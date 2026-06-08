@@ -1,7 +1,7 @@
 // ldp3c -- the LDP3 compiler driver (CLI entry point).
 //
-// Release 0.1 / M1: the lexer is wired in behind --dump-tokens. The rest of
-// the pipeline (parser -> semantic -> codegen -> .ll) lands in later phases.
+// Release 0.1 / M1: lexer and parser are wired in behind --dump-tokens and
+// --dump-ast. Semantic analysis and codegen (-> .ll) land in later phases.
 
 #include <cstdio>
 #include <fstream>
@@ -9,10 +9,13 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "lexer/lexer.h"
 #include "lexer/token.h"
+#include "parser/ast.h"
+#include "parser/parser.h"
 
 namespace {
 
@@ -30,8 +33,9 @@ int printUsage(const char* prog) {
     std::fprintf(stderr,
                  "usage: %s <input.ldp3>\n"
                  "       %s --dump-tokens <input.ldp3>\n"
+                 "       %s --dump-ast <input.ldp3>\n"
                  "       %s --version\n",
-                 prog, prog, prog);
+                 prog, prog, prog, prog);
     return 2;
 }
 
@@ -60,6 +64,39 @@ int dumpTokens(const std::string& path) {
     return 0;
 }
 
+int dumpAst(const std::string& path) {
+    auto source = readFile(path);
+    if (!source) {
+        std::fprintf(stderr, "error: cannot open input file '%s'\n", path.c_str());
+        return 1;
+    }
+
+    ldp3::Lexer lexer(*source, path);
+    std::vector<ldp3::Token> tokens = lexer.tokenize();
+    if (lexer.hasErrors()) {
+        for (const ldp3::LexError& e : lexer.errors()) {
+            std::fprintf(stderr, "%s:%d:%d: lex error: %s\n", path.c_str(), e.loc.line,
+                         e.loc.col, e.message.c_str());
+        }
+        return 1;
+    }
+
+    ldp3::Parser parser(std::move(tokens), path);
+    const ldp3::ast::Program program = parser.parse();
+    if (parser.hasErrors()) {
+        for (const ldp3::ParseError& e : parser.errors()) {
+            std::fprintf(stderr, "%s:%d:%d: parse error: %s\n", path.c_str(), e.loc.line,
+                         e.loc.col, e.message.c_str());
+        }
+        return 1;
+    }
+
+    std::string out;
+    program.dump(out, 0);
+    std::fputs(out.c_str(), stdout);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -77,6 +114,14 @@ int main(int argc, char** argv) {
             return printUsage(argv[0]);
         }
         return dumpTokens(std::string(args[1]));
+    }
+
+    if (args[0] == "--dump-ast") {
+        if (args.size() < 2) {
+            std::fprintf(stderr, "error: --dump-ast requires an input file\n");
+            return printUsage(argv[0]);
+        }
+        return dumpAst(std::string(args[1]));
     }
 
     // Default (placeholder until the full pipeline lands): read the source.

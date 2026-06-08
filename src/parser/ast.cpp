@@ -1,0 +1,105 @@
+#include "parser/ast.h"
+
+namespace ldp3::ast {
+
+namespace {
+
+void line(std::string& out, int indent, const std::string& text) {
+    out.append(static_cast<std::size_t>(indent) * 2, ' ');
+    out += text;
+    out += '\n';
+}
+
+std::string typeText(const TypeRef& t) {
+    return t.name + (t.isArray ? "[]" : "");
+}
+
+}  // namespace
+
+void IdentifierExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Identifier '" + name + "'");
+}
+
+void IntLiteralExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "IntLiteral " + text);
+}
+
+void StringLiteralExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "StringLiteral \"" + value + "\"");
+}
+
+void CharLiteralExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "CharLiteral '" + value + "'");
+}
+
+void BoolLiteralExpr::dump(std::string& out, int indent) const {
+    line(out, indent, std::string("BoolLiteral ") + (value ? "true" : "false"));
+}
+
+void MemberExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Member '." + member + "'");
+    object->dump(out, indent + 1);
+}
+
+void CallExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Call");
+    line(out, indent + 1, "callee:");
+    callee->dump(out, indent + 2);
+    line(out, indent + 1, "args:");
+    for (const auto& a : args) a->dump(out, indent + 2);
+}
+
+void ExprStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "ExprStmt");
+    expr->dump(out, indent + 1);
+}
+
+void ReturnStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Return");
+    if (value) value->dump(out, indent + 1);
+}
+
+void Block::dump(std::string& out, int indent) const {
+    line(out, indent, "Block");
+    for (const auto& s : statements) s->dump(out, indent + 1);
+}
+
+void MethodDecl::dump(std::string& out, int indent) const {
+    std::string head = "Method '" + name + "'";
+    if (!visibility.empty()) head += " " + visibility;
+    if (isStatic) head += " static";
+    head += " returns " + typeText(returnType);
+    line(out, indent, head);
+    for (const auto& p : params) {
+        line(out, indent + 1, "Param '" + p.name + "': " + typeText(p.type));
+    }
+    body.dump(out, indent + 1);
+}
+
+void ClassDecl::dump(std::string& out, int indent) const {
+    std::string head = "Class '" + name + "'";
+    if (!visibility.empty()) head += " " + visibility;
+    line(out, indent, head);
+    for (const auto& m : members) m->dump(out, indent + 1);
+}
+
+void Namespace::dump(std::string& out, int indent) const {
+    std::string head = "Namespace '" + name + "'";
+    if (!visibility.empty()) head += " " + visibility;
+    line(out, indent, head);
+    for (const auto& c : classes) c.dump(out, indent + 1);
+}
+
+void Bundle::dump(std::string& out, int indent) const {
+    std::string head = "Bundle '" + name + "'";
+    if (!visibility.empty()) head += " " + visibility;
+    line(out, indent, head);
+    for (const auto& n : namespaces) n.dump(out, indent + 1);
+}
+
+void Program::dump(std::string& out, int indent) const {
+    line(out, indent, "Program '" + name + "'");
+    for (const auto& b : bundles) b.dump(out, indent + 1);
+}
+
+}  // namespace ldp3::ast
