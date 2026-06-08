@@ -1,0 +1,12 @@
+program Hello;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.printf("Hello, world!\n");
+                System.IO.printf("LDP3 compiles to native code.\n");
+            }
+        }
+    }
+}
