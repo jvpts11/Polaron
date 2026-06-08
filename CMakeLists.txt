@@ -12,8 +12,8 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# The LLVM IR codegen backend is wired in from M1, once the dev SDK
-# (vcpkg: llvm:x64-windows) finishes building. Until then the frontend
+# The LLVM IR codegen backend is wired in from the codegen milestone, once the
+# dev SDK (vcpkg: llvm:x64-windows) finishes building. Until then the frontend
 # builds without it so the pipeline stays green.
 option(LDP3_WITH_LLVM "Build the LLVM IR codegen backend" OFF)
 if(LDP3_WITH_LLVM)
@@ -21,10 +21,16 @@ if(LDP3_WITH_LLVM)
     message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} (${LLVM_DIR})")
 endif()
 
-# Compiler driver. Phase by phase this grows into lexer -> parser ->
-# semantic -> codegen; for now (M0) it is a thin CLI over file reading.
+# Compiler core. Phase by phase this grows: lexer (now) -> parser -> semantic
+# -> codegen.
+add_library(ldp3_core
+    src/lexer/token.cpp
+    src/lexer/lexer.cpp
+)
+target_include_directories(ldp3_core PUBLIC src)
+
 add_executable(ldp3c src/cli/main.cpp)
-target_include_directories(ldp3c PRIVATE src)
+target_link_libraries(ldp3c PRIVATE ldp3_core)
 
 enable_testing()
 add_subdirectory(tests)
