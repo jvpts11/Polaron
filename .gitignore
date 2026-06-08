@@ -1,0 +1,16 @@
+# Build output
+/build/
+/out/
+out.ll
+*.exe
+*.obj
+*.pdb
+*.ilk
+
+# vcpkg
+/vcpkg_installed/
+
+# Editor / IDE
+.vs/
+.vscode/
+*.user
