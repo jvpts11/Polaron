@@ -78,3 +78,61 @@ TEST_CASE("semantic accepts local var type inference") {
     CHECK(checkSrc(wrapMain(
         "public static method main(string[] args) returns void { var n = 5; int m = n + 1; }")));
 }
+
+TEST_CASE("semantic rejects assignment to an immutable variable") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { int x = 1; x = 2; }")));
+}
+
+TEST_CASE("semantic accepts assignment to a mutable variable") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { mutable int x = 1; x = 2; }")));
+}
+
+TEST_CASE("semantic rejects increment of an immutable variable") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { int x = 1; x++; }")));
+}
+
+TEST_CASE("semantic types a comparison as boolean") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { boolean b = 1 < 2; }")));
+}
+
+TEST_CASE("semantic rejects assigning a boolean to an int") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { int b = 1 < 2; }")));
+}
+
+TEST_CASE("semantic rejects logical operators on int operands") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { boolean b = 1 && 2; }")));
+}
+
+TEST_CASE("semantic rejects a non-boolean if condition") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { if (5) { } }")));
+}
+
+TEST_CASE("semantic scopes variables to their block") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void "
+        "{ if (1 < 2) { int x = 1; } int y = x; }")));
+}
+
+TEST_CASE("semantic forbids shadowing in a nested block") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void "
+        "{ int x = 1; if (1 < 2) { int x = 2; } }")));
+}
+
+TEST_CASE("semantic rejects a non-boolean while condition") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { while (1) { } }")));
+}
+
+TEST_CASE("semantic scopes the for-init variable to the loop") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void "
+        "{ for (mutable int i = 0; i < 3; i++) { } int x = i; }")));
+}

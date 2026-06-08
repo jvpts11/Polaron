@@ -55,7 +55,13 @@ private:
     ast::TypeRef parseTypeRef();
     ast::Block parseBlock();
     ast::StmtPtr parseStatement();
+    ast::StmtPtr parseIfStatement();
+    ast::StmtPtr parseWhileStatement();
+    ast::StmtPtr parseForStatement();
     ast::StmtPtr parseVarDecl();
+    std::unique_ptr<ast::VarDeclStmt> parseVarDeclCore();   // no trailing ';'
+    ast::StmtPtr parseAssignOrIncDec();
+    ast::StmtPtr parseAssignOrIncDecCore();                 // no trailing ';'
     ast::ExprPtr parseExpression();
     ast::ExprPtr parseBinary(int minPrec);
     ast::ExprPtr parseUnary();

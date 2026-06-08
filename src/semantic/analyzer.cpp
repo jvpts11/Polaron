@@ -69,10 +69,34 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
 }
 
 void SemanticAnalyzer::analyzeMethodBody(const ast::MethodDecl& method) {
-    locals_.clear();
-    for (const auto& stmt : method.body.statements) {
+    scopes_.clear();
+    analyzeBlock(method.body);
+}
+
+void SemanticAnalyzer::analyzeBlock(const ast::Block& block) {
+    pushScope();
+    for (const auto& stmt : block.statements) {
         analyzeStatement(*stmt);
     }
+    popScope();
+}
+
+void SemanticAnalyzer::pushScope() { scopes_.emplace_back(); }
+
+void SemanticAnalyzer::popScope() {
+    if (!scopes_.empty()) scopes_.pop_back();
+}
+
+const LocalVar* SemanticAnalyzer::lookupLocal(const std::string& name) const {
+    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+        auto found = it->find(name);
+        if (found != it->end()) return &found->second;
+    }
+    return nullptr;
+}
+
+void SemanticAnalyzer::declareLocal(const std::string& name, LocalVar info) {
+    scopes_.back()[name] = std::move(info);
 }
 
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
@@ -84,11 +108,76 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                       "' with a value of type '" + initType + "'",
                   vd->loc);
         }
-        if (locals_.count(vd->name) > 0) {
-            error("redeclaration of variable '" + vd->name + "'", vd->loc);
+        if (lookupLocal(vd->name) != nullptr) {
+            error("redeclaration or shadowing of variable '" + vd->name + "'", vd->loc);
         } else {
-            locals_[vd->name] = declType.empty() ? std::string("int") : declType;
+            declareLocal(vd->name, LocalVar{declType.empty() ? std::string("int") : declType,
+                                            vd->isMutable});
         }
+        return;
+    }
+    if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
+        const LocalVar* var = lookupLocal(assign->target);
+        if (var == nullptr) {
+            error("assignment to undeclared variable '" + assign->target + "'", assign->loc);
+            return;
+        }
+        if (!var->isMutable) {
+            error("cannot assign to immutable variable '" + assign->target +
+                      "' (declare it 'mutable')",
+                  assign->loc);
+        }
+        const std::string vt = typeOf(*assign->value);
+        if (!vt.empty() && vt != var->type) {
+            error("cannot assign a value of type '" + vt + "' to variable '" + assign->target +
+                      "' of type '" + var->type + "'",
+                  assign->loc);
+        }
+        return;
+    }
+    if (const auto* incdec = dynamic_cast<const ast::IncDecStmt*>(&stmt)) {
+        const LocalVar* var = lookupLocal(incdec->target);
+        if (var == nullptr) {
+            error("modification of undeclared variable '" + incdec->target + "'", incdec->loc);
+            return;
+        }
+        if (!var->isMutable) {
+            error("cannot modify immutable variable '" + incdec->target +
+                      "' (declare it 'mutable')",
+                  incdec->loc);
+        }
+        if (var->type != "int") {
+            error("'++'/'--' requires an int variable", incdec->loc);
+        }
+        return;
+    }
+    if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(&stmt)) {
+        const std::string ct = typeOf(*ifs->cond);
+        if (!ct.empty() && ct != "boolean") {
+            error("'if' condition must be boolean, got '" + ct + "'", ifs->loc);
+        }
+        analyzeBlock(ifs->thenBlock);
+        if (ifs->elseBlock) analyzeBlock(*ifs->elseBlock);
+        return;
+    }
+    if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&stmt)) {
+        const std::string ct = typeOf(*ws->cond);
+        if (!ct.empty() && ct != "boolean") {
+            error("'while' condition must be boolean, got '" + ct + "'", ws->loc);
+        }
+        analyzeBlock(ws->body);
+        return;
+    }
+    if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&stmt)) {
+        pushScope();  // the for-init variable lives in the loop's own scope
+        if (fs->init) analyzeStatement(*fs->init);
+        const std::string ct = typeOf(*fs->cond);
+        if (!ct.empty() && ct != "boolean") {
+            error("'for' condition must be boolean, got '" + ct + "'", fs->loc);
+        }
+        if (fs->update) analyzeStatement(*fs->update);
+        analyzeBlock(fs->body);
+        popScope();
         return;
     }
     if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
@@ -107,15 +196,21 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
     if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
-        auto it = locals_.find(id->name);
-        if (it == locals_.end()) {
+        const LocalVar* var = lookupLocal(id->name);
+        if (var == nullptr) {
             error("use of undeclared variable '" + id->name + "'", id->loc);
             return "";
         }
-        return it->second;
+        return var->type;
     }
     if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
         const std::string t = typeOf(*un->operand);
+        if (un->op == "!") {
+            if (!t.empty() && t != "boolean") {
+                error("unary '!' requires a boolean operand", un->loc);
+            }
+            return "boolean";
+        }
         if (!t.empty() && t != "int") {
             error("unary '" + un->op + "' requires an int operand", un->loc);
         }
@@ -124,10 +219,33 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
         const std::string lt = typeOf(*bin->lhs);
         const std::string rt = typeOf(*bin->rhs);
-        if ((!lt.empty() && lt != "int") || (!rt.empty() && rt != "int")) {
-            error("operator '" + bin->op + "' requires int operands", bin->loc);
+        const std::string& op = bin->op;
+        if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
+            if ((!lt.empty() && lt != "int") || (!rt.empty() && rt != "int")) {
+                error("operator '" + op + "' requires int operands", bin->loc);
+            }
+            return "int";
         }
-        return "int";
+        if (op == "<" || op == ">" || op == "<=" || op == ">=") {
+            if ((!lt.empty() && lt != "int") || (!rt.empty() && rt != "int")) {
+                error("operator '" + op + "' requires int operands", bin->loc);
+            }
+            return "boolean";
+        }
+        if (op == "==" || op == "!=") {
+            if (!lt.empty() && !rt.empty() && lt != rt) {
+                error("operator '" + op + "' requires operands of the same type", bin->loc);
+            }
+            return "boolean";
+        }
+        if (op == "&&" || op == "||") {
+            if ((!lt.empty() && lt != "boolean") || (!rt.empty() && rt != "boolean")) {
+                error("operator '" + op + "' requires boolean operands", bin->loc);
+            }
+            return "boolean";
+        }
+        error("unsupported binary operator '" + op + "'", bin->loc);
+        return "";
     }
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
         const std::string name = flattenCallee(*call->callee);

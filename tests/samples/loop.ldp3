@@ -1,0 +1,23 @@
+program Loop;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int sum = 0;
+                for (mutable int i = 1; i <= 10; i++) {
+                    sum = sum + i;            // 1 + 2 + ... + 10 = 55
+                }
+
+                mutable int n = 100;
+                mutable int steps = 0;
+                while (n > 1) {
+                    n = n / 2;                // 100 -> 1 in 6 halvings
+                    steps++;
+                }
+
+                System.IO.printf("sum=%d steps=%d\n", sum, steps);
+            }
+        }
+    }
+}

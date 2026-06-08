@@ -22,6 +22,12 @@ struct EntryPoint {
     std::string qualifiedName;  // e.g. "main.app.Main.main"
 };
 
+// A local variable in the current method scope.
+struct LocalVar {
+    std::string type;
+    bool isMutable = false;
+};
+
 // Semantic analysis. Release 0.1 / walking-skeleton scope: validate that the
 // program has exactly one well-formed entry point. Symbol tables, scope
 // resolution and full type checking arrive from M2 onward.
@@ -39,15 +45,23 @@ private:
     void error(std::string message, SourceLocation loc);
     bool isValidMainSignature(const ast::MethodDecl& method) const;
 
-    // M2: walk the entry-point body resolving variables and checking types.
+    // M2/M3: walk the entry-point body resolving variables and checking types.
     void analyzeMethodBody(const ast::MethodDecl& method);
+    void analyzeBlock(const ast::Block& block);
     void analyzeStatement(const ast::Stmt& stmt);
     std::string typeOf(const ast::Expr& expr);  // "" on error
     std::string flattenCallee(const ast::Expr& expr) const;
 
+    // Lexical scopes (innermost last). Shadowing is forbidden, so a name lives
+    // in at most one scope at a time.
+    void pushScope();
+    void popScope();
+    const LocalVar* lookupLocal(const std::string& name) const;
+    void declareLocal(const std::string& name, LocalVar info);
+
     std::vector<SemaError> errors_;
     EntryPoint entry_;
-    std::unordered_map<std::string, std::string> locals_;  // name -> type (single scope)
+    std::vector<std::unordered_map<std::string, LocalVar>> scopes_;
 };
 
 }  // namespace ldp3

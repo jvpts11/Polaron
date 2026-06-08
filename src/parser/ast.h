@@ -105,10 +105,43 @@ struct VarDeclStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+struct AssignStmt : Stmt {
+    std::string target;  // M2: a simple variable name
+    ExprPtr value;
+    void dump(std::string& out, int indent) const override;
+};
+
+struct IncDecStmt : Stmt {
+    std::string target;
+    bool isIncrement = true;  // ++ vs --
+    void dump(std::string& out, int indent) const override;
+};
+
 struct Block {
     std::vector<StmtPtr> statements;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
+};
+
+struct IfStmt : Stmt {
+    ExprPtr cond;
+    Block thenBlock;
+    std::unique_ptr<Block> elseBlock;  // null when there is no else
+    void dump(std::string& out, int indent) const override;
+};
+
+struct WhileStmt : Stmt {
+    ExprPtr cond;
+    Block body;
+    void dump(std::string& out, int indent) const override;
+};
+
+struct ForStmt : Stmt {
+    StmtPtr init;    // variable declaration or assignment (may be null)
+    ExprPtr cond;
+    StmtPtr update;  // assignment or increment/decrement (may be null)
+    Block body;
+    void dump(std::string& out, int indent) const override;
 };
 
 // ---- Declarations ----

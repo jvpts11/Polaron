@@ -78,9 +78,54 @@ void VarDeclStmt::dump(std::string& out, int indent) const {
     init->dump(out, indent + 1);
 }
 
+void AssignStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Assign '" + target + "'");
+    value->dump(out, indent + 1);
+}
+
+void IncDecStmt::dump(std::string& out, int indent) const {
+    line(out, indent, std::string("IncDec '") + target + (isIncrement ? "++" : "--") + "'");
+}
+
 void Block::dump(std::string& out, int indent) const {
     line(out, indent, "Block");
     for (const auto& s : statements) s->dump(out, indent + 1);
+}
+
+void IfStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "If");
+    line(out, indent + 1, "cond:");
+    cond->dump(out, indent + 2);
+    line(out, indent + 1, "then:");
+    thenBlock.dump(out, indent + 2);
+    if (elseBlock) {
+        line(out, indent + 1, "else:");
+        elseBlock->dump(out, indent + 2);
+    }
+}
+
+void WhileStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "While");
+    line(out, indent + 1, "cond:");
+    cond->dump(out, indent + 2);
+    line(out, indent + 1, "body:");
+    body.dump(out, indent + 2);
+}
+
+void ForStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "For");
+    if (init) {
+        line(out, indent + 1, "init:");
+        init->dump(out, indent + 2);
+    }
+    line(out, indent + 1, "cond:");
+    cond->dump(out, indent + 2);
+    if (update) {
+        line(out, indent + 1, "update:");
+        update->dump(out, indent + 2);
+    }
+    line(out, indent + 1, "body:");
+    body.dump(out, indent + 2);
 }
 
 void MethodDecl::dump(std::string& out, int indent) const {

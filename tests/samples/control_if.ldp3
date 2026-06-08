@@ -1,0 +1,21 @@
+program ControlIf;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int n = 7;
+                mutable int result = 0;
+                if (n % 2 == 0) {
+                    result = 1;
+                } else {
+                    result = 2;        // 7 is odd -> 2
+                }
+                if (n > 5) {
+                    result = result + 100;  // -> 102
+                }
+                System.IO.printf("result=%d\n", result);
+            }
+        }
+    }
+}

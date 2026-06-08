@@ -131,6 +131,10 @@ struct CodeGenerator::Impl {
             llvm::Value* v = emitExpr(*un->operand);
             if (v == nullptr) return nullptr;
             if (un->op == "-") return builder.CreateNeg(v);
+            if (un->op == "!") {
+                llvm::Value* isZero = builder.CreateICmpEQ(v, builder.getInt32(0));
+                return builder.CreateZExt(isZero, builder.getInt32Ty());
+            }
             error("unsupported unary operator '" + un->op + "'", un->loc);
             return nullptr;
         }
@@ -138,12 +142,32 @@ struct CodeGenerator::Impl {
             llvm::Value* l = emitExpr(*bin->lhs);
             llvm::Value* r = emitExpr(*bin->rhs);
             if (l == nullptr || r == nullptr) return nullptr;
-            if (bin->op == "+") return builder.CreateAdd(l, r);
-            if (bin->op == "-") return builder.CreateSub(l, r);
-            if (bin->op == "*") return builder.CreateMul(l, r);
-            if (bin->op == "/") return builder.CreateSDiv(l, r);
-            if (bin->op == "%") return builder.CreateSRem(l, r);
-            error("unsupported binary operator '" + bin->op + "'", bin->loc);
+            const std::string& op = bin->op;
+            if (op == "+") return builder.CreateAdd(l, r);
+            if (op == "-") return builder.CreateSub(l, r);
+            if (op == "*") return builder.CreateMul(l, r);
+            if (op == "/") return builder.CreateSDiv(l, r);
+            if (op == "%") return builder.CreateSRem(l, r);
+
+            // Comparisons yield i1; widen to i32 since booleans are i32 0/1.
+            llvm::Value* cmp = nullptr;
+            if (op == "==") cmp = builder.CreateICmpEQ(l, r);
+            else if (op == "!=") cmp = builder.CreateICmpNE(l, r);
+            else if (op == "<") cmp = builder.CreateICmpSLT(l, r);
+            else if (op == ">") cmp = builder.CreateICmpSGT(l, r);
+            else if (op == "<=") cmp = builder.CreateICmpSLE(l, r);
+            else if (op == ">=") cmp = builder.CreateICmpSGE(l, r);
+            if (cmp != nullptr) return builder.CreateZExt(cmp, builder.getInt32Ty());
+
+            // Logical &&/|| (no short-circuit yet; operands are booleans 0/1).
+            if (op == "&&" || op == "||") {
+                llvm::Value* lb = builder.CreateICmpNE(l, builder.getInt32(0));
+                llvm::Value* rb = builder.CreateICmpNE(r, builder.getInt32(0));
+                llvm::Value* res =
+                    (op == "&&") ? builder.CreateAnd(lb, rb) : builder.CreateOr(lb, rb);
+                return builder.CreateZExt(res, builder.getInt32Ty());
+            }
+            error("unsupported binary operator '" + op + "'", bin->loc);
             return nullptr;
         }
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
@@ -171,12 +195,48 @@ struct CodeGenerator::Impl {
     }
 
     void emitStatement(const ast::Stmt& stmt) {
+        if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(&stmt)) {
+            emitIf(*ifs);
+            return;
+        }
+        if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&stmt)) {
+            emitWhile(*ws);
+            return;
+        }
+        if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&stmt)) {
+            emitFor(*fs);
+            return;
+        }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
             llvm::Value* initV = emitExpr(*vd->init);
             if (initV == nullptr) return;
-            llvm::Value* slot = builder.CreateAlloca(builder.getInt32Ty(), nullptr, vd->name);
+            llvm::Value* slot = createEntryAlloca(vd->name);
             builder.CreateStore(initV, slot);
             locals[vd->name] = slot;
+            return;
+        }
+        if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
+            auto it = locals.find(assign->target);
+            if (it == locals.end()) {
+                error("assignment to undeclared variable '" + assign->target + "'", assign->loc);
+                return;
+            }
+            llvm::Value* v = emitExpr(*assign->value);
+            if (v == nullptr) return;
+            builder.CreateStore(v, it->second);
+            return;
+        }
+        if (const auto* incdec = dynamic_cast<const ast::IncDecStmt*>(&stmt)) {
+            auto it = locals.find(incdec->target);
+            if (it == locals.end()) {
+                error("modification of undeclared variable '" + incdec->target + "'", incdec->loc);
+                return;
+            }
+            llvm::Value* cur = builder.CreateLoad(builder.getInt32Ty(), it->second, incdec->target);
+            llvm::Value* one = builder.getInt32(1);
+            llvm::Value* res =
+                incdec->isIncrement ? builder.CreateAdd(cur, one) : builder.CreateSub(cur, one);
+            builder.CreateStore(res, it->second);
             return;
         }
         if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
@@ -190,6 +250,88 @@ struct CodeGenerator::Impl {
         error("unsupported statement in codegen (0.1 walking skeleton)", stmt.loc);
     }
 
+    // Allocas live at the top of the entry block so they are not re-run inside
+    // loops (the function frame reserves them once).
+    llvm::Value* createEntryAlloca(const std::string& name) {
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock& entryBB = fn->getEntryBlock();
+        llvm::IRBuilder<> tmp(&entryBB, entryBB.begin());
+        return tmp.CreateAlloca(builder.getInt32Ty(), nullptr, name);
+    }
+
+    void emitBlock(const ast::Block& block) {
+        for (const auto& stmt : block.statements) {
+            if (builder.GetInsertBlock()->getTerminator() != nullptr) break;  // unreachable
+            emitStatement(*stmt);
+        }
+    }
+
+    void emitIf(const ast::IfStmt& s) {
+        llvm::Value* condV = emitExpr(*s.cond);
+        if (condV == nullptr) return;
+        llvm::Value* condBool = builder.CreateICmpNE(condV, builder.getInt32(0));
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context, "if.then", fn);
+        llvm::BasicBlock* elseBB =
+            s.elseBlock ? llvm::BasicBlock::Create(context, "if.else", fn) : nullptr;
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "if.end", fn);
+        builder.CreateCondBr(condBool, thenBB, elseBB != nullptr ? elseBB : endBB);
+
+        builder.SetInsertPoint(thenBB);
+        emitBlock(s.thenBlock);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
+
+        if (elseBB != nullptr) {
+            builder.SetInsertPoint(elseBB);
+            emitBlock(*s.elseBlock);
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
+        }
+
+        builder.SetInsertPoint(endBB);
+    }
+
+    void emitWhile(const ast::WhileStmt& s) {
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "while.cond", fn);
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "while.body", fn);
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "while.end", fn);
+        builder.CreateBr(condBB);
+
+        builder.SetInsertPoint(condBB);
+        llvm::Value* condV = emitExpr(*s.cond);
+        if (condV == nullptr) return;
+        builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
+
+        builder.SetInsertPoint(bodyBB);
+        emitBlock(s.body);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(condBB);
+
+        builder.SetInsertPoint(endBB);
+    }
+
+    void emitFor(const ast::ForStmt& s) {
+        if (s.init) emitStatement(*s.init);
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "for.cond", fn);
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "for.body", fn);
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "for.end", fn);
+        builder.CreateBr(condBB);
+
+        builder.SetInsertPoint(condBB);
+        llvm::Value* condV = emitExpr(*s.cond);
+        if (condV == nullptr) return;
+        builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
+
+        builder.SetInsertPoint(bodyBB);
+        emitBlock(s.body);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) {
+            if (s.update) emitStatement(*s.update);
+            builder.CreateBr(condBB);
+        }
+
+        builder.SetInsertPoint(endBB);
+    }
+
     void emitMain() {
         llvm::FunctionType* mainTy = llvm::FunctionType::get(builder.getInt32Ty(), false);
         llvm::Function* mainFn =
@@ -197,10 +339,10 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", mainFn);
         builder.SetInsertPoint(block);
 
-        for (const auto& stmt : entry.method->body.statements) {
-            emitStatement(*stmt);
+        emitBlock(entry.method->body);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) {
+            builder.CreateRet(builder.getInt32(0));
         }
-        builder.CreateRet(builder.getInt32(0));
     }
 };
 

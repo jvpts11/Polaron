@@ -38,13 +38,25 @@ bool isTypeKeyword(TokenKind k) {
 // Binary operator precedence (higher binds tighter); 0 means "not a binary op".
 int binaryPrec(TokenKind k) {
     switch (k) {
+        case TokenKind::PipePipe:
+            return 1;
+        case TokenKind::AmpAmp:
+            return 2;
+        case TokenKind::EqEq:
+        case TokenKind::BangEq:
+            return 3;
+        case TokenKind::Lt:
+        case TokenKind::Gt:
+        case TokenKind::LtEq:
+        case TokenKind::GtEq:
+            return 4;
+        case TokenKind::Plus:
+        case TokenKind::Minus:
+            return 5;
         case TokenKind::Star:
         case TokenKind::Slash:
         case TokenKind::Percent:
-            return 2;
-        case TokenKind::Plus:
-        case TokenKind::Minus:
-            return 1;
+            return 6;
         default:
             return 0;
     }
@@ -236,6 +248,15 @@ ast::Block Parser::parseBlock() {
 }
 
 ast::StmtPtr Parser::parseStatement() {
+    if (check(TokenKind::KwIf)) {
+        return parseIfStatement();
+    }
+    if (check(TokenKind::KwWhile)) {
+        return parseWhileStatement();
+    }
+    if (check(TokenKind::KwFor)) {
+        return parseForStatement();
+    }
     if (check(TokenKind::KwReturn)) {
         auto ret = std::make_unique<ast::ReturnStmt>();
         ret->loc = current().loc;
@@ -250,6 +271,11 @@ ast::StmtPtr Parser::parseStatement() {
         isTypeKeyword(current().kind)) {
         return parseVarDecl();
     }
+    if (check(TokenKind::Identifier) &&
+        (peek(1).kind == TokenKind::Assign || peek(1).kind == TokenKind::PlusPlus ||
+         peek(1).kind == TokenKind::MinusMinus)) {
+        return parseAssignOrIncDec();
+    }
     auto stmt = std::make_unique<ast::ExprStmt>();
     stmt->loc = current().loc;
     stmt->expr = parseExpression();
@@ -257,7 +283,62 @@ ast::StmtPtr Parser::parseStatement() {
     return stmt;
 }
 
-ast::StmtPtr Parser::parseVarDecl() {
+ast::StmtPtr Parser::parseIfStatement() {
+    auto s = std::make_unique<ast::IfStmt>();
+    s->loc = current().loc;
+    expect(TokenKind::KwIf, "'if'");
+    expect(TokenKind::LParen, "'('");
+    s->cond = parseExpression();
+    expect(TokenKind::RParen, "')'");
+    s->thenBlock = parseBlock();
+    if (match(TokenKind::KwElse)) {
+        if (check(TokenKind::KwIf)) {
+            // `else if`: wrap the nested if in a block to keep the AST uniform.
+            auto inner = std::make_unique<ast::Block>();
+            inner->loc = current().loc;
+            inner->statements.push_back(parseIfStatement());
+            s->elseBlock = std::move(inner);
+        } else {
+            s->elseBlock = std::make_unique<ast::Block>(parseBlock());
+        }
+    }
+    return s;
+}
+
+ast::StmtPtr Parser::parseWhileStatement() {
+    auto s = std::make_unique<ast::WhileStmt>();
+    s->loc = current().loc;
+    expect(TokenKind::KwWhile, "'while'");
+    expect(TokenKind::LParen, "'('");
+    s->cond = parseExpression();
+    expect(TokenKind::RParen, "')'");
+    s->body = parseBlock();
+    return s;
+}
+
+ast::StmtPtr Parser::parseForStatement() {
+    auto s = std::make_unique<ast::ForStmt>();
+    s->loc = current().loc;
+    expect(TokenKind::KwFor, "'for'");
+    expect(TokenKind::LParen, "'('");
+    if (check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
+        isTypeKeyword(current().kind)) {
+        s->init = parseVarDeclCore();
+    } else if (check(TokenKind::Identifier)) {
+        s->init = parseAssignOrIncDecCore();
+    }
+    expect(TokenKind::Semicolon, "';'");
+    s->cond = parseExpression();
+    expect(TokenKind::Semicolon, "';'");
+    if (!check(TokenKind::RParen)) {
+        s->update = parseAssignOrIncDecCore();
+    }
+    expect(TokenKind::RParen, "')'");
+    s->body = parseBlock();
+    return s;
+}
+
+std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
     auto decl = std::make_unique<ast::VarDeclStmt>();
     decl->loc = current().loc;
     decl->isMutable = match(TokenKind::KwMutable);
@@ -269,8 +350,37 @@ ast::StmtPtr Parser::parseVarDecl() {
     decl->name = expect(TokenKind::Identifier, "a variable name").lexeme;
     expect(TokenKind::Assign, "'=' (variables require an initializer)");
     decl->init = parseExpression();
+    return decl;
+}
+
+ast::StmtPtr Parser::parseVarDecl() {
+    auto decl = parseVarDeclCore();
     expect(TokenKind::Semicolon, "';'");
     return decl;
+}
+
+ast::StmtPtr Parser::parseAssignOrIncDecCore() {
+    const Token nameTok = expect(TokenKind::Identifier, "a variable name");
+    if (check(TokenKind::PlusPlus) || check(TokenKind::MinusMinus)) {
+        const Token op = advance();
+        auto s = std::make_unique<ast::IncDecStmt>();
+        s->loc = nameTok.loc;
+        s->target = nameTok.lexeme;
+        s->isIncrement = (op.kind == TokenKind::PlusPlus);
+        return s;
+    }
+    expect(TokenKind::Assign, "'='");
+    auto s = std::make_unique<ast::AssignStmt>();
+    s->loc = nameTok.loc;
+    s->target = nameTok.lexeme;
+    s->value = parseExpression();
+    return s;
+}
+
+ast::StmtPtr Parser::parseAssignOrIncDec() {
+    auto s = parseAssignOrIncDecCore();
+    expect(TokenKind::Semicolon, "';'");
+    return s;
 }
 
 ast::ExprPtr Parser::parseExpression() { return parseBinary(1); }
@@ -293,7 +403,7 @@ ast::ExprPtr Parser::parseBinary(int minPrec) {
 }
 
 ast::ExprPtr Parser::parseUnary() {
-    if (check(TokenKind::Minus)) {
+    if (check(TokenKind::Minus) || check(TokenKind::Bang)) {
         const Token op = advance();
         auto un = std::make_unique<ast::UnaryExpr>();
         un->loc = op.loc;

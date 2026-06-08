@@ -1,0 +1,15 @@
+program Logic;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = 10;
+                int b = 20;
+                boolean less = a < b;            // true
+                boolean both = less && (b > 0);  // true && true
+                System.IO.printf("less=%d both=%d sum_gt=%d\n", less, both, a + b > 25);
+            }
+        }
+    }
+}
