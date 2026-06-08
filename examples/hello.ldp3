@@ -1,11 +1,15 @@
+// The classic hello world in LDP3.
+//
+// Build & run:  powershell -ExecutionPolicy Bypass -File scripts\run.ps1 examples\hello.ldp3
+
 program Hello;
 
 public bundle main {
-    public namespace app {
+    public namespace examples {
         public class Main {
             public static method main(string[] args) returns void {
                 System.IO.printf("Hello, world!\n");
-                System.IO.printf("LDP3 compiles to native code.\n");
+                System.IO.printf("This is LDP3, the beginning of something greater.\n");
             }
         }
     }

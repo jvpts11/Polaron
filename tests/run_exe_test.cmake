@@ -13,7 +13,7 @@ if(NOT rc EQUAL 0)
     message(FATAL_ERROR "ldp3c failed (exit ${rc})")
 endif()
 
-execute_process(COMMAND "${CLANG}" "${ll}" -o "${exe}" RESULT_VARIABLE rc)
+execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}" -o "${exe}" RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})")
 endif()

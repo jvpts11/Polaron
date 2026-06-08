@@ -22,7 +22,7 @@ if (-not (Test-Path $ldp3c)) {
 
 & $ldp3c $File -o $ll
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& $clang $ll -o $exe
+& $clang -Wno-override-module $ll -o $exe
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "--- output ---"

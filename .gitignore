@@ -1,16 +1,29 @@
 # Build output
 /build/
+/build-*/
 /out/
 out.ll
+
+# Native build artifacts
 *.exe
 *.obj
+*.o
+*.a
+*.lib
 *.pdb
 *.ilk
+*.exp
 
-# vcpkg
+# CMake
+CMakeUserPresets.json
+
+# vcpkg (dependencies live outside the repo)
 /vcpkg_installed/
 
 # Editor / IDE
 .vs/
 .vscode/
 *.user
+
+# Note: CLAUDE.md and docs/ are intentionally NOT ignored here; they are simply
+# never added to commits.
