@@ -1,0 +1,13 @@
+program NoEntry;
+
+// This program has no entry point: the public class is named 'Helper', not
+// 'Main', so semantic analysis must reject it.
+public bundle main {
+    public namespace app {
+        public class Helper {
+            public static method run(string[] args) returns void {
+                return;
+            }
+        }
+    }
+}

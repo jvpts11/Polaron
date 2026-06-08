@@ -1,7 +1,8 @@
 # CTest wiring for the LDP3 compiler.
 #
 # Integration smoke tests over the ldp3c driver. Granular unit tests for the
-# lexer/parser stages join via a lightweight framework as the surface grows.
+# lexer/parser/semantic stages join via a lightweight framework as the surface
+# grows.
 
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
@@ -23,3 +24,15 @@ add_test(NAME parser_dumps_ast
     COMMAND ldp3c --dump-ast "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3")
 set_tests_properties(parser_dumps_ast PROPERTIES
     PASS_REGULAR_EXPRESSION "Program 'HelloWorld'")
+
+# Semantic: hello_world has a valid entry point.
+add_test(NAME sema_accepts_entry_point
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3")
+set_tests_properties(sema_accepts_entry_point PROPERTIES
+    PASS_REGULAR_EXPRESSION "OK: entry point")
+
+# Semantic: a program without 'class Main' is rejected.
+add_test(NAME sema_rejects_no_entry
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/no_entry.ldp3")
+set_tests_properties(sema_rejects_no_entry PROPERTIES
+    PASS_REGULAR_EXPRESSION "no entry point")

@@ -1,7 +1,8 @@
 // ldp3c -- the LDP3 compiler driver (CLI entry point).
 //
-// Release 0.1 / M1: lexer and parser are wired in behind --dump-tokens and
-// --dump-ast. Semantic analysis and codegen (-> .ll) land in later phases.
+// Release 0.1 / M1: lexer, parser and (entry-point) semantic analysis are
+// wired in behind --dump-tokens, --dump-ast and --check. Codegen (-> .ll)
+// lands once the LLVM dev SDK is available.
 
 #include <cstdio>
 #include <fstream>
@@ -16,6 +17,7 @@
 #include "lexer/token.h"
 #include "parser/ast.h"
 #include "parser/parser.h"
+#include "semantic/analyzer.h"
 
 namespace {
 
@@ -34,9 +36,20 @@ int printUsage(const char* prog) {
                  "usage: %s <input.ldp3>\n"
                  "       %s --dump-tokens <input.ldp3>\n"
                  "       %s --dump-ast <input.ldp3>\n"
+                 "       %s --check <input.ldp3>\n"
                  "       %s --version\n",
-                 prog, prog, prog, prog);
+                 prog, prog, prog, prog, prog);
     return 2;
+}
+
+// Reports any lexer diagnostics; returns true if there were errors.
+bool reportLexErrors(const std::string& path, const ldp3::Lexer& lexer) {
+    if (!lexer.hasErrors()) return false;
+    for (const ldp3::LexError& e : lexer.errors()) {
+        std::fprintf(stderr, "%s:%d:%d: lex error: %s\n", path.c_str(), e.loc.line, e.loc.col,
+                     e.message.c_str());
+    }
+    return true;
 }
 
 int dumpTokens(const std::string& path) {
@@ -53,15 +66,7 @@ int dumpTokens(const std::string& path) {
         std::printf("%s:%d:%d\t%.*s\t%s\n", path.c_str(), tok.loc.line, tok.loc.col,
                     static_cast<int>(name.size()), name.data(), tok.lexeme.c_str());
     }
-
-    if (lexer.hasErrors()) {
-        for (const ldp3::LexError& e : lexer.errors()) {
-            std::fprintf(stderr, "%s:%d:%d: lex error: %s\n", path.c_str(), e.loc.line,
-                         e.loc.col, e.message.c_str());
-        }
-        return 1;
-    }
-    return 0;
+    return reportLexErrors(path, lexer) ? 1 : 0;
 }
 
 int dumpAst(const std::string& path) {
@@ -73,13 +78,7 @@ int dumpAst(const std::string& path) {
 
     ldp3::Lexer lexer(*source, path);
     std::vector<ldp3::Token> tokens = lexer.tokenize();
-    if (lexer.hasErrors()) {
-        for (const ldp3::LexError& e : lexer.errors()) {
-            std::fprintf(stderr, "%s:%d:%d: lex error: %s\n", path.c_str(), e.loc.line,
-                         e.loc.col, e.message.c_str());
-        }
-        return 1;
-    }
+    if (reportLexErrors(path, lexer)) return 1;
 
     ldp3::Parser parser(std::move(tokens), path);
     const ldp3::ast::Program program = parser.parse();
@@ -97,6 +96,40 @@ int dumpAst(const std::string& path) {
     return 0;
 }
 
+int checkProgram(const std::string& path) {
+    auto source = readFile(path);
+    if (!source) {
+        std::fprintf(stderr, "error: cannot open input file '%s'\n", path.c_str());
+        return 1;
+    }
+
+    ldp3::Lexer lexer(*source, path);
+    std::vector<ldp3::Token> tokens = lexer.tokenize();
+    if (reportLexErrors(path, lexer)) return 1;
+
+    ldp3::Parser parser(std::move(tokens), path);
+    const ldp3::ast::Program program = parser.parse();
+    if (parser.hasErrors()) {
+        for (const ldp3::ParseError& e : parser.errors()) {
+            std::fprintf(stderr, "%s:%d:%d: parse error: %s\n", path.c_str(), e.loc.line,
+                         e.loc.col, e.message.c_str());
+        }
+        return 1;
+    }
+
+    ldp3::SemanticAnalyzer sema;
+    if (!sema.analyze(program)) {
+        for (const ldp3::SemaError& e : sema.errors()) {
+            std::fprintf(stderr, "%s:%d:%d: error: %s\n", path.c_str(), e.loc.line, e.loc.col,
+                         e.message.c_str());
+        }
+        return 1;
+    }
+
+    std::printf("OK: entry point %s\n", sema.entryPoint().qualifiedName.c_str());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -108,20 +141,16 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    if (args[0] == "--dump-tokens") {
+    if (args[0] == "--dump-tokens" || args[0] == "--dump-ast" || args[0] == "--check") {
         if (args.size() < 2) {
-            std::fprintf(stderr, "error: --dump-tokens requires an input file\n");
+            std::fprintf(stderr, "error: %.*s requires an input file\n",
+                         static_cast<int>(args[0].size()), args[0].data());
             return printUsage(argv[0]);
         }
-        return dumpTokens(std::string(args[1]));
-    }
-
-    if (args[0] == "--dump-ast") {
-        if (args.size() < 2) {
-            std::fprintf(stderr, "error: --dump-ast requires an input file\n");
-            return printUsage(argv[0]);
-        }
-        return dumpAst(std::string(args[1]));
+        const std::string path(args[1]);
+        if (args[0] == "--dump-tokens") return dumpTokens(path);
+        if (args[0] == "--dump-ast") return dumpAst(path);
+        return checkProgram(path);
     }
 
     // Default (placeholder until the full pipeline lands): read the source.

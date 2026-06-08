@@ -21,13 +21,14 @@ if(LDP3_WITH_LLVM)
     message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} (${LLVM_DIR})")
 endif()
 
-# Compiler core. Phase by phase this grows: lexer -> parser (now) -> semantic
+# Compiler core. Phase by phase this grows: lexer -> parser -> semantic (now)
 # -> codegen.
 add_library(ldp3_core
     src/lexer/token.cpp
     src/lexer/lexer.cpp
     src/parser/ast.cpp
     src/parser/parser.cpp
+    src/semantic/analyzer.cpp
 )
 target_include_directories(ldp3_core PUBLIC src)
 
