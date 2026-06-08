@@ -12,25 +12,34 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# The LLVM IR codegen backend is wired in from the codegen milestone, once the
-# dev SDK (vcpkg: llvm:x64-windows) finishes building. Until then the frontend
-# builds without it so the pipeline stays green.
-option(LDP3_WITH_LLVM "Build the LLVM IR codegen backend" OFF)
-if(LDP3_WITH_LLVM)
-    find_package(LLVM REQUIRED CONFIG)
-    message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} (${LLVM_DIR})")
-endif()
-
-# Compiler core. Phase by phase this grows: lexer -> parser -> semantic (now)
-# -> codegen.
-add_library(ldp3_core
+# Compiler core. Phase by phase: lexer -> parser -> semantic -> codegen.
+set(LDP3_CORE_SOURCES
     src/lexer/token.cpp
     src/lexer/lexer.cpp
     src/parser/ast.cpp
     src/parser/parser.cpp
     src/semantic/analyzer.cpp
 )
+
+# The codegen backend needs the LLVM dev SDK (vcpkg: llvm:x64-windows).
+# Configure with -DLDP3_WITH_LLVM=ON and the vcpkg toolchain file.
+option(LDP3_WITH_LLVM "Build the LLVM IR codegen backend" OFF)
+if(LDP3_WITH_LLVM)
+    find_package(LLVM REQUIRED CONFIG)
+    message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} (${LLVM_DIR})")
+    add_definitions(${LLVM_DEFINITIONS})
+    list(APPEND LDP3_CORE_SOURCES src/codegen/codegen.cpp)
+endif()
+
+add_library(ldp3_core ${LDP3_CORE_SOURCES})
 target_include_directories(ldp3_core PUBLIC src)
+
+if(LDP3_WITH_LLVM)
+    target_include_directories(ldp3_core SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
+    target_compile_definitions(ldp3_core PUBLIC LDP3_WITH_LLVM=1)
+    llvm_map_components_to_libnames(LDP3_LLVM_LIBS core)
+    target_link_libraries(ldp3_core PUBLIC ${LDP3_LLVM_LIBS})
+endif()
 
 add_executable(ldp3c src/cli/main.cpp)
 target_link_libraries(ldp3c PRIVATE ldp3_core)

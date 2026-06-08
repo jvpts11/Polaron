@@ -3,15 +3,10 @@
 # Two layers: integration smoke tests over the ldp3c driver, and granular
 # unit tests (doctest) over the lexer/parser/semantic libraries.
 
-# ---- Integration tests (driver end to end) ----
+# ---- Integration tests (driver) ----
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
     PASS_REGULAR_EXPRESSION "ldp3c 0\\.1\\.0-dev")
-
-add_test(NAME cli_reads_sample
-    COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3")
-set_tests_properties(cli_reads_sample PROPERTIES
-    PASS_REGULAR_EXPRESSION "read [0-9]+ bytes")
 
 add_test(NAME lexer_dumps_tokens
     COMMAND ldp3c --dump-tokens "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3")
@@ -32,6 +27,29 @@ add_test(NAME sema_rejects_no_entry
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/no_entry.ldp3")
 set_tests_properties(sema_rejects_no_entry PROPERTIES
     PASS_REGULAR_EXPRESSION "no entry point")
+
+# ---- Codegen tests (only when the LLVM backend is built) ----
+if(LDP3_WITH_LLVM)
+    # The emitted IR contains an i32 main and a printf call.
+    add_test(NAME codegen_emits_ir
+        COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3")
+    set_tests_properties(codegen_emits_ir PROPERTIES
+        PASS_REGULAR_EXPRESSION "define i32 @main")
+
+    # Full pipeline: compile to .exe with clang and check it prints correctly.
+    find_program(LDP3_CLANG clang HINTS "C:/Program Files/LLVM/bin")
+    if(LDP3_CLANG)
+        add_test(NAME codegen_hello_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3"
+            "-DEXPECTED=Resultado: 42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+    else()
+        message(STATUS "clang not found; skipping end-to-end codegen test")
+    endif()
+endif()
 
 # ---- Unit tests (doctest, fetched at configure time) ----
 include(FetchContent)
