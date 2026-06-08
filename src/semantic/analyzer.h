@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "lexer/token.h"
@@ -38,8 +39,15 @@ private:
     void error(std::string message, SourceLocation loc);
     bool isValidMainSignature(const ast::MethodDecl& method) const;
 
+    // M2: walk the entry-point body resolving variables and checking types.
+    void analyzeMethodBody(const ast::MethodDecl& method);
+    void analyzeStatement(const ast::Stmt& stmt);
+    std::string typeOf(const ast::Expr& expr);  // "" on error
+    std::string flattenCallee(const ast::Expr& expr) const;
+
     std::vector<SemaError> errors_;
     EntryPoint entry_;
+    std::unordered_map<std::string, std::string> locals_;  // name -> type (single scope)
 };
 
 }  // namespace ldp3

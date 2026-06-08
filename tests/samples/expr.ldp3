@@ -1,0 +1,14 @@
+program Expr;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = 10;
+                int b = 20;
+                int c = a + b * 2;
+                System.IO.printf("c = %d\n", c);
+            }
+        }
+    }
+}

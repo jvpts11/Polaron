@@ -55,7 +55,10 @@ private:
     ast::TypeRef parseTypeRef();
     ast::Block parseBlock();
     ast::StmtPtr parseStatement();
+    ast::StmtPtr parseVarDecl();
     ast::ExprPtr parseExpression();
+    ast::ExprPtr parseBinary(int minPrec);
+    ast::ExprPtr parseUnary();
     ast::ExprPtr parsePostfix();
     ast::ExprPtr parsePrimary();
 

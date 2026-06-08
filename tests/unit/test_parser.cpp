@@ -66,3 +66,28 @@ TEST_CASE("parser reports a missing closing brace") {
     parser.parse();
     CHECK(parser.hasErrors());
 }
+
+TEST_CASE("parser respects arithmetic precedence") {
+    const char* src =
+        "program P; public bundle b { public namespace n { public class Main {\n"
+        "  public static method main(string[] args) returns void { int x = 1 + 2 * 3; }\n"
+        "} } }";
+    Lexer lexer(src, "test");
+    Parser parser(lexer.tokenize(), "test");
+    const ast::Program prog = parser.parse();
+    REQUIRE_FALSE(parser.hasErrors());
+
+    const ast::ClassDecl& cls = prog.bundles.at(0).namespaces.at(0).classes.at(0);
+    const auto* method = dynamic_cast<const ast::MethodDecl*>(cls.members.at(0).get());
+    REQUIRE(method != nullptr);
+    REQUIRE(method->body.statements.size() == 1);
+    const auto* decl = dynamic_cast<const ast::VarDeclStmt*>(method->body.statements[0].get());
+    REQUIRE(decl != nullptr);
+    const auto* add = dynamic_cast<const ast::BinaryExpr*>(decl->init.get());
+    REQUIRE(add != nullptr);
+    CHECK(add->op == "+");
+    // The multiplication binds tighter, so it must be the right operand of '+'.
+    const auto* mul = dynamic_cast<const ast::BinaryExpr*>(add->rhs.get());
+    REQUIRE(mul != nullptr);
+    CHECK(mul->op == "*");
+}

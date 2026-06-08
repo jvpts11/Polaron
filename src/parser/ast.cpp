@@ -49,6 +49,17 @@ void CallExpr::dump(std::string& out, int indent) const {
     for (const auto& a : args) a->dump(out, indent + 2);
 }
 
+void BinaryExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Binary '" + op + "'");
+    lhs->dump(out, indent + 1);
+    rhs->dump(out, indent + 1);
+}
+
+void UnaryExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Unary '" + op + "'");
+    operand->dump(out, indent + 1);
+}
+
 void ExprStmt::dump(std::string& out, int indent) const {
     line(out, indent, "ExprStmt");
     expr->dump(out, indent + 1);
@@ -57,6 +68,14 @@ void ExprStmt::dump(std::string& out, int indent) const {
 void ReturnStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Return");
     if (value) value->dump(out, indent + 1);
+}
+
+void VarDeclStmt::dump(std::string& out, int indent) const {
+    std::string head = "VarDecl '" + name + "'";
+    if (isMutable) head += " mutable";
+    head += isVar ? " var" : (" : " + typeText(type));
+    line(out, indent, head);
+    init->dump(out, indent + 1);
 }
 
 void Block::dump(std::string& out, int indent) const {

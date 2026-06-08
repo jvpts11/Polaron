@@ -35,6 +35,21 @@ bool isTypeKeyword(TokenKind k) {
     }
 }
 
+// Binary operator precedence (higher binds tighter); 0 means "not a binary op".
+int binaryPrec(TokenKind k) {
+    switch (k) {
+        case TokenKind::Star:
+        case TokenKind::Slash:
+        case TokenKind::Percent:
+            return 2;
+        case TokenKind::Plus:
+        case TokenKind::Minus:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 }  // namespace
 
 Parser::Parser(std::vector<Token> tokens, std::string_view file)
@@ -231,6 +246,10 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return ret;
     }
+    if (check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
+        isTypeKeyword(current().kind)) {
+        return parseVarDecl();
+    }
     auto stmt = std::make_unique<ast::ExprStmt>();
     stmt->loc = current().loc;
     stmt->expr = parseExpression();
@@ -238,7 +257,52 @@ ast::StmtPtr Parser::parseStatement() {
     return stmt;
 }
 
-ast::ExprPtr Parser::parseExpression() { return parsePostfix(); }
+ast::StmtPtr Parser::parseVarDecl() {
+    auto decl = std::make_unique<ast::VarDeclStmt>();
+    decl->loc = current().loc;
+    decl->isMutable = match(TokenKind::KwMutable);
+    if (match(TokenKind::KwVar)) {
+        decl->isVar = true;
+    } else {
+        decl->type = parseTypeRef();
+    }
+    decl->name = expect(TokenKind::Identifier, "a variable name").lexeme;
+    expect(TokenKind::Assign, "'=' (variables require an initializer)");
+    decl->init = parseExpression();
+    expect(TokenKind::Semicolon, "';'");
+    return decl;
+}
+
+ast::ExprPtr Parser::parseExpression() { return parseBinary(1); }
+
+ast::ExprPtr Parser::parseBinary(int minPrec) {
+    ast::ExprPtr left = parseUnary();
+    for (;;) {
+        const int prec = binaryPrec(current().kind);
+        if (prec == 0 || prec < minPrec) break;
+        const Token op = advance();
+        ast::ExprPtr right = parseBinary(prec + 1);
+        auto bin = std::make_unique<ast::BinaryExpr>();
+        bin->loc = op.loc;
+        bin->op = op.lexeme;
+        bin->lhs = std::move(left);
+        bin->rhs = std::move(right);
+        left = std::move(bin);
+    }
+    return left;
+}
+
+ast::ExprPtr Parser::parseUnary() {
+    if (check(TokenKind::Minus)) {
+        const Token op = advance();
+        auto un = std::make_unique<ast::UnaryExpr>();
+        un->loc = op.loc;
+        un->op = op.lexeme;
+        un->operand = parseUnary();
+        return un;
+    }
+    return parsePostfix();
+}
 
 ast::ExprPtr Parser::parsePostfix() {
     ast::ExprPtr expr = parsePrimary();
@@ -308,6 +372,12 @@ ast::ExprPtr Parser::parsePrimary() {
             e->name = tok.lexeme;
             advance();
             return e;
+        }
+        case TokenKind::LParen: {
+            advance();
+            ast::ExprPtr inner = parseExpression();
+            expect(TokenKind::RParen, "')'");
+            return inner;
         }
         default:
             fail("expected an expression but found '" + tok.lexeme + "'", tok.loc);

@@ -63,3 +63,18 @@ TEST_CASE("semantic rejects multiple entry points") {
         "}";
     CHECK_FALSE(checkSrc(src));
 }
+
+TEST_CASE("semantic rejects an undeclared variable") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { int y = x + 1; }")));
+}
+
+TEST_CASE("semantic rejects variable redeclaration") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { int z = 1; int z = 2; }")));
+}
+
+TEST_CASE("semantic accepts local var type inference") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { var n = 5; int m = n + 1; }")));
+}

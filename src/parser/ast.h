@@ -65,6 +65,19 @@ struct CallExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+struct BinaryExpr : Expr {
+    std::string op;  // "+", "-", "*", "/", "%"
+    ExprPtr lhs;
+    ExprPtr rhs;
+    void dump(std::string& out, int indent) const override;
+};
+
+struct UnaryExpr : Expr {
+    std::string op;  // "-"
+    ExprPtr operand;
+    void dump(std::string& out, int indent) const override;
+};
+
 // ---- Statements ----
 struct Stmt {
     SourceLocation loc;
@@ -80,6 +93,15 @@ struct ExprStmt : Stmt {
 
 struct ReturnStmt : Stmt {
     ExprPtr value;  // null for a bare `return;`
+    void dump(std::string& out, int indent) const override;
+};
+
+struct VarDeclStmt : Stmt {
+    bool isMutable = false;
+    bool isVar = false;  // `var` type inference; `type` then unused
+    TypeRef type;        // used when !isVar
+    std::string name;
+    ExprPtr init;        // M2: an initializer is required
     void dump(std::string& out, int indent) const override;
 };
 

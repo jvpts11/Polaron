@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "parser/ast.h"
@@ -74,6 +75,7 @@ struct CodeGenerator::Impl {
     llvm::LLVMContext context;
     llvm::Module module;
     llvm::IRBuilder<> builder;
+    std::unordered_map<std::string, llvm::Value*> locals;
 
     Impl(const EntryPoint& e, std::string_view name, std::vector<CodegenError>& errs)
         : entry(e), errors(errs), module(std::string(name), context), builder(context) {}
@@ -117,6 +119,33 @@ struct CodeGenerator::Impl {
         if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&expr)) {
             return builder.getInt32(b->value ? 1 : 0);
         }
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
+            auto it = locals.find(id->name);
+            if (it == locals.end()) {
+                error("use of undeclared variable '" + id->name + "'", id->loc);
+                return nullptr;
+            }
+            return builder.CreateLoad(builder.getInt32Ty(), it->second, id->name);
+        }
+        if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
+            llvm::Value* v = emitExpr(*un->operand);
+            if (v == nullptr) return nullptr;
+            if (un->op == "-") return builder.CreateNeg(v);
+            error("unsupported unary operator '" + un->op + "'", un->loc);
+            return nullptr;
+        }
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
+            llvm::Value* l = emitExpr(*bin->lhs);
+            llvm::Value* r = emitExpr(*bin->rhs);
+            if (l == nullptr || r == nullptr) return nullptr;
+            if (bin->op == "+") return builder.CreateAdd(l, r);
+            if (bin->op == "-") return builder.CreateSub(l, r);
+            if (bin->op == "*") return builder.CreateMul(l, r);
+            if (bin->op == "/") return builder.CreateSDiv(l, r);
+            if (bin->op == "%") return builder.CreateSRem(l, r);
+            error("unsupported binary operator '" + bin->op + "'", bin->loc);
+            return nullptr;
+        }
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
             return emitCall(*call);
         }
@@ -142,6 +171,14 @@ struct CodeGenerator::Impl {
     }
 
     void emitStatement(const ast::Stmt& stmt) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
+            llvm::Value* initV = emitExpr(*vd->init);
+            if (initV == nullptr) return;
+            llvm::Value* slot = builder.CreateAlloca(builder.getInt32Ty(), nullptr, vd->name);
+            builder.CreateStore(initV, slot);
+            locals[vd->name] = slot;
+            return;
+        }
         if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
             emitExpr(*es->expr);
             return;
