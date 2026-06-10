@@ -706,6 +706,29 @@ TEST_CASE("parser keeps a < b as a comparison, not a generic declaration") {
         " int a = 1; int b = 2; boolean c = a < b; }")));
 }
 
+TEST_CASE("semantic accepts properties: auto, init-only and computed get-only") {
+    CHECK(checkSrc(withClass(
+        "public class Rect { public int w { get; set; } public int h { get; init; }"
+        " public constructor Rect(int w, int h) { this.w = w; this.h = h; }"
+        " public int area { get { return this.w * this.h; } } }",
+        "Rect r = new Rect(3, 4); int a = r.area; r.w = 10;")));
+}
+
+TEST_CASE("semantic rejects writing an init-only property after construction") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class Rect { public int h { get; init; }"
+        " public constructor Rect(int h) { this.h = h; } }",
+        "Rect r = new Rect(4); r.h = 9;")));
+}
+
+TEST_CASE("parser still allows a method named get (get is a soft keyword)") {
+    CHECK(checkSrc(withClass(
+        "public class Box { public mutable int v;"
+        " public constructor Box(int v) { this.v = v; }"
+        " public method get() returns int { return this.v; } }",
+        "Box b = new Box(5); int x = b.get();")));
+}
+
 TEST_CASE("semantic accepts operator overloading and types a + b as its return") {
     CHECK(checkSrc(withClass(
         "public class Vec { public mutable int x;"

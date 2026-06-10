@@ -533,18 +533,84 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
 }
 
 ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable) {
+    const SourceLocation loc = current().loc;
+    ast::TypeRef type = parseTypeRef();
+    const std::string name = expect(TokenKind::Identifier, "a field name").lexeme;
+    // A `{` here makes it a property (spec 8.4) rather than a plain field.
+    if (check(TokenKind::LBrace)) {
+        return parseProperty(std::move(visibility), isStatic, std::move(type), name, loc);
+    }
     auto f = std::make_unique<ast::FieldDecl>();
-    f->loc = current().loc;
+    f->loc = loc;
     f->visibility = std::move(visibility);
     f->isStatic = isStatic;
     f->isMutable = isMutable;
-    f->type = parseTypeRef();
-    f->name = expect(TokenKind::Identifier, "a field name").lexeme;
+    f->type = std::move(type);
+    f->name = name;
     if (match(TokenKind::Assign)) {
         f->init = parseExpression();  // inline field initializer (spec 940)
     }
     expect(TokenKind::Semicolon, "';'");
     return f;
+}
+
+// Property (spec 8.4). Auto-accessors desugar to a field (set -> mutable;
+// init / get-only -> immutable). A `get { body }` is a computed get-only
+// property: it becomes a getter method read as `obj.name` (no parens).
+// set-with-body (backing-field properties) is a later refinement.
+ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
+                                     const std::string& name, SourceLocation loc) {
+    expect(TokenKind::LBrace, "'{'");
+    bool hasSet = false;
+    bool getHasBody = false;
+    ast::Block getBody;
+    // get / set / init are soft keywords here (plain identifiers).
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        if (!check(TokenKind::Identifier)) {
+            fail("expected 'get', 'set' or 'init' in a property", current().loc);
+        }
+        const std::string accessor = advance().lexeme;
+        if (accessor == "get") {
+            if (check(TokenKind::LBrace)) {
+                getBody = parseBlock();
+                getHasBody = true;
+            } else {
+                expect(TokenKind::Semicolon, "';' (auto-property) or a '{ ... }' get body");
+            }
+        } else if (accessor == "set") {
+            if (check(TokenKind::LBrace)) {
+                fail("set bodies are not supported yet; use an auto-property `set;`", loc);
+            }
+            hasSet = true;
+            expect(TokenKind::Semicolon, "';'");
+        } else if (accessor == "init") {
+            expect(TokenKind::Semicolon, "';'");  // init-only -> immutable
+        } else {
+            fail("expected 'get', 'set' or 'init' in a property, found '" + accessor + "'", loc);
+        }
+    }
+    expect(TokenKind::RBrace, "'}'");
+
+    if (getHasBody) {  // computed get-only property -> a getter method
+        auto m = std::make_unique<ast::MethodDecl>();
+        m->loc = loc;
+        m->visibility = std::move(visibility);
+        m->isStatic = isStatic;
+        m->isProperty = true;
+        m->name = name;
+        m->returnType = std::move(type);
+        m->body = std::move(getBody);
+        return m;
+    }
+    // Auto-property -> a field (set => mutable; init / get-only => immutable).
+    auto f = std::make_unique<ast::FieldDecl>();
+    f->loc = loc;
+    f->visibility = std::move(visibility);
+    f->isStatic = isStatic;
+    f->isMutable = hasSet;
+    f->type = std::move(type);
+    f->name = name;
+    return f;  // a property ends at '}', no trailing ';'
 }
 
 std::unique_ptr<ast::ConstructorDecl> Parser::parseConstructor(std::string visibility) {

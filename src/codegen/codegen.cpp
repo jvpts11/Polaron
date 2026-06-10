@@ -460,10 +460,17 @@ struct CodeGenerator::Impl {
                     return objId->name;  // EnumName.CONSTANT -> the enum type
                 }
             }
-            auto cit = classes.find(baseType(typeName(*mem->object)));
+            const std::string ot = baseType(typeName(*mem->object));
+            auto cit = classes.find(ot);
             if (cit != classes.end()) {
                 auto ft = cit->second.fieldType.find(mem->member);
                 if (ft != cit->second.fieldType.end()) return ft->second;
+            }
+            // Computed get-only property read as obj.name -> the getter's return type.
+            if (const ast::MethodDecl* pm = findMethodDecl(ot, mem->member);
+                pm != nullptr && pm->isProperty) {
+                const std::string owner = methodOwner(ot, mem->member);
+                if (!owner.empty()) return classes[owner].methodReturnType[mem->member];
             }
             return "int";
         }
@@ -714,6 +721,18 @@ struct CodeGenerator::Impl {
                                             : static_cast<int>(pos - eit->second.begin());
                         return builder.getInt32(static_cast<std::uint32_t>(ord));
                     }
+                }
+            }
+            // Computed get-only property: obj.name calls the getter (no parens).
+            const std::string ot = baseType(typeName(*mem->object));
+            if (const ast::MethodDecl* pm = findMethodDecl(ot, mem->member);
+                pm != nullptr && pm->isProperty) {
+                const std::string owner = methodOwner(ot, mem->member);
+                auto fnit = functions.find(owner + "." + mem->member);
+                if (fnit != functions.end()) {
+                    llvm::Value* recv = emitObjectPtr(*mem->object);
+                    if (recv == nullptr) return nullptr;
+                    return builder.CreateCall(fnit->second, {recv});
                 }
             }
             llvm::Value* fieldPtr = emitLValue(*mem);

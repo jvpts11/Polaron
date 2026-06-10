@@ -430,6 +430,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=c = 11 22 33"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Properties: auto (get/set, get/init) and a computed get-only property.
+        add_test(NAME codegen_properties_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/properties.ldp3"
+            "-DEXPECTED=area = 12 w = 3 h = 4 area = 40"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

@@ -53,6 +53,7 @@ enum class TokenKind : std::uint8_t {
 
     // Keywords -- compile-time / literal suffixes (0.2 Fase C)
     KwComptime, KwLiteral, KwImport,
+    // (get / set / init are soft keywords -- not reserved; see parser)
 
     // Keywords -- control flow
     KwIf, KwElse, KwWhile, KwDo, KwFor,

@@ -1,0 +1,26 @@
+program Properties;
+
+public bundle main {
+    public namespace app {
+
+        public class Rect {
+            public int w { get; set; }    // auto-property: mutable (has set)
+            public int h { get; init; }   // init-only: immutable after the constructor
+            public constructor Rect(int w, int h) {
+                this.w = w;
+                this.h = h;
+            }
+            public int area { get { return this.w * this.h; } }   // computed get-only
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Rect r = new Rect(3, 4);
+                System.IO.println($"area = {r.area} w = {r.w} h = {r.h}");  // area = 12 w = 3 h = 4
+                r.w = 10;
+                System.IO.println($"area = {r.area}");                      // area = 40
+                return;
+            }
+        }
+    }
+}

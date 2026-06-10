@@ -251,8 +251,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
                         info.fields[f->name] = FieldInfo{typeRefStr(f->type), f->isMutable};
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                        info.methods[m->name] =
-                            MethodInfo{typeRefStr(m->returnType), m->isStatic, m->isAbstract};
+                        info.methods[m->name] = MethodInfo{typeRefStr(m->returnType), m->isStatic,
+                                                           m->isAbstract, m->isProperty};
                     } else if (dynamic_cast<const ast::ConstructorDecl*>(member.get()) != nullptr) {
                         info.hasConstructor = true;
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) != nullptr) {
@@ -1005,6 +1005,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string objType = typeOf(*mem->object);
         if (objType.empty()) return "";
         if (const FieldInfo* f = findField(objType, mem->member)) return f->type;
+        // A computed get-only property is read as obj.name (no parens).
+        if (const MethodInfo* pm = findMethod(objType, mem->member); pm != nullptr && pm->isProperty)
+            return pm->returnType;
         error("class '" + objType + "' has no field '" + mem->member + "'", mem->loc);
         return "";
     }

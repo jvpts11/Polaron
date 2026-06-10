@@ -37,6 +37,7 @@ struct MethodInfo {
     std::string returnType;
     bool isStatic = false;
     bool isAbstract = false;
+    bool isProperty = false;  // computed get-only property: read as obj.name (no parens)
 };
 struct ClassInfo {
     std::string name;

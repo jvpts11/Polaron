@@ -272,6 +272,7 @@ struct MethodDecl : MemberDecl {
     bool isAbstract = false;  // no body; must be overridden
     bool isOverride = false;  // overrides an inherited/interface method
     bool isFinal = false;     // cannot be overridden
+    bool isProperty = false;  // computed get-only property: read as obj.name (no parens)
     std::string name;
     std::vector<Param> params;
     TypeRef returnType;
