@@ -15,26 +15,40 @@ struct SemaError {
     SourceLocation loc;
 };
 
-// The validated program entry point: the chain bundle -> namespace ->
-// public class Main -> public static method main(string[]) returns void/int.
+// The validated program entry point.
 struct EntryPoint {
     const ast::MethodDecl* method = nullptr;
     std::string qualifiedName;  // e.g. "main.app.Main.main"
 };
 
-// A local variable in the current method scope.
+// A local variable (or parameter) in the current method scope.
 struct LocalVar {
     std::string type;
     bool isMutable = false;
 };
 
-// Semantic analysis. Release 0.1 / walking-skeleton scope: validate that the
-// program has exactly one well-formed entry point. Symbol tables, scope
-// resolution and full type checking arrive from M2 onward.
+// Class members collected in pass 1, for name resolution / type checking.
+struct FieldInfo {
+    std::string type;
+    bool isMutable = false;
+};
+struct MethodInfo {
+    std::string returnType;
+    bool isStatic = false;
+};
+struct ClassInfo {
+    std::string name;
+    std::unordered_map<std::string, FieldInfo> fields;
+    std::unordered_map<std::string, MethodInfo> methods;
+    bool hasConstructor = false;
+    bool hasDestructor = false;
+};
+
+// Semantic analysis. Release 0.1 / M4 scope: builds a catalog of classes, finds
+// the entry point, and type-checks the body of every method and constructor,
+// resolving locals, `this`, fields, methods and `new`.
 class SemanticAnalyzer {
 public:
-    // Returns true when analysis found no errors. On success, entryPoint() is
-    // populated.
     bool analyze(const ast::Program& program);
 
     bool hasErrors() const { return !errors_.empty(); }
@@ -45,15 +59,22 @@ private:
     void error(std::string message, SourceLocation loc);
     bool isValidMainSignature(const ast::MethodDecl& method) const;
 
-    // M2/M3: walk the entry-point body resolving variables and checking types.
-    void analyzeMethodBody(const ast::MethodDecl& method);
+    void registerClasses(const ast::Program& program);
+    void findEntryPoint(const ast::Program& program);
+    void analyzeBodies(const ast::Program& program);
+    void analyzeFieldInits(const ast::ClassDecl& cls);
+    void analyzeMethodBody(const ast::Block& body, const std::vector<ast::Param>& params,
+                           const std::string& thisClass);
     void analyzeBlock(const ast::Block& block);
     void analyzeStatement(const ast::Stmt& stmt);
+    void checkAssignTarget(const ast::Expr& target, const std::string& valueType,
+                           SourceLocation loc);
+    void checkIncDecTarget(const ast::Expr& target, SourceLocation loc);
     std::string typeOf(const ast::Expr& expr);  // "" on error
     std::string flattenCallee(const ast::Expr& expr) const;
+    const ClassInfo* lookupClass(const std::string& name) const;
 
-    // Lexical scopes (innermost last). Shadowing is forbidden, so a name lives
-    // in at most one scope at a time.
+    // Lexical scopes (innermost last); shadowing is forbidden.
     void pushScope();
     void popScope();
     const LocalVar* lookupLocal(const std::string& name) const;
@@ -61,6 +82,8 @@ private:
 
     std::vector<SemaError> errors_;
     EntryPoint entry_;
+    std::unordered_map<std::string, ClassInfo> classes_;
+    std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     std::vector<std::unordered_map<std::string, LocalVar>> scopes_;
 };
 

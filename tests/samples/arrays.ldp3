@@ -1,0 +1,25 @@
+program Arrays;
+
+// M5: dynamic arrays. `new int[n]()` zero-initializes on the heap; `a[i]` reads
+// and writes; `a.length()` reads the header; `delete` frees.
+// Expected output: sum=45 len=10
+
+public bundle main {
+    public namespace examples {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int[] nums = new int[10]();
+                for (mutable int i = 0; i < nums.length(); i++) {
+                    nums[i] = i;
+                }
+                mutable int sum = 0;
+                for (mutable int j = 0; j < 10; j++) {
+                    sum = sum + nums[j];
+                }
+                System.IO.println("sum=%d len=%d", sum, nums.length());
+                delete nums;
+                return;
+            }
+        }
+    }
+}

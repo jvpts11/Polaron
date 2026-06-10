@@ -2,6 +2,7 @@
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
@@ -14,6 +15,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "parser/ast.h"
 
@@ -21,7 +23,6 @@ namespace ldp3 {
 
 namespace {
 
-// Resolves escape sequences in a raw string/char body into real bytes.
 std::string resolveEscapes(const std::string& raw) {
     std::string out;
     for (std::size_t i = 0; i < raw.size(); ++i) {
@@ -43,8 +44,6 @@ std::string resolveEscapes(const std::string& raw) {
     return out;
 }
 
-// Parses an integer-literal lexeme (decimal/hex/binary, '_' separators,
-// optional L suffix) into a value.
 std::int64_t parseIntLiteral(const std::string& lexeme) {
     std::string s;
     for (char c : lexeme) {
@@ -67,21 +66,132 @@ std::int64_t parseIntLiteral(const std::string& lexeme) {
     }
 }
 
+// Array types are spelled with a trailing "[]" (e.g. "int[]", "char[]").
+bool isArrayType(const std::string& t) {
+    return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;
+}
+
+// The LDP3 type name of a declaration, including the array marker.
+std::string typeRefName(const ast::TypeRef& t) {
+    return t.name + (t.isArray ? "[]" : "");
+}
+
+// Layout of a class: its LLVM struct, field indices/types, and method returns.
+struct ClassLayout {
+    llvm::StructType* type = nullptr;
+    std::unordered_map<std::string, unsigned> fieldIndex;
+    std::unordered_map<std::string, std::string> fieldType;  // LDP3 type name per field
+    std::unordered_map<std::string, std::string> methodReturnType;
+    bool hasDestructor = false;
+};
+
+// A local variable / parameter: its storage (an alloca) and LDP3 type name.
+struct LocalSlot {
+    llvm::Value* storage = nullptr;
+    std::string type;
+};
+
+// A stack object with a destructor, pending end-of-scope cleanup (RAII).
+struct ScopeObject {
+    llvm::Value* slot = nullptr;  // the variable's slot (holds a pointer to the struct)
+    std::string className;
+};
+
 }  // namespace
 
 struct CodeGenerator::Impl {
+    const ast::Program& program;
     const EntryPoint& entry;
     std::vector<CodegenError>& errors;
     llvm::LLVMContext context;
     llvm::Module module;
     llvm::IRBuilder<> builder;
-    std::unordered_map<std::string, llvm::Value*> locals;
 
-    Impl(const EntryPoint& e, std::string_view name, std::vector<CodegenError>& errs)
-        : entry(e), errors(errs), module(std::string(name), context), builder(context) {}
+    std::unordered_map<std::string, ClassLayout> classes;
+    std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
+    std::unordered_map<std::string, LocalSlot> locals;
+    std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
+    std::string currentClass;        // "" inside a static method / the entry point
+    llvm::Value* currentThis = nullptr;
+    llvm::Function* currentFn = nullptr;
+    llvm::Type* currentRetType = nullptr;
+
+    Impl(const ast::Program& p, const EntryPoint& e, std::string_view name,
+         std::vector<CodegenError>& errs)
+        : program(p), entry(e), errors(errs), module(std::string(name), context), builder(context) {}
 
     void error(std::string message, SourceLocation loc) {
         errors.push_back(CodegenError{std::move(message), loc});
+    }
+
+    // int/boolean/char -> i32; a class or array -> opaque pointer; void -> void.
+    llvm::Type* llvmType(const std::string& t) {
+        if (t == "void") return builder.getVoidTy();
+        if (isArrayType(t)) return builder.getPtrTy();
+        if (classes.count(t) > 0) return builder.getPtrTy();
+        return builder.getInt32Ty();
+    }
+
+    std::string flattenCallee(const ast::Expr& expr) {
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) return id->name;
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            const std::string base = flattenCallee(*mem->object);
+            if (base.empty()) return "";
+            return base + "." + mem->member;
+        }
+        return "";
+    }
+
+    // Type name of an expression. Assumes a valid AST (semantic analysis ran).
+    std::string typeName(const ast::Expr& expr) {
+        if (dynamic_cast<const ast::IntLiteralExpr*>(&expr) != nullptr) return "int";
+        if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
+        if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
+        if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
+            if (id->name == "this") return currentClass;
+            auto it = locals.find(id->name);
+            return it == locals.end() ? std::string("int") : it->second.type;
+        }
+        if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
+            return un->op == "!" ? "boolean" : "int";
+        }
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
+            const std::string& op = bin->op;
+            if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" ||
+                op == "&&" || op == "||") {
+                return "boolean";
+            }
+            return "int";
+        }
+        if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) return nw->className;
+        if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
+            return na->elementType + "[]";
+        }
+        if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
+            const std::string at = typeName(*ix->array);
+            return isArrayType(at) ? at.substr(0, at.size() - 2) : std::string("int");
+        }
+        if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+                if (mem->member == "length" && isArrayType(typeName(*mem->object))) return "int";
+                auto cit = classes.find(typeName(*mem->object));
+                if (cit != classes.end()) {
+                    auto rit = cit->second.methodReturnType.find(mem->member);
+                    if (rit != cit->second.methodReturnType.end()) return rit->second;
+                }
+            }
+            return "int";
+        }
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            auto cit = classes.find(typeName(*mem->object));
+            if (cit != classes.end()) {
+                auto ft = cit->second.fieldType.find(mem->member);
+                if (ft != cit->second.fieldType.end()) return ft->second;
+            }
+            return "int";
+        }
+        return "int";
     }
 
     llvm::FunctionCallee printf() {
@@ -90,18 +200,116 @@ struct CodeGenerator::Impl {
         return module.getOrInsertFunction("printf", ty);
     }
 
-    // Flattens a callee like System.IO.printf into a dotted string, or "" if it
-    // is not a plain identifier/member chain.
-    std::string flattenCallee(const ast::Expr& expr) {
+    llvm::FunctionCallee scanf() {
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getInt32Ty(), {builder.getPtrTy()}, /*isVarArg=*/true);
+        return module.getOrInsertFunction("scanf", ty);
+    }
+
+    llvm::FunctionCallee mallocFn() {
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getPtrTy(), {builder.getInt64Ty()}, false);
+        return module.getOrInsertFunction("malloc", ty);
+    }
+
+    llvm::FunctionCallee freeFn() {
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("free", ty);
+    }
+
+    // sizeof(type) in bytes, the target-portable way: gep null + 1, then
+    // ptrtoint. The backend folds it to a constant using the real data layout.
+    llvm::Value* sizeOf(llvm::Type* type) {
+        llvm::Value* gep = builder.CreateConstGEP1_64(
+            type, llvm::ConstantPointerNull::get(builder.getPtrTy()), 1);
+        return builder.CreatePtrToInt(gep, builder.getInt64Ty());
+    }
+
+    llvm::FunctionCallee memsetFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getPtrTy(), {builder.getPtrTy(), builder.getInt32Ty(), builder.getInt64Ty()},
+            false);
+        return module.getOrInsertFunction("memset", ty);
+    }
+
+    // Array memory layout: one heap block [ i64 length | elem 0 | elem 1 | ... ].
+    // The array value is a pointer to the length header; elements (i32 in M5)
+    // start 8 bytes in.
+    llvm::Value* arrayData(llvm::Value* block) {
+        return builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 8, "arr.data");
+    }
+    llvm::Value* arrayElemPtr(llvm::Value* block, llvm::Value* index) {
+        return builder.CreateGEP(builder.getInt32Ty(), arrayData(block), index, "arr.elem");
+    }
+
+    llvm::Value* emitNewArray(const ast::NewArrayExpr& na) {
+        llvm::Value* n = emitExpr(*na.size);
+        if (n == nullptr) return nullptr;
+        llvm::Value* n64 = builder.CreateSExt(n, builder.getInt64Ty());
+        llvm::Value* elemBytes = builder.CreateMul(n64, builder.getInt64(4));  // i32 elements
+        llvm::Value* total = builder.CreateAdd(builder.getInt64(8), elemBytes);
+        llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "arr");
+        builder.CreateStore(n64, block);  // length header
+        builder.CreateCall(memsetFn(), {arrayData(block), builder.getInt32(0), elemBytes});
+        return block;
+    }
+
+    llvm::Value* createEntryAlloca(const std::string& name, llvm::Type* type) {
+        llvm::BasicBlock& entryBB = currentFn->getEntryBlock();
+        llvm::IRBuilder<> tmp(&entryBB, entryBB.begin());
+        return tmp.CreateAlloca(type, nullptr, name);
+    }
+
+    // Pointer to the struct of an object expression (`this` or a class variable).
+    llvm::Value* emitObjectPtr(const ast::Expr& expr) {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
-            return id->name;
+            if (id->name == "this") return currentThis;
+            auto it = locals.find(id->name);
+            if (it == locals.end()) {
+                error("use of undeclared variable '" + id->name + "'", id->loc);
+                return nullptr;
+            }
+            return builder.CreateLoad(builder.getPtrTy(), it->second.storage, id->name);
+        }
+        error("unsupported object expression", expr.loc);
+        return nullptr;
+    }
+
+    // Address (pointer) of an assignable expression.
+    llvm::Value* emitLValue(const ast::Expr& expr) {
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
+            auto it = locals.find(id->name);
+            if (it == locals.end()) {
+                error("use of undeclared variable '" + id->name + "'", id->loc);
+                return nullptr;
+            }
+            return it->second.storage;
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
-            const std::string base = flattenCallee(*mem->object);
-            if (base.empty()) return "";
-            return base + "." + mem->member;
+            llvm::Value* objPtr = emitObjectPtr(*mem->object);
+            if (objPtr == nullptr) return nullptr;
+            auto cit = classes.find(typeName(*mem->object));
+            if (cit == classes.end()) {
+                error("no such field '" + mem->member + "'", mem->loc);
+                return nullptr;
+            }
+            auto fit = cit->second.fieldIndex.find(mem->member);
+            if (fit == cit->second.fieldIndex.end()) {
+                error("no such field '" + mem->member + "'", mem->loc);
+                return nullptr;
+            }
+            return builder.CreateStructGEP(cit->second.type, objPtr, fit->second, mem->member);
         }
-        return "";
+        if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
+            llvm::Value* block = emitExpr(*ix->array);
+            if (block == nullptr) return nullptr;
+            llvm::Value* index = emitExpr(*ix->index);
+            if (index == nullptr) return nullptr;
+            return arrayElemPtr(block, index);
+        }
+        error("invalid assignment target", expr.loc);
+        return nullptr;
     }
 
     llvm::Value* emitExpr(const ast::Expr& expr) {
@@ -114,72 +322,156 @@ struct CodeGenerator::Impl {
         if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(&expr)) {
             const std::string bytes = resolveEscapes(c->value);
             const unsigned char value = bytes.empty() ? 0 : static_cast<unsigned char>(bytes[0]);
-            return builder.getInt32(value);  // promoted for printf varargs
+            return builder.getInt32(value);
         }
         if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&expr)) {
             return builder.getInt32(b->value ? 1 : 0);
         }
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
+            if (id->name == "this") return currentThis;
             auto it = locals.find(id->name);
             if (it == locals.end()) {
                 error("use of undeclared variable '" + id->name + "'", id->loc);
                 return nullptr;
             }
-            return builder.CreateLoad(builder.getInt32Ty(), it->second, id->name);
+            return builder.CreateLoad(llvmType(it->second.type), it->second.storage, id->name);
+        }
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            llvm::Value* fieldPtr = emitLValue(*mem);
+            if (fieldPtr == nullptr) return nullptr;
+            return builder.CreateLoad(llvmType(typeName(*mem)), fieldPtr, mem->member);
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
             llvm::Value* v = emitExpr(*un->operand);
             if (v == nullptr) return nullptr;
             if (un->op == "-") return builder.CreateNeg(v);
             if (un->op == "!") {
-                llvm::Value* isZero = builder.CreateICmpEQ(v, builder.getInt32(0));
-                return builder.CreateZExt(isZero, builder.getInt32Ty());
+                return builder.CreateZExt(builder.CreateICmpEQ(v, builder.getInt32(0)),
+                                          builder.getInt32Ty());
             }
             error("unsupported unary operator '" + un->op + "'", un->loc);
             return nullptr;
         }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
-            llvm::Value* l = emitExpr(*bin->lhs);
-            llvm::Value* r = emitExpr(*bin->rhs);
-            if (l == nullptr || r == nullptr) return nullptr;
-            const std::string& op = bin->op;
-            if (op == "+") return builder.CreateAdd(l, r);
-            if (op == "-") return builder.CreateSub(l, r);
-            if (op == "*") return builder.CreateMul(l, r);
-            if (op == "/") return builder.CreateSDiv(l, r);
-            if (op == "%") return builder.CreateSRem(l, r);
-
-            // Comparisons yield i1; widen to i32 since booleans are i32 0/1.
-            llvm::Value* cmp = nullptr;
-            if (op == "==") cmp = builder.CreateICmpEQ(l, r);
-            else if (op == "!=") cmp = builder.CreateICmpNE(l, r);
-            else if (op == "<") cmp = builder.CreateICmpSLT(l, r);
-            else if (op == ">") cmp = builder.CreateICmpSGT(l, r);
-            else if (op == "<=") cmp = builder.CreateICmpSLE(l, r);
-            else if (op == ">=") cmp = builder.CreateICmpSGE(l, r);
-            if (cmp != nullptr) return builder.CreateZExt(cmp, builder.getInt32Ty());
-
-            // Logical &&/|| (no short-circuit yet; operands are booleans 0/1).
-            if (op == "&&" || op == "||") {
-                llvm::Value* lb = builder.CreateICmpNE(l, builder.getInt32(0));
-                llvm::Value* rb = builder.CreateICmpNE(r, builder.getInt32(0));
-                llvm::Value* res =
-                    (op == "&&") ? builder.CreateAnd(lb, rb) : builder.CreateOr(lb, rb);
-                return builder.CreateZExt(res, builder.getInt32Ty());
-            }
-            error("unsupported binary operator '" + op + "'", bin->loc);
+            return emitBinary(*bin);
+        }
+        if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
+            return emitNew(*nw);
+        }
+        if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
+            return emitNewArray(*na);
+        }
+        if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
+            llvm::Value* elemPtr = emitLValue(*ix);
+            if (elemPtr == nullptr) return nullptr;
+            return builder.CreateLoad(builder.getInt32Ty(), elemPtr, "elem");
+        }
+        if (dynamic_cast<const ast::InterpStringExpr*>(&expr) != nullptr) {
+            error("string interpolation is only supported as a printf/println argument for now",
+                  expr.loc);
             return nullptr;
         }
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
             return emitCall(*call);
         }
-        error("unsupported expression in codegen (0.1 walking skeleton)", expr.loc);
+        error("unsupported expression in codegen", expr.loc);
         return nullptr;
+    }
+
+    llvm::Value* emitBinary(const ast::BinaryExpr& bin) {
+        llvm::Value* l = emitExpr(*bin.lhs);
+        llvm::Value* r = emitExpr(*bin.rhs);
+        if (l == nullptr || r == nullptr) return nullptr;
+        const std::string& op = bin.op;
+        if (op == "+") return builder.CreateAdd(l, r);
+        if (op == "-") return builder.CreateSub(l, r);
+        if (op == "*") return builder.CreateMul(l, r);
+        if (op == "/") return builder.CreateSDiv(l, r);
+        if (op == "%") return builder.CreateSRem(l, r);
+
+        llvm::Value* cmp = nullptr;
+        if (op == "==") cmp = builder.CreateICmpEQ(l, r);
+        else if (op == "!=") cmp = builder.CreateICmpNE(l, r);
+        else if (op == "<") cmp = builder.CreateICmpSLT(l, r);
+        else if (op == ">") cmp = builder.CreateICmpSGT(l, r);
+        else if (op == "<=") cmp = builder.CreateICmpSLE(l, r);
+        else if (op == ">=") cmp = builder.CreateICmpSGE(l, r);
+        if (cmp != nullptr) return builder.CreateZExt(cmp, builder.getInt32Ty());
+
+        if (op == "&&" || op == "||") {
+            llvm::Value* lb = builder.CreateICmpNE(l, builder.getInt32(0));
+            llvm::Value* rb = builder.CreateICmpNE(r, builder.getInt32(0));
+            llvm::Value* res = (op == "&&") ? builder.CreateAnd(lb, rb) : builder.CreateOr(lb, rb);
+            return builder.CreateZExt(res, builder.getInt32Ty());
+        }
+        error("unsupported binary operator '" + op + "'", bin.loc);
+        return nullptr;
+    }
+
+    llvm::Value* emitNew(const ast::NewExpr& nw) {
+        auto cit = classes.find(nw.className);
+        if (cit == classes.end()) {
+            error("unknown class '" + nw.className + "'", nw.loc);
+            return nullptr;
+        }
+        llvm::Value* objPtr = nullptr;
+        if (nw.location == "stack") {
+            objPtr = createEntryAlloca(nw.className + ".obj", cit->second.type);
+        } else if (nw.location == "heap") {
+            objPtr = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, nw.className + ".obj");
+        } else {
+            error("'new' location must be 'stack' or 'heap', got '" + nw.location + "'", nw.loc);
+            return nullptr;
+        }
+        auto fnit = functions.find(nw.className + "." + nw.className);
+        if (fnit != functions.end()) {
+            std::vector<llvm::Value*> args;
+            args.push_back(objPtr);
+            for (const auto& arg : nw.args) {
+                llvm::Value* v = emitExpr(*arg);
+                if (v == nullptr) return nullptr;
+                args.push_back(v);
+            }
+            builder.CreateCall(fnit->second, args);
+        }
+        return objPtr;
+    }
+
+    // Lowers $"lit {e0} lit {e1} ..." to a printf: builds a format string with a
+    // specifier per expression (%c for char, %d otherwise) and passes the values.
+    llvm::Value* emitInterp(const ast::InterpStringExpr& is, bool addNewline) {
+        std::string fmt;
+        std::vector<llvm::Value*> values;
+        for (std::size_t i = 0; i < is.exprs.size(); ++i) {
+            fmt += resolveEscapes(is.literals[i]);
+            fmt += (typeName(*is.exprs[i]) == "char") ? "%c" : "%d";
+            llvm::Value* v = emitExpr(*is.exprs[i]);
+            if (v == nullptr) return nullptr;
+            values.push_back(v);
+        }
+        fmt += resolveEscapes(is.literals.back());
+        if (addNewline) fmt += "\n";
+        std::vector<llvm::Value*> args;
+        args.push_back(builder.CreateGlobalStringPtr(fmt, ".str"));
+        for (llvm::Value* v : values) args.push_back(v);
+        return builder.CreateCall(printf(), args);
     }
 
     llvm::Value* emitCall(const ast::CallExpr& call) {
         const std::string name = flattenCallee(*call.callee);
+        if (name == "System.IO.readInt") {
+            llvm::Value* tmp = createEntryAlloca("readtmp", builder.getInt32Ty());
+            llvm::Value* fmt = builder.CreateGlobalStringPtr("%d", ".scanfmt");
+            builder.CreateCall(scanf(), {fmt, tmp});
+            return builder.CreateLoad(builder.getInt32Ty(), tmp, "readInt");
+        }
         if (name == "System.IO.printf") {
+            if (!call.args.empty()) {
+                if (const auto* is =
+                        dynamic_cast<const ast::InterpStringExpr*>(call.args.front().get())) {
+                    return emitInterp(*is, /*addNewline=*/false);
+                }
+            }
             std::vector<llvm::Value*> args;
             for (const auto& arg : call.args) {
                 llvm::Value* v = emitExpr(*arg);
@@ -188,10 +480,88 @@ struct CodeGenerator::Impl {
             }
             return builder.CreateCall(printf(), args);
         }
-        error("unknown call '" + (name.empty() ? std::string("<expr>") : name) +
-                  "' (0.1 only supports System.IO.printf)",
-              call.loc);
+        // println: printf with a newline appended to the format string. With no
+        // args it prints a blank line.
+        if (name == "System.IO.println") {
+            if (!call.args.empty()) {
+                if (const auto* is =
+                        dynamic_cast<const ast::InterpStringExpr*>(call.args.front().get())) {
+                    return emitInterp(*is, /*addNewline=*/true);
+                }
+            }
+            std::string fmt = "\n";
+            if (!call.args.empty()) {
+                const auto* lit =
+                    dynamic_cast<const ast::StringLiteralExpr*>(call.args.front().get());
+                fmt = (lit != nullptr ? resolveEscapes(lit->value) : std::string()) + "\n";
+            }
+            std::vector<llvm::Value*> args;
+            args.push_back(builder.CreateGlobalStringPtr(fmt, ".str"));
+            for (std::size_t i = 1; i < call.args.size(); ++i) {
+                llvm::Value* v = emitExpr(*call.args[i]);
+                if (v == nullptr) return nullptr;
+                args.push_back(v);
+            }
+            return builder.CreateCall(printf(), args);
+        }
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get())) {
+            // array.length(): read the i64 length header and truncate to int.
+            if (mem->member == "length" && isArrayType(typeName(*mem->object))) {
+                llvm::Value* block = emitExpr(*mem->object);
+                if (block == nullptr) return nullptr;
+                llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "len");
+                return builder.CreateTrunc(len, builder.getInt32Ty());
+            }
+            // Static call: the receiver names a class, not a local/this.
+            if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                if (objId->name != "this" && locals.find(objId->name) == locals.end() &&
+                    classes.count(objId->name) > 0) {
+                    auto fnit = functions.find(objId->name + "." + mem->member);
+                    if (fnit == functions.end()) {
+                        error("unknown static method '" + mem->member + "'", call.loc);
+                        return nullptr;
+                    }
+                    std::vector<llvm::Value*> args;
+                    for (const auto& arg : call.args) {
+                        llvm::Value* v = emitExpr(*arg);
+                        if (v == nullptr) return nullptr;
+                        args.push_back(v);
+                    }
+                    return builder.CreateCall(fnit->second, args);
+                }
+            }
+            // Instance call: obj.method(this, args...).
+            llvm::Value* objPtr = emitObjectPtr(*mem->object);
+            if (objPtr == nullptr) return nullptr;
+            auto fnit = functions.find(typeName(*mem->object) + "." + mem->member);
+            if (fnit == functions.end()) {
+                error("unknown method '" + mem->member + "'", call.loc);
+                return nullptr;
+            }
+            std::vector<llvm::Value*> args;
+            args.push_back(objPtr);
+            for (const auto& arg : call.args) {
+                llvm::Value* v = emitExpr(*arg);
+                if (v == nullptr) return nullptr;
+                args.push_back(v);
+            }
+            return builder.CreateCall(fnit->second, args);
+        }
+        error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call.loc);
         return nullptr;
+    }
+
+    // Calls the destructor of every live stack object, in reverse declaration
+    // order. Emitted before each `return` and at the function's fall-through end.
+    // M4 tracks objects at function scope; per-block RAII comes with nested
+    // scopes in a later phase.
+    void emitScopeCleanup() {
+        for (auto it = scopeObjects.rbegin(); it != scopeObjects.rend(); ++it) {
+            auto fnit = functions.find(it->className + ".~" + it->className);
+            if (fnit == functions.end()) continue;
+            llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), it->slot);
+            builder.CreateCall(fnit->second, {objPtr});
+        }
     }
 
     void emitStatement(const ast::Stmt& stmt) {
@@ -208,60 +578,82 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
+            const std::string declType = vd->isVar ? typeName(*vd->init) : typeRefName(vd->type);
             llvm::Value* initV = emitExpr(*vd->init);
             if (initV == nullptr) return;
-            llvm::Value* slot = createEntryAlloca(vd->name);
+            llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
             builder.CreateStore(initV, slot);
-            locals[vd->name] = slot;
+            locals[vd->name] = LocalSlot{slot, declType};
+            // RAII: a freshly built `new ... on stack` object with a destructor
+            // gets cleaned up when the function returns.
+            if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
+                auto cit = classes.find(nw->className);
+                if (nw->location == "stack" && cit != classes.end() && cit->second.hasDestructor) {
+                    scopeObjects.push_back(ScopeObject{slot, nw->className});
+                }
+            }
             return;
         }
         if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
-            auto it = locals.find(assign->target);
-            if (it == locals.end()) {
-                error("assignment to undeclared variable '" + assign->target + "'", assign->loc);
-                return;
-            }
+            llvm::Value* slot = emitLValue(*assign->target);
+            if (slot == nullptr) return;
             llvm::Value* v = emitExpr(*assign->value);
             if (v == nullptr) return;
-            builder.CreateStore(v, it->second);
+            builder.CreateStore(v, slot);
             return;
         }
         if (const auto* incdec = dynamic_cast<const ast::IncDecStmt*>(&stmt)) {
-            auto it = locals.find(incdec->target);
-            if (it == locals.end()) {
-                error("modification of undeclared variable '" + incdec->target + "'", incdec->loc);
-                return;
-            }
-            llvm::Value* cur = builder.CreateLoad(builder.getInt32Ty(), it->second, incdec->target);
+            llvm::Value* slot = emitLValue(*incdec->target);
+            if (slot == nullptr) return;
+            llvm::Value* cur = builder.CreateLoad(builder.getInt32Ty(), slot);
             llvm::Value* one = builder.getInt32(1);
             llvm::Value* res =
                 incdec->isIncrement ? builder.CreateAdd(cur, one) : builder.CreateSub(cur, one);
-            builder.CreateStore(res, it->second);
+            builder.CreateStore(res, slot);
+            return;
+        }
+        if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
+            const std::string t = typeName(*del->target);
+            if (isArrayType(t)) {
+                // An array is a single heap block: just free it.
+                llvm::Value* block = emitExpr(*del->target);
+                if (block != nullptr) builder.CreateCall(freeFn(), {block});
+                return;
+            }
+            llvm::Value* objPtr = emitObjectPtr(*del->target);
+            if (objPtr == nullptr) return;
+            auto cit = classes.find(t);
+            if (cit != classes.end() && cit->second.hasDestructor) {
+                builder.CreateCall(functions[t + ".~" + t], {objPtr});
+            }
+            builder.CreateCall(freeFn(), {objPtr});
             return;
         }
         if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
             emitExpr(*es->expr);
             return;
         }
-        if (dynamic_cast<const ast::ReturnStmt*>(&stmt) != nullptr) {
-            // `return;` in a void main maps to `ret i32 0`, emitted below.
+        if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
+            if (rs->value != nullptr) {
+                llvm::Value* v = emitExpr(*rs->value);
+                emitScopeCleanup();
+                if (v != nullptr) builder.CreateRet(v);
+                return;
+            }
+            emitScopeCleanup();
+            if (currentRetType->isVoidTy()) {
+                builder.CreateRetVoid();
+            } else {
+                builder.CreateRet(builder.getInt32(0));
+            }
             return;
         }
-        error("unsupported statement in codegen (0.1 walking skeleton)", stmt.loc);
-    }
-
-    // Allocas live at the top of the entry block so they are not re-run inside
-    // loops (the function frame reserves them once).
-    llvm::Value* createEntryAlloca(const std::string& name) {
-        llvm::Function* fn = builder.GetInsertBlock()->getParent();
-        llvm::BasicBlock& entryBB = fn->getEntryBlock();
-        llvm::IRBuilder<> tmp(&entryBB, entryBB.begin());
-        return tmp.CreateAlloca(builder.getInt32Ty(), nullptr, name);
+        error("unsupported statement in codegen", stmt.loc);
     }
 
     void emitBlock(const ast::Block& block) {
         for (const auto& stmt : block.statements) {
-            if (builder.GetInsertBlock()->getTerminator() != nullptr) break;  // unreachable
+            if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
             emitStatement(*stmt);
         }
     }
@@ -286,7 +678,6 @@ struct CodeGenerator::Impl {
             emitBlock(*s.elseBlock);
             if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
         }
-
         builder.SetInsertPoint(endBB);
     }
 
@@ -296,16 +687,13 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "while.body", fn);
         llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "while.end", fn);
         builder.CreateBr(condBB);
-
         builder.SetInsertPoint(condBB);
         llvm::Value* condV = emitExpr(*s.cond);
         if (condV == nullptr) return;
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
-
         builder.SetInsertPoint(bodyBB);
         emitBlock(s.body);
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(condBB);
-
         builder.SetInsertPoint(endBB);
     }
 
@@ -316,38 +704,219 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "for.body", fn);
         llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "for.end", fn);
         builder.CreateBr(condBB);
-
         builder.SetInsertPoint(condBB);
         llvm::Value* condV = emitExpr(*s.cond);
         if (condV == nullptr) return;
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
-
         builder.SetInsertPoint(bodyBB);
         emitBlock(s.body);
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             if (s.update) emitStatement(*s.update);
             builder.CreateBr(condBB);
         }
-
         builder.SetInsertPoint(endBB);
     }
 
-    void emitMain() {
-        llvm::FunctionType* mainTy = llvm::FunctionType::get(builder.getInt32Ty(), false);
-        llvm::Function* mainFn =
-            llvm::Function::Create(mainTy, llvm::Function::ExternalLinkage, "main", module);
-        llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", mainFn);
+    // ---- Top-level generation ----
+
+    void declareClasses() {
+        // Pass 1: create empty struct types and register layouts (field indices
+        // and types, method returns, destructor flag). Registering all names
+        // first lets a field whose type is another class resolve in pass 2.
+        for (const ast::Bundle& bundle : program.bundles) {
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ClassDecl& cls : ns.classes) {
+                    ClassLayout layout;
+                    layout.type = llvm::StructType::create(context, "class." + cls.name);
+                    unsigned idx = 0;
+                    for (const ast::MemberPtr& member : cls.members) {
+                        if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
+                            layout.fieldIndex[f->name] = idx++;
+                            layout.fieldType[f->name] =
+                                f->type.name + (f->type.isArray ? "[]" : "");
+                        } else if (const auto* m =
+                                       dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                            layout.methodReturnType[m->name] = m->returnType.name;
+                        } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) !=
+                                   nullptr) {
+                            layout.hasDestructor = true;
+                        }
+                    }
+                    classes[cls.name] = std::move(layout);
+                }
+            }
+        }
+        // Pass 2: set struct bodies, now that every class type is registered.
+        for (const ast::Bundle& bundle : program.bundles) {
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ClassDecl& cls : ns.classes) {
+                    std::vector<llvm::Type*> fieldTypes;
+                    for (const ast::MemberPtr& member : cls.members) {
+                        if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
+                            fieldTypes.push_back(
+                                llvmType(f->type.name + (f->type.isArray ? "[]" : "")));
+                        }
+                    }
+                    classes[cls.name].type->setBody(fieldTypes);
+                }
+            }
+        }
+    }
+
+    void declareFunctions() {
+        for (const ast::Bundle& bundle : program.bundles) {
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ClassDecl& cls : ns.classes) {
+                    bool hasCtor = false;
+                    for (const ast::MemberPtr& member : cls.members) {
+                        if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                            if (m == entry.method) {
+                                llvm::FunctionType* ty =
+                                    llvm::FunctionType::get(builder.getInt32Ty(), false);
+                                functions["@entry"] = llvm::Function::Create(
+                                    ty, llvm::Function::ExternalLinkage, "main", module);
+                                continue;
+                            }
+                            std::vector<llvm::Type*> ptypes;
+                            if (!m->isStatic) ptypes.push_back(builder.getPtrTy());
+                            for (const auto& p : m->params)
+                                ptypes.push_back(llvmType(typeRefName(p.type)));
+                            llvm::FunctionType* ty = llvm::FunctionType::get(
+                                llvmType(typeRefName(m->returnType)), ptypes, false);
+                            const std::string mangled = cls.name + "." + m->name;
+                            functions[mangled] = llvm::Function::Create(
+                                ty, llvm::Function::ExternalLinkage, mangled, module);
+                        } else if (const auto* c =
+                                       dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
+                            hasCtor = true;
+                            std::vector<llvm::Type*> ptypes;
+                            ptypes.push_back(builder.getPtrTy());  // this
+                            for (const auto& p : c->params)
+                                ptypes.push_back(llvmType(typeRefName(p.type)));
+                            llvm::FunctionType* ty =
+                                llvm::FunctionType::get(builder.getVoidTy(), ptypes, false);
+                            const std::string mangled = cls.name + "." + cls.name;
+                            functions[mangled] = llvm::Function::Create(
+                                ty, llvm::Function::ExternalLinkage, mangled, module);
+                        } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) !=
+                                   nullptr) {
+                            llvm::FunctionType* ty = llvm::FunctionType::get(
+                                builder.getVoidTy(), {builder.getPtrTy()}, false);
+                            const std::string mangled = cls.name + ".~" + cls.name;
+                            functions[mangled] = llvm::Function::Create(
+                                ty, llvm::Function::ExternalLinkage, mangled, module);
+                        }
+                    }
+                    // Synthesize a default constructor so that `new X()` and inline
+                    // field initializers work for classes with no explicit ctor.
+                    if (!hasCtor) {
+                        llvm::FunctionType* ty = llvm::FunctionType::get(
+                            builder.getVoidTy(), {builder.getPtrTy()}, false);
+                        const std::string mangled = cls.name + "." + cls.name;
+                        functions[mangled] = llvm::Function::Create(
+                            ty, llvm::Function::ExternalLinkage, mangled, module);
+                    }
+                }
+            }
+        }
+    }
+
+    // Applies every inline field initializer to `thisPtr`, in declaration order.
+    // Run at the start of each constructor, before its body (spec 940).
+    void emitFieldInits(const ast::ClassDecl& cls, llvm::Value* thisPtr) {
+        ClassLayout& layout = classes[cls.name];
+        for (const ast::MemberPtr& member : cls.members) {
+            const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
+            if (f == nullptr || !f->init || f->isStatic) continue;
+            auto idx = layout.fieldIndex.find(f->name);
+            if (idx == layout.fieldIndex.end()) continue;
+            llvm::Value* v = emitExpr(*f->init);
+            if (v == nullptr) continue;
+            llvm::Value* fp = builder.CreateStructGEP(layout.type, thisPtr, idx->second, f->name);
+            builder.CreateStore(v, fp);
+        }
+    }
+
+    void emitBody(llvm::Function* fn, const ast::Block& body,
+                  const std::vector<ast::Param>& params, const std::string& thisClass,
+                  llvm::Type* retType, const ast::ClassDecl* ctorOf = nullptr) {
+        currentFn = fn;
+        currentClass = thisClass;
+        currentRetType = retType;
+        currentThis = nullptr;
+        locals.clear();
+        scopeObjects.clear();
+        llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
         builder.SetInsertPoint(block);
 
-        emitBlock(entry.method->body);
+        unsigned argIdx = 0;
+        if (!thisClass.empty()) {
+            currentThis = fn->getArg(0);
+            argIdx = 1;
+        }
+        for (const ast::Param& p : params) {
+            const std::string pt = typeRefName(p.type);
+            llvm::Value* slot = createEntryAlloca(p.name, llvmType(pt));
+            builder.CreateStore(fn->getArg(argIdx), slot);
+            locals[p.name] = LocalSlot{slot, pt};
+            ++argIdx;
+        }
+
+        // A constructor applies inline field initializers before its own body.
+        if (ctorOf != nullptr) emitFieldInits(*ctorOf, currentThis);
+
+        emitBlock(body);
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
-            builder.CreateRet(builder.getInt32(0));
+            emitScopeCleanup();
+            if (retType->isVoidTy()) {
+                builder.CreateRetVoid();
+            } else {
+                builder.CreateRet(builder.getInt32(0));
+            }
+        }
+    }
+
+    void emitFunctions() {
+        for (const ast::Bundle& bundle : program.bundles) {
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ClassDecl& cls : ns.classes) {
+                    bool hasCtor = false;
+                    for (const ast::MemberPtr& member : cls.members) {
+                        if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                            if (m == entry.method) {
+                                emitBody(functions["@entry"], m->body, {}, "",
+                                         builder.getInt32Ty());
+                            } else {
+                                emitBody(functions[cls.name + "." + m->name], m->body, m->params,
+                                         m->isStatic ? std::string() : cls.name,
+                                         llvmType(typeRefName(m->returnType)));
+                            }
+                        } else if (const auto* c =
+                                       dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
+                            hasCtor = true;
+                            emitBody(functions[cls.name + "." + cls.name], c->body, c->params,
+                                     cls.name, builder.getVoidTy(), &cls);
+                        } else if (const auto* d =
+                                       dynamic_cast<const ast::DestructorDecl*>(member.get())) {
+                            emitBody(functions[cls.name + ".~" + cls.name], d->body, {}, cls.name,
+                                     builder.getVoidTy());
+                        }
+                    }
+                    // Emit the synthesized default constructor: just field inits.
+                    if (!hasCtor) {
+                        const ast::Block emptyBody;
+                        emitBody(functions[cls.name + "." + cls.name], emptyBody, {}, cls.name,
+                                 builder.getVoidTy(), &cls);
+                    }
+                }
+            }
         }
     }
 };
 
-CodeGenerator::CodeGenerator(const EntryPoint& entry, std::string_view moduleName)
-    : impl_(std::make_unique<Impl>(entry, moduleName, errors_)) {}
+CodeGenerator::CodeGenerator(const ast::Program& program, const EntryPoint& entry,
+                             std::string_view moduleName)
+    : impl_(std::make_unique<Impl>(program, entry, moduleName, errors_)) {}
 
 CodeGenerator::~CodeGenerator() = default;
 
@@ -356,7 +925,9 @@ bool CodeGenerator::generate() {
         errors_.push_back(CodegenError{"no entry point to generate", {}});
         return false;
     }
-    impl_->emitMain();
+    impl_->declareClasses();
+    impl_->declareFunctions();
+    impl_->emitFunctions();
     if (!errors_.empty()) return false;
 
     std::string verifyMsg;

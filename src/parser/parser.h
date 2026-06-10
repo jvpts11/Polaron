@@ -51,6 +51,10 @@ private:
     ast::ClassDecl parseClass();
     ast::MemberPtr parseMember();
     std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic);
+    ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable);
+    std::unique_ptr<ast::ConstructorDecl> parseConstructor(std::string visibility);
+    std::unique_ptr<ast::DestructorDecl> parseDestructor(std::string visibility);
+    ast::ExprPtr parseNew();
     std::vector<ast::Param> parseParams();
     ast::TypeRef parseTypeRef();
     ast::Block parseBlock();
@@ -60,9 +64,10 @@ private:
     ast::StmtPtr parseForStatement();
     ast::StmtPtr parseVarDecl();
     std::unique_ptr<ast::VarDeclStmt> parseVarDeclCore();   // no trailing ';'
-    ast::StmtPtr parseAssignOrIncDec();
-    ast::StmtPtr parseAssignOrIncDecCore();                 // no trailing ';'
+    ast::StmtPtr parseExprStatement();                      // assignment/inc-dec/expr + ';'
+    ast::StmtPtr parseSimpleStatement();                    // same, without ';'
     ast::ExprPtr parseExpression();
+    ast::ExprPtr parseInterpolation(const std::string& raw, SourceLocation loc);
     ast::ExprPtr parseBinary(int minPrec);
     ast::ExprPtr parseUnary();
     ast::ExprPtr parsePostfix();

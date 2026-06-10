@@ -1,0 +1,145 @@
+program TicTacToe;
+
+// Release 0.1 north-star: a playable tic-tac-toe in the terminal. Exercises
+// classes, manual memory (char[] board freed in the destructor), arrays,
+// control flow, instance methods, readInt for input, and interpolation for
+// output. Positions are 1-9:
+//
+//    1 | 2 | 3
+//   ---+---+---
+//    4 | 5 | 6
+//   ---+---+---
+//    7 | 8 | 9
+
+public bundle main {
+    public namespace game {
+
+        public class Board {
+            private mutable char[] cells;
+
+            public constructor Board() {
+                this.cells = new char[9]();
+                mutable int i = 0;
+                while (i < 9) {
+                    this.cells[i] = ' ';
+                    i = i + 1;
+                }
+            }
+
+            // Places `player` at 0-based `pos`. Returns false if out of range
+            // or already taken. (Bounds are checked before the array access
+            // because && / || are not short-circuit yet.)
+            public method place(int pos, char player) returns boolean {
+                if (pos < 0 || pos > 8) {
+                    return false;
+                }
+                if (this.cells[pos] != ' ') {
+                    return false;
+                }
+                this.cells[pos] = player;
+                return true;
+            }
+
+            // Returns the winning mark if cells a, b, c are equal and non-empty.
+            public method line(int a, int b, int c) returns char {
+                char first = this.cells[a];
+                if (first == ' ') {
+                    return ' ';
+                }
+                if (this.cells[b] == first) {
+                    if (this.cells[c] == first) {
+                        return first;
+                    }
+                }
+                return ' ';
+            }
+
+            // The winning mark ('X' or 'O'), or ' ' if nobody has won yet.
+            public method winner() returns char {
+                mutable char w = this.line(0, 1, 2);
+                if (w != ' ') { return w; }
+                w = this.line(3, 4, 5);
+                if (w != ' ') { return w; }
+                w = this.line(6, 7, 8);
+                if (w != ' ') { return w; }
+                w = this.line(0, 3, 6);
+                if (w != ' ') { return w; }
+                w = this.line(1, 4, 7);
+                if (w != ' ') { return w; }
+                w = this.line(2, 5, 8);
+                if (w != ' ') { return w; }
+                w = this.line(0, 4, 8);
+                if (w != ' ') { return w; }
+                w = this.line(2, 4, 6);
+                if (w != ' ') { return w; }
+                return ' ';
+            }
+
+            public method isFull() returns boolean {
+                mutable int i = 0;
+                while (i < this.cells.length()) {
+                    if (this.cells[i] == ' ') {
+                        return false;
+                    }
+                    i = i + 1;
+                }
+                return true;
+            }
+
+            public method show() returns void {
+                System.IO.println($" {this.cells[0]} | {this.cells[1]} | {this.cells[2]} ");
+                System.IO.println("---+---+---");
+                System.IO.println($" {this.cells[3]} | {this.cells[4]} | {this.cells[5]} ");
+                System.IO.println("---+---+---");
+                System.IO.println($" {this.cells[6]} | {this.cells[7]} | {this.cells[8]} ");
+                return;
+            }
+
+            public destructor ~Board() returns void {
+                delete this.cells;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Board board = new Board();   // default stack: destructor frees cells
+                mutable char current = 'X';
+                mutable boolean over = false;
+
+                System.IO.println("Jogo da Velha! Escolha posicoes de 1 a 9.");
+
+                while (!over) {
+                    board.show();
+                    System.IO.println($"Vez do jogador {current}. Posicao (1-9):");
+
+                    int pos = System.IO.readInt();
+                    boolean ok = board.place(pos - 1, current);
+
+                    if (!ok) {
+                        System.IO.println("Jogada invalida, tente de novo.");
+                    } else {
+                        char w = board.winner();
+                        if (w != ' ') {
+                            board.show();
+                            System.IO.println($"Jogador {w} venceu!");
+                            over = true;
+                        } else {
+                            if (board.isFull()) {
+                                board.show();
+                                System.IO.println("Deu velha! Empate.");
+                                over = true;
+                            } else {
+                                if (current == 'X') {
+                                    current = 'O';
+                                } else {
+                                    current = 'X';
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+    }
+}

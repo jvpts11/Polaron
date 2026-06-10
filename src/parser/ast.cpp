@@ -60,6 +60,34 @@ void UnaryExpr::dump(std::string& out, int indent) const {
     operand->dump(out, indent + 1);
 }
 
+void NewExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "New '" + className + "' on " + location);
+    for (const auto& a : args) a->dump(out, indent + 1);
+}
+
+void NewArrayExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "NewArray '" + elementType + "[]' on " + location);
+    line(out, indent + 1, "size:");
+    size->dump(out, indent + 2);
+}
+
+void IndexExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Index");
+    line(out, indent + 1, "array:");
+    array->dump(out, indent + 2);
+    line(out, indent + 1, "index:");
+    index->dump(out, indent + 2);
+}
+
+void InterpStringExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "InterpString");
+    for (std::size_t i = 0; i < exprs.size(); ++i) {
+        line(out, indent + 1, "lit \"" + literals[i] + "\"");
+        exprs[i]->dump(out, indent + 1);
+    }
+    if (!literals.empty()) line(out, indent + 1, "lit \"" + literals.back() + "\"");
+}
+
 void ExprStmt::dump(std::string& out, int indent) const {
     line(out, indent, "ExprStmt");
     expr->dump(out, indent + 1);
@@ -68,6 +96,11 @@ void ExprStmt::dump(std::string& out, int indent) const {
 void ReturnStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Return");
     if (value) value->dump(out, indent + 1);
+}
+
+void DeleteStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Delete");
+    target->dump(out, indent + 1);
 }
 
 void VarDeclStmt::dump(std::string& out, int indent) const {
@@ -79,12 +112,16 @@ void VarDeclStmt::dump(std::string& out, int indent) const {
 }
 
 void AssignStmt::dump(std::string& out, int indent) const {
-    line(out, indent, "Assign '" + target + "'");
-    value->dump(out, indent + 1);
+    line(out, indent, "Assign");
+    line(out, indent + 1, "target:");
+    target->dump(out, indent + 2);
+    line(out, indent + 1, "value:");
+    value->dump(out, indent + 2);
 }
 
 void IncDecStmt::dump(std::string& out, int indent) const {
-    line(out, indent, std::string("IncDec '") + target + (isIncrement ? "++" : "--") + "'");
+    line(out, indent, std::string("IncDec ") + (isIncrement ? "'++'" : "'--'"));
+    target->dump(out, indent + 1);
 }
 
 void Block::dump(std::string& out, int indent) const {
@@ -137,6 +174,32 @@ void MethodDecl::dump(std::string& out, int indent) const {
     for (const auto& p : params) {
         line(out, indent + 1, "Param '" + p.name + "': " + typeText(p.type));
     }
+    body.dump(out, indent + 1);
+}
+
+void FieldDecl::dump(std::string& out, int indent) const {
+    std::string head = "Field '" + name + "' : " + typeText(type);
+    if (!visibility.empty()) head += " " + visibility;
+    if (isStatic) head += " static";
+    if (isMutable) head += " mutable";
+    line(out, indent, head);
+    if (init) init->dump(out, indent + 1);
+}
+
+void ConstructorDecl::dump(std::string& out, int indent) const {
+    std::string head = "Constructor";
+    if (!visibility.empty()) head += " " + visibility;
+    line(out, indent, head);
+    for (const auto& p : params) {
+        line(out, indent + 1, "Param '" + p.name + "': " + typeText(p.type));
+    }
+    body.dump(out, indent + 1);
+}
+
+void DestructorDecl::dump(std::string& out, int indent) const {
+    std::string head = "Destructor";
+    if (!visibility.empty()) head += " " + visibility;
+    line(out, indent, head);
     body.dump(out, indent + 1);
 }
 

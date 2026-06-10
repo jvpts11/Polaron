@@ -1,0 +1,35 @@
+program Dtor;
+
+// M4: a destructor is called automatically when a stack object leaves scope
+// (RAII). Expected output, in order:
+//   ctor
+//   hello
+//   dtor
+
+public bundle main {
+    public namespace examples {
+
+        public class Greeter {
+            public constructor Greeter() {
+                System.IO.printf("ctor\n");
+            }
+
+            public method hello() returns void {
+                System.IO.printf("hello\n");
+                return;
+            }
+
+            public destructor ~Greeter() returns void {
+                System.IO.printf("dtor\n");
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Greeter g = new Greeter() on stack;
+                g.hello();
+                return;
+            }
+        }
+    }
+}

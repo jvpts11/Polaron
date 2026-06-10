@@ -1,0 +1,30 @@
+program Counter;
+
+public bundle main {
+    public namespace examples {
+        public class Counter {
+            private mutable int count;
+
+            public constructor Counter() {
+                this.count = 0;
+            }
+
+            public method increment() returns void {
+                this.count = this.count + 1;
+            }
+
+            public method get() returns int {
+                return this.count;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter c = new Counter() on stack;
+                c.increment();
+                c.increment();
+                System.IO.printf("count = %d\n", c.get());
+            }
+        }
+    }
+}

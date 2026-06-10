@@ -20,7 +20,8 @@ struct CodegenError {
 // printf. The LLVM types stay behind a PIMPL so this header is LLVM-free.
 class CodeGenerator {
 public:
-    CodeGenerator(const EntryPoint& entry, std::string_view moduleName);
+    CodeGenerator(const ast::Program& program, const EntryPoint& entry,
+                  std::string_view moduleName);
     ~CodeGenerator();
     CodeGenerator(const CodeGenerator&) = delete;
     CodeGenerator& operator=(const CodeGenerator&) = delete;

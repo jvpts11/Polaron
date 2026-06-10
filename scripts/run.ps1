@@ -22,7 +22,9 @@ if (-not (Test-Path $ldp3c)) {
 
 & $ldp3c $File -o $ll
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& $clang -Wno-override-module $ll -o $exe
+# legacy_stdio_definitions.lib provides real printf/scanf symbols (the UCRT
+# headers define them inline, so the bare symbols are otherwise unresolved).
+& $clang -Wno-override-module $ll -o $exe -llegacy_stdio_definitions
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "--- output ---"

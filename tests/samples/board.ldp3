@@ -1,0 +1,38 @@
+program BoardDemo;
+
+// M5: a char[] field, written and read through this.cells[i], freed in the
+// destructor. This is the shape of the tic-tac-toe board.
+// Expected output: XOX
+
+public bundle main {
+    public namespace game {
+
+        public class Board {
+            private mutable char[] cells;
+
+            public constructor Board() {
+                this.cells = new char[3]();
+                this.cells[0] = 'X';
+                this.cells[1] = 'O';
+                this.cells[2] = 'X';
+            }
+
+            public method show() returns void {
+                System.IO.println("%c%c%c", this.cells[0], this.cells[1], this.cells[2]);
+                return;
+            }
+
+            public destructor ~Board() returns void {
+                delete this.cells;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Board b = new Board();   // default stack: destructor frees cells at end
+                b.show();
+                return;
+            }
+        }
+    }
+}

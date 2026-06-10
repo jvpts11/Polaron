@@ -12,6 +12,7 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::FloatLiteral: return "FloatLiteral";
         case TokenKind::CharLiteral:  return "CharLiteral";
         case TokenKind::StringLiteral:return "StringLiteral";
+        case TokenKind::InterpString: return "InterpString";
 
         case TokenKind::KwProgram:     return "KwProgram";
         case TokenKind::KwBundle:      return "KwBundle";

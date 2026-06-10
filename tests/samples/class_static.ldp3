@@ -1,0 +1,28 @@
+program Static;
+
+// M4: static methods, called as ClassName.method(args) with no instance.
+// Expected output: square=25 total=125
+
+public bundle main {
+    public namespace examples {
+
+        public class MathUtil {
+            public static method square(int x) returns int {
+                return x * x;
+            }
+
+            public static method add(int a, int b) returns int {
+                return a + b;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                int s = MathUtil.square(5);
+                int total = MathUtil.add(s, 100);
+                System.IO.printf("square=%d total=%d\n", s, total);
+                return;
+            }
+        }
+    }
+}

@@ -265,6 +265,29 @@ Token Lexer::scanString() {
     return make(TokenKind::StringLiteral, std::move(value), loc);
 }
 
+// An interpolated string: $"text {expr} more". The raw content between the
+// quotes (braces and all) is kept verbatim; the parser splits it into literal
+// chunks and embedded expressions.
+Token Lexer::scanInterpString() {
+    SourceLocation loc = here();
+    advance();  // '$'
+    advance();  // '"'
+    std::string value;
+    while (!atEnd() && peek() != '"' && peek() != '\n') {
+        if (peek() == '\\') {
+            value += advance();                // backslash
+            if (!atEnd()) value += advance();  // escaped char
+        } else {
+            value += advance();
+        }
+    }
+    if (!match('"')) {
+        error("unterminated interpolated string", loc);
+        return make(TokenKind::Unknown, std::move(value), loc);
+    }
+    return make(TokenKind::InterpString, std::move(value), loc);
+}
+
 Token Lexer::scanToken() {
     SourceLocation loc = here();
     char c = peek();
@@ -273,6 +296,7 @@ Token Lexer::scanToken() {
     if (isDigit(c)) return scanNumber();
     if (c == '\'') return scanChar();
     if (c == '"') return scanString();
+    if (c == '$' && peek(1) == '"') return scanInterpString();
 
     advance();  // consume the operator/punctuation lead character
     switch (c) {

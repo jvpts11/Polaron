@@ -1,0 +1,37 @@
+program Heap;
+
+// M4: manual heap memory. `new ... on heap` allocates with malloc and runs the
+// constructor; `delete` runs the destructor and frees. Also exercises a
+// constructor with a parameter. Expected output, in order:
+//   value = 42
+//   freeing 42
+
+public bundle main {
+    public namespace examples {
+
+        public class Box {
+            private mutable int value;
+
+            public constructor Box(int v) {
+                this.value = v;
+            }
+
+            public method get() returns int {
+                return this.value;
+            }
+
+            public destructor ~Box() returns void {
+                System.IO.printf("freeing %d\n", this.value);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box b = new Box(42) on heap;
+                System.IO.printf("value = %d\n", b.get());
+                delete b;
+                return;
+            }
+        }
+    }
+}

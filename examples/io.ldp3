@@ -1,0 +1,25 @@
+program IO;
+
+// I/O na 0.1: System.IO.printf é um builtin estilo C. O PRIMEIRO argumento é
+// sempre uma string LITERAL (o "formato"). Imprimir texto puro é só passar uma
+// string sem formatadores. Para imprimir valores, eles entram no formato:
+// %d (int/boolean), %c (char), com escapes \n e \t.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // 1) Só texto, sem nenhum formatador: totalmente OK.
+                System.IO.printf("Ola, mundo!\n");
+
+                // 2) Texto com um valor interpolado via formato.
+                System.IO.printf("Soma: %d\n", 2 + 3);
+
+                // 3) char com %c e escape \t (tab).
+                System.IO.printf("Letra:\t%c\n", 'A');
+
+                return;
+            }
+        }
+    }
+}

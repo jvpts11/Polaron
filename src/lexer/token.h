@@ -28,6 +28,7 @@ enum class TokenKind : std::uint8_t {
     FloatLiteral,
     CharLiteral,
     StringLiteral,
+    InterpString,  // $"...{expr}..." -- raw content kept; split by the parser
 
     // Keywords -- structure
     KwProgram, KwBundle, KwNamespace,

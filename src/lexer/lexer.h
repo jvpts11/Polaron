@@ -45,6 +45,7 @@ private:
     Token scanNumber();
     Token scanChar();
     Token scanString();
+    Token scanInterpString();
 
     Token make(TokenKind kind, std::string lexeme, SourceLocation loc) const;
     void error(std::string message, SourceLocation loc);

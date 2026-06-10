@@ -1,0 +1,27 @@
+program FieldInit;
+
+// M4: inline field initializers (spec 940). Config has initialized fields and
+// NO explicit constructor, so the synthesized default constructor applies the
+// initializers. Expected output: area = 1920
+
+public bundle main {
+    public namespace examples {
+
+        public class Config {
+            public mutable int width = 80;
+            public mutable int height = 24;
+
+            public method area() returns int {
+                return this.width * this.height;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Config c = new Config() on stack;
+                System.IO.printf("area = %d\n", c.area());
+                return;
+            }
+        }
+    }
+}

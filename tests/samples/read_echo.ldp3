@@ -1,0 +1,17 @@
+program ReadEcho;
+
+// M6: System.IO.readInt() reads an int from stdin (libc scanf). Combined with
+// interpolation. Run with input "3 4" -> a=3 b=4 soma=7
+
+public bundle main {
+    public namespace examples {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = System.IO.readInt();
+                int b = System.IO.readInt();
+                System.IO.println($"a={a} b={b} soma={a + b}");
+                return;
+            }
+        }
+    }
+}

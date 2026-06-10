@@ -1,0 +1,20 @@
+program Interp;
+
+// M5+: string interpolation as a println argument. The compiler lowers it to a
+// printf with %d/%c specifiers inferred from each {expr}'s type.
+// Expected output: placar: 10 x 7 vez do X / soma = 17
+
+public bundle main {
+    public namespace examples {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = 10;
+                int b = 7;
+                char player = 'X';
+                System.IO.println($"placar: {a} x {b} vez do {player}");
+                System.IO.println($"soma = {a + b}");
+                return;
+            }
+        }
+    }
+}

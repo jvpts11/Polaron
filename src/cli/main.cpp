@@ -146,7 +146,7 @@ int compile(const std::string& path, const std::string& outPath) {
     }
 
 #ifdef LDP3_WITH_LLVM
-    ldp3::CodeGenerator codegen(sema.entryPoint(), path);
+    ldp3::CodeGenerator codegen(program, sema.entryPoint(), path);
     if (!codegen.generate()) {
         for (const ldp3::CodegenError& e : codegen.errors()) {
             std::fprintf(stderr, "%s:%d:%d: codegen error: %s\n", path.c_str(), e.loc.line,

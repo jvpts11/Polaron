@@ -78,6 +78,37 @@ struct UnaryExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+struct NewExpr : Expr {
+    std::string className;
+    std::vector<ExprPtr> args;
+    std::string location;  // "stack" or "heap"
+    void dump(std::string& out, int indent) const override;
+};
+
+// new T[size]() -- a dynamic, zero-initialized array on the heap.
+struct NewArrayExpr : Expr {
+    std::string elementType;  // e.g. "int", "char"
+    ExprPtr size;
+    std::string location;  // "stack" or "heap" (arrays default to heap)
+    void dump(std::string& out, int indent) const override;
+};
+
+// array[index] -- element access (readable and assignable).
+struct IndexExpr : Expr {
+    ExprPtr array;
+    ExprPtr index;
+    void dump(std::string& out, int indent) const override;
+};
+
+// $"lit0 {expr0} lit1 {expr1} ... litN" -- string interpolation. There are
+// N+1 literal chunks interleaved with N expressions. Release 0.1: valid only
+// as a System.IO.printf/println argument (lowered to a format string + args).
+struct InterpStringExpr : Expr {
+    std::vector<std::string> literals;  // N+1 chunks (escapes unresolved)
+    std::vector<ExprPtr> exprs;         // N embedded expressions
+    void dump(std::string& out, int indent) const override;
+};
+
 // ---- Statements ----
 struct Stmt {
     SourceLocation loc;
@@ -96,6 +127,11 @@ struct ReturnStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+struct DeleteStmt : Stmt {
+    ExprPtr target;  // a heap object or array to free
+    void dump(std::string& out, int indent) const override;
+};
+
 struct VarDeclStmt : Stmt {
     bool isMutable = false;
     bool isVar = false;  // `var` type inference; `type` then unused
@@ -106,13 +142,13 @@ struct VarDeclStmt : Stmt {
 };
 
 struct AssignStmt : Stmt {
-    std::string target;  // M2: a simple variable name
+    ExprPtr target;  // lvalue: a variable or member access (this.field / obj.field)
     ExprPtr value;
     void dump(std::string& out, int indent) const override;
 };
 
 struct IncDecStmt : Stmt {
-    std::string target;
+    ExprPtr target;  // lvalue
     bool isIncrement = true;  // ++ vs --
     void dump(std::string& out, int indent) const override;
 };
@@ -166,6 +202,29 @@ struct MethodDecl : MemberDecl {
     std::vector<Param> params;
     TypeRef returnType;
     Block body;
+    void dump(std::string& out, int indent) const override;
+};
+
+struct FieldDecl : MemberDecl {
+    std::string visibility;
+    bool isStatic = false;
+    bool isMutable = false;
+    TypeRef type;
+    std::string name;
+    ExprPtr init;  // optional inline initializer (null if none); see spec 940
+    void dump(std::string& out, int indent) const override;
+};
+
+struct ConstructorDecl : MemberDecl {
+    std::string visibility;
+    std::vector<Param> params;
+    Block body;
+    void dump(std::string& out, int indent) const override;
+};
+
+struct DestructorDecl : MemberDecl {
+    std::string visibility;
+    Block body;  // a destructor takes no parameters and returns void
     void dump(std::string& out, int indent) const override;
 };
 

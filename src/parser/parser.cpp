@@ -2,6 +2,8 @@
 
 #include <utility>
 
+#include "lexer/lexer.h"
+
 namespace ldp3 {
 
 namespace {
@@ -181,13 +183,32 @@ ast::ClassDecl Parser::parseClass() {
 
 ast::MemberPtr Parser::parseMember() {
     std::string visibility = parseVisibilityOpt();
-    bool isStatic = match(TokenKind::KwStatic);
-    // Other modifiers (abstract/final/override) and member kinds (fields,
-    // constructors, destructors) join in later phases.
+    bool isStatic = false;
+    bool isMutable = false;
+    for (;;) {
+        if (!isStatic && check(TokenKind::KwStatic)) {
+            advance();
+            isStatic = true;
+            continue;
+        }
+        if (!isMutable && check(TokenKind::KwMutable)) {
+            advance();
+            isMutable = true;
+            continue;
+        }
+        break;
+    }
     if (check(TokenKind::KwMethod)) {
         return parseMethod(std::move(visibility), isStatic);
     }
-    fail("expected a class member but found '" + current().lexeme + "'", current().loc);
+    if (check(TokenKind::KwConstructor)) {
+        return parseConstructor(std::move(visibility));
+    }
+    if (check(TokenKind::KwDestructor)) {
+        return parseDestructor(std::move(visibility));
+    }
+    // Otherwise it is a field:  <type> <name> ;
+    return parseField(std::move(visibility), isStatic, isMutable);
 }
 
 std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, bool isStatic) {
@@ -204,6 +225,52 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     m->returnType = parseTypeRef();
     m->body = parseBlock();
     return m;
+}
+
+ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable) {
+    auto f = std::make_unique<ast::FieldDecl>();
+    f->loc = current().loc;
+    f->visibility = std::move(visibility);
+    f->isStatic = isStatic;
+    f->isMutable = isMutable;
+    f->type = parseTypeRef();
+    f->name = expect(TokenKind::Identifier, "a field name").lexeme;
+    if (match(TokenKind::Assign)) {
+        f->init = parseExpression();  // inline field initializer (spec 940)
+    }
+    expect(TokenKind::Semicolon, "';'");
+    return f;
+}
+
+std::unique_ptr<ast::ConstructorDecl> Parser::parseConstructor(std::string visibility) {
+    auto c = std::make_unique<ast::ConstructorDecl>();
+    c->loc = current().loc;
+    c->visibility = std::move(visibility);
+    expect(TokenKind::KwConstructor, "'constructor'");
+    expect(TokenKind::Identifier, "the constructor name (the class name)");
+    expect(TokenKind::LParen, "'('");
+    c->params = parseParams();
+    expect(TokenKind::RParen, "')'");
+    c->body = parseBlock();
+    return c;
+}
+
+std::unique_ptr<ast::DestructorDecl> Parser::parseDestructor(std::string visibility) {
+    auto d = std::make_unique<ast::DestructorDecl>();
+    d->loc = current().loc;
+    d->visibility = std::move(visibility);
+    expect(TokenKind::KwDestructor, "'destructor'");
+    expect(TokenKind::Tilde, "'~'");
+    expect(TokenKind::Identifier, "the destructor name (the class name)");
+    expect(TokenKind::LParen, "'('");
+    expect(TokenKind::RParen, "')'");
+    expect(TokenKind::KwReturns, "'returns'");
+    const ast::TypeRef ret = parseTypeRef();  // must be void
+    if (ret.name != "void" || ret.isArray) {
+        fail("a destructor must return void", ret.loc);
+    }
+    d->body = parseBlock();
+    return d;
 }
 
 std::vector<ast::Param> Parser::parseParams() {
@@ -267,20 +334,21 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return ret;
     }
+    if (check(TokenKind::KwDelete)) {
+        auto del = std::make_unique<ast::DeleteStmt>();
+        del->loc = current().loc;
+        advance();
+        del->target = parseExpression();
+        expect(TokenKind::Semicolon, "';'");
+        return del;
+    }
     if (check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
-        isTypeKeyword(current().kind)) {
+        isTypeKeyword(current().kind) ||
+        (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Identifier)) {
+        // The last case is `ClassName name = ...` (a class-typed local).
         return parseVarDecl();
     }
-    if (check(TokenKind::Identifier) &&
-        (peek(1).kind == TokenKind::Assign || peek(1).kind == TokenKind::PlusPlus ||
-         peek(1).kind == TokenKind::MinusMinus)) {
-        return parseAssignOrIncDec();
-    }
-    auto stmt = std::make_unique<ast::ExprStmt>();
-    stmt->loc = current().loc;
-    stmt->expr = parseExpression();
-    expect(TokenKind::Semicolon, "';'");
-    return stmt;
+    return parseExprStatement();
 }
 
 ast::StmtPtr Parser::parseIfStatement() {
@@ -324,14 +392,14 @@ ast::StmtPtr Parser::parseForStatement() {
     if (check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
         isTypeKeyword(current().kind)) {
         s->init = parseVarDeclCore();
-    } else if (check(TokenKind::Identifier)) {
-        s->init = parseAssignOrIncDecCore();
+    } else if (!check(TokenKind::Semicolon)) {
+        s->init = parseSimpleStatement();
     }
     expect(TokenKind::Semicolon, "';'");
     s->cond = parseExpression();
     expect(TokenKind::Semicolon, "';'");
     if (!check(TokenKind::RParen)) {
-        s->update = parseAssignOrIncDecCore();
+        s->update = parseSimpleStatement();
     }
     expect(TokenKind::RParen, "')'");
     s->body = parseBlock();
@@ -359,31 +427,87 @@ ast::StmtPtr Parser::parseVarDecl() {
     return decl;
 }
 
-ast::StmtPtr Parser::parseAssignOrIncDecCore() {
-    const Token nameTok = expect(TokenKind::Identifier, "a variable name");
+ast::StmtPtr Parser::parseSimpleStatement() {
+    ast::ExprPtr expr = parseExpression();
+    if (check(TokenKind::Assign)) {
+        const Token op = advance();
+        auto s = std::make_unique<ast::AssignStmt>();
+        s->loc = op.loc;
+        s->target = std::move(expr);
+        s->value = parseExpression();
+        return s;
+    }
     if (check(TokenKind::PlusPlus) || check(TokenKind::MinusMinus)) {
         const Token op = advance();
         auto s = std::make_unique<ast::IncDecStmt>();
-        s->loc = nameTok.loc;
-        s->target = nameTok.lexeme;
+        s->loc = op.loc;
+        s->target = std::move(expr);
         s->isIncrement = (op.kind == TokenKind::PlusPlus);
         return s;
     }
-    expect(TokenKind::Assign, "'='");
-    auto s = std::make_unique<ast::AssignStmt>();
-    s->loc = nameTok.loc;
-    s->target = nameTok.lexeme;
-    s->value = parseExpression();
+    auto s = std::make_unique<ast::ExprStmt>();
+    s->loc = expr->loc;
+    s->expr = std::move(expr);
     return s;
 }
 
-ast::StmtPtr Parser::parseAssignOrIncDec() {
-    auto s = parseAssignOrIncDecCore();
+ast::StmtPtr Parser::parseExprStatement() {
+    ast::StmtPtr s = parseSimpleStatement();
     expect(TokenKind::Semicolon, "';'");
     return s;
 }
 
 ast::ExprPtr Parser::parseExpression() { return parseBinary(1); }
+
+// Splits an interpolated string's raw content into literal chunks and embedded
+// {expr} expressions. Each expression is lexed and parsed on its own (a nested
+// Lexer/Parser over the substring); diagnostics are merged into this parser.
+ast::ExprPtr Parser::parseInterpolation(const std::string& raw, SourceLocation loc) {
+    auto e = std::make_unique<ast::InterpStringExpr>();
+    e->loc = loc;
+    std::string lit;
+    std::size_t i = 0;
+    while (i < raw.size()) {
+        if (raw[i] == '{') {
+            std::size_t depth = 1;
+            std::size_t j = i + 1;
+            std::string exprSrc;
+            while (j < raw.size() && depth > 0) {
+                if (raw[j] == '{') {
+                    ++depth;
+                } else if (raw[j] == '}') {
+                    if (--depth == 0) break;
+                }
+                exprSrc += raw[j];
+                ++j;
+            }
+            if (depth != 0) fail("unterminated '{' in interpolated string", loc);
+
+            e->literals.push_back(lit);
+            lit.clear();
+
+            Lexer sublex(exprSrc, file_);
+            Parser sub(sublex.tokenize(), file_);
+            ast::ExprPtr parsed;
+            try {
+                parsed = sub.parseExpression();
+            } catch (const ParseError&) {
+                // recorded below via sub.errors()
+            }
+            for (const ParseError& se : sub.errors()) errors_.push_back(se);
+            if (parsed == nullptr) {
+                fail("invalid expression in interpolation: {" + exprSrc + "}", loc);
+            }
+            e->exprs.push_back(std::move(parsed));
+            i = j + 1;  // skip past '}'
+        } else {
+            lit += raw[i];
+            ++i;
+        }
+    }
+    e->literals.push_back(lit);  // trailing chunk (N+1 literals for N expressions)
+    return e;
+}
 
 ast::ExprPtr Parser::parseBinary(int minPrec) {
     ast::ExprPtr left = parseUnary();
@@ -436,6 +560,14 @@ ast::ExprPtr Parser::parsePostfix() {
             expect(TokenKind::RParen, "')'");
             call->callee = std::move(expr);
             expr = std::move(call);
+        } else if (check(TokenKind::LBracket)) {
+            auto idx = std::make_unique<ast::IndexExpr>();
+            idx->loc = current().loc;
+            advance();  // '['
+            idx->index = parseExpression();
+            expect(TokenKind::RBracket, "']'");
+            idx->array = std::move(expr);
+            expr = std::move(idx);
         } else {
             break;
         }
@@ -467,6 +599,12 @@ ast::ExprPtr Parser::parsePrimary() {
             advance();
             return e;
         }
+        case TokenKind::InterpString: {
+            const std::string raw = tok.lexeme;
+            const SourceLocation loc = tok.loc;
+            advance();
+            return parseInterpolation(raw, loc);
+        }
         case TokenKind::KwTrue:
         case TokenKind::KwFalse: {
             auto e = std::make_unique<ast::BoolLiteralExpr>();
@@ -489,9 +627,60 @@ ast::ExprPtr Parser::parsePrimary() {
             expect(TokenKind::RParen, "')'");
             return inner;
         }
+        case TokenKind::KwNew:
+            return parseNew();
         default:
             fail("expected an expression but found '" + tok.lexeme + "'", tok.loc);
     }
+}
+
+ast::ExprPtr Parser::parseNew() {
+    const SourceLocation loc = current().loc;
+    expect(TokenKind::KwNew, "'new'");
+    // Base type: a primitive keyword (int/char/...) or a class name.
+    std::string typeName;
+    if (isTypeKeyword(current().kind) || check(TokenKind::Identifier)) {
+        typeName = advance().lexeme;
+    } else {
+        fail("expected a type after 'new' but found '" + current().lexeme + "'", current().loc);
+    }
+
+    // Array form: new T[size]() [on stack|heap]
+    if (match(TokenKind::LBracket)) {
+        auto arr = std::make_unique<ast::NewArrayExpr>();
+        arr->loc = loc;
+        arr->elementType = std::move(typeName);
+        arr->size = parseExpression();
+        expect(TokenKind::RBracket, "']'");
+        expect(TokenKind::LParen, "'(' (zero-initialized array: new T[n]())");
+        expect(TokenKind::RParen, "')'");
+        if (match(TokenKind::KwOn)) {
+            arr->location = expect(TokenKind::Identifier, "'stack' or 'heap'").lexeme;
+        } else {
+            arr->location = "heap";  // arrays are dynamic -> default heap
+        }
+        return arr;
+    }
+
+    // Object form: new T(args) [on stack|heap]
+    auto e = std::make_unique<ast::NewExpr>();
+    e->loc = loc;
+    e->className = std::move(typeName);
+    expect(TokenKind::LParen, "'('");
+    if (!check(TokenKind::RParen)) {
+        do {
+            e->args.push_back(parseExpression());
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RParen, "')'");
+    // Memory location is optional. Omitted, objects default to the stack (RAII,
+    // no `delete`). Write `on stack` / `on heap` only to force a placement.
+    if (match(TokenKind::KwOn)) {
+        e->location = expect(TokenKind::Identifier, "'stack' or 'heap'").lexeme;
+    } else {
+        e->location = "stack";
+    }
+    return e;
 }
 
 }  // namespace ldp3
