@@ -1,0 +1,33 @@
+program DeepCopy;
+
+public bundle main {
+    public namespace app {
+
+        public class Bag {
+            public mutable int[] items;
+            public constructor Bag() {
+                this.items = new int[3]();
+                this.items[0] = 10;
+                this.items[1] = 20;
+                this.items[2] = 30;
+            }
+            public method set(int i, int v) returns void {
+                this.items[i] = v;
+            }
+            public method get(int i) returns int {
+                return this.items[i];
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Bag a = new Bag();
+                Bag b = a;            // value copy -> the items[] array is duplicated
+                b.set(0, 999);        // mutate only the copy
+                System.IO.println($"a[0] = {a.get(0)} b[0] = {b.get(0)}");
+                // deep copy: a[0] = 10 (unchanged), b[0] = 999
+                return;
+            }
+        }
+    }
+}

@@ -521,12 +521,39 @@ struct CodeGenerator::Impl {
                dynamic_cast<const ast::MemberExpr*>(&e) != nullptr;
     }
 
-    // Allocates a fresh struct and copies srcPtr's bytes into it (value copy).
+    // Duplicates an array block [ i64 length | elems... ] into a fresh heap block
+    // so a value copy does not share the elements. Elements are 4 bytes in 0.1.
+    llvm::Value* emitArrayDup(llvm::Value* srcBlock) {
+        llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), srcBlock, "arr.len");
+        llvm::Value* total = builder.CreateAdd(builder.getInt64(8),
+                                               builder.CreateMul(len, builder.getInt64(4)));
+        llvm::Value* newBlock = builder.CreateCall(mallocFn(), {total}, "arr.copy");
+        builder.CreateCall(memcpyFn(), {newBlock, srcBlock, total});
+        return newBlock;
+    }
+
+    // Allocates a fresh struct and copies srcPtr into it (deep value copy): the
+    // bytes are memcpy'd first, then each field that owns its storage -- arrays
+    // and value sub-objects -- is duplicated so the two objects share nothing.
+    // Pointer/reference fields are shared on purpose; primitives copy inline.
     llvm::Value* emitClassCopy(const std::string& className, llvm::Value* srcPtr) {
         auto cit = classes.find(className);
         if (cit == classes.end()) return srcPtr;
-        llvm::Value* dest = createEntryAlloca(className + ".copy", cit->second.type);
-        builder.CreateCall(memcpyFn(), {dest, srcPtr, sizeOf(cit->second.type)});
+        llvm::StructType* st = cit->second.type;
+        llvm::Value* dest = createEntryAlloca(className + ".copy", st);
+        builder.CreateCall(memcpyFn(), {dest, srcPtr, sizeOf(st)});  // shallow copy first
+        for (const auto& [fname, ftype] : collectFields(className)) {
+            const unsigned idx = cit->second.fieldIndex[fname];
+            llvm::Value* deep = nullptr;
+            if (isArrayType(ftype)) {
+                llvm::Value* srcSlot = builder.CreateStructGEP(st, srcPtr, idx);
+                deep = emitArrayDup(builder.CreateLoad(builder.getPtrTy(), srcSlot));
+            } else if (isClassValue(ftype) && isCopyDiscipline(ftype)) {
+                llvm::Value* srcSlot = builder.CreateStructGEP(st, srcPtr, idx);
+                deep = emitClassCopy(ftype, builder.CreateLoad(builder.getPtrTy(), srcSlot));
+            }
+            if (deep != nullptr) builder.CreateStore(deep, builder.CreateStructGEP(st, dest, idx));
+        }
         return dest;
     }
 

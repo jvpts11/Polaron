@@ -330,6 +330,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=f32 back = 16777216 f64 back = 16777217 pi = 3.5"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Deep value copy: copying a class duplicates its array, so mutating the
+        # copy leaves the original untouched.
+        add_test(NAME codegen_deep_copy_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/deep_copy.ldp3"
+            "-DEXPECTED=a[0] = 10 b[0] = 999"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()
