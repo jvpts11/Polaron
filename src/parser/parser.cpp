@@ -169,12 +169,34 @@ ast::Namespace Parser::parseNamespace() {
         }
         if (kind == TokenKind::KwEnum) {
             ns.enums.push_back(parseEnum());
+        } else if (kind == TokenKind::KwComptime || kind == TokenKind::KwLiteral) {
+            ns.literals.push_back(parseLiteral());
         } else {
             ns.classes.push_back(parseClassOrInterface());
         }
     }
     expect(TokenKind::RBrace, "'}'");
     return ns;
+}
+
+ast::LiteralDecl Parser::parseLiteral() {
+    ast::LiteralDecl l;
+    l.loc = current().loc;
+    l.visibility = parseVisibilityOpt();
+    if (match(TokenKind::KwComptime)) l.isComptime = true;
+    expect(TokenKind::KwLiteral, "'literal'");
+    l.name = expect(TokenKind::Identifier, "the literal suffix name").lexeme;
+    expect(TokenKind::LParen, "'('");
+    std::vector<ast::Param> params = parseParams();
+    expect(TokenKind::RParen, "')'");
+    if (params.size() != 1) {
+        fail("a literal suffix must take exactly one parameter", l.loc);
+    }
+    l.param = std::move(params[0]);
+    expect(TokenKind::KwReturns, "'returns'");
+    l.returnType = parseTypeRef();
+    l.body = parseBlock();
+    return l;
 }
 
 ast::EnumDecl Parser::parseEnum() {

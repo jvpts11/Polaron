@@ -552,3 +552,21 @@ TEST_CASE("semantic rejects a class that extends a struct") {
         " public class C extends S { public constructor C() {} }",
         "int n = 0;")));
 }
+
+TEST_CASE("semantic accepts a comptime literal suffix function") {
+    CHECK(checkSrc(withClass(
+        "public comptime literal kib(int x) returns int64 { return cast<int64>(x) * 1024; }",
+        "int64 s = kib(64);")));
+}
+
+TEST_CASE("semantic rejects a literal suffix that is not comptime") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public literal kib(int x) returns int64 { return cast<int64>(x); }",
+        "int64 s = kib(1);")));
+}
+
+TEST_CASE("parser rejects a literal suffix with more than one parameter") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public comptime literal bad(int x, int y) returns int64 { return cast<int64>(x); }",
+        "int n = 0;")));
+}

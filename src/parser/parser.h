@@ -50,6 +50,7 @@ private:
     ast::Namespace parseNamespace();
     ast::ClassDecl parseClassOrInterface();
     ast::EnumDecl parseEnum();
+    ast::LiteralDecl parseLiteral();
     ast::MemberPtr parseMember(bool inInterface);
     std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic,
                                                  bool isAbstract, bool isOverride, bool isFinal,

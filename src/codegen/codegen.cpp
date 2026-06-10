@@ -158,6 +158,7 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, ClassLayout> classes;
     std::unordered_map<std::string, std::vector<std::string>> enums;  // name -> constants (ordinals)
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
+    std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
     std::vector<const ast::Block*> deferred;  // defer blocks, run at scope end (LIFO)
@@ -438,6 +439,9 @@ struct CodeGenerator::Impl {
                 }
                 if (!owner.empty()) return classes[owner].methodReturnType[mem->member];
             }
+            // Namespace-level literal suffix function: name(arg).
+            auto lit = literalReturnType.find(flattenCallee(*call->callee));
+            if (lit != literalReturnType.end()) return lit->second;
             return "int";
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
@@ -940,6 +944,19 @@ struct CodeGenerator::Impl {
             }
             return builder.CreateCall(printf(), args);
         }
+        // Namespace-level literal suffix function: name(arg). (comptime in the
+        // spec; for now it runs at runtime with the same result -- see Fase C.)
+        if (auto fnit = functions.find(name);
+            fnit != functions.end() && literalReturnType.count(name) > 0) {
+            std::vector<llvm::Value*> args;
+            for (const auto& arg : call.args) {
+                llvm::Value* v = emitExpr(*arg);
+                if (v == nullptr) return nullptr;
+                args.push_back(v);
+            }
+            if (!args.empty()) args[0] = coerceToType(args[0], fnit->second->getArg(0)->getType());
+            return builder.CreateCall(fnit->second, args);
+        }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get())) {
             // array.length(): read the i64 length header and truncate to int.
             if (mem->member == "length" && isArrayType(typeName(*mem->object))) {
@@ -1386,6 +1403,15 @@ struct CodeGenerator::Impl {
                             ty, llvm::Function::ExternalLinkage, mangled, module);
                     }
                 }
+                // Namespace-level `comptime literal` suffix functions (spec 17.10).
+                for (const ast::LiteralDecl& lit : ns.literals) {
+                    llvm::FunctionType* ty = llvm::FunctionType::get(
+                        llvmType(typeRefName(lit.returnType)),
+                        {llvmType(typeRefName(lit.param.type))}, false);
+                    functions[lit.name] = llvm::Function::Create(
+                        ty, llvm::Function::ExternalLinkage, "literal." + lit.name, module);
+                    literalReturnType[lit.name] = typeRefName(lit.returnType);
+                }
             }
         }
     }
@@ -1509,6 +1535,11 @@ struct CodeGenerator::Impl {
                         emitBody(functions[cls.name + "." + cls.name], emptyBody, {}, cls.name,
                                  builder.getVoidTy(), &cls);
                     }
+                }
+                // Literal suffix bodies: emitted as static functions (no `this`).
+                for (const ast::LiteralDecl& lit : ns.literals) {
+                    emitBody(functions[lit.name], lit.body, {lit.param}, /*thisClass=*/"",
+                             llvmType(typeRefName(lit.returnType)));
                 }
             }
         }

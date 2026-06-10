@@ -50,6 +50,9 @@ enum class TokenKind : std::uint8_t {
     KwRegion, KwOf, KwAccepts, KwRejects,
     KwDefer, KwUsing,
 
+    // Keywords -- compile-time / literal suffixes (0.2 Fase C)
+    KwComptime, KwLiteral, KwImport,
+
     // Keywords -- control flow
     KwIf, KwElse, KwWhile, KwDo, KwFor,
     KwSwitch, KwCase, KwDefault, KwBreak, KwContinue,

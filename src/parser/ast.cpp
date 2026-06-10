@@ -254,11 +254,20 @@ void EnumDecl::dump(std::string& out, int indent) const {
     for (const auto& c : constants) line(out, indent + 1, "Constant '" + c + "'");
 }
 
+void LiteralDecl::dump(std::string& out, int indent) const {
+    std::string head = "Literal '" + name + "'";
+    if (!visibility.empty()) head += " " + visibility;
+    if (isComptime) head += " comptime";
+    head += " (" + param.type.name + " " + param.name + ") returns " + returnType.name;
+    line(out, indent, head);
+}
+
 void Namespace::dump(std::string& out, int indent) const {
     std::string head = "Namespace '" + name + "'";
     if (!visibility.empty()) head += " " + visibility;
     line(out, indent, head);
     for (const auto& e : enums) e.dump(out, indent + 1);
+    for (const auto& l : literals) l.dump(out, indent + 1);
     for (const auto& c : classes) c.dump(out, indent + 1);
 }
 

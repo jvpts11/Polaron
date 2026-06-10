@@ -61,6 +61,9 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwRejects:       return "KwRejects";
         case TokenKind::KwDefer:         return "KwDefer";
         case TokenKind::KwUsing:         return "KwUsing";
+        case TokenKind::KwComptime:      return "KwComptime";
+        case TokenKind::KwLiteral:       return "KwLiteral";
+        case TokenKind::KwImport:        return "KwImport";
 
         case TokenKind::KwIf:       return "KwIf";
         case TokenKind::KwElse:     return "KwElse";

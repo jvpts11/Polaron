@@ -53,6 +53,14 @@ struct ClassInfo {
     bool hasDestructor = false;
 };
 
+// A namespace-level `comptime literal` suffix function (spec 17.10).
+struct LiteralInfo {
+    std::string paramType;
+    std::string returnType;
+    bool isComptime = false;
+    SourceLocation loc;
+};
+
 // Semantic analysis. Release 0.1 / M4 scope: builds a catalog of classes, finds
 // the entry point, and type-checks the body of every method and constructor,
 // resolving locals, `this`, fields, methods and `new`.
@@ -70,8 +78,10 @@ private:
 
     void registerClasses(const ast::Program& program);
     void registerEnums(const ast::Program& program);
+    void registerLiterals(const ast::Program& program);
     void findEntryPoint(const ast::Program& program);
     void analyzeBodies(const ast::Program& program);
+    void analyzeLiteralBodies(const ast::Program& program);
     void analyzeFieldInits(const ast::ClassDecl& cls);
     void analyzeMethodBody(const ast::Block& body, const std::vector<ast::Param>& params,
                            const std::string& thisClass, bool inConstructor);
@@ -105,6 +115,7 @@ private:
     EntryPoint entry_;
     std::unordered_map<std::string, ClassInfo> classes_;
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants
+    std::unordered_map<std::string, LiteralInfo> literals_;  // suffix name -> info
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state

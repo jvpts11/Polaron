@@ -363,6 +363,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
 bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerClasses(program);
     registerEnums(program);
+    registerLiterals(program);
     validateHierarchy();
     // If the hierarchy itself is broken (cycle, missing super), stop: walking it
     // recursively below could otherwise loop forever.
@@ -370,7 +371,46 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     validateOverrides(program);
     findEntryPoint(program);
     analyzeBodies(program);
+    analyzeLiteralBodies(program);
     return errors_.empty();
+}
+
+// Registers each namespace-level `comptime literal` suffix function and checks
+// its shape (spec 17.10): must be comptime, exactly one numeric parameter, and a
+// known return type. The body is type-checked later, in analyzeLiteralBodies.
+void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::LiteralDecl& lit : ns.literals) {
+                const std::string paramType = typeRefStr(lit.param.type);
+                const std::string returnType = typeRefStr(lit.returnType);
+                if (!lit.isComptime) {
+                    error("literal suffix '" + lit.name + "' must be 'comptime literal'", lit.loc);
+                }
+                if (!isNumeric(paramType)) {
+                    error("literal suffix '" + lit.name +
+                              "' must take a numeric parameter (int or float family)",
+                          lit.loc);
+                }
+                if (literals_.count(lit.name) > 0) {
+                    error("literal suffix '" + lit.name + "' is already defined", lit.loc);
+                }
+                literals_[lit.name] = LiteralInfo{paramType, returnType, lit.isComptime, lit.loc};
+            }
+        }
+    }
+}
+
+// Type-checks the body of each literal suffix, with its single parameter in
+// scope and treated like a static function (no `this`).
+void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::LiteralDecl& lit : ns.literals) {
+                analyzeMethodBody(lit.body, {lit.param}, /*thisClass=*/"", /*inConstructor=*/false);
+            }
+        }
+    }
 }
 
 void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
@@ -774,6 +814,20 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return "void";
         }
         const std::string name = flattenCallee(*call->callee);
+        // Namespace-level literal suffix function called by name: kilobytes(64).
+        if (auto lit = literals_.find(name); lit != literals_.end()) {
+            if (call->args.size() != 1) {
+                error("literal suffix '" + name + "' takes exactly one argument", call->loc);
+            } else {
+                const std::string at = typeOf(*call->args[0]);
+                if (!at.empty() && !isSubtype(at, lit->second.paramType)) {
+                    error("literal suffix '" + name + "' expects " + lit->second.paramType +
+                              ", got '" + at + "'",
+                          call->loc);
+                }
+            }
+            return lit->second.returnType;
+        }
         if (name == "System.IO.readInt") {
             if (!call->args.empty()) error("System.IO.readInt takes no arguments", call->loc);
             return "int";

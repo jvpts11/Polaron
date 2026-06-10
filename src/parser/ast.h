@@ -299,11 +299,26 @@ struct EnumDecl {
     void dump(std::string& out, int indent) const;
 };
 
+// A `comptime literal` suffix function at namespace level (spec 17.10):
+// `comptime literal name(T param) returns R { body }`, used as `64 kilobytes`.
+// This is the one namespace-level function form (OOP is mandatory otherwise).
+struct LiteralDecl {
+    std::string visibility;
+    bool isComptime = false;  // spec requires `comptime`; semantics enforces it
+    std::string name;
+    Param param;              // exactly one parameter
+    TypeRef returnType;
+    Block body;
+    SourceLocation loc;
+    void dump(std::string& out, int indent) const;
+};
+
 struct Namespace {
     std::string visibility;
     std::string name;
     std::vector<ClassDecl> classes;
     std::vector<EnumDecl> enums;
+    std::vector<LiteralDecl> literals;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

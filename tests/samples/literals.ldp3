@@ -1,0 +1,21 @@
+program Literals;
+
+public bundle main {
+    public namespace app {
+
+        // A namespace-level comptime literal suffix function (spec 17.10).
+        // For now it is called explicitly; the `64 kib` suffix syntax and import
+        // arrive in the next slice.
+        public comptime literal kib(int x) returns int64 {
+            return cast<int64>(x) * 1024;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                int64 size = kib(64);
+                System.IO.println($"size = {size}");   // 65536
+                return;
+            }
+        }
+    }
+}
