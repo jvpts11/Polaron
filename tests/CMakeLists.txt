@@ -284,6 +284,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=big=10000000000 sum=10000000005 wide=200"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Short-circuit && / || : the right operand runs only when needed.
+        # Exact match: any extra "touched!" would mean the right side ran eagerly.
+        add_test(NAME codegen_short_circuit_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/short_circuit.ldp3"
+            "-DEXPECTED=or-ok touched! and-ok"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

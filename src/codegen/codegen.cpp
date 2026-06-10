@@ -6,6 +6,7 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
@@ -622,7 +623,33 @@ struct CodeGenerator::Impl {
         return nullptr;
     }
 
+    // Short-circuit && / ||: evaluate the right operand only when needed.
+    // a && b -> if a then b else false;  a || b -> if a then true else b.
+    llvm::Value* emitShortCircuit(const ast::BinaryExpr& bin) {
+        llvm::Value* a = emitExpr(*bin.lhs);
+        if (a == nullptr) return nullptr;
+        a = builder.CreateICmpNE(a, llvm::Constant::getNullValue(a->getType()), "sc.a");
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* startBB = builder.GetInsertBlock();
+        llvm::BasicBlock* rhsBB = llvm::BasicBlock::Create(context, "sc.rhs", fn);
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "sc.end", fn);
+        const bool isAnd = (bin.op == "&&");
+        builder.CreateCondBr(a, isAnd ? rhsBB : endBB, isAnd ? endBB : rhsBB);
+        builder.SetInsertPoint(rhsBB);
+        llvm::Value* b = emitExpr(*bin.rhs);
+        if (b == nullptr) return nullptr;
+        b = builder.CreateICmpNE(b, llvm::Constant::getNullValue(b->getType()), "sc.b");
+        llvm::BasicBlock* rhsEnd = builder.GetInsertBlock();
+        builder.CreateBr(endBB);
+        builder.SetInsertPoint(endBB);
+        llvm::PHINode* phi = builder.CreatePHI(builder.getInt1Ty(), 2, "sc");
+        phi->addIncoming(builder.getInt1(!isAnd), startBB);  // && short-circuits to false, || to true
+        phi->addIncoming(b, rhsEnd);
+        return builder.CreateZExt(phi, builder.getInt32Ty());
+    }
+
     llvm::Value* emitBinary(const ast::BinaryExpr& bin) {
+        if (bin.op == "&&" || bin.op == "||") return emitShortCircuit(bin);
         const std::string lt = typeName(*bin.lhs);
         const std::string rt = typeName(*bin.rhs);
         llvm::Value* l = emitExpr(*bin.lhs);
@@ -667,12 +694,6 @@ struct CodeGenerator::Impl {
         else if (op == ">=") cmp = builder.CreateICmpSGE(l, r);
         if (cmp != nullptr) return builder.CreateZExt(cmp, builder.getInt32Ty());
 
-        if (op == "&&" || op == "||") {
-            llvm::Value* lb = builder.CreateICmpNE(l, builder.getInt32(0));
-            llvm::Value* rb = builder.CreateICmpNE(r, builder.getInt32(0));
-            llvm::Value* res = (op == "&&") ? builder.CreateAnd(lb, rb) : builder.CreateOr(lb, rb);
-            return builder.CreateZExt(res, builder.getInt32Ty());
-        }
         error("unsupported binary operator '" + op + "'", bin.loc);
         return nullptr;
     }

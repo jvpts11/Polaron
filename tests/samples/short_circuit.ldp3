@@ -1,0 +1,36 @@
+program ShortCircuit;
+
+public bundle main {
+    public namespace app {
+
+        public class Probe {
+            public method touched() returns boolean {
+                System.IO.println("touched!");
+                return true;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Probe p = new Probe();
+
+                // false && X : the right side must NOT run.
+                if (false && p.touched()) {
+                    System.IO.println("unreachable-and");
+                }
+
+                // true || X : the right side must NOT run.
+                if (true || p.touched()) {
+                    System.IO.println("or-ok");
+                }
+
+                // true && X : the right side MUST run (prints "touched!").
+                if (true && p.touched()) {
+                    System.IO.println("and-ok");
+                }
+
+                return;
+            }
+        }
+    }
+}
