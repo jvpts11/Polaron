@@ -101,6 +101,8 @@ struct ClassLayout {
     std::vector<std::pair<std::string, std::string>> ownFields;  // (name, type), declaration order
     bool isAbstract = false;
     bool isInterface = false;
+    bool isMovable = false;
+    bool isUnique = false;
     bool hasVtable = false;
     bool hasDestructor = false;
     std::vector<std::string> vtslots;          // virtual method names, in slot order
@@ -373,6 +375,12 @@ struct CodeGenerator::Impl {
         return !isRefType(t) && !isArrayType(t) && classes.count(t) > 0;
     }
 
+    // Only the default discipline copies; movable/unique transfer the pointer.
+    bool isCopyDiscipline(const std::string& t) {
+        auto it = classes.find(baseType(t));
+        return it != classes.end() && !it->second.isMovable && !it->second.isUnique;
+    }
+
     // An existing object that a value copy must duplicate (vs. a fresh `new`).
     bool isCopyableLValue(const ast::Expr& e) {
         return dynamic_cast<const ast::IdentifierExpr*>(&e) != nullptr ||
@@ -526,6 +534,9 @@ struct CodeGenerator::Impl {
         }
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
             return emitNew(*nw);
+        }
+        if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) {
+            return emitExpr(*mv->operand);  // move transfers the pointer (no copy)
         }
         if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
             return emitNewArray(*na);
@@ -782,8 +793,10 @@ struct CodeGenerator::Impl {
             llvm::Value* initV = emitExpr(*vd->init);
             if (initV == nullptr) return;
             // Value semantics: copying a class value from an existing object makes
-            // an independent copy; binding a fresh `new` (or a pointer) does not.
-            if (isClassValue(declType) && isCopyableLValue(*vd->init)) {
+            // an independent copy; binding a fresh `new`/pointer/`move` does not,
+            // and movable/unique disciplines transfer instead of copying.
+            if (isClassValue(declType) && isCopyDiscipline(declType) &&
+                isCopyableLValue(*vd->init)) {
                 initV = emitClassCopy(declType, initV);
             }
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
@@ -807,7 +820,8 @@ struct CodeGenerator::Impl {
             if (v == nullptr) return;
             // Value semantics: assigning a class value copies into the target's
             // existing struct, keeping it independent from the source.
-            if (isClassValue(targetType) && isCopyableLValue(*assign->value)) {
+            if (isClassValue(targetType) && isCopyDiscipline(targetType) &&
+                isCopyableLValue(*assign->value)) {
                 llvm::Value* destStruct = builder.CreateLoad(builder.getPtrTy(), slot);
                 builder.CreateCall(memcpyFn(),
                                    {destStruct, v, sizeOf(classes[targetType].type)});
@@ -952,6 +966,8 @@ struct CodeGenerator::Impl {
                     layout.interfaces = cls.interfaces;
                     layout.isAbstract = cls.isAbstract;
                     layout.isInterface = cls.isInterface;
+                    layout.isMovable = cls.isMovable;
+                    layout.isUnique = cls.isUnique;
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
                             layout.ownFields.emplace_back(

@@ -1,0 +1,31 @@
+program Ownership;
+
+// Fase B: a movable class transfers ownership with `move`; the source variable
+// is invalidated (use-after-move is a compile error). Expected output:
+//   moved value = 7
+
+public bundle main {
+    public namespace app {
+
+        public movable class Handle {
+            public mutable int id;
+
+            public constructor Handle(int n) {
+                this.id = n;
+            }
+
+            public method value() returns int {
+                return this.id;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Handle a = new Handle(7) on heap;
+                Handle b = move a;     // ownership transfers to b; a is now invalid
+                System.IO.println($"moved value = {b.value()}");
+                return;
+            }
+        }
+    }
+}

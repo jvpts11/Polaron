@@ -220,6 +220,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 info.interfaces = cls.interfaces;
                 info.isAbstract = cls.isAbstract;
                 info.isInterface = cls.isInterface;
+                info.isMovable = cls.isMovable;
+                info.isUnique = cls.isUnique;
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
                         info.fields[f->name] = FieldInfo{typeRefStr(f->type), f->isMutable};
@@ -351,6 +353,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<ast::Param>& params,
                                          const std::string& thisClass, bool inConstructor) {
     scopes_.clear();
+    moved_.clear();
     currentClass_ = thisClass;
     inConstructor_ = inConstructor;
     pushScope();
@@ -430,6 +433,24 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
     error("invalid assignment target", loc);
 }
 
+void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const ast::Expr& rhs,
+                                            SourceLocation loc) {
+    if (isRefType(targetType)) return;  // pointers/refs share; no move discipline
+    const ClassInfo* ci = lookupClass(baseType(targetType));
+    if (ci == nullptr) return;  // not a class value
+    const bool rhsIsMove = dynamic_cast<const ast::MoveExpr*>(&rhs) != nullptr;
+    const auto* rhsId = dynamic_cast<const ast::IdentifierExpr*>(&rhs);
+    const bool rhsIsLValue =
+        rhsId != nullptr || dynamic_cast<const ast::MemberExpr*>(&rhs) != nullptr;
+    if (!rhsIsLValue || rhsIsMove) return;  // a fresh `new`, a `move`, or a temporary is fine
+    if (ci->isMovable) {
+        error("'" + ci->name + "' is movable; transfer ownership with 'move' (e.g. = move x)",
+              loc);
+    } else if (ci->isUnique && rhsId != nullptr) {
+        moved_.insert(rhsId->name);  // unique: a plain assignment is an implicit move
+    }
+}
+
 void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, SourceLocation loc) {
     std::string type;
     bool mutableTarget = false;
@@ -478,11 +499,17 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             declareLocal(vd->name, LocalVar{declType.empty() ? std::string("int") : declType,
                                             vd->isMutable});
         }
+        checkOwnershipAssign(declType, *vd->init, vd->loc);
         return;
     }
     if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
         const std::string vt = typeOf(*assign->value);
         checkAssignTarget(*assign->target, vt, assign->loc);
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get())) {
+            moved_.erase(id->name);  // reassignment reactivates the variable
+            const LocalVar* var = lookupLocal(id->name);
+            if (var != nullptr) checkOwnershipAssign(var->type, *assign->value, assign->loc);
+        }
         return;
     }
     if (const auto* incdec = dynamic_cast<const ast::IncDecStmt*>(&stmt)) {
@@ -555,6 +582,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             error("use of undeclared variable '" + id->name + "'", id->loc);
             return "";
         }
+        if (moved_.count(id->name) > 0) {
+            error("use of variable '" + id->name +
+                      "' after it was moved (reassign it before using)",
+                  id->loc);
+        }
         return var->type;
     }
 
@@ -569,6 +601,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         if (!t.empty() && t != "int") error("unary '" + un->op + "' requires an int operand", un->loc);
         return "int";
+    }
+
+    if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) {
+        const std::string t = typeOf(*mv->operand);
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mv->operand.get())) {
+            moved_.insert(id->name);  // the source variable becomes invalid
+        }
+        return t;
     }
 
     if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {

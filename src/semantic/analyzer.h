@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "lexer/token.h"
@@ -45,6 +46,8 @@ struct ClassInfo {
     std::vector<std::string> interfaces;
     bool isAbstract = false;
     bool isInterface = false;
+    bool isMovable = false;  // move discipline
+    bool isUnique = false;   // single-live-reference discipline
     bool hasConstructor = false;
     bool hasDestructor = false;
 };
@@ -75,6 +78,9 @@ private:
     void analyzeStatement(const ast::Stmt& stmt);
     void checkAssignTarget(const ast::Expr& target, const std::string& valueType,
                            SourceLocation loc);
+    // Enforces move discipline when a class value is bound from `rhs`.
+    void checkOwnershipAssign(const std::string& targetType, const ast::Expr& rhs,
+                              SourceLocation loc);
     void checkIncDecTarget(const ast::Expr& target, SourceLocation loc);
     std::string typeOf(const ast::Expr& expr);  // "" on error
     std::string flattenCallee(const ast::Expr& expr) const;
@@ -100,6 +106,7 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     bool inConstructor_ = false;  // immutable fields may be initialized here
+    std::unordered_set<std::string> moved_;  // variables in the "moved" state
     std::vector<std::unordered_map<std::string, LocalVar>> scopes_;
 };
 

@@ -413,3 +413,44 @@ TEST_CASE("semantic accepts an upcast pointer (Square* to Shape*)") {
         " public override method area() returns int { return 1; } }",
         "Square sq = new Square() on stack; Shape* s = &sq; int a = s.area();")));
 }
+
+// ---- Ownership (0.2 Fase B) ----
+
+TEST_CASE("semantic accepts a move and the new owner") {
+    CHECK(checkSrc(withClass(
+        "public movable class H { public mutable int id;"
+        " public constructor H() { this.id = 1; } }",
+        "H a = new H() on heap; H b = move a;")));
+}
+
+TEST_CASE("semantic rejects use of a moved variable") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public movable class H { public mutable int id;"
+        " public constructor H() { this.id = 1; }"
+        " public method v() returns int { return this.id; } }",
+        "H a = new H() on heap; H b = move a; int x = a.v();")));
+}
+
+TEST_CASE("semantic rejects assigning a movable without move") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public movable class H { public mutable int id;"
+        " public constructor H() { this.id = 1; } }",
+        "H a = new H() on heap; H b = a;")));
+}
+
+TEST_CASE("semantic treats unique assignment as an implicit move") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public unique class U { public mutable int id;"
+        " public constructor U() { this.id = 1; }"
+        " public method v() returns int { return this.id; } }",
+        "U a = new U() on heap; U b = a; int x = a.v();")));
+}
+
+TEST_CASE("semantic reactivates a moved variable on reassignment") {
+    CHECK(checkSrc(withClass(
+        "public movable class H { public mutable int id;"
+        " public constructor H() { this.id = 1; }"
+        " public method v() returns int { return this.id; } }",
+        "mutable H a = new H() on heap; H b = move a;"
+        " a = new H() on heap; int x = a.v();")));
+}

@@ -45,6 +45,11 @@ enum class TokenKind : std::uint8_t {
     KwVar, KwNew, KwDelete, KwOn, KwIn,
     KwIs, KwAs, KwCast, KwNull,
 
+    // Keywords -- ownership / regions / scoped resources (0.2 memory model)
+    KwMove, KwMovable, KwUnique, KwPartitionable,
+    KwRegion, KwOf, KwAccepts, KwRejects,
+    KwDefer, KwUsing,
+
     // Keywords -- control flow
     KwIf, KwElse, KwWhile, KwDo, KwFor,
     KwSwitch, KwCase, KwDefault, KwBreak, KwContinue,

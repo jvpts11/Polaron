@@ -50,6 +50,17 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwCast:       return "KwCast";
         case TokenKind::KwNull:       return "KwNull";
 
+        case TokenKind::KwMove:          return "KwMove";
+        case TokenKind::KwMovable:       return "KwMovable";
+        case TokenKind::KwUnique:        return "KwUnique";
+        case TokenKind::KwPartitionable: return "KwPartitionable";
+        case TokenKind::KwRegion:        return "KwRegion";
+        case TokenKind::KwOf:            return "KwOf";
+        case TokenKind::KwAccepts:       return "KwAccepts";
+        case TokenKind::KwRejects:       return "KwRejects";
+        case TokenKind::KwDefer:         return "KwDefer";
+        case TokenKind::KwUsing:         return "KwUsing";
+
         case TokenKind::KwIf:       return "KwIf";
         case TokenKind::KwElse:     return "KwElse";
         case TokenKind::KwWhile:    return "KwWhile";

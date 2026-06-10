@@ -89,6 +89,12 @@ struct NewExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// `move x` -- transfers ownership; the source variable becomes invalid.
+struct MoveExpr : Expr {
+    ExprPtr operand;
+    void dump(std::string& out, int indent) const override;
+};
+
 // new T[size]() -- a dynamic, zero-initialized array on the heap.
 struct NewArrayExpr : Expr {
     std::string elementType;  // e.g. "int", "char"
@@ -240,6 +246,8 @@ struct ClassDecl {
     std::string name;
     bool isInterface = false;             // declared with `interface`
     bool isAbstract = false;              // `abstract class` (interfaces are abstract too)
+    bool isMovable = false;               // `movable class` -- move discipline
+    bool isUnique = false;                // `unique class` -- single live reference
     std::string superclass;               // "" when none (from `extends`)
     std::vector<std::string> interfaces;  // from `implements`
     std::vector<MemberPtr> members;

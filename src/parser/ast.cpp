@@ -65,6 +65,11 @@ void NewExpr::dump(std::string& out, int indent) const {
     for (const auto& a : args) a->dump(out, indent + 1);
 }
 
+void MoveExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Move");
+    operand->dump(out, indent + 1);
+}
+
 void NewArrayExpr::dump(std::string& out, int indent) const {
     line(out, indent, "NewArray '" + elementType + "[]' on " + location);
     line(out, indent + 1, "size:");
@@ -210,6 +215,8 @@ void ClassDecl::dump(std::string& out, int indent) const {
     std::string head = (isInterface ? "Interface '" : "Class '") + name + "'";
     if (!visibility.empty()) head += " " + visibility;
     if (isAbstract && !isInterface) head += " abstract";
+    if (isMovable) head += " movable";
+    if (isUnique) head += " unique";
     if (!superclass.empty()) head += " extends " + superclass;
     for (const auto& i : interfaces) head += " implements " + i;
     line(out, indent, head);

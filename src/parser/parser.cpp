@@ -198,6 +198,11 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     c.loc = current().loc;
     c.visibility = parseVisibilityOpt();
     if (match(TokenKind::KwAbstract)) c.isAbstract = true;
+    if (match(TokenKind::KwMovable)) {
+        c.isMovable = true;
+    } else if (match(TokenKind::KwUnique)) {
+        c.isUnique = true;
+    }
     if (match(TokenKind::KwInterface)) {
         c.isInterface = true;
         c.isAbstract = true;  // interfaces are abstract by nature
@@ -609,6 +614,14 @@ ast::ExprPtr Parser::parseBinary(int minPrec) {
 }
 
 ast::ExprPtr Parser::parseUnary() {
+    // `move x` transfers ownership (the source becomes invalid).
+    if (check(TokenKind::KwMove)) {
+        auto mv = std::make_unique<ast::MoveExpr>();
+        mv->loc = current().loc;
+        advance();
+        mv->operand = parseUnary();
+        return mv;
+    }
     // Prefix '&' is address-of (share the object); '-' negation; '!' logical not.
     if (check(TokenKind::Minus) || check(TokenKind::Bang) || check(TokenKind::Amp)) {
         const Token op = advance();
