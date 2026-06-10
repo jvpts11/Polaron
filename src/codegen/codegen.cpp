@@ -107,8 +107,10 @@ std::string baseType(const std::string& t) {
 }
 
 // The LDP3 type name of a declaration, including array / pointer / ref markers.
+// Generic arguments are mangled into the name (Box<int> -> "Box$int").
 std::string typeRefName(const ast::TypeRef& t) {
-    return t.name + (t.isArray ? "[]" : "") + (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
+    return ast::mangleGeneric(t.name, t.typeArgs) + (t.isArray ? "[]" : "") +
+           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
 }
 
 // Layout of a class: its LLVM struct, field indices/types, and method returns.
@@ -423,7 +425,9 @@ struct CodeGenerator::Impl {
             if (w == 64) return u ? "uint64" : "int64";
             return u ? "uint32" : "int";
         }
-        if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) return nw->className;
+        if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
+            return ast::mangleGeneric(nw->className, nw->typeArgs);
+        }
         if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
             return na->elementType + "[]";
         }
@@ -890,9 +894,10 @@ struct CodeGenerator::Impl {
     }
 
     llvm::Value* emitNew(const ast::NewExpr& nw) {
-        auto cit = classes.find(nw.className);
+        const std::string cn = ast::mangleGeneric(nw.className, nw.typeArgs);  // Box<int> -> Box$int
+        auto cit = classes.find(cn);
         if (cit == classes.end()) {
-            error("unknown class '" + nw.className + "'", nw.loc);
+            error("unknown class '" + cn + "'", nw.loc);
             return nullptr;
         }
         llvm::Value* objPtr = nullptr;
@@ -900,14 +905,14 @@ struct CodeGenerator::Impl {
             objPtr = emitRegionBumpAlloc(nw.region, cit->second.type, nw.loc);
             if (objPtr == nullptr) return nullptr;
         } else if (nw.location == "stack") {
-            objPtr = createEntryAlloca(nw.className + ".obj", cit->second.type);
+            objPtr = createEntryAlloca(cn + ".obj", cit->second.type);
         } else if (nw.location == "heap") {
-            objPtr = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, nw.className + ".obj");
+            objPtr = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, cn + ".obj");
         } else {
             error("'new' location must be 'stack' or 'heap', got '" + nw.location + "'", nw.loc);
             return nullptr;
         }
-        auto fnit = functions.find(nw.className + "." + nw.className);
+        auto fnit = functions.find(cn + "." + cn);
         if (fnit != functions.end()) {
             std::vector<llvm::Value*> args;
             args.push_back(objPtr);

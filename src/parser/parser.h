@@ -64,6 +64,7 @@ private:
     ast::TypeRef parseTypeRef();
     ast::Block parseBlock();
     ast::StmtPtr parseStatement();
+    bool looksLikeGenericVarDecl() const;
     ast::StmtPtr parseIfStatement();
     ast::StmtPtr parseWhileStatement();
     ast::StmtPtr parseForStatement();

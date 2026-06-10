@@ -19,6 +19,7 @@
 #include "lexer/lexer.h"
 #include "lexer/token.h"
 #include "parser/ast.h"
+#include "parser/monomorphize.h"
 #include "parser/parser.h"
 #include "semantic/analyzer.h"
 
@@ -159,6 +160,7 @@ int checkProgram(const std::string& path) {
     ldp3::ast::Program program = parser.parse();
     if (reportParseErrors(path, parser)) return 1;
     appendPrelude(program);
+    ldp3::monomorphize(program);  // expand generics into concrete classes
     ldp3::SemanticAnalyzer sema;
     if (!sema.analyze(program)) {
         for (const ldp3::SemaError& e : sema.errors()) {
@@ -184,6 +186,7 @@ int compile(const std::string& path, const std::string& outPath) {
     ldp3::ast::Program program = parser.parse();
     if (reportParseErrors(path, parser)) return 1;
     appendPrelude(program);
+    ldp3::monomorphize(program);  // expand generics into concrete classes
     ldp3::SemanticAnalyzer sema;
     if (!sema.analyze(program)) {
         for (const ldp3::SemaError& e : sema.errors()) {

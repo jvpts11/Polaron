@@ -18,6 +18,7 @@ set(LDP3_CORE_SOURCES
     src/lexer/lexer.cpp
     src/parser/ast.cpp
     src/parser/parser.cpp
+    src/parser/monomorphize.cpp
     src/semantic/analyzer.cpp
 )
 

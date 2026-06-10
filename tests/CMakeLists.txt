@@ -412,6 +412,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=earth = 5 mars = 10"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Generics: monomorphized Box<int>/Box<double> (distinct) and Pair<A,B>.
+        add_test(NAME codegen_generics_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/generics.ldp3"
+            "-DEXPECTED=bi=42 bd=2.5 first=7 second=X"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

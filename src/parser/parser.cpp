@@ -352,6 +352,13 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         expect(TokenKind::KwClass, "'class', 'struct' or 'interface'");
     }
     c.name = expect(TokenKind::Identifier, "the type name").lexeme;
+    // Generic parameters: class Box<T>, class Pair<K, V>.
+    if (match(TokenKind::Lt)) {
+        do {
+            c.typeParams.push_back(expect(TokenKind::Identifier, "a type parameter").lexeme);
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Gt, "'>' to close type parameters");
+    }
     if (match(TokenKind::KwExtends)) {
         if (c.isStruct) fail("a struct cannot extend another type (structs have no inheritance)",
                              c.loc);
@@ -573,6 +580,20 @@ ast::TypeRef Parser::parseTypeRef() {
     } else {
         fail("expected a type but found '" + tok.lexeme + "'", tok.loc);
     }
+    // Generic arguments: Box<int>, Pair<int, double>. (Nested args like
+    // Box<List<int>> would need `>>` splitting -- a later refinement.)
+    if (match(TokenKind::Lt)) {
+        do {
+            const Token& at = current();
+            if (isTypeKeyword(at.kind) || at.kind == TokenKind::Identifier) {
+                t.typeArgs.push_back(at.lexeme);
+                advance();
+            } else {
+                fail("expected a type argument but found '" + at.lexeme + "'", at.loc);
+            }
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Gt, "'>' to close type arguments");
+    }
     if (match(TokenKind::LBracket)) {
         expect(TokenKind::RBracket, "']'");
         t.isArray = true;
@@ -651,10 +672,32 @@ ast::StmtPtr Parser::parseStatement() {
          (peek(1).kind == TokenKind::LBracket && peek(2).kind == TokenKind::RBracket &&
           peek(3).kind == TokenKind::Identifier));
     if (check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
-        isTypeKeyword(current().kind) || classVarDecl) {
+        isTypeKeyword(current().kind) || classVarDecl || looksLikeGenericVarDecl()) {
         return parseVarDecl();
     }
     return parseExprStatement();
+}
+
+// Distinguishes `Box<int> b` (a generic-typed declaration) from `a < b`
+// (a comparison): scans the `<...>` -- which may hold only type names and
+// commas -- and checks that an identifier (the variable name) follows the `>`.
+bool Parser::looksLikeGenericVarDecl() const {
+    if (!check(TokenKind::Identifier) || peek(1).kind != TokenKind::Lt) return false;
+    int i = 2;
+    int depth = 1;
+    while (true) {
+        const TokenKind k = peek(i).kind;
+        if (k == TokenKind::EndOfFile) return false;
+        if (k == TokenKind::Lt) {
+            ++depth;
+        } else if (k == TokenKind::Gt) {
+            if (--depth == 0) break;
+        } else if (k != TokenKind::Identifier && k != TokenKind::Comma && !isTypeKeyword(k)) {
+            return false;  // not a pure type-argument list -> it's a comparison
+        }
+        ++i;
+    }
+    return peek(i + 1).kind == TokenKind::Identifier;
 }
 
 ast::StmtPtr Parser::parseIfStatement() {
@@ -1095,10 +1138,22 @@ ast::ExprPtr Parser::parseNew() {
         return arr;
     }
 
-    // Object form: new T(args) [on stack|heap]
+    // Object form: new T(args) [on stack|heap], with optional generic args.
     auto e = std::make_unique<ast::NewExpr>();
     e->loc = loc;
     e->className = std::move(typeName);
+    if (match(TokenKind::Lt)) {
+        do {
+            const Token& at = current();
+            if (isTypeKeyword(at.kind) || at.kind == TokenKind::Identifier) {
+                e->typeArgs.push_back(at.lexeme);
+                advance();
+            } else {
+                fail("expected a type argument but found '" + at.lexeme + "'", at.loc);
+            }
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Gt, "'>' to close type arguments");
+    }
     expect(TokenKind::LParen, "'('");
     if (!check(TokenKind::RParen)) {
         do {

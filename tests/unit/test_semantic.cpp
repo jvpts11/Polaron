@@ -3,18 +3,20 @@
 #include <string>
 
 #include "lexer/lexer.h"
+#include "parser/monomorphize.h"
 #include "parser/parser.h"
 #include "semantic/analyzer.h"
 
 using namespace ldp3;
 
 namespace {
-// Runs lex -> parse -> sema on `src`; returns true if the program is valid.
+// Runs lex -> parse -> monomorphize -> sema on `src`; true if the program is valid.
 bool checkSrc(const std::string& src, std::string* entryOut = nullptr) {
     Lexer lexer(src, "test");
     Parser parser(lexer.tokenize(), "test");
-    const ast::Program prog = parser.parse();
+    ast::Program prog = parser.parse();
     if (parser.hasErrors()) return false;
+    monomorphize(prog);
     SemanticAnalyzer sema;
     const bool ok = sema.analyze(prog);
     if (ok && entryOut != nullptr) *entryOut = sema.entryPoint().qualifiedName;
@@ -687,4 +689,19 @@ TEST_CASE("semantic still accepts a plain int-style enum") {
     CHECK(checkSrc(withClass(
         "public enum Color { RED, GREEN, BLUE }",
         "Color c = Color.GREEN;")));
+}
+
+TEST_CASE("semantic accepts a generic class instantiated with two element types") {
+    CHECK(checkSrc(withClass(
+        "public class Box<T> { private T value;"
+        " public constructor Box(T v) { this.value = v; }"
+        " public method get() returns T { return this.value; } }",
+        "Box<int> a = new Box<int>(1); Box<char> b = new Box<char>('x');"
+        " int x = a.get();")));
+}
+
+TEST_CASE("parser keeps a < b as a comparison, not a generic declaration") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " int a = 1; int b = 2; boolean c = a < b; }")));
 }

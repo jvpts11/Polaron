@@ -1,0 +1,31 @@
+program Generics;
+
+public bundle main {
+    public namespace app {
+
+        public class Box<T> {
+            private T value;
+            public constructor Box(T v) { this.value = v; }
+            public method get() returns T { return this.value; }
+        }
+
+        public class Pair<A, B> {
+            private A first;
+            private B second;
+            public constructor Pair(A a, B b) { this.first = a; this.second = b; }
+            public method getFirst() returns A { return this.first; }
+            public method getSecond() returns B { return this.second; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box<int> bi = new Box<int>(42);
+                Box<double> bd = new Box<double>(2.5);   // distinct monomorphization
+                Pair<int, char> p = new Pair<int, char>(7, 'X');
+                System.IO.println($"bi={bi.get()} bd={bd.get()} first={p.getFirst()} second={p.getSecond()}");
+                // bi=42 bd=2.5 first=7 second=X
+                return;
+            }
+        }
+    }
+}

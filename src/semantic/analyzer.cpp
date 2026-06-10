@@ -23,7 +23,8 @@ std::string baseType(const std::string& t) {
     return isRefType(t) ? t.substr(0, t.size() - 1) : t;
 }
 std::string typeRefStr(const ast::TypeRef& t) {
-    return t.name + (t.isArray ? "[]" : "") + (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
+    return ast::mangleGeneric(t.name, t.typeArgs) + (t.isArray ? "[]" : "") +
+           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
 }
 bool isFloatType(const std::string& t) {
     return t == "float" || t == "float32" || t == "double" || t == "float64";
@@ -817,15 +818,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
-        const ClassInfo* ci = lookupClass(nw->className);
+        const std::string cn = ast::mangleGeneric(nw->className, nw->typeArgs);  // Box<int> -> Box$int
+        const ClassInfo* ci = lookupClass(cn);
         if (ci == nullptr) {
-            error("unknown class '" + nw->className + "'", nw->loc);
+            error("unknown class '" + cn + "'", nw->loc);
             return "";
         }
         if (ci->isInterface || ci->isAbstract) {
             error("cannot instantiate " +
-                      std::string(ci->isInterface ? "interface" : "abstract class") + " '" +
-                      nw->className + "'",
+                      std::string(ci->isInterface ? "interface" : "abstract class") + " '" + cn + "'",
                   nw->loc);
         }
         if (nw->location != "stack" && nw->location != "heap") {
@@ -838,11 +839,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             } else if (r->type != "region") {
                 error("'" + nw->region + "' is not a region", nw->loc);
             } else {
-                checkRegionAccepts(nw->region, nw->className, nw->loc);
+                checkRegionAccepts(nw->region, cn, nw->loc);
             }
         }
         for (const auto& arg : nw->args) typeOf(*arg);
-        return nw->className;
+        return cn;
     }
 
     if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {

@@ -13,6 +13,14 @@
 // statements the hello-world walking skeleton needs.
 namespace ldp3::ast {
 
+// Mangled name of a generic instantiation: Box<int> -> "Box$int",
+// Pair<int, double> -> "Pair$int$double". No args returns the base unchanged.
+inline std::string mangleGeneric(const std::string& base, const std::vector<std::string>& args) {
+    std::string s = base;
+    for (const std::string& a : args) s += "$" + a;
+    return s;
+}
+
 // A type reference, e.g. `void`, `int`, `string[]`, `Dog*`, or a class name.
 // Pointer (`T*`) and reference (`T&`) both mean "share the object" (opt-out of
 // the default value/copy semantics); the distinction is refined later.
@@ -21,6 +29,7 @@ struct TypeRef {
     bool isArray = false;
     bool isPointer = false;  // T*
     bool isRef = false;      // T&
+    std::vector<std::string> typeArgs;  // generic arguments, e.g. Box<int> -> ["int"]
     SourceLocation loc;
 };
 
@@ -90,6 +99,7 @@ struct UnaryExpr : Expr {
 
 struct NewExpr : Expr {
     std::string className;
+    std::vector<std::string> typeArgs;  // generic arguments: new Box<int>(...)
     std::vector<ExprPtr> args;
     std::string location;  // "stack" or "heap"
     std::string region;    // "in region R" target; empty when none
@@ -295,6 +305,7 @@ struct DestructorDecl : MemberDecl {
 struct ClassDecl {
     std::string visibility;
     std::string name;
+    std::vector<std::string> typeParams;  // generic parameters, e.g. Box<T> -> ["T"]
     bool isInterface = false;             // declared with `interface`
     bool isStruct = false;                // declared with `struct` -- value type, no inheritance
     bool isRecord = false;                // declared with `record` -- immutable value type
