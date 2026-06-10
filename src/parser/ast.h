@@ -297,6 +297,7 @@ struct ClassDecl {
     std::string name;
     bool isInterface = false;             // declared with `interface`
     bool isStruct = false;                // declared with `struct` -- value type, no inheritance
+    bool isRecord = false;                // declared with `record` -- immutable value type
     bool isAbstract = false;              // `abstract class` (interfaces are abstract too)
     bool isMovable = false;               // `movable class` -- move discipline
     bool isUnique = false;                // `unique class` -- single live reference

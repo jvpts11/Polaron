@@ -8,6 +8,68 @@ namespace ldp3 {
 
 namespace {
 
+// AST builders used to synthesize a record's primary constructor and equals().
+std::unique_ptr<ast::IdentifierExpr> makeIdent(const std::string& name, SourceLocation loc) {
+    auto e = std::make_unique<ast::IdentifierExpr>();
+    e->loc = loc;
+    e->name = name;
+    return e;
+}
+std::unique_ptr<ast::MemberExpr> makeMember(ast::ExprPtr obj, const std::string& member,
+                                            SourceLocation loc) {
+    auto e = std::make_unique<ast::MemberExpr>();
+    e->loc = loc;
+    e->member = member;
+    e->object = std::move(obj);
+    return e;
+}
+
+// Builds `public method equals(Name other) returns boolean { return this.f0 ==
+// other.f0 && ...; }` for a record's fields (spec 10: auto-generated equals).
+ast::MemberPtr buildRecordEquals(const std::string& typeName,
+                                 const std::vector<ast::Param>& fields, SourceLocation loc) {
+    auto m = std::make_unique<ast::MethodDecl>();
+    m->loc = loc;
+    m->visibility = "public";
+    m->name = "equals";
+    ast::Param p;
+    p.loc = loc;
+    p.type.name = typeName;
+    p.name = "other";
+    m->params.push_back(p);
+    m->returnType.name = "boolean";
+
+    ast::ExprPtr expr;
+    for (const ast::Param& f : fields) {
+        auto cmp = std::make_unique<ast::BinaryExpr>();
+        cmp->loc = loc;
+        cmp->op = "==";
+        cmp->lhs = makeMember(makeIdent("this", loc), f.name, loc);
+        cmp->rhs = makeMember(makeIdent("other", loc), f.name, loc);
+        if (!expr) {
+            expr = std::move(cmp);
+        } else {
+            auto conj = std::make_unique<ast::BinaryExpr>();
+            conj->loc = loc;
+            conj->op = "&&";
+            conj->lhs = std::move(expr);
+            conj->rhs = std::move(cmp);
+            expr = std::move(conj);
+        }
+    }
+    if (!expr) {
+        auto b = std::make_unique<ast::BoolLiteralExpr>();
+        b->loc = loc;
+        b->value = true;
+        expr = std::move(b);
+    }
+    auto ret = std::make_unique<ast::ReturnStmt>();
+    ret->loc = loc;
+    ret->value = std::move(expr);
+    m->body.statements.push_back(std::move(ret));
+    return m;
+}
+
 bool isTypeKeyword(TokenKind k) {
     switch (k) {
         case TokenKind::KwVoid:
@@ -185,6 +247,8 @@ ast::Namespace Parser::parseNamespace() {
             ns.enums.push_back(parseEnum());
         } else if (kind == TokenKind::KwComptime || kind == TokenKind::KwLiteral) {
             ns.literals.push_back(parseLiteral());
+        } else if (kind == TokenKind::KwRecord) {
+            ns.classes.push_back(parseRecord());
         } else {
             ns.classes.push_back(parseClassOrInterface());
         }
@@ -261,6 +325,66 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     expect(TokenKind::LBrace, "'{'");
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
         c.members.push_back(parseMember(c.isInterface));
+    }
+    expect(TokenKind::RBrace, "'}'");
+    return c;
+}
+
+// record Name(params) [implements ...] { methods }. The params are the record's
+// fields; we synthesize a field per param, a primary constructor, and equals()
+// (spec 10). A record is an immutable value type, so it reuses the struct path.
+ast::ClassDecl Parser::parseRecord() {
+    ast::ClassDecl c;
+    c.loc = current().loc;
+    c.visibility = parseVisibilityOpt();
+    expect(TokenKind::KwRecord, "'record'");
+    c.isRecord = true;
+    c.isStruct = true;  // value type, no vtable -> reuses struct codegen
+    c.name = expect(TokenKind::Identifier, "the record name").lexeme;
+    expect(TokenKind::LParen, "'('");
+    std::vector<ast::Param> fields = parseParams();
+    expect(TokenKind::RParen, "')'");
+    if (match(TokenKind::KwImplements)) {
+        do {
+            c.interfaces.push_back(expect(TokenKind::Identifier, "an interface name").lexeme);
+        } while (match(TokenKind::Comma));
+    }
+
+    // A field per parameter (immutable).
+    for (const ast::Param& f : fields) {
+        auto fd = std::make_unique<ast::FieldDecl>();
+        fd->loc = c.loc;
+        fd->visibility = "public";
+        fd->isMutable = false;
+        fd->type = f.type;
+        fd->name = f.name;
+        c.members.push_back(std::move(fd));
+    }
+    // Primary constructor: this.f = f; for each field.
+    {
+        auto ctor = std::make_unique<ast::ConstructorDecl>();
+        ctor->loc = c.loc;
+        ctor->visibility = "public";
+        ctor->params = fields;
+        for (const ast::Param& f : fields) {
+            auto assign = std::make_unique<ast::AssignStmt>();
+            assign->loc = c.loc;
+            assign->target = makeMember(makeIdent("this", c.loc), f.name, c.loc);
+            assign->value = makeIdent(f.name, c.loc);
+            ctor->body.statements.push_back(std::move(assign));
+        }
+        c.members.push_back(std::move(ctor));
+    }
+    c.members.push_back(buildRecordEquals(c.name, fields, c.loc));
+
+    // Body: methods and constants only -- no extra fields (spec 10).
+    expect(TokenKind::LBrace, "'{'");
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        ast::MemberPtr m = parseMember(/*inInterface=*/false);
+        if (dynamic_cast<ast::FieldDecl*>(m.get()) != nullptr) {
+            fail("a record cannot declare fields beyond its primary constructor parameters", m->loc);
+        }
+        c.members.push_back(std::move(m));
     }
     expect(TokenKind::RBrace, "'}'");
     return c;

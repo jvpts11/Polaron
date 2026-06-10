@@ -49,6 +49,7 @@ private:
     ast::Bundle parseBundle();
     ast::Namespace parseNamespace();
     ast::ClassDecl parseClassOrInterface();
+    ast::ClassDecl parseRecord();
     ast::EnumDecl parseEnum();
     ast::LiteralDecl parseLiteral();
     ast::MemberPtr parseMember(bool inInterface);

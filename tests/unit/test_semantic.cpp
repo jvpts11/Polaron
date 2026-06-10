@@ -647,3 +647,27 @@ TEST_CASE("semantic accepts a subtype of an accepted type in a region") {
         " public class Dog extends Animal { public constructor Dog() {} }",
         "region r = itself.allocate(1024).accepts({Animal}); Dog* d = new Dog() in region r;")));
 }
+
+TEST_CASE("semantic accepts a record with fields and a method, plus auto equals") {
+    CHECK(checkSrc(withClass(
+        "public record Point(int x, int y) { public method sum() returns int { return this.x + this.y; } }",
+        "Point p = new Point(1, 2); int s = p.sum(); boolean e = p.equals(p);")));
+}
+
+TEST_CASE("semantic rejects mutating a record field (records are immutable)") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public record Point(int x, int y) {}",
+        "Point p = new Point(1, 2); p.x = 9;")));
+}
+
+TEST_CASE("parser rejects a record with an extra field beyond its parameters") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public record Point(int x, int y) { private int extra; }",
+        "int n = 0;")));
+}
+
+TEST_CASE("parser rejects a record that extends a type") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public record Point(int x) extends Object {}",
+        "int n = 0;")));
+}

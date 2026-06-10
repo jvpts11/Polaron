@@ -27,6 +27,7 @@ TokenKind keywordKind(std::string_view text) {
         {"class", TokenKind::KwClass},
         {"interface", TokenKind::KwInterface},
         {"struct", TokenKind::KwStruct},
+        {"record", TokenKind::KwRecord},
         {"enum", TokenKind::KwEnum},
         {"method", TokenKind::KwMethod},
         {"constructor", TokenKind::KwConstructor},
