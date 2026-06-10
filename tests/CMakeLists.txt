@@ -212,12 +212,13 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # M8: interface + abstract class + override + virtual dispatch.
+        # M10: the closing north-star - enum + interface + abstract + override +
+        # virtual dispatch, all in one program.
         add_test(NAME codegen_shapes_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/shapes.ldp3"
-            "-DEXPECTED=Square area: 16 Circle area: 12"
+            "-DEXPECTED=Square (kind 0) area: 16 Circle (kind 1) area: 12"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

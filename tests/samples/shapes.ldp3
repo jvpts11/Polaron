@@ -1,13 +1,19 @@
 program Shapes;
 
-// Release 0.1 polymorphism north-star: an interface, an abstract class, two
-// concrete subclasses with overrides, dispatched virtually through a base-typed
-// variable. Expected output:
-//   Square area: 16
-//   Circle area: 12
+// Release 0.1 closing north-star: brings the whole OOP core together in one
+// program -- an enum, an interface, an abstract class, inheritance, override,
+// virtual dispatch through a base-typed variable, and string interpolation.
+// Expected output:
+//   Square (kind 0) area: 16
+//   Circle (kind 1) area: 12
 
 public bundle main {
     public namespace geo {
+
+        public enum ShapeKind {
+            SQUARE,
+            CIRCLE
+        }
 
         public interface Drawable {
             method describe() returns void;
@@ -15,6 +21,7 @@ public bundle main {
 
         public abstract class Shape implements Drawable {
             public abstract method area() returns int;
+            public abstract method kind() returns ShapeKind;
         }
 
         public class Square extends Shape {
@@ -28,8 +35,12 @@ public bundle main {
                 return this.side * this.side;
             }
 
+            public override method kind() returns ShapeKind {
+                return ShapeKind.SQUARE;
+            }
+
             public override method describe() returns void {
-                System.IO.println($"Square area: {this.area()}");
+                System.IO.println($"Square (kind {this.kind()}) area: {this.area()}");
                 return;
             }
         }
@@ -45,8 +56,12 @@ public bundle main {
                 return 3 * this.radius * this.radius;
             }
 
+            public override method kind() returns ShapeKind {
+                return ShapeKind.CIRCLE;
+            }
+
             public override method describe() returns void {
-                System.IO.println($"Circle area: {this.area()}");
+                System.IO.println($"Circle (kind {this.kind()}) area: {this.area()}");
                 return;
             }
         }
@@ -55,8 +70,8 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Shape s1 = new Square(4);   // static type Shape, dynamic type Square
                 Shape s2 = new Circle(2);
-                s1.describe();              // -> Square area: 16
-                s2.describe();              // -> Circle area: 12
+                s1.describe();              // -> Square (kind 0) area: 16
+                s2.describe();              // -> Circle (kind 1) area: 12
                 return;
             }
         }
