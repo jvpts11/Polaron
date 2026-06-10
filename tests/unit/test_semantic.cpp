@@ -705,3 +705,13 @@ TEST_CASE("parser keeps a < b as a comparison, not a generic declaration") {
         "public static method main(string[] args) returns void {"
         " int a = 1; int b = 2; boolean c = a < b; }")));
 }
+
+TEST_CASE("semantic accepts operator overloading and types a + b as its return") {
+    CHECK(checkSrc(withClass(
+        "public class Vec { public mutable int x;"
+        " public constructor Vec(int x) { this.x = x; }"
+        " public operator + (Vec o) returns Vec { return new Vec(this.x + o.x) on heap; }"
+        " public operator == (Vec o) returns boolean { return this.x == o.x; } }",
+        "Vec a = new Vec(1) on heap; Vec b = new Vec(2) on heap;"
+        " Vec c = a + b; boolean eq = a == b;")));
+}

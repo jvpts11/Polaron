@@ -482,8 +482,29 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     if (check(TokenKind::KwDestructor)) {
         return parseDestructor(std::move(visibility));
     }
+    if (check(TokenKind::KwOperator)) {
+        return parseOperator(std::move(visibility));
+    }
     // Otherwise it is a field:  <type> <name> ;
     return parseField(std::move(visibility), isStatic, isMutable);
+}
+
+// `operator <op> (params) returns T { body }` (spec 6.5). Modeled as a method
+// named "operator<op>" (e.g. "operator+"), reusing the whole method pipeline.
+std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
+    auto m = std::make_unique<ast::MethodDecl>();
+    m->loc = current().loc;
+    m->visibility = std::move(visibility);
+    expect(TokenKind::KwOperator, "'operator'");
+    const Token op = advance();  // the operator symbol token (+, -, ==, <, ...)
+    m->name = "operator" + op.lexeme;
+    expect(TokenKind::LParen, "'('");
+    m->params = parseParams();
+    expect(TokenKind::RParen, "')'");
+    expect(TokenKind::KwReturns, "'returns'");
+    m->returnType = parseTypeRef();
+    m->body = parseBlock();
+    return m;
 }
 
 std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, bool isStatic,

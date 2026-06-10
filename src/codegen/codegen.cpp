@@ -410,6 +410,9 @@ struct CodeGenerator::Impl {
         }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
             const std::string& op = bin->op;
+            // Operator overloading: result type is the operator method's return type.
+            const std::string oowner = methodOwner(baseType(typeName(*bin->lhs)), "operator" + op);
+            if (!oowner.empty()) return classes[oowner].methodReturnType["operator" + op];
             if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" ||
                 op == "&&" || op == "||") {
                 return "boolean";
@@ -796,6 +799,21 @@ struct CodeGenerator::Impl {
     llvm::Value* emitBinary(const ast::BinaryExpr& bin) {
         if (bin.op == "&&" || bin.op == "||") return emitShortCircuit(bin);
         const std::string lt = typeName(*bin.lhs);
+        // Operator overloading: a OP b -> a.operator OP(b) when a's class defines it.
+        {
+            const std::string owner = methodOwner(baseType(lt), "operator" + bin.op);
+            auto fnit = owner.empty() ? functions.end()
+                                      : functions.find(owner + ".operator" + bin.op);
+            if (fnit != functions.end()) {
+                llvm::Value* recv = emitExpr(*bin.lhs);
+                llvm::Value* arg = emitExpr(*bin.rhs);
+                if (recv == nullptr || arg == nullptr) return nullptr;
+                if (fnit->second->arg_size() >= 2) {
+                    arg = coerceToType(arg, fnit->second->getArg(1)->getType());
+                }
+                return builder.CreateCall(fnit->second, {recv, arg});
+            }
+        }
         const std::string rt = typeName(*bin.rhs);
         llvm::Value* l = emitExpr(*bin.lhs);
         llvm::Value* r = emitExpr(*bin.rhs);

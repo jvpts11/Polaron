@@ -1,0 +1,30 @@
+program Operators;
+
+public bundle main {
+    public namespace app {
+
+        public class Vec3 {
+            public mutable int x;
+            public mutable int y;
+            public mutable int z;
+            public constructor Vec3(int x, int y, int z) {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+            }
+            public operator + (Vec3 other) returns Vec3 {
+                return new Vec3(this.x + other.x, this.y + other.y, this.z + other.z) on heap;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Vec3 a = new Vec3(1, 2, 3) on heap;
+                Vec3 b = new Vec3(10, 20, 30) on heap;
+                Vec3 c = a + b;                       // a.operator+(b)
+                System.IO.println($"c = {c.x} {c.y} {c.z}");   // c = 11 22 33
+                return;
+            }
+        }
+    }
+}

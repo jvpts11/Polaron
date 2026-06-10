@@ -785,6 +785,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string lt = typeOf(*bin->lhs);
         const std::string rt = typeOf(*bin->rhs);
         const std::string& op = bin->op;
+        // Operator overloading: a OP b where a's class defines `operator OP` (spec 6.5).
+        if (const MethodInfo* om = findMethod(baseType(lt), "operator" + op)) {
+            return om->returnType;
+        }
         if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
             if ((!lt.empty() && !isNumeric(lt)) || (!rt.empty() && !isNumeric(rt))) {
                 error("operator '" + op + "' requires numeric operands", bin->loc);

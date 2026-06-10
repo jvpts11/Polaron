@@ -30,6 +30,7 @@ TokenKind keywordKind(std::string_view text) {
         {"record", TokenKind::KwRecord},
         {"enum", TokenKind::KwEnum},
         {"method", TokenKind::KwMethod},
+        {"operator", TokenKind::KwOperator},
         {"constructor", TokenKind::KwConstructor},
         {"destructor", TokenKind::KwDestructor},
         {"returns", TokenKind::KwReturns},

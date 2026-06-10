@@ -59,6 +59,7 @@ private:
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable);
     std::unique_ptr<ast::ConstructorDecl> parseConstructor(std::string visibility);
     std::unique_ptr<ast::DestructorDecl> parseDestructor(std::string visibility);
+    std::unique_ptr<ast::MethodDecl> parseOperator(std::string visibility);
     ast::ExprPtr parseNew();
     std::vector<ast::Param> parseParams();
     ast::TypeRef parseTypeRef();
