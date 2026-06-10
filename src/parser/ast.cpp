@@ -236,7 +236,7 @@ void DestructorDecl::dump(std::string& out, int indent) const {
 }
 
 void ClassDecl::dump(std::string& out, int indent) const {
-    std::string head = (isInterface ? "Interface '" : "Class '") + name + "'";
+    std::string head = (isInterface ? "Interface '" : isStruct ? "Struct '" : "Class '") + name + "'";
     if (!visibility.empty()) head += " " + visibility;
     if (isAbstract && !isInterface) head += " abstract";
     if (isMovable) head += " movable";

@@ -46,6 +46,7 @@ struct ClassInfo {
     std::vector<std::string> interfaces;
     bool isAbstract = false;
     bool isInterface = false;
+    bool isStruct = false;   // value type, no inheritance
     bool isMovable = false;  // move discipline
     bool isUnique = false;   // single-live-reference discipline
     bool hasConstructor = false;

@@ -206,11 +206,15 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     if (match(TokenKind::KwInterface)) {
         c.isInterface = true;
         c.isAbstract = true;  // interfaces are abstract by nature
+    } else if (match(TokenKind::KwStruct)) {
+        c.isStruct = true;  // value type, no inheritance
     } else {
-        expect(TokenKind::KwClass, "'class' or 'interface'");
+        expect(TokenKind::KwClass, "'class', 'struct' or 'interface'");
     }
     c.name = expect(TokenKind::Identifier, "the type name").lexeme;
     if (match(TokenKind::KwExtends)) {
+        if (c.isStruct) fail("a struct cannot extend another type (structs have no inheritance)",
+                             c.loc);
         c.superclass = expect(TokenKind::Identifier, "a superclass name").lexeme;
     }
     if (match(TokenKind::KwImplements)) {

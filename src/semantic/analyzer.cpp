@@ -107,6 +107,10 @@ void SemanticAnalyzer::validateHierarchy() {
                 error("class '" + name + "' extends interface '" + info.superclass +
                           "' (use 'implements')",
                       {});
+            } else if (sup->isStruct) {
+                error("class '" + name + "' extends struct '" + info.superclass +
+                          "' (structs have no inheritance)",
+                      {});
             }
         }
         for (const std::string& iface : info.interfaces) {
@@ -239,6 +243,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 info.interfaces = cls.interfaces;
                 info.isAbstract = cls.isAbstract;
                 info.isInterface = cls.isInterface;
+                info.isStruct = cls.isStruct;
                 info.isMovable = cls.isMovable;
                 info.isUnique = cls.isUnique;
                 for (const ast::MemberPtr& member : cls.members) {

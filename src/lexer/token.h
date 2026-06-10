@@ -32,7 +32,7 @@ enum class TokenKind : std::uint8_t {
 
     // Keywords -- structure
     KwProgram, KwBundle, KwNamespace,
-    KwClass, KwInterface, KwEnum,
+    KwClass, KwInterface, KwStruct, KwEnum,
     KwMethod, KwConstructor, KwDestructor,
     KwReturns, KwReturn,
 

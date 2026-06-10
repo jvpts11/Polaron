@@ -1,0 +1,30 @@
+program Structs;
+
+public bundle main {
+    public namespace app {
+
+        public struct Point {
+            public mutable int x;
+            public mutable int y;
+            public constructor Point(int x, int y) {
+                this.x = x;
+                this.y = y;
+            }
+            public method sum() returns int {
+                return this.x + this.y;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Point p = new Point(3, 4);
+                System.IO.println($"sum = {p.sum()}");           // 7
+
+                Point q = p;          // value copy -> independent
+                q.x = 100;            // mutate only the copy
+                System.IO.println($"p.x = {p.x} q.x = {q.x}");   // p.x = 3 q.x = 100
+                return;
+            }
+        }
+    }
+}

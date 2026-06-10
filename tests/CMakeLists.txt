@@ -340,6 +340,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=a[0] = 10 b[0] = 999"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # struct: value type with fields/constructor/methods; copy is independent.
+        add_test(NAME codegen_structs_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/structs.ldp3"
+            "-DEXPECTED=sum = 7 p.x = 3 q.x = 100"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

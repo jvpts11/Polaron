@@ -531,3 +531,24 @@ TEST_CASE("semantic rejects super(args) outside the first statement") {
         " public constructor Dog(int barks) { this.barks = barks; super(4); } }",
         "Dog d = new Dog(3);")));
 }
+
+TEST_CASE("semantic accepts a struct value type with a constructor and method") {
+    CHECK(checkSrc(withClass(
+        "public struct Point { public mutable int x; public mutable int y;"
+        " public constructor Point(int x, int y) { this.x = x; this.y = y; } }",
+        "Point p = new Point(1, 2); int s = p.x + p.y;")));
+}
+
+TEST_CASE("parser rejects a struct that extends another type") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class Base { public constructor Base() {} }"
+        " public struct Bad extends Base { public mutable int x; }",
+        "int n = 0;")));
+}
+
+TEST_CASE("semantic rejects a class that extends a struct") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public struct S { public mutable int x; }"
+        " public class C extends S { public constructor C() {} }",
+        "int n = 0;")));
+}

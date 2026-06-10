@@ -19,6 +19,7 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwNamespace:   return "KwNamespace";
         case TokenKind::KwClass:       return "KwClass";
         case TokenKind::KwInterface:   return "KwInterface";
+        case TokenKind::KwStruct:      return "KwStruct";
         case TokenKind::KwEnum:        return "KwEnum";
         case TokenKind::KwMethod:      return "KwMethod";
         case TokenKind::KwConstructor: return "KwConstructor";
