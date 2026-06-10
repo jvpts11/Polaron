@@ -216,10 +216,18 @@ void ClassDecl::dump(std::string& out, int indent) const {
     for (const auto& m : members) m->dump(out, indent + 1);
 }
 
+void EnumDecl::dump(std::string& out, int indent) const {
+    std::string head = "Enum '" + name + "'";
+    if (!visibility.empty()) head += " " + visibility;
+    line(out, indent, head);
+    for (const auto& c : constants) line(out, indent + 1, "Constant '" + c + "'");
+}
+
 void Namespace::dump(std::string& out, int indent) const {
     std::string head = "Namespace '" + name + "'";
     if (!visibility.empty()) head += " " + visibility;
     line(out, indent, head);
+    for (const auto& e : enums) e.dump(out, indent + 1);
     for (const auto& c : classes) c.dump(out, indent + 1);
 }
 

@@ -243,10 +243,21 @@ struct ClassDecl {
     void dump(std::string& out, int indent) const;
 };
 
+// A simple (int-style) enum: a named set of constants. Java-style enums (with
+// fields, constructors and methods) come once float/double land.
+struct EnumDecl {
+    std::string visibility;
+    std::string name;
+    std::vector<std::string> constants;  // in declaration order; ordinal = index
+    SourceLocation loc;
+    void dump(std::string& out, int indent) const;
+};
+
 struct Namespace {
     std::string visibility;
     std::string name;
     std::vector<ClassDecl> classes;
+    std::vector<EnumDecl> enums;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

@@ -1,0 +1,29 @@
+program Enums;
+
+// M9: simple (int-style) enum. Constants are ordinals: RED=0, GREEN=1, BLUE=2.
+// Expected output:
+//   is red? 1
+//   blue code = 2
+
+public bundle main {
+    public namespace app {
+
+        public enum Color {
+            RED,
+            GREEN,
+            BLUE
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Color c = Color.RED;
+                boolean isRed = c == Color.RED;
+                System.IO.println($"is red? {isRed}");
+
+                Color other = Color.BLUE;
+                System.IO.println($"blue code = {other}");
+                return;
+            }
+        }
+    }
+}

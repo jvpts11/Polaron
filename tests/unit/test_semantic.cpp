@@ -370,3 +370,29 @@ TEST_CASE("semantic accepts initializing an immutable field in the constructor")
         " public method get() returns int { return this.v; } }",
         "Box b = new Box(7);")));
 }
+
+// ---- Enums (M9) ----
+
+TEST_CASE("semantic accepts an enum constant and comparison") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public enum Color { RED, GREEN, BLUE }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Color c = Color.RED; boolean x = c == Color.BLUE; } } } }"));
+}
+
+TEST_CASE("semantic rejects an unknown enum constant") {
+    CHECK_FALSE(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public enum Color { RED, GREEN }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Color c = Color.PURPLE; } } } }"));
+}
+
+TEST_CASE("semantic rejects mixing an enum with an int") {
+    CHECK_FALSE(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public enum Color { RED, GREEN }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " int x = Color.RED; } } } }"));
+}

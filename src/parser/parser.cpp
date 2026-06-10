@@ -161,10 +161,36 @@ ast::Namespace Parser::parseNamespace() {
     ns.name = parseDottedName();
     expect(TokenKind::LBrace, "'{'");
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
-        ns.classes.push_back(parseClassOrInterface());
+        // Peek past an optional visibility modifier to tell enums from classes.
+        TokenKind kind = current().kind;
+        if (kind == TokenKind::KwPublic || kind == TokenKind::KwPrivate ||
+            kind == TokenKind::KwProtected || kind == TokenKind::KwInternal) {
+            kind = peek(1).kind;
+        }
+        if (kind == TokenKind::KwEnum) {
+            ns.enums.push_back(parseEnum());
+        } else {
+            ns.classes.push_back(parseClassOrInterface());
+        }
     }
     expect(TokenKind::RBrace, "'}'");
     return ns;
+}
+
+ast::EnumDecl Parser::parseEnum() {
+    ast::EnumDecl e;
+    e.loc = current().loc;
+    e.visibility = parseVisibilityOpt();
+    expect(TokenKind::KwEnum, "'enum'");
+    e.name = expect(TokenKind::Identifier, "the enum name").lexeme;
+    expect(TokenKind::LBrace, "'{'");
+    if (!check(TokenKind::RBrace)) {
+        do {
+            e.constants.push_back(expect(TokenKind::Identifier, "an enum constant").lexeme);
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RBrace, "'}'");
+    return e;
 }
 
 ast::ClassDecl Parser::parseClassOrInterface() {

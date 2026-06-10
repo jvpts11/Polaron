@@ -226,6 +226,20 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
     }
 }
 
+void SemanticAnalyzer::registerEnums(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::EnumDecl& en : ns.enums) {
+                if (enums_.count(en.name) > 0 || classes_.count(en.name) > 0) {
+                    error("redeclaration of type '" + en.name + "'", en.loc);
+                    continue;
+                }
+                enums_[en.name] = en.constants;
+            }
+        }
+    }
+}
+
 // ---- Pass 2: locate the single entry point (spec section 2.9). ----
 void SemanticAnalyzer::findEntryPoint(const ast::Program& program) {
     std::vector<EntryPoint> candidates;
@@ -309,6 +323,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
 
 bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerClasses(program);
+    registerEnums(program);
     validateHierarchy();
     // If the hierarchy itself is broken (cycle, missing super), stop: walking it
     // recursively below could otherwise loop forever.
@@ -614,8 +629,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(&expr)) {
         for (const auto& e : is->exprs) {
             const std::string t = typeOf(*e);
-            if (!t.empty() && t != "int" && t != "char" && t != "boolean") {
-                error("string interpolation can only print int, char or boolean values, "
+            const bool printable =
+                t.empty() || t == "int" || t == "char" || t == "boolean" || enums_.count(t) > 0;
+            if (!printable) {
+                error("string interpolation can only print int, char, boolean or enum values, "
                       "got '" + t + "'",
                       e->loc);
             }
@@ -692,6 +709,21 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+        // Enum constant access: EnumName.CONSTANT (when the receiver names an enum,
+        // not a variable).
+        if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+            if (lookupLocal(objId->name) == nullptr) {
+                auto eit = enums_.find(objId->name);
+                if (eit != enums_.end()) {
+                    if (std::find(eit->second.begin(), eit->second.end(), mem->member) ==
+                        eit->second.end()) {
+                        error("enum '" + objId->name + "' has no constant '" + mem->member + "'",
+                              mem->loc);
+                    }
+                    return objId->name;
+                }
+            }
+        }
         const std::string objType = typeOf(*mem->object);
         if (objType.empty()) return "";
         if (const FieldInfo* f = findField(objType, mem->member)) return f->type;

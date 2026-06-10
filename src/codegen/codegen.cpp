@@ -122,6 +122,7 @@ struct CodeGenerator::Impl {
     llvm::IRBuilder<> builder;
 
     std::unordered_map<std::string, ClassLayout> classes;
+    std::unordered_map<std::string, std::vector<std::string>> enums;  // name -> constants (ordinals)
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
@@ -297,6 +298,11 @@ struct CodeGenerator::Impl {
             return "int";
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                if (locals.find(objId->name) == locals.end() && enums.count(objId->name) > 0) {
+                    return objId->name;  // EnumName.CONSTANT -> the enum type
+                }
+            }
             auto cit = classes.find(typeName(*mem->object));
             if (cit != classes.end()) {
                 auto ft = cit->second.fieldType.find(mem->member);
@@ -450,6 +456,19 @@ struct CodeGenerator::Impl {
             return builder.CreateLoad(llvmType(it->second.type), it->second.storage, id->name);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            // Enum constant -> its ordinal (i32).
+            if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                if (locals.find(objId->name) == locals.end()) {
+                    auto eit = enums.find(objId->name);
+                    if (eit != enums.end()) {
+                        auto pos = std::find(eit->second.begin(), eit->second.end(), mem->member);
+                        const int ord = pos == eit->second.end()
+                                            ? 0
+                                            : static_cast<int>(pos - eit->second.begin());
+                        return builder.getInt32(static_cast<std::uint32_t>(ord));
+                    }
+                }
+            }
             llvm::Value* fieldPtr = emitLValue(*mem);
             if (fieldPtr == nullptr) return nullptr;
             return builder.CreateLoad(llvmType(typeName(*mem)), fieldPtr, mem->member);
@@ -864,6 +883,12 @@ struct CodeGenerator::Impl {
     // ---- Top-level generation ----
 
     void declareClasses() {
+        // Pass 0: register enums (each lowers to i32; constants are ordinals).
+        for (const ast::Bundle& bundle : program.bundles) {
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::EnumDecl& en : ns.enums) enums[en.name] = en.constants;
+            }
+        }
         // Pass 1: create struct types and record declaration, superclass,
         // interfaces, flags and own members. All names registered first.
         for (const ast::Bundle& bundle : program.bundles) {
