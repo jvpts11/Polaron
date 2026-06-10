@@ -1,0 +1,37 @@
+program Pointers;
+
+// Fase A1: pointers share an instance. A pointer (T*) and the address-of (&)
+// let two names see and mutate the same object.
+// Expected output: b=5 p=5
+
+public bundle main {
+    public namespace app {
+
+        public class Box {
+            public mutable int value;
+
+            public constructor Box() {
+                this.value = 0;
+            }
+
+            public method set(int v) returns void {
+                this.value = v;
+                return;
+            }
+
+            public method get() returns int {
+                return this.value;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box b = new Box() on stack;
+                Box* p = &b;        // p shares b (no copy)
+                p.set(5);           // mutate through the pointer
+                System.IO.println($"b={b.get()} p={p.get()}");   // both 5
+                return;
+            }
+        }
+    }
+}

@@ -11,7 +11,7 @@ void line(std::string& out, int indent, const std::string& text) {
 }
 
 std::string typeText(const TypeRef& t) {
-    return t.name + (t.isArray ? "[]" : "");
+    return t.name + (t.isArray ? "[]" : "") + (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
 }
 
 }  // namespace

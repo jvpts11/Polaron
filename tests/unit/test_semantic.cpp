@@ -396,3 +396,20 @@ TEST_CASE("semantic rejects mixing an enum with an int") {
         " public class Main { public static method main(string[] args) returns void {"
         " int x = Color.RED; } } } }"));
 }
+
+// ---- Pointers / references (0.2 Fase A1) ----
+
+TEST_CASE("semantic accepts a pointer, address-of and member access through it") {
+    CHECK(checkSrc(withClass(
+        "public class Box { public mutable int v;"
+        " public method get() returns int { return this.v; } }",
+        "Box b = new Box() on stack; Box* p = &b; int x = p.get();")));
+}
+
+TEST_CASE("semantic accepts an upcast pointer (Square* to Shape*)") {
+    CHECK(checkSrc(withClass(
+        "public abstract class Shape { public abstract method area() returns int; }"
+        " public class Square extends Shape {"
+        " public override method area() returns int { return 1; } }",
+        "Square sq = new Square() on stack; Shape* s = &sq; int a = s.area();")));
+}

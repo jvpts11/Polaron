@@ -15,6 +15,16 @@ bool isArrayType(const std::string& t) {
 std::string elementOf(const std::string& t) {
     return isArrayType(t) ? t.substr(0, t.size() - 2) : t;
 }
+// Pointer/reference types end with '*' or '&' (e.g. "Dog*", "Dog&").
+bool isRefType(const std::string& t) {
+    return !t.empty() && (t.back() == '*' || t.back() == '&');
+}
+std::string baseType(const std::string& t) {
+    return isRefType(t) ? t.substr(0, t.size() - 1) : t;
+}
+std::string typeRefStr(const ast::TypeRef& t) {
+    return t.name + (t.isArray ? "[]" : "") + (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
+}
 }  // namespace
 
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
@@ -28,7 +38,7 @@ const ClassInfo* SemanticAnalyzer::lookupClass(const std::string& name) const {
 
 const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
                                              const std::string& field) const {
-    const ClassInfo* c = lookupClass(className);
+    const ClassInfo* c = lookupClass(baseType(className));  // see through T* / T&
     while (c != nullptr) {
         auto it = c->fields.find(field);
         if (it != c->fields.end()) return &it->second;
@@ -40,7 +50,7 @@ const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
 
 const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
                                                const std::string& method) const {
-    const ClassInfo* c = lookupClass(className);
+    const ClassInfo* c = lookupClass(baseType(className));  // see through T* / T&
     while (c != nullptr) {
         auto it = c->methods.find(method);
         if (it != c->methods.end()) return &it->second;
@@ -56,6 +66,9 @@ const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
 
 bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& super) const {
     if (sub == super) return true;
+    // Pointer/reference compatibility follows the pointee (T*, T& and T mix
+    // freely for now; the strict value-vs-reference rules land with deep copy).
+    if (isRefType(sub) || isRefType(super)) return isSubtype(baseType(sub), baseType(super));
     const ClassInfo* c = lookupClass(sub);
     if (c == nullptr) return false;
     if (!c->superclass.empty() && isSubtype(c->superclass, super)) return true;
@@ -209,11 +222,10 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 info.isInterface = cls.isInterface;
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
-                        info.fields[f->name] =
-                            FieldInfo{f->type.name + (f->type.isArray ? "[]" : ""), f->isMutable};
+                        info.fields[f->name] = FieldInfo{typeRefStr(f->type), f->isMutable};
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         info.methods[m->name] =
-                            MethodInfo{m->returnType.name, m->isStatic, m->isAbstract};
+                            MethodInfo{typeRefStr(m->returnType), m->isStatic, m->isAbstract};
                     } else if (dynamic_cast<const ast::ConstructorDecl*>(member.get()) != nullptr) {
                         info.hasConstructor = true;
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) != nullptr) {
@@ -289,8 +301,9 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
         const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
         if (f == nullptr || !f->init) continue;
         const std::string initType = typeOf(*f->init);
-        if (!initType.empty() && initType != f->type.name) {
-            error("cannot initialize field '" + f->name + "' of type '" + f->type.name +
+        const std::string ft = typeRefStr(f->type);
+        if (!initType.empty() && !isSubtype(initType, ft)) {
+            error("cannot initialize field '" + f->name + "' of type '" + ft +
                       "' with a value of type '" + initType + "'",
                   f->loc);
         }
@@ -342,8 +355,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     inConstructor_ = inConstructor;
     pushScope();
     for (const ast::Param& p : params) {
-        // params immutable by default
-        declareLocal(p.name, LocalVar{p.type.name + (p.type.isArray ? "[]" : ""), false});
+        declareLocal(p.name, LocalVar{typeRefStr(p.type), false});  // params immutable by default
     }
     for (const auto& stmt : body.statements) {
         analyzeStatement(*stmt);
@@ -454,8 +466,7 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, SourceLocation
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
         const std::string initType = typeOf(*vd->init);
-        const std::string declType =
-            vd->isVar ? initType : (vd->type.name + (vd->type.isArray ? "[]" : ""));
+        const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);
         if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType)) {
             error("cannot initialize variable '" + vd->name + "' of type '" + declType +
                       "' with a value of type '" + initType + "'",
@@ -549,6 +560,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
 
     if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
         const std::string t = typeOf(*un->operand);
+        if (un->op == "&") {
+            return t.empty() ? std::string() : t + "*";  // address-of: T -> T*
+        }
         if (un->op == "!") {
             if (!t.empty() && t != "boolean") error("unary '!' requires a boolean operand", un->loc);
             return "boolean";

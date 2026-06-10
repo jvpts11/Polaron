@@ -74,9 +74,17 @@ bool isArrayType(const std::string& t) {
     return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;
 }
 
-// The LDP3 type name of a declaration, including the array marker.
+// Pointer/reference types end with '*' or '&'; both lower to a plain pointer.
+bool isRefType(const std::string& t) {
+    return !t.empty() && (t.back() == '*' || t.back() == '&');
+}
+std::string baseType(const std::string& t) {
+    return isRefType(t) ? t.substr(0, t.size() - 1) : t;
+}
+
+// The LDP3 type name of a declaration, including array / pointer / ref markers.
 std::string typeRefName(const ast::TypeRef& t) {
-    return t.name + (t.isArray ? "[]" : "");
+    return t.name + (t.isArray ? "[]" : "") + (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
 }
 
 // Layout of a class: its LLVM struct, field indices/types, and method returns.
@@ -139,10 +147,10 @@ struct CodeGenerator::Impl {
         errors.push_back(CodegenError{std::move(message), loc});
     }
 
-    // int/boolean/char -> i32; a class or array -> opaque pointer; void -> void.
+    // int/boolean/char/enum -> i32; class, array, pointer, ref -> opaque pointer.
     llvm::Type* llvmType(const std::string& t) {
         if (t == "void") return builder.getVoidTy();
-        if (isArrayType(t)) return builder.getPtrTy();
+        if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (classes.count(t) > 0) return builder.getPtrTy();
         return builder.getInt32Ty();
     }
@@ -159,7 +167,7 @@ struct CodeGenerator::Impl {
 
     // The class that defines `method`, searching up the superclass chain ("" if none).
     std::string methodOwner(const std::string& className, const std::string& method) {
-        std::string cn = className;
+        std::string cn = baseType(className);  // see through T* / T&
         while (!cn.empty()) {
             auto it = classes.find(cn);
             if (it == classes.end()) break;
@@ -267,6 +275,7 @@ struct CodeGenerator::Impl {
             return it == locals.end() ? std::string("int") : it->second.type;
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
+            if (un->op == "&") return typeName(*un->operand) + "*";  // address-of
             return un->op == "!" ? "boolean" : "int";
         }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
@@ -303,7 +312,7 @@ struct CodeGenerator::Impl {
                     return objId->name;  // EnumName.CONSTANT -> the enum type
                 }
             }
-            auto cit = classes.find(typeName(*mem->object));
+            auto cit = classes.find(baseType(typeName(*mem->object)));
             if (cit != classes.end()) {
                 auto ft = cit->second.fieldType.find(mem->member);
                 if (ft != cit->second.fieldType.end()) return ft->second;
@@ -408,7 +417,7 @@ struct CodeGenerator::Impl {
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
             llvm::Value* objPtr = emitObjectPtr(*mem->object);
             if (objPtr == nullptr) return nullptr;
-            auto cit = classes.find(typeName(*mem->object));
+            auto cit = classes.find(baseType(typeName(*mem->object)));  // see through T* / T&
             if (cit == classes.end()) {
                 error("no such field '" + mem->member + "'", mem->loc);
                 return nullptr;
@@ -474,6 +483,7 @@ struct CodeGenerator::Impl {
             return builder.CreateLoad(llvmType(typeName(*mem)), fieldPtr, mem->member);
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
+            if (un->op == "&") return emitObjectPtr(*un->operand);  // address-of: the object pointer
             llvm::Value* v = emitExpr(*un->operand);
             if (v == nullptr) return nullptr;
             if (un->op == "-") return builder.CreateNeg(v);
@@ -664,7 +674,7 @@ struct CodeGenerator::Impl {
             }
             // Virtual dispatch: if the static type is polymorphic and the method
             // has a vtable slot, call indirectly through the object's vtable.
-            const std::string st = typeName(*mem->object);
+            const std::string st = baseType(typeName(*mem->object));  // see through T* / T&
             auto stit = classes.find(st);
             if (stit != classes.end() && stit->second.hasVtable) {
                 const int slot = slotIndex(st, mem->member);

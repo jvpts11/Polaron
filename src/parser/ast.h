@@ -13,10 +13,14 @@
 // statements the hello-world walking skeleton needs.
 namespace ldp3::ast {
 
-// A type reference, e.g. `void`, `int`, `string[]`, or a class name.
+// A type reference, e.g. `void`, `int`, `string[]`, `Dog*`, or a class name.
+// Pointer (`T*`) and reference (`T&`) both mean "share the object" (opt-out of
+// the default value/copy semantics); the distinction is refined later.
 struct TypeRef {
     std::string name;
     bool isArray = false;
+    bool isPointer = false;  // T*
+    bool isRef = false;      // T&
     SourceLocation loc;
 };
 

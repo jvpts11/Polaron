@@ -368,6 +368,12 @@ ast::TypeRef Parser::parseTypeRef() {
         expect(TokenKind::RBracket, "']'");
         t.isArray = true;
     }
+    // Pointer / reference: share the object instead of copying it.
+    if (match(TokenKind::Star)) {
+        t.isPointer = true;
+    } else if (match(TokenKind::Amp)) {
+        t.isRef = true;
+    }
     return t;
 }
 
@@ -410,10 +416,18 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return del;
     }
+    // A class-typed local: `ClassName name`, `ClassName* p`, `ClassName& r`,
+    // or `ClassName[] a` (the receiver of a member access starts with '.', so it
+    // never matches these shapes).
+    const bool classVarDecl =
+        check(TokenKind::Identifier) &&
+        (peek(1).kind == TokenKind::Identifier ||
+         (peek(1).kind == TokenKind::Star && peek(2).kind == TokenKind::Identifier) ||
+         (peek(1).kind == TokenKind::Amp && peek(2).kind == TokenKind::Identifier) ||
+         (peek(1).kind == TokenKind::LBracket && peek(2).kind == TokenKind::RBracket &&
+          peek(3).kind == TokenKind::Identifier));
     if (check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
-        isTypeKeyword(current().kind) ||
-        (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Identifier)) {
-        // The last case is `ClassName name = ...` (a class-typed local).
+        isTypeKeyword(current().kind) || classVarDecl) {
         return parseVarDecl();
     }
     return parseExprStatement();
@@ -595,7 +609,8 @@ ast::ExprPtr Parser::parseBinary(int minPrec) {
 }
 
 ast::ExprPtr Parser::parseUnary() {
-    if (check(TokenKind::Minus) || check(TokenKind::Bang)) {
+    // Prefix '&' is address-of (share the object); '-' negation; '!' logical not.
+    if (check(TokenKind::Minus) || check(TokenKind::Bang) || check(TokenKind::Amp)) {
         const Token op = advance();
         auto un = std::make_unique<ast::UnaryExpr>();
         un->loc = op.loc;
