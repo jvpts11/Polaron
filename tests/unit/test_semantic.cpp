@@ -738,3 +738,29 @@ TEST_CASE("semantic accepts operator overloading and types a + b as its return")
         "Vec a = new Vec(1) on heap; Vec b = new Vec(2) on heap;"
         " Vec c = a + b; boolean eq = a == b;")));
 }
+
+namespace {
+// `importLine` after the bundle's `{`. A Widget lives in namespace `lib`; Main
+// in namespace `app` uses it -- visible only with an import.
+std::string crossNs(const std::string& importLine) {
+    return "program P; public bundle b { " + importLine +
+           " public namespace lib { public class Widget { public constructor Widget() {} } }"
+           " public namespace app { public class Main {"
+           " public static method main(string[] args) returns void {"
+           " Widget w = new Widget(); } } } }";
+}
+}  // namespace
+
+TEST_CASE("semantic rejects a type from another namespace without an import") {
+    CHECK_FALSE(checkSrc(crossNs("")));
+}
+
+TEST_CASE("semantic accepts a type from another namespace when imported") {
+    CHECK(checkSrc(crossNs("import lib.Widget;")));
+}
+
+TEST_CASE("semantic allows a type from the same namespace without an import") {
+    CHECK(checkSrc(withClass(
+        "public class Widget { public constructor Widget() {} }",
+        "Widget w = new Widget();")));
+}

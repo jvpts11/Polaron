@@ -260,6 +260,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                     }
                 }
                 classes_[cls.name] = std::move(info);
+                typeNamespace_[cls.name] = ns.name;
             }
         }
     }
@@ -276,6 +277,7 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                     continue;
                 }
                 enums_[en.name] = en.constants;
+                typeNamespace_[en.name] = ns.name;
             }
         }
     }
@@ -342,7 +344,12 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
 
 void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
+        // Imports are per-bundle; collect the imported symbol names.
+        currentImports_.clear();
+        for (const ast::ImportDecl& imp : bundle.imports)
+            if (!imp.path.empty()) currentImports_.insert(imp.path.back());
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 analyzeFieldInits(cls);
                 for (const ast::MemberPtr& member : cls.members) {
@@ -430,7 +437,11 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
 // scope and treated like a static function (no `this`).
 void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
+        currentImports_.clear();
+        for (const ast::ImportDecl& imp : bundle.imports)
+            if (!imp.path.empty()) currentImports_.insert(imp.path.back());
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;
             for (const ast::LiteralDecl& lit : ns.literals) {
                 analyzeMethodBody(lit.body, {lit.param}, /*thisClass=*/"", /*inConstructor=*/false);
             }
@@ -533,6 +544,19 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
     error("invalid assignment target", loc);
 }
 
+void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLocation loc) {
+    std::string n = baseType(typeName);          // see through T* / T&
+    if (isArrayType(n)) n = elementOf(n);         // and through T[]
+    if (n.find('$') != std::string::npos) return;  // monomorphized generic -> always visible
+    auto it = typeNamespace_.find(n);
+    if (it == typeNamespace_.end()) return;        // primitive / unknown (other checks catch it)
+    if (it->second == currentNamespace_) return;   // same namespace -> visible
+    if (currentImports_.count(n) > 0) return;      // brought in by import
+    error("type '" + n + "' is in namespace '" + it->second + "'; import it (import " + it->second +
+              "." + n + ";) to use it here",
+          loc);
+}
+
 void SemanticAnalyzer::checkRegionAccepts(const std::string& region, const std::string& type,
                                           SourceLocation loc) {
     auto rc = regionConstraints_.find(region);
@@ -606,6 +630,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
         const std::string initType = typeOf(*vd->init);
         const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);
+        if (!vd->isVar) checkTypeAccessible(declType, vd->loc);
         if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType)) {
             error("cannot initialize variable '" + vd->name + "' of type '" + declType +
                       "' with a value of type '" + initType + "'",
@@ -823,6 +848,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
 
     if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
         const std::string cn = ast::mangleGeneric(nw->className, nw->typeArgs);  // Box<int> -> Box$int
+        checkTypeAccessible(cn, nw->loc);
         const ClassInfo* ci = lookupClass(cn);
         if (ci == nullptr) {
             error("unknown class '" + cn + "'", nw->loc);

@@ -102,6 +102,9 @@ private:
                               SourceLocation loc);
     // Checks a type against a region's accepts/rejects constraints (spec 17.3).
     void checkRegionAccepts(const std::string& region, const std::string& type, SourceLocation loc);
+    // A type from another namespace must be imported (or be a primitive / a
+    // monomorphized generic). Errors otherwise (namespace visibility).
+    void checkTypeAccessible(const std::string& typeName, SourceLocation loc);
     void checkIncDecTarget(const ast::Expr& target, SourceLocation loc);
     std::string typeOf(const ast::Expr& expr);  // "" on error
     std::string flattenCallee(const ast::Expr& expr) const;
@@ -127,6 +130,9 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants
     std::unordered_map<std::string, LiteralInfo> literals_;  // suffix name -> info
     std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
+    std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace
+    std::string currentNamespace_;  // namespace being analyzed (visibility checks)
+    std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state

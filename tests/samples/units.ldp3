@@ -2,6 +2,7 @@ program Units;
 
 public bundle main {
 
+    import System.Memory.Units.ByteSize;
     import System.Memory.Units.kilobytes;
     import System.Memory.Units.megabytes;
 
