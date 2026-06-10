@@ -199,6 +199,18 @@ struct CodeGenerator::Impl {
         return v;
     }
 
+    // Explicit numeric conversion for cast<T>(expr): covers every direction,
+    // including the narrowing ones the implicit `coerce` refuses (long->int,
+    // float->int). Float is a single f64 width in 0.1.
+    llvm::Value* emitCast(llvm::Value* v, const std::string& from, const std::string& to) {
+        if (v == nullptr) return v;
+        const bool toFloat = isFloatType(to);
+        const bool fromFloat = isFloatType(from);
+        if (toFloat) return fromFloat ? v : builder.CreateSIToFP(v, builder.getDoubleTy());
+        if (fromFloat) return builder.CreateFPToSI(v, llvmType(to));  // truncates toward zero
+        return fitInt(v, intBits(to));  // int -> int: sext / trunc
+    }
+
     std::string flattenCallee(const ast::Expr& expr) {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) return id->name;
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
@@ -370,6 +382,8 @@ struct CodeGenerator::Impl {
             }
             return "int";
         }
+        if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) return cst->targetType;
+        if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) return typeName(*mv->operand);
         return "int";
     }
 
@@ -602,6 +616,9 @@ struct CodeGenerator::Impl {
         }
         if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) {
             return emitExpr(*mv->operand);  // move transfers the pointer (no copy)
+        }
+        if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
+            return emitCast(emitExpr(*cst->operand), typeName(*cst->operand), cst->targetType);
         }
         if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
             return emitNewArray(*na);

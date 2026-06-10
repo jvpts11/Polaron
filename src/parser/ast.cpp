@@ -74,6 +74,11 @@ void MoveExpr::dump(std::string& out, int indent) const {
     operand->dump(out, indent + 1);
 }
 
+void CastExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Cast<" + targetType + ">");
+    operand->dump(out, indent + 1);
+}
+
 void NewArrayExpr::dump(std::string& out, int indent) const {
     line(out, indent, "NewArray '" + elementType + "[]' on " + location);
     line(out, indent + 1, "size:");

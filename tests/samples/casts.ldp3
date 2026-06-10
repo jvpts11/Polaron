@@ -1,0 +1,27 @@
+program Casts;
+
+public bundle main {
+    public namespace app {
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Narrowing: 2^32 + 5 keeps only its low 32 bits when cast to int.
+                long big = 4294967301;
+                int low = cast<int>(big);
+                System.IO.println($"low = {low}");
+
+                // Float -> int truncates toward zero.
+                double pi = 3.99;
+                int truncated = cast<int>(pi);
+                System.IO.println($"truncated = {truncated}");
+
+                // Int -> float enables real division instead of integer division.
+                int n = 7;
+                double d = cast<double>(n) / 2.0;
+                System.IO.println($"d = {d}");
+
+                return;
+            }
+        }
+    }
+}

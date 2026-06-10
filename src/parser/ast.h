@@ -100,6 +100,14 @@ struct MoveExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// cast<T>(expr) -- explicit conversion. Release 0.1 handles numeric casts
+// (int<->int of any width, int<->float); class casts arrive with exceptions.
+struct CastExpr : Expr {
+    std::string targetType;  // simple type name, e.g. "int", "int64", "float"
+    ExprPtr operand;
+    void dump(std::string& out, int indent) const override;
+};
+
 // new T[size]() -- a dynamic, zero-initialized array on the heap.
 struct NewArrayExpr : Expr {
     std::string elementType;  // e.g. "int", "char"

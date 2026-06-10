@@ -642,6 +642,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         return t;
     }
 
+    if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
+        const std::string src = typeOf(*cst->operand);
+        const std::string& dst = cst->targetType;
+        // Release 0.1 supports numeric casts only; class casts need runtime
+        // type checks and exceptions (a later phase).
+        if (!isNumeric(dst)) {
+            error("cast<" + dst + "> is not supported yet; 0.1 casts only between numeric types", cst->loc);
+        } else if (!src.empty() && !isNumeric(src)) {
+            error("cannot cast '" + src + "' to '" + dst + "'; only numeric casts are supported", cst->loc);
+        }
+        return dst;
+    }
+
     if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
         const std::string lt = typeOf(*bin->lhs);
         const std::string rt = typeOf(*bin->rhs);

@@ -487,3 +487,19 @@ TEST_CASE("semantic rejects narrowing a long to an int") {
     CHECK_FALSE(checkSrc(wrapMain(
         "public static method main(string[] args) returns void { long w = 3; int n = w; }")));
 }
+
+TEST_CASE("semantic accepts an explicit cast that narrows a double to an int") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { int n = cast<int>(3.14); }")));
+}
+
+TEST_CASE("semantic accepts an explicit cast that narrows a long to an int") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { long w = 3; int n = cast<int>(w); }")));
+}
+
+TEST_CASE("semantic rejects a class cast in 0.1 (numeric casts only)") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class Animal { public constructor Animal() {} }",
+        "Animal a = new Animal(); Animal b = cast<Animal>(a);")));
+}

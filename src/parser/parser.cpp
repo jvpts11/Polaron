@@ -641,6 +641,25 @@ ast::ExprPtr Parser::parseBinary(int minPrec) {
 }
 
 ast::ExprPtr Parser::parseUnary() {
+    // cast<T>(expr) -- explicit conversion.
+    if (check(TokenKind::KwCast)) {
+        auto c = std::make_unique<ast::CastExpr>();
+        c->loc = current().loc;
+        advance();  // 'cast'
+        expect(TokenKind::Lt, "'<' after 'cast'");
+        const Token& tt = current();
+        if (isTypeKeyword(tt.kind) || tt.kind == TokenKind::Identifier) {
+            c->targetType = tt.lexeme;
+            advance();
+        } else {
+            fail("expected a type inside cast<...>", tt.loc);
+        }
+        expect(TokenKind::Gt, "'>' to close cast<...>");
+        expect(TokenKind::LParen, "'(' after cast<T>");
+        c->operand = parseExpression();
+        expect(TokenKind::RParen, "')'");
+        return c;
+    }
     // `move x` transfers ownership (the source becomes invalid).
     if (check(TokenKind::KwMove)) {
         auto mv = std::make_unique<ast::MoveExpr>();
