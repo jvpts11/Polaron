@@ -1,0 +1,40 @@
+program Inherit;
+
+// Structural inheritance: Dog inherits the `legs` field and legCount() from
+// Animal; the implicit super() initializes legs. Expected output:
+//   woof! legs=4
+
+public bundle main {
+    public namespace zoo {
+
+        public class Animal {
+            protected mutable int legs;
+
+            public constructor Animal() {
+                this.legs = 4;
+            }
+
+            public method legCount() returns int {
+                return this.legs;
+            }
+        }
+
+        public class Dog extends Animal {
+            public constructor Dog() {
+            }
+
+            public method speak() returns void {
+                System.IO.println($"woof! legs={this.legCount()}");
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog d = new Dog();
+                d.speak();
+                return;
+            }
+        }
+    }
+}

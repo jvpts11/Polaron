@@ -79,9 +79,11 @@ std::string typeRefName(const ast::TypeRef& t) {
 // Layout of a class: its LLVM struct, field indices/types, and method returns.
 struct ClassLayout {
     llvm::StructType* type = nullptr;
-    std::unordered_map<std::string, unsigned> fieldIndex;
+    std::unordered_map<std::string, unsigned> fieldIndex;  // includes inherited fields
     std::unordered_map<std::string, std::string> fieldType;  // LDP3 type name per field
-    std::unordered_map<std::string, std::string> methodReturnType;
+    std::unordered_map<std::string, std::string> methodReturnType;  // own methods only
+    std::string superclass;
+    std::vector<std::pair<std::string, std::string>> ownFields;  // (name, type), declaration order
     bool hasDestructor = false;
 };
 
@@ -142,6 +144,28 @@ struct CodeGenerator::Impl {
         return "";
     }
 
+    // The class that defines `method`, searching up the superclass chain ("" if none).
+    std::string methodOwner(const std::string& className, const std::string& method) {
+        std::string cn = className;
+        while (!cn.empty()) {
+            auto it = classes.find(cn);
+            if (it == classes.end()) break;
+            if (it->second.methodReturnType.count(method) > 0) return cn;
+            cn = it->second.superclass;
+        }
+        return "";
+    }
+
+    // Fields in layout order: inherited (base-first), then own.
+    std::vector<std::pair<std::string, std::string>> collectFields(const std::string& className) {
+        std::vector<std::pair<std::string, std::string>> result;
+        auto it = classes.find(className);
+        if (it == classes.end()) return result;
+        if (!it->second.superclass.empty()) result = collectFields(it->second.superclass);
+        for (const auto& f : it->second.ownFields) result.push_back(f);
+        return result;
+    }
+
     // Type name of an expression. Assumes a valid AST (semantic analysis ran).
     std::string typeName(const ast::Expr& expr) {
         if (dynamic_cast<const ast::IntLiteralExpr*>(&expr) != nullptr) return "int";
@@ -175,11 +199,12 @@ struct CodeGenerator::Impl {
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
                 if (mem->member == "length" && isArrayType(typeName(*mem->object))) return "int";
-                auto cit = classes.find(typeName(*mem->object));
-                if (cit != classes.end()) {
-                    auto rit = cit->second.methodReturnType.find(mem->member);
-                    if (rit != cit->second.methodReturnType.end()) return rit->second;
+                // instance: search the object's hierarchy; static: the named class.
+                std::string owner = methodOwner(typeName(*mem->object), mem->member);
+                if (owner.empty() && classes.count(flattenCallee(*mem->object)) > 0) {
+                    owner = methodOwner(flattenCallee(*mem->object), mem->member);
                 }
+                if (!owner.empty()) return classes[owner].methodReturnType[mem->member];
             }
             return "int";
         }
@@ -530,11 +555,13 @@ struct CodeGenerator::Impl {
                     return builder.CreateCall(fnit->second, args);
                 }
             }
-            // Instance call: obj.method(this, args...).
+            // Instance call: obj.method(this, args...). The implementation is on
+            // the class that defines the method (which may be a superclass).
             llvm::Value* objPtr = emitObjectPtr(*mem->object);
             if (objPtr == nullptr) return nullptr;
-            auto fnit = functions.find(typeName(*mem->object) + "." + mem->member);
-            if (fnit == functions.end()) {
+            const std::string owner = methodOwner(typeName(*mem->object), mem->member);
+            auto fnit = functions.find(owner + "." + mem->member);
+            if (owner.empty() || fnit == functions.end()) {
                 error("unknown method '" + mem->member + "'", call.loc);
                 return nullptr;
             }
@@ -720,20 +747,19 @@ struct CodeGenerator::Impl {
     // ---- Top-level generation ----
 
     void declareClasses() {
-        // Pass 1: create empty struct types and register layouts (field indices
-        // and types, method returns, destructor flag). Registering all names
-        // first lets a field whose type is another class resolve in pass 2.
+        // Pass 1: create struct types and record own fields, superclass and
+        // method returns. All names registered first so pass 2 can resolve
+        // inherited fields and field types that reference other classes.
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ClassDecl& cls : ns.classes) {
                     ClassLayout layout;
                     layout.type = llvm::StructType::create(context, "class." + cls.name);
-                    unsigned idx = 0;
+                    layout.superclass = cls.superclass;
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
-                            layout.fieldIndex[f->name] = idx++;
-                            layout.fieldType[f->name] =
-                                f->type.name + (f->type.isArray ? "[]" : "");
+                            layout.ownFields.emplace_back(
+                                f->name, f->type.name + (f->type.isArray ? "[]" : ""));
                         } else if (const auto* m =
                                        dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             layout.methodReturnType[m->name] = m->returnType.name;
@@ -746,18 +772,19 @@ struct CodeGenerator::Impl {
                 }
             }
         }
-        // Pass 2: set struct bodies, now that every class type is registered.
+        // Pass 2: lay out fields inherited-first, then own; set struct bodies.
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ClassDecl& cls : ns.classes) {
+                    ClassLayout& layout = classes[cls.name];
                     std::vector<llvm::Type*> fieldTypes;
-                    for (const ast::MemberPtr& member : cls.members) {
-                        if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
-                            fieldTypes.push_back(
-                                llvmType(f->type.name + (f->type.isArray ? "[]" : "")));
-                        }
+                    unsigned idx = 0;
+                    for (const auto& [fname, ftype] : collectFields(cls.name)) {
+                        layout.fieldIndex[fname] = idx++;
+                        layout.fieldType[fname] = ftype;
+                        fieldTypes.push_back(llvmType(ftype));
                     }
-                    classes[cls.name].type->setBody(fieldTypes);
+                    layout.type->setBody(fieldTypes);
                 }
             }
         }
@@ -862,8 +889,16 @@ struct CodeGenerator::Impl {
             ++argIdx;
         }
 
-        // A constructor applies inline field initializers before its own body.
-        if (ctorOf != nullptr) emitFieldInits(*ctorOf, currentThis);
+        // A constructor first runs the implicit super() (base constructor), then
+        // its inline field initializers, then its own body.
+        if (ctorOf != nullptr) {
+            const std::string& super = classes[ctorOf->name].superclass;
+            if (!super.empty()) {
+                auto sit = functions.find(super + "." + super);
+                if (sit != functions.end()) builder.CreateCall(sit->second, {currentThis});
+            }
+            emitFieldInits(*ctorOf, currentThis);
+        }
 
         emitBlock(body);
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {

@@ -25,6 +25,80 @@ const ClassInfo* SemanticAnalyzer::lookupClass(const std::string& name) const {
     return it == classes_.end() ? nullptr : &it->second;
 }
 
+const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
+                                             const std::string& field) const {
+    const ClassInfo* c = lookupClass(className);
+    while (c != nullptr) {
+        auto it = c->fields.find(field);
+        if (it != c->fields.end()) return &it->second;
+        if (c->superclass.empty()) break;
+        c = lookupClass(c->superclass);
+    }
+    return nullptr;
+}
+
+const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
+                                               const std::string& method) const {
+    const ClassInfo* c = lookupClass(className);
+    while (c != nullptr) {
+        auto it = c->methods.find(method);
+        if (it != c->methods.end()) return &it->second;
+        for (const std::string& iface : c->interfaces) {
+            const MethodInfo* m = findMethod(iface, method);
+            if (m != nullptr) return m;
+        }
+        if (c->superclass.empty()) break;
+        c = lookupClass(c->superclass);
+    }
+    return nullptr;
+}
+
+bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& super) const {
+    if (sub == super) return true;
+    const ClassInfo* c = lookupClass(sub);
+    if (c == nullptr) return false;
+    if (!c->superclass.empty() && isSubtype(c->superclass, super)) return true;
+    for (const std::string& iface : c->interfaces) {
+        if (isSubtype(iface, super)) return true;
+    }
+    return false;
+}
+
+void SemanticAnalyzer::validateHierarchy() {
+    for (const auto& [name, info] : classes_) {
+        if (!info.superclass.empty()) {
+            const ClassInfo* sup = lookupClass(info.superclass);
+            if (sup == nullptr) {
+                error("class '" + name + "' extends unknown type '" + info.superclass + "'", {});
+            } else if (sup->isInterface) {
+                error("class '" + name + "' extends interface '" + info.superclass +
+                          "' (use 'implements')",
+                      {});
+            }
+        }
+        for (const std::string& iface : info.interfaces) {
+            const ClassInfo* i = lookupClass(iface);
+            if (i == nullptr) {
+                error("'" + name + "' implements unknown type '" + iface + "'", {});
+            } else if (!i->isInterface) {
+                error("'" + name + "' implements '" + iface + "', which is not an interface", {});
+            }
+        }
+        // Inheritance cycle detection via the superclass chain.
+        std::string cur = info.superclass;
+        const int limit = static_cast<int>(classes_.size()) + 1;
+        for (int steps = 0; !cur.empty() && steps <= limit; ++steps) {
+            if (cur == name) {
+                error("inheritance cycle involving class '" + name + "'", {});
+                break;
+            }
+            const ClassInfo* c = lookupClass(cur);
+            if (c == nullptr) break;
+            cur = c->superclass;
+        }
+    }
+}
+
 void SemanticAnalyzer::pushScope() { scopes_.emplace_back(); }
 
 void SemanticAnalyzer::popScope() {
@@ -64,12 +138,17 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 }
                 ClassInfo info;
                 info.name = cls.name;
+                info.superclass = cls.superclass;
+                info.interfaces = cls.interfaces;
+                info.isAbstract = cls.isAbstract;
+                info.isInterface = cls.isInterface;
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
                         info.fields[f->name] =
                             FieldInfo{f->type.name + (f->type.isArray ? "[]" : ""), f->isMutable};
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                        info.methods[m->name] = MethodInfo{m->returnType.name, m->isStatic};
+                        info.methods[m->name] =
+                            MethodInfo{m->returnType.name, m->isStatic, m->isAbstract};
                     } else if (dynamic_cast<const ast::ConstructorDecl*>(member.get()) != nullptr) {
                         info.hasConstructor = true;
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) != nullptr) {
@@ -164,6 +243,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
 
 bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerClasses(program);
+    validateHierarchy();
     findEntryPoint(program);
     analyzeBodies(program);
     return errors_.empty();
@@ -205,7 +285,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             error("cannot assign to immutable variable '" + id->name + "' (declare it 'mutable')",
                   loc);
         }
-        if (!valueType.empty() && valueType != var->type) {
+        if (!valueType.empty() && !isSubtype(valueType, var->type)) {
             error("cannot assign a value of type '" + valueType + "' to variable '" + id->name +
                       "' of type '" + var->type + "'",
                   loc);
@@ -215,23 +295,18 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
     if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&target)) {
         const std::string objType = typeOf(*mem->object);
         if (objType.empty()) return;
-        const ClassInfo* cls = lookupClass(objType);
-        if (cls == nullptr) {
-            error("type '" + objType + "' has no fields", loc);
-            return;
-        }
-        auto fit = cls->fields.find(mem->member);
-        if (fit == cls->fields.end()) {
+        const FieldInfo* f = findField(objType, mem->member);
+        if (f == nullptr) {
             error("class '" + objType + "' has no field '" + mem->member + "'", loc);
             return;
         }
-        if (!fit->second.isMutable) {
+        if (!f->isMutable) {
             error("cannot assign to immutable field '" + mem->member + "' (declare it 'mutable')",
                   loc);
         }
-        if (!valueType.empty() && valueType != fit->second.type) {
+        if (!valueType.empty() && !isSubtype(valueType, f->type)) {
             error("cannot assign a value of type '" + valueType + "' to field '" + mem->member +
-                      "' of type '" + fit->second.type + "'",
+                      "' of type '" + f->type + "'",
                   loc);
         }
         return;
@@ -270,14 +345,10 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, SourceLocation
     } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&target)) {
         const std::string objType = typeOf(*mem->object);
         if (objType.empty()) return;
-        const ClassInfo* cls = lookupClass(objType);
-        if (cls != nullptr) {
-            auto fit = cls->fields.find(mem->member);
-            if (fit != cls->fields.end()) {
-                type = fit->second.type;
-                mutableTarget = fit->second.isMutable;
-                resolved = true;
-            }
+        if (const FieldInfo* f = findField(objType, mem->member)) {
+            type = f->type;
+            mutableTarget = f->isMutable;
+            resolved = true;
         }
         if (!resolved) {
             error("invalid '++'/'--' target", loc);
@@ -296,7 +367,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const std::string initType = typeOf(*vd->init);
         const std::string declType =
             vd->isVar ? initType : (vd->type.name + (vd->type.isArray ? "[]" : ""));
-        if (!vd->isVar && !initType.empty() && initType != declType) {
+        if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType)) {
             error("cannot initialize variable '" + vd->name + "' of type '" + declType +
                       "' with a value of type '" + initType + "'",
                   vd->loc);
@@ -527,18 +598,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                       call->loc);
                 return "";
             }
-            const ClassInfo* cls = lookupClass(objType);
-            if (cls == nullptr) {
-                error("type '" + objType + "' has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            auto mit = cls->methods.find(mem->member);
-            if (mit == cls->methods.end()) {
+            const MethodInfo* m = findMethod(objType, mem->member);
+            if (m == nullptr) {
                 error("class '" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";
             }
             for (const auto& arg : call->args) typeOf(*arg);
-            return mit->second.returnType;
+            return m->returnType;
         }
         error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call->loc);
         return "";
@@ -547,13 +613,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
         const std::string objType = typeOf(*mem->object);
         if (objType.empty()) return "";
-        const ClassInfo* cls = lookupClass(objType);
-        if (cls == nullptr) {
-            error("type '" + objType + "' has no member '" + mem->member + "'", mem->loc);
-            return "";
-        }
-        auto fit = cls->fields.find(mem->member);
-        if (fit != cls->fields.end()) return fit->second.type;
+        if (const FieldInfo* f = findField(objType, mem->member)) return f->type;
         error("class '" + objType + "' has no field '" + mem->member + "'", mem->loc);
         return "";
     }

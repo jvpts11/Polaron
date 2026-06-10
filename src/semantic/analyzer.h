@@ -35,11 +35,16 @@ struct FieldInfo {
 struct MethodInfo {
     std::string returnType;
     bool isStatic = false;
+    bool isAbstract = false;
 };
 struct ClassInfo {
     std::string name;
     std::unordered_map<std::string, FieldInfo> fields;
     std::unordered_map<std::string, MethodInfo> methods;
+    std::string superclass;               // "" when none
+    std::vector<std::string> interfaces;
+    bool isAbstract = false;
+    bool isInterface = false;
     bool hasConstructor = false;
     bool hasDestructor = false;
 };
@@ -73,6 +78,12 @@ private:
     std::string typeOf(const ast::Expr& expr);  // "" on error
     std::string flattenCallee(const ast::Expr& expr) const;
     const ClassInfo* lookupClass(const std::string& name) const;
+    void validateHierarchy();
+    // Resolve a member by walking the class, its superclasses and interfaces.
+    const FieldInfo* findField(const std::string& className, const std::string& field) const;
+    const MethodInfo* findMethod(const std::string& className, const std::string& method) const;
+    // True if `sub` is `super` or transitively extends/implements it.
+    bool isSubtype(const std::string& sub, const std::string& super) const;
 
     // Lexical scopes (innermost last); shadowing is forbidden.
     void pushScope();
