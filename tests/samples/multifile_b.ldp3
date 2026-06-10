@@ -1,0 +1,14 @@
+program MultiFile;
+
+// Part B: the entry point, using Greeter defined in part A.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Greeter g = new Greeter(7);
+                System.IO.println($"greet = {g.greet()}");   // greet = 7
+                return;
+            }
+        }
+    }
+}

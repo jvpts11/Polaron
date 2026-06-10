@@ -8,7 +8,12 @@
 set(ll "${WORKDIR}/e2e_out.ll")
 set(exe "${WORKDIR}/e2e_out.exe")
 
-execute_process(COMMAND "${LDP3C}" "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
+# INPUT2 is optional: a program may span multiple .ldp3 files.
+if(DEFINED INPUT2)
+    execute_process(COMMAND "${LDP3C}" "${INPUT}" "${INPUT2}" -o "${ll}" RESULT_VARIABLE rc)
+else()
+    execute_process(COMMAND "${LDP3C}" "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
+endif()
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "ldp3c failed (exit ${rc})")
 endif()

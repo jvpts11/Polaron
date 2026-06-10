@@ -173,34 +173,56 @@ int checkProgram(const std::string& path) {
     return 0;
 }
 
-int compile(const std::string& path, const std::string& outPath) {
-    auto source = readFile(path);
-    if (!source) {
-        std::fprintf(stderr, "error: cannot open input file '%s'\n", path.c_str());
-        return 1;
+// Compiles one or more .ldp3 files that together form a single program. Each
+// file declares `program <Name>;` (all must agree); their bundles are merged
+// (the semantic catalog is flat, so concatenation is enough). `inputs` outlives
+// this call, so token SourceLocations (string_views into the paths) stay valid.
+int compile(const std::vector<std::string>& inputs, const std::string& outPath) {
+    ldp3::ast::Program program;
+    std::string programName;
+    // Keep each file's source alive only within its iteration: the AST copies
+    // the lexemes it needs, and locations reference the (long-lived) path string.
+    for (const std::string& path : inputs) {
+        auto source = readFile(path);
+        if (!source) {
+            std::fprintf(stderr, "error: cannot open input file '%s'\n", path.c_str());
+            return 1;
+        }
+        ldp3::Lexer lexer(*source, path);
+        std::vector<ldp3::Token> tokens = lexer.tokenize();
+        if (reportLexErrors(path, lexer)) return 1;
+        ldp3::Parser parser(std::move(tokens), path);
+        ldp3::ast::Program prog = parser.parse();
+        if (reportParseErrors(path, parser)) return 1;
+        if (programName.empty()) {
+            programName = prog.name;
+            program.name = prog.name;
+            program.loc = prog.loc;
+        } else if (prog.name != programName) {
+            std::fprintf(stderr, "%s: error: program is '%s' but the first file declares '%s'\n",
+                         path.c_str(), prog.name.c_str(), programName.c_str());
+            return 1;
+        }
+        for (auto& bundle : prog.bundles) program.bundles.push_back(std::move(bundle));
     }
-    ldp3::Lexer lexer(*source, path);
-    std::vector<ldp3::Token> tokens = lexer.tokenize();
-    if (reportLexErrors(path, lexer)) return 1;
-    ldp3::Parser parser(std::move(tokens), path);
-    ldp3::ast::Program program = parser.parse();
-    if (reportParseErrors(path, parser)) return 1;
+
     appendPrelude(program);
     ldp3::monomorphize(program);  // expand generics into concrete classes
     ldp3::SemanticAnalyzer sema;
     if (!sema.analyze(program)) {
         for (const ldp3::SemaError& e : sema.errors()) {
-            std::fprintf(stderr, "%s:%d:%d: error: %s\n", path.c_str(), e.loc.line, e.loc.col,
-                         e.message.c_str());
+            std::fprintf(stderr, "%.*s:%d:%d: error: %s\n", static_cast<int>(e.loc.file.size()),
+                         e.loc.file.data(), e.loc.line, e.loc.col, e.message.c_str());
         }
         return 1;
     }
 
 #ifdef LDP3_WITH_LLVM
-    ldp3::CodeGenerator codegen(program, sema.entryPoint(), path);
+    ldp3::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
     if (!codegen.generate()) {
         for (const ldp3::CodegenError& e : codegen.errors()) {
-            std::fprintf(stderr, "%s:%d:%d: codegen error: %s\n", path.c_str(), e.loc.line,
+            std::fprintf(stderr, "%.*s:%d:%d: codegen error: %s\n",
+                         static_cast<int>(e.loc.file.size()), e.loc.file.data(), e.loc.line,
                          e.loc.col, e.message.c_str());
         }
         return 1;
@@ -249,10 +271,10 @@ int main(int argc, char** argv) {
         return checkProgram(path);
     }
 
-    // Compile mode: <input> [-o <output>].
-    const std::string input(args[0]);
+    // Compile mode: <input...> [-o <output>]. A program may span several files.
+    std::vector<std::string> inputs;
     std::string output;
-    for (std::size_t i = 1; i < args.size(); ++i) {
+    for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "-o") {
             if (i + 1 >= args.size()) {
                 std::fprintf(stderr, "error: -o requires an output path\n");
@@ -261,10 +283,12 @@ int main(int argc, char** argv) {
             output = std::string(args[i + 1]);
             ++i;
         } else {
-            std::fprintf(stderr, "error: unexpected argument '%.*s'\n",
-                         static_cast<int>(args[i].size()), args[i].data());
-            return printUsage(argv[0]);
+            inputs.emplace_back(args[i]);
         }
     }
-    return compile(input, output);
+    if (inputs.empty()) {
+        std::fprintf(stderr, "error: no input files\n");
+        return printUsage(argv[0]);
+    }
+    return compile(inputs, output);
 }

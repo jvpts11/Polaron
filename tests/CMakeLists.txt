@@ -439,6 +439,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=area = 12 w = 3 h = 4 area = 40"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Multiple files forming one program: Main (part B) uses Greeter (part A).
+        add_test(NAME codegen_multifile_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/multifile_a.ldp3"
+            "-DINPUT2=${CMAKE_CURRENT_SOURCE_DIR}/samples/multifile_b.ldp3"
+            "-DEXPECTED=greet = 7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()
