@@ -211,6 +211,33 @@ struct CodeGenerator::Impl {
         return fitInt(v, intBits(to));  // int -> int: sext / trunc
     }
 
+    // Coerce a value to a target LLVM type (numeric widen/narrow), e.g. when an
+    // argument's static type is a subtype of the parameter type.
+    llvm::Value* coerceToType(llvm::Value* v, llvm::Type* ty) {
+        if (v == nullptr || v->getType() == ty) return v;
+        if (ty->isDoubleTy() && v->getType()->isIntegerTy()) return builder.CreateSIToFP(v, ty);
+        if (ty->isIntegerTy() && v->getType()->isIntegerTy()) {
+            const unsigned want = ty->getIntegerBitWidth();
+            const unsigned have = v->getType()->getIntegerBitWidth();
+            if (want > have) return builder.CreateSExt(v, ty);
+            if (want < have) return builder.CreateTrunc(v, ty);
+        }
+        return v;
+    }
+
+    // If a constructor body opens with `super(...)`, returns that call so the
+    // prologue can forward its arguments to the base constructor.
+    static const ast::CallExpr* explicitSuperCall(const ast::Block& body) {
+        if (body.statements.empty()) return nullptr;
+        const auto* es = dynamic_cast<const ast::ExprStmt*>(body.statements.front().get());
+        if (es == nullptr) return nullptr;
+        const auto* call = dynamic_cast<const ast::CallExpr*>(es->expr.get());
+        if (call != nullptr && dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr) {
+            return call;
+        }
+        return nullptr;
+    }
+
     std::string flattenCallee(const ast::Expr& expr) {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) return id->name;
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
@@ -634,6 +661,10 @@ struct CodeGenerator::Impl {
             return nullptr;
         }
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+            // super(args) was already emitted in the constructor prologue.
+            if (dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr) {
+                return nullptr;
+            }
             return emitCall(*call);
         }
         error("unsupported expression in codegen", expr.loc);
@@ -1316,13 +1347,28 @@ struct CodeGenerator::Impl {
             ++argIdx;
         }
 
-        // A constructor first runs the implicit super() (base constructor), then
-        // installs this class's vtable, then field initializers, then its body.
+        // A constructor first runs super() (base constructor) -- implicit, or
+        // explicit `super(args)` to forward arguments -- then installs this
+        // class's vtable, then field initializers, then its body.
         if (ctorOf != nullptr) {
             ClassLayout& cl = classes[ctorOf->name];
+            const ast::CallExpr* superCall = explicitSuperCall(body);
             if (!cl.superclass.empty()) {
                 auto sit = functions.find(cl.superclass + "." + cl.superclass);
-                if (sit != functions.end()) builder.CreateCall(sit->second, {currentThis});
+                if (sit != functions.end()) {
+                    std::vector<llvm::Value*> superArgs{currentThis};
+                    if (superCall != nullptr) {
+                        llvm::Function* basef = sit->second;
+                        for (std::size_t i = 0; i < superCall->args.size(); ++i) {
+                            llvm::Value* av = emitExpr(*superCall->args[i]);
+                            if (i + 1 < basef->arg_size()) {
+                                av = coerceToType(av, basef->getArg(i + 1)->getType());
+                            }
+                            superArgs.push_back(av);
+                        }
+                    }
+                    builder.CreateCall(sit->second, superArgs);
+                }
             }
             if (cl.hasVtable && cl.vtable != nullptr) {
                 llvm::Value* vtblField =

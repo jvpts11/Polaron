@@ -770,6 +770,12 @@ ast::ExprPtr Parser::parsePrimary() {
             advance();
             return e;
         }
+        case TokenKind::KwSuper: {
+            auto e = std::make_unique<ast::SuperExpr>();
+            e->loc = tok.loc;
+            advance();
+            return e;  // parsePostfix turns `super(args)` into a CallExpr
+        }
         case TokenKind::LParen: {
             advance();
             ast::ExprPtr inner = parseExpression();

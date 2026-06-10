@@ -379,8 +379,18 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     for (const ast::Param& p : params) {
         declareLocal(p.name, LocalVar{typeRefStr(p.type), false});  // params immutable by default
     }
-    for (const auto& stmt : body.statements) {
-        analyzeStatement(*stmt);
+    for (std::size_t i = 0; i < body.statements.size(); ++i) {
+        // `super(...)` is only legal as the very first statement of a constructor.
+        if (inConstructor && i != 0) {
+            const auto* es = dynamic_cast<const ast::ExprStmt*>(body.statements[i].get());
+            const auto* call = es ? dynamic_cast<const ast::CallExpr*>(es->expr.get()) : nullptr;
+            if (call != nullptr &&
+                dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr) {
+                error("'super(...)' must be the first statement of the constructor",
+                      body.statements[i]->loc);
+            }
+        }
+        analyzeStatement(*body.statements[i]);
     }
     popScope();
 }
@@ -743,6 +753,21 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+        // super(args): explicitly call the base constructor to pass arguments.
+        if (dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr) {
+            if (!inConstructor_) {
+                error("'super(...)' is only valid inside a constructor", call->loc);
+            } else {
+                const ClassInfo* ci = lookupClass(currentClass_);
+                if (ci == nullptr || ci->superclass.empty()) {
+                    error("'super(...)' requires a superclass, but '" + currentClass_ +
+                              "' has none",
+                          call->loc);
+                }
+            }
+            for (const auto& arg : call->args) typeOf(*arg);
+            return "void";
+        }
         const std::string name = flattenCallee(*call->callee);
         if (name == "System.IO.readInt") {
             if (!call->args.empty()) error("System.IO.readInt takes no arguments", call->loc);
@@ -830,6 +855,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (objType.empty()) return "";
         if (const FieldInfo* f = findField(objType, mem->member)) return f->type;
         error("class '" + objType + "' has no field '" + mem->member + "'", mem->loc);
+        return "";
+    }
+
+    if (dynamic_cast<const ast::SuperExpr*>(&expr) != nullptr) {
+        error("'super' can only be used as 'super(...)' in a constructor", expr.loc);
         return "";
     }
 

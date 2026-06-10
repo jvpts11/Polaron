@@ -108,6 +108,12 @@ struct CastExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// `super` -- only valid as `super(args)`, the first statement of a constructor,
+// to pass arguments to the base-class constructor (spec 8; super() is implicit).
+struct SuperExpr : Expr {
+    void dump(std::string& out, int indent) const override;
+};
+
 // new T[size]() -- a dynamic, zero-initialized array on the heap.
 struct NewArrayExpr : Expr {
     std::string elementType;  // e.g. "int", "char"

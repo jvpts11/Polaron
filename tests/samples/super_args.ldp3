@@ -1,0 +1,36 @@
+program SuperArgs;
+
+public bundle main {
+    public namespace app {
+
+        public class Animal {
+            protected int legs;
+            public constructor Animal(int legs) {
+                this.legs = legs;
+            }
+            public method legCount() returns int {
+                return this.legs;
+            }
+        }
+
+        public class Dog extends Animal {
+            private int barks;
+            public constructor Dog(int barks) {
+                super(4);              // forward 4 to Animal's constructor
+                this.barks = barks;
+            }
+            public method describe() returns void {
+                System.IO.println($"legs = {this.legCount()} barks = {this.barks}");
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog d = new Dog(3) on heap;
+                d.describe();
+                delete d;
+                return;
+            }
+        }
+    }
+}

@@ -79,6 +79,10 @@ void CastExpr::dump(std::string& out, int indent) const {
     operand->dump(out, indent + 1);
 }
 
+void SuperExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Super");
+}
+
 void NewArrayExpr::dump(std::string& out, int indent) const {
     line(out, indent, "NewArray '" + elementType + "[]' on " + location);
     line(out, indent + 1, "size:");

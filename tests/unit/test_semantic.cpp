@@ -503,3 +503,31 @@ TEST_CASE("semantic rejects a class cast in 0.1 (numeric casts only)") {
         "public class Animal { public constructor Animal() {} }",
         "Animal a = new Animal(); Animal b = cast<Animal>(a);")));
 }
+
+namespace {
+// A base class and a subclass whose constructor forwards an argument via super.
+const std::string kAnimalDog =
+    "public class Animal { protected int legs;"
+    " public constructor Animal(int legs) { this.legs = legs; } }"
+    " public class Dog extends Animal { private mutable int barks;"
+    " public constructor Dog(int barks) { super(4); this.barks = barks; } }";
+}  // namespace
+
+TEST_CASE("semantic accepts super(args) as the first statement of a constructor") {
+    CHECK(checkSrc(withClass(kAnimalDog, "Dog d = new Dog(3);")));
+}
+
+TEST_CASE("semantic rejects super(args) when the class has no superclass") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class Lonely { public constructor Lonely() { super(1); } }",
+        "Lonely x = new Lonely();")));
+}
+
+TEST_CASE("semantic rejects super(args) outside the first statement") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class Animal { protected int legs;"
+        " public constructor Animal(int legs) { this.legs = legs; } }"
+        " public class Dog extends Animal { private mutable int barks;"
+        " public constructor Dog(int barks) { this.barks = barks; super(4); } }",
+        "Dog d = new Dog(3);")));
+}
