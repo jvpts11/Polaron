@@ -169,6 +169,20 @@ struct Block {
     void dump(std::string& out, int indent) const;
 };
 
+// defer { ... } -- runs at the end of the enclosing method (LIFO).
+struct DeferStmt : Stmt {
+    Block body;
+    void dump(std::string& out, int indent) const override;
+};
+
+// using (T x = ...) { ... } -- x is disposed automatically at the block's end.
+struct UsingStmt : Stmt {
+    StmtPtr decl;  // a VarDeclStmt
+    std::string varName;
+    Block body;
+    void dump(std::string& out, int indent) const override;
+};
+
 struct IfStmt : Stmt {
     ExprPtr cond;
     Block thenBlock;

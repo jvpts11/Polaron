@@ -1,0 +1,39 @@
+program Scoped;
+
+// Fase D: `using` disposes a resource at the block's end; `defer` runs at the
+// end of the method, in LIFO order. Expected output:
+//   inside using
+//   closing 3
+//   body
+//   deferred 2
+//   deferred 1
+
+public bundle main {
+    public namespace app {
+
+        public class Resource {
+            public mutable int id;
+
+            public constructor Resource(int n) {
+                this.id = n;
+            }
+
+            public destructor ~Resource() returns void {
+                System.IO.println($"closing {this.id}");
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                using (Resource r = new Resource(3) on heap) {
+                    System.IO.println("inside using");
+                }   // r disposed here -> closing 3
+
+                defer { System.IO.println("deferred 1"); }
+                defer { System.IO.println("deferred 2"); }
+                System.IO.println("body");
+                return;   // defers run LIFO: deferred 2, then deferred 1
+            }
+        }
+    }
+}

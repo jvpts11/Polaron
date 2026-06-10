@@ -108,6 +108,17 @@ void DeleteStmt::dump(std::string& out, int indent) const {
     target->dump(out, indent + 1);
 }
 
+void DeferStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Defer");
+    body.dump(out, indent + 1);
+}
+
+void UsingStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Using '" + varName + "'");
+    decl->dump(out, indent + 1);
+    body.dump(out, indent + 1);
+}
+
 void VarDeclStmt::dump(std::string& out, int indent) const {
     std::string head = "VarDecl '" + name + "'";
     if (isMutable) head += " mutable";

@@ -561,6 +561,17 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         return;
     }
+    if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {
+        analyzeBlock(def->body);
+        return;
+    }
+    if (const auto* us = dynamic_cast<const ast::UsingStmt*>(&stmt)) {
+        pushScope();
+        analyzeStatement(*us->decl);
+        analyzeBlock(us->body);
+        popScope();
+        return;
+    }
 }
 
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {

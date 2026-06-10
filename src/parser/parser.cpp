@@ -421,6 +421,12 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return del;
     }
+    if (check(TokenKind::KwDefer)) {
+        return parseDefer();
+    }
+    if (check(TokenKind::KwUsing)) {
+        return parseUsing();
+    }
     // A class-typed local: `ClassName name`, `ClassName* p`, `ClassName& r`,
     // or `ClassName[] a` (the receiver of a member access starts with '.', so it
     // never matches these shapes).
@@ -506,6 +512,27 @@ std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
     expect(TokenKind::Assign, "'=' (variables require an initializer)");
     decl->init = parseExpression();
     return decl;
+}
+
+ast::StmtPtr Parser::parseDefer() {
+    auto d = std::make_unique<ast::DeferStmt>();
+    d->loc = current().loc;
+    expect(TokenKind::KwDefer, "'defer'");
+    d->body = parseBlock();
+    return d;
+}
+
+ast::StmtPtr Parser::parseUsing() {
+    auto u = std::make_unique<ast::UsingStmt>();
+    u->loc = current().loc;
+    expect(TokenKind::KwUsing, "'using'");
+    expect(TokenKind::LParen, "'('");
+    auto decl = parseVarDeclCore();  // T x = expr
+    u->varName = decl->name;
+    u->decl = std::move(decl);
+    expect(TokenKind::RParen, "')'");
+    u->body = parseBlock();
+    return u;
 }
 
 ast::StmtPtr Parser::parseVarDecl() {

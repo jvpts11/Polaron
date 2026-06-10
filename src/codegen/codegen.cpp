@@ -136,6 +136,7 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
+    std::vector<const ast::Block*> deferred;  // defer blocks, run at scope end (LIFO)
     std::string currentClass;        // "" inside a static method / the entry point
     llvm::Value* currentThis = nullptr;
     llvm::Function* currentFn = nullptr;
@@ -767,6 +768,11 @@ struct CodeGenerator::Impl {
     // M4 tracks objects at function scope; per-block RAII comes with nested
     // scopes in a later phase.
     void emitScopeCleanup() {
+        // Deferred blocks run first, in reverse (LIFO) order.
+        for (auto it = deferred.rbegin(); it != deferred.rend(); ++it) {
+            if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
+            emitBlock(**it);
+        }
         for (auto it = scopeObjects.rbegin(); it != scopeObjects.rend(); ++it) {
             auto fnit = functions.find(it->className + ".~" + it->className);
             if (fnit == functions.end()) continue;
@@ -850,11 +856,33 @@ struct CodeGenerator::Impl {
             }
             llvm::Value* objPtr = emitObjectPtr(*del->target);
             if (objPtr == nullptr) return;
-            auto cit = classes.find(t);
+            const std::string cn = baseType(t);  // see through T*
+            auto cit = classes.find(cn);
             if (cit != classes.end() && cit->second.hasDestructor) {
-                builder.CreateCall(functions[t + ".~" + t], {objPtr});
+                builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
             }
             builder.CreateCall(freeFn(), {objPtr});
+            return;
+        }
+        if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {
+            deferred.push_back(&def->body);  // runs at scope end (see emitScopeCleanup)
+            return;
+        }
+        if (const auto* us = dynamic_cast<const ast::UsingStmt*>(&stmt)) {
+            emitStatement(*us->decl);  // declare the resource
+            emitBlock(us->body);       // use it
+            // Dispose it (destructor if any, then free) at the block's end.
+            auto it = locals.find(us->varName);
+            if (it != locals.end() && builder.GetInsertBlock()->getTerminator() == nullptr) {
+                const std::string cn = baseType(it->second.type);
+                llvm::Value* objPtr =
+                    builder.CreateLoad(builder.getPtrTy(), it->second.storage);
+                auto cit = classes.find(cn);
+                if (cit != classes.end() && cit->second.hasDestructor) {
+                    builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+                }
+                builder.CreateCall(freeFn(), {objPtr});
+            }
             return;
         }
         if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
@@ -1125,6 +1153,7 @@ struct CodeGenerator::Impl {
         currentThis = nullptr;
         locals.clear();
         scopeObjects.clear();
+        deferred.clear();
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
         builder.SetInsertPoint(block);
 
