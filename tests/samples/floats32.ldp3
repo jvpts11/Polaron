@@ -1,0 +1,24 @@
+program Floats32;
+
+public bundle main {
+    public namespace app {
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // 2^24 + 1 is not representable in f32: it rounds down to 2^24.
+                float f = cast<float>(16777217);
+                int back = cast<int>(f);
+                System.IO.println($"f32 back = {back}");   // 16777216 (lost the +1)
+
+                // The same value is exact in f64 (double).
+                double d = cast<double>(16777217);
+                int dback = cast<int>(d);
+                System.IO.println($"f64 back = {dback}");  // 16777217
+
+                float pi = 3.5;
+                System.IO.println($"pi = {pi}");           // 3.5
+                return;
+            }
+        }
+    }
+}

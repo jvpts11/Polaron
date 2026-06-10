@@ -321,6 +321,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=big = 3000000000 half = 1500000000 big > 1 = 1 huge = 18000000000000000000"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # float is f32, double is f64: 2^24+1 survives in f64 but not in f32.
+        add_test(NAME codegen_floats32_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/floats32.ldp3"
+            "-DEXPECTED=f32 back = 16777216 f64 back = 16777217 pi = 3.5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

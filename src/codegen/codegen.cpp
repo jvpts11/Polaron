@@ -81,11 +81,11 @@ bool isArrayType(const std::string& t) {
     return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;
 }
 
-// Floating-point types. For now float and double both lower to f64; a distinct
-// f32 representation is a later refinement.
+// Floating-point types. `float`/`float32` lower to f32; `double`/`float64` to f64.
 bool isFloatType(const std::string& t) {
     return t == "float" || t == "float32" || t == "double" || t == "float64";
 }
+bool isF32(const std::string& t) { return t == "float" || t == "float32"; }
 
 // Bit width of an integer-family type (int/char/boolean/enum default to 32).
 unsigned intBits(const std::string& t) {
@@ -174,11 +174,11 @@ struct CodeGenerator::Impl {
         errors.push_back(CodegenError{std::move(message), loc});
     }
 
-    // float/double -> f64; class/array/pointer/ref -> opaque pointer;
-    // int/boolean/char/enum -> i32.
+    // float/float32 -> f32, double/float64 -> f64; class/array/pointer/ref ->
+    // opaque pointer; int/boolean/char/enum -> iN.
     llvm::Type* llvmType(const std::string& t) {
         if (t == "void") return builder.getVoidTy();
-        if (isFloatType(t)) return builder.getDoubleTy();
+        if (isFloatType(t)) return isF32(t) ? builder.getFloatTy() : builder.getDoubleTy();
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (classes.count(t) > 0) return builder.getPtrTy();
         return builder.getIntNTy(intBits(t));
@@ -189,9 +189,17 @@ struct CodeGenerator::Impl {
     // zero-extend and use the unsigned int->float opcode.
     llvm::Value* coerce(llvm::Value* v, const std::string& from, const std::string& to) {
         if (v == nullptr) return v;
-        if (isFloatType(to) && !isFloatType(from) && v->getType()->isIntegerTy()) {
-            return isUnsigned(from) ? builder.CreateUIToFP(v, builder.getDoubleTy())
-                                    : builder.CreateSIToFP(v, builder.getDoubleTy());
+        if (isFloatType(to)) {
+            llvm::Type* fty = llvmType(to);
+            if (v->getType()->isIntegerTy()) {
+                return isUnsigned(from) ? builder.CreateUIToFP(v, fty)
+                                        : builder.CreateSIToFP(v, fty);
+            }
+            if (v->getType()->isFloatingPointTy() && v->getType() != fty) {
+                return fty->isDoubleTy() ? builder.CreateFPExt(v, fty)     // f32 -> f64
+                                         : builder.CreateFPTrunc(v, fty);  // f64 -> f32
+            }
+            return v;
         }
         if (v->getType()->isIntegerTy() && llvmType(to)->isIntegerTy()) {
             const unsigned want = llvmType(to)->getIntegerBitWidth();
@@ -218,16 +226,21 @@ struct CodeGenerator::Impl {
 
     // Explicit numeric conversion for cast<T>(expr): covers every direction,
     // including the narrowing ones the implicit `coerce` refuses (long->int,
-    // float->int). Float is a single f64 width in 0.1. Unsigned source/target
-    // selects zero-extension and the unsigned int<->float opcodes.
+    // float->int, f64->f32). Unsigned source/target selects zero-extension and
+    // the unsigned int<->float opcodes.
     llvm::Value* emitCast(llvm::Value* v, const std::string& from, const std::string& to) {
         if (v == nullptr) return v;
         const bool toFloat = isFloatType(to);
         const bool fromFloat = isFloatType(from);
         if (toFloat) {
-            if (fromFloat) return v;
-            return isUnsigned(from) ? builder.CreateUIToFP(v, builder.getDoubleTy())
-                                    : builder.CreateSIToFP(v, builder.getDoubleTy());
+            llvm::Type* fty = llvmType(to);
+            if (fromFloat) {
+                if (v->getType() == fty) return v;
+                return fty->isDoubleTy() ? builder.CreateFPExt(v, fty)
+                                         : builder.CreateFPTrunc(v, fty);
+            }
+            return isUnsigned(from) ? builder.CreateUIToFP(v, fty)
+                                    : builder.CreateSIToFP(v, fty);
         }
         if (fromFloat) {
             return isUnsigned(to) ? builder.CreateFPToUI(v, llvmType(to))   // truncates toward zero
@@ -735,10 +748,12 @@ struct CodeGenerator::Impl {
         llvm::Value* r = emitExpr(*bin.rhs);
         if (l == nullptr || r == nullptr) return nullptr;
         const std::string& op = bin.op;
-        // Floating-point path: widen both operands to f64.
+        // Floating-point path: the result is f64 if either side is f64, else f32.
         if (isFloatType(lt) || isFloatType(rt)) {
-            l = coerce(l, lt, "double");
-            r = coerce(r, rt, "double");
+            const bool f64 = (isFloatType(lt) && !isF32(lt)) || (isFloatType(rt) && !isF32(rt));
+            const std::string ft = f64 ? "double" : "float";
+            l = coerce(l, lt, ft);
+            r = coerce(r, rt, ft);
             if (op == "+") return builder.CreateFAdd(l, r);
             if (op == "-") return builder.CreateFSub(l, r);
             if (op == "*") return builder.CreateFMul(l, r);
