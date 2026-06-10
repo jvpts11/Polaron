@@ -38,6 +38,52 @@ std::optional<std::string> readFile(const std::string& path) {
     return buffer.str();
 }
 
+// The embedded standard prelude. Parsed and merged into every program so that
+// `import System.Memory.Units.kilobytes;` resolves without a stdlib on disk
+// (spec 17.10). The unit literals return a heap-allocated ByteSize; the spec
+// makes them comptime, so the allocation vanishes once comptime eval lands (F6).
+constexpr std::string_view kPreludeSource = R"LDP3(
+program __prelude;
+public bundle std {
+    public namespace System.Memory.Units {
+        public struct ByteSize {
+            public final int64 bytes;
+            public constructor ByteSize(int64 bytes) { this.bytes = bytes; }
+        }
+        public comptime literal bytes(int x) returns ByteSize {
+            return new ByteSize(cast<int64>(x)) on heap;
+        }
+        public comptime literal kilobytes(int x) returns ByteSize {
+            return new ByteSize(cast<int64>(x) * 1024) on heap;
+        }
+        public comptime literal megabytes(int x) returns ByteSize {
+            return new ByteSize(cast<int64>(x) * 1024 * 1024) on heap;
+        }
+        public comptime literal gigabytes(int x) returns ByteSize {
+            return new ByteSize(cast<int64>(x) * 1024 * 1024 * 1024) on heap;
+        }
+        public comptime literal terabytes(int x) returns ByteSize {
+            return new ByteSize(cast<int64>(x) * 1024 * 1024 * 1024 * 1024) on heap;
+        }
+        public comptime literal exabytes(int x) returns ByteSize {
+            return new ByteSize(cast<int64>(x) * 1024 * 1024 * 1024 * 1024 * 1024 * 1024) on heap;
+        }
+    }
+}
+)LDP3";
+
+// Parses the embedded prelude and merges its bundles into `prog`.
+void appendPrelude(ldp3::ast::Program& prog) {
+    ldp3::Lexer lexer(kPreludeSource, "<prelude>");  // string_view: static lifetime
+    ldp3::Parser parser(lexer.tokenize(), "<prelude>");
+    ldp3::ast::Program prelude = parser.parse();
+    if (parser.hasErrors()) {
+        std::fprintf(stderr, "internal error: the embedded prelude failed to parse\n");
+        return;
+    }
+    for (auto& bundle : prelude.bundles) prog.bundles.push_back(std::move(bundle));
+}
+
 int printUsage(const char* prog) {
     std::fprintf(stderr,
                  "usage: %s <input.ldp3> [-o <output.ll>]\n"
@@ -110,8 +156,9 @@ int checkProgram(const std::string& path) {
     std::vector<ldp3::Token> tokens = lexer.tokenize();
     if (reportLexErrors(path, lexer)) return 1;
     ldp3::Parser parser(std::move(tokens), path);
-    const ldp3::ast::Program program = parser.parse();
+    ldp3::ast::Program program = parser.parse();
     if (reportParseErrors(path, parser)) return 1;
+    appendPrelude(program);
     ldp3::SemanticAnalyzer sema;
     if (!sema.analyze(program)) {
         for (const ldp3::SemaError& e : sema.errors()) {
@@ -134,8 +181,9 @@ int compile(const std::string& path, const std::string& outPath) {
     std::vector<ldp3::Token> tokens = lexer.tokenize();
     if (reportLexErrors(path, lexer)) return 1;
     ldp3::Parser parser(std::move(tokens), path);
-    const ldp3::ast::Program program = parser.parse();
+    ldp3::ast::Program program = parser.parse();
     if (reportParseErrors(path, parser)) return 1;
+    appendPrelude(program);
     ldp3::SemanticAnalyzer sema;
     if (!sema.analyze(program)) {
         for (const ldp3::SemaError& e : sema.errors()) {

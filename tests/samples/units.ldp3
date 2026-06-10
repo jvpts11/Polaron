@@ -1,0 +1,19 @@
+program Units;
+
+public bundle main {
+
+    import System.Memory.Units.kilobytes;
+    import System.Memory.Units.megabytes;
+
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // The unit suffixes and ByteSize come from the embedded prelude.
+                ByteSize a = 64 kilobytes;
+                ByteSize b = 2 megabytes;
+                System.IO.println($"a = {a.bytes} b = {b.bytes}");   // 65536 / 2097152
+                return;
+            }
+        }
+    }
+}
