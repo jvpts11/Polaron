@@ -42,6 +42,8 @@ std::string_view tokenKindName(TokenKind kind) {
 
         case TokenKind::KwExtends:    return "KwExtends";
         case TokenKind::KwImplements: return "KwImplements";
+        case TokenKind::KwSealed:     return "KwSealed";
+        case TokenKind::KwPermits:    return "KwPermits";
         case TokenKind::KwThis:       return "KwThis";
         case TokenKind::KwSuper:      return "KwSuper";
         case TokenKind::KwVar:        return "KwVar";

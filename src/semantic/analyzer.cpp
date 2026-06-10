@@ -112,6 +112,12 @@ void SemanticAnalyzer::validateHierarchy() {
                 error("class '" + name + "' extends struct '" + info.superclass +
                           "' (structs have no inheritance)",
                       {});
+            } else if (sup->isSealed &&
+                       std::find(sup->permits.begin(), sup->permits.end(), name) ==
+                           sup->permits.end()) {
+                error("class '" + name + "' cannot extend sealed '" + info.superclass +
+                          "' (not in its permits list)",
+                      {});
             }
         }
         for (const std::string& iface : info.interfaces) {
@@ -245,6 +251,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 info.isAbstract = cls.isAbstract;
                 info.isInterface = cls.isInterface;
                 info.isStruct = cls.isStruct;
+                info.isSealed = cls.isSealed;
+                info.permits = cls.permits;
                 info.isMovable = cls.isMovable;
                 info.isUnique = cls.isUnique;
                 for (const ast::MemberPtr& member : cls.members) {
@@ -710,6 +718,22 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             popScope();
         }
         if (ms->defaultBody) analyzeBlock(*ms->defaultBody);
+        // Exhaustiveness (spec 16.1): a sealed subject must cover every permit and
+        // needs no default; a non-sealed subject requires a default.
+        const ClassInfo* sc = lookupClass(baseType(subjType));
+        if (sc != nullptr && sc->isSealed) {
+            for (const std::string& p : sc->permits) {
+                bool covered = false;
+                for (const ast::MatchCase& c : ms->cases)
+                    if (c.typeName == p) covered = true;
+                if (!covered && !ms->defaultBody)
+                    error("match on sealed '" + baseType(subjType) +
+                              "' is not exhaustive: missing case '" + p + "'",
+                          ms->loc);
+            }
+        } else if (!ms->defaultBody) {
+            error("match requires a 'default' case (the subject is not sealed)", ms->loc);
+        }
         return;
     }
     if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&stmt)) {

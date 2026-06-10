@@ -45,6 +45,8 @@ TokenKind keywordKind(std::string_view text) {
         {"final", TokenKind::KwFinal},
         {"override", TokenKind::KwOverride},
         {"mutable", TokenKind::KwMutable},
+        {"sealed", TokenKind::KwSealed},
+        {"permits", TokenKind::KwPermits},
         {"extends", TokenKind::KwExtends},
         {"implements", TokenKind::KwImplements},
         {"this", TokenKind::KwThis},

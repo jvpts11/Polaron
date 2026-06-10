@@ -48,10 +48,12 @@ struct ClassInfo {
     bool isAbstract = false;
     bool isInterface = false;
     bool isStruct = false;   // value type, no inheritance
+    bool isSealed = false;   // only `permits` types may extend it
     bool isMovable = false;  // move discipline
     bool isUnique = false;   // single-live-reference discipline
     bool hasConstructor = false;
     bool hasDestructor = false;
+    std::vector<std::string> permits;  // sealed permits list
 };
 
 // A namespace-level `comptime literal` suffix function (spec 17.10).

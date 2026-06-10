@@ -329,10 +329,12 @@ struct ClassDecl {
     bool isRecord = false;                // declared with `record` -- immutable value type
     bool isUnion = false;                 // declared with `union` -- fields share one storage
     bool isAbstract = false;              // `abstract class` (interfaces are abstract too)
+    bool isSealed = false;                // `sealed` -- only `permits` types may extend it
     bool isMovable = false;               // `movable class` -- move discipline
     bool isUnique = false;                // `unique class` -- single live reference
     std::string superclass;               // "" when none (from `extends`)
     std::vector<std::string> interfaces;  // from `implements`
+    std::vector<std::string> permits;     // sealed permits list (subtypes)
     std::vector<MemberPtr> members;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;

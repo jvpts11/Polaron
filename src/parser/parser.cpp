@@ -337,6 +337,7 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     ast::ClassDecl c;
     c.loc = current().loc;
     c.visibility = parseVisibilityOpt();
+    if (match(TokenKind::KwSealed)) c.isSealed = true;
     if (match(TokenKind::KwAbstract)) c.isAbstract = true;
     if (match(TokenKind::KwMovable)) {
         c.isMovable = true;
@@ -370,6 +371,12 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     if (match(TokenKind::KwImplements)) {
         do {
             c.interfaces.push_back(expect(TokenKind::Identifier, "an interface name").lexeme);
+        } while (match(TokenKind::Comma));
+    }
+    // `sealed ... permits A, B, C`: only the listed types may extend it (spec 12/16).
+    if (match(TokenKind::KwPermits)) {
+        do {
+            c.permits.push_back(expect(TokenKind::Identifier, "a permitted subtype").lexeme);
         } while (match(TokenKind::Comma));
     }
     expect(TokenKind::LBrace, "'{'");

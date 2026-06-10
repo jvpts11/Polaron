@@ -755,6 +755,40 @@ TEST_CASE("semantic accepts a match with subtype cases and field bindings") {
     CHECK(checkSrc(withMatch("match (s) { case Circle(int r) { int x = r; } default {} }")));
 }
 
+namespace {
+// A sealed Shape permitting Circle and Square, plus a match in Main's body.
+std::string withSealed(const std::string& matchBody) {
+    return withClass(
+        "public sealed abstract class Shape permits Circle, Square {"
+        " public abstract method area() returns int; }"
+        " public class Circle extends Shape { public constructor Circle() {}"
+        " public override method area() returns int { return 0; } }"
+        " public class Square extends Shape { public constructor Square() {}"
+        " public override method area() returns int { return 0; } }",
+        "Shape* s = new Circle() on heap; " + matchBody);
+}
+}  // namespace
+
+TEST_CASE("semantic accepts an exhaustive sealed match without a default") {
+    CHECK(checkSrc(withSealed("match (s) { case Circle() {} case Square() {} }")));
+}
+
+TEST_CASE("semantic rejects a non-exhaustive sealed match without a default") {
+    CHECK_FALSE(checkSrc(withSealed("match (s) { case Circle() {} }")));
+}
+
+TEST_CASE("semantic rejects a non-sealed match without a default") {
+    CHECK_FALSE(checkSrc(withMatch("match (s) { case Circle(int r) { int x = r; } }")));
+}
+
+TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public sealed class Base permits Ok { public constructor Base() {} }"
+        " public class Ok extends Base { public constructor Ok() {} }"
+        " public class Sneaky extends Base { public constructor Sneaky() {} }",
+        "int n = 0;")));
+}
+
 TEST_CASE("semantic rejects a match case that is not a subtype of the subject") {
     CHECK_FALSE(checkSrc(withClass(
         "public class Foo { public constructor Foo() {} }"
