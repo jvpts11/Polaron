@@ -4,16 +4,19 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -77,14 +80,23 @@ std::string typeRefName(const ast::TypeRef& t) {
 }
 
 // Layout of a class: its LLVM struct, field indices/types, and method returns.
+// Polymorphic classes (in a hierarchy) carry a vtable pointer at field 0.
 struct ClassLayout {
+    const ast::ClassDecl* decl = nullptr;  // source declaration (members in order)
     llvm::StructType* type = nullptr;
     std::unordered_map<std::string, unsigned> fieldIndex;  // includes inherited fields
     std::unordered_map<std::string, std::string> fieldType;  // LDP3 type name per field
     std::unordered_map<std::string, std::string> methodReturnType;  // own methods only
+    std::unordered_map<std::string, const ast::MethodDecl*> ownMethods;  // own methods, by name
     std::string superclass;
+    std::vector<std::string> interfaces;
     std::vector<std::pair<std::string, std::string>> ownFields;  // (name, type), declaration order
+    bool isAbstract = false;
+    bool isInterface = false;
+    bool hasVtable = false;
     bool hasDestructor = false;
+    std::vector<std::string> vtslots;          // virtual method names, in slot order
+    llvm::GlobalVariable* vtable = nullptr;     // emitted vtable global (concrete classes)
 };
 
 // A local variable / parameter: its storage (an alloca) and LDP3 type name.
@@ -164,6 +176,82 @@ struct CodeGenerator::Impl {
         if (!it->second.superclass.empty()) result = collectFields(it->second.superclass);
         for (const auto& f : it->second.ownFields) result.push_back(f);
         return result;
+    }
+
+    // Virtual method names in vtable-slot order: superclass slots first, then
+    // interface methods, then own new instance methods. Overrides reuse a slot.
+    std::vector<std::string> computeSlots(const std::string& className) {
+        std::vector<std::string> slots;
+        auto it = classes.find(className);
+        if (it == classes.end()) return slots;
+        const ClassLayout& l = it->second;
+        if (!l.superclass.empty()) slots = computeSlots(l.superclass);
+        for (const std::string& iface : l.interfaces) {
+            for (const std::string& m : computeSlots(iface)) {
+                if (std::find(slots.begin(), slots.end(), m) == slots.end()) slots.push_back(m);
+            }
+        }
+        if (l.decl != nullptr) {
+            for (const ast::MemberPtr& member : l.decl->members) {
+                const auto* md = dynamic_cast<const ast::MethodDecl*>(member.get());
+                if (md == nullptr || md->isStatic) continue;
+                if (std::find(slots.begin(), slots.end(), md->name) == slots.end()) {
+                    slots.push_back(md->name);
+                }
+            }
+        }
+        return slots;
+    }
+
+    // Mangled name of the most-derived concrete implementation of `method` at or
+    // above `className` ("" if the slot is still abstract).
+    std::string vtableImpl(const std::string& className, const std::string& method) {
+        std::string c = className;
+        while (!c.empty()) {
+            auto it = classes.find(c);
+            if (it == classes.end()) break;
+            auto mit = it->second.ownMethods.find(method);
+            if (mit != it->second.ownMethods.end() && !mit->second->isAbstract) {
+                return c + "." + method;
+            }
+            c = it->second.superclass;
+        }
+        return "";
+    }
+
+    // The MethodDecl for `method` visible from `className` (for its signature).
+    const ast::MethodDecl* findMethodDecl(const std::string& className, const std::string& method) {
+        std::string c = className;
+        while (!c.empty()) {
+            auto it = classes.find(c);
+            if (it == classes.end()) break;
+            auto mit = it->second.ownMethods.find(method);
+            if (mit != it->second.ownMethods.end()) return mit->second;
+            for (const std::string& iface : it->second.interfaces) {
+                const ast::MethodDecl* m = findMethodDecl(iface, method);
+                if (m != nullptr) return m;
+            }
+            c = it->second.superclass;
+        }
+        return nullptr;
+    }
+
+    int slotIndex(const std::string& staticType, const std::string& method) {
+        auto it = classes.find(staticType);
+        if (it == classes.end()) return -1;
+        const std::vector<std::string>& slots = it->second.vtslots;
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            if (slots[i] == method) return static_cast<int>(i);
+        }
+        return -1;
+    }
+
+    // Signature of an instance method as called through a vtable: (this, params) -> ret.
+    llvm::FunctionType* methodFnType(const ast::MethodDecl* m) {
+        std::vector<llvm::Type*> ptypes;
+        ptypes.push_back(builder.getPtrTy());  // this
+        for (const auto& p : m->params) ptypes.push_back(llvmType(typeRefName(p.type)));
+        return llvm::FunctionType::get(llvmType(typeRefName(m->returnType)), ptypes, false);
     }
 
     // Type name of an expression. Assumes a valid AST (semantic analysis ran).
@@ -555,8 +643,37 @@ struct CodeGenerator::Impl {
                     return builder.CreateCall(fnit->second, args);
                 }
             }
-            // Instance call: obj.method(this, args...). The implementation is on
-            // the class that defines the method (which may be a superclass).
+            // Virtual dispatch: if the static type is polymorphic and the method
+            // has a vtable slot, call indirectly through the object's vtable.
+            const std::string st = typeName(*mem->object);
+            auto stit = classes.find(st);
+            if (stit != classes.end() && stit->second.hasVtable) {
+                const int slot = slotIndex(st, mem->member);
+                const ast::MethodDecl* mdecl = findMethodDecl(st, mem->member);
+                if (slot >= 0 && mdecl != nullptr) {
+                    llvm::Value* recv = emitObjectPtr(*mem->object);
+                    if (recv == nullptr) return nullptr;
+                    llvm::Value* vtblField =
+                        builder.CreateStructGEP(stit->second.type, recv, 0, "vtbl.addr");
+                    llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblField, "vtbl");
+                    llvm::Type* vtArrTy =
+                        llvm::ArrayType::get(builder.getPtrTy(), stit->second.vtslots.size());
+                    llvm::Value* slotPtr = builder.CreateConstGEP2_64(
+                        vtArrTy, vtbl, 0, static_cast<std::uint64_t>(slot), "slot");
+                    llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), slotPtr, "fn");
+                    std::vector<llvm::Value*> vargs;
+                    vargs.push_back(recv);
+                    for (const auto& arg : call.args) {
+                        llvm::Value* v = emitExpr(*arg);
+                        if (v == nullptr) return nullptr;
+                        vargs.push_back(v);
+                    }
+                    return builder.CreateCall(methodFnType(mdecl), fnPtr, vargs);
+                }
+            }
+
+            // Direct call: obj.method(this, args...). The implementation is on the
+            // class that defines the method (which may be a superclass).
             llvm::Value* objPtr = emitObjectPtr(*mem->object);
             if (objPtr == nullptr) return nullptr;
             const std::string owner = methodOwner(typeName(*mem->object), mem->member);
@@ -747,15 +864,18 @@ struct CodeGenerator::Impl {
     // ---- Top-level generation ----
 
     void declareClasses() {
-        // Pass 1: create struct types and record own fields, superclass and
-        // method returns. All names registered first so pass 2 can resolve
-        // inherited fields and field types that reference other classes.
+        // Pass 1: create struct types and record declaration, superclass,
+        // interfaces, flags and own members. All names registered first.
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ClassDecl& cls : ns.classes) {
                     ClassLayout layout;
+                    layout.decl = &cls;
                     layout.type = llvm::StructType::create(context, "class." + cls.name);
                     layout.superclass = cls.superclass;
+                    layout.interfaces = cls.interfaces;
+                    layout.isAbstract = cls.isAbstract;
+                    layout.isInterface = cls.isInterface;
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
                             layout.ownFields.emplace_back(
@@ -763,6 +883,7 @@ struct CodeGenerator::Impl {
                         } else if (const auto* m =
                                        dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             layout.methodReturnType[m->name] = m->returnType.name;
+                            layout.ownMethods[m->name] = m;
                         } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) !=
                                    nullptr) {
                             layout.hasDestructor = true;
@@ -772,13 +893,29 @@ struct CodeGenerator::Impl {
                 }
             }
         }
-        // Pass 2: lay out fields inherited-first, then own; set struct bodies.
+        // Pass 1.5: vtable metadata. A class is polymorphic (carries a vtable
+        // pointer) if it is in any inheritance/interface relationship.
+        std::unordered_set<std::string> bases;
+        for (const auto& [name, l] : classes) {
+            if (!l.superclass.empty()) bases.insert(l.superclass);
+            for (const std::string& i : l.interfaces) bases.insert(i);
+        }
+        for (auto& [name, l] : classes) {
+            l.hasVtable = !l.superclass.empty() || !l.interfaces.empty() || l.isAbstract ||
+                          l.isInterface || bases.count(name) > 0;
+        }
+        for (auto& [name, l] : classes) {
+            if (l.hasVtable) l.vtslots = computeSlots(name);
+        }
+        // Pass 2: lay out fields (vtable pointer at slot 0 when polymorphic),
+        // inherited fields first, then own.
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ClassDecl& cls : ns.classes) {
                     ClassLayout& layout = classes[cls.name];
                     std::vector<llvm::Type*> fieldTypes;
-                    unsigned idx = 0;
+                    if (layout.hasVtable) fieldTypes.push_back(builder.getPtrTy());  // vtable ptr
+                    unsigned idx = layout.hasVtable ? 1u : 0u;
                     for (const auto& [fname, ftype] : collectFields(cls.name)) {
                         layout.fieldIndex[fname] = idx++;
                         layout.fieldType[fname] = ftype;
@@ -787,6 +924,27 @@ struct CodeGenerator::Impl {
                     layout.type->setBody(fieldTypes);
                 }
             }
+        }
+    }
+
+    // Emits one vtable global per concrete polymorphic class: an array of
+    // function pointers, one per slot, pointing at the most-derived impl.
+    void emitVtables() {
+        for (auto& [name, l] : classes) {
+            if (!l.hasVtable || l.isAbstract || l.isInterface) continue;  // concrete only
+            std::vector<llvm::Constant*> entries;
+            for (const std::string& slot : l.vtslots) {
+                const std::string impl = vtableImpl(name, slot);
+                llvm::Constant* slotFn = llvm::ConstantPointerNull::get(builder.getPtrTy());
+                auto fit = functions.find(impl);
+                if (!impl.empty() && fit != functions.end()) slotFn = fit->second;  // Function*
+                entries.push_back(slotFn);
+            }
+            llvm::ArrayType* vtType = llvm::ArrayType::get(builder.getPtrTy(), entries.size());
+            l.vtable = new llvm::GlobalVariable(module, vtType, /*isConstant=*/true,
+                                                llvm::GlobalValue::PrivateLinkage,
+                                                llvm::ConstantArray::get(vtType, entries),
+                                                name + ".vtable");
         }
     }
 
@@ -804,6 +962,7 @@ struct CodeGenerator::Impl {
                                     ty, llvm::Function::ExternalLinkage, "main", module);
                                 continue;
                             }
+                            if (m->isAbstract) continue;  // no body to declare
                             std::vector<llvm::Type*> ptypes;
                             if (!m->isStatic) ptypes.push_back(builder.getPtrTy());
                             for (const auto& p : m->params)
@@ -836,7 +995,8 @@ struct CodeGenerator::Impl {
                     }
                     // Synthesize a default constructor so that `new X()` and inline
                     // field initializers work for classes with no explicit ctor.
-                    if (!hasCtor) {
+                    // Interfaces are never instantiated, so they get none.
+                    if (!hasCtor && !cls.isInterface) {
                         llvm::FunctionType* ty = llvm::FunctionType::get(
                             builder.getVoidTy(), {builder.getPtrTy()}, false);
                         const std::string mangled = cls.name + "." + cls.name;
@@ -890,12 +1050,17 @@ struct CodeGenerator::Impl {
         }
 
         // A constructor first runs the implicit super() (base constructor), then
-        // its inline field initializers, then its own body.
+        // installs this class's vtable, then field initializers, then its body.
         if (ctorOf != nullptr) {
-            const std::string& super = classes[ctorOf->name].superclass;
-            if (!super.empty()) {
-                auto sit = functions.find(super + "." + super);
+            ClassLayout& cl = classes[ctorOf->name];
+            if (!cl.superclass.empty()) {
+                auto sit = functions.find(cl.superclass + "." + cl.superclass);
                 if (sit != functions.end()) builder.CreateCall(sit->second, {currentThis});
+            }
+            if (cl.hasVtable && cl.vtable != nullptr) {
+                llvm::Value* vtblField =
+                    builder.CreateStructGEP(cl.type, currentThis, 0, "vtbl.addr");
+                builder.CreateStore(cl.vtable, vtblField);
             }
             emitFieldInits(*ctorOf, currentThis);
         }
@@ -921,7 +1086,7 @@ struct CodeGenerator::Impl {
                             if (m == entry.method) {
                                 emitBody(functions["@entry"], m->body, {}, "",
                                          builder.getInt32Ty());
-                            } else {
+                            } else if (!m->isAbstract) {
                                 emitBody(functions[cls.name + "." + m->name], m->body, m->params,
                                          m->isStatic ? std::string() : cls.name,
                                          llvmType(typeRefName(m->returnType)));
@@ -937,8 +1102,9 @@ struct CodeGenerator::Impl {
                                      builder.getVoidTy());
                         }
                     }
-                    // Emit the synthesized default constructor: just field inits.
-                    if (!hasCtor) {
+                    // Emit the synthesized default constructor (sets the vtable +
+                    // field inits). Interfaces get none.
+                    if (!hasCtor && !cls.isInterface) {
                         const ast::Block emptyBody;
                         emitBody(functions[cls.name + "." + cls.name], emptyBody, {}, cls.name,
                                  builder.getVoidTy(), &cls);
@@ -962,6 +1128,7 @@ bool CodeGenerator::generate() {
     }
     impl_->declareClasses();
     impl_->declareFunctions();
+    impl_->emitVtables();
     impl_->emitFunctions();
     if (!errors_.empty()) return false;
 

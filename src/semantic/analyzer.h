@@ -69,7 +69,7 @@ private:
     void analyzeBodies(const ast::Program& program);
     void analyzeFieldInits(const ast::ClassDecl& cls);
     void analyzeMethodBody(const ast::Block& body, const std::vector<ast::Param>& params,
-                           const std::string& thisClass);
+                           const std::string& thisClass, bool inConstructor);
     void analyzeBlock(const ast::Block& block);
     void analyzeStatement(const ast::Stmt& stmt);
     void checkAssignTarget(const ast::Expr& target, const std::string& valueType,
@@ -79,6 +79,8 @@ private:
     std::string flattenCallee(const ast::Expr& expr) const;
     const ClassInfo* lookupClass(const std::string& name) const;
     void validateHierarchy();
+    void validateOverrides(const ast::Program& program);
+    void collectMethodNamesInto(const std::string& className, std::vector<std::string>& out) const;
     // Resolve a member by walking the class, its superclasses and interfaces.
     const FieldInfo* findField(const std::string& className, const std::string& field) const;
     const MethodInfo* findMethod(const std::string& className, const std::string& method) const;
@@ -95,6 +97,7 @@ private:
     EntryPoint entry_;
     std::unordered_map<std::string, ClassInfo> classes_;
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
+    bool inConstructor_ = false;  // immutable fields may be initialized here
     std::vector<std::unordered_map<std::string, LocalVar>> scopes_;
 };
 

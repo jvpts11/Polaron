@@ -1,0 +1,42 @@
+program Polymorphism;
+
+// Virtual dispatch: a variable of the base type calls the derived override.
+// Expected output:
+//   woof
+//   meow
+
+public bundle main {
+    public namespace zoo {
+
+        public class Animal {
+            public method speak() returns void {
+                System.IO.println("...generic animal");
+                return;
+            }
+        }
+
+        public class Dog extends Animal {
+            public override method speak() returns void {
+                System.IO.println("woof");
+                return;
+            }
+        }
+
+        public class Cat extends Animal {
+            public override method speak() returns void {
+                System.IO.println("meow");
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Animal a = new Dog();   // upcast: a's static type is Animal
+                a.speak();              // -> woof (dispatched to Dog)
+                Animal b = new Cat();
+                b.speak();              // -> meow (dispatched to Cat)
+                return;
+            }
+        }
+    }
+}

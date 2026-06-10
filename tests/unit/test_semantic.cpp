@@ -312,3 +312,61 @@ TEST_CASE("semantic rejects interpolating a non-printable value") {
     CHECK_FALSE(checkSrc(withClass(
         kCounter, "Counter c = new Counter(); System.IO.println($\"c = {c}\");")));
 }
+
+// ---- Inheritance, interfaces and polymorphism (M8) ----
+
+TEST_CASE("semantic accepts inheritance, override and an upcast") {
+    CHECK(checkSrc(withClass(
+        "public class Animal { public method speak() returns void { } }"
+        " public class Dog extends Animal { public override method speak() returns void { } }",
+        "Animal a = new Dog(); a.speak();")));
+}
+
+TEST_CASE("semantic rejects extends of an unknown class") {
+    CHECK_FALSE(checkSrc(withClass("public class Dog extends Ghost { }", "")));
+}
+
+TEST_CASE("semantic rejects instantiating an abstract class") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public abstract class Shape { public abstract method area() returns int; }",
+        "Shape s = new Shape();")));
+}
+
+TEST_CASE("semantic rejects 'override' that overrides nothing") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class A { public override method foo() returns void { } }", "")));
+}
+
+TEST_CASE("semantic requires 'override' on an inherited method") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class A { public method foo() returns void { } }"
+        " public class B extends A { public method foo() returns void { } }",
+        "")));
+}
+
+TEST_CASE("semantic rejects a concrete class leaving a method abstract") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public abstract class Shape { public abstract method area() returns int; }"
+        " public class Bad extends Shape { }",
+        "")));
+}
+
+TEST_CASE("semantic accepts implementing an interface") {
+    CHECK(checkSrc(withClass(
+        "public interface Drawable { method draw() returns void; }"
+        " public class Dot implements Drawable { public override method draw() returns void { } }",
+        "")));
+}
+
+TEST_CASE("semantic rejects an inheritance cycle") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class A extends B { } public class B extends A { }", "")));
+}
+
+TEST_CASE("semantic accepts initializing an immutable field in the constructor") {
+    CHECK(checkSrc(withClass(
+        "public class Box { private int v;"
+        " public constructor Box(int x) { this.v = x; }"
+        " public method get() returns int { return this.v; } }",
+        "Box b = new Box(7);")));
+}

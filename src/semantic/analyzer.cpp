@@ -1,5 +1,6 @@
 #include "semantic/analyzer.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -95,6 +96,70 @@ void SemanticAnalyzer::validateHierarchy() {
             const ClassInfo* c = lookupClass(cur);
             if (c == nullptr) break;
             cur = c->superclass;
+        }
+    }
+}
+
+void SemanticAnalyzer::collectMethodNamesInto(const std::string& className,
+                                              std::vector<std::string>& out) const {
+    const ClassInfo* c = lookupClass(className);
+    if (c == nullptr) return;
+    for (const auto& [mname, mi] : c->methods) {
+        (void)mi;
+        if (std::find(out.begin(), out.end(), mname) == out.end()) out.push_back(mname);
+    }
+    if (!c->superclass.empty()) collectMethodNamesInto(c->superclass, out);
+    for (const std::string& iface : c->interfaces) collectMethodNamesInto(iface, out);
+}
+
+void SemanticAnalyzer::validateOverrides(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
+                const ClassInfo* ci = lookupClass(cls.name);
+                if (ci == nullptr) continue;
+
+                // Does any superclass / interface declare `method`?
+                auto inheritedHas = [&](const std::string& method) {
+                    if (!ci->superclass.empty() && findMethod(ci->superclass, method) != nullptr) {
+                        return true;
+                    }
+                    for (const std::string& iface : ci->interfaces) {
+                        if (findMethod(iface, method) != nullptr) return true;
+                    }
+                    return false;
+                };
+
+                for (const ast::MemberPtr& member : cls.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                    if (m == nullptr || m->isStatic) continue;
+                    const bool inherited = inheritedHas(m->name);
+                    if (m->isOverride && !inherited) {
+                        error("method '" + m->name +
+                                  "' is marked 'override' but does not override anything",
+                              m->loc);
+                    }
+                    if (!m->isOverride && !m->isAbstract && inherited) {
+                        error("method '" + m->name +
+                                  "' overrides an inherited method; mark it 'override'",
+                              m->loc);
+                    }
+                }
+
+                // A concrete class must implement every abstract method it inherits.
+                if (!ci->isAbstract && !ci->isInterface) {
+                    std::vector<std::string> names;
+                    collectMethodNamesInto(cls.name, names);
+                    for (const std::string& mname : names) {
+                        const MethodInfo* mi = findMethod(cls.name, mname);
+                        if (mi != nullptr && mi->isAbstract) {
+                            error("class '" + cls.name + "' must implement abstract method '" +
+                                      mname + "'",
+                                  cls.loc);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -226,14 +291,15 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                 analyzeFieldInits(cls);
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                        if (m->isAbstract) continue;  // no body to analyze
                         analyzeMethodBody(m->body, m->params,
-                                          m->isStatic ? std::string() : cls.name);
+                                          m->isStatic ? std::string() : cls.name, false);
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
-                        analyzeMethodBody(c->body, c->params, cls.name);
+                        analyzeMethodBody(c->body, c->params, cls.name, /*inConstructor=*/true);
                     } else if (const auto* d =
                                    dynamic_cast<const ast::DestructorDecl*>(member.get())) {
-                        analyzeMethodBody(d->body, {}, cls.name);
+                        analyzeMethodBody(d->body, {}, cls.name, false);
                     }
                 }
             }
@@ -244,6 +310,10 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
 bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerClasses(program);
     validateHierarchy();
+    // If the hierarchy itself is broken (cycle, missing super), stop: walking it
+    // recursively below could otherwise loop forever.
+    if (!errors_.empty()) return false;
+    validateOverrides(program);
     findEntryPoint(program);
     analyzeBodies(program);
     return errors_.empty();
@@ -251,9 +321,10 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
 
 void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<ast::Param>& params,
-                                         const std::string& thisClass) {
+                                         const std::string& thisClass, bool inConstructor) {
     scopes_.clear();
     currentClass_ = thisClass;
+    inConstructor_ = inConstructor;
     pushScope();
     for (const ast::Param& p : params) {
         // params immutable by default
@@ -300,7 +371,10 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             error("class '" + objType + "' has no field '" + mem->member + "'", loc);
             return;
         }
-        if (!f->isMutable) {
+        // Immutable fields may still be initialized via `this.field` in a constructor.
+        const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+        const bool isThisField = objId != nullptr && objId->name == "this";
+        if (!f->isMutable && !(inConstructor_ && isThisField)) {
             error("cannot assign to immutable field '" + mem->member + "' (declare it 'mutable')",
                   loc);
         }
@@ -501,9 +575,16 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
-        if (lookupClass(nw->className) == nullptr) {
+        const ClassInfo* ci = lookupClass(nw->className);
+        if (ci == nullptr) {
             error("unknown class '" + nw->className + "'", nw->loc);
             return "";
+        }
+        if (ci->isInterface || ci->isAbstract) {
+            error("cannot instantiate " +
+                      std::string(ci->isInterface ? "interface" : "abstract class") + " '" +
+                      nw->className + "'",
+                  nw->loc);
         }
         if (nw->location != "stack" && nw->location != "heap") {
             error("'new' location must be 'stack' or 'heap', got '" + nw->location + "'", nw->loc);
