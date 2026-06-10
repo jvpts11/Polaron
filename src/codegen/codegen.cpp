@@ -361,6 +361,33 @@ struct CodeGenerator::Impl {
         return module.getOrInsertFunction("memset", ty);
     }
 
+    llvm::FunctionCallee memcpyFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getPtrTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty()},
+            false);
+        return module.getOrInsertFunction("memcpy", ty);
+    }
+
+    // A class value (not a pointer/ref, not an array, not a primitive/enum).
+    bool isClassValue(const std::string& t) {
+        return !isRefType(t) && !isArrayType(t) && classes.count(t) > 0;
+    }
+
+    // An existing object that a value copy must duplicate (vs. a fresh `new`).
+    bool isCopyableLValue(const ast::Expr& e) {
+        return dynamic_cast<const ast::IdentifierExpr*>(&e) != nullptr ||
+               dynamic_cast<const ast::MemberExpr*>(&e) != nullptr;
+    }
+
+    // Allocates a fresh struct and copies srcPtr's bytes into it (value copy).
+    llvm::Value* emitClassCopy(const std::string& className, llvm::Value* srcPtr) {
+        auto cit = classes.find(className);
+        if (cit == classes.end()) return srcPtr;
+        llvm::Value* dest = createEntryAlloca(className + ".copy", cit->second.type);
+        builder.CreateCall(memcpyFn(), {dest, srcPtr, sizeOf(cit->second.type)});
+        return dest;
+    }
+
     // Array memory layout: one heap block [ i64 length | elem 0 | elem 1 | ... ].
     // The array value is a pointer to the length header; elements (i32 in M5)
     // start 8 bytes in.
@@ -754,6 +781,11 @@ struct CodeGenerator::Impl {
             const std::string declType = vd->isVar ? typeName(*vd->init) : typeRefName(vd->type);
             llvm::Value* initV = emitExpr(*vd->init);
             if (initV == nullptr) return;
+            // Value semantics: copying a class value from an existing object makes
+            // an independent copy; binding a fresh `new` (or a pointer) does not.
+            if (isClassValue(declType) && isCopyableLValue(*vd->init)) {
+                initV = emitClassCopy(declType, initV);
+            }
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
             builder.CreateStore(initV, slot);
             locals[vd->name] = LocalSlot{slot, declType};
@@ -768,11 +800,20 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
+            const std::string targetType = typeName(*assign->target);
             llvm::Value* slot = emitLValue(*assign->target);
             if (slot == nullptr) return;
             llvm::Value* v = emitExpr(*assign->value);
             if (v == nullptr) return;
-            builder.CreateStore(v, slot);
+            // Value semantics: assigning a class value copies into the target's
+            // existing struct, keeping it independent from the source.
+            if (isClassValue(targetType) && isCopyableLValue(*assign->value)) {
+                llvm::Value* destStruct = builder.CreateLoad(builder.getPtrTy(), slot);
+                builder.CreateCall(memcpyFn(),
+                                   {destStruct, v, sizeOf(classes[targetType].type)});
+            } else {
+                builder.CreateStore(v, slot);
+            }
             return;
         }
         if (const auto* incdec = dynamic_cast<const ast::IncDecStmt*>(&stmt)) {

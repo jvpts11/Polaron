@@ -239,6 +239,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=b=5 p=5"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # 0.2 Fase A2: value semantics - `T b = a` copies, `T* p = &a` shares.
+        add_test(NAME codegen_value_semantics_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/value_semantics.ldp3"
+            "-DEXPECTED=after copy: a=1 b=99 after share: a=42 p=42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()
