@@ -48,9 +48,11 @@ private:
 
     ast::Bundle parseBundle();
     ast::Namespace parseNamespace();
-    ast::ClassDecl parseClass();
-    ast::MemberPtr parseMember();
-    std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic);
+    ast::ClassDecl parseClassOrInterface();
+    ast::MemberPtr parseMember(bool inInterface);
+    std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic,
+                                                 bool isAbstract, bool isOverride, bool isFinal,
+                                                 bool inInterface);
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable);
     std::unique_ptr<ast::ConstructorDecl> parseConstructor(std::string visibility);
     std::unique_ptr<ast::DestructorDecl> parseDestructor(std::string visibility);

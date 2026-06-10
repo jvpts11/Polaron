@@ -161,30 +161,47 @@ ast::Namespace Parser::parseNamespace() {
     ns.name = parseDottedName();
     expect(TokenKind::LBrace, "'{'");
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
-        ns.classes.push_back(parseClass());
+        ns.classes.push_back(parseClassOrInterface());
     }
     expect(TokenKind::RBrace, "'}'");
     return ns;
 }
 
-ast::ClassDecl Parser::parseClass() {
+ast::ClassDecl Parser::parseClassOrInterface() {
     ast::ClassDecl c;
     c.loc = current().loc;
     c.visibility = parseVisibilityOpt();
-    expect(TokenKind::KwClass, "'class'");
-    c.name = expect(TokenKind::Identifier, "the class name").lexeme;
+    if (match(TokenKind::KwAbstract)) c.isAbstract = true;
+    if (match(TokenKind::KwInterface)) {
+        c.isInterface = true;
+        c.isAbstract = true;  // interfaces are abstract by nature
+    } else {
+        expect(TokenKind::KwClass, "'class' or 'interface'");
+    }
+    c.name = expect(TokenKind::Identifier, "the type name").lexeme;
+    if (match(TokenKind::KwExtends)) {
+        c.superclass = expect(TokenKind::Identifier, "a superclass name").lexeme;
+    }
+    if (match(TokenKind::KwImplements)) {
+        do {
+            c.interfaces.push_back(expect(TokenKind::Identifier, "an interface name").lexeme);
+        } while (match(TokenKind::Comma));
+    }
     expect(TokenKind::LBrace, "'{'");
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
-        c.members.push_back(parseMember());
+        c.members.push_back(parseMember(c.isInterface));
     }
     expect(TokenKind::RBrace, "'}'");
     return c;
 }
 
-ast::MemberPtr Parser::parseMember() {
+ast::MemberPtr Parser::parseMember(bool inInterface) {
     std::string visibility = parseVisibilityOpt();
     bool isStatic = false;
     bool isMutable = false;
+    bool isAbstract = false;
+    bool isOverride = false;
+    bool isFinal = false;
     for (;;) {
         if (!isStatic && check(TokenKind::KwStatic)) {
             advance();
@@ -196,10 +213,26 @@ ast::MemberPtr Parser::parseMember() {
             isMutable = true;
             continue;
         }
+        if (!isAbstract && check(TokenKind::KwAbstract)) {
+            advance();
+            isAbstract = true;
+            continue;
+        }
+        if (!isOverride && check(TokenKind::KwOverride)) {
+            advance();
+            isOverride = true;
+            continue;
+        }
+        if (!isFinal && check(TokenKind::KwFinal)) {
+            advance();
+            isFinal = true;
+            continue;
+        }
         break;
     }
     if (check(TokenKind::KwMethod)) {
-        return parseMethod(std::move(visibility), isStatic);
+        return parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
+                           inInterface);
     }
     if (check(TokenKind::KwConstructor)) {
         return parseConstructor(std::move(visibility));
@@ -211,11 +244,16 @@ ast::MemberPtr Parser::parseMember() {
     return parseField(std::move(visibility), isStatic, isMutable);
 }
 
-std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, bool isStatic) {
+std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, bool isStatic,
+                                                     bool isAbstract, bool isOverride, bool isFinal,
+                                                     bool inInterface) {
     auto m = std::make_unique<ast::MethodDecl>();
     m->loc = current().loc;
     m->visibility = std::move(visibility);
     m->isStatic = isStatic;
+    m->isAbstract = isAbstract || inInterface;  // interface methods are abstract
+    m->isOverride = isOverride;
+    m->isFinal = isFinal;
     expect(TokenKind::KwMethod, "'method'");
     m->name = expect(TokenKind::Identifier, "the method name").lexeme;
     expect(TokenKind::LParen, "'('");
@@ -223,7 +261,11 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     expect(TokenKind::RParen, "')'");
     expect(TokenKind::KwReturns, "'returns'");
     m->returnType = parseTypeRef();
-    m->body = parseBlock();
+    if (m->isAbstract) {
+        expect(TokenKind::Semicolon, "';' (an abstract method has no body)");
+    } else {
+        m->body = parseBlock();
+    }
     return m;
 }
 

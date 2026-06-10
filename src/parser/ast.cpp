@@ -169,12 +169,15 @@ void MethodDecl::dump(std::string& out, int indent) const {
     std::string head = "Method '" + name + "'";
     if (!visibility.empty()) head += " " + visibility;
     if (isStatic) head += " static";
+    if (isAbstract) head += " abstract";
+    if (isOverride) head += " override";
+    if (isFinal) head += " final";
     head += " returns " + typeText(returnType);
     line(out, indent, head);
     for (const auto& p : params) {
         line(out, indent + 1, "Param '" + p.name + "': " + typeText(p.type));
     }
-    body.dump(out, indent + 1);
+    if (!isAbstract) body.dump(out, indent + 1);
 }
 
 void FieldDecl::dump(std::string& out, int indent) const {
@@ -204,8 +207,11 @@ void DestructorDecl::dump(std::string& out, int indent) const {
 }
 
 void ClassDecl::dump(std::string& out, int indent) const {
-    std::string head = "Class '" + name + "'";
+    std::string head = (isInterface ? "Interface '" : "Class '") + name + "'";
     if (!visibility.empty()) head += " " + visibility;
+    if (isAbstract && !isInterface) head += " abstract";
+    if (!superclass.empty()) head += " extends " + superclass;
+    for (const auto& i : interfaces) head += " implements " + i;
     line(out, indent, head);
     for (const auto& m : members) m->dump(out, indent + 1);
 }

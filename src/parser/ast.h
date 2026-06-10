@@ -198,10 +198,13 @@ using MemberPtr = std::unique_ptr<MemberDecl>;
 struct MethodDecl : MemberDecl {
     std::string visibility;  // "" when none
     bool isStatic = false;
+    bool isAbstract = false;  // no body; must be overridden
+    bool isOverride = false;  // overrides an inherited/interface method
+    bool isFinal = false;     // cannot be overridden
     std::string name;
     std::vector<Param> params;
     TypeRef returnType;
-    Block body;
+    Block body;  // empty when isAbstract
     void dump(std::string& out, int indent) const override;
 };
 
@@ -231,6 +234,10 @@ struct DestructorDecl : MemberDecl {
 struct ClassDecl {
     std::string visibility;
     std::string name;
+    bool isInterface = false;             // declared with `interface`
+    bool isAbstract = false;              // `abstract class` (interfaces are abstract too)
+    std::string superclass;               // "" when none (from `extends`)
+    std::vector<std::string> interfaces;  // from `implements`
     std::vector<MemberPtr> members;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
