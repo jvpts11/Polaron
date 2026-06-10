@@ -135,6 +135,22 @@ void ReleaseStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Release region " + region);
 }
 
+void MatchStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Match");
+    subject->dump(out, indent + 1);
+    for (const auto& c : cases) {
+        std::string head = "case " + c.typeName + "(";
+        for (std::size_t i = 0; i < c.bindings.size(); ++i)
+            head += (i ? ", " : "") + c.bindings[i].type.name + " " + c.bindings[i].name;
+        line(out, indent + 1, head + ")");
+        c.body.dump(out, indent + 2);
+    }
+    if (defaultBody) {
+        line(out, indent + 1, "default");
+        defaultBody->dump(out, indent + 2);
+    }
+}
+
 void DeferStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Defer");
     body.dump(out, indent + 1);

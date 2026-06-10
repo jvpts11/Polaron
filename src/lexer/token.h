@@ -58,7 +58,7 @@ enum class TokenKind : std::uint8_t {
     // Keywords -- control flow
     KwIf, KwElse, KwWhile, KwDo, KwFor,
     KwSwitch, KwCase, KwDefault, KwBreak, KwContinue,
-    KwStep, KwIndex,
+    KwStep, KwIndex, KwMatch,
 
     // Keywords -- primitive types + boolean literals
     KwVoid, KwBoolean, KwChar, KwString, KwStringClass,  // string / String

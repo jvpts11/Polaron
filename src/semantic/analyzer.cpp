@@ -693,6 +693,25 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (ifs->elseBlock) analyzeBlock(*ifs->elseBlock);
         return;
     }
+    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(&stmt)) {
+        const std::string subjType = typeOf(*ms->subject);
+        for (const ast::MatchCase& c : ms->cases) {
+            const ClassInfo* ci = lookupClass(c.typeName);
+            if (ci == nullptr) {
+                error("unknown type '" + c.typeName + "' in match case", c.loc);
+            } else if (!subjType.empty() && !isSubtype(c.typeName, baseType(subjType))) {
+                error("'" + c.typeName + "' is not a subtype of '" + subjType + "'", c.loc);
+            }
+            // Bindings introduce locals (the case type's fields) in the case body.
+            pushScope();
+            for (const ast::Param& b : c.bindings)
+                declareLocal(b.name, LocalVar{typeRefStr(b.type), false});
+            for (const auto& st : c.body.statements) analyzeStatement(*st);
+            popScope();
+        }
+        if (ms->defaultBody) analyzeBlock(*ms->defaultBody);
+        return;
+    }
     if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&stmt)) {
         const std::string ct = typeOf(*ws->cond);
         if (!ct.empty() && ct != "boolean") {
@@ -723,7 +742,8 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     }
     if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
         const std::string t = typeOf(*del->target);
-        if (!t.empty() && lookupClass(t) == nullptr && !isArrayType(t)) {
+        // `delete p` where p is a class, or a pointer/reference to one (see through T*/T&).
+        if (!t.empty() && lookupClass(baseType(t)) == nullptr && !isArrayType(t)) {
             error("'delete' expects a heap object or array; got a value of type '" + t + "'",
                   del->loc);
         }

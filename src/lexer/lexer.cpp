@@ -81,6 +81,7 @@ TokenKind keywordKind(std::string_view text) {
         {"do", TokenKind::KwDo},
         {"for", TokenKind::KwFor},
         {"switch", TokenKind::KwSwitch},
+        {"match", TokenKind::KwMatch},
         {"case", TokenKind::KwCase},
         {"default", TokenKind::KwDefault},
         {"break", TokenKind::KwBreak},

@@ -724,6 +724,9 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwFor)) {
         return parseForStatement();
     }
+    if (check(TokenKind::KwMatch)) {
+        return parseMatch();
+    }
     if (check(TokenKind::KwReturn)) {
         auto ret = std::make_unique<ast::ReturnStmt>();
         ret->loc = current().loc;
@@ -849,6 +852,34 @@ ast::StmtPtr Parser::parseForStatement() {
     expect(TokenKind::RParen, "')'");
     s->body = parseBlock();
     return s;
+}
+
+// match (subject) { case Type(bindings) { ... } ... default { ... } } (spec 16).
+ast::StmtPtr Parser::parseMatch() {
+    auto m = std::make_unique<ast::MatchStmt>();
+    m->loc = current().loc;
+    expect(TokenKind::KwMatch, "'match'");
+    expect(TokenKind::LParen, "'('");
+    m->subject = parseExpression();
+    expect(TokenKind::RParen, "')'");
+    expect(TokenKind::LBrace, "'{'");
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        if (match(TokenKind::KwDefault)) {
+            m->defaultBody = std::make_unique<ast::Block>(parseBlock());
+            continue;
+        }
+        expect(TokenKind::KwCase, "'case' or 'default'");
+        ast::MatchCase c;
+        c.loc = current().loc;
+        c.typeName = expect(TokenKind::Identifier, "a case type name").lexeme;
+        expect(TokenKind::LParen, "'(' (positional field bindings)");
+        c.bindings = parseParams();  // (type name, ...) -- may be empty
+        expect(TokenKind::RParen, "')'");
+        c.body = parseBlock();
+        m->cases.push_back(std::move(c));
+    }
+    expect(TokenKind::RBrace, "'}'");
+    return m;
 }
 
 std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {

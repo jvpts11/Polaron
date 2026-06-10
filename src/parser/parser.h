@@ -71,6 +71,7 @@ private:
     ast::StmtPtr parseIfStatement();
     ast::StmtPtr parseWhileStatement();
     ast::StmtPtr parseForStatement();
+    ast::StmtPtr parseMatch();
     ast::StmtPtr parseDefer();
     ast::StmtPtr parseUsing();
     ast::StmtPtr parseVarDecl();

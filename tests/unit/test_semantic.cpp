@@ -740,6 +740,31 @@ TEST_CASE("semantic accepts operator overloading and types a + b as its return")
 }
 
 namespace {
+// A Shape hierarchy plus a match in Main's body.
+std::string withMatch(const std::string& matchBody) {
+    return withClass(
+        "public abstract class Shape { public abstract method area() returns int; }"
+        " public class Circle extends Shape { private int r;"
+        " public constructor Circle(int r) { this.r = r; }"
+        " public override method area() returns int { return this.r; } }",
+        "Shape* s = new Circle(2) on heap; " + matchBody);
+}
+}  // namespace
+
+TEST_CASE("semantic accepts a match with subtype cases and field bindings") {
+    CHECK(checkSrc(withMatch("match (s) { case Circle(int r) { int x = r; } default {} }")));
+}
+
+TEST_CASE("semantic rejects a match case that is not a subtype of the subject") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class Foo { public constructor Foo() {} }"
+        " public abstract class Shape { public abstract method area() returns int; }"
+        " public class Circle extends Shape { public constructor Circle() {}"
+        " public override method area() returns int { return 0; } }",
+        "Shape* s = new Circle() on heap; match (s) { case Foo() {} default {} }")));
+}
+
+namespace {
 // `importLine` after the bundle's `{`. A Widget lives in namespace `lib`; Main
 // in namespace `app` uses it -- visible only with an import.
 std::string crossNs(const std::string& importLine) {

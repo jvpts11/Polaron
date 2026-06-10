@@ -1208,6 +1208,10 @@ struct CodeGenerator::Impl {
             emitIf(*ifs);
             return;
         }
+        if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(&stmt)) {
+            emitMatch(*ms);
+            return;
+        }
         if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&stmt)) {
             emitWhile(*ws);
             return;
@@ -1373,6 +1377,53 @@ struct CodeGenerator::Impl {
             emitBlock(*s.elseBlock);
             if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
         }
+        builder.SetInsertPoint(endBB);
+    }
+
+    // match (subject) { case Type(binds) { ... } ... default { ... } } (spec 16):
+    // a chain of vtable comparisons. Each case binds the case type's own fields
+    // (positional) and runs its body.
+    void emitMatch(const ast::MatchStmt& s) {
+        llvm::Value* subj = emitExpr(*s.subject);
+        if (subj == nullptr) return;
+        auto sit = classes.find(baseType(typeName(*s.subject)));
+        if (sit == classes.end() || !sit->second.hasVtable) {
+            error("match subject must be a polymorphic class", s.loc);
+            return;
+        }
+        llvm::Value* vtblAddr = builder.CreateStructGEP(sit->second.type, subj, 0, "vtbl.addr");
+        llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblAddr, "vtbl");
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "match.end", fn);
+        for (const ast::MatchCase& c : s.cases) {
+            auto cit = classes.find(c.typeName);
+            if (cit == classes.end() || cit->second.vtable == nullptr) continue;
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "match.case", fn);
+            llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(context, "match.next", fn);
+            builder.CreateCondBr(builder.CreateICmpEQ(vtbl, cit->second.vtable, "is"), bodyBB, nextBB);
+            builder.SetInsertPoint(bodyBB);
+            // Bind positional fields: binding[i] <- the case type's own field[i].
+            std::vector<std::string> added;
+            for (std::size_t i = 0; i < c.bindings.size() && i < cit->second.ownFields.size(); ++i) {
+                const std::string& fname = cit->second.ownFields[i].first;
+                const std::string ftype = cit->second.fieldType.count(fname) > 0
+                                              ? cit->second.fieldType[fname]
+                                              : cit->second.ownFields[i].second;
+                llvm::Value* fptr =
+                    builder.CreateStructGEP(cit->second.type, subj, cit->second.fieldIndex[fname]);
+                llvm::Value* val = builder.CreateLoad(llvmType(ftype), fptr, fname);
+                llvm::Value* slot = createEntryAlloca(c.bindings[i].name, llvmType(ftype));
+                builder.CreateStore(val, slot);
+                locals[c.bindings[i].name] = LocalSlot{slot, ftype};
+                added.push_back(c.bindings[i].name);
+            }
+            emitBlock(c.body);
+            for (const std::string& n : added) locals.erase(n);  // bindings are case-scoped
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
+            builder.SetInsertPoint(nextBB);
+        }
+        if (s.defaultBody) emitBlock(*s.defaultBody);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
         builder.SetInsertPoint(endBB);
     }
 

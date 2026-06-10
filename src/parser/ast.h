@@ -258,6 +258,23 @@ struct Param {
     SourceLocation loc;
 };
 
+// One arm of a match: `case Type(t1 b1, ...) { body }` (spec 16). The bindings
+// are positional -- they bind the case type's own fields, in declaration order.
+struct MatchCase {
+    std::string typeName;
+    std::vector<Param> bindings;
+    Block body;
+    SourceLocation loc;
+};
+
+// match (subject) { case ... } -- dynamic type dispatch with destructuring.
+struct MatchStmt : Stmt {
+    ExprPtr subject;
+    std::vector<MatchCase> cases;
+    std::unique_ptr<Block> defaultBody;  // null when absent
+    void dump(std::string& out, int indent) const override;
+};
+
 // Base for class-body members (method now; field/constructor/destructor later).
 struct MemberDecl {
     SourceLocation loc;
