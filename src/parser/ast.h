@@ -71,6 +71,7 @@ struct MemberExpr : Expr {
 struct CallExpr : Expr {
     ExprPtr callee;
     std::vector<ExprPtr> args;
+    bool fromSuffix = false;  // formed from `N suffix` (spec 17.10); requires import
     void dump(std::string& out, int indent) const override;
 };
 
@@ -323,9 +324,17 @@ struct Namespace {
     void dump(std::string& out, int indent) const;
 };
 
+// `import a.b.c;` -- brings a symbol (last component) into scope. Required to
+// enable a literal's `N suffix` syntax (spec 17.10 rule 5).
+struct ImportDecl {
+    std::vector<std::string> path;  // e.g. ["System","Memory","Units","kilobytes"]
+    SourceLocation loc;
+};
+
 struct Bundle {
     std::string visibility;
     std::string name;
+    std::vector<ImportDecl> imports;
     std::vector<Namespace> namespaces;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;

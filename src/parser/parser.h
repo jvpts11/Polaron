@@ -78,6 +78,7 @@ private:
     ast::ExprPtr parseUnary();
     ast::ExprPtr parsePostfix();
     ast::ExprPtr parsePrimary();
+    ast::ExprPtr maybeLiteralSuffix(ast::ExprPtr literal);
 
     std::vector<Token> tokens_;
     std::string_view file_;

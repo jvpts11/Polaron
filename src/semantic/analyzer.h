@@ -79,6 +79,7 @@ private:
     void registerClasses(const ast::Program& program);
     void registerEnums(const ast::Program& program);
     void registerLiterals(const ast::Program& program);
+    void processImports(const ast::Program& program);
     void findEntryPoint(const ast::Program& program);
     void analyzeBodies(const ast::Program& program);
     void analyzeLiteralBodies(const ast::Program& program);
@@ -116,6 +117,7 @@ private:
     std::unordered_map<std::string, ClassInfo> classes_;
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants
     std::unordered_map<std::string, LiteralInfo> literals_;  // suffix name -> info
+    std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state

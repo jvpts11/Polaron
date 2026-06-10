@@ -364,6 +364,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerClasses(program);
     registerEnums(program);
     registerLiterals(program);
+    processImports(program);
     validateHierarchy();
     // If the hierarchy itself is broken (cycle, missing super), stop: walking it
     // recursively below could otherwise loop forever.
@@ -396,6 +397,27 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
                     error("literal suffix '" + lit.name + "' is already defined", lit.loc);
                 }
                 literals_[lit.name] = LiteralInfo{paramType, returnType, lit.isComptime, lit.loc};
+            }
+        }
+    }
+}
+
+// Resolves each `import a.b.c;`: the last component is the symbol. Importing a
+// literal suffix enables its `N suffix` syntax (spec 17.10 rule 5). Importing a
+// type is accepted (names are global in 0.2); an unknown symbol is an error.
+void SemanticAnalyzer::processImports(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::ImportDecl& imp : bundle.imports) {
+            if (imp.path.empty()) continue;
+            const std::string& symbol = imp.path.back();
+            if (literals_.count(symbol) > 0) {
+                importedSuffixes_.insert(symbol);
+            } else if (classes_.count(symbol) == 0 && enums_.count(symbol) == 0) {
+                std::string full;
+                for (std::size_t i = 0; i < imp.path.size(); ++i) {
+                    full += (i > 0 ? "." : "") + imp.path[i];
+                }
+                error("import of unknown symbol '" + full + "'", imp.loc);
             }
         }
     }
@@ -816,6 +838,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string name = flattenCallee(*call->callee);
         // Namespace-level literal suffix function called by name: kilobytes(64).
         if (auto lit = literals_.find(name); lit != literals_.end()) {
+            // The `N suffix` form (spec 17.10) requires the suffix to be imported;
+            // an explicit call name(arg) does not.
+            if (call->fromSuffix && importedSuffixes_.count(name) == 0) {
+                error("literal suffix '" + name +
+                          "' is not in scope; import it to use the 'N " + name + "' form",
+                      call->loc);
+            }
             if (call->args.size() != 1) {
                 error("literal suffix '" + name + "' takes exactly one argument", call->loc);
             } else {

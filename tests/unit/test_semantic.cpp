@@ -570,3 +570,32 @@ TEST_CASE("parser rejects a literal suffix with more than one parameter") {
         "public comptime literal bad(int x, int y) returns int64 { return cast<int64>(x); }",
         "int n = 0;")));
 }
+
+namespace {
+// A program with a literal suffix `kib` in namespace `n` and a Main in `m`.
+// `importLine` is spliced right after the bundle's `{`.
+std::string withSuffix(const std::string& importLine, const std::string& mainBody) {
+    return "program P; public bundle b { " + importLine +
+           " public namespace n { public comptime literal kib(int x) returns int64 {"
+           " return cast<int64>(x) * 1024; } }"
+           " public namespace m { public class Main {"
+           " public static method main(string[] args) returns void { " +
+           mainBody + " } } } }";
+}
+}  // namespace
+
+TEST_CASE("semantic accepts the N-suffix form when the suffix is imported") {
+    CHECK(checkSrc(withSuffix("import n.kib;", "int64 s = 64 kib;")));
+}
+
+TEST_CASE("semantic rejects the N-suffix form without an import") {
+    CHECK_FALSE(checkSrc(withSuffix("", "int64 s = 64 kib;")));
+}
+
+TEST_CASE("semantic still allows an explicit literal call without an import") {
+    CHECK(checkSrc(withSuffix("", "int64 s = kib(64);")));
+}
+
+TEST_CASE("semantic rejects an import of an unknown symbol") {
+    CHECK_FALSE(checkSrc(withSuffix("import n.nope;", "int s = 0;")));
+}

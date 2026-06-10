@@ -146,6 +146,19 @@ ast::Bundle Parser::parseBundle() {
     expect(TokenKind::KwBundle, "'bundle'");
     b.name = expect(TokenKind::Identifier, "the bundle name").lexeme;
     expect(TokenKind::LBrace, "'{'");
+    // Imports come first: `import a.b.c;` (spec 2.7). The `bundle`/`from program`
+    // forms are later phases.
+    while (check(TokenKind::KwImport)) {
+        ast::ImportDecl imp;
+        imp.loc = current().loc;
+        advance();  // 'import'
+        imp.path.push_back(expect(TokenKind::Identifier, "an import path").lexeme);
+        while (match(TokenKind::Dot)) {
+            imp.path.push_back(expect(TokenKind::Identifier, "a name after '.'").lexeme);
+        }
+        expect(TokenKind::Semicolon, "';'");
+        b.imports.push_back(std::move(imp));
+    }
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
         b.namespaces.push_back(parseNamespace());
     }
@@ -743,6 +756,21 @@ ast::ExprPtr Parser::parsePostfix() {
     return expr;
 }
 
+// After a numeric literal, an identifier means a literal suffix (spec 17.10):
+// `64 kilobytes` parses as kilobytes(64). Otherwise the literal stands alone.
+ast::ExprPtr Parser::maybeLiteralSuffix(ast::ExprPtr literal) {
+    if (!check(TokenKind::Identifier)) return literal;
+    auto call = std::make_unique<ast::CallExpr>();
+    call->loc = current().loc;
+    call->fromSuffix = true;
+    auto callee = std::make_unique<ast::IdentifierExpr>();
+    callee->loc = current().loc;
+    callee->name = advance().lexeme;  // the suffix name
+    call->callee = std::move(callee);
+    call->args.push_back(std::move(literal));
+    return call;
+}
+
 ast::ExprPtr Parser::parsePrimary() {
     const Token& tok = current();
     switch (tok.kind) {
@@ -751,14 +779,14 @@ ast::ExprPtr Parser::parsePrimary() {
             e->loc = tok.loc;
             e->text = tok.lexeme;
             advance();
-            return e;
+            return maybeLiteralSuffix(std::move(e));
         }
         case TokenKind::FloatLiteral: {
             auto e = std::make_unique<ast::FloatLiteralExpr>();
             e->loc = tok.loc;
             e->text = tok.lexeme;
             advance();
-            return e;
+            return maybeLiteralSuffix(std::move(e));
         }
         case TokenKind::StringLiteral: {
             auto e = std::make_unique<ast::StringLiteralExpr>();
