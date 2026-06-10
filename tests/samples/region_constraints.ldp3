@@ -1,0 +1,26 @@
+program RegionConstraints;
+
+public bundle main {
+
+    import System.Memory.Units.kilobytes;
+
+    public namespace app {
+
+        public class Dog {
+            private int n;
+            public constructor Dog(int n) { this.n = n; }
+            public method get() returns int { return this.n; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // The region only accepts Dog; allocating a Dog is allowed.
+                region pen = itself.allocate(1 kilobytes).accepts({Dog});
+                Dog* d = new Dog(42) in region pen;
+                System.IO.println($"d = {d.get()}");   // 42
+                release region pen;
+                return;
+            }
+        }
+    }
+}

@@ -440,6 +440,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::string& thisClass, bool inConstructor) {
     scopes_.clear();
     moved_.clear();
+    regionConstraints_.clear();
     currentClass_ = thisClass;
     inConstructor_ = inConstructor;
     pushScope();
@@ -529,6 +530,24 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
     error("invalid assignment target", loc);
 }
 
+void SemanticAnalyzer::checkRegionAccepts(const std::string& region, const std::string& type,
+                                          SourceLocation loc) {
+    auto rc = regionConstraints_.find(region);
+    if (rc == regionConstraints_.end()) return;  // no constraints recorded
+    for (const std::string& rej : rc->second.rejects) {
+        if (type == rej || isSubtype(type, rej)) {
+            error("region '" + region + "' rejects type '" + type + "'", loc);
+            return;
+        }
+    }
+    if (!rc->second.accepts.empty()) {
+        for (const std::string& acc : rc->second.accepts) {
+            if (type == acc || isSubtype(type, acc)) return;  // accepted
+        }
+        error("region '" + region + "' does not accept type '" + type + "'", loc);
+    }
+}
+
 void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const ast::Expr& rhs,
                                             SourceLocation loc) {
     if (isRefType(targetType)) return;  // pointers/refs share; no move discipline
@@ -594,6 +613,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         } else {
             declareLocal(vd->name, LocalVar{declType.empty() ? std::string("int") : declType,
                                             vd->isMutable});
+        }
+        // Remember a region's accepts/rejects constraints, keyed by variable.
+        if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get())) {
+            regionConstraints_[vd->name] = RegionConstraints{ri->accepts, ri->rejects};
         }
         checkOwnershipAssign(declType, *vd->init, vd->loc);
         return;
@@ -728,6 +751,20 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         return t;
     }
 
+    if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
+        if (ri->size) typeOf(*ri->size);
+        // Constrained types must exist (dotted family names like Animal.X are a
+        // later refinement and are skipped here).
+        for (const auto& list : {ri->accepts, ri->rejects}) {
+            for (const std::string& t : list) {
+                if (t.find('.') == std::string::npos && lookupClass(t) == nullptr) {
+                    error("region accepts/rejects references unknown type '" + t + "'", ri->loc);
+                }
+            }
+        }
+        return "region";
+    }
+
     if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
         const std::string src = typeOf(*cst->operand);
         const std::string& dst = cst->targetType;
@@ -798,6 +835,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("unknown region '" + nw->region + "'", nw->loc);
             } else if (r->type != "region") {
                 error("'" + nw->region + "' is not a region", nw->loc);
+            } else {
+                checkRegionAccepts(nw->region, nw->className, nw->loc);
             }
         }
         for (const auto& arg : nw->args) typeOf(*arg);
@@ -853,11 +892,6 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return "void";
         }
         const std::string name = flattenCallee(*call->callee);
-        // Region initializer: itself.allocate(size) / itself.at(addr, size) (spec 17.2).
-        if (name == "itself.allocate" || name == "itself.at") {
-            for (const auto& arg : call->args) typeOf(*arg);
-            return "region";
-        }
         // Namespace-level literal suffix function called by name: kilobytes(64).
         if (auto lit = literals_.find(name); lit != literals_.end()) {
             // The `N suffix` form (spec 17.10) requires the suffix to be imported;

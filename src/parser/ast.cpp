@@ -76,6 +76,14 @@ void MoveExpr::dump(std::string& out, int indent) const {
     operand->dump(out, indent + 1);
 }
 
+void RegionInitExpr::dump(std::string& out, int indent) const {
+    std::string head = "RegionInit";
+    for (const auto& a : accepts) head += " accepts " + a;
+    for (const auto& r : rejects) head += " rejects " + r;
+    line(out, indent, head);
+    if (size) size->dump(out, indent + 1);
+}
+
 void CastExpr::dump(std::string& out, int indent) const {
     line(out, indent, "Cast<" + targetType + ">");
     operand->dump(out, indent + 1);

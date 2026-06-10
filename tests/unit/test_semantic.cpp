@@ -616,3 +616,34 @@ TEST_CASE("semantic rejects release of a non-region") {
     CHECK_FALSE(checkSrc(wrapMain(
         "public static method main(string[] args) returns void { int x = 5; release region x; }")));
 }
+
+namespace {
+const std::string kDogCat =
+    "public class Dog { public constructor Dog() {} }"
+    " public class Cat { public constructor Cat() {} }";
+}  // namespace
+
+TEST_CASE("semantic allows allocating an accepted type in a region") {
+    CHECK(checkSrc(withClass(
+        kDogCat,
+        "region r = itself.allocate(1024).accepts({Dog}); Dog* d = new Dog() in region r;")));
+}
+
+TEST_CASE("semantic rejects allocating a type a region does not accept") {
+    CHECK_FALSE(checkSrc(withClass(
+        kDogCat,
+        "region r = itself.allocate(1024).accepts({Dog}); Cat* c = new Cat() in region r;")));
+}
+
+TEST_CASE("semantic rejects allocating a type a region rejects") {
+    CHECK_FALSE(checkSrc(withClass(
+        kDogCat,
+        "region r = itself.allocate(1024).rejects({Cat}); Cat* c = new Cat() in region r;")));
+}
+
+TEST_CASE("semantic accepts a subtype of an accepted type in a region") {
+    CHECK(checkSrc(withClass(
+        "public class Animal { public constructor Animal() {} }"
+        " public class Dog extends Animal { public constructor Dog() {} }",
+        "region r = itself.allocate(1024).accepts({Animal}); Dog* d = new Dog() in region r;")));
+}

@@ -61,6 +61,12 @@ struct LiteralInfo {
     SourceLocation loc;
 };
 
+// Type constraints attached to a region by accepts/rejects (spec 17.3).
+struct RegionConstraints {
+    std::vector<std::string> accepts;  // empty = accepts anything
+    std::vector<std::string> rejects;
+};
+
 // Semantic analysis. Release 0.1 / M4 scope: builds a catalog of classes, finds
 // the entry point, and type-checks the body of every method and constructor,
 // resolving locals, `this`, fields, methods and `new`.
@@ -93,6 +99,8 @@ private:
     // Enforces move discipline when a class value is bound from `rhs`.
     void checkOwnershipAssign(const std::string& targetType, const ast::Expr& rhs,
                               SourceLocation loc);
+    // Checks a type against a region's accepts/rejects constraints (spec 17.3).
+    void checkRegionAccepts(const std::string& region, const std::string& type, SourceLocation loc);
     void checkIncDecTarget(const ast::Expr& target, SourceLocation loc);
     std::string typeOf(const ast::Expr& expr);  // "" on error
     std::string flattenCallee(const ast::Expr& expr) const;
@@ -121,6 +129,7 @@ private:
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state
+    std::unordered_map<std::string, RegionConstraints> regionConstraints_;  // region var -> accepts/rejects
     std::vector<std::unordered_map<std::string, LocalVar>> scopes_;
 };
 

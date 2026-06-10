@@ -102,6 +102,16 @@ struct MoveExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// Region initializer: `itself.allocate(size)` with optional `.accepts({...})` /
+// `.rejects({...})` type constraints (spec 17.2-17.3). Constraints are checked
+// at compile time; the runtime exception form arrives with exceptions (F6).
+struct RegionInitExpr : Expr {
+    ExprPtr size;                      // the allocate(...) byte size
+    std::vector<std::string> accepts;  // empty = accepts anything
+    std::vector<std::string> rejects;
+    void dump(std::string& out, int indent) const override;
+};
+
 // cast<T>(expr) -- explicit conversion. Release 0.1 handles numeric casts
 // (int<->int of any width, int<->float); class casts arrive with exceptions.
 struct CastExpr : Expr {

@@ -443,10 +443,9 @@ struct CodeGenerator::Impl {
             // Namespace-level literal suffix function: name(arg).
             auto lit = literalReturnType.find(flattenCallee(*call->callee));
             if (lit != literalReturnType.end()) return lit->second;
-            const std::string cn = flattenCallee(*call->callee);
-            if (cn == "itself.allocate" || cn == "itself.at") return "region";
             return "int";
         }
+        if (dynamic_cast<const ast::RegionInitExpr*>(&expr) != nullptr) return "region";
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 if (locals.find(objId->name) == locals.end() && enums.count(objId->name) > 0) {
@@ -722,6 +721,9 @@ struct CodeGenerator::Impl {
         if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) {
             return emitExpr(*mv->operand);  // move transfers the pointer (no copy)
         }
+        if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
+            return emitRegionAllocate(ri->size.get());
+        }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
             return emitCast(emitExpr(*cst->operand), typeName(*cst->operand), cst->targetType);
         }
@@ -850,12 +852,13 @@ struct CodeGenerator::Impl {
 
     // itself.allocate(size): malloc a region block and initialize its header.
     // `size` is a ByteSize (read .bytes) or a raw integer count of bytes.
-    llvm::Value* emitRegionAllocate(const ast::CallExpr& call) {
+    // accepts/rejects are compile-time only, so codegen ignores them.
+    llvm::Value* emitRegionAllocate(const ast::Expr* sizeExpr) {
         llvm::Value* nbytes = builder.getInt64(0);
-        if (!call.args.empty()) {
-            llvm::Value* arg = emitExpr(*call.args[0]);
+        if (sizeExpr != nullptr) {
+            llvm::Value* arg = emitExpr(*sizeExpr);
             if (arg == nullptr) return nullptr;
-            const std::string at = typeName(*call.args[0]);
+            const std::string at = typeName(*sizeExpr);
             auto cit = classes.find(at);
             if (cit != classes.end() && cit->second.fieldIndex.count("bytes") > 0) {
                 llvm::Value* f = builder.CreateStructGEP(cit->second.type, arg,
@@ -949,11 +952,6 @@ struct CodeGenerator::Impl {
 
     llvm::Value* emitCall(const ast::CallExpr& call) {
         const std::string name = flattenCallee(*call.callee);
-        if (name == "itself.allocate") return emitRegionAllocate(call);
-        if (name == "itself.at") {
-            error("region.at(physical address) is not supported yet", call.loc);
-            return nullptr;
-        }
         if (name == "System.IO.readInt") {
             llvm::Value* tmp = createEntryAlloca("readtmp", builder.getInt32Ty());
             llvm::Value* fmt = builder.CreateGlobalStringPtr("%d", ".scanfmt");

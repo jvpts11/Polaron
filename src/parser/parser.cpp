@@ -766,6 +766,53 @@ ast::ExprPtr Parser::parsePostfix() {
     return expr;
 }
 
+// Parses `{ Type (, Type)* }` -- a set of (possibly dotted) type names, the
+// argument to accepts/rejects.
+void Parser::parseTypeSet(std::vector<std::string>& out) {
+    expect(TokenKind::LParen, "'(' after accepts/rejects");
+    expect(TokenKind::LBrace, "'{'");
+    if (!check(TokenKind::RBrace)) {
+        do {
+            std::string name = expect(TokenKind::Identifier, "a type name").lexeme;
+            while (match(TokenKind::Dot)) {
+                name += "." + expect(TokenKind::Identifier, "a name after '.'").lexeme;
+            }
+            out.push_back(std::move(name));
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RBrace, "'}'");
+    expect(TokenKind::RParen, "')'");
+}
+
+// Parses `itself.allocate(size) [.accepts({...})] [.rejects({...})]` (spec 17.2-17.3).
+ast::ExprPtr Parser::parseRegionInit() {
+    auto e = std::make_unique<ast::RegionInitExpr>();
+    e->loc = current().loc;
+    expect(TokenKind::KwItself, "'itself'");
+    expect(TokenKind::Dot, "'.' after 'itself'");
+    const Token method = expect(TokenKind::Identifier, "'allocate'");
+    if (method.lexeme != "allocate") {
+        fail("only itself.allocate(...) is supported for now, not 'itself." + method.lexeme + "'",
+             method.loc);
+    }
+    expect(TokenKind::LParen, "'('");
+    e->size = parseExpression();
+    expect(TokenKind::RParen, "')'");
+    while (check(TokenKind::Dot)) {
+        advance();  // '.'
+        if (check(TokenKind::KwAccepts)) {
+            advance();
+            parseTypeSet(e->accepts);
+        } else if (check(TokenKind::KwRejects)) {
+            advance();
+            parseTypeSet(e->rejects);
+        } else {
+            fail("expected 'accepts' or 'rejects' after '.'", current().loc);
+        }
+    }
+    return e;
+}
+
 // After a numeric literal, an identifier means a literal suffix (spec 17.10):
 // `64 kilobytes` parses as kilobytes(64). Otherwise the literal stands alone.
 ast::ExprPtr Parser::maybeLiteralSuffix(ast::ExprPtr literal) {
@@ -840,15 +887,9 @@ ast::ExprPtr Parser::parsePrimary() {
             advance();
             return e;  // parsePostfix turns `super(args)` into a CallExpr
         }
-        case TokenKind::KwItself: {
-            // `itself` in a region initializer refers to the variable being
-            // declared (spec 17.9). Modeled as the identifier "itself".
-            auto e = std::make_unique<ast::IdentifierExpr>();
-            e->loc = tok.loc;
-            e->name = "itself";
-            advance();
-            return e;
-        }
+        case TokenKind::KwItself:
+            // `itself.allocate(...)` region initializer (spec 17.2-17.3, 17.9).
+            return parseRegionInit();
         case TokenKind::LParen: {
             advance();
             ast::ExprPtr inner = parseExpression();
