@@ -764,3 +764,15 @@ TEST_CASE("semantic allows a type from the same namespace without an import") {
         "public class Widget { public constructor Widget() {} }",
         "Widget w = new Widget();")));
 }
+
+TEST_CASE("semantic rejects an import whose namespace prefix is wrong") {
+    CHECK_FALSE(checkSrc(crossNs("import wrong.Widget;")));
+}
+
+TEST_CASE("semantic rejects a field typed from another namespace without an import") {
+    CHECK_FALSE(checkSrc(
+        "program P; public bundle b {"
+        " public namespace lib { public class Widget { public constructor Widget() {} } }"
+        " public namespace app { public class Holder { private Widget w; }"
+        " public class Main { public static method main(string[] args) returns void {} } } }"));
+}

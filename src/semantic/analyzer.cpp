@@ -351,6 +351,20 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             currentNamespace_ = ns.name;
             for (const ast::ClassDecl& cls : ns.classes) {
+                // Member signature types must also be visible from this namespace.
+                for (const ast::MemberPtr& member : cls.members) {
+                    if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                        for (const ast::Param& p : m->params)
+                            checkTypeAccessible(typeRefStr(p.type), p.loc);
+                        checkTypeAccessible(typeRefStr(m->returnType), m->loc);
+                    } else if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
+                        checkTypeAccessible(typeRefStr(f->type), f->loc);
+                    } else if (const auto* c =
+                                   dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
+                        for (const ast::Param& p : c->params)
+                            checkTypeAccessible(typeRefStr(p.type), p.loc);
+                    }
+                }
                 analyzeFieldInits(cls);
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
@@ -407,6 +421,7 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
                     error("literal suffix '" + lit.name + "' is already defined", lit.loc);
                 }
                 literals_[lit.name] = LiteralInfo{paramType, returnType, lit.isComptime, lit.loc};
+                typeNamespace_[lit.name] = ns.name;  // for import-prefix validation
             }
         }
     }
@@ -420,14 +435,20 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
         for (const ast::ImportDecl& imp : bundle.imports) {
             if (imp.path.empty()) continue;
             const std::string& symbol = imp.path.back();
-            if (literals_.count(symbol) > 0) {
-                importedSuffixes_.insert(symbol);
-            } else if (classes_.count(symbol) == 0 && enums_.count(symbol) == 0) {
-                std::string full;
-                for (std::size_t i = 0; i < imp.path.size(); ++i) {
-                    full += (i > 0 ? "." : "") + imp.path[i];
-                }
+            std::string full;
+            for (std::size_t i = 0; i < imp.path.size(); ++i) full += (i > 0 ? "." : "") + imp.path[i];
+            // The prefix (everything before the symbol) must be the symbol's real namespace.
+            std::string prefix;
+            for (std::size_t i = 0; i + 1 < imp.path.size(); ++i)
+                prefix += (i > 0 ? "." : "") + imp.path[i];
+            auto nsIt = typeNamespace_.find(symbol);
+            if (nsIt == typeNamespace_.end()) {
                 error("import of unknown symbol '" + full + "'", imp.loc);
+            } else if (!prefix.empty() && prefix != nsIt->second) {
+                error("'" + symbol + "' is in namespace '" + nsIt->second + "', not '" + prefix + "'",
+                      imp.loc);
+            } else {
+                importedSuffixes_.insert(symbol);  // harmless for non-literals
             }
         }
     }
