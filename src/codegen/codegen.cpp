@@ -66,7 +66,13 @@ std::int64_t parseIntLiteral(const std::string& lexeme) {
     try {
         return static_cast<std::int64_t>(std::stoll(s.substr(start), nullptr, base));
     } catch (...) {
-        return 0;
+        // Beyond int64 range (e.g. a large uint64 literal): parse as unsigned
+        // and keep the bit pattern.
+        try {
+            return static_cast<std::int64_t>(std::stoull(s.substr(start), nullptr, base));
+        } catch (...) {
+            return 0;
+        }
     }
 }
 
@@ -88,6 +94,9 @@ unsigned intBits(const std::string& t) {
     if (t == "int64" || t == "uint64" || t == "long") return 64;
     return 32;
 }
+
+// Unsigned integer types (uint8..uint64). `byte` is int8 (signed) per spec 5.
+bool isUnsigned(const std::string& t) { return t.rfind("uint", 0) == 0; }
 
 // Pointer/reference types end with '*' or '&'; both lower to a plain pointer.
 bool isRefType(const std::string& t) {
@@ -176,39 +185,55 @@ struct CodeGenerator::Impl {
     }
 
     // Adjusts a value to the target type: int->float widening, or integer
-    // sign-extend / truncate to the target bit width.
+    // sign/zero-extend / truncate to the target bit width. Unsigned sources
+    // zero-extend and use the unsigned int->float opcode.
     llvm::Value* coerce(llvm::Value* v, const std::string& from, const std::string& to) {
         if (v == nullptr) return v;
         if (isFloatType(to) && !isFloatType(from) && v->getType()->isIntegerTy()) {
-            return builder.CreateSIToFP(v, builder.getDoubleTy());
+            return isUnsigned(from) ? builder.CreateUIToFP(v, builder.getDoubleTy())
+                                    : builder.CreateSIToFP(v, builder.getDoubleTy());
         }
         if (v->getType()->isIntegerTy() && llvmType(to)->isIntegerTy()) {
             const unsigned want = llvmType(to)->getIntegerBitWidth();
             const unsigned have = v->getType()->getIntegerBitWidth();
-            if (want > have) return builder.CreateSExt(v, llvmType(to));
+            if (want > have) {
+                return isUnsigned(from) ? builder.CreateZExt(v, llvmType(to))
+                                        : builder.CreateSExt(v, llvmType(to));
+            }
             if (want < have) return builder.CreateTrunc(v, llvmType(to));
         }
         return v;
     }
 
     // Sign-extends or truncates an integer value to `bits`.
-    llvm::Value* fitInt(llvm::Value* v, unsigned bits) {
+    llvm::Value* fitInt(llvm::Value* v, unsigned bits, bool uns = false) {
         const unsigned have = v->getType()->getIntegerBitWidth();
-        if (have < bits) return builder.CreateSExt(v, builder.getIntNTy(bits));
+        if (have < bits) {
+            return uns ? builder.CreateZExt(v, builder.getIntNTy(bits))
+                       : builder.CreateSExt(v, builder.getIntNTy(bits));
+        }
         if (have > bits) return builder.CreateTrunc(v, builder.getIntNTy(bits));
         return v;
     }
 
     // Explicit numeric conversion for cast<T>(expr): covers every direction,
     // including the narrowing ones the implicit `coerce` refuses (long->int,
-    // float->int). Float is a single f64 width in 0.1.
+    // float->int). Float is a single f64 width in 0.1. Unsigned source/target
+    // selects zero-extension and the unsigned int<->float opcodes.
     llvm::Value* emitCast(llvm::Value* v, const std::string& from, const std::string& to) {
         if (v == nullptr) return v;
         const bool toFloat = isFloatType(to);
         const bool fromFloat = isFloatType(from);
-        if (toFloat) return fromFloat ? v : builder.CreateSIToFP(v, builder.getDoubleTy());
-        if (fromFloat) return builder.CreateFPToSI(v, llvmType(to));  // truncates toward zero
-        return fitInt(v, intBits(to));  // int -> int: sext / trunc
+        if (toFloat) {
+            if (fromFloat) return v;
+            return isUnsigned(from) ? builder.CreateUIToFP(v, builder.getDoubleTy())
+                                    : builder.CreateSIToFP(v, builder.getDoubleTy());
+        }
+        if (fromFloat) {
+            return isUnsigned(to) ? builder.CreateFPToUI(v, llvmType(to))   // truncates toward zero
+                                  : builder.CreateFPToSI(v, llvmType(to));
+        }
+        return fitInt(v, intBits(to), isUnsigned(from));  // int -> int: zext/sext / trunc
     }
 
     // Coerce a value to a target LLVM type (numeric widen/narrow), e.g. when an
@@ -371,10 +396,16 @@ struct CodeGenerator::Impl {
                 op == "&&" || op == "||") {
                 return "boolean";
             }
-            if (isFloatType(typeName(*bin->lhs)) || isFloatType(typeName(*bin->rhs))) {
-                return "double";
-            }
-            return "int";
+            const std::string lt = typeName(*bin->lhs);
+            const std::string rt = typeName(*bin->rhs);
+            if (isFloatType(lt) || isFloatType(rt)) return "double";
+            // Arithmetic result: the wider operand's width; unsigned is contagious.
+            const unsigned w = std::max(intBits(lt), intBits(rt));
+            const bool u = isUnsigned(lt) || isUnsigned(rt);
+            if (w == 8) return u ? "uint8" : "int8";
+            if (w == 16) return u ? "uint16" : "int16";
+            if (w == 64) return u ? "uint64" : "int64";
+            return u ? "uint32" : "int";
         }
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) return nw->className;
         if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
@@ -723,23 +754,26 @@ struct CodeGenerator::Impl {
             error("unsupported float operator '" + op + "'", bin.loc);
             return nullptr;
         }
-        // Integer path: promote both operands to the wider bit width.
+        // Integer path: promote both operands to the wider bit width. If either
+        // side is unsigned the operation is unsigned (zero-extend, udiv/urem,
+        // unsigned comparisons).
         const unsigned w = std::max(intBits(lt), intBits(rt));
-        l = fitInt(l, w);
-        r = fitInt(r, w);
+        const bool uns = isUnsigned(lt) || isUnsigned(rt);
+        l = fitInt(l, w, uns);
+        r = fitInt(r, w, uns);
         if (op == "+") return builder.CreateAdd(l, r);
         if (op == "-") return builder.CreateSub(l, r);
         if (op == "*") return builder.CreateMul(l, r);
-        if (op == "/") return builder.CreateSDiv(l, r);
-        if (op == "%") return builder.CreateSRem(l, r);
+        if (op == "/") return uns ? builder.CreateUDiv(l, r) : builder.CreateSDiv(l, r);
+        if (op == "%") return uns ? builder.CreateURem(l, r) : builder.CreateSRem(l, r);
 
         llvm::Value* cmp = nullptr;
         if (op == "==") cmp = builder.CreateICmpEQ(l, r);
         else if (op == "!=") cmp = builder.CreateICmpNE(l, r);
-        else if (op == "<") cmp = builder.CreateICmpSLT(l, r);
-        else if (op == ">") cmp = builder.CreateICmpSGT(l, r);
-        else if (op == "<=") cmp = builder.CreateICmpSLE(l, r);
-        else if (op == ">=") cmp = builder.CreateICmpSGE(l, r);
+        else if (op == "<") cmp = uns ? builder.CreateICmpULT(l, r) : builder.CreateICmpSLT(l, r);
+        else if (op == ">") cmp = uns ? builder.CreateICmpUGT(l, r) : builder.CreateICmpSGT(l, r);
+        else if (op == "<=") cmp = uns ? builder.CreateICmpULE(l, r) : builder.CreateICmpSLE(l, r);
+        else if (op == ">=") cmp = uns ? builder.CreateICmpUGE(l, r) : builder.CreateICmpSGE(l, r);
         if (cmp != nullptr) return builder.CreateZExt(cmp, builder.getInt32Ty());
 
         error("unsupported binary operator '" + op + "'", bin.loc);
@@ -790,6 +824,15 @@ struct CodeGenerator::Impl {
                 v = coerce(v, et, "double");  // f64 for the %g vararg
             } else if (et == "char") {
                 fmt += "%c";
+            } else if (isUnsigned(et)) {
+                if (intBits(et) == 64) {
+                    fmt += "%llu";
+                } else {
+                    fmt += "%u";
+                    if (v->getType()->isIntegerTy() && v->getType()->getIntegerBitWidth() < 32) {
+                        v = builder.CreateZExt(v, builder.getInt32Ty());  // varargs promotion
+                    }
+                }
             } else if (intBits(et) == 64) {
                 fmt += "%lld";
             } else {
