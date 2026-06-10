@@ -92,6 +92,7 @@ struct NewExpr : Expr {
     std::string className;
     std::vector<ExprPtr> args;
     std::string location;  // "stack" or "heap"
+    std::string region;    // "in region R" target; empty when none
     void dump(std::string& out, int indent) const override;
 };
 
@@ -159,6 +160,12 @@ struct ReturnStmt : Stmt {
 
 struct DeleteStmt : Stmt {
     ExprPtr target;  // a heap object or array to free
+    void dump(std::string& out, int indent) const override;
+};
+
+// `release region R;` -- frees a region and everything allocated in it (spec 17.7).
+struct ReleaseStmt : Stmt {
+    std::string region;
     void dump(std::string& out, int indent) const override;
 };
 

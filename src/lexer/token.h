@@ -48,6 +48,7 @@ enum class TokenKind : std::uint8_t {
     // Keywords -- ownership / regions / scoped resources (0.2 memory model)
     KwMove, KwMovable, KwUnique, KwPartitionable,
     KwRegion, KwOf, KwAccepts, KwRejects,
+    KwItself, KwRelease,
     KwDefer, KwUsing,
 
     // Keywords -- compile-time / literal suffixes (0.2 Fase C)

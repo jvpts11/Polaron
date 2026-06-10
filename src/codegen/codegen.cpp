@@ -181,6 +181,7 @@ struct CodeGenerator::Impl {
         if (t == "void") return builder.getVoidTy();
         if (isFloatType(t)) return isF32(t) ? builder.getFloatTy() : builder.getDoubleTy();
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
+        if (t == "region") return builder.getPtrTy();  // pointer to the region block
         if (classes.count(t) > 0) return builder.getPtrTy();
         return builder.getIntNTy(intBits(t));
     }
@@ -442,6 +443,8 @@ struct CodeGenerator::Impl {
             // Namespace-level literal suffix function: name(arg).
             auto lit = literalReturnType.find(flattenCallee(*call->callee));
             if (lit != literalReturnType.end()) return lit->second;
+            const std::string cn = flattenCallee(*call->callee);
+            if (cn == "itself.allocate" || cn == "itself.at") return "region";
             return "int";
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
@@ -826,6 +829,50 @@ struct CodeGenerator::Impl {
         return nullptr;
     }
 
+    // A region block is [ i64 used | i64 capacity | data... ]. Bump-allocates
+    // `objType` bytes (8-aligned) from region variable `name` and returns the slot.
+    llvm::Value* emitRegionBumpAlloc(const std::string& name, llvm::StructType* objType,
+                                     SourceLocation loc) {
+        auto it = locals.find(name);
+        if (it == locals.end()) {
+            error("unknown region '" + name + "'", loc);
+            return nullptr;
+        }
+        llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage, "region");
+        llvm::Value* used = builder.CreateLoad(builder.getInt64Ty(), block, "used");
+        llvm::Value* dataBase = builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 16, "rgn.data");
+        llvm::Value* objPtr = builder.CreateGEP(builder.getInt8Ty(), dataBase, used, "rgn.obj");
+        llvm::Value* aligned = builder.CreateAnd(builder.CreateAdd(sizeOf(objType), builder.getInt64(7)),
+                                                 builder.getInt64(~static_cast<std::uint64_t>(7)));
+        builder.CreateStore(builder.CreateAdd(used, aligned), block);  // bump
+        return objPtr;
+    }
+
+    // itself.allocate(size): malloc a region block and initialize its header.
+    // `size` is a ByteSize (read .bytes) or a raw integer count of bytes.
+    llvm::Value* emitRegionAllocate(const ast::CallExpr& call) {
+        llvm::Value* nbytes = builder.getInt64(0);
+        if (!call.args.empty()) {
+            llvm::Value* arg = emitExpr(*call.args[0]);
+            if (arg == nullptr) return nullptr;
+            const std::string at = typeName(*call.args[0]);
+            auto cit = classes.find(at);
+            if (cit != classes.end() && cit->second.fieldIndex.count("bytes") > 0) {
+                llvm::Value* f = builder.CreateStructGEP(cit->second.type, arg,
+                                                         cit->second.fieldIndex["bytes"], "bs");
+                nbytes = builder.CreateLoad(builder.getInt64Ty(), f, "bytes");
+            } else {
+                nbytes = fitInt(arg, 64);
+            }
+        }
+        llvm::Value* total = builder.CreateAdd(builder.getInt64(16), nbytes);
+        llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "region");
+        builder.CreateStore(builder.getInt64(0), block);  // used = 0
+        llvm::Value* capPtr = builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 8, "rgn.cap");
+        builder.CreateStore(nbytes, capPtr);  // capacity = nbytes
+        return block;
+    }
+
     llvm::Value* emitNew(const ast::NewExpr& nw) {
         auto cit = classes.find(nw.className);
         if (cit == classes.end()) {
@@ -833,7 +880,10 @@ struct CodeGenerator::Impl {
             return nullptr;
         }
         llvm::Value* objPtr = nullptr;
-        if (nw.location == "stack") {
+        if (!nw.region.empty()) {
+            objPtr = emitRegionBumpAlloc(nw.region, cit->second.type, nw.loc);
+            if (objPtr == nullptr) return nullptr;
+        } else if (nw.location == "stack") {
             objPtr = createEntryAlloca(nw.className + ".obj", cit->second.type);
         } else if (nw.location == "heap") {
             objPtr = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, nw.className + ".obj");
@@ -899,6 +949,11 @@ struct CodeGenerator::Impl {
 
     llvm::Value* emitCall(const ast::CallExpr& call) {
         const std::string name = flattenCallee(*call.callee);
+        if (name == "itself.allocate") return emitRegionAllocate(call);
+        if (name == "itself.at") {
+            error("region.at(physical address) is not supported yet", call.loc);
+            return nullptr;
+        }
         if (name == "System.IO.readInt") {
             llvm::Value* tmp = createEntryAlloca("readtmp", builder.getInt32Ty());
             llvm::Value* fmt = builder.CreateGlobalStringPtr("%d", ".scanfmt");
@@ -1136,6 +1191,16 @@ struct CodeGenerator::Impl {
                 builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
             }
             builder.CreateCall(freeFn(), {objPtr});
+            return;
+        }
+        if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {
+            // Free the whole region block. (Per-object destructors on release are
+            // a later refinement; the region is a bump allocator.)
+            auto it = locals.find(rel->region);
+            if (it != locals.end()) {
+                llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage);
+                builder.CreateCall(freeFn(), {block});
+            }
             return;
         }
         if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {

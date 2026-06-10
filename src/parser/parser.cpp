@@ -31,6 +31,7 @@ bool isTypeKeyword(TokenKind k) {
         case TokenKind::KwDouble:
         case TokenKind::KwFloat32:
         case TokenKind::KwFloat64:
+        case TokenKind::KwRegion:
             return true;
         default:
             return false;
@@ -460,6 +461,15 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return del;
     }
+    if (check(TokenKind::KwRelease)) {
+        auto rel = std::make_unique<ast::ReleaseStmt>();
+        rel->loc = current().loc;
+        advance();  // 'release'
+        expect(TokenKind::KwRegion, "'region' after 'release'");
+        rel->region = expect(TokenKind::Identifier, "the region name").lexeme;
+        expect(TokenKind::Semicolon, "';'");
+        return rel;
+    }
     if (check(TokenKind::KwDefer)) {
         return parseDefer();
     }
@@ -830,6 +840,15 @@ ast::ExprPtr Parser::parsePrimary() {
             advance();
             return e;  // parsePostfix turns `super(args)` into a CallExpr
         }
+        case TokenKind::KwItself: {
+            // `itself` in a region initializer refers to the variable being
+            // declared (spec 17.9). Modeled as the identifier "itself".
+            auto e = std::make_unique<ast::IdentifierExpr>();
+            e->loc = tok.loc;
+            e->name = "itself";
+            advance();
+            return e;
+        }
         case TokenKind::LParen: {
             advance();
             ast::ExprPtr inner = parseExpression();
@@ -888,6 +907,11 @@ ast::ExprPtr Parser::parseNew() {
         e->location = expect(TokenKind::Identifier, "'stack' or 'heap'").lexeme;
     } else {
         e->location = "stack";
+    }
+    // `in region R`: allocate inside a region (spec 17.5). Takes precedence.
+    if (match(TokenKind::KwIn)) {
+        expect(TokenKind::KwRegion, "'region' after 'in'");
+        e->region = expect(TokenKind::Identifier, "the region name").lexeme;
     }
     return e;
 }

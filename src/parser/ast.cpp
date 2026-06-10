@@ -65,7 +65,9 @@ void UnaryExpr::dump(std::string& out, int indent) const {
 }
 
 void NewExpr::dump(std::string& out, int indent) const {
-    line(out, indent, "New '" + className + "' on " + location);
+    std::string head = "New '" + className + "' on " + location;
+    if (!region.empty()) head += " in region " + region;
+    line(out, indent, head);
     for (const auto& a : args) a->dump(out, indent + 1);
 }
 
@@ -119,6 +121,10 @@ void ReturnStmt::dump(std::string& out, int indent) const {
 void DeleteStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Delete");
     target->dump(out, indent + 1);
+}
+
+void ReleaseStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Release region " + region);
 }
 
 void DeferStmt::dump(std::string& out, int indent) const {

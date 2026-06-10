@@ -599,3 +599,20 @@ TEST_CASE("semantic still allows an explicit literal call without an import") {
 TEST_CASE("semantic rejects an import of an unknown symbol") {
     CHECK_FALSE(checkSrc(withSuffix("import n.nope;", "int s = 0;")));
 }
+
+TEST_CASE("semantic accepts a region: allocate, new in region, release") {
+    CHECK(checkSrc(withClass(
+        "public class Dog { public constructor Dog() {} }",
+        "region r = itself.allocate(1024); Dog* d = new Dog() in region r; release region r;")));
+}
+
+TEST_CASE("semantic rejects new in an unknown region") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class Dog { public constructor Dog() {} }",
+        "Dog* d = new Dog() in region nope;")));
+}
+
+TEST_CASE("semantic rejects release of a non-region") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { int x = 5; release region x; }")));
+}

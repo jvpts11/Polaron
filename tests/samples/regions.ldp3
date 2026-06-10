@@ -1,0 +1,26 @@
+program Regions;
+
+public bundle main {
+
+    import System.Memory.Units.kilobytes;
+
+    public namespace app {
+
+        public class Dog {
+            private int years;
+            public constructor Dog(int years) { this.years = years; }
+            public method getAge() returns int { return this.years; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                region pen = itself.allocate(1 kilobytes);   // a 1 KiB arena
+                Dog* a = new Dog(3) in region pen;            // bump-allocated
+                Dog* b = new Dog(7) in region pen;            // bump-allocated
+                System.IO.println($"a = {a.getAge()} b = {b.getAge()}");  // a = 3 b = 7
+                release region pen;                            // frees both at once
+                return;
+            }
+        }
+    }
+}

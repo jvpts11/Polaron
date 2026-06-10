@@ -657,6 +657,15 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         return;
     }
+    if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {
+        const LocalVar* r = lookupLocal(rel->region);
+        if (r == nullptr) {
+            error("unknown region '" + rel->region + "'", rel->loc);
+        } else if (r->type != "region") {
+            error("'" + rel->region + "' is not a region", rel->loc);
+        }
+        return;
+    }
     if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {
         analyzeBlock(def->body);
         return;
@@ -783,6 +792,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (nw->location != "stack" && nw->location != "heap") {
             error("'new' location must be 'stack' or 'heap', got '" + nw->location + "'", nw->loc);
         }
+        if (!nw->region.empty()) {
+            const LocalVar* r = lookupLocal(nw->region);
+            if (r == nullptr) {
+                error("unknown region '" + nw->region + "'", nw->loc);
+            } else if (r->type != "region") {
+                error("'" + nw->region + "' is not a region", nw->loc);
+            }
+        }
         for (const auto& arg : nw->args) typeOf(*arg);
         return nw->className;
     }
@@ -836,6 +853,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return "void";
         }
         const std::string name = flattenCallee(*call->callee);
+        // Region initializer: itself.allocate(size) / itself.at(addr, size) (spec 17.2).
+        if (name == "itself.allocate" || name == "itself.at") {
+            for (const auto& arg : call->args) typeOf(*arg);
+            return "region";
+        }
         // Namespace-level literal suffix function called by name: kilobytes(64).
         if (auto lit = literals_.find(name); lit != literals_.end()) {
             // The `N suffix` form (spec 17.10) requires the suffix to be imported;
