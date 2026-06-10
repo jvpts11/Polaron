@@ -1,0 +1,24 @@
+program Unions;
+
+public bundle main {
+    public namespace app {
+
+        // C-style union (spec 13): all fields share one storage.
+        public union Value {
+            int32 asInt;
+            float32 asFloat;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Value v = new Value();
+                v.asFloat = 1.5;
+                // 1.5f reinterpreted as int32 bits is 1069547520 (0x3FC00000).
+                System.IO.println($"bits = {v.asInt}");
+                v.asInt = 1069547520;
+                System.IO.println($"back = {v.asFloat}");   // 1.5
+                return;
+            }
+        }
+    }
+}

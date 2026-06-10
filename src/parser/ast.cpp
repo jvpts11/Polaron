@@ -252,6 +252,7 @@ void DestructorDecl::dump(std::string& out, int indent) const {
 void ClassDecl::dump(std::string& out, int indent) const {
     std::string head = (isInterface ? "Interface '"
                         : isRecord  ? "Record '"
+                        : isUnion   ? "Union '"
                         : isStruct  ? "Struct '"
                                     : "Class '") +
                        name + "'";

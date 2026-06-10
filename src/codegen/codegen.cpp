@@ -98,6 +98,16 @@ unsigned intBits(const std::string& t) {
 // Unsigned integer types (uint8..uint64). `byte` is int8 (signed) per spec 5.
 bool isUnsigned(const std::string& t) { return t.rfind("uint", 0) == 0; }
 
+// Approximate byte size of a type, used to size a union's shared storage.
+// Pointers/refs/arrays/classes are pointer-sized.
+unsigned byteSizeOf(const std::string& t) {
+    if (t == "double" || t == "float64") return 8;
+    if (t == "float" || t == "float32") return 4;
+    if (t.back() == '*' || t.back() == '&' || (t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0))
+        return 8;  // pointer-sized
+    return intBits(t) / 8;  // int family (and class names fall back to 4; refined later)
+}
+
 // Pointer/reference types end with '*' or '&'; both lower to a plain pointer.
 bool isRefType(const std::string& t) {
     return !t.empty() && (t.back() == '*' || t.back() == '&');
@@ -127,6 +137,7 @@ struct ClassLayout {
     std::vector<std::pair<std::string, std::string>> ownFields;  // (name, type), declaration order
     bool isAbstract = false;
     bool isInterface = false;
+    bool isUnion = false;  // fields overlap one storage (C-style union)
     bool isMovable = false;
     bool isUnique = false;
     bool hasVtable = false;
@@ -1426,6 +1437,7 @@ struct CodeGenerator::Impl {
                     layout.interfaces = cls.interfaces;
                     layout.isAbstract = cls.isAbstract;
                     layout.isInterface = cls.isInterface;
+                    layout.isUnion = cls.isUnion;
                     layout.isMovable = cls.isMovable;
                     layout.isUnique = cls.isUnique;
                     for (const ast::MemberPtr& member : cls.members) {
@@ -1465,6 +1477,23 @@ struct CodeGenerator::Impl {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ClassDecl& cls : ns.classes) {
                     ClassLayout& layout = classes[cls.name];
+                    if (layout.isUnion) {
+                        // All fields overlap at offset 0; storage is the largest field.
+                        std::string biggest;
+                        unsigned maxBytes = 0;
+                        for (const auto& [fname, ftype] : collectFields(cls.name)) {
+                            layout.fieldIndex[fname] = 0;
+                            layout.fieldType[fname] = ftype;
+                            if (byteSizeOf(ftype) > maxBytes) {
+                                maxBytes = byteSizeOf(ftype);
+                                biggest = ftype;
+                            }
+                        }
+                        std::vector<llvm::Type*> body;
+                        if (!biggest.empty()) body.push_back(llvmType(biggest));
+                        layout.type->setBody(body);
+                        continue;
+                    }
                     std::vector<llvm::Type*> fieldTypes;
                     if (layout.hasVtable) fieldTypes.push_back(builder.getPtrTy());  // vtable ptr
                     unsigned idx = layout.hasVtable ? 1u : 0u;

@@ -348,8 +348,11 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         c.isAbstract = true;  // interfaces are abstract by nature
     } else if (match(TokenKind::KwStruct)) {
         c.isStruct = true;  // value type, no inheritance
+    } else if (match(TokenKind::KwUnion)) {
+        c.isUnion = true;   // value type whose fields overlap one storage
+        c.isStruct = true;
     } else {
-        expect(TokenKind::KwClass, "'class', 'struct' or 'interface'");
+        expect(TokenKind::KwClass, "'class', 'struct', 'union' or 'interface'");
     }
     c.name = expect(TokenKind::Identifier, "the type name").lexeme;
     // Generic parameters: class Box<T>, class Pair<K, V>.
@@ -374,6 +377,12 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         c.members.push_back(parseMember(c.isInterface));
     }
     expect(TokenKind::RBrace, "'}'");
+    // Union fields are written/read freely (manual memory); make them mutable.
+    if (c.isUnion) {
+        for (const ast::MemberPtr& member : c.members) {
+            if (auto* f = dynamic_cast<ast::FieldDecl*>(member.get())) f->isMutable = true;
+        }
+    }
     return c;
 }
 

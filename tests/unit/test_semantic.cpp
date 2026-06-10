@@ -769,6 +769,12 @@ TEST_CASE("semantic rejects an import whose namespace prefix is wrong") {
     CHECK_FALSE(checkSrc(crossNs("import wrong.Widget;")));
 }
 
+TEST_CASE("semantic accepts a C-style union and lets its fields be written") {
+    CHECK(checkSrc(withClass(
+        "public union Value { int32 asInt; float32 asFloat; }",
+        "Value v = new Value(); v.asFloat = 1.5; int b = v.asInt;")));
+}
+
 TEST_CASE("semantic rejects a field typed from another namespace without an import") {
     CHECK_FALSE(checkSrc(
         "program P; public bundle b {"
