@@ -275,6 +275,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=pi=3.14 area=12.56 half=1.5 n=5"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Types: wide integers - int64/long and int -> long widening.
+        add_test(NAME codegen_bitwidths_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bitwidths.ldp3"
+            "-DEXPECTED=big=10000000000 sum=10000000005 wide=200"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

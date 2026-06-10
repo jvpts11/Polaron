@@ -477,3 +477,13 @@ TEST_CASE("semantic rejects modulo on doubles") {
     CHECK_FALSE(checkSrc(wrapMain(
         "public static method main(string[] args) returns void { double x = 5.0 % 2.0; }")));
 }
+
+TEST_CASE("semantic widens an int to a long") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { int n = 3; long w = n; }")));
+}
+
+TEST_CASE("semantic rejects narrowing a long to an int") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { long w = 3; int n = w; }")));
+}

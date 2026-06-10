@@ -80,6 +80,14 @@ bool isFloatType(const std::string& t) {
     return t == "float" || t == "float32" || t == "double" || t == "float64";
 }
 
+// Bit width of an integer-family type (int/char/boolean/enum default to 32).
+unsigned intBits(const std::string& t) {
+    if (t == "int8" || t == "uint8" || t == "byte") return 8;
+    if (t == "int16" || t == "uint16" || t == "short") return 16;
+    if (t == "int64" || t == "uint64" || t == "long") return 64;
+    return 32;
+}
+
 // Pointer/reference types end with '*' or '&'; both lower to a plain pointer.
 bool isRefType(const std::string& t) {
     return !t.empty() && (t.back() == '*' || t.back() == '&');
@@ -163,14 +171,30 @@ struct CodeGenerator::Impl {
         if (isFloatType(t)) return builder.getDoubleTy();
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (classes.count(t) > 0) return builder.getPtrTy();
-        return builder.getInt32Ty();
+        return builder.getIntNTy(intBits(t));
     }
 
-    // Widen an integer value to f64 when the target type is floating-point.
+    // Adjusts a value to the target type: int->float widening, or integer
+    // sign-extend / truncate to the target bit width.
     llvm::Value* coerce(llvm::Value* v, const std::string& from, const std::string& to) {
-        if (v != nullptr && isFloatType(to) && !isFloatType(from) && v->getType()->isIntegerTy()) {
+        if (v == nullptr) return v;
+        if (isFloatType(to) && !isFloatType(from) && v->getType()->isIntegerTy()) {
             return builder.CreateSIToFP(v, builder.getDoubleTy());
         }
+        if (v->getType()->isIntegerTy() && llvmType(to)->isIntegerTy()) {
+            const unsigned want = llvmType(to)->getIntegerBitWidth();
+            const unsigned have = v->getType()->getIntegerBitWidth();
+            if (want > have) return builder.CreateSExt(v, llvmType(to));
+            if (want < have) return builder.CreateTrunc(v, llvmType(to));
+        }
+        return v;
+    }
+
+    // Sign-extends or truncates an integer value to `bits`.
+    llvm::Value* fitInt(llvm::Value* v, unsigned bits) {
+        const unsigned have = v->getType()->getIntegerBitWidth();
+        if (have < bits) return builder.CreateSExt(v, builder.getIntNTy(bits));
+        if (have > bits) return builder.CreateTrunc(v, builder.getIntNTy(bits));
         return v;
     }
 
@@ -284,7 +308,10 @@ struct CodeGenerator::Impl {
 
     // Type name of an expression. Assumes a valid AST (semantic analysis ran).
     std::string typeName(const ast::Expr& expr) {
-        if (dynamic_cast<const ast::IntLiteralExpr*>(&expr) != nullptr) return "int";
+        if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
+            const std::int64_t v = parseIntLiteral(n->text);
+            return (v >= INT32_MIN && v <= INT32_MAX) ? "int" : "int64";
+        }
         if (dynamic_cast<const ast::FloatLiteralExpr*>(&expr) != nullptr) return "double";
         if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
         if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
@@ -501,7 +528,11 @@ struct CodeGenerator::Impl {
             return builder.CreateGlobalStringPtr(resolveEscapes(s->value), ".str");
         }
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
-            return builder.getInt32(static_cast<std::uint32_t>(parseIntLiteral(n->text)));
+            const std::int64_t v = parseIntLiteral(n->text);
+            if (v >= INT32_MIN && v <= INT32_MAX) {
+                return builder.getInt32(static_cast<std::uint32_t>(v));
+            }
+            return builder.getInt64(static_cast<std::uint64_t>(v));  // literal needs 64 bits
         }
         if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(&expr)) {
             std::string s;
@@ -617,6 +648,10 @@ struct CodeGenerator::Impl {
             error("unsupported float operator '" + op + "'", bin.loc);
             return nullptr;
         }
+        // Integer path: promote both operands to the wider bit width.
+        const unsigned w = std::max(intBits(lt), intBits(rt));
+        l = fitInt(l, w);
+        r = fitInt(r, w);
         if (op == "+") return builder.CreateAdd(l, r);
         if (op == "-") return builder.CreateSub(l, r);
         if (op == "*") return builder.CreateMul(l, r);
@@ -686,8 +721,13 @@ struct CodeGenerator::Impl {
                 v = coerce(v, et, "double");  // f64 for the %g vararg
             } else if (et == "char") {
                 fmt += "%c";
+            } else if (intBits(et) == 64) {
+                fmt += "%lld";
             } else {
                 fmt += "%d";
+                if (v->getType()->isIntegerTy() && v->getType()->getIntegerBitWidth() < 32) {
+                    v = builder.CreateSExt(v, builder.getInt32Ty());  // varargs promotion
+                }
             }
             values.push_back(v);
         }
@@ -899,10 +939,11 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* incdec = dynamic_cast<const ast::IncDecStmt*>(&stmt)) {
+            llvm::Type* ty = llvmType(typeName(*incdec->target));
             llvm::Value* slot = emitLValue(*incdec->target);
             if (slot == nullptr) return;
-            llvm::Value* cur = builder.CreateLoad(builder.getInt32Ty(), slot);
-            llvm::Value* one = builder.getInt32(1);
+            llvm::Value* cur = builder.CreateLoad(ty, slot);
+            llvm::Value* one = llvm::ConstantInt::get(ty, 1);
             llvm::Value* res =
                 incdec->isIncrement ? builder.CreateAdd(cur, one) : builder.CreateSub(cur, one);
             builder.CreateStore(res, slot);

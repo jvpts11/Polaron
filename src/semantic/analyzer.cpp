@@ -28,7 +28,18 @@ std::string typeRefStr(const ast::TypeRef& t) {
 bool isFloatType(const std::string& t) {
     return t == "float" || t == "float32" || t == "double" || t == "float64";
 }
-bool isNumeric(const std::string& t) { return t == "int" || isFloatType(t); }
+bool isIntName(const std::string& t) {
+    return t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" ||
+           t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" || t == "short" ||
+           t == "long" || t == "byte";
+}
+unsigned intBits(const std::string& t) {
+    if (t == "int8" || t == "uint8" || t == "byte") return 8;
+    if (t == "int16" || t == "uint16" || t == "short") return 16;
+    if (t == "int64" || t == "uint64" || t == "long") return 64;
+    return 32;
+}
+bool isNumeric(const std::string& t) { return isIntName(t) || isFloatType(t); }
 }  // namespace
 
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
@@ -72,6 +83,8 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     if (sub == super) return true;
     // int and float both widen to a float type (no implicit narrowing).
     if (isFloatType(super) && isNumeric(sub)) return true;
+    // Integers widen to a wider integer (no implicit narrowing).
+    if (isIntName(sub) && isIntName(super)) return intBits(sub) <= intBits(super);
     // Pointer/reference compatibility follows the pointee (T*, T& and T mix
     // freely for now; the strict value-vs-reference rules land with deep copy).
     if (isRefType(sub) || isRefType(super)) return isSubtype(baseType(sub), baseType(super));
@@ -640,7 +653,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (op == "%" && (isFloatType(lt) || isFloatType(rt))) {
                 error("operator '%' requires int operands", bin->loc);
             }
-            return (isFloatType(lt) || isFloatType(rt)) ? "double" : "int";
+            if (isFloatType(lt) || isFloatType(rt)) return "double";
+            return intBits(lt) >= intBits(rt) ? lt : rt;  // wider integer wins
         }
         if (op == "<" || op == ">" || op == "<=" || op == ">=") {
             if ((!lt.empty() && !isNumeric(lt)) || (!rt.empty() && !isNumeric(rt))) {
@@ -704,11 +718,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(&expr)) {
         for (const auto& e : is->exprs) {
             const std::string t = typeOf(*e);
-            const bool printable = t.empty() || t == "int" || t == "char" || t == "boolean" ||
-                                   isFloatType(t) || enums_.count(t) > 0;
+            const bool printable = t.empty() || isIntName(t) || isFloatType(t) || t == "char" ||
+                                   t == "boolean" || enums_.count(t) > 0;
             if (!printable) {
-                error("string interpolation can only print int, char, boolean or enum values, "
-                      "got '" + t + "'",
+                error("string interpolation can only print numeric, char, boolean or enum "
+                      "values, got '" + t + "'",
                       e->loc);
             }
         }
