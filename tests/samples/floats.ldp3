@@ -1,0 +1,21 @@
+program Floats;
+
+// Floating point: double arithmetic, int -> float widening, %g printing.
+// (float and double both lower to f64 for now.)
+// Expected output: pi=3.14 area=12.56 half=1.5 n=5
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                double pi = 3.14;
+                double r = 2.0;
+                double area = pi * r * r;
+                double half = 3.0 / 2.0;
+                double n = 5;                 // int literal widened to double
+                System.IO.println($"pi={pi} area={area} half={half} n={n}");
+                return;
+            }
+        }
+    }
+}

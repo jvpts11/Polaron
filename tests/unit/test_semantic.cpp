@@ -454,3 +454,26 @@ TEST_CASE("semantic reactivates a moved variable on reassignment") {
         "mutable H a = new H() on heap; H b = move a;"
         " a = new H() on heap; int x = a.v();")));
 }
+
+// ---- Floating point ----
+
+TEST_CASE("semantic accepts double arithmetic") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void "
+        "{ double pi = 3.14; double a = pi * 2.0; }")));
+}
+
+TEST_CASE("semantic widens an int to a double") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { double d = 5; }")));
+}
+
+TEST_CASE("semantic rejects narrowing a double to an int") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { int x = 3.14; }")));
+}
+
+TEST_CASE("semantic rejects modulo on doubles") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { double x = 5.0 % 2.0; }")));
+}

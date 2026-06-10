@@ -25,6 +25,10 @@ std::string baseType(const std::string& t) {
 std::string typeRefStr(const ast::TypeRef& t) {
     return t.name + (t.isArray ? "[]" : "") + (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
 }
+bool isFloatType(const std::string& t) {
+    return t == "float" || t == "float32" || t == "double" || t == "float64";
+}
+bool isNumeric(const std::string& t) { return t == "int" || isFloatType(t); }
 }  // namespace
 
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
@@ -66,6 +70,8 @@ const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
 
 bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& super) const {
     if (sub == super) return true;
+    // int and float both widen to a float type (no implicit narrowing).
+    if (isFloatType(super) && isNumeric(sub)) return true;
     // Pointer/reference compatibility follows the pointee (T*, T& and T mix
     // freely for now; the strict value-vs-reference rules land with deep copy).
     if (isRefType(sub) || isRefType(super)) return isSubtype(baseType(sub), baseType(super));
@@ -576,6 +582,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
 
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (dynamic_cast<const ast::IntLiteralExpr*>(&expr) != nullptr) return "int";
+    if (dynamic_cast<const ast::FloatLiteralExpr*>(&expr) != nullptr) return "double";
     if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
     if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
     if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
@@ -627,14 +634,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string rt = typeOf(*bin->rhs);
         const std::string& op = bin->op;
         if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
-            if ((!lt.empty() && lt != "int") || (!rt.empty() && rt != "int")) {
-                error("operator '" + op + "' requires int operands", bin->loc);
+            if ((!lt.empty() && !isNumeric(lt)) || (!rt.empty() && !isNumeric(rt))) {
+                error("operator '" + op + "' requires numeric operands", bin->loc);
             }
-            return "int";
+            if (op == "%" && (isFloatType(lt) || isFloatType(rt))) {
+                error("operator '%' requires int operands", bin->loc);
+            }
+            return (isFloatType(lt) || isFloatType(rt)) ? "double" : "int";
         }
         if (op == "<" || op == ">" || op == "<=" || op == ">=") {
-            if ((!lt.empty() && lt != "int") || (!rt.empty() && rt != "int")) {
-                error("operator '" + op + "' requires int operands", bin->loc);
+            if ((!lt.empty() && !isNumeric(lt)) || (!rt.empty() && !isNumeric(rt))) {
+                error("operator '" + op + "' requires numeric operands", bin->loc);
             }
             return "boolean";
         }
@@ -694,8 +704,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(&expr)) {
         for (const auto& e : is->exprs) {
             const std::string t = typeOf(*e);
-            const bool printable =
-                t.empty() || t == "int" || t == "char" || t == "boolean" || enums_.count(t) > 0;
+            const bool printable = t.empty() || t == "int" || t == "char" || t == "boolean" ||
+                                   isFloatType(t) || enums_.count(t) > 0;
             if (!printable) {
                 error("string interpolation can only print int, char, boolean or enum values, "
                       "got '" + t + "'",

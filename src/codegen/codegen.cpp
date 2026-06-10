@@ -74,6 +74,12 @@ bool isArrayType(const std::string& t) {
     return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;
 }
 
+// Floating-point types. For now float and double both lower to f64; a distinct
+// f32 representation is a later refinement.
+bool isFloatType(const std::string& t) {
+    return t == "float" || t == "float32" || t == "double" || t == "float64";
+}
+
 // Pointer/reference types end with '*' or '&'; both lower to a plain pointer.
 bool isRefType(const std::string& t) {
     return !t.empty() && (t.back() == '*' || t.back() == '&');
@@ -150,12 +156,22 @@ struct CodeGenerator::Impl {
         errors.push_back(CodegenError{std::move(message), loc});
     }
 
-    // int/boolean/char/enum -> i32; class, array, pointer, ref -> opaque pointer.
+    // float/double -> f64; class/array/pointer/ref -> opaque pointer;
+    // int/boolean/char/enum -> i32.
     llvm::Type* llvmType(const std::string& t) {
         if (t == "void") return builder.getVoidTy();
+        if (isFloatType(t)) return builder.getDoubleTy();
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (classes.count(t) > 0) return builder.getPtrTy();
         return builder.getInt32Ty();
+    }
+
+    // Widen an integer value to f64 when the target type is floating-point.
+    llvm::Value* coerce(llvm::Value* v, const std::string& from, const std::string& to) {
+        if (v != nullptr && isFloatType(to) && !isFloatType(from) && v->getType()->isIntegerTy()) {
+            return builder.CreateSIToFP(v, builder.getDoubleTy());
+        }
+        return v;
     }
 
     std::string flattenCallee(const ast::Expr& expr) {
@@ -269,6 +285,7 @@ struct CodeGenerator::Impl {
     // Type name of an expression. Assumes a valid AST (semantic analysis ran).
     std::string typeName(const ast::Expr& expr) {
         if (dynamic_cast<const ast::IntLiteralExpr*>(&expr) != nullptr) return "int";
+        if (dynamic_cast<const ast::FloatLiteralExpr*>(&expr) != nullptr) return "double";
         if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
         if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
         if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
@@ -286,6 +303,9 @@ struct CodeGenerator::Impl {
             if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" ||
                 op == "&&" || op == "||") {
                 return "boolean";
+            }
+            if (isFloatType(typeName(*bin->lhs)) || isFloatType(typeName(*bin->rhs))) {
+                return "double";
             }
             return "int";
         }
@@ -483,6 +503,18 @@ struct CodeGenerator::Impl {
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
             return builder.getInt32(static_cast<std::uint32_t>(parseIntLiteral(n->text)));
         }
+        if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(&expr)) {
+            std::string s;
+            for (char c : f->text) {
+                if (c != '_' && c != 'f' && c != 'F') s += c;
+            }
+            double val = 0.0;
+            try {
+                val = std::stod(s);
+            } catch (...) {
+            }
+            return llvm::ConstantFP::get(builder.getDoubleTy(), val);
+        }
         if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(&expr)) {
             const std::string bytes = resolveEscapes(c->value);
             const unsigned char value = bytes.empty() ? 0 : static_cast<unsigned char>(bytes[0]);
@@ -560,10 +592,31 @@ struct CodeGenerator::Impl {
     }
 
     llvm::Value* emitBinary(const ast::BinaryExpr& bin) {
+        const std::string lt = typeName(*bin.lhs);
+        const std::string rt = typeName(*bin.rhs);
         llvm::Value* l = emitExpr(*bin.lhs);
         llvm::Value* r = emitExpr(*bin.rhs);
         if (l == nullptr || r == nullptr) return nullptr;
         const std::string& op = bin.op;
+        // Floating-point path: widen both operands to f64.
+        if (isFloatType(lt) || isFloatType(rt)) {
+            l = coerce(l, lt, "double");
+            r = coerce(r, rt, "double");
+            if (op == "+") return builder.CreateFAdd(l, r);
+            if (op == "-") return builder.CreateFSub(l, r);
+            if (op == "*") return builder.CreateFMul(l, r);
+            if (op == "/") return builder.CreateFDiv(l, r);
+            llvm::Value* fc = nullptr;
+            if (op == "==") fc = builder.CreateFCmpOEQ(l, r);
+            else if (op == "!=") fc = builder.CreateFCmpONE(l, r);
+            else if (op == "<") fc = builder.CreateFCmpOLT(l, r);
+            else if (op == ">") fc = builder.CreateFCmpOGT(l, r);
+            else if (op == "<=") fc = builder.CreateFCmpOLE(l, r);
+            else if (op == ">=") fc = builder.CreateFCmpOGE(l, r);
+            if (fc != nullptr) return builder.CreateZExt(fc, builder.getInt32Ty());
+            error("unsupported float operator '" + op + "'", bin.loc);
+            return nullptr;
+        }
         if (op == "+") return builder.CreateAdd(l, r);
         if (op == "-") return builder.CreateSub(l, r);
         if (op == "*") return builder.CreateMul(l, r);
@@ -625,9 +678,17 @@ struct CodeGenerator::Impl {
         std::vector<llvm::Value*> values;
         for (std::size_t i = 0; i < is.exprs.size(); ++i) {
             fmt += resolveEscapes(is.literals[i]);
-            fmt += (typeName(*is.exprs[i]) == "char") ? "%c" : "%d";
+            const std::string et = typeName(*is.exprs[i]);
             llvm::Value* v = emitExpr(*is.exprs[i]);
             if (v == nullptr) return nullptr;
+            if (isFloatType(et)) {
+                fmt += "%g";
+                v = coerce(v, et, "double");  // f64 for the %g vararg
+            } else if (et == "char") {
+                fmt += "%c";
+            } else {
+                fmt += "%d";
+            }
             values.push_back(v);
         }
         fmt += resolveEscapes(is.literals.back());
@@ -805,6 +866,7 @@ struct CodeGenerator::Impl {
                 isCopyableLValue(*vd->init)) {
                 initV = emitClassCopy(declType, initV);
             }
+            initV = coerce(initV, typeName(*vd->init), declType);  // int -> float widening
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
             builder.CreateStore(initV, slot);
             locals[vd->name] = LocalSlot{slot, declType};
@@ -832,7 +894,7 @@ struct CodeGenerator::Impl {
                 builder.CreateCall(memcpyFn(),
                                    {destStruct, v, sizeOf(classes[targetType].type)});
             } else {
-                builder.CreateStore(v, slot);
+                builder.CreateStore(coerce(v, typeName(*assign->value), targetType), slot);
             }
             return;
         }
@@ -892,6 +954,9 @@ struct CodeGenerator::Impl {
         if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
             if (rs->value != nullptr) {
                 llvm::Value* v = emitExpr(*rs->value);
+                if (v != nullptr && currentRetType->isDoubleTy() && v->getType()->isIntegerTy()) {
+                    v = builder.CreateSIToFP(v, currentRetType);  // int -> double return
+                }
                 emitScopeCleanup();
                 if (v != nullptr) builder.CreateRet(v);
                 return;
@@ -899,6 +964,8 @@ struct CodeGenerator::Impl {
             emitScopeCleanup();
             if (currentRetType->isVoidTy()) {
                 builder.CreateRetVoid();
+            } else if (currentRetType->isDoubleTy()) {
+                builder.CreateRet(llvm::ConstantFP::get(currentRetType, 0.0));
             } else {
                 builder.CreateRet(builder.getInt32(0));
             }
@@ -1191,6 +1258,8 @@ struct CodeGenerator::Impl {
             emitScopeCleanup();
             if (retType->isVoidTy()) {
                 builder.CreateRetVoid();
+            } else if (retType->isDoubleTy()) {
+                builder.CreateRet(llvm::ConstantFP::get(retType, 0.0));
             } else {
                 builder.CreateRet(builder.getInt32(0));
             }

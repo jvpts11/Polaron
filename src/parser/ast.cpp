@@ -24,6 +24,10 @@ void IntLiteralExpr::dump(std::string& out, int indent) const {
     line(out, indent, "IntLiteral " + text);
 }
 
+void FloatLiteralExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "FloatLiteral " + text);
+}
+
 void StringLiteralExpr::dump(std::string& out, int indent) const {
     line(out, indent, "StringLiteral \"" + value + "\"");
 }

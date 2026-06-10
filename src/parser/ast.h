@@ -42,6 +42,11 @@ struct IntLiteralExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+struct FloatLiteralExpr : Expr {
+    std::string text;  // raw lexeme, e.g. "3.14" or "2.0f"
+    void dump(std::string& out, int indent) const override;
+};
+
 struct StringLiteralExpr : Expr {
     std::string value;  // raw content; escapes resolved in a later phase
     void dump(std::string& out, int indent) const override;

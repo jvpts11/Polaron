@@ -708,6 +708,13 @@ ast::ExprPtr Parser::parsePrimary() {
             advance();
             return e;
         }
+        case TokenKind::FloatLiteral: {
+            auto e = std::make_unique<ast::FloatLiteralExpr>();
+            e->loc = tok.loc;
+            e->text = tok.lexeme;
+            advance();
+            return e;
+        }
         case TokenKind::StringLiteral: {
             auto e = std::make_unique<ast::StringLiteralExpr>();
             e->loc = tok.loc;
