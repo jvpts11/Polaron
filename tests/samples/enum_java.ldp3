@@ -1,0 +1,32 @@
+program EnumJava;
+
+public bundle main {
+    public namespace app {
+
+        // Java-style enum: constants carry constructor args; fields/methods follow.
+        public enum Planet {
+            EARTH(10, 2),
+            MARS(30, 3);
+
+            private final int mass;
+            private final int radius;
+
+            public constructor Planet(int mass, int radius) {
+                this.mass = mass;
+                this.radius = radius;
+            }
+
+            public method density() returns int {
+                return this.mass / this.radius;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.println($"earth = {Planet.EARTH.density()} mars = {Planet.MARS.density()}");
+                // earth = 5 (10/2), mars = 10 (30/3)
+                return;
+            }
+        }
+    }
+}

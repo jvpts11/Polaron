@@ -157,6 +157,7 @@ struct CodeGenerator::Impl {
 
     std::unordered_map<std::string, ClassLayout> classes;
     std::unordered_map<std::string, std::vector<std::string>> enums;  // name -> constants (ordinals)
+    std::unordered_map<std::string, const ast::EnumDecl*> javaEnums;  // java-style enum decls
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
     std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
     std::unordered_map<std::string, LocalSlot> locals;
@@ -602,6 +603,15 @@ struct CodeGenerator::Impl {
             }
             return builder.CreateLoad(builder.getPtrTy(), it->second.storage, id->name);
         }
+        // A java-style enum constant used as a receiver (Type.CONST.method()).
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                auto jit = javaEnums.find(objId->name);
+                if (jit != javaEnums.end() && locals.find(objId->name) == locals.end()) {
+                    return emitEnumConstant(*jit->second, mem->member);
+                }
+            }
+        }
         error("unsupported object expression", expr.loc);
         return nullptr;
     }
@@ -683,9 +693,12 @@ struct CodeGenerator::Impl {
             return builder.CreateLoad(llvmType(it->second.type), it->second.storage, id->name);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
-            // Enum constant -> its ordinal (i32).
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 if (locals.find(objId->name) == locals.end()) {
+                    // Java-style enum constant -> materialize the instance.
+                    auto jit = javaEnums.find(objId->name);
+                    if (jit != javaEnums.end()) return emitEnumConstant(*jit->second, mem->member);
+                    // Int-style enum constant -> its ordinal (i32).
                     auto eit = enums.find(objId->name);
                     if (eit != enums.end()) {
                         auto pos = std::find(eit->second.begin(), eit->second.end(), mem->member);
@@ -901,6 +914,37 @@ struct CodeGenerator::Impl {
             for (const auto& arg : nw.args) {
                 llvm::Value* v = emitExpr(*arg);
                 if (v == nullptr) return nullptr;
+                args.push_back(v);
+            }
+            builder.CreateCall(fnit->second, args);
+        }
+        return objPtr;
+    }
+
+    // A java-style enum constant: materializes `new EnumName(args)` on the heap.
+    // Not yet a true singleton -- each reference rebuilds it; identity is a later
+    // refinement (would need a global + eager init).
+    llvm::Value* emitEnumConstant(const ast::EnumDecl& en, const std::string& constName) {
+        auto pos = std::find(en.constants.begin(), en.constants.end(), constName);
+        if (pos == en.constants.end()) {
+            error("enum '" + en.name + "' has no constant '" + constName + "'", en.loc);
+            return nullptr;
+        }
+        const std::size_t idx = static_cast<std::size_t>(pos - en.constants.begin());
+        auto cit = classes.find(en.name);
+        if (cit == classes.end()) return nullptr;
+        llvm::Value* objPtr = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, en.name);
+        auto fnit = functions.find(en.name + "." + en.name);
+        if (fnit != functions.end()) {
+            std::vector<llvm::Value*> args;
+            args.push_back(objPtr);
+            const auto& cargs = en.constantArgs[idx];
+            for (std::size_t i = 0; i < cargs.size(); ++i) {
+                llvm::Value* v = emitExpr(*cargs[i]);
+                if (v == nullptr) return nullptr;
+                if (i + 1 < fnit->second->arg_size()) {
+                    v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
+                }
                 args.push_back(v);
             }
             builder.CreateCall(fnit->second, args);
@@ -1318,10 +1362,14 @@ struct CodeGenerator::Impl {
     // ---- Top-level generation ----
 
     void declareClasses() {
-        // Pass 0: register enums (each lowers to i32; constants are ordinals).
+        // Pass 0: register enums (int-style lowers to i32 ordinals; java-style
+        // constants are singletons materialized as instances of a desugared class).
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
-                for (const ast::EnumDecl& en : ns.enums) enums[en.name] = en.constants;
+                for (const ast::EnumDecl& en : ns.enums) {
+                    enums[en.name] = en.constants;
+                    if (en.isJavaStyle) javaEnums[en.name] = &en;
+                }
             }
         }
         // Pass 1: create struct types and record declaration, superclass,

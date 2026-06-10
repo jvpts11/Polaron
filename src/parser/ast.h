@@ -308,12 +308,16 @@ struct ClassDecl {
     void dump(std::string& out, int indent) const;
 };
 
-// A simple (int-style) enum: a named set of constants. Java-style enums (with
-// fields, constructors and methods) come once float/double land.
+// An enum. Int-style (`RED, GREEN`) uses only `constants` (ordinal = index).
+// Java-style (spec 12.2) adds per-constant constructor args, plus fields,
+// a constructor and methods in `members`; each constant is a singleton instance.
 struct EnumDecl {
     std::string visibility;
     std::string name;
-    std::vector<std::string> constants;  // in declaration order; ordinal = index
+    std::vector<std::string> constants;            // names, in declaration order
+    std::vector<std::vector<ExprPtr>> constantArgs;  // java-style: ctor args, parallel to constants
+    std::vector<MemberPtr> members;                // java-style: fields/constructor/methods
+    bool isJavaStyle = false;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

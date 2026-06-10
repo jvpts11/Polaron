@@ -671,3 +671,20 @@ TEST_CASE("parser rejects a record that extends a type") {
         "public record Point(int x) extends Object {}",
         "int n = 0;")));
 }
+
+TEST_CASE("semantic accepts a java-style enum with fields and a method") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public enum Planet { EARTH(10, 2), MARS(30, 3);"
+        " private final int mass; private final int radius;"
+        " public constructor Planet(int mass, int radius) { this.mass = mass; this.radius = radius; }"
+        " public method density() returns int { return this.mass / this.radius; } }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " int d = Planet.EARTH.density(); } } } }"));
+}
+
+TEST_CASE("semantic still accepts a plain int-style enum") {
+    CHECK(checkSrc(withClass(
+        "public enum Color { RED, GREEN, BLUE }",
+        "Color c = Color.GREEN;")));
+}

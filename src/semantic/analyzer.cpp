@@ -268,7 +268,9 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::EnumDecl& en : ns.enums) {
-                if (enums_.count(en.name) > 0 || classes_.count(en.name) > 0) {
+                // A java-style enum is desugared into a class of the same name, so
+                // its matching class entry is expected; only flag other clashes.
+                if (enums_.count(en.name) > 0 || (!en.isJavaStyle && classes_.count(en.name) > 0)) {
                     error("redeclaration of type '" + en.name + "'", en.loc);
                     continue;
                 }

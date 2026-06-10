@@ -244,7 +244,28 @@ ast::Namespace Parser::parseNamespace() {
             kind = peek(1).kind;
         }
         if (kind == TokenKind::KwEnum) {
-            ns.enums.push_back(parseEnum());
+            ast::EnumDecl en = parseEnum();
+            if (en.isJavaStyle) {
+                // Desugar: a class carries the fields/constructor/methods (reusing
+                // the whole class pipeline); a light enum keeps the constants and
+                // their constructor args so `Type.CONST` can materialize them.
+                ast::ClassDecl cls;
+                cls.loc = en.loc;
+                cls.visibility = en.visibility;
+                cls.name = en.name;
+                cls.members = std::move(en.members);
+                ns.classes.push_back(std::move(cls));
+                ast::EnumDecl light;
+                light.loc = en.loc;
+                light.visibility = en.visibility;
+                light.name = en.name;
+                light.constants = std::move(en.constants);
+                light.constantArgs = std::move(en.constantArgs);
+                light.isJavaStyle = true;
+                ns.enums.push_back(std::move(light));
+            } else {
+                ns.enums.push_back(std::move(en));
+            }
         } else if (kind == TokenKind::KwComptime || kind == TokenKind::KwLiteral) {
             ns.literals.push_back(parseLiteral());
         } else if (kind == TokenKind::KwRecord) {
@@ -284,10 +305,29 @@ ast::EnumDecl Parser::parseEnum() {
     expect(TokenKind::KwEnum, "'enum'");
     e.name = expect(TokenKind::Identifier, "the enum name").lexeme;
     expect(TokenKind::LBrace, "'{'");
-    if (!check(TokenKind::RBrace)) {
+    // Constants: NAME [ (ctor args) ], comma-separated. Args make it Java-style.
+    if (check(TokenKind::Identifier)) {
         do {
             e.constants.push_back(expect(TokenKind::Identifier, "an enum constant").lexeme);
+            std::vector<ast::ExprPtr> args;
+            if (match(TokenKind::LParen)) {
+                e.isJavaStyle = true;
+                if (!check(TokenKind::RParen)) {
+                    do {
+                        args.push_back(parseExpression());
+                    } while (match(TokenKind::Comma));
+                }
+                expect(TokenKind::RParen, "')'");
+            }
+            e.constantArgs.push_back(std::move(args));
         } while (match(TokenKind::Comma));
+    }
+    // Java-style body: `;` then fields / constructor / methods (spec 12.2).
+    if (match(TokenKind::Semicolon)) {
+        e.isJavaStyle = true;
+        while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+            e.members.push_back(parseMember(/*inInterface=*/false));
+        }
     }
     expect(TokenKind::RBrace, "'}'");
     return e;

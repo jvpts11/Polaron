@@ -268,8 +268,10 @@ void ClassDecl::dump(std::string& out, int indent) const {
 void EnumDecl::dump(std::string& out, int indent) const {
     std::string head = "Enum '" + name + "'";
     if (!visibility.empty()) head += " " + visibility;
+    if (isJavaStyle) head += " java-style";
     line(out, indent, head);
     for (const auto& c : constants) line(out, indent + 1, "Constant '" + c + "'");
+    for (const auto& m : members) m->dump(out, indent + 1);
 }
 
 void LiteralDecl::dump(std::string& out, int indent) const {
