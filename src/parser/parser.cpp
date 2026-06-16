@@ -889,6 +889,40 @@ ast::StmtPtr Parser::parseMatch() {
     return m;
 }
 
+// match (subject) { case Type(bindings) -> expr; ... default -> expr; } as an
+// expression (spec 16.2). Each arm yields a value via `->`. Block-bodied arms in
+// expression position are not supported yet (the spec leaves their value implicit).
+ast::ExprPtr Parser::parseMatchExpr() {
+    auto m = std::make_unique<ast::MatchExpr>();
+    m->loc = current().loc;
+    expect(TokenKind::KwMatch, "'match'");
+    expect(TokenKind::LParen, "'('");
+    m->subject = parseExpression();
+    expect(TokenKind::RParen, "')'");
+    expect(TokenKind::LBrace, "'{'");
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        if (match(TokenKind::KwDefault)) {
+            expect(TokenKind::Arrow, "'->' after 'default'");
+            m->defaultResult = parseExpression();
+            expect(TokenKind::Semicolon, "';'");
+            continue;
+        }
+        expect(TokenKind::KwCase, "'case' or 'default'");
+        ast::MatchCase c;
+        c.loc = current().loc;
+        c.typeName = expect(TokenKind::Identifier, "a case type name").lexeme;
+        expect(TokenKind::LParen, "'(' (positional field bindings)");
+        c.bindings = parseParams();  // (type name, ...) -- may be empty
+        expect(TokenKind::RParen, "')'");
+        expect(TokenKind::Arrow, "'->' (a match-expression arm yields a value)");
+        c.result = parseExpression();
+        expect(TokenKind::Semicolon, "';'");
+        m->cases.push_back(std::move(c));
+    }
+    expect(TokenKind::RBrace, "'}'");
+    return m;
+}
+
 std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
     auto decl = std::make_unique<ast::VarDeclStmt>();
     decl->loc = current().loc;
@@ -1239,6 +1273,9 @@ ast::ExprPtr Parser::parsePrimary() {
         }
         case TokenKind::KwNew:
             return parseNew();
+        case TokenKind::KwMatch:
+            // match (...) { case T(..) -> expr; ... } in expression position (spec 16.2).
+            return parseMatchExpr();
         default:
             fail("expected an expression but found '" + tok.lexeme + "'", tok.loc);
     }

@@ -476,6 +476,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=circle r = 3"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # match as an expression (spec 16.2): each arm yields a value via `->`.
+        add_test(NAME codegen_match_expr_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/match_expr.ldp3"
+            "-DEXPECTED=area = 27 area = 25 d = 7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

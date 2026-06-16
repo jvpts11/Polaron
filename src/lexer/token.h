@@ -92,6 +92,9 @@ enum class TokenKind : std::uint8_t {
     // Operators -- logical
     AmpAmp, PipePipe, Bang,  // && || !
 
+    // Operators -- misc
+    Arrow,  // -> (match-expression arm)
+
     // Operators -- bitwise
     Amp, Pipe, Caret, Tilde, Shl, Shr,  // & | ^ ~ << >>
 };

@@ -86,6 +86,7 @@ private:
     ast::ExprPtr parsePrimary();
     ast::ExprPtr maybeLiteralSuffix(ast::ExprPtr literal);
     ast::ExprPtr parseRegionInit();
+    ast::ExprPtr parseMatchExpr();   // match(...) { case T(..) -> expr; ... } as a value
     void parseTypeSet(std::vector<std::string>& out);
 
     std::vector<Token> tokens_;

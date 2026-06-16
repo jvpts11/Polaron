@@ -263,7 +263,8 @@ struct Param {
 struct MatchCase {
     std::string typeName;
     std::vector<Param> bindings;
-    Block body;
+    Block body;          // statement form: the case body
+    ExprPtr result;      // expression form (`-> expr`); null in the statement form
     SourceLocation loc;
 };
 
@@ -272,6 +273,16 @@ struct MatchStmt : Stmt {
     ExprPtr subject;
     std::vector<MatchCase> cases;
     std::unique_ptr<Block> defaultBody;  // null when absent
+    void dump(std::string& out, int indent) const override;
+};
+
+// match (subject) { case T(..) -> expr; ... } as an expression (spec 16.2):
+// every arm yields one value via `->`; the whole match evaluates to that value.
+struct MatchExpr : Expr {
+    ExprPtr subject;
+    std::vector<MatchCase> cases;     // each arm uses `result`; `body` stays empty
+    ExprPtr defaultResult;            // `default -> expr;`; null when absent
+    mutable std::string resultType;   // value type; computed by sema, read by codegen
     void dump(std::string& out, int indent) const override;
 };
 

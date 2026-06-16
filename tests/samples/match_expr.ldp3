@@ -1,0 +1,51 @@
+program MatchExpr;
+
+public bundle main {
+    public namespace app {
+
+        public sealed abstract class Shape permits Circle, Square {
+            public abstract method area() returns int;
+        }
+        public class Circle extends Shape {
+            private int r;
+            public constructor Circle(int r) { this.r = r; }
+            public override method area() returns int { return this.r * this.r * 3; }
+        }
+        public class Square extends Shape {
+            private int side;
+            public constructor Square(int side) { this.side = side; }
+            public override method area() returns int { return this.side * this.side; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Exhaustive match-expression over a sealed type: no default needed.
+                Shape* s = new Circle(3) on heap;
+                int a = match (s) {
+                    case Circle(int r) -> r * r * 3;
+                    case Square(int side) -> side * side;
+                };
+                System.IO.println($"area = {a}");      // Circle(3) -> 27
+                delete s;
+
+                Shape* t = new Square(5) on heap;
+                int b = match (t) {
+                    case Circle(int r) -> r * r * 3;
+                    case Square(int side) -> side * side;
+                };
+                System.IO.println($"area = {b}");      // Square(5) -> 25
+                delete t;
+
+                // A default arm catches the uncovered case (Square falls through here).
+                Shape* u = new Square(2) on heap;
+                int d = match (u) {
+                    case Circle(int r) -> r;
+                    default -> 7;
+                };
+                System.IO.println($"d = {d}");         // Square -> default -> 7
+                delete u;
+                return;
+            }
+        }
+    }
+}

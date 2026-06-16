@@ -171,6 +171,29 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         for (const auto& ex : x->exprs) n->exprs.push_back(cloneExpr(ex.get(), s));
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::MatchExpr*>(e)) {
+        auto n = std::make_unique<ast::MatchExpr>();
+        n->loc = x->loc;
+        n->subject = cloneExpr(x->subject.get(), s);
+        for (const auto& c : x->cases) {
+            ast::MatchCase nc;
+            nc.loc = c.loc;
+            nc.typeName = c.typeName;
+            auto it = s.find(nc.typeName);
+            if (it != s.end()) nc.typeName = it->second;  // a case type may be a type param
+            for (const auto& b : c.bindings) {
+                ast::Param p;
+                p.loc = b.loc;
+                p.type = substType(b.type, s);
+                p.name = b.name;
+                nc.bindings.push_back(std::move(p));
+            }
+            nc.result = cloneExpr(c.result.get(), s);
+            n->cases.push_back(std::move(nc));
+        }
+        n->defaultResult = cloneExpr(x->defaultResult.get(), s);
+        return n;
+    }
     return nullptr;  // unknown node: should not happen for well-formed input
 }
 
@@ -360,6 +383,12 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
     if (const auto* x = dynamic_cast<const ast::InterpStringExpr*>(e)) { for (const auto& ex : x->exprs) collectExpr(ex.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::NewArrayExpr*>(e)) { collectExpr(x->size.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::RegionInitExpr*>(e)) { collectExpr(x->size.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::MatchExpr*>(e)) {
+        collectExpr(x->subject.get(), g, out);
+        for (const auto& c : x->cases) collectExpr(c.result.get(), g, out);
+        collectExpr(x->defaultResult.get(), g, out);
+        return;
+    }
 }
 void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& out) {
     if (st == nullptr) return;

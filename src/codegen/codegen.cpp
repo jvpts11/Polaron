@@ -419,6 +419,13 @@ struct CodeGenerator::Impl {
             if (un->op == "&") return typeName(*un->operand) + "*";  // address-of
             return un->op == "!" ? "boolean" : "int";
         }
+        if (const auto* me = dynamic_cast<const ast::MatchExpr*>(&expr)) {
+            // Value type is the arms' common type, computed by sema (bindings in scope).
+            if (!me->resultType.empty()) return me->resultType;
+            if (!me->cases.empty() && me->cases[0].result) return typeName(*me->cases[0].result);
+            if (me->defaultResult) return typeName(*me->defaultResult);
+            return "int";
+        }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
             const std::string& op = bin->op;
             // Operator overloading: result type is the operator method's return type.
@@ -707,6 +714,9 @@ struct CodeGenerator::Impl {
         }
         if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&expr)) {
             return builder.getInt32(b->value ? 1 : 0);
+        }
+        if (const auto* me = dynamic_cast<const ast::MatchExpr*>(&expr)) {
+            return emitMatchExpr(*me);
         }
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
             if (id->name == "this") return currentThis;
@@ -1425,6 +1435,69 @@ struct CodeGenerator::Impl {
         if (s.defaultBody) emitBlock(*s.defaultBody);
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
         builder.SetInsertPoint(endBB);
+    }
+
+    // Expression form (spec 16.2): each arm yields a value; a phi at the join merges
+    // them. Mirrors emitMatch's vtable dispatch + positional binding, but produces a
+    // value. Sema guarantees exhaustiveness, so the no-match tail is unreachable.
+    llvm::Value* emitMatchExpr(const ast::MatchExpr& s) {
+        llvm::Value* subj = emitExpr(*s.subject);
+        if (subj == nullptr) return nullptr;
+        auto sit = classes.find(baseType(typeName(*s.subject)));
+        if (sit == classes.end() || !sit->second.hasVtable) {
+            error("match subject must be a polymorphic class", s.loc);
+            return nullptr;
+        }
+        const std::string rtype = s.resultType.empty() ? std::string("int") : s.resultType;
+        llvm::Type* rty = llvmType(rtype);
+        llvm::Value* vtblAddr = builder.CreateStructGEP(sit->second.type, subj, 0, "vtbl.addr");
+        llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblAddr, "vtbl");
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "matchx.end", fn);
+        std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+        for (const ast::MatchCase& c : s.cases) {
+            auto cit = classes.find(c.typeName);
+            if (cit == classes.end() || cit->second.vtable == nullptr) continue;
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "matchx.case", fn);
+            llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(context, "matchx.next", fn);
+            builder.CreateCondBr(builder.CreateICmpEQ(vtbl, cit->second.vtable, "is"), bodyBB, nextBB);
+            builder.SetInsertPoint(bodyBB);
+            std::vector<std::string> added;
+            for (std::size_t i = 0; i < c.bindings.size() && i < cit->second.ownFields.size(); ++i) {
+                const std::string& fname = cit->second.ownFields[i].first;
+                const std::string ftype = cit->second.fieldType.count(fname) > 0
+                                              ? cit->second.fieldType[fname]
+                                              : cit->second.ownFields[i].second;
+                llvm::Value* fptr =
+                    builder.CreateStructGEP(cit->second.type, subj, cit->second.fieldIndex[fname]);
+                llvm::Value* val = builder.CreateLoad(llvmType(ftype), fptr, fname);
+                llvm::Value* slot = createEntryAlloca(c.bindings[i].name, llvmType(ftype));
+                builder.CreateStore(val, slot);
+                locals[c.bindings[i].name] = LocalSlot{slot, ftype};
+                added.push_back(c.bindings[i].name);
+            }
+            llvm::Value* v = c.result ? emitExpr(*c.result) : nullptr;
+            if (v != nullptr) v = coerce(v, typeName(*c.result), rtype);  // typeName needs bindings
+            for (const std::string& n : added) locals.erase(n);  // bindings are arm-scoped
+            if (v == nullptr) v = llvm::Constant::getNullValue(rty);  // error recovery
+            incoming.push_back({v, builder.GetInsertBlock()});
+            builder.CreateBr(endBB);
+            builder.SetInsertPoint(nextBB);
+        }
+        if (s.defaultResult) {
+            llvm::Value* v = emitExpr(*s.defaultResult);
+            v = (v == nullptr) ? llvm::Constant::getNullValue(rty)
+                               : coerce(v, typeName(*s.defaultResult), rtype);
+            incoming.push_back({v, builder.GetInsertBlock()});
+            builder.CreateBr(endBB);
+        } else {
+            builder.CreateUnreachable();  // sema guarantees a sealed match is exhaustive
+        }
+        builder.SetInsertPoint(endBB);
+        if (incoming.empty()) return llvm::Constant::getNullValue(rty);
+        llvm::PHINode* phi = builder.CreatePHI(rty, static_cast<unsigned>(incoming.size()), "matchx");
+        for (auto& in : incoming) phi->addIncoming(in.first, in.second);
+        return phi;
     }
 
     void emitWhile(const ast::WhileStmt& s) {

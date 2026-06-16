@@ -836,6 +836,50 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         return "int";
     }
 
+    if (const auto* me = dynamic_cast<const ast::MatchExpr*>(&expr)) {
+        const std::string subjType = typeOf(*me->subject);
+        const std::string subjBase = baseType(subjType);
+        std::string resultType;
+        for (const ast::MatchCase& c : me->cases) {
+            const ClassInfo* ci = lookupClass(c.typeName);
+            if (ci == nullptr) {
+                error("unknown type '" + c.typeName + "' in match case", c.loc);
+            } else if (!subjType.empty() && !isSubtype(c.typeName, subjBase)) {
+                error("'" + c.typeName + "' is not a subtype of '" + subjType + "'", c.loc);
+            }
+            // Bindings introduce the case type's fields as locals in the arm expression.
+            pushScope();
+            for (const ast::Param& b : c.bindings)
+                declareLocal(b.name, LocalVar{typeRefStr(b.type), false});
+            const std::string at = c.result ? typeOf(*c.result) : std::string();
+            popScope();
+            if (resultType.empty()) resultType = at;
+        }
+        if (me->defaultResult) {
+            const std::string dt = typeOf(*me->defaultResult);
+            if (resultType.empty()) resultType = dt;
+        }
+        // Exhaustiveness (spec 16.1): a sealed subject must cover every permit with no
+        // default; otherwise a default arm is required so the expression always yields.
+        const ClassInfo* sc = lookupClass(subjBase);
+        if (sc != nullptr && sc->isSealed) {
+            for (const std::string& p : sc->permits) {
+                bool covered = false;
+                for (const ast::MatchCase& c : me->cases)
+                    if (c.typeName == p) covered = true;
+                if (!covered && !me->defaultResult)
+                    error("match on sealed '" + subjBase +
+                              "' is not exhaustive: missing case '" + p + "'",
+                          me->loc);
+            }
+        } else if (!me->defaultResult) {
+            error("match expression requires a 'default' arm (the subject is not sealed)",
+                  me->loc);
+        }
+        me->resultType = resultType;
+        return resultType;
+    }
+
     if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) {
         const std::string t = typeOf(*mv->operand);
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mv->operand.get())) {

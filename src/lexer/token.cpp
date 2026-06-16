@@ -131,6 +131,7 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::Percent:    return "Percent";
         case TokenKind::PlusPlus:   return "PlusPlus";
         case TokenKind::MinusMinus: return "MinusMinus";
+        case TokenKind::Arrow:      return "Arrow";
 
         case TokenKind::Assign:    return "Assign";
         case TokenKind::PlusEq:    return "PlusEq";

@@ -151,6 +151,22 @@ void MatchStmt::dump(std::string& out, int indent) const {
     }
 }
 
+void MatchExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "MatchExpr");
+    subject->dump(out, indent + 1);
+    for (const auto& c : cases) {
+        std::string head = "case " + c.typeName + "(";
+        for (std::size_t i = 0; i < c.bindings.size(); ++i)
+            head += (i ? ", " : "") + c.bindings[i].type.name + " " + c.bindings[i].name;
+        line(out, indent + 1, head + ") ->");
+        if (c.result) c.result->dump(out, indent + 2);
+    }
+    if (defaultResult) {
+        line(out, indent + 1, "default ->");
+        defaultResult->dump(out, indent + 2);
+    }
+}
+
 void DeferStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Defer");
     body.dump(out, indent + 1);

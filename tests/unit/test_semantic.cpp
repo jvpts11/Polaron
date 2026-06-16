@@ -781,6 +781,22 @@ TEST_CASE("semantic rejects a non-sealed match without a default") {
     CHECK_FALSE(checkSrc(withMatch("match (s) { case Circle(int r) { int x = r; } }")));
 }
 
+TEST_CASE("semantic accepts a match expression with a binding and a default") {
+    CHECK(checkSrc(withMatch("int v = match (s) { case Circle(int r) -> r * r; default -> 0; };")));
+}
+
+TEST_CASE("semantic accepts an exhaustive sealed match expression without a default") {
+    CHECK(checkSrc(withSealed("int v = match (s) { case Circle() -> 1; case Square() -> 2; };")));
+}
+
+TEST_CASE("semantic rejects a non-exhaustive sealed match expression without a default") {
+    CHECK_FALSE(checkSrc(withSealed("int v = match (s) { case Circle() -> 1; };")));
+}
+
+TEST_CASE("semantic rejects a non-sealed match expression without a default") {
+    CHECK_FALSE(checkSrc(withMatch("int v = match (s) { case Circle(int r) -> r; };")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

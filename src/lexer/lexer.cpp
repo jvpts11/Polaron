@@ -348,6 +348,7 @@ Token Lexer::scanToken() {
         case '-':
             if (match('-')) return make(TokenKind::MinusMinus, "--", loc);
             if (match('=')) return make(TokenKind::MinusEq, "-=", loc);
+            if (match('>')) return make(TokenKind::Arrow, "->", loc);
             return make(TokenKind::Minus, "-", loc);
         case '*':
             if (match('=')) return make(TokenKind::StarEq, "*=", loc);
