@@ -43,6 +43,7 @@ enum class TokenKind : std::uint8_t {
     // Keywords -- OOP / memory / type ops
     KwExtends, KwImplements, KwThis, KwSuper,
     KwSealed, KwPermits,
+    KwRequires, KwEnsures, KwInvariant,
     KwVar, KwNew, KwDelete, KwOn, KwIn,
     KwIs, KwAs, KwCast, KwNull,
 

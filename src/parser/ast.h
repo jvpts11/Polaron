@@ -305,6 +305,8 @@ struct MethodDecl : MemberDecl {
     std::vector<Param> params;
     TypeRef returnType;
     Block body;  // empty when isAbstract
+    std::vector<ExprPtr> requiresClauses;  // contracts (spec 29): preconditions
+    std::vector<ExprPtr> ensuresClauses;   // contracts (spec 29): postconditions
     void dump(std::string& out, int indent) const override;
 };
 
@@ -322,6 +324,8 @@ struct ConstructorDecl : MemberDecl {
     std::string visibility;
     std::vector<Param> params;
     Block body;
+    std::vector<ExprPtr> requiresClauses;  // contracts (spec 29): preconditions
+    std::vector<ExprPtr> ensuresClauses;   // contracts (spec 29): postconditions
     void dump(std::string& out, int indent) const override;
 };
 

@@ -1,0 +1,34 @@
+program Contracts;
+
+public bundle main {
+    public namespace app {
+
+        public class Account {
+            private mutable int balance;
+
+            public constructor Account(int start)
+                requires start >= 0
+            {
+                this.balance = start;
+            }
+
+            public method deposit(int amount) returns void
+                requires amount > 0
+                ensures this.balance >= 0
+            {
+                this.balance = this.balance + amount;
+            }
+
+            public method getBalance() returns int { return this.balance; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Account a = new Account(100) on stack;
+                a.deposit(50);
+                System.IO.println($"balance = {a.getBalance()}");   // 150
+                return;
+            }
+        }
+    }
+}

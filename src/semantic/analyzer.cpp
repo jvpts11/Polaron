@@ -377,11 +377,18 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         if (m->isAbstract) continue;  // no body to analyze
+                        std::vector<const ast::Expr*> contracts;
+                        for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
+                        for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
                         analyzeMethodBody(m->body, m->params,
-                                          m->isStatic ? std::string() : cls.name, false);
+                                          m->isStatic ? std::string() : cls.name, false, contracts);
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
-                        analyzeMethodBody(c->body, c->params, cls.name, /*inConstructor=*/true);
+                        std::vector<const ast::Expr*> contracts;
+                        for (const auto& e : c->requiresClauses) contracts.push_back(e.get());
+                        for (const auto& e : c->ensuresClauses) contracts.push_back(e.get());
+                        analyzeMethodBody(c->body, c->params, cls.name, /*inConstructor=*/true,
+                                          contracts);
                     } else if (const auto* d =
                                    dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                         analyzeMethodBody(d->body, {}, cls.name, false);
@@ -480,7 +487,8 @@ void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
 
 void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<ast::Param>& params,
-                                         const std::string& thisClass, bool inConstructor) {
+                                         const std::string& thisClass, bool inConstructor,
+                                         const std::vector<const ast::Expr*>& contracts) {
     scopes_.clear();
     moved_.clear();
     regionConstraints_.clear();
@@ -502,6 +510,12 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
             }
         }
         analyzeStatement(*body.statements[i]);
+    }
+    // Contract clauses (spec 29) are boolean expressions over params/this/fields.
+    for (const ast::Expr* clause : contracts) {
+        const std::string t = typeOf(*clause);
+        if (!t.empty() && t != "boolean")
+            error("a contract clause must be boolean, got '" + t + "'", clause->loc);
     }
     popScope();
 }

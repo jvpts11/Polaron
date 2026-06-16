@@ -94,7 +94,8 @@ private:
     void analyzeLiteralBodies(const ast::Program& program);
     void analyzeFieldInits(const ast::ClassDecl& cls);
     void analyzeMethodBody(const ast::Block& body, const std::vector<ast::Param>& params,
-                           const std::string& thisClass, bool inConstructor);
+                           const std::string& thisClass, bool inConstructor,
+                           const std::vector<const ast::Expr*>& contracts = {});
     void analyzeBlock(const ast::Block& block);
     void analyzeStatement(const ast::Stmt& stmt);
     void checkAssignTarget(const ast::Expr& target, const std::string& valueType,

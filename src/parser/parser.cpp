@@ -540,6 +540,13 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     expect(TokenKind::RParen, "')'");
     expect(TokenKind::KwReturns, "'returns'");
     m->returnType = parseTypeRef();
+    // Contract clauses (spec 29): `requires <expr>` / `ensures <expr>`, between the
+    // signature and the body, no separators. `old(...)` in ensures is not yet supported.
+    while (check(TokenKind::KwRequires) || check(TokenKind::KwEnsures)) {
+        const bool isReq = check(TokenKind::KwRequires);
+        advance();
+        (isReq ? m->requiresClauses : m->ensuresClauses).push_back(parseExpression());
+    }
     if (m->isAbstract) {
         expect(TokenKind::Semicolon, "';' (an abstract method has no body)");
     } else {
@@ -638,6 +645,11 @@ std::unique_ptr<ast::ConstructorDecl> Parser::parseConstructor(std::string visib
     expect(TokenKind::LParen, "'('");
     c->params = parseParams();
     expect(TokenKind::RParen, "')'");
+    while (check(TokenKind::KwRequires) || check(TokenKind::KwEnsures)) {
+        const bool isReq = check(TokenKind::KwRequires);
+        advance();
+        (isReq ? c->requiresClauses : c->ensuresClauses).push_back(parseExpression());
+    }
     c->body = parseBlock();
     return c;
 }

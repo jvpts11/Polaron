@@ -180,6 +180,7 @@ struct CodeGenerator::Impl {
     llvm::Value* currentThis = nullptr;
     llvm::Function* currentFn = nullptr;
     llvm::Type* currentRetType = nullptr;
+    const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
 
     Impl(const ast::Program& p, const EntryPoint& e, std::string_view name,
          std::vector<CodegenError>& errs)
@@ -507,6 +508,29 @@ struct CodeGenerator::Impl {
         llvm::FunctionType* ty =
             llvm::FunctionType::get(builder.getInt32Ty(), {builder.getPtrTy()}, /*isVarArg=*/true);
         return module.getOrInsertFunction("scanf", ty);
+    }
+
+    llvm::FunctionCallee exitFn() {
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getInt32Ty()}, false);
+        return module.getOrInsertFunction("exit", ty);
+    }
+
+    // Contracts (spec 29): if the boolean condition is false at runtime, report and exit(1).
+    void emitContractCheck(const ast::Expr& cond, const char* kind) {
+        llvm::Value* c = emitExpr(cond);
+        if (c == nullptr) return;
+        llvm::Value* ok = builder.CreateICmpNE(c, builder.getInt32(0), "contract.ok");
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* failBB = llvm::BasicBlock::Create(context, "contract.fail", fn);
+        llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "contract.cont", fn);
+        builder.CreateCondBr(ok, contBB, failBB);
+        builder.SetInsertPoint(failBB);
+        const std::string msg = std::string("contract violated: ") + kind + "\n";
+        builder.CreateCall(printf(), {builder.CreateGlobalStringPtr(msg, ".contract")});
+        builder.CreateCall(exitFn(), {builder.getInt32(1)});
+        builder.CreateUnreachable();
+        builder.SetInsertPoint(contBB);
     }
 
     llvm::FunctionCallee mallocFn() {
@@ -1200,6 +1224,9 @@ struct CodeGenerator::Impl {
     // M4 tracks objects at function scope; per-block RAII comes with nested
     // scopes in a later phase.
     void emitScopeCleanup() {
+        // Contracts: postconditions run at each exit, before defers/destructors (spec 29).
+        if (currentEnsures != nullptr)
+            for (const ast::ExprPtr& e : *currentEnsures) emitContractCheck(*e, "ensures");
         // Deferred blocks run first, in reverse (LIFO) order.
         for (auto it = deferred.rbegin(); it != deferred.rend(); ++it) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
@@ -1740,10 +1767,13 @@ struct CodeGenerator::Impl {
 
     void emitBody(llvm::Function* fn, const ast::Block& body,
                   const std::vector<ast::Param>& params, const std::string& thisClass,
-                  llvm::Type* retType, const ast::ClassDecl* ctorOf = nullptr) {
+                  llvm::Type* retType, const ast::ClassDecl* ctorOf = nullptr,
+                  const std::vector<ast::ExprPtr>* requiresClauses = nullptr,
+                  const std::vector<ast::ExprPtr>* ensuresClauses = nullptr) {
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
+        currentEnsures = ensuresClauses;
         currentThis = nullptr;
         locals.clear();
         scopeObjects.clear();
@@ -1795,6 +1825,10 @@ struct CodeGenerator::Impl {
             emitFieldInits(*ctorOf, currentThis);
         }
 
+        // Contracts: preconditions run after the prologue, before the body (spec 29).
+        if (requiresClauses != nullptr)
+            for (const ast::ExprPtr& r : *requiresClauses) emitContractCheck(*r, "requires");
+
         emitBlock(body);
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             emitScopeCleanup();
@@ -1821,13 +1855,15 @@ struct CodeGenerator::Impl {
                             } else if (!m->isAbstract) {
                                 emitBody(functions[cls.name + "." + m->name], m->body, m->params,
                                          m->isStatic ? std::string() : cls.name,
-                                         llvmType(typeRefName(m->returnType)));
+                                         llvmType(typeRefName(m->returnType)), nullptr,
+                                         &m->requiresClauses, &m->ensuresClauses);
                             }
                         } else if (const auto* c =
                                        dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                             hasCtor = true;
                             emitBody(functions[cls.name + "." + cls.name], c->body, c->params,
-                                     cls.name, builder.getVoidTy(), &cls);
+                                     cls.name, builder.getVoidTy(), &cls,
+                                     &c->requiresClauses, &c->ensuresClauses);
                         } else if (const auto* d =
                                        dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                             emitBody(functions[cls.name + ".~" + cls.name], d->body, {}, cls.name,

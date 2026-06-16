@@ -797,6 +797,19 @@ TEST_CASE("semantic rejects a non-sealed match expression without a default") {
     CHECK_FALSE(checkSrc(withMatch("int v = match (s) { case Circle(int r) -> r; };")));
 }
 
+TEST_CASE("semantic accepts requires/ensures contract clauses") {
+    CHECK(checkSrc(withClass(
+        "public class C { public method m(int x) returns void"
+        " requires x > 0 ensures x > 0 { } }",
+        "int n = 0;")));
+}
+
+TEST_CASE("semantic rejects a non-boolean contract clause") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class C { public method m(int x) returns void requires x + 1 { } }",
+        "int n = 0;")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"
