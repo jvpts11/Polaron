@@ -6,6 +6,8 @@ public bundle main {
         public class Account {
             private mutable int balance;
 
+            invariant this.balance >= 0;
+
             public constructor Account(int start)
                 requires start >= 0
             {

@@ -810,6 +810,13 @@ TEST_CASE("semantic rejects a non-boolean contract clause") {
         "int n = 0;")));
 }
 
+TEST_CASE("semantic accepts a class invariant") {
+    CHECK(checkSrc(withClass(
+        "public class C { private mutable int x; invariant this.x >= 0;"
+        " public constructor C() { this.x = 1; } }",
+        "int n = 0;")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

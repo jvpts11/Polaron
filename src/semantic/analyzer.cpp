@@ -374,6 +374,11 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                     }
                 }
                 analyzeFieldInits(cls);
+                if (!cls.invariants.empty()) {
+                    std::vector<const ast::Expr*> invs;
+                    for (const auto& e : cls.invariants) invs.push_back(e.get());
+                    analyzeMethodBody(ast::Block{}, {}, cls.name, false, invs);
+                }
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         if (m->isAbstract) continue;  // no body to analyze

@@ -350,6 +350,7 @@ struct ClassDecl {
     std::string superclass;               // "" when none (from `extends`)
     std::vector<std::string> interfaces;  // from `implements`
     std::vector<std::string> permits;     // sealed permits list (subtypes)
+    std::vector<ExprPtr> invariants;      // class invariants (spec 29), checked per method
     std::vector<MemberPtr> members;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;

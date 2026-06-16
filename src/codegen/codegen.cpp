@@ -181,6 +181,7 @@ struct CodeGenerator::Impl {
     llvm::Function* currentFn = nullptr;
     llvm::Type* currentRetType = nullptr;
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
+    const std::vector<ast::ExprPtr>* currentInvariants = nullptr;  // contracts: class invariants
 
     Impl(const ast::Program& p, const EntryPoint& e, std::string_view name,
          std::vector<CodegenError>& errs)
@@ -1227,6 +1228,8 @@ struct CodeGenerator::Impl {
         // Contracts: postconditions run at each exit, before defers/destructors (spec 29).
         if (currentEnsures != nullptr)
             for (const ast::ExprPtr& e : *currentEnsures) emitContractCheck(*e, "ensures");
+        if (currentInvariants != nullptr)
+            for (const ast::ExprPtr& inv : *currentInvariants) emitContractCheck(*inv, "invariant");
         // Deferred blocks run first, in reverse (LIFO) order.
         for (auto it = deferred.rbegin(); it != deferred.rend(); ++it) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
@@ -1769,11 +1772,13 @@ struct CodeGenerator::Impl {
                   const std::vector<ast::Param>& params, const std::string& thisClass,
                   llvm::Type* retType, const ast::ClassDecl* ctorOf = nullptr,
                   const std::vector<ast::ExprPtr>* requiresClauses = nullptr,
-                  const std::vector<ast::ExprPtr>* ensuresClauses = nullptr) {
+                  const std::vector<ast::ExprPtr>* ensuresClauses = nullptr,
+                  const std::vector<ast::ExprPtr>* invariants = nullptr) {
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
         currentEnsures = ensuresClauses;
+        currentInvariants = invariants;
         currentThis = nullptr;
         locals.clear();
         scopeObjects.clear();
@@ -1856,14 +1861,15 @@ struct CodeGenerator::Impl {
                                 emitBody(functions[cls.name + "." + m->name], m->body, m->params,
                                          m->isStatic ? std::string() : cls.name,
                                          llvmType(typeRefName(m->returnType)), nullptr,
-                                         &m->requiresClauses, &m->ensuresClauses);
+                                         &m->requiresClauses, &m->ensuresClauses,
+                                         m->isStatic ? nullptr : &cls.invariants);
                             }
                         } else if (const auto* c =
                                        dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                             hasCtor = true;
                             emitBody(functions[cls.name + "." + cls.name], c->body, c->params,
                                      cls.name, builder.getVoidTy(), &cls,
-                                     &c->requiresClauses, &c->ensuresClauses);
+                                     &c->requiresClauses, &c->ensuresClauses, &cls.invariants);
                         } else if (const auto* d =
                                        dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                             emitBody(functions[cls.name + ".~" + cls.name], d->body, {}, cls.name,

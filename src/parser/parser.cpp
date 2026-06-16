@@ -381,6 +381,12 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     }
     expect(TokenKind::LBrace, "'{'");
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        // Class invariant (spec 29): `invariant <expr>;` -- a class-level contract.
+        if (match(TokenKind::KwInvariant)) {
+            c.invariants.push_back(parseExpression());
+            expect(TokenKind::Semicolon, "';'");
+            continue;
+        }
         c.members.push_back(parseMember(c.isInterface));
     }
     expect(TokenKind::RBrace, "'}'");
