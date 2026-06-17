@@ -736,8 +736,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const std::string it = typeOf(*fe->iterable);
         if (!it.empty() && !isArrayType(it))
             error("foreach requires an array, got '" + it + "'", fe->loc);
+        const std::string et = fe->isVar ? elementOf(it) : typeRefStr(fe->elemType);
         pushScope();
-        declareLocal(fe->varName, LocalVar{typeRefStr(fe->elemType), false});
+        declareLocal(fe->varName, LocalVar{et, false});
         analyzeBlock(fe->body);
         popScope();
         return;

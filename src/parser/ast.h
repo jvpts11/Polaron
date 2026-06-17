@@ -341,7 +341,8 @@ struct LabeledStmt : Stmt {
 // for (T v in array) { ... } -- foreach over an array (spec 7). Ranges and the
 // `index i, T v` form are later refinements.
 struct ForeachStmt : Stmt {
-    TypeRef elemType;
+    TypeRef elemType;        // ignored when isVar -- inferred from the array element type
+    bool isVar = false;      // `for (var x in ...)`
     std::string varName;
     ExprPtr iterable;
     Block body;

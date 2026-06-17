@@ -1726,7 +1726,9 @@ struct CodeGenerator::Impl {
         llvm::Value* len = builder.CreateTrunc(len64, builder.getInt32Ty(), "fe.len32");
         llvm::Value* iSlot = createEntryAlloca("fe.i", builder.getInt32Ty());
         builder.CreateStore(builder.getInt32(0), iSlot);
-        const std::string et = typeRefName(s.elemType);
+        const std::string at = typeName(*s.iterable);
+        const std::string et = s.isVar ? (isArrayType(at) ? at.substr(0, at.size() - 2) : at)
+                                       : typeRefName(s.elemType);
         llvm::Value* vSlot = createEntryAlloca(s.varName, llvmType(et));
         locals[s.varName] = LocalSlot{vSlot, et};
         llvm::Function* fn = builder.GetInsertBlock()->getParent();

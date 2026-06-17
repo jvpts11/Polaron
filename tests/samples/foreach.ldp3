@@ -8,9 +8,9 @@ public bundle main {
                 for (mutable int i = 0; i < 5; i++) {
                     nums[i] = i * i;
                 }
-                // foreach over the array (spec 7).
+                // foreach over the array (spec 7), with an inferred element type.
                 mutable int sum = 0;
-                for (int x in nums) {
+                for (var x in nums) {
                     sum = sum + x;
                 }
                 System.IO.println($"sum of squares = {sum}");   // 0+1+4+9+16 = 30

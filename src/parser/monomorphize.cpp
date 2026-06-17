@@ -244,6 +244,7 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         auto n = std::make_unique<ast::ForeachStmt>();
         n->loc = x->loc;
         n->elemType = substType(x->elemType, s);
+        n->isVar = x->isVar;
         n->varName = x->varName;
         n->iterable = cloneExpr(x->iterable.get(), s);
         n->body = cloneBlock(x->body, s);

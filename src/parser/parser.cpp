@@ -948,11 +948,16 @@ ast::StmtPtr Parser::parseForStatement() {
     expect(TokenKind::LParen, "'('");
     // foreach over an array: `for (T name in iterable) { ... }` (spec 7). Ranges
     // (`0..10`) and the `index i, T v` form are later refinements.
-    if ((isTypeKeyword(current().kind) || check(TokenKind::Identifier)) &&
+    if ((check(TokenKind::KwVar) || isTypeKeyword(current().kind) ||
+         check(TokenKind::Identifier)) &&
         peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::KwIn) {
         auto fe = std::make_unique<ast::ForeachStmt>();
         fe->loc = loc;
-        fe->elemType = parseTypeRef();
+        if (match(TokenKind::KwVar)) {
+            fe->isVar = true;  // infer the element type
+        } else {
+            fe->elemType = parseTypeRef();
+        }
         fe->varName = expect(TokenKind::Identifier, "a loop variable name").lexeme;
         expect(TokenKind::KwIn, "'in'");
         fe->iterable = parseExpression();

@@ -865,6 +865,12 @@ TEST_CASE("semantic accepts foreach over an array") {
         " int[] a = new int[3](); mutable int s = 0; for (int x in a) { s = s + x; } }")));
 }
 
+TEST_CASE("semantic accepts var in foreach (inferred element type)") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " int[] a = new int[3](); mutable int s = 0; for (var x in a) { s = s + x; } }")));
+}
+
 TEST_CASE("semantic rejects foreach over a non-array") {
     CHECK_FALSE(checkSrc(wrapMain(
         "public static method main(string[] args) returns void {"
