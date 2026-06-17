@@ -391,10 +391,23 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         if (c.isStruct) fail("a struct cannot extend another type (structs have no inheritance)",
                              c.loc);
         c.superclass = expect(TokenKind::Identifier, "a superclass name").lexeme;
+        if (match(TokenKind::Lt)) {  // generic base: extends Base<T>
+            do {
+                c.superclassTypeArgs.push_back(
+                    expect(TokenKind::Identifier, "a type argument").lexeme);
+            } while (match(TokenKind::Comma));
+            expect(TokenKind::Gt, "'>' to close type arguments");
+        }
     }
     if (match(TokenKind::KwImplements)) {
         do {
             c.interfaces.push_back(expect(TokenKind::Identifier, "an interface name").lexeme);
+            if (match(TokenKind::Lt)) {  // generic interface args (skipped for now)
+                do {
+                    expect(TokenKind::Identifier, "a type argument");
+                } while (match(TokenKind::Comma));
+                expect(TokenKind::Gt, "'>' to close type arguments");
+            }
         } while (match(TokenKind::Comma));
     }
     // `sealed ... permits A, B, C`: only the listed types may extend it (spec 12/16).

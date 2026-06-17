@@ -827,6 +827,16 @@ TEST_CASE("semantic accepts a generic instantiation that satisfies its constrain
         "Circle c = new Circle() on stack; Box<Circle> b = new Box<Circle>(&c) on stack;")));
 }
 
+TEST_CASE("semantic accepts generic inheritance") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public class Base<T> { public constructor Base() {}"
+        " public method f() returns int { return 1; } }"
+        " public class Derived<T> extends Base<T> { public constructor Derived() {} }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Derived<int> d = new Derived<int>() on stack; int x = d.f(); } } } }"));
+}
+
 TEST_CASE("semantic rejects a generic instantiation that violates its constraint") {
     CHECK_FALSE(checkSrc(withClass(
         "public abstract class Shape { public abstract method area() returns int; }"

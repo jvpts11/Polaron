@@ -410,6 +410,10 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
     c.isMovable = d.isMovable;
     c.isUnique = d.isUnique;
     c.superclass = d.superclass;
+    for (const auto& a : d.superclassTypeArgs) {  // substitute T in `extends Base<T>`
+        auto it = s.find(a);
+        c.superclassTypeArgs.push_back(it != s.end() ? it->second : a);
+    }
     c.interfaces = d.interfaces;
     for (const auto& m : d.members) c.members.push_back(cloneMember(m.get(), s));
     return c;
@@ -567,6 +571,14 @@ bool monomorphize(ast::Program& program) {
         Subst s;
         for (std::size_t i = 0; i < args.size(); ++i) s[tit->second->typeParams[i]] = args[i];
         ast::ClassDecl concrete = cloneClass(*tit->second, s, m);
+        // A generic base (`extends Base<T>`) is itself an instantiation to generate.
+        if (!concrete.superclassTypeArgs.empty() && generics.count(concrete.superclass) > 0) {
+            const std::string sm =
+                ast::mangleGeneric(concrete.superclass, concrete.superclassTypeArgs);
+            if (insts.find(sm) == insts.end())
+                insts[sm] = {concrete.superclass, concrete.superclassTypeArgs};
+            if (done.count(sm) == 0) work.push_back(sm);
+        }
         InstMap more;
         collectClass(concrete, generics, more);
         for (const auto& [mm, pp] : more) {
@@ -588,6 +600,13 @@ bool monomorphize(ast::Program& program) {
         }
     if (sink != nullptr)
         for (auto& c : generated) sink->classes.push_back(std::move(c));
+    // Mangle generic superclasses now that every concrete class exists (Derived$int
+    // extends Base$int). Applies to generated and plain classes alike.
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes)
+                if (!c.superclassTypeArgs.empty())
+                    c.superclass = ast::mangleGeneric(c.superclass, c.superclassTypeArgs);
     return ok;
 }
 

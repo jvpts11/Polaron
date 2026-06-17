@@ -413,6 +413,7 @@ struct ClassDecl {
     bool isMovable = false;               // `movable class` -- move discipline
     bool isUnique = false;                // `unique class` -- single live reference
     std::string superclass;               // "" when none (from `extends`)
+    std::vector<std::string> superclassTypeArgs;  // type args on `extends Base<...>` (generics)
     std::vector<std::string> interfaces;  // from `implements`
     std::vector<std::string> permits;     // sealed permits list (subtypes)
     std::vector<ExprPtr> invariants;      // class invariants (spec 29), checked per method
