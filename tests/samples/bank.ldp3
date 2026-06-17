@@ -1,0 +1,41 @@
+program Bank;
+
+// A small OOP program: inheritance + super(args) + override + virtual dispatch +
+// contracts (requires) + protected fields.
+public bundle main {
+    public namespace app {
+        public class Account {
+            protected mutable int balance;
+            public constructor Account(int initial) requires initial >= 0 {
+                this.balance = initial;
+            }
+            public method deposit(int amount) returns void requires amount > 0 {
+                this.balance = this.balance + amount;
+            }
+            public method addInterest() returns void { }   // base: no interest
+            public method getBalance() returns int { return this.balance; }
+        }
+
+        public class Savings extends Account {
+            private int rate;
+            public constructor Savings(int initial, int rate) {
+                super(initial);
+                this.rate = rate;
+            }
+            public override method addInterest() returns void {
+                this.balance = this.balance + (this.balance * this.rate) / 100;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Account* acc = new Savings(1000, 10) on heap;
+                acc.deposit(500);     // 1500
+                acc.addInterest();    // virtual -> Savings: 1500 + 150 = 1650
+                System.IO.println($"balance = {acc.getBalance()}");   // 1650
+                delete acc;
+                return;
+            }
+        }
+    }
+}
