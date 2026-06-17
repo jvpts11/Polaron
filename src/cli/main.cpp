@@ -160,7 +160,7 @@ int checkProgram(const std::string& path) {
     ldp3::ast::Program program = parser.parse();
     if (reportParseErrors(path, parser)) return 1;
     appendPrelude(program);
-    ldp3::monomorphize(program);  // expand generics into concrete classes
+    if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     ldp3::SemanticAnalyzer sema;
     if (!sema.analyze(program)) {
         for (const ldp3::SemaError& e : sema.errors()) {
@@ -207,7 +207,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath) 
     }
 
     appendPrelude(program);
-    ldp3::monomorphize(program);  // expand generics into concrete classes
+    if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     ldp3::SemanticAnalyzer sema;
     if (!sema.analyze(program)) {
         for (const ldp3::SemaError& e : sema.errors()) {

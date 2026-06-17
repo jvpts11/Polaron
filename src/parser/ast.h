@@ -339,6 +339,8 @@ struct ClassDecl {
     std::string visibility;
     std::string name;
     std::vector<std::string> typeParams;  // generic parameters, e.g. Box<T> -> ["T"]
+    // Constraint per type param, if any: (param, bound) from `<T extends X>` / `<T implements I>`.
+    std::vector<std::pair<std::string, std::string>> typeParamBounds;
     bool isInterface = false;             // declared with `interface`
     bool isStruct = false;                // declared with `struct` -- value type, no inheritance
     bool isRecord = false;                // declared with `record` -- immutable value type

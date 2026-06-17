@@ -1,0 +1,33 @@
+program GenericsConstraints;
+
+public bundle main {
+    public namespace app {
+
+        public abstract class Shape {
+            public abstract method area() returns int;
+        }
+        public class Circle extends Shape {
+            private int r;
+            public constructor Circle(int r) { this.r = r; }
+            public override method area() returns int { return this.r * this.r * 3; }
+        }
+
+        // Box only accepts subtypes of Shape (spec 15.2). Box<int> would be rejected.
+        // (T is used as a parameter type; a T* field would hit a separate codegen debt:
+        // assigning to a pointer field currently deep-copies. See NIGHT_PROGRESS.)
+        public class Box<T extends Shape> {
+            public constructor Box() {}
+            public method areaOf(T* s) returns int { return s.area(); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Circle* c = new Circle(4) on heap;
+                Box<Circle> b = new Box<Circle>() on stack;
+                System.IO.println($"area = {b.areaOf(c)}");   // Circle(4) -> 48
+                delete c;
+                return;
+            }
+        }
+    }
+}

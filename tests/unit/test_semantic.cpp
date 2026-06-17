@@ -16,7 +16,7 @@ bool checkSrc(const std::string& src, std::string* entryOut = nullptr) {
     Parser parser(lexer.tokenize(), "test");
     ast::Program prog = parser.parse();
     if (parser.hasErrors()) return false;
-    monomorphize(prog);
+    if (!monomorphize(prog)) return false;
     SemanticAnalyzer sema;
     const bool ok = sema.analyze(prog);
     if (ok && entryOut != nullptr) *entryOut = sema.entryPoint().qualifiedName;
@@ -815,6 +815,24 @@ TEST_CASE("semantic accepts a class invariant") {
         "public class C { private mutable int x; invariant this.x >= 0;"
         " public constructor C() { this.x = 1; } }",
         "int n = 0;")));
+}
+
+TEST_CASE("semantic accepts a generic instantiation that satisfies its constraint") {
+    CHECK(checkSrc(withClass(
+        "public abstract class Shape { public abstract method area() returns int; }"
+        " public class Circle extends Shape { public constructor Circle() {}"
+        " public override method area() returns int { return 1; } }"
+        " public class Box<T extends Shape> { private T* it;"
+        " public constructor Box(T* it) { this.it = it; } }",
+        "Circle c = new Circle() on stack; Box<Circle> b = new Box<Circle>(&c) on stack;")));
+}
+
+TEST_CASE("semantic rejects a generic instantiation that violates its constraint") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public abstract class Shape { public abstract method area() returns int; }"
+        " public class Box<T extends Shape> { private T* it;"
+        " public constructor Box(T* it) { this.it = it; } }",
+        "int n = 5; Box<int> b = new Box<int>(&n) on stack;")));
 }
 
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {

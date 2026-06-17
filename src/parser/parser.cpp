@@ -359,7 +359,22 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     // Generic parameters: class Box<T>, class Pair<K, V>.
     if (match(TokenKind::Lt)) {
         do {
-            c.typeParams.push_back(expect(TokenKind::Identifier, "a type parameter").lexeme);
+            const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
+            c.typeParams.push_back(tp);
+            // Constraint (spec 15.2): `<T extends Base>` or `<T implements Iface>`.
+            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {
+                c.typeParamBounds.push_back(
+                    {tp, expect(TokenKind::Identifier, "a constraint type").lexeme});
+                // A generic bound like Comparable<T> is accepted; its arguments are skipped for now.
+                if (match(TokenKind::Lt)) {
+                    int depth = 1;
+                    while (depth > 0 && !check(TokenKind::EndOfFile)) {
+                        if (match(TokenKind::Lt)) ++depth;
+                        else if (match(TokenKind::Gt)) --depth;
+                        else advance();
+                    }
+                }
+            }
         } while (match(TokenKind::Comma));
         expect(TokenKind::Gt, "'>' to close type parameters");
     }

@@ -1,5 +1,6 @@
 #include "parser/monomorphize.h"
 
+#include <cstdio>
 #include <map>
 #include <set>
 #include <string>
@@ -422,9 +423,22 @@ void collectClass(const ast::ClassDecl& c, const std::set<std::string>& g, InstM
     }
 }
 
+// Subtype check over the class hierarchy (AST-level), for constraint validation.
+bool isSubtypeOf(const std::string& sub, const std::string& base,
+                 const std::map<std::string, const ast::ClassDecl*>& idx) {
+    if (sub == base) return true;
+    auto it = idx.find(sub);
+    if (it == idx.end()) return false;
+    if (!it->second->superclass.empty() && isSubtypeOf(it->second->superclass, base, idx))
+        return true;
+    for (const auto& i : it->second->interfaces)
+        if (isSubtypeOf(i, base, idx)) return true;
+    return false;
+}
+
 }  // namespace
 
-void monomorphize(ast::Program& program) {
+bool monomorphize(ast::Program& program) {
     // Index generic templates by name.
     std::map<std::string, const ast::ClassDecl*> templates;
     std::set<std::string> generics;
@@ -435,7 +449,14 @@ void monomorphize(ast::Program& program) {
                     templates[c.name] = &c;
                     generics.insert(c.name);
                 }
-    if (templates.empty()) return;
+    if (templates.empty()) return true;
+
+    // Index every class by name for constraint subtype checks.
+    std::map<std::string, const ast::ClassDecl*> classIndex;
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes) classIndex[c.name] = &c;
+    bool ok = true;
 
     // Collect instantiations used across the whole program.
     InstMap insts;
@@ -456,6 +477,22 @@ void monomorphize(ast::Program& program) {
         const auto& [base, args] = insts[m];
         auto tit = templates.find(base);
         if (tit == templates.end() || tit->second->typeParams.size() != args.size()) continue;
+        // Constraints (spec 15.2): each type argument must satisfy its bound.
+        for (const auto& pb : tit->second->typeParamBounds) {
+            std::size_t pi = 0;
+            while (pi < tit->second->typeParams.size() && tit->second->typeParams[pi] != pb.first)
+                ++pi;
+            if (pi >= args.size()) continue;
+            if (!isSubtypeOf(args[pi], pb.second, classIndex)) {
+                const auto& loc = tit->second->loc;
+                std::fprintf(stderr,
+                             "%s:%d:%d: error: type argument '%s' does not satisfy constraint "
+                             "'%s extends %s' in '%s'\n",
+                             std::string(loc.file).c_str(), loc.line, loc.col, args[pi].c_str(),
+                             pb.first.c_str(), pb.second.c_str(), m.c_str());
+                ok = false;
+            }
+        }
         Subst s;
         for (std::size_t i = 0; i < args.size(); ++i) s[tit->second->typeParams[i]] = args[i];
         ast::ClassDecl concrete = cloneClass(*tit->second, s, m);
@@ -480,6 +517,7 @@ void monomorphize(ast::Program& program) {
         }
     if (sink != nullptr)
         for (auto& c : generated) sink->classes.push_back(std::move(c));
+    return ok;
 }
 
 }  // namespace ldp3

@@ -10,6 +10,8 @@ namespace ldp3 {
 // program contains only concrete classes, so semantics and codegen stay
 // generics-unaware. Uses (Box<int> b, new Box<int>(...)) resolve to the mangled
 // names because typeRefStr / typeRefName mangle their type arguments.
-void monomorphize(ast::Program& program);
+// Returns false (after reporting to stderr) if a generic instantiation violates a
+// type-parameter constraint (spec 15.2); true otherwise.
+bool monomorphize(ast::Program& program);
 
 }  // namespace ldp3
