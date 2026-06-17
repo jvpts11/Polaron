@@ -88,6 +88,10 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->fromSuffix = x->fromSuffix;
         n->callee = cloneExpr(x->callee.get(), s);
         for (const auto& a : x->args) n->args.push_back(cloneExpr(a.get(), s));
+        for (const std::string& a : x->typeArgs) {  // generic call args may be type params
+            auto ai = s.find(a);
+            n->typeArgs.push_back(ai != s.end() ? ai->second : a);
+        }
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::BinaryExpr*>(e)) {
@@ -498,6 +502,211 @@ void collectClass(const ast::ClassDecl& c, const std::set<std::string>& g, InstM
     }
 }
 
+// ---- Generic methods (spec 15) ----
+// A generic method `m<T>(...)` is monomorphized like a generic class: one
+// concrete method per (name, type-args) call site. Because monomorphize runs
+// before sema, a call `obj.m<int>()` can't be resolved to a receiver class by
+// type; so every class that declares a generic method named `m` gets a concrete
+// `m$int`, and the calls are rewritten to the mangled member. Sema/codegen then
+// see ordinary calls.
+
+using MethInst = std::pair<std::string, std::vector<std::string>>;  // (name, args)
+using MethInsts = std::set<MethInst>;
+
+// Collects every generic call's (name, type-args) from an expression tree.
+// Const: it observes only; the rewrite to the mangled member is a later pass.
+void collectMethExpr(const ast::Expr* e, MethInsts& out);
+void collectMethStmt(const ast::Stmt* st, MethInsts& out);
+void collectMethBlock(const ast::Block& b, MethInsts& out) {
+    for (const auto& st : b.statements) collectMethStmt(st.get(), out);
+}
+void collectMethExpr(const ast::Expr* e, MethInsts& out) {
+    if (e == nullptr) return;
+    if (const auto* x = dynamic_cast<const ast::CallExpr*>(e)) {
+        if (!x->typeArgs.empty())
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(x->callee.get()))
+                out.insert({mem->member, x->typeArgs});
+        collectMethExpr(x->callee.get(), out);
+        for (const auto& a : x->args) collectMethExpr(a.get(), out);
+        return;
+    }
+    if (const auto* x = dynamic_cast<const ast::MemberExpr*>(e)) { collectMethExpr(x->object.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::BinaryExpr*>(e)) { collectMethExpr(x->lhs.get(), out); collectMethExpr(x->rhs.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::TernaryExpr*>(e)) { collectMethExpr(x->cond.get(), out); collectMethExpr(x->thenExpr.get(), out); collectMethExpr(x->elseExpr.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::UnaryExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::IndexExpr*>(e)) { collectMethExpr(x->array.get(), out); collectMethExpr(x->index.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::MoveExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::CastExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::NewExpr*>(e)) { for (const auto& a : x->args) collectMethExpr(a.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::NewArrayExpr*>(e)) { collectMethExpr(x->size.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::RegionInitExpr*>(e)) { collectMethExpr(x->size.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::InterpStringExpr*>(e)) { for (const auto& ex : x->exprs) collectMethExpr(ex.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::MatchExpr*>(e)) {
+        collectMethExpr(x->subject.get(), out);
+        for (const auto& c : x->cases) collectMethExpr(c.result.get(), out);
+        collectMethExpr(x->defaultResult.get(), out);
+        return;
+    }
+}
+void collectMethStmt(const ast::Stmt* st, MethInsts& out) {
+    if (st == nullptr) return;
+    if (const auto* x = dynamic_cast<const ast::ExprStmt*>(st)) { collectMethExpr(x->expr.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::StaticAssertStmt*>(st)) { collectMethExpr(x->condition.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) { collectMethStmt(x->stmt.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) { collectMethExpr(x->iterable.get(), out); collectMethBlock(x->body, out); return; }
+    if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) { collectMethExpr(x->subject.get(), out); for (const auto& c : x->cases) { collectMethExpr(c.value.get(), out); collectMethBlock(c.body, out); } if (x->defaultBody) collectMethBlock(*x->defaultBody, out); return; }
+    if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) { collectMethExpr(x->subject.get(), out); for (const auto& c : x->cases) collectMethBlock(c.body, out); if (x->defaultBody) collectMethBlock(*x->defaultBody, out); return; }
+    if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) { collectMethExpr(x->value.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::DeleteStmt*>(st)) { collectMethExpr(x->target.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::VarDeclStmt*>(st)) { collectMethExpr(x->init.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::AssignStmt*>(st)) { collectMethExpr(x->target.get(), out); collectMethExpr(x->value.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::IncDecStmt*>(st)) { collectMethExpr(x->target.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::DeferStmt*>(st)) { collectMethBlock(x->body, out); return; }
+    if (const auto* x = dynamic_cast<const ast::UsingStmt*>(st)) { collectMethStmt(x->decl.get(), out); collectMethBlock(x->body, out); return; }
+    if (const auto* x = dynamic_cast<const ast::IfStmt*>(st)) { collectMethExpr(x->cond.get(), out); collectMethBlock(x->thenBlock, out); if (x->elseBlock) collectMethBlock(*x->elseBlock, out); return; }
+    if (const auto* x = dynamic_cast<const ast::WhileStmt*>(st)) { collectMethExpr(x->cond.get(), out); collectMethBlock(x->body, out); return; }
+    if (const auto* x = dynamic_cast<const ast::DoWhileStmt*>(st)) { collectMethBlock(x->body, out); collectMethExpr(x->cond.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::ForStmt*>(st)) { collectMethStmt(x->init.get(), out); collectMethExpr(x->cond.get(), out); collectMethStmt(x->update.get(), out); collectMethBlock(x->body, out); return; }
+}
+
+// Rewrites every generic call `obj.m<args>(...)` to the mangled member
+// `obj.m$args(...)` with empty type-args, so sema/codegen see an ordinary call.
+void rewriteMethExpr(ast::Expr* e);
+void rewriteMethStmt(ast::Stmt* st);
+void rewriteMethBlock(ast::Block& b) {
+    for (auto& st : b.statements) rewriteMethStmt(st.get());
+}
+void rewriteMethExpr(ast::Expr* e) {
+    if (e == nullptr) return;
+    if (auto* x = dynamic_cast<ast::CallExpr*>(e)) {
+        if (!x->typeArgs.empty())
+            if (auto* mem = dynamic_cast<ast::MemberExpr*>(x->callee.get())) {
+                mem->member = ast::mangleGeneric(mem->member, x->typeArgs);
+                x->typeArgs.clear();
+            }
+        rewriteMethExpr(x->callee.get());
+        for (auto& a : x->args) rewriteMethExpr(a.get());
+        return;
+    }
+    if (auto* x = dynamic_cast<ast::MemberExpr*>(e)) { rewriteMethExpr(x->object.get()); return; }
+    if (auto* x = dynamic_cast<ast::BinaryExpr*>(e)) { rewriteMethExpr(x->lhs.get()); rewriteMethExpr(x->rhs.get()); return; }
+    if (auto* x = dynamic_cast<ast::TernaryExpr*>(e)) { rewriteMethExpr(x->cond.get()); rewriteMethExpr(x->thenExpr.get()); rewriteMethExpr(x->elseExpr.get()); return; }
+    if (auto* x = dynamic_cast<ast::UnaryExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
+    if (auto* x = dynamic_cast<ast::IndexExpr*>(e)) { rewriteMethExpr(x->array.get()); rewriteMethExpr(x->index.get()); return; }
+    if (auto* x = dynamic_cast<ast::MoveExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
+    if (auto* x = dynamic_cast<ast::CastExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
+    if (auto* x = dynamic_cast<ast::NewExpr*>(e)) { for (auto& a : x->args) rewriteMethExpr(a.get()); return; }
+    if (auto* x = dynamic_cast<ast::NewArrayExpr*>(e)) { rewriteMethExpr(x->size.get()); return; }
+    if (auto* x = dynamic_cast<ast::RegionInitExpr*>(e)) { rewriteMethExpr(x->size.get()); return; }
+    if (auto* x = dynamic_cast<ast::InterpStringExpr*>(e)) { for (auto& ex : x->exprs) rewriteMethExpr(ex.get()); return; }
+    if (auto* x = dynamic_cast<ast::MatchExpr*>(e)) {
+        rewriteMethExpr(x->subject.get());
+        for (auto& c : x->cases) rewriteMethExpr(c.result.get());
+        rewriteMethExpr(x->defaultResult.get());
+        return;
+    }
+}
+void rewriteMethStmt(ast::Stmt* st) {
+    if (st == nullptr) return;
+    if (auto* x = dynamic_cast<ast::ExprStmt*>(st)) { rewriteMethExpr(x->expr.get()); return; }
+    if (auto* x = dynamic_cast<ast::StaticAssertStmt*>(st)) { rewriteMethExpr(x->condition.get()); return; }
+    if (auto* x = dynamic_cast<ast::LabeledStmt*>(st)) { rewriteMethStmt(x->stmt.get()); return; }
+    if (auto* x = dynamic_cast<ast::ForeachStmt*>(st)) { rewriteMethExpr(x->iterable.get()); rewriteMethBlock(x->body); return; }
+    if (auto* x = dynamic_cast<ast::SwitchStmt*>(st)) { rewriteMethExpr(x->subject.get()); for (auto& c : x->cases) { rewriteMethExpr(c.value.get()); rewriteMethBlock(c.body); } if (x->defaultBody) rewriteMethBlock(*x->defaultBody); return; }
+    if (auto* x = dynamic_cast<ast::MatchStmt*>(st)) { rewriteMethExpr(x->subject.get()); for (auto& c : x->cases) rewriteMethBlock(c.body); if (x->defaultBody) rewriteMethBlock(*x->defaultBody); return; }
+    if (auto* x = dynamic_cast<ast::ReturnStmt*>(st)) { rewriteMethExpr(x->value.get()); return; }
+    if (auto* x = dynamic_cast<ast::DeleteStmt*>(st)) { rewriteMethExpr(x->target.get()); return; }
+    if (auto* x = dynamic_cast<ast::VarDeclStmt*>(st)) { rewriteMethExpr(x->init.get()); return; }
+    if (auto* x = dynamic_cast<ast::AssignStmt*>(st)) { rewriteMethExpr(x->target.get()); rewriteMethExpr(x->value.get()); return; }
+    if (auto* x = dynamic_cast<ast::IncDecStmt*>(st)) { rewriteMethExpr(x->target.get()); return; }
+    if (auto* x = dynamic_cast<ast::DeferStmt*>(st)) { rewriteMethBlock(x->body); return; }
+    if (auto* x = dynamic_cast<ast::UsingStmt*>(st)) { rewriteMethStmt(x->decl.get()); rewriteMethBlock(x->body); return; }
+    if (auto* x = dynamic_cast<ast::IfStmt*>(st)) { rewriteMethExpr(x->cond.get()); rewriteMethBlock(x->thenBlock); if (x->elseBlock) rewriteMethBlock(*x->elseBlock); return; }
+    if (auto* x = dynamic_cast<ast::WhileStmt*>(st)) { rewriteMethExpr(x->cond.get()); rewriteMethBlock(x->body); return; }
+    if (auto* x = dynamic_cast<ast::DoWhileStmt*>(st)) { rewriteMethBlock(x->body); rewriteMethExpr(x->cond.get()); return; }
+    if (auto* x = dynamic_cast<ast::ForStmt*>(st)) { rewriteMethStmt(x->init.get()); rewriteMethExpr(x->cond.get()); rewriteMethStmt(x->update.get()); rewriteMethBlock(x->body); return; }
+}
+
+// Expands generic methods program-wide. Materializes one concrete method per
+// (name, type-args) call site on every class declaring a matching generic
+// template, drops the templates, then rewrites every generic call to the mangled
+// member. Cloning substitutes the type params, so a concrete body's own generic
+// call `inner<T>` becomes `inner<int>`; a worklist collects those transitively.
+void expandGenericMethods(ast::Program& program) {
+    // Any generic method templates at all? If not, there is nothing to do.
+    bool anyTemplate = false;
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes)
+                for (auto& m : c.members)
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
+                        if (!meth->typeParams.empty()) anyTemplate = true;
+    if (!anyTemplate) return;
+
+    // 1. Collect (name, args) from every existing method body (templates included).
+    MethInsts insts;
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes)
+                for (auto& m : c.members)
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
+                        collectMethBlock(meth->body, insts);
+
+    // 2. Generate concrete methods on each class, to a fixpoint (a generated body
+    //    may itself contain a newly-discovered generic call).
+    std::set<std::string> done;  // per-class "name$args" already generated; key includes class name
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (auto& b : program.bundles)
+            for (auto& ns : b.namespaces)
+                for (auto& c : ns.classes) {
+                    std::vector<ast::MemberPtr> generated;
+                    for (auto& m : c.members) {
+                        auto* meth = dynamic_cast<ast::MethodDecl*>(m.get());
+                        if (meth == nullptr || meth->typeParams.empty()) continue;  // template
+                        for (const MethInst& inst : insts) {
+                            if (inst.first != meth->name ||
+                                inst.second.size() != meth->typeParams.size())
+                                continue;
+                            const std::string mangled =
+                                ast::mangleGeneric(meth->name, inst.second);
+                            const std::string key = c.name + "::" + mangled;
+                            if (done.count(key) > 0) continue;
+                            done.insert(key);
+                            Subst s;
+                            for (std::size_t i = 0; i < inst.second.size(); ++i)
+                                s[meth->typeParams[i]] = inst.second[i];
+                            ast::MemberPtr cm = cloneMember(meth, s);
+                            auto* cmeth = static_cast<ast::MethodDecl*>(cm.get());
+                            cmeth->name = mangled;
+                            cmeth->typeParams.clear();
+                            collectMethBlock(cmeth->body, insts);  // transitive calls
+                            generated.push_back(std::move(cm));
+                            changed = true;
+                        }
+                    }
+                    for (auto& g : generated) c.members.push_back(std::move(g));
+                }
+    }
+
+    // 3. Drop the templates and rewrite all generic calls to the mangled member.
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes) {
+                std::vector<ast::MemberPtr> kept;
+                for (auto& m : c.members) {
+                    auto* meth = dynamic_cast<ast::MethodDecl*>(m.get());
+                    if (meth != nullptr && !meth->typeParams.empty()) continue;  // template
+                    kept.push_back(std::move(m));
+                }
+                c.members = std::move(kept);
+                for (auto& m : c.members)
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
+                        rewriteMethBlock(meth->body);
+            }
+}
+
 // Subtype check over the class hierarchy (AST-level), for constraint validation.
 bool isSubtypeOf(const std::string& sub, const std::string& base,
                  const std::map<std::string, const ast::ClassDecl*>& idx) {
@@ -524,7 +733,11 @@ bool monomorphize(ast::Program& program) {
                     templates[c.name] = &c;
                     generics.insert(c.name);
                 }
-    if (templates.empty()) return true;
+    // No generic classes: still expand any generic methods, then done.
+    if (templates.empty()) {
+        expandGenericMethods(program);
+        return true;
+    }
 
     // Index every class by name for constraint subtype checks.
     std::map<std::string, const ast::ClassDecl*> classIndex;
@@ -607,6 +820,9 @@ bool monomorphize(ast::Program& program) {
             for (auto& c : ns.classes)
                 if (!c.superclassTypeArgs.empty())
                     c.superclass = ast::mangleGeneric(c.superclass, c.superclassTypeArgs);
+    // Generic methods live on both plain and monomorphized classes; expand them
+    // now that every concrete class (and its cloned bodies) exists.
+    expandGenericMethods(program);
     return ok;
 }
 

@@ -80,6 +80,7 @@ struct MemberExpr : Expr {
 struct CallExpr : Expr {
     ExprPtr callee;
     std::vector<ExprPtr> args;
+    std::vector<std::string> typeArgs;  // generic method call: obj.identity<int>(x) -> ["int"]
     bool fromSuffix = false;  // formed from `N suffix` (spec 17.10); requires import
     void dump(std::string& out, int indent) const override;
 };
@@ -365,6 +366,7 @@ struct MethodDecl : MemberDecl {
     bool isFinal = false;     // cannot be overridden
     bool isProperty = false;  // computed get-only property: read as obj.name (no parens)
     std::string name;
+    std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
     std::vector<Param> params;
     TypeRef returnType;
     Block body;  // empty when isAbstract

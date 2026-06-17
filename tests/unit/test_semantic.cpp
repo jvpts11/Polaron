@@ -889,6 +889,13 @@ TEST_CASE("semantic accepts generic inheritance") {
         " Derived<int> d = new Derived<int>() on stack; int x = d.f(); } } } }"));
 }
 
+TEST_CASE("semantic accepts a generic method call") {
+    CHECK(checkSrc(withClass(
+        "public class Util { public constructor Util() {}"
+        " public method identity<T>(T x) returns T { return x; } }",
+        "Util u = new Util() on stack; int x = u.identity<int>(42);")));
+}
+
 TEST_CASE("semantic rejects a generic instantiation that violates its constraint") {
     CHECK_FALSE(checkSrc(withClass(
         "public abstract class Shape { public abstract method area() returns int; }"

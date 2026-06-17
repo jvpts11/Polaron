@@ -593,6 +593,15 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     m->isFinal = isFinal;
     expect(TokenKind::KwMethod, "'method'");
     m->name = expect(TokenKind::Identifier, "the method name").lexeme;
+    // Generic method type parameters: method identity<T>(...) (spec 15). Each
+    // (method-name, type-args) call is monomorphized into a concrete method.
+    if (match(TokenKind::Lt)) {
+        do {
+            m->typeParams.push_back(
+                expect(TokenKind::Identifier, "a type parameter").lexeme);
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Gt, "'>' to close type parameters");
+    }
     expect(TokenKind::LParen, "'('");
     m->params = parseParams();
     expect(TokenKind::RParen, "')'");
@@ -924,6 +933,29 @@ bool Parser::looksLikeGenericVarDecl() const {
         j += 2;
     }
     return peek(j).kind == TokenKind::Identifier;
+}
+
+// Distinguishes a generic method call `obj.m<int>(...)` from a comparison
+// `obj.m < x`. The current token is the `<`; scans the `<...>` (only type names
+// and commas) and requires a `(` immediately after the closing `>`. The `(`
+// rules out comparisons -- `a < b > c` has no parenthesized call after `>`.
+bool Parser::looksLikeGenericCall() const {
+    if (!check(TokenKind::Lt)) return false;
+    int i = 1;
+    int depth = 1;
+    while (true) {
+        const TokenKind k = peek(i).kind;
+        if (k == TokenKind::EndOfFile) return false;
+        if (k == TokenKind::Lt) {
+            ++depth;
+        } else if (k == TokenKind::Gt) {
+            if (--depth == 0) break;
+        } else if (k != TokenKind::Identifier && k != TokenKind::Comma && !isTypeKeyword(k)) {
+            return false;  // not a pure type-argument list -> it's a comparison
+        }
+        ++i;
+    }
+    return peek(i + 1).kind == TokenKind::LParen;
 }
 
 ast::StmtPtr Parser::parseIfStatement() {
@@ -1374,6 +1406,33 @@ ast::ExprPtr Parser::parsePostfix() {
             m->member = expect(TokenKind::Identifier, "a member name").lexeme;
             m->object = std::move(expr);
             expr = std::move(m);
+        } else if (check(TokenKind::Lt) && looksLikeGenericCall()) {
+            // Generic method call: obj.m<int>(args). Parse the type arguments here;
+            // the `(` then forms the call below, carrying the args (spec 15).
+            std::vector<std::string> typeArgs;
+            advance();  // '<'
+            do {
+                const Token& at = current();
+                if (isTypeKeyword(at.kind) || at.kind == TokenKind::Identifier) {
+                    typeArgs.push_back(at.lexeme);
+                    advance();
+                } else {
+                    fail("expected a type argument but found '" + at.lexeme + "'", at.loc);
+                }
+            } while (match(TokenKind::Comma));
+            expect(TokenKind::Gt, "'>' to close type arguments");
+            auto call = std::make_unique<ast::CallExpr>();
+            call->loc = current().loc;
+            expect(TokenKind::LParen, "'('");
+            if (!check(TokenKind::RParen)) {
+                do {
+                    call->args.push_back(parseExpression());
+                } while (match(TokenKind::Comma));
+            }
+            expect(TokenKind::RParen, "')'");
+            call->callee = std::move(expr);
+            call->typeArgs = std::move(typeArgs);
+            expr = std::move(call);
         } else if (check(TokenKind::LParen)) {
             auto call = std::make_unique<ast::CallExpr>();
             call->loc = current().loc;

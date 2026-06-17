@@ -1,0 +1,22 @@
+program GenericMethod;
+
+public bundle main {
+    public namespace app {
+        public class Util {
+            public constructor Util() {}
+            public method identity<T>(T x) returns T { return x; }
+            public method pick<T>(boolean c, T a, T b) returns T {
+                if (c) { return a; }
+                return b;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Util u = new Util() on stack;
+                System.IO.println($"id={u.identity<int>(42)} pick={u.pick<int>(true, 7, 9)}");  // id=42 pick=7
+                return;
+            }
+        }
+    }
+}

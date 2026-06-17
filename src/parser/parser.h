@@ -68,6 +68,7 @@ private:
     ast::Block parseBlock();
     ast::StmtPtr parseStatement();
     bool looksLikeGenericVarDecl() const;
+    bool looksLikeGenericCall() const;
     ast::StmtPtr parseIfStatement();
     ast::StmtPtr parseWhileStatement();
     ast::StmtPtr parseDoStatement();
