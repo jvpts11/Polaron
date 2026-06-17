@@ -184,6 +184,16 @@ TEST_CASE("semantic accepts a persistent instance field accessed via a variable"
         " Car c = new Car() on heap; c.chassi = c.chassi + 1; delete c; return; } } } }"));
 }
 
+TEST_CASE("semantic accepts a persistent instance field used via this in a method") {
+    CHECK(checkSrc(
+        "program P; public bundle main { public namespace app {"
+        " public class Car { public persistent mutable int chassi = 0;"
+        " public constructor Car() {}"
+        " public method bump() returns void { this.chassi = this.chassi + 1; } }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Car c = new Car() on heap; c.bump(); delete c; return; } } } }"));
+}
+
 TEST_CASE("semantic rejects assignment to an immutable field") {
     CHECK_FALSE(checkSrc(withClass(
         "public class Box { private int v;"

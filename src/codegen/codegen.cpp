@@ -171,6 +171,11 @@ struct ClassLayout {
     bool hasDestructor = false;
     std::vector<std::string> vtslots;          // virtual method names, in slot order
     llvm::GlobalVariable* vtable = nullptr;     // emitted vtable global (concrete classes)
+    // Persistent instance fields (spec 18): they live in a per-variable disk-backed block,
+    // not in the object. The object carries a pointer to its block at persistPtrIdx.
+    llvm::StructType* persistBlock = nullptr;
+    unsigned persistPtrIdx = 0;                 // struct index of the __persist pointer (0 = none)
+    std::vector<std::string> persistOrder;      // persistent field names, in block order
 };
 
 // A local variable / parameter: its storage (an alloca) and LDP3 type name.
@@ -213,6 +218,8 @@ struct CodeGenerator::Impl {
     std::vector<std::pair<llvm::GlobalVariable*, llvm::Type*>> persistentStatics;
     // class -> its persistent instance field names (spec 18: object reattach via per-variable globals)
     std::unordered_map<std::string, std::unordered_set<std::string>> persistentInstanceFields;
+    // set by a var-decl just before emitNew so the new object can wire up its persistent block
+    std::string pendingPersistKey;
     std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
@@ -745,31 +752,37 @@ struct CodeGenerator::Impl {
         return staticGlobals.count(key) > 0 ? key : std::string();
     }
 
-    // Object reattach (spec 18): a persistent instance field accessed as `var.field` lives in a
-    // disk-backed global keyed by (function, variable, field) -- NOT inside the object. So it
-    // survives `delete var` and reattaches when a variable of the same name is recreated.
-    // Returns the global, or null if this isn't such an access (via `this`, non-local, or a
-    // non-persistent field), in which case the normal inline field access applies.
-    llvm::GlobalVariable* persistentFieldGlobal(const ast::MemberExpr& mem) {
-        const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem.object.get());
-        if (objId == nullptr || objId->name == "this") return nullptr;
-        auto lit = locals.find(objId->name);
-        if (lit == locals.end()) return nullptr;  // must be a named local variable
-        const std::string cls = baseType(lit->second.type);
-        auto pit = persistentInstanceFields.find(cls);
-        if (pit == persistentInstanceFields.end() || pit->second.count(mem.member) == 0)
-            return nullptr;
-        const std::string key =
-            (currentFn != nullptr ? currentFn->getName().str() : std::string()) + "." +
-            objId->name + "." + mem.member;
-        if (staticGlobals.count(key) == 0) {
-            llvm::Type* lty = llvmType(classes[cls].fieldType[mem.member]);
-            staticGlobals[key] = new llvm::GlobalVariable(
-                module, lty, /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
-                llvm::Constant::getNullValue(lty), key);
-            persistentStatics.push_back({staticGlobals[key], lty});
+    // The disk-backed persistent block for an identity key (one per variable that binds a
+    // persistent-bearing object). Created lazily; serialized via persistentStatics.
+    llvm::GlobalVariable* getPersistBlock(const std::string& key, llvm::StructType* blockTy) {
+        const std::string gname = key + ".__pblock";
+        if (staticGlobals.count(gname) == 0) {
+            staticGlobals[gname] = new llvm::GlobalVariable(
+                module, blockTy, /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
+                llvm::Constant::getNullValue(blockTy), gname);
+            persistentStatics.push_back({staticGlobals[gname], blockTy});
         }
-        return staticGlobals[key];
+        return staticGlobals[gname];
+    }
+
+    // Object reattach (spec 18.2): address of a persistent instance field, reached through the
+    // object's __persist pointer -- so this.field (in methods/ctor) and var.field both work, and
+    // the field survives `delete` (it lives in the block, not the object). Null if `mem` is not
+    // a persistent instance field access.
+    llvm::Value* persistentFieldPtr(const ast::MemberExpr& mem) {
+        const std::string cls = baseType(typeName(*mem.object));
+        auto cit = classes.find(cls);
+        if (cit == classes.end() || cit->second.persistPtrIdx == 0) return nullptr;
+        const auto& order = cit->second.persistOrder;
+        auto pos = std::find(order.begin(), order.end(), mem.member);
+        if (pos == order.end()) return nullptr;  // not a persistent field
+        llvm::Value* objPtr = emitObjectPtr(*mem.object);
+        if (objPtr == nullptr) return nullptr;
+        llvm::Value* slot = builder.CreateStructGEP(cit->second.type, objPtr,
+                                                    cit->second.persistPtrIdx, "__persist");
+        llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "pblock");
+        const auto fidx = static_cast<unsigned>(pos - order.begin());
+        return builder.CreateStructGEP(cit->second.persistBlock, block, fidx, mem.member);
     }
 
     llvm::Value* emitObjectPtr(const ast::Expr& expr) {
@@ -812,8 +825,8 @@ struct CodeGenerator::Impl {
             if (const std::string key = staticFieldKey(*mem); !key.empty()) {
                 return staticGlobals[key];  // the global itself is the address
             }
-            if (llvm::GlobalVariable* pg = persistentFieldGlobal(*mem)) {
-                return pg;  // persistent instance field: its address is the disk-backed global
+            if (llvm::Value* pp = persistentFieldPtr(*mem)) {
+                return pp;  // persistent instance field: address inside the object's block
             }
             llvm::Value* objPtr = emitObjectPtr(*mem->object);
             if (objPtr == nullptr) return nullptr;
@@ -902,8 +915,8 @@ struct CodeGenerator::Impl {
                 return builder.CreateLoad(llvmType(staticFieldType[key]), staticGlobals[key],
                                           mem->member);
             }
-            if (llvm::GlobalVariable* pg = persistentFieldGlobal(*mem)) {
-                return builder.CreateLoad(pg->getValueType(), pg, mem->member);
+            if (llvm::Value* pp = persistentFieldPtr(*mem)) {
+                return builder.CreateLoad(llvmType(typeName(*mem)), pp, mem->member);
             }
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 if (locals.find(objId->name) == locals.end()) {
@@ -1197,6 +1210,14 @@ struct CodeGenerator::Impl {
         } else {
             error("'new' location must be 'stack' or 'heap', got '" + nw.location + "'", nw.loc);
             return nullptr;
+        }
+        // Wire up the persistent block (if any) BEFORE the constructor, so the ctor can read
+        // and write this.<persistent field>. Keyed by the binding variable's identity.
+        if (cit->second.persistPtrIdx != 0 && !pendingPersistKey.empty()) {
+            llvm::Value* slot = builder.CreateStructGEP(cit->second.type, objPtr,
+                                                        cit->second.persistPtrIdx, "__persist");
+            builder.CreateStore(getPersistBlock(pendingPersistKey, cit->second.persistBlock), slot);
+            pendingPersistKey.clear();
         }
         auto fnit = functions.find(cn + "." + cn);
         if (fnit != functions.end()) {
@@ -1554,7 +1575,18 @@ struct CodeGenerator::Impl {
                 locals[vd->name] = LocalSlot{staticGlobals[key], declType};
                 return;
             }
+            // An object with persistent fields bound to a named variable: pass the identity key
+            // to emitNew so it wires the object's persistent block before the constructor runs.
+            if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
+                auto cit = classes.find(ast::mangleGeneric(nw->className, nw->typeArgs));
+                if (cit != classes.end() && cit->second.persistPtrIdx != 0) {
+                    pendingPersistKey =
+                        (currentFn != nullptr ? currentFn->getName().str() : std::string()) +
+                        "." + vd->name;
+                }
+            }
             llvm::Value* initV = emitExpr(*vd->init);
+            pendingPersistKey.clear();
             if (initV == nullptr) return;
             // Value semantics: copying a class value from an existing object makes
             // an independent copy; binding a fresh `new`/pointer/`move` does not,
@@ -2031,6 +2063,7 @@ struct CodeGenerator::Impl {
                                 staticFieldType[cls.name + "." + f->name] = ftype;
                             } else {
                                 layout.ownFields.emplace_back(f->name, ftype);
+                                if (f->isPersistent) layout.persistOrder.push_back(f->name);
                             }
                         } else if (const auto* m =
                                        dynamic_cast<const ast::MethodDecl*>(member.get())) {
@@ -2109,6 +2142,19 @@ struct CodeGenerator::Impl {
                         layout.fieldIndex[fname] = idx++;
                         layout.fieldType[fname] = ftype;
                         fieldTypes.push_back(llvmType(ftype));
+                    }
+                    // Persistent instance fields also get an out-of-object block; the object
+                    // holds a pointer to it (set at construction) so this.f and var.f both work
+                    // and the field survives `delete` (it lives in the block, not the object).
+                    if (!layout.persistOrder.empty()) {
+                        std::vector<llvm::Type*> blockTypes;
+                        for (const auto& pf : layout.persistOrder)
+                            blockTypes.push_back(llvmType(layout.fieldType[pf]));
+                        layout.persistBlock =
+                            llvm::StructType::create(context, "persistblock." + cls.name);
+                        layout.persistBlock->setBody(blockTypes);
+                        layout.persistPtrIdx = idx;
+                        fieldTypes.push_back(builder.getPtrTy());
                     }
                     layout.type->setBody(fieldTypes);
                 }
