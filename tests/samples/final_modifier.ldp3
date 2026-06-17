@@ -1,0 +1,21 @@
+program FinalModifier;
+
+// `final` (spec 15 / universal prefixes): explicitly immutable, on a field or a local.
+public bundle main {
+    public namespace app {
+        public class C {
+            private final int x;
+            public constructor C() { this.x = 5; }
+            public method get() returns int { return this.x; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                C c = new C() on stack;
+                final int y = c.get();
+                System.IO.println($"y = {y}");   // 5
+                return;
+            }
+        }
+    }
+}

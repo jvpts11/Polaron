@@ -932,6 +932,19 @@ TEST_CASE("semantic accepts compound assignment") {
         " mutable int x = 1; x += 2; x *= 3; x -= 1; }")));
 }
 
+TEST_CASE("semantic accepts final on a field and a local") {
+    CHECK(checkSrc(withClass(
+        "public class C { private final int x; public constructor C() { this.x = 5; }"
+        " public method get() returns int { return this.x; } }",
+        "C c = new C() on stack; final int y = c.get();")));
+}
+
+TEST_CASE("semantic rejects reassigning a final local") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " final int y = 5; y = 6; }")));
+}
+
 TEST_CASE("semantic accepts bitwise compound assignment") {
     CHECK(checkSrc(wrapMain(
         "public static method main(string[] args) returns void {"
