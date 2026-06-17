@@ -214,8 +214,10 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
     std::unordered_map<std::string, llvm::GlobalVariable*> staticGlobals;  // "Class.field" -> global
     std::unordered_map<std::string, std::string> staticFieldType;  // "Class.field" -> LDP3 type
-    // static persistent fields: (global, type) serialized to/from disk (spec 18, cross-run)
-    std::vector<std::pair<llvm::GlobalVariable*, llvm::Type*>> persistentStatics;
+    // persistent roots serialized to/from disk (spec 18, cross-run). `cls` is the class whose
+    // persistent fields fill the block (serialized field-by-field); empty = a primitive global.
+    struct PersistEntry { llvm::GlobalVariable* global; llvm::Type* type; std::string cls; };
+    std::vector<PersistEntry> persistentStatics;
     // class -> its persistent instance field names (spec 18: object reattach via per-variable globals)
     std::unordered_map<std::string, std::unordered_set<std::string>> persistentInstanceFields;
     // set by a var-decl just before emitNew so the new object can wire up its persistent block
@@ -754,13 +756,14 @@ struct CodeGenerator::Impl {
 
     // The disk-backed persistent block for an identity key (one per variable that binds a
     // persistent-bearing object). Created lazily; serialized via persistentStatics.
-    llvm::GlobalVariable* getPersistBlock(const std::string& key, llvm::StructType* blockTy) {
+    llvm::GlobalVariable* getPersistBlock(const std::string& key, llvm::StructType* blockTy,
+                                          const std::string& cls) {
         const std::string gname = key + ".__pblock";
         if (staticGlobals.count(gname) == 0) {
             staticGlobals[gname] = new llvm::GlobalVariable(
                 module, blockTy, /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
                 llvm::Constant::getNullValue(blockTy), gname);
-            persistentStatics.push_back({staticGlobals[gname], blockTy});
+            persistentStatics.push_back({staticGlobals[gname], blockTy, cls});
         }
         return staticGlobals[gname];
     }
@@ -1216,7 +1219,8 @@ struct CodeGenerator::Impl {
         if (cit->second.persistPtrIdx != 0 && !pendingPersistKey.empty()) {
             llvm::Value* slot = builder.CreateStructGEP(cit->second.type, objPtr,
                                                         cit->second.persistPtrIdx, "__persist");
-            builder.CreateStore(getPersistBlock(pendingPersistKey, cit->second.persistBlock), slot);
+            builder.CreateStore(
+                getPersistBlock(pendingPersistKey, cit->second.persistBlock, cn), slot);
             pendingPersistKey.clear();
         }
         auto fnit = functions.find(cn + "." + cn);
@@ -1570,7 +1574,7 @@ struct CodeGenerator::Impl {
                     staticGlobals[key] = new llvm::GlobalVariable(
                         module, lty, /*isConstant=*/false,
                         llvm::GlobalValue::PrivateLinkage, init, key);
-                    persistentStatics.push_back({staticGlobals[key], lty});
+                    persistentStatics.push_back({staticGlobals[key], lty, ""});
                 }
                 locals[vd->name] = LocalSlot{staticGlobals[key], declType};
                 return;
@@ -2258,7 +2262,18 @@ struct CodeGenerator::Impl {
                 builder.CreateICmpNE(f, llvm::ConstantPointerNull::get(ptrTy)), bodyBB, endBB);
             builder.SetInsertPoint(bodyBB);
             for (const auto& gt : persistentStatics) {
-                builder.CreateCall(io, {gt.first, sizeOf(gt.second), builder.getInt64(1), f});
+                if (gt.cls.empty()) {  // primitive global: raw bytes
+                    builder.CreateCall(io, {gt.global, sizeOf(gt.type), builder.getInt64(1), f});
+                    continue;
+                }
+                // Object block: serialize field-by-field, so pointers can be followed (step C).
+                const ClassLayout& cl = classes.at(gt.cls);
+                for (std::size_t i = 0; i < cl.persistOrder.size(); ++i) {
+                    llvm::Value* fp = builder.CreateStructGEP(gt.type, gt.global,
+                                                              static_cast<unsigned>(i));
+                    llvm::Type* ft = llvmType(cl.fieldType.at(cl.persistOrder[i]));
+                    builder.CreateCall(io, {fp, sizeOf(ft), builder.getInt64(1), f});
+                }
             }
             builder.CreateCall(fcloseF, {f});
             builder.CreateBr(endBB);
@@ -2306,7 +2321,7 @@ struct CodeGenerator::Impl {
                             new llvm::GlobalVariable(module, lty, /*isConstant=*/false,
                                                      llvm::GlobalValue::PrivateLinkage, init, key);
                         if (f->isPersistent) {
-                            persistentStatics.push_back({staticGlobals[key], lty});
+                            persistentStatics.push_back({staticGlobals[key], lty, ""});
                         }
                     }
                 }
