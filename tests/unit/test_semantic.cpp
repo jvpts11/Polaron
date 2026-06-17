@@ -835,6 +835,24 @@ TEST_CASE("semantic rejects a generic instantiation that violates its constraint
         "int n = 5; Box<int> b = new Box<int>(&n) on stack;")));
 }
 
+TEST_CASE("semantic accepts a true static_assert") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " static_assert(2 + 2 == 4, \"ok\"); }")));
+}
+
+TEST_CASE("semantic rejects a false static_assert") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " static_assert(1 == 2, \"nope\"); }")));
+}
+
+TEST_CASE("semantic rejects a non-constant static_assert") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " mutable int x = 3; static_assert(x == 3, \"not const\"); }")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

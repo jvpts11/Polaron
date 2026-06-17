@@ -206,6 +206,13 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->expr = cloneExpr(x->expr.get(), s);
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::StaticAssertStmt*>(st)) {
+        auto n = std::make_unique<ast::StaticAssertStmt>();
+        n->loc = x->loc;
+        n->message = x->message;
+        n->condition = cloneExpr(x->condition.get(), s);
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) {
         auto n = std::make_unique<ast::ReturnStmt>();
         n->loc = x->loc;
@@ -394,6 +401,7 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
 void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& out) {
     if (st == nullptr) return;
     if (const auto* x = dynamic_cast<const ast::ExprStmt*>(st)) { collectExpr(x->expr.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::StaticAssertStmt*>(st)) { collectExpr(x->condition.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) { collectExpr(x->value.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::DeleteStmt*>(st)) { collectExpr(x->target.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::VarDeclStmt*>(st)) { collectType(x->type, g, out); collectExpr(x->init.get(), g, out); return; }

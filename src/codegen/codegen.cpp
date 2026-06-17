@@ -1244,6 +1244,8 @@ struct CodeGenerator::Impl {
     }
 
     void emitStatement(const ast::Stmt& stmt) {
+        // static_assert is a compile-time check (spec 28.2); it emits no code.
+        if (dynamic_cast<const ast::StaticAssertStmt*>(&stmt) != nullptr) return;
         if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(&stmt)) {
             emitIf(*ifs);
             return;

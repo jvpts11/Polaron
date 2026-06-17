@@ -674,7 +674,60 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, SourceLocation
     if (type != "int") error("'++'/'--' requires an int target", loc);
 }
 
+// Evaluates a constant integer/boolean expression at compile time (spec 28).
+// Returns false if the expression is not a compile-time constant.
+static bool evalConstInt(const ast::Expr& e, long long& out) {
+    if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&e)) {
+        try {
+            out = std::stoll(n->text);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&e)) {
+        out = b->value ? 1 : 0;
+        return true;
+    }
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
+        long long v;
+        if (!evalConstInt(*u->operand, v)) return false;
+        if (u->op == "!") { out = v ? 0 : 1; return true; }
+        if (u->op == "-") { out = -v; return true; }
+        return false;
+    }
+    if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
+        long long l, r;
+        if (!evalConstInt(*bin->lhs, l) || !evalConstInt(*bin->rhs, r)) return false;
+        const std::string& op = bin->op;
+        if (op == "+") out = l + r;
+        else if (op == "-") out = l - r;
+        else if (op == "*") out = l * r;
+        else if (op == "/") { if (r == 0) return false; out = l / r; }
+        else if (op == "%") { if (r == 0) return false; out = l % r; }
+        else if (op == "==") out = (l == r) ? 1 : 0;
+        else if (op == "!=") out = (l != r) ? 1 : 0;
+        else if (op == "<") out = (l < r) ? 1 : 0;
+        else if (op == ">") out = (l > r) ? 1 : 0;
+        else if (op == "<=") out = (l <= r) ? 1 : 0;
+        else if (op == ">=") out = (l >= r) ? 1 : 0;
+        else if (op == "&&") out = (l && r) ? 1 : 0;
+        else if (op == "||") out = (l || r) ? 1 : 0;
+        else return false;
+        return true;
+    }
+    return false;
+}
+
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
+    if (const auto* sa = dynamic_cast<const ast::StaticAssertStmt*>(&stmt)) {
+        long long v;
+        if (!evalConstInt(*sa->condition, v))
+            error("static_assert requires a constant expression", sa->loc);
+        else if (v == 0)
+            error("static assertion failed: " + sa->message, sa->loc);
+        return;
+    }
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
         const std::string initType = typeOf(*vd->init);
         const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);

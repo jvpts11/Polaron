@@ -50,6 +50,7 @@ TokenKind keywordKind(std::string_view text) {
         {"requires", TokenKind::KwRequires},
         {"ensures", TokenKind::KwEnsures},
         {"invariant", TokenKind::KwInvariant},
+        {"static_assert", TokenKind::KwStaticAssert},
         {"extends", TokenKind::KwExtends},
         {"implements", TokenKind::KwImplements},
         {"this", TokenKind::KwThis},

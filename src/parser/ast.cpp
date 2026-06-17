@@ -167,6 +167,11 @@ void MatchExpr::dump(std::string& out, int indent) const {
     }
 }
 
+void StaticAssertStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "StaticAssert \"" + message + "\"");
+    condition->dump(out, indent + 1);
+}
+
 void DeferStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Defer");
     body.dump(out, indent + 1);

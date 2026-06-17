@@ -767,6 +767,18 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwMatch)) {
         return parseMatch();
     }
+    if (check(TokenKind::KwStaticAssert)) {
+        auto sa = std::make_unique<ast::StaticAssertStmt>();
+        sa->loc = current().loc;
+        advance();  // 'static_assert'
+        expect(TokenKind::LParen, "'('");
+        sa->condition = parseExpression();
+        expect(TokenKind::Comma, "',' (static_assert takes a message)");
+        sa->message = expect(TokenKind::StringLiteral, "a message string").lexeme;
+        expect(TokenKind::RParen, "')'");
+        expect(TokenKind::Semicolon, "';'");
+        return sa;
+    }
     if (check(TokenKind::KwReturn)) {
         auto ret = std::make_unique<ast::ReturnStmt>();
         ret->loc = current().loc;

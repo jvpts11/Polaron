@@ -286,6 +286,14 @@ struct MatchExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// static_assert(cond, "message"); -- compile-time assertion (spec 28.2). The
+// condition must be a constant expression; checked by the analyzer, emits no code.
+struct StaticAssertStmt : Stmt {
+    ExprPtr condition;
+    std::string message;
+    void dump(std::string& out, int indent) const override;
+};
+
 // Base for class-body members (method now; field/constructor/destructor later).
 struct MemberDecl {
     SourceLocation loc;
