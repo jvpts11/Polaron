@@ -159,6 +159,18 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
 
+        # object reattach (spec 18.2): a persistent INSTANCE field survives delete + reattaches
+        # when the variable is recreated. bump() deletes its Car each call; chassi counts 1/2/3,
+        # then run 2 continues -> a=4 b=5 c=6.
+        add_test(NAME codegen_persist_object_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_object.ldp3"
+            "-DEXPECTED=a=4 b=5 c=6"
+            "-DSTORE=PersistObject.ldpstore"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
+
         # M4: inline field initializers + synthesized default constructor.
         add_test(NAME codegen_field_init_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

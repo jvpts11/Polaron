@@ -175,6 +175,15 @@ TEST_CASE("semantic accepts a persistent local variable") {
         " persistent mutable int n = 0; n = n + 1; }")));
 }
 
+TEST_CASE("semantic accepts a persistent instance field accessed via a variable") {
+    CHECK(checkSrc(
+        "program P; public bundle main { public namespace app {"
+        " public class Car { public persistent mutable int chassi = 0;"
+        " public constructor Car() {} }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Car c = new Car() on heap; c.chassi = c.chassi + 1; delete c; return; } } } }"));
+}
+
 TEST_CASE("semantic rejects assignment to an immutable field") {
     CHECK_FALSE(checkSrc(withClass(
         "public class Box { private int v;"
