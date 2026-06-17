@@ -1083,6 +1083,43 @@ ast::StmtPtr Parser::parseVarDecl() {
     return decl;
 }
 
+// Clones a simple lvalue (identifier / this.field / a[i]) so `x += e` can desugar
+// to `x = x + e` without re-parsing. Returns null for unsupported targets.
+static ast::ExprPtr cloneLValue(const ast::Expr* e) {
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
+        auto n = std::make_unique<ast::IdentifierExpr>();
+        n->loc = id->loc;
+        n->name = id->name;
+        return n;
+    }
+    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) {
+        ast::ExprPtr obj = cloneLValue(m->object.get());
+        if (obj == nullptr) return nullptr;
+        auto n = std::make_unique<ast::MemberExpr>();
+        n->loc = m->loc;
+        n->member = m->member;
+        n->object = std::move(obj);
+        return n;
+    }
+    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+        ast::ExprPtr arr = cloneLValue(ix->array.get());
+        ast::ExprPtr idx = cloneLValue(ix->index.get());
+        if (arr == nullptr || idx == nullptr) return nullptr;
+        auto n = std::make_unique<ast::IndexExpr>();
+        n->loc = ix->loc;
+        n->array = std::move(arr);
+        n->index = std::move(idx);
+        return n;
+    }
+    if (const auto* il = dynamic_cast<const ast::IntLiteralExpr*>(e)) {
+        auto n = std::make_unique<ast::IntLiteralExpr>();
+        n->loc = il->loc;
+        n->text = il->text;
+        return n;
+    }
+    return nullptr;
+}
+
 ast::StmtPtr Parser::parseSimpleStatement() {
     ast::ExprPtr expr = parseExpression();
     if (check(TokenKind::Assign)) {
@@ -1091,6 +1128,28 @@ ast::StmtPtr Parser::parseSimpleStatement() {
         s->loc = op.loc;
         s->target = std::move(expr);
         s->value = parseExpression();
+        return s;
+    }
+    // Compound assignment: `x += e` desugars to `x = x + e` (spec 6).
+    std::string compoundOp;
+    if (check(TokenKind::PlusEq)) compoundOp = "+";
+    else if (check(TokenKind::MinusEq)) compoundOp = "-";
+    else if (check(TokenKind::StarEq)) compoundOp = "*";
+    else if (check(TokenKind::SlashEq)) compoundOp = "/";
+    else if (check(TokenKind::PercentEq)) compoundOp = "%";
+    if (!compoundOp.empty()) {
+        const Token op = advance();
+        ast::ExprPtr lhs = cloneLValue(expr.get());
+        if (lhs == nullptr) fail("unsupported target for compound assignment", op.loc);
+        auto bin = std::make_unique<ast::BinaryExpr>();
+        bin->loc = op.loc;
+        bin->op = compoundOp;
+        bin->lhs = std::move(lhs);
+        bin->rhs = parseExpression();
+        auto s = std::make_unique<ast::AssignStmt>();
+        s->loc = op.loc;
+        s->target = std::move(expr);
+        s->value = std::move(bin);
         return s;
     }
     if (check(TokenKind::PlusPlus) || check(TokenKind::MinusMinus)) {

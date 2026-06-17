@@ -883,6 +883,12 @@ TEST_CASE("semantic accepts a do-while loop") {
         " mutable int n = 0; do { n = n + 1; } while (n < 3); }")));
 }
 
+TEST_CASE("semantic accepts compound assignment") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " mutable int x = 1; x += 2; x *= 3; x -= 1; }")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

@@ -1,0 +1,25 @@
+program Compound;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int x = 10;
+                x += 5;     // 15
+                x -= 3;     // 12
+                x *= 2;     // 24
+                x /= 4;     // 6
+                x %= 4;     // 2
+                System.IO.println($"x = {x}");        // 2
+
+                // Compound assignment also works on array elements.
+                int[] a = new int[3]();
+                a[0] = 10;
+                a[0] += 7;  // 17
+                System.IO.println($"a0 = {a[0]}");    // 17
+                delete a;
+                return;
+            }
+        }
+    }
+}
