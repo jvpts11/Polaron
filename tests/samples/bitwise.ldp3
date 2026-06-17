@@ -11,6 +11,7 @@ public bundle main {
                 System.IO.println($"xor = {a ^ b}");    // 6  (0110)
                 System.IO.println($"shl = {a << 2}");   // 48
                 System.IO.println($"shr = {a >> 1}");   // 6
+                System.IO.println($"not = {~a}");        // -13 (two's complement)
                 return;
             }
         }

@@ -892,7 +892,7 @@ TEST_CASE("semantic accepts compound assignment") {
 TEST_CASE("semantic accepts bitwise operators") {
     CHECK(checkSrc(wrapMain(
         "public static method main(string[] args) returns void {"
-        " int a = 12; int b = 10; int c = (a & b) | (a ^ b); int d = a << 2 >> 1; }")));
+        " int a = 12; int b = 10; int c = (a & b) | (a ^ b); int d = a << 2 >> 1; int e = ~a; }")));
 }
 
 TEST_CASE("semantic rejects bitwise on a float operand") {

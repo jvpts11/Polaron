@@ -420,6 +420,7 @@ struct CodeGenerator::Impl {
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
             if (un->op == "&") return typeName(*un->operand) + "*";  // address-of
+            if (un->op == "~") return typeName(*un->operand);  // bitwise not keeps the width
             return un->op == "!" ? "boolean" : "int";
         }
         if (const auto* me = dynamic_cast<const ast::MatchExpr*>(&expr)) {
@@ -798,6 +799,7 @@ struct CodeGenerator::Impl {
                 return builder.CreateZExt(builder.CreateICmpEQ(v, builder.getInt32(0)),
                                           builder.getInt32Ty());
             }
+            if (un->op == "~") return builder.CreateNot(v);  // bitwise not
             error("unsupported unary operator '" + un->op + "'", un->loc);
             return nullptr;
         }

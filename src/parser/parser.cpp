@@ -1291,8 +1291,9 @@ ast::ExprPtr Parser::parseUnary() {
         mv->operand = parseUnary();
         return mv;
     }
-    // Prefix '&' is address-of (share the object); '-' negation; '!' logical not.
-    if (check(TokenKind::Minus) || check(TokenKind::Bang) || check(TokenKind::Amp)) {
+    // Prefix '&' is address-of (share the object); '-' negation; '!' logical not; '~' bitwise not.
+    if (check(TokenKind::Minus) || check(TokenKind::Bang) || check(TokenKind::Amp) ||
+        check(TokenKind::Tilde)) {
         const Token op = advance();
         auto un = std::make_unique<ast::UnaryExpr>();
         un->loc = op.loc;
