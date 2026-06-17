@@ -1,0 +1,53 @@
+program Showcase;
+
+// Combines many 0.2 features end to end: a sealed hierarchy with a virtual method,
+// match-as-expression, contracts, heap allocation + polymorphism, loops, ternary,
+// bitwise and compound assignment, and string interpolation.
+public bundle main {
+    public namespace app {
+
+        public sealed abstract class Shape permits Circle, Square {
+            public abstract method area() returns int;
+        }
+        public class Circle extends Shape {
+            private int r;
+            public constructor Circle(int r) requires r > 0 { this.r = r; }
+            public override method area() returns int { return this.r * this.r * 3; }
+        }
+        public class Square extends Shape {
+            private int side;
+            public constructor Square(int side) requires side > 0 { this.side = side; }
+            public override method area() returns int { return this.side * this.side; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shape* s1 = new Circle(2) on heap;
+                Shape* s2 = new Square(3) on heap;
+
+                // match as an expression over the sealed type (exhaustive, no default)
+                int a1 = match (s1) {
+                    case Circle(int r) -> r * r * 3;
+                    case Square(int side) -> side * side;
+                };
+                int a2 = match (s2) {
+                    case Circle(int r) -> r * r * 3;
+                    case Square(int side) -> side * side;
+                };
+                int total = a1 + a2;
+                System.IO.println($"areas: {a1} {a2} total {total}");   // 12 9 21
+
+                // loop + ternary + bitwise + compound assignment
+                mutable int acc = 0;
+                for (mutable int i = 1; i <= 4; i++) {
+                    acc += (i & 1) == 1 ? i : 0;   // sum the odd i: 1 + 3 = 4
+                }
+                System.IO.println($"odd sum = {acc}");   // 4
+
+                delete s1;
+                delete s2;
+                return;
+            }
+        }
+    }
+}
