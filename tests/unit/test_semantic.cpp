@@ -169,6 +169,12 @@ TEST_CASE("semantic accepts persistent / eternal / transient field modifiers") {
         "")));
 }
 
+TEST_CASE("semantic accepts a persistent local variable") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " persistent mutable int n = 0; n = n + 1; }")));
+}
+
 TEST_CASE("semantic rejects assignment to an immutable field") {
     CHECK_FALSE(checkSrc(withClass(
         "public class Box { private int v;"

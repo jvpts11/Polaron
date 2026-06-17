@@ -1500,6 +1500,25 @@ struct CodeGenerator::Impl {
         }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
             const std::string declType = vd->isVar ? typeName(*vd->init) : typeRefName(vd->type);
+            // Persistent local (spec 18): lives in a disk-backed global keyed by function +
+            // name, so it keeps its value across calls AND across runs. The initializer seeds
+            // the global once; we never re-store it on entry -- that omission is the reattach.
+            if (vd->isPersistent) {
+                const std::string key =
+                    (currentFn != nullptr ? currentFn->getName().str() : std::string()) +
+                    "." + vd->name;
+                llvm::Type* lty = llvmType(declType);
+                if (staticGlobals.count(key) == 0) {
+                    llvm::Constant* init = constFold(*vd->init, declType);
+                    if (init == nullptr) init = llvm::Constant::getNullValue(lty);
+                    staticGlobals[key] = new llvm::GlobalVariable(
+                        module, lty, /*isConstant=*/false,
+                        llvm::GlobalValue::PrivateLinkage, init, key);
+                    persistentStatics.push_back({staticGlobals[key], lty});
+                }
+                locals[vd->name] = LocalSlot{staticGlobals[key], declType};
+                return;
+            }
             llvm::Value* initV = emitExpr(*vd->init);
             if (initV == nullptr) return;
             // Value semantics: copying a class value from an existing object makes

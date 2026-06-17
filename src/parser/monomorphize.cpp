@@ -297,6 +297,8 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->loc = x->loc;
         n->isMutable = x->isMutable;
         n->isVar = x->isVar;
+        n->isPersistent = x->isPersistent;
+        n->isEternal = x->isEternal;
         n->type = substType(x->type, s);
         n->name = x->name;
         n->init = cloneExpr(x->init.get(), s);

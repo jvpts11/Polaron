@@ -946,6 +946,7 @@ ast::StmtPtr Parser::parseStatement() {
          (peek(1).kind == TokenKind::LBracket && peek(2).kind == TokenKind::RBracket &&
           peek(3).kind == TokenKind::Identifier));
     if (check(TokenKind::KwFinal) || check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
+        check(TokenKind::KwPersistent) || check(TokenKind::KwEternal) ||
         isTypeKeyword(current().kind) || classVarDecl || looksLikeGenericVarDecl()) {
         return parseVarDecl();
     }
@@ -1245,6 +1246,10 @@ ast::ExprPtr Parser::parseMatchExpr() {
 std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
     auto decl = std::make_unique<ast::VarDeclStmt>();
     decl->loc = current().loc;
+    while (check(TokenKind::KwPersistent) || check(TokenKind::KwEternal)) {
+        if (match(TokenKind::KwPersistent)) decl->isPersistent = true;
+        else { advance(); decl->isEternal = true; }  // eternal [persistent]
+    }
     if (match(TokenKind::KwFinal)) {  // final = explicitly immutable (the default)
         decl->isMutable = false;
     } else {

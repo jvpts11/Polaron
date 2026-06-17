@@ -148,6 +148,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
 
+        # persistents in LOCALS (spec 18): a persistent local retains its value across
+        # calls and runs. Run 1 counts 1/2/3; run 2 continues -> a=4 b=5 c=6.
+        add_test(NAME codegen_persist_local_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_local.ldp3"
+            "-DEXPECTED=a=4 b=5 c=6"
+            "-DSTORE=PersistLocal.ldpstore"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
+
         # M4: inline field initializers + synthesized default constructor.
         add_test(NAME codegen_field_init_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

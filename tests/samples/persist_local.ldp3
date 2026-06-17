@@ -1,0 +1,20 @@
+program PersistLocal;
+
+// A `persistent` LOCAL variable (spec 18: persistent applies to internal variables too).
+// It lives in a disk-backed global, so it keeps its value across CALLS and across RUNS --
+// it reattaches instead of reinitializing. Run 1: a=1 b=2 c=3. Run 2: a=4 b=5 c=6.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method counter() returns int {
+                persistent mutable int n = 0;
+                n = n + 1;
+                return n;
+            }
+            public static method main(string[] args) returns void {
+                System.IO.println($"a={Main.counter()} b={Main.counter()} c={Main.counter()}");
+                return;
+            }
+        }
+    }
+}

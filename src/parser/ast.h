@@ -216,6 +216,8 @@ struct ReleaseStmt : Stmt {
 struct VarDeclStmt : Stmt {
     bool isMutable = false;
     bool isVar = false;  // `var` type inference; `type` then unused
+    bool isPersistent = false;  // spec 18: disk-backed local, retained across calls/runs
+    bool isEternal = false;     // eternal persistent
     TypeRef type;        // used when !isVar
     std::string name;
     ExprPtr init;        // M2: an initializer is required
