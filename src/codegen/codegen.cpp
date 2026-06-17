@@ -1410,6 +1410,24 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
+            // operator[]= overload: obj[i] = v -> obj.operator[]=(i, v) (spec 6.5).
+            if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(assign->target.get())) {
+                const std::string owner = methodOwner(baseType(typeName(*ix->array)), "operator[]=");
+                auto fnit = owner.empty() ? functions.end()
+                                          : functions.find(owner + ".operator[]=");
+                if (fnit != functions.end()) {
+                    llvm::Value* recv = emitExpr(*ix->array);
+                    llvm::Value* idx = emitExpr(*ix->index);
+                    llvm::Value* val = emitExpr(*assign->value);
+                    if (recv == nullptr || idx == nullptr || val == nullptr) return;
+                    if (fnit->second->arg_size() >= 3) {
+                        idx = coerceToType(idx, fnit->second->getArg(1)->getType());
+                        val = coerceToType(val, fnit->second->getArg(2)->getType());
+                    }
+                    builder.CreateCall(fnit->second, {recv, idx, val});
+                    return;
+                }
+            }
             const std::string targetType = typeName(*assign->target);
             llvm::Value* slot = emitLValue(*assign->target);
             if (slot == nullptr) return;

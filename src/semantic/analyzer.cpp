@@ -577,6 +577,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
     if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&target)) {
         const std::string at = typeOf(*ix->array);
         typeOf(*ix->index);
+        if (findMethod(baseType(at), "operator[]=")) return;  // operator[]= overload (spec 6.5)
         if (!at.empty() && !isArrayType(at)) {
             error("cannot index a value of non-array type '" + at + "'", loc);
             return;

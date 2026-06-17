@@ -1,0 +1,25 @@
+program OperatorIndexSet;
+
+public bundle main {
+    public namespace app {
+        public class Pair {
+            private mutable int a;
+            private mutable int b;
+            public constructor Pair() { this.a = 0; this.b = 0; }
+            public operator [] (int i) returns int { return i == 0 ? this.a : this.b; }
+            public operator []= (int i, int v) returns void {
+                if (i == 0) { this.a = v; } else { this.b = v; }
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Pair p = new Pair() on stack;
+                p[0] = 10;   // operator[]= (write)
+                p[1] = 20;
+                System.IO.println($"p = {p[0]} {p[1]}");   // operator[] (read): 10 20
+                return;
+            }
+        }
+    }
+}

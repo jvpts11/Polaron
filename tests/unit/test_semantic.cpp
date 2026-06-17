@@ -937,6 +937,13 @@ TEST_CASE("semantic accepts operator[] overloading") {
         "Triple t = new Triple() on stack; int x = t[0];")));
 }
 
+TEST_CASE("semantic accepts operator[]= overloading") {
+    CHECK(checkSrc(withClass(
+        "public class Box { private mutable int a; public constructor Box() { this.a = 0; }"
+        " public operator []= (int i, int v) returns void { this.a = v; } }",
+        "Box b = new Box() on stack; b[0] = 5;")));
+}
+
 TEST_CASE("semantic accepts enum count() and values()") {
     CHECK(checkSrc(
         "program P; public bundle b { public namespace n {"
