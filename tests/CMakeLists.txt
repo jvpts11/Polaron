@@ -593,6 +593,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=count = 3 sum of ordinals = 3"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # pointer fields (Node* next) -- linked structures; the assign must store, not copy.
+        add_test(NAME codegen_linked_list_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/linked_list.ldp3"
+            "-DEXPECTED=sum = 6"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

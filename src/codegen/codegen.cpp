@@ -1806,7 +1806,9 @@ struct CodeGenerator::Impl {
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
                             layout.ownFields.emplace_back(
-                                f->name, f->type.name + (f->type.isArray ? "[]" : ""));
+                                f->name, f->type.name + (f->type.isArray ? "[]" : "") +
+                                             (f->type.isPointer ? "*" : "") +
+                                             (f->type.isRef ? "&" : ""));
                         } else if (const auto* m =
                                        dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             layout.methodReturnType[m->name] = m->returnType.name;

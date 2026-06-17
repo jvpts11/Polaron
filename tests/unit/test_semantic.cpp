@@ -926,6 +926,13 @@ TEST_CASE("semantic accepts enum count() and values()") {
         " int k = E.count(); mutable int s = 0; for (int x in E.values()) { s = s + x; } } } } }"));
 }
 
+TEST_CASE("semantic accepts a pointer field and pointer-field assignment") {
+    CHECK(checkSrc(withClass(
+        "public class Node { public mutable int val; public mutable Node* next;"
+        " public constructor Node(int v) { this.val = v; } }",
+        "Node a = new Node(1) on stack; Node b = new Node(2) on stack; a.next = &b;")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

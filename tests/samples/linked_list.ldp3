@@ -1,0 +1,36 @@
+program LinkedList;
+
+public bundle main {
+    public namespace app {
+
+        // A pointer field (Node* next) -- enables linked structures. Assigning to a
+        // pointer field must store the pointer, not deep-copy the pointee.
+        public class Node {
+            public mutable int val;
+            public mutable Node* next;
+            public constructor Node(int v) { this.val = v; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node a = new Node(1) on stack;
+                Node b = new Node(2) on stack;
+                Node c = new Node(3) on stack;
+                a.next = &b;   // pointer-field assignment
+                b.next = &c;
+
+                // Traverse a -> b -> c and sum the values.
+                mutable Node* cur = &a;
+                mutable int sum = 0;
+                mutable int guard = 0;
+                while (guard < 3) {
+                    sum = sum + cur.val;
+                    cur = cur.next;
+                    guard = guard + 1;
+                }
+                System.IO.println($"sum = {sum}");   // 1 + 2 + 3 = 6
+                return;
+            }
+        }
+    }
+}
