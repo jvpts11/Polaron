@@ -1,0 +1,48 @@
+program GenericStack;
+
+// A real generic data structure: Stack<T> over linked nodes. Integrates generics,
+// pointer fields, chained access, methods, and manual memory (new/delete).
+public bundle main {
+    public namespace app {
+        public class Node<T> {
+            public mutable T val;
+            public mutable Node<T>* next;
+            public constructor Node(T v) { this.val = v; }
+        }
+
+        public class Stack<T> {
+            private mutable Node<T>* top;
+            private mutable int size;
+            public constructor Stack() { this.size = 0; }
+
+            public method push(T v) returns void {
+                Node<T>* n = new Node<T>(v) on heap;
+                n.next = this.top;
+                this.top = n;
+                this.size = this.size + 1;
+            }
+            public method pop() returns T {
+                T v = this.top.val;
+                Node<T>* old = this.top;
+                this.top = this.top.next;
+                delete old;
+                this.size = this.size - 1;
+                return v;
+            }
+            public method count() returns int { return this.size; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Stack<int> s = new Stack<int>() on stack;
+                s.push(10);
+                s.push(20);
+                s.push(30);
+                int a = s.pop();   // 30
+                int b = s.pop();   // 20
+                System.IO.println($"popped {a} {b}, count {s.count()}");   // 30 20, 1
+                return;
+            }
+        }
+    }
+}
