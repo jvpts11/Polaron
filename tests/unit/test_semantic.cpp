@@ -159,6 +159,16 @@ TEST_CASE("semantic accepts a class with fields, ctor and instance methods") {
     CHECK(checkSrc(withClass(kCounter, "Counter c = new Counter() on stack; c.inc();")));
 }
 
+TEST_CASE("semantic accepts persistent / eternal / transient field modifiers") {
+    CHECK(checkSrc(withClass(
+        "public class Config {"
+        " public eternal persistent int counter = 0;"
+        " private persistent int sessions = 0;"
+        " private transient int cache = 0;"
+        " public constructor Config() {} }",
+        "")));
+}
+
 TEST_CASE("semantic rejects assignment to an immutable field") {
     CHECK_FALSE(checkSrc(withClass(
         "public class Box { private int v;"

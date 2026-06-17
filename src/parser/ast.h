@@ -406,6 +406,9 @@ struct FieldDecl : MemberDecl {
     std::string visibility;
     bool isStatic = false;
     bool isMutable = false;
+    bool isPersistent = false;  // spec 18: lifetime decoupled from the object (cross-run via disk)
+    bool isEternal = false;     // eternal persistent: never requires explicit release
+    bool isTransient = false;   // excluded from serialization
     TypeRef type;
     std::string name;
     ExprPtr init;  // optional inline initializer (null if none); see spec 940

@@ -513,6 +513,9 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isAbstract = false;
     bool isOverride = false;
     bool isFinal = false;
+    bool isPersistent = false;
+    bool isEternal = false;
+    bool isTransient = false;
     for (;;) {
         if (!isStatic && check(TokenKind::KwStatic)) {
             advance();
@@ -539,6 +542,21 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isFinal = true;
             continue;
         }
+        if (!isPersistent && check(TokenKind::KwPersistent)) {
+            advance();
+            isPersistent = true;
+            continue;
+        }
+        if (!isEternal && check(TokenKind::KwEternal)) {
+            advance();
+            isEternal = true;
+            continue;
+        }
+        if (!isTransient && check(TokenKind::KwTransient)) {
+            advance();
+            isTransient = true;
+            continue;
+        }
         break;
     }
     if (check(TokenKind::KwMethod)) {
@@ -555,7 +573,8 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         return parseOperator(std::move(visibility));
     }
     // Otherwise it is a field:  <type> <name> ;
-    return parseField(std::move(visibility), isStatic, isMutable);
+    return parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
+                      isTransient);
 }
 
 // `operator <op> (params) returns T { body }` (spec 6.5). Modeled as a method
@@ -622,7 +641,8 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     return m;
 }
 
-ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable) {
+ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable,
+                                  bool isPersistent, bool isEternal, bool isTransient) {
     const SourceLocation loc = current().loc;
     ast::TypeRef type = parseTypeRef();
     const std::string name = expect(TokenKind::Identifier, "a field name").lexeme;
@@ -635,6 +655,9 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->visibility = std::move(visibility);
     f->isStatic = isStatic;
     f->isMutable = isMutable;
+    f->isPersistent = isPersistent;
+    f->isEternal = isEternal;
+    f->isTransient = isTransient;
     f->type = std::move(type);
     f->name = name;
     if (match(TokenKind::Assign)) {

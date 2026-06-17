@@ -52,6 +52,7 @@ enum class TokenKind : std::uint8_t {
     KwMove, KwMovable, KwUnique, KwPartitionable,
     KwRegion, KwOf, KwAccepts, KwRejects,
     KwItself, KwRelease,
+    KwPersistent, KwEternal, KwTransient,
     KwDefer, KwUsing,
 
     // Keywords -- compile-time / literal suffixes (0.2 Fase C)

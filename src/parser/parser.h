@@ -56,7 +56,8 @@ private:
     std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic,
                                                  bool isAbstract, bool isOverride, bool isFinal,
                                                  bool inInterface);
-    ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable);
+    ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
+                              bool isPersistent, bool isEternal, bool isTransient);
     ast::MemberPtr parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
                                  const std::string& name, SourceLocation loc);
     std::unique_ptr<ast::ConstructorDecl> parseConstructor(std::string visibility);
