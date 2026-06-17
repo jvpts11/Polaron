@@ -827,6 +827,17 @@ TEST_CASE("semantic accepts a generic instantiation that satisfies its constrain
         "Circle c = new Circle() on stack; Box<Circle> b = new Box<Circle>(&c) on stack;")));
 }
 
+TEST_CASE("semantic accepts a generic pointer variable and generic upcast") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public class Animal<T> { public constructor Animal() {}"
+        " public method s() returns int { return 0; } }"
+        " public class Dog<T> extends Animal<T> { public constructor Dog() {}"
+        " public override method s() returns int { return 1; } }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Animal<int>* a = new Dog<int>() on heap; int x = a.s(); delete a; } } } }"));
+}
+
 TEST_CASE("semantic accepts generic inheritance") {
     CHECK(checkSrc(
         "program P; public bundle b { public namespace n {"

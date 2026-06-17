@@ -1,0 +1,22 @@
+program GenericVirtual;
+
+public bundle main {
+    public namespace app {
+        public class Animal<T> {
+            public constructor Animal() {}
+            public method sound() returns int { return 0; }
+        }
+        public class Dog<T> extends Animal<T> {
+            public constructor Dog() {}
+            public override method sound() returns int { return 7; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Animal<int>* a = new Dog<int>() on heap;
+                System.IO.println($"sound = {a.sound()}");   // virtual dispatch -> 7
+                delete a;
+                return;
+            }
+        }
+    }
+}

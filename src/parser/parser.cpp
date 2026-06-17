@@ -906,7 +906,14 @@ bool Parser::looksLikeGenericVarDecl() const {
         }
         ++i;
     }
-    return peek(i + 1).kind == TokenKind::Identifier;
+    // Allow a trailing *, &, or [] before the variable name (Box<int>* p, Box<int>[] a).
+    int j = i + 1;
+    if (peek(j).kind == TokenKind::Star || peek(j).kind == TokenKind::Amp) {
+        ++j;
+    } else if (peek(j).kind == TokenKind::LBracket && peek(j + 1).kind == TokenKind::RBracket) {
+        j += 2;
+    }
+    return peek(j).kind == TokenKind::Identifier;
 }
 
 ast::StmtPtr Parser::parseIfStatement() {
