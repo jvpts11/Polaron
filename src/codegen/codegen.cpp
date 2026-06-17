@@ -209,6 +209,8 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
     std::unordered_map<std::string, llvm::GlobalVariable*> staticGlobals;  // "Class.field" -> global
     std::unordered_map<std::string, std::string> staticFieldType;  // "Class.field" -> LDP3 type
+    // static persistent fields: (global, type) serialized to/from disk (spec 18, cross-run)
+    std::vector<std::pair<llvm::GlobalVariable*, llvm::Type*>> persistentStatics;
     std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
@@ -2119,6 +2121,70 @@ struct CodeGenerator::Impl {
 
     // Emits one zero-initialized (or literal-initialized) LLVM global per static
     // field, named "Class.field". Static fields are class-wide, not per instance.
+    // Cross-run persistents (spec 18): each `static persistent` global is loaded from a
+    // disk store at startup (registered as a global ctor) and written back at exit (a global
+    // dtor). The store sits next to the executable, fields matched positionally. MVP:
+    // primitive fields; renaming/reshaping is a future build-time schema check.
+    void emitPersistence() {
+        if (persistentStatics.empty()) return;
+        llvm::PointerType* ptrTy = builder.getPtrTy();
+        llvm::Type* i64 = builder.getInt64Ty();
+        auto fopenF = module.getOrInsertFunction(
+            "fopen", llvm::FunctionType::get(ptrTy, {ptrTy, ptrTy}, false));
+        auto* fioTy = llvm::FunctionType::get(i64, {ptrTy, i64, i64, ptrTy}, false);
+        auto freadF = module.getOrInsertFunction("fread", fioTy);
+        auto fwriteF = module.getOrInsertFunction("fwrite", fioTy);
+        auto fcloseF = module.getOrInsertFunction(
+            "fclose", llvm::FunctionType::get(builder.getInt32Ty(), {ptrTy}, false));
+        auto atexitF = module.getOrInsertFunction(
+            "atexit", llvm::FunctionType::get(builder.getInt32Ty(), {ptrTy}, false));
+        const std::string storeName = program.name + ".ldpstore";
+
+        auto buildIO = [&](const char* fnName, const char* mode, llvm::FunctionCallee io,
+                           llvm::Function* atexitTarget) -> llvm::Function* {
+            llvm::Function* fn = llvm::Function::Create(
+                llvm::FunctionType::get(builder.getVoidTy(), {}, false),
+                llvm::Function::InternalLinkage, fnName, module);
+            llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", fn);
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "io", fn);
+            llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "done", fn);
+            builder.SetInsertPoint(entry);
+            // The ctor registers the save with atexit (global_dtors isn't reliable on Windows).
+            if (atexitTarget != nullptr) builder.CreateCall(atexitF, {atexitTarget});
+            llvm::Value* path = builder.CreateGlobalStringPtr(storeName, ".store");
+            llvm::Value* m = builder.CreateGlobalStringPtr(mode, ".mode");
+            llvm::Value* f = builder.CreateCall(fopenF, {path, m}, "f");
+            builder.CreateCondBr(
+                builder.CreateICmpNE(f, llvm::ConstantPointerNull::get(ptrTy)), bodyBB, endBB);
+            builder.SetInsertPoint(bodyBB);
+            for (const auto& gt : persistentStatics) {
+                builder.CreateCall(io, {gt.first, sizeOf(gt.second), builder.getInt64(1), f});
+            }
+            builder.CreateCall(fcloseF, {f});
+            builder.CreateBr(endBB);
+            builder.SetInsertPoint(endBB);
+            builder.CreateRetVoid();
+            return fn;
+        };
+
+        // Register load/save as a global ctor/dtor by hand (avoids the LLVMTransformUtils
+        // helper). @llvm.global_ctors/dtors is an appending array of {i32 priority, ptr fn,
+        // ptr data}; the CRT runs ctors before main and dtors at exit.
+        auto registerXtor = [&](const char* arrayName, llvm::Function* fn) {
+            llvm::StructType* elemTy =
+                llvm::StructType::get(context, {builder.getInt32Ty(), ptrTy, ptrTy});
+            llvm::Constant* entry = llvm::ConstantStruct::get(
+                elemTy, {builder.getInt32(65535), fn, llvm::ConstantPointerNull::get(ptrTy)});
+            llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, 1);
+            new llvm::GlobalVariable(module, arrTy, /*isConstant=*/false,
+                                     llvm::GlobalValue::AppendingLinkage,
+                                     llvm::ConstantArray::get(arrTy, {entry}), arrayName);
+        };
+        llvm::Function* saveFn = buildIO("__ldp3_persist_save", "wb", fwriteF, nullptr);
+        llvm::Function* loadFn = buildIO("__ldp3_persist_load", "rb", freadF, saveFn);
+        registerXtor("llvm.global_ctors", loadFn);
+    }
+
     void emitStaticFields() {
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
@@ -2135,6 +2201,9 @@ struct CodeGenerator::Impl {
                         staticGlobals[key] =
                             new llvm::GlobalVariable(module, lty, /*isConstant=*/false,
                                                      llvm::GlobalValue::PrivateLinkage, init, key);
+                        if (f->isPersistent) {
+                            persistentStatics.push_back({staticGlobals[key], lty});
+                        }
                     }
                 }
             }
@@ -2391,6 +2460,7 @@ bool CodeGenerator::generate() {
     impl_->declareFunctions();
     impl_->emitVtables();
     impl_->emitFunctions();
+    impl_->emitPersistence();
     if (!errors_.empty()) return false;
 
     std::string verifyMsg;

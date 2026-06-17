@@ -1,0 +1,22 @@
+program PersistDemo;
+
+// A static persistent field survives across program runs: its value is loaded from
+// a disk store (PersistDemo.ldpstore, next to the working dir) at startup and saved
+// at exit. Run the exe repeatedly: runs = 1, then 2, then 3, ...
+public bundle main {
+    public namespace app {
+        public class Counter {
+            public static persistent mutable int runs = 0;
+            public static method bump() returns void { Counter.runs = Counter.runs + 1; }
+            public static method get() returns int { return Counter.runs; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter.bump();
+                System.IO.println($"runs = {Counter.get()}");
+                return;
+            }
+        }
+    }
+}
