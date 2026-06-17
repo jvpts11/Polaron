@@ -1,0 +1,26 @@
+program MathDemo;
+
+public bundle main {
+    public namespace app {
+        public class MathUtil {
+            public static method gcd(int a, int b) returns int {
+                if (b == 0) { return a; }
+                return MathUtil.gcd(b, a % b);   // Euclid: recursion + modulo
+            }
+            public static method pow(int base, int exp) returns int {
+                mutable int result = 1;
+                for (mutable int i = 0; i < exp; i++) {
+                    result = result * base;
+                }
+                return result;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.println($"gcd(48,18)={MathUtil.gcd(48, 18)} pow(2,10)={MathUtil.pow(2, 10)}");
+                return;   // 6, 1024
+            }
+        }
+    }
+}
