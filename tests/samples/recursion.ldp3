@@ -1,0 +1,23 @@
+program Recursion;
+
+public bundle main {
+    public namespace app {
+        public class MathUtil {
+            public static method fact(int n) returns int {
+                if (n <= 1) { return 1; }
+                return n * MathUtil.fact(n - 1);
+            }
+            public static method fib(int n) returns int {
+                if (n < 2) { return n; }
+                return MathUtil.fib(n - 1) + MathUtil.fib(n - 2);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.println($"fact(5)={MathUtil.fact(5)} fib(10)={MathUtil.fib(10)}");  // 120, 55
+                return;
+            }
+        }
+    }
+}
