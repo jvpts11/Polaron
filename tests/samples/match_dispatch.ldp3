@@ -1,0 +1,34 @@
+program MatchDispatch;
+
+// match as a statement: dynamic-type dispatch + positional destructuring over a
+// sealed hierarchy (exhaustive -> no default needed).
+public bundle main {
+    public namespace app {
+        public sealed abstract class Shape permits Circle, Rect {
+            public abstract method tag() returns int;
+        }
+        public class Circle extends Shape {
+            public int r;
+            public constructor Circle(int r) { this.r = r; }
+            public override method tag() returns int { return 1; }
+        }
+        public class Rect extends Shape {
+            public int w;
+            public int h;
+            public constructor Rect(int w, int h) { this.w = w; this.h = h; }
+            public override method tag() returns int { return 2; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shape* s = new Rect(3, 4) on heap;
+                match (s) {
+                    case Circle(int r) { System.IO.println($"circle {r}"); }
+                    case Rect(int w, int h) { System.IO.println($"rect area {w * h}"); }
+                }
+                delete s;
+                return;
+            }
+        }
+    }
+}
