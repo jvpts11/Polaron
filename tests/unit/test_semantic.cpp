@@ -933,6 +933,14 @@ TEST_CASE("semantic accepts a pointer field and pointer-field assignment") {
         "Node a = new Node(1) on stack; Node b = new Node(2) on stack; a.next = &b;")));
 }
 
+TEST_CASE("semantic accepts chained member access through pointer fields") {
+    CHECK(checkSrc(withClass(
+        "public class Node { public mutable int val; public mutable Node* next;"
+        " public constructor Node(int v) { this.val = v; } }",
+        "Node a = new Node(1) on stack; Node b = new Node(2) on stack;"
+        " a.next = &b; int x = a.next.val;")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

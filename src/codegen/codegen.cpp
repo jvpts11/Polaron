@@ -673,14 +673,17 @@ struct CodeGenerator::Impl {
             }
             return builder.CreateLoad(builder.getPtrTy(), it->second.storage, id->name);
         }
-        // A java-style enum constant used as a receiver (Type.CONST.method()).
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            // A java-style enum constant used as a receiver (Type.CONST.method()).
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 auto jit = javaEnums.find(objId->name);
                 if (jit != javaEnums.end() && locals.find(objId->name) == locals.end()) {
                     return emitEnumConstant(*jit->second, mem->member);
                 }
             }
+            // Chained access (a.b.c): the receiver `a.b` is itself a member. A pointer
+            // member's value is the object pointer; a value member lives at its address.
+            return isRefType(typeName(expr)) ? emitExpr(expr) : emitLValue(expr);
         }
         error("unsupported object expression", expr.loc);
         return nullptr;
