@@ -877,6 +877,12 @@ TEST_CASE("semantic accepts a switch with cases and default") {
         " mutable int x = 1; switch (x) { case 1 { } case 2 { break; } default { } } }")));
 }
 
+TEST_CASE("semantic accepts a do-while loop") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " mutable int n = 0; do { n = n + 1; } while (n < 3); }")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

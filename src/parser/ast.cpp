@@ -195,6 +195,12 @@ void ForeachStmt::dump(std::string& out, int indent) const {
     body.dump(out, indent + 1);
 }
 
+void DoWhileStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "DoWhile");
+    body.dump(out, indent + 1);
+    cond->dump(out, indent + 1);
+}
+
 void DeferStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Defer");
     body.dump(out, indent + 1);

@@ -70,6 +70,7 @@ private:
     bool looksLikeGenericVarDecl() const;
     ast::StmtPtr parseIfStatement();
     ast::StmtPtr parseWhileStatement();
+    ast::StmtPtr parseDoStatement();
     ast::StmtPtr parseForStatement();
     ast::StmtPtr parseMatch();
     ast::StmtPtr parseSwitch();

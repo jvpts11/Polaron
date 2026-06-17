@@ -1269,6 +1269,10 @@ struct CodeGenerator::Impl {
             emitWhile(*ws);
             return;
         }
+        if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&stmt)) {
+            emitDoWhile(*dw);
+            return;
+        }
         if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&stmt)) {
             emitFor(*fs);
             return;
@@ -1566,6 +1570,25 @@ struct CodeGenerator::Impl {
         emitBlock(s.body);
         loopStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(condBB);
+        builder.SetInsertPoint(endBB);
+    }
+
+    // do { body } while (cond); -- the body runs at least once (spec 7).
+    void emitDoWhile(const ast::DoWhileStmt& s) {
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "do.body", fn);
+        llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "do.cond", fn);
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "do.end", fn);
+        builder.CreateBr(bodyBB);
+        builder.SetInsertPoint(bodyBB);
+        loopStack.push_back({endBB, condBB});  // break -> end, continue -> cond
+        emitBlock(s.body);
+        loopStack.pop_back();
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(condBB);
+        builder.SetInsertPoint(condBB);
+        llvm::Value* condV = emitExpr(*s.cond);
+        if (condV == nullptr) return;
+        builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
         builder.SetInsertPoint(endBB);
     }
 

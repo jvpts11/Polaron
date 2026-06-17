@@ -317,6 +317,13 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->body = cloneBlock(x->body, s);
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::DoWhileStmt*>(st)) {
+        auto n = std::make_unique<ast::DoWhileStmt>();
+        n->loc = x->loc;
+        n->body = cloneBlock(x->body, s);
+        n->cond = cloneExpr(x->cond.get(), s);
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::ForStmt*>(st)) {
         auto n = std::make_unique<ast::ForStmt>();
         n->loc = x->loc;
@@ -446,6 +453,7 @@ void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& o
     if (const auto* x = dynamic_cast<const ast::UsingStmt*>(st)) { collectStmt(x->decl.get(), g, out); collectBlock(x->body, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::IfStmt*>(st)) { collectExpr(x->cond.get(), g, out); collectBlock(x->thenBlock, g, out); if (x->elseBlock) collectBlock(*x->elseBlock, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::WhileStmt*>(st)) { collectExpr(x->cond.get(), g, out); collectBlock(x->body, g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::DoWhileStmt*>(st)) { collectBlock(x->body, g, out); collectExpr(x->cond.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ForStmt*>(st)) { collectStmt(x->init.get(), g, out); collectExpr(x->cond.get(), g, out); collectStmt(x->update.get(), g, out); collectBlock(x->body, g, out); return; }
 }
 void collectClass(const ast::ClassDecl& c, const std::set<std::string>& g, InstMap& out) {

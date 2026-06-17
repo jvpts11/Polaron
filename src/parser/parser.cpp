@@ -761,6 +761,9 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwWhile)) {
         return parseWhileStatement();
     }
+    if (check(TokenKind::KwDo)) {
+        return parseDoStatement();
+    }
     if (check(TokenKind::KwFor)) {
         return parseForStatement();
     }
@@ -898,6 +901,19 @@ ast::StmtPtr Parser::parseWhileStatement() {
     s->cond = parseExpression();
     expect(TokenKind::RParen, "')'");
     s->body = parseBlock();
+    return s;
+}
+
+ast::StmtPtr Parser::parseDoStatement() {
+    auto s = std::make_unique<ast::DoWhileStmt>();
+    s->loc = current().loc;
+    expect(TokenKind::KwDo, "'do'");
+    s->body = parseBlock();
+    expect(TokenKind::KwWhile, "'while'");
+    expect(TokenKind::LParen, "'('");
+    s->cond = parseExpression();
+    expect(TokenKind::RParen, "')'");
+    expect(TokenKind::Semicolon, "';'");
     return s;
 }
 

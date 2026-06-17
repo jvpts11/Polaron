@@ -839,6 +839,14 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         analyzeBlock(ws->body);
         return;
     }
+    if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&stmt)) {
+        analyzeBlock(dw->body);
+        const std::string ct = typeOf(*dw->cond);
+        if (!ct.empty() && ct != "boolean") {
+            error("'do-while' condition must be boolean, got '" + ct + "'", dw->loc);
+        }
+        return;
+    }
     if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&stmt)) {
         pushScope();
         if (fs->init) analyzeStatement(*fs->init);

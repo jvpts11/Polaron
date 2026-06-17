@@ -243,6 +243,13 @@ struct WhileStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// do { body } while (cond); -- the body runs at least once (spec 7).
+struct DoWhileStmt : Stmt {
+    Block body;
+    ExprPtr cond;
+    void dump(std::string& out, int indent) const override;
+};
+
 struct ForStmt : Stmt {
     StmtPtr init;    // variable declaration or assignment (may be null)
     ExprPtr cond;
