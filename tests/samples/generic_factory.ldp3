@@ -1,0 +1,23 @@
+program GenericFactory;
+
+public bundle main {
+    public namespace app {
+        public class Box<T> {
+            public mutable T v;
+            public constructor Box(T v) { this.v = v; }
+        }
+        public class Factory {
+            public constructor Factory() {}
+            public method make() returns Box<int>* { return new Box<int>(7) on heap; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Factory f = new Factory() on stack;
+                Box<int>* b = f.make();
+                System.IO.println($"v = {b.v}");   // 7
+                delete b;
+                return;
+            }
+        }
+    }
+}
