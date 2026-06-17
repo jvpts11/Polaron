@@ -1,0 +1,28 @@
+program PersistObject;
+
+// Object reattach (spec 18.2): `chassi` is a persistent instance field. It lives OUTSIDE the
+// object (in a disk-backed global keyed by the variable `c`), so it survives `delete c` and
+// reattaches when a `Car c` is created again. bump() is called repeatedly: chassi counts up
+// 1, 2, 3 across calls (and across runs) even though the Car object is deleted every time.
+public bundle main {
+    public namespace app {
+        public class Car {
+            public persistent mutable int chassi = 0;
+            public constructor Car() {}
+        }
+
+        public class Main {
+            public static method bump() returns int {
+                Car c = new Car() on heap;
+                c.chassi = c.chassi + 1;
+                int r = c.chassi;
+                delete c;
+                return r;
+            }
+            public static method main(string[] args) returns void {
+                System.IO.println($"a={Main.bump()} b={Main.bump()} c={Main.bump()}");
+                return;
+            }
+        }
+    }
+}

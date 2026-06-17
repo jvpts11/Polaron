@@ -211,6 +211,8 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, std::string> staticFieldType;  // "Class.field" -> LDP3 type
     // static persistent fields: (global, type) serialized to/from disk (spec 18, cross-run)
     std::vector<std::pair<llvm::GlobalVariable*, llvm::Type*>> persistentStatics;
+    // class -> its persistent instance field names (spec 18: object reattach via per-variable globals)
+    std::unordered_map<std::string, std::unordered_set<std::string>> persistentInstanceFields;
     std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
@@ -743,6 +745,33 @@ struct CodeGenerator::Impl {
         return staticGlobals.count(key) > 0 ? key : std::string();
     }
 
+    // Object reattach (spec 18): a persistent instance field accessed as `var.field` lives in a
+    // disk-backed global keyed by (function, variable, field) -- NOT inside the object. So it
+    // survives `delete var` and reattaches when a variable of the same name is recreated.
+    // Returns the global, or null if this isn't such an access (via `this`, non-local, or a
+    // non-persistent field), in which case the normal inline field access applies.
+    llvm::GlobalVariable* persistentFieldGlobal(const ast::MemberExpr& mem) {
+        const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem.object.get());
+        if (objId == nullptr || objId->name == "this") return nullptr;
+        auto lit = locals.find(objId->name);
+        if (lit == locals.end()) return nullptr;  // must be a named local variable
+        const std::string cls = baseType(lit->second.type);
+        auto pit = persistentInstanceFields.find(cls);
+        if (pit == persistentInstanceFields.end() || pit->second.count(mem.member) == 0)
+            return nullptr;
+        const std::string key =
+            (currentFn != nullptr ? currentFn->getName().str() : std::string()) + "." +
+            objId->name + "." + mem.member;
+        if (staticGlobals.count(key) == 0) {
+            llvm::Type* lty = llvmType(classes[cls].fieldType[mem.member]);
+            staticGlobals[key] = new llvm::GlobalVariable(
+                module, lty, /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
+                llvm::Constant::getNullValue(lty), key);
+            persistentStatics.push_back({staticGlobals[key], lty});
+        }
+        return staticGlobals[key];
+    }
+
     llvm::Value* emitObjectPtr(const ast::Expr& expr) {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
             if (id->name == "this") return currentThis;
@@ -782,6 +811,9 @@ struct CodeGenerator::Impl {
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
             if (const std::string key = staticFieldKey(*mem); !key.empty()) {
                 return staticGlobals[key];  // the global itself is the address
+            }
+            if (llvm::GlobalVariable* pg = persistentFieldGlobal(*mem)) {
+                return pg;  // persistent instance field: its address is the disk-backed global
             }
             llvm::Value* objPtr = emitObjectPtr(*mem->object);
             if (objPtr == nullptr) return nullptr;
@@ -869,6 +901,9 @@ struct CodeGenerator::Impl {
             if (const std::string key = staticFieldKey(*mem); !key.empty()) {
                 return builder.CreateLoad(llvmType(staticFieldType[key]), staticGlobals[key],
                                           mem->member);
+            }
+            if (llvm::GlobalVariable* pg = persistentFieldGlobal(*mem)) {
+                return builder.CreateLoad(pg->getValueType(), pg, mem->member);
             }
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 if (locals.find(objId->name) == locals.end()) {
@@ -2210,7 +2245,11 @@ struct CodeGenerator::Impl {
                 for (const ast::ClassDecl& cls : ns.classes) {
                     for (const ast::MemberPtr& member : cls.members) {
                         const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
-                        if (f == nullptr || !f->isStatic) continue;
+                        if (f == nullptr) continue;
+                        if (f->isPersistent && !f->isStatic) {
+                            persistentInstanceFields[cls.name].insert(f->name);
+                        }
+                        if (!f->isStatic) continue;
                         const std::string key = cls.name + "." + f->name;
                         const std::string ftype = staticFieldType[key];
                         llvm::Type* lty = llvmType(ftype);
