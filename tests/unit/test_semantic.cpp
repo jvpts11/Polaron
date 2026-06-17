@@ -889,6 +889,12 @@ TEST_CASE("semantic accepts compound assignment") {
         " mutable int x = 1; x += 2; x *= 3; x -= 1; }")));
 }
 
+TEST_CASE("semantic accepts bitwise compound assignment") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " mutable int x = 12; x &= 10; x |= 1; x ^= 3; x <<= 2; x >>= 1; }")));
+}
+
 TEST_CASE("semantic accepts bitwise operators") {
     CHECK(checkSrc(wrapMain(
         "public static method main(string[] args) returns void {"

@@ -1151,6 +1151,11 @@ ast::StmtPtr Parser::parseSimpleStatement() {
     else if (check(TokenKind::StarEq)) compoundOp = "*";
     else if (check(TokenKind::SlashEq)) compoundOp = "/";
     else if (check(TokenKind::PercentEq)) compoundOp = "%";
+    else if (check(TokenKind::AmpEq)) compoundOp = "&";
+    else if (check(TokenKind::PipeEq)) compoundOp = "|";
+    else if (check(TokenKind::CaretEq)) compoundOp = "^";
+    else if (check(TokenKind::ShlEq)) compoundOp = "<<";
+    else if (check(TokenKind::ShrEq)) compoundOp = ">>";
     if (!compoundOp.empty()) {
         const Token op = advance();
         ast::ExprPtr lhs = cloneLValue(expr.get());
