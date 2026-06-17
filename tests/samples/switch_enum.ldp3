@@ -1,0 +1,23 @@
+program SwitchEnum;
+
+public bundle main {
+    public namespace app {
+
+        public enum Dir { NORTH, EAST, SOUTH, WEST }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dir d = Dir.EAST;
+                mutable int code = -1;
+                switch (d) {
+                    case Dir.NORTH { code = 0; break; }
+                    case Dir.EAST { code = 1; break; }
+                    case Dir.SOUTH { code = 2; break; }
+                    default { code = 9; }
+                }
+                System.IO.println($"code = {code}");   // EAST -> 1
+                return;
+            }
+        }
+    }
+}
