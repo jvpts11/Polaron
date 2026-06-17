@@ -1,0 +1,25 @@
+program GenericList;
+
+// A generic linked node: Node<T> with a recursive generic pointer field Node<T>*.
+public bundle main {
+    public namespace app {
+        public class Node<T> {
+            public mutable T val;
+            public mutable Node<T>* next;
+            public constructor Node(T v) { this.val = v; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node<int> a = new Node<int>(1) on stack;
+                Node<int> b = new Node<int>(2) on stack;
+                Node<int> c = new Node<int>(3) on stack;
+                a.next = &b;
+                b.next = &c;
+                int total = a.val + a.next.val + a.next.next.val;
+                System.IO.println($"total = {total}");   // 1 + 2 + 3 = 6
+                return;
+            }
+        }
+    }
+}

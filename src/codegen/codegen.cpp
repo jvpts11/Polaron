@@ -1848,8 +1848,12 @@ struct CodeGenerator::Impl {
                     layout.isUnique = cls.isUnique;
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
+                            // A generic field type must mangle its args (Node<int>* -> Node$int*).
+                            const std::string base = f->type.typeArgs.empty()
+                                ? f->type.name
+                                : ast::mangleGeneric(f->type.name, f->type.typeArgs);
                             layout.ownFields.emplace_back(
-                                f->name, f->type.name + (f->type.isArray ? "[]" : "") +
+                                f->name, base + (f->type.isArray ? "[]" : "") +
                                              (f->type.isPointer ? "*" : "") +
                                              (f->type.isRef ? "&" : ""));
                         } else if (const auto* m =
