@@ -1,0 +1,33 @@
+program Tuple;
+
+public bundle main {
+    public namespace app {
+
+        public class MathX {
+            // Returns several values at once via a tuple (spec 22.5).
+            public static method divmod(int a, int b) returns (int, int) {
+                return (a / b, a % b);
+            }
+
+            // Named tuple components are documentation only.
+            public static method bounds() returns (int low, int high) {
+                return (3, 9);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                (int q, int r) = MathX.divmod(17, 5);
+                System.IO.println($"q={q} r={r}");
+
+                (int lo, int hi) = MathX.bounds();
+                System.IO.println($"lo={lo} hi={hi}");
+
+                // A tuple local initialized from a literal, then destructured.
+                (int x, int y) = (lo + 1, hi + 1);
+                System.IO.println($"x={x} y={y}");
+                return;
+            }
+        }
+    }
+}

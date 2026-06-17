@@ -184,6 +184,12 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         for (const auto& ex : x->exprs) n->exprs.push_back(cloneExpr(ex.get(), s));
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::TupleExpr*>(e)) {
+        auto n = std::make_unique<ast::TupleExpr>();
+        n->loc = x->loc;
+        for (const auto& ex : x->elements) n->elements.push_back(cloneExpr(ex.get(), s));
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::MatchExpr*>(e)) {
         auto n = std::make_unique<ast::MatchExpr>();
         n->loc = x->loc;
@@ -293,6 +299,18 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->isVar = x->isVar;
         n->type = substType(x->type, s);
         n->name = x->name;
+        n->init = cloneExpr(x->init.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::TupleDeclStmt*>(st)) {
+        auto n = std::make_unique<ast::TupleDeclStmt>();
+        n->loc = x->loc;
+        for (const auto& b : x->bindings) {
+            ast::TupleBinding nb;
+            nb.type = substType(b.type, s);
+            nb.name = b.name;
+            n->bindings.push_back(std::move(nb));
+        }
         n->init = cloneExpr(x->init.get(), s);
         return n;
     }
@@ -456,6 +474,7 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
     if (const auto* x = dynamic_cast<const ast::MoveExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::CastExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::InterpStringExpr*>(e)) { for (const auto& ex : x->exprs) collectExpr(ex.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::TupleExpr*>(e)) { for (const auto& ex : x->elements) collectExpr(ex.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::NewArrayExpr*>(e)) { collectExpr(x->size.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::RegionInitExpr*>(e)) { collectExpr(x->size.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::MatchExpr*>(e)) {
@@ -475,6 +494,7 @@ void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& o
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) { collectExpr(x->value.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::DeleteStmt*>(st)) { collectExpr(x->target.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::VarDeclStmt*>(st)) { collectType(x->type, g, out); collectExpr(x->init.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::TupleDeclStmt*>(st)) { for (const auto& b : x->bindings) collectType(b.type, g, out); collectExpr(x->init.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::AssignStmt*>(st)) { collectExpr(x->target.get(), g, out); collectExpr(x->value.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::IncDecStmt*>(st)) { collectExpr(x->target.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::DeferStmt*>(st)) { collectBlock(x->body, g, out); return; }

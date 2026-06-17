@@ -756,6 +756,25 @@ ast::TypeRef Parser::parseTypeRef() {
     ast::TypeRef t;
     const Token& tok = current();
     t.loc = tok.loc;
+    // Tuple type (spec 22.5): `(T0, T1, ...)`, with optional component names
+    // (e.g. `(int quotient, int remainder)`). The canonical type string is the
+    // comma-joined component types in parentheses, e.g. "(int,int)". The names
+    // are documentation only -- bindings come from the destructuring site.
+    if (tok.kind == TokenKind::LParen) {
+        advance();  // '('
+        std::string canonical = "(";
+        std::size_t count = 0;
+        do {
+            ast::TypeRef elem = parseTypeRef();
+            // An optional component name follows the type.
+            if (check(TokenKind::Identifier)) advance();
+            canonical += (count++ ? "," : "") + ast::canonicalType(elem);
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::RParen, "')' to close a tuple type");
+        if (count < 2) fail("a tuple type needs at least two components", t.loc);
+        t.name = canonical + ")";
+        return t;  // tuple components carry their own markers; no outer [] / * / &
+    }
     if (isTypeKeyword(tok.kind) || tok.kind == TokenKind::Identifier) {
         t.name = tok.lexeme;
         advance();
@@ -889,6 +908,10 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwUsing)) {
         return parseUsing();
     }
+    // Tuple destructuring `(int q, int r) = expr;` (spec 22.5).
+    if (looksLikeTupleDestructuring()) {
+        return parseTupleDecl();
+    }
     // A class-typed local: `ClassName name`, `ClassName* p`, `ClassName& r`,
     // or `ClassName[] a` (the receiver of a member access starts with '.', so it
     // never matches these shapes).
@@ -956,6 +979,69 @@ bool Parser::looksLikeGenericCall() const {
         ++i;
     }
     return peek(i + 1).kind == TokenKind::LParen;
+}
+
+// Distinguishes a tuple destructuring `(int q, int r) = expr;` (spec 22.5) from
+// an ordinary parenthesized/tuple expression statement. Scans the parenthesized
+// list and requires each component to be `type name` (two-plus components) and
+// the closing `)` to be immediately followed by `=`. A tuple *expression* like
+// `(a, b);` has bare identifiers (no per-component name) and no trailing `=`.
+bool Parser::looksLikeTupleDestructuring() const {
+    if (!check(TokenKind::LParen)) return false;
+    int i = 1;
+    int comps = 0;
+    while (true) {
+        // One component: a type, then a binding name.
+        const TokenKind tk = peek(i).kind;
+        if (tk != TokenKind::Identifier && !isTypeKeyword(tk)) return false;
+        ++i;
+        // Optional generic arguments `<...>` (only type names / commas inside).
+        if (peek(i).kind == TokenKind::Lt) {
+            int depth = 1;
+            ++i;
+            while (depth > 0) {
+                const TokenKind k = peek(i).kind;
+                if (k == TokenKind::EndOfFile) return false;
+                if (k == TokenKind::Lt) ++depth;
+                else if (k == TokenKind::Gt) --depth;
+                else if (k != TokenKind::Identifier && k != TokenKind::Comma && !isTypeKeyword(k))
+                    return false;
+                ++i;
+            }
+        }
+        // Optional `[]`, then optional `*` / `&`.
+        if (peek(i).kind == TokenKind::LBracket && peek(i + 1).kind == TokenKind::RBracket) i += 2;
+        if (peek(i).kind == TokenKind::Star || peek(i).kind == TokenKind::Amp) ++i;
+        // The binding name.
+        if (peek(i).kind != TokenKind::Identifier) return false;
+        ++i;
+        ++comps;
+        if (peek(i).kind == TokenKind::Comma) {
+            ++i;
+            continue;
+        }
+        break;
+    }
+    return comps >= 2 && peek(i).kind == TokenKind::RParen &&
+           peek(i + 1).kind == TokenKind::Assign;
+}
+
+// (T0 x0, T1 x1, ...) = expr;
+ast::StmtPtr Parser::parseTupleDecl() {
+    auto decl = std::make_unique<ast::TupleDeclStmt>();
+    decl->loc = current().loc;
+    expect(TokenKind::LParen, "'('");
+    do {
+        ast::TupleBinding b;
+        b.type = parseTypeRef();
+        b.name = expect(TokenKind::Identifier, "a binding name").lexeme;
+        decl->bindings.push_back(std::move(b));
+    } while (match(TokenKind::Comma));
+    expect(TokenKind::RParen, "')'");
+    expect(TokenKind::Assign, "'='");
+    decl->init = parseExpression();
+    expect(TokenKind::Semicolon, "';'");
+    return decl;
 }
 
 ast::StmtPtr Parser::parseIfStatement() {
@@ -1585,8 +1671,21 @@ ast::ExprPtr Parser::parsePrimary() {
             // `itself.allocate(...)` region initializer (spec 17.2-17.3, 17.9).
             return parseRegionInit();
         case TokenKind::LParen: {
+            const SourceLocation lp = tok.loc;
             advance();
             ast::ExprPtr inner = parseExpression();
+            // A comma turns `(a, b, ...)` into a tuple literal (spec 22.5);
+            // otherwise it is an ordinary parenthesized expression.
+            if (check(TokenKind::Comma)) {
+                auto tup = std::make_unique<ast::TupleExpr>();
+                tup->loc = lp;
+                tup->elements.push_back(std::move(inner));
+                while (match(TokenKind::Comma)) {
+                    tup->elements.push_back(parseExpression());
+                }
+                expect(TokenKind::RParen, "')' to close a tuple literal");
+                return tup;
+            }
             expect(TokenKind::RParen, "')'");
             return inner;
         }

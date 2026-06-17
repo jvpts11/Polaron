@@ -819,6 +819,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=total = 6"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # tuples (spec 22.5): multi-value return + destructuring + a tuple literal.
+        add_test(NAME codegen_tuple_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tuple.ldp3"
+            "-DEXPECTED=q=3 r=2 lo=3 hi=9 x=4 y=10"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

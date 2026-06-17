@@ -112,6 +112,33 @@ unsigned byteSizeOf(const std::string& t) {
 bool isRefType(const std::string& t) {
     return !t.empty() && (t.back() == '*' || t.back() == '&');
 }
+
+// Tuple types are spelled "(T0,T1,...)" (spec 22.5). They lower to an anonymous
+// LLVM struct returned/passed by value.
+bool isTupleType(const std::string& t) {
+    return t.size() >= 2 && t.front() == '(' && t.back() == ')';
+}
+// Splits tuple components, honoring nested parentheses so commas inside a nested
+// tuple don't split the outer one.
+std::vector<std::string> tupleElems(const std::string& t) {
+    std::vector<std::string> out;
+    if (!isTupleType(t)) return out;
+    int depth = 0;
+    std::string cur;
+    for (std::size_t i = 1; i + 1 < t.size(); ++i) {
+        const char c = t[i];
+        if (c == '(') ++depth;
+        if (c == ')') --depth;
+        if (c == ',' && depth == 0) {
+            out.push_back(cur);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
 std::string baseType(const std::string& t) {
     return isRefType(t) ? t.substr(0, t.size() - 1) : t;
 }
@@ -169,6 +196,7 @@ struct CodeGenerator::Impl {
     llvm::IRBuilder<> builder;
 
     std::unordered_map<std::string, ClassLayout> classes;
+    std::unordered_map<std::string, llvm::StructType*> tupleTypes;  // "(int,int)" -> { i32, i32 }
     // Global per-method-name vtable slots. Every distinct virtual method name gets
     // one stable index, and every polymorphic class's vtable is laid out by these
     // indices. Because LDP3 has no method overloading (unique name per method), a
@@ -203,10 +231,23 @@ struct CodeGenerator::Impl {
         errors.push_back(CodegenError{std::move(message), loc});
     }
 
+    // Anonymous LLVM struct for a tuple type "(T0,T1,...)", cached so the same
+    // tuple type always maps to the same struct (LLVM identifies them by shape).
+    llvm::StructType* tupleStructType(const std::string& t) {
+        auto it = tupleTypes.find(t);
+        if (it != tupleTypes.end()) return it->second;
+        std::vector<llvm::Type*> elems;
+        for (const std::string& e : tupleElems(t)) elems.push_back(llvmType(e));
+        llvm::StructType* st = llvm::StructType::get(context, elems);
+        tupleTypes[t] = st;
+        return st;
+    }
+
     // float/float32 -> f32, double/float64 -> f64; class/array/pointer/ref ->
-    // opaque pointer; int/boolean/char/enum -> iN.
+    // opaque pointer; int/boolean/char/enum -> iN; tuple -> anonymous struct.
     llvm::Type* llvmType(const std::string& t) {
         if (t == "void") return builder.getVoidTy();
+        if (isTupleType(t)) return tupleStructType(t);
         if (isFloatType(t)) return isF32(t) ? builder.getFloatTy() : builder.getDoubleTy();
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
@@ -426,6 +467,12 @@ struct CodeGenerator::Impl {
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
             const std::int64_t v = parseIntLiteral(n->text);
             return (v >= INT32_MIN && v <= INT32_MAX) ? "int" : "int64";
+        }
+        if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
+            std::string s = "(";
+            for (std::size_t i = 0; i < tup->elements.size(); ++i)
+                s += (i ? "," : "") + typeName(*tup->elements[i]);
+            return s + ")";
         }
         if (dynamic_cast<const ast::FloatLiteralExpr*>(&expr) != nullptr) return "double";
         if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
@@ -789,6 +836,20 @@ struct CodeGenerator::Impl {
         }
         if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&expr)) {
             return builder.getInt32(b->value ? 1 : 0);
+        }
+        if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
+            // Build the anonymous struct value component by component.
+            const std::string tt = typeName(*tup);
+            const std::vector<std::string> comps = tupleElems(tt);
+            llvm::StructType* st = tupleStructType(tt);
+            llvm::Value* agg = llvm::UndefValue::get(st);
+            for (std::size_t i = 0; i < tup->elements.size(); ++i) {
+                llvm::Value* v = emitExpr(*tup->elements[i]);
+                if (v == nullptr) return nullptr;
+                v = coerce(v, typeName(*tup->elements[i]), comps[i]);
+                agg = builder.CreateInsertValue(agg, v, {static_cast<unsigned>(i)});
+            }
+            return agg;
         }
         if (const auto* me = dynamic_cast<const ast::MatchExpr*>(&expr)) {
             return emitMatchExpr(*me);
@@ -1420,6 +1481,21 @@ struct CodeGenerator::Impl {
             emitSwitch(*sw);
             return;
         }
+        if (const auto* td = dynamic_cast<const ast::TupleDeclStmt*>(&stmt)) {
+            // Evaluate the tuple value once, then bind each component to a local.
+            llvm::Value* agg = emitExpr(*td->init);
+            if (agg == nullptr) return;
+            const std::vector<std::string> comps = tupleElems(typeName(*td->init));
+            for (std::size_t i = 0; i < td->bindings.size(); ++i) {
+                const std::string bt = typeRefName(td->bindings[i].type);
+                llvm::Value* v = builder.CreateExtractValue(agg, {static_cast<unsigned>(i)});
+                if (i < comps.size()) v = coerce(v, comps[i], bt);
+                llvm::Value* slot = createEntryAlloca(td->bindings[i].name, llvmType(bt));
+                builder.CreateStore(v, slot);
+                locals[td->bindings[i].name] = LocalSlot{slot, bt};
+            }
+            return;
+        }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
             const std::string declType = vd->isVar ? typeName(*vd->init) : typeRefName(vd->type);
             llvm::Value* initV = emitExpr(*vd->init);
@@ -1560,6 +1636,8 @@ struct CodeGenerator::Impl {
                 builder.CreateRetVoid();
             } else if (currentRetType->isDoubleTy()) {
                 builder.CreateRet(llvm::ConstantFP::get(currentRetType, 0.0));
+            } else if (currentRetType->isStructTy()) {
+                builder.CreateRet(llvm::UndefValue::get(currentRetType));  // tuple
             } else {
                 builder.CreateRet(builder.getInt32(0));
             }
@@ -2242,6 +2320,8 @@ struct CodeGenerator::Impl {
                 builder.CreateRetVoid();
             } else if (retType->isDoubleTy()) {
                 builder.CreateRet(llvm::ConstantFP::get(retType, 0.0));
+            } else if (retType->isStructTy()) {
+                builder.CreateRet(llvm::UndefValue::get(retType));  // tuple: no implicit default
             } else {
                 builder.CreateRet(builder.getInt32(0));
             }

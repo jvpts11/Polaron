@@ -69,6 +69,8 @@ private:
     ast::StmtPtr parseStatement();
     bool looksLikeGenericVarDecl() const;
     bool looksLikeGenericCall() const;
+    bool looksLikeTupleDestructuring() const;
+    ast::StmtPtr parseTupleDecl();
     ast::StmtPtr parseIfStatement();
     ast::StmtPtr parseWhileStatement();
     ast::StmtPtr parseDoStatement();

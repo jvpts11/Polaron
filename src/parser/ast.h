@@ -33,6 +33,14 @@ struct TypeRef {
     SourceLocation loc;
 };
 
+// Canonical type string of a TypeRef, matching the form sema/codegen key on:
+// generic args mangled into the name, then [] / * / & markers (e.g. "Box$int*").
+// A tuple type already carries its full spelling in `name` (e.g. "(int,int)").
+inline std::string canonicalType(const TypeRef& t) {
+    return mangleGeneric(t.name, t.typeArgs) + (t.isArray ? "[]" : "") +
+           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
+}
+
 // ---- Expressions ----
 struct Expr {
     SourceLocation loc;
@@ -169,6 +177,13 @@ struct InterpStringExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// (e0, e1, ...) -- a tuple literal (spec 22.5). Lowered to an anonymous LLVM
+// struct value; chiefly used to return several values from a method at once.
+struct TupleExpr : Expr {
+    std::vector<ExprPtr> elements;  // two or more components
+    void dump(std::string& out, int indent) const override;
+};
+
 // ---- Statements ----
 struct Stmt {
     SourceLocation loc;
@@ -204,6 +219,18 @@ struct VarDeclStmt : Stmt {
     TypeRef type;        // used when !isVar
     std::string name;
     ExprPtr init;        // M2: an initializer is required
+    void dump(std::string& out, int indent) const override;
+};
+
+// (T0 x0, T1 x1, ...) = expr; -- destructures a tuple into fresh locals
+// (spec 22.5). Each binding declares one local from the matching component.
+struct TupleBinding {
+    TypeRef type;
+    std::string name;
+};
+struct TupleDeclStmt : Stmt {
+    std::vector<TupleBinding> bindings;  // two or more, left to right
+    ExprPtr init;
     void dump(std::string& out, int indent) const override;
 };
 

@@ -116,6 +116,11 @@ void InterpStringExpr::dump(std::string& out, int indent) const {
     if (!literals.empty()) line(out, indent + 1, "lit \"" + literals.back() + "\"");
 }
 
+void TupleExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Tuple");
+    for (const auto& e : elements) e->dump(out, indent + 1);
+}
+
 void ExprStmt::dump(std::string& out, int indent) const {
     line(out, indent, "ExprStmt");
     expr->dump(out, indent + 1);
@@ -230,6 +235,14 @@ void VarDeclStmt::dump(std::string& out, int indent) const {
     if (isMutable) head += " mutable";
     head += isVar ? " var" : (" : " + typeText(type));
     line(out, indent, head);
+    init->dump(out, indent + 1);
+}
+
+void TupleDeclStmt::dump(std::string& out, int indent) const {
+    std::string head = "TupleDecl (";
+    for (std::size_t i = 0; i < bindings.size(); ++i)
+        head += (i ? ", " : "") + typeText(bindings[i].type) + " " + bindings[i].name;
+    line(out, indent, head + ")");
     init->dump(out, indent + 1);
 }
 

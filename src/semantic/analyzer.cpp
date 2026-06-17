@@ -41,6 +41,32 @@ unsigned intBits(const std::string& t) {
     return 32;
 }
 bool isNumeric(const std::string& t) { return isIntName(t) || isFloatType(t); }
+
+// Tuple types are spelled "(T0,T1,...)" (spec 22.5).
+bool isTupleType(const std::string& t) {
+    return t.size() >= 2 && t.front() == '(' && t.back() == ')';
+}
+// Splits the components of a tuple type, honoring nested parentheses (a
+// component may itself be a tuple) so commas inside nested tuples don't split.
+std::vector<std::string> tupleElems(const std::string& t) {
+    std::vector<std::string> out;
+    if (!isTupleType(t)) return out;
+    int depth = 0;
+    std::string cur;
+    for (std::size_t i = 1; i + 1 < t.size(); ++i) {
+        const char c = t[i];
+        if (c == '(') ++depth;
+        if (c == ')') --depth;
+        if (c == ',' && depth == 0) {
+            out.push_back(cur);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
 }  // namespace
 
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
@@ -777,6 +803,34 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (sw->defaultBody) analyzeBlock(*sw->defaultBody);
         return;
     }
+    if (const auto* td = dynamic_cast<const ast::TupleDeclStmt*>(&stmt)) {
+        const std::string initType = typeOf(*td->init);
+        if (!initType.empty() && !isTupleType(initType)) {
+            error("cannot destructure a non-tuple value of type '" + initType + "'", td->loc);
+        }
+        const std::vector<std::string> comps = tupleElems(initType);
+        if (!initType.empty() && comps.size() != td->bindings.size()) {
+            error("tuple destructuring expects " + std::to_string(comps.size()) +
+                      " bindings but found " + std::to_string(td->bindings.size()),
+                  td->loc);
+        }
+        for (std::size_t i = 0; i < td->bindings.size(); ++i) {
+            const std::string bt = typeRefStr(td->bindings[i].type);
+            checkTypeAccessible(bt, td->loc);
+            if (i < comps.size() && !comps[i].empty() && !isSubtype(comps[i], bt)) {
+                error("cannot bind tuple component " + std::to_string(i) + " of type '" +
+                          comps[i] + "' to '" + bt + "'",
+                      td->loc);
+            }
+            if (lookupLocal(td->bindings[i].name) != nullptr) {
+                error("redeclaration or shadowing of variable '" + td->bindings[i].name + "'",
+                      td->loc);
+            } else {
+                declareLocal(td->bindings[i].name, LocalVar{bt, false});
+            }
+        }
+        return;
+    }
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
         const std::string initType = typeOf(*vd->init);
         const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);
@@ -930,6 +984,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
     if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
     if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
+
+    if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
+        // A tuple literal's type is "(c0,c1,...)" of its components' types.
+        std::string s = "(";
+        for (std::size_t i = 0; i < tup->elements.size(); ++i) {
+            const std::string et = typeOf(*tup->elements[i]);
+            if (et.empty()) return "";
+            s += (i ? "," : "") + et;
+        }
+        return s + ")";
+    }
 
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
         if (id->name == "this") {

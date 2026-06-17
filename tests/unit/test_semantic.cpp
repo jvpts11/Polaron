@@ -1109,3 +1109,36 @@ TEST_CASE("semantic rejects a field typed from another namespace without an impo
         " public namespace app { public class Holder { private Widget w; }"
         " public class Main { public static method main(string[] args) returns void {} } } }"));
 }
+
+namespace {
+// A helper class returning a tuple, used by the tuple destructuring tests (spec 22.5).
+const std::string kMathX =
+    "public class MathX {"
+    " public static method divmod(int a, int b) returns (int, int) { return (a / b, a % b); } }";
+}  // namespace
+
+TEST_CASE("semantic accepts a tuple return and destructuring") {
+    CHECK(checkSrc(withClass(kMathX, "(int q, int r) = MathX.divmod(17, 5);")));
+}
+
+TEST_CASE("semantic accepts a tuple literal initializer destructured into locals") {
+    CHECK(checkSrc(withClass(kMathX, "(int x, int y) = (1, 2);")));
+}
+
+TEST_CASE("semantic binds tuple components as usable locals") {
+    CHECK(checkSrc(withClass(
+        kMathX, "(int q, int r) = MathX.divmod(9, 4); System.IO.println($\"{q} {r}\");")));
+}
+
+TEST_CASE("semantic rejects a tuple destructuring with the wrong arity") {
+    CHECK_FALSE(checkSrc(withClass(kMathX, "(int q, int r, int s) = MathX.divmod(9, 4);")));
+}
+
+TEST_CASE("semantic rejects destructuring a non-tuple value") {
+    CHECK_FALSE(checkSrc(withClass(kMathX, "(int x, int y) = 42;")));
+}
+
+TEST_CASE("semantic rejects a tuple component bound to an incompatible type") {
+    // The components are int; a boolean binding can't accept an int (no narrowing).
+    CHECK_FALSE(checkSrc(withClass(kMathX, "(boolean q, int r) = MathX.divmod(9, 4);")));
+}
