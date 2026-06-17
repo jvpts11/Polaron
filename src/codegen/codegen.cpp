@@ -918,6 +918,11 @@ struct CodeGenerator::Impl {
         if (op == "*") return builder.CreateMul(l, r);
         if (op == "/") return uns ? builder.CreateUDiv(l, r) : builder.CreateSDiv(l, r);
         if (op == "%") return uns ? builder.CreateURem(l, r) : builder.CreateSRem(l, r);
+        if (op == "&") return builder.CreateAnd(l, r);
+        if (op == "|") return builder.CreateOr(l, r);
+        if (op == "^") return builder.CreateXor(l, r);
+        if (op == "<<") return builder.CreateShl(l, r);
+        if (op == ">>") return uns ? builder.CreateLShr(l, r) : builder.CreateAShr(l, r);
 
         llvm::Value* cmp = nullptr;
         if (op == "==") cmp = builder.CreateICmpEQ(l, r);

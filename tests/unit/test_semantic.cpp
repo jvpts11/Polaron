@@ -889,6 +889,17 @@ TEST_CASE("semantic accepts compound assignment") {
         " mutable int x = 1; x += 2; x *= 3; x -= 1; }")));
 }
 
+TEST_CASE("semantic accepts bitwise operators") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " int a = 12; int b = 10; int c = (a & b) | (a ^ b); int d = a << 2 >> 1; }")));
+}
+
+TEST_CASE("semantic rejects bitwise on a float operand") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { double f = 1.5; int c = f & 3; }")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

@@ -107,21 +107,30 @@ int binaryPrec(TokenKind k) {
             return 1;
         case TokenKind::AmpAmp:
             return 2;
+        case TokenKind::Pipe:  // bitwise or
+            return 3;
+        case TokenKind::Caret:  // bitwise xor
+            return 4;
+        case TokenKind::Amp:  // bitwise and
+            return 5;
         case TokenKind::EqEq:
         case TokenKind::BangEq:
-            return 3;
+            return 6;
         case TokenKind::Lt:
         case TokenKind::Gt:
         case TokenKind::LtEq:
         case TokenKind::GtEq:
-            return 4;
+            return 7;
+        case TokenKind::Shl:
+        case TokenKind::Shr:
+            return 8;
         case TokenKind::Plus:
         case TokenKind::Minus:
-            return 5;
+            return 9;
         case TokenKind::Star:
         case TokenKind::Slash:
         case TokenKind::Percent:
-            return 6;
+            return 10;
         default:
             return 0;
     }

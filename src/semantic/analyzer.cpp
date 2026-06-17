@@ -1036,6 +1036,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (isFloatType(lt) || isFloatType(rt)) return "double";
             return intBits(lt) >= intBits(rt) ? lt : rt;  // wider integer wins
         }
+        if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
+            if (isFloatType(lt) || isFloatType(rt) || (!lt.empty() && !isNumeric(lt)) ||
+                (!rt.empty() && !isNumeric(rt))) {
+                error("operator '" + op + "' requires integer operands", bin->loc);
+            }
+            return intBits(lt) >= intBits(rt) ? lt : rt;
+        }
         if (op == "<" || op == ">" || op == "<=" || op == ">=") {
             if ((!lt.empty() && !isNumeric(lt)) || (!rt.empty() && !isNumeric(rt))) {
                 error("operator '" + op + "' requires numeric operands", bin->loc);

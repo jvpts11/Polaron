@@ -1,0 +1,18 @@
+program Bitwise;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = 12;   // 1100
+                int b = 10;   // 1010
+                System.IO.println($"and = {a & b}");    // 8  (1000)
+                System.IO.println($"or = {a | b}");     // 14 (1110)
+                System.IO.println($"xor = {a ^ b}");    // 6  (0110)
+                System.IO.println($"shl = {a << 2}");   // 48
+                System.IO.println($"shr = {a >> 1}");   // 6
+                return;
+            }
+        }
+    }
+}
