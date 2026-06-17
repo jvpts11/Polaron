@@ -32,6 +32,7 @@ struct LocalVar {
 struct FieldInfo {
     std::string type;
     bool isMutable = false;
+    bool isStatic = false;
 };
 struct MethodInfo {
     std::string returnType;

@@ -257,7 +257,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 info.isUnique = cls.isUnique;
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
-                        info.fields[f->name] = FieldInfo{typeRefStr(f->type), f->isMutable};
+                        info.fields[f->name] = FieldInfo{typeRefStr(f->type), f->isMutable,
+                                                         f->isStatic};
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         info.methods[m->name] = MethodInfo{typeRefStr(m->returnType), m->isStatic,
                                                            m->isAbstract, m->isProperty};
@@ -553,6 +554,29 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         return;
     }
     if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&target)) {
+        // Static field target: ClassName.field (receiver names a class, not a variable).
+        if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+            if (objId->name != "this" && lookupLocal(objId->name) == nullptr &&
+                lookupClass(objId->name) != nullptr) {
+                const FieldInfo* f = findField(objId->name, mem->member);
+                if (f == nullptr || !f->isStatic) {
+                    error("class '" + objId->name + "' has no static field '" + mem->member + "'",
+                          loc);
+                    return;
+                }
+                if (!f->isMutable) {
+                    error("cannot assign to immutable static field '" + mem->member +
+                              "' (declare it 'mutable')",
+                          loc);
+                }
+                if (!valueType.empty() && !isSubtype(valueType, f->type)) {
+                    error("cannot assign a value of type '" + valueType + "' to static field '" +
+                              mem->member + "' of type '" + f->type + "'",
+                          loc);
+                }
+                return;
+            }
+        }
         const std::string objType = typeOf(*mem->object);
         if (objType.empty()) return;
         const FieldInfo* f = findField(objType, mem->member);
@@ -1259,7 +1283,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // Enum constant access: EnumName.CONSTANT (when the receiver names an enum,
         // not a variable).
         if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
-            if (lookupLocal(objId->name) == nullptr) {
+            if (objId->name != "this" && lookupLocal(objId->name) == nullptr) {
                 auto eit = enums_.find(objId->name);
                 if (eit != enums_.end()) {
                     if (std::find(eit->second.begin(), eit->second.end(), mem->member) ==
@@ -1268,6 +1292,22 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                               mem->loc);
                     }
                     return objId->name;
+                }
+                // Static field access: ClassName.field (when the receiver names a class).
+                if (const ClassInfo* sc = lookupClass(objId->name)) {
+                    const FieldInfo* f = findField(objId->name, mem->member);
+                    if (f == nullptr) {
+                        error("class '" + objId->name + "' has no static field '" + mem->member + "'",
+                              mem->loc);
+                        return "";
+                    }
+                    if (!f->isStatic) {
+                        error("field '" + mem->member +
+                                  "' is not static; access it on an instance",
+                              mem->loc);
+                        return "";
+                    }
+                    return f->type;
                 }
             }
         }

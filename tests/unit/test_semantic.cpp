@@ -210,6 +210,24 @@ TEST_CASE("semantic rejects an instance method called statically") {
     CHECK_FALSE(checkSrc(withClass(kCounter, "int r = Counter.get();")));
 }
 
+TEST_CASE("semantic accepts reading and writing a static field as ClassName.field") {
+    CHECK(checkSrc(withClass(
+        "public class Counter { private static mutable int count;"
+        " public static method inc() returns void { Counter.count = Counter.count + 1; }"
+        " public static method get() returns int { return Counter.count; } }",
+        "Counter.inc(); int n = Counter.get();")));
+}
+
+TEST_CASE("semantic rejects assigning to a non-mutable static field") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class Cfg { private static int limit; }", "Cfg.limit = 5;")));
+}
+
+TEST_CASE("semantic rejects accessing a non-static field as ClassName.field") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class Box { private mutable int v; }", "int n = Box.v;")));
+}
+
 TEST_CASE("semantic rejects a redeclared class") {
     CHECK_FALSE(checkSrc(
         "program P; public bundle b { public namespace n {"

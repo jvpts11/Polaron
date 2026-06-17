@@ -172,6 +172,8 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, std::vector<std::string>> enums;  // name -> constants (ordinals)
     std::unordered_map<std::string, const ast::EnumDecl*> javaEnums;  // java-style enum decls
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
+    std::unordered_map<std::string, llvm::GlobalVariable*> staticGlobals;  // "Class.field" -> global
+    std::unordered_map<std::string, std::string> staticFieldType;  // "Class.field" -> LDP3 type
     std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
@@ -490,6 +492,9 @@ struct CodeGenerator::Impl {
         }
         if (dynamic_cast<const ast::RegionInitExpr*>(&expr) != nullptr) return "region";
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            if (const std::string key = staticFieldKey(*mem); !key.empty()) {
+                return staticFieldType[key];
+            }
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 if (locals.find(objId->name) == locals.end() && enums.count(objId->name) > 0) {
                     return objId->name;  // EnumName.CONSTANT -> the enum type
@@ -665,6 +670,16 @@ struct CodeGenerator::Impl {
     }
 
     // Pointer to the struct of an object expression (`this` or a class variable).
+    // If `mem` is a static-field reference `ClassName.field` (the receiver names a
+    // class, not a local), returns its mangled key "Class.field"; otherwise "".
+    std::string staticFieldKey(const ast::MemberExpr& mem) {
+        const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem.object.get());
+        if (objId == nullptr || objId->name == "this") return "";
+        if (locals.find(objId->name) != locals.end()) return "";
+        const std::string key = objId->name + "." + mem.member;
+        return staticGlobals.count(key) > 0 ? key : std::string();
+    }
+
     llvm::Value* emitObjectPtr(const ast::Expr& expr) {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
             if (id->name == "this") return currentThis;
@@ -702,6 +717,9 @@ struct CodeGenerator::Impl {
             return it->second.storage;
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            if (const std::string key = staticFieldKey(*mem); !key.empty()) {
+                return staticGlobals[key];  // the global itself is the address
+            }
             llvm::Value* objPtr = emitObjectPtr(*mem->object);
             if (objPtr == nullptr) return nullptr;
             auto cit = classes.find(baseType(typeName(*mem->object)));  // see through T* / T&
@@ -771,6 +789,10 @@ struct CodeGenerator::Impl {
             return builder.CreateLoad(llvmType(it->second.type), it->second.storage, id->name);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            if (const std::string key = staticFieldKey(*mem); !key.empty()) {
+                return builder.CreateLoad(llvmType(staticFieldType[key]), staticGlobals[key],
+                                          mem->member);
+            }
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 if (locals.find(objId->name) == locals.end()) {
                     // Java-style enum constant -> materialize the instance.
@@ -1852,10 +1874,16 @@ struct CodeGenerator::Impl {
                             const std::string base = f->type.typeArgs.empty()
                                 ? f->type.name
                                 : ast::mangleGeneric(f->type.name, f->type.typeArgs);
-                            layout.ownFields.emplace_back(
-                                f->name, base + (f->type.isArray ? "[]" : "") +
-                                             (f->type.isPointer ? "*" : "") +
-                                             (f->type.isRef ? "&" : ""));
+                            const std::string ftype = base + (f->type.isArray ? "[]" : "") +
+                                                      (f->type.isPointer ? "*" : "") +
+                                                      (f->type.isRef ? "&" : "");
+                            // Static fields live in a single LLVM global, not in each
+                            // instance, so they are excluded from the struct layout.
+                            if (f->isStatic) {
+                                staticFieldType[cls.name + "." + f->name] = ftype;
+                            } else {
+                                layout.ownFields.emplace_back(f->name, ftype);
+                            }
                         } else if (const auto* m =
                                        dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             layout.methodReturnType[m->name] = m->returnType.name;
@@ -1915,6 +1943,87 @@ struct CodeGenerator::Impl {
                         fieldTypes.push_back(llvmType(ftype));
                     }
                     layout.type->setBody(fieldTypes);
+                }
+            }
+        }
+    }
+
+    // Folds a simple literal initializer to an LLVM constant of `llvmType(type)`.
+    // Returns nullptr when the expression is not a compile-time literal we handle
+    // here (the caller then zero-initializes the global).
+    llvm::Constant* constFold(const ast::Expr& expr, const std::string& type) {
+        llvm::Type* lty = llvmType(type);
+        if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
+            if (isFloatType(type)) {
+                return llvm::ConstantFP::get(lty, static_cast<double>(parseIntLiteral(n->text)));
+            }
+            return llvm::ConstantInt::get(lty, static_cast<std::uint64_t>(parseIntLiteral(n->text)),
+                                          /*isSigned=*/true);
+        }
+        if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(&expr)) {
+            const std::string bytes = resolveEscapes(c->value);
+            const unsigned char v = bytes.empty() ? 0 : static_cast<unsigned char>(bytes[0]);
+            return llvm::ConstantInt::get(lty, v);
+        }
+        if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&expr)) {
+            return llvm::ConstantInt::get(lty, b->value ? 1 : 0);
+        }
+        if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(&expr)) {
+            std::string s;
+            for (char ch : f->text) {
+                if (ch != '_' && ch != 'f' && ch != 'F') s += ch;
+            }
+            double val = 0.0;
+            try {
+                val = std::stod(s);
+            } catch (...) {
+            }
+            return isFloatType(type) ? llvm::ConstantFP::get(lty, val) : nullptr;
+        }
+        if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&expr); u != nullptr && u->op == "-") {
+            if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(u->operand.get())) {
+                const std::int64_t v = -parseIntLiteral(n->text);
+                if (isFloatType(type)) {
+                    return llvm::ConstantFP::get(lty, static_cast<double>(v));
+                }
+                return llvm::ConstantInt::get(lty, static_cast<std::uint64_t>(v), /*isSigned=*/true);
+            }
+            if (const auto* fnode = dynamic_cast<const ast::FloatLiteralExpr*>(u->operand.get());
+                fnode != nullptr && isFloatType(type)) {
+                std::string s;
+                for (char ch : fnode->text) {
+                    if (ch != '_' && ch != 'f' && ch != 'F') s += ch;
+                }
+                double val = 0.0;
+                try {
+                    val = std::stod(s);
+                } catch (...) {
+                }
+                return llvm::ConstantFP::get(lty, -val);
+            }
+        }
+        return nullptr;
+    }
+
+    // Emits one zero-initialized (or literal-initialized) LLVM global per static
+    // field, named "Class.field". Static fields are class-wide, not per instance.
+    void emitStaticFields() {
+        for (const ast::Bundle& bundle : program.bundles) {
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ClassDecl& cls : ns.classes) {
+                    for (const ast::MemberPtr& member : cls.members) {
+                        const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
+                        if (f == nullptr || !f->isStatic) continue;
+                        const std::string key = cls.name + "." + f->name;
+                        const std::string ftype = staticFieldType[key];
+                        llvm::Type* lty = llvmType(ftype);
+                        llvm::Constant* init =
+                            f->init ? constFold(*f->init, ftype) : nullptr;
+                        if (init == nullptr) init = llvm::Constant::getNullValue(lty);
+                        staticGlobals[key] =
+                            new llvm::GlobalVariable(module, lty, /*isConstant=*/false,
+                                                     llvm::GlobalValue::PrivateLinkage, init, key);
+                    }
                 }
             }
         }
@@ -2164,6 +2273,7 @@ bool CodeGenerator::generate() {
         return false;
     }
     impl_->declareClasses();
+    impl_->emitStaticFields();
     impl_->declareFunctions();
     impl_->emitVtables();
     impl_->emitFunctions();

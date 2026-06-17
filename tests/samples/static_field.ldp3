@@ -1,0 +1,31 @@
+program StaticField;
+
+// Static fields: class-wide state shared across all calls, accessed as
+// ClassName.field. Expected output: count = 3
+
+public bundle main {
+    public namespace examples {
+
+        public class Counter {
+            private static mutable int count;
+
+            public static method inc() returns void {
+                Counter.count = Counter.count + 1;
+            }
+
+            public static method get() returns int {
+                return Counter.count;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter.inc();
+                Counter.inc();
+                Counter.inc();
+                System.IO.println($"count = {Counter.get()}");
+                return;
+            }
+        }
+    }
+}
