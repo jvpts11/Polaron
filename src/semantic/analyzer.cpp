@@ -742,6 +742,15 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         popScope();
         return;
     }
+    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&stmt)) {
+        typeOf(*sw->subject);
+        for (const ast::SwitchCase& c : sw->cases) {
+            typeOf(*c.value);
+            analyzeBlock(c.body);
+        }
+        if (sw->defaultBody) analyzeBlock(*sw->defaultBody);
+        return;
+    }
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
         const std::string initType = typeOf(*vd->init);
         const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);

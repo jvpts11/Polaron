@@ -871,6 +871,12 @@ TEST_CASE("semantic rejects foreach over a non-array") {
         " mutable int a = 3; for (int x in a) { } }")));
 }
 
+TEST_CASE("semantic accepts a switch with cases and default") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " mutable int x = 1; switch (x) { case 1 { } case 2 { break; } default { } } }")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

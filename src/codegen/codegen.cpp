@@ -1277,6 +1277,10 @@ struct CodeGenerator::Impl {
             emitForeach(*fe);
             return;
         }
+        if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&stmt)) {
+            emitSwitch(*sw);
+            return;
+        }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
             const std::string declType = vd->isVar ? typeName(*vd->init) : typeRefName(vd->type);
             llvm::Value* initV = emitExpr(*vd->init);
@@ -1623,6 +1627,48 @@ struct CodeGenerator::Impl {
         builder.CreateBr(condBB);
         builder.SetInsertPoint(endBB);
         locals.erase(s.varName);
+    }
+
+    // switch (x) { case C { ... } ... default { ... } } with C-style fall-through (spec 7.3).
+    void emitSwitch(const ast::SwitchStmt& s) {
+        llvm::Value* subj = emitExpr(*s.subject);
+        if (subj == nullptr) return;
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "switch.end", fn);
+        const std::size_t n = s.cases.size();
+        std::vector<llvm::BasicBlock*> bodyBBs;
+        for (std::size_t i = 0; i < n; ++i)
+            bodyBBs.push_back(llvm::BasicBlock::Create(context, "switch.case", fn));
+        llvm::BasicBlock* defaultBB =
+            s.defaultBody ? llvm::BasicBlock::Create(context, "switch.default", fn) : endBB;
+        // Dispatch chain: compare the subject against each case value.
+        for (std::size_t i = 0; i < n; ++i) {
+            llvm::Value* cv = emitExpr(*s.cases[i].value);
+            llvm::Value* eq = builder.CreateICmpEQ(subj, cv, "switch.is");
+            llvm::BasicBlock* nextTest = llvm::BasicBlock::Create(context, "switch.test", fn);
+            builder.CreateCondBr(eq, bodyBBs[i], nextTest);
+            builder.SetInsertPoint(nextTest);
+        }
+        builder.CreateBr(defaultBB);  // nothing matched
+        // break exits the switch; continue (if any) targets the enclosing loop.
+        const std::pair<llvm::BasicBlock*, llvm::BasicBlock*> brk = {
+            endBB, loopStack.empty() ? endBB : loopStack.back().second};
+        for (std::size_t i = 0; i < n; ++i) {
+            builder.SetInsertPoint(bodyBBs[i]);
+            loopStack.push_back(brk);
+            emitBlock(s.cases[i].body);
+            loopStack.pop_back();
+            if (builder.GetInsertBlock()->getTerminator() == nullptr)
+                builder.CreateBr((i + 1 < n) ? bodyBBs[i + 1] : defaultBB);  // fall-through
+        }
+        if (s.defaultBody) {
+            builder.SetInsertPoint(defaultBB);
+            loopStack.push_back(brk);
+            emitBlock(*s.defaultBody);
+            loopStack.pop_back();
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
+        }
+        builder.SetInsertPoint(endBB);
     }
 
     // ---- Top-level generation ----

@@ -1,0 +1,31 @@
+program Switch;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                for (mutable int x = 0; x < 4; x++) {
+                    switch (x) {
+                        case 0 {
+                            System.IO.printf("zero ");
+                            // no break: falls through to case 1 (spec 7.3)
+                        }
+                        case 1 {
+                            System.IO.printf("one ");
+                            break;
+                        }
+                        case 2 {
+                            System.IO.printf("two ");
+                            break;
+                        }
+                        default {
+                            System.IO.printf("other ");
+                        }
+                    }
+                }
+                System.IO.println("");
+                return;
+            }
+        }
+    }
+}

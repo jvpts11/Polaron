@@ -767,6 +767,9 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwMatch)) {
         return parseMatch();
     }
+    if (check(TokenKind::KwSwitch)) {
+        return parseSwitch();
+    }
     if (check(TokenKind::KwStaticAssert)) {
         auto sa = std::make_unique<ast::StaticAssertStmt>();
         sa->loc = current().loc;
@@ -933,6 +936,31 @@ ast::StmtPtr Parser::parseForStatement() {
     expect(TokenKind::RParen, "')'");
     s->body = parseBlock();
     return s;
+}
+
+// switch (x) { case C { ... } ... default { ... } } with C-style fall-through (spec 7.3).
+ast::StmtPtr Parser::parseSwitch() {
+    auto sw = std::make_unique<ast::SwitchStmt>();
+    sw->loc = current().loc;
+    expect(TokenKind::KwSwitch, "'switch'");
+    expect(TokenKind::LParen, "'('");
+    sw->subject = parseExpression();
+    expect(TokenKind::RParen, "')'");
+    expect(TokenKind::LBrace, "'{'");
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        if (match(TokenKind::KwDefault)) {
+            sw->defaultBody = std::make_unique<ast::Block>(parseBlock());
+            continue;
+        }
+        expect(TokenKind::KwCase, "'case' or 'default'");
+        ast::SwitchCase c;
+        c.loc = current().loc;
+        c.value = parseExpression();
+        c.body = parseBlock();
+        sw->cases.push_back(std::move(c));
+    }
+    expect(TokenKind::RBrace, "'}'");
+    return sw;
 }
 
 // match (subject) { case Type(bindings) { ... } ... default { ... } } (spec 16).

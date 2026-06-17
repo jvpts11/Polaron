@@ -276,6 +276,19 @@ struct MatchStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// switch (x) { case C { ... } ... default { ... } } -- C-style fall-through (spec 7.3).
+struct SwitchCase {
+    ExprPtr value;
+    Block body;
+    SourceLocation loc;
+};
+struct SwitchStmt : Stmt {
+    ExprPtr subject;
+    std::vector<SwitchCase> cases;
+    std::unique_ptr<Block> defaultBody;  // null when absent
+    void dump(std::string& out, int indent) const override;
+};
+
 // match (subject) { case T(..) -> expr; ... } as an expression (spec 16.2):
 // every arm yields one value via `->`; the whole match evaluates to that value.
 struct MatchExpr : Expr {
