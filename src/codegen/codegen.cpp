@@ -468,6 +468,12 @@ struct CodeGenerator::Impl {
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
                 if (mem->member == "length" && isArrayType(typeName(*mem->object))) return "int";
+                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                    if (enums.count(oid->name) > 0) {
+                        if (mem->member == "count") return "int";
+                        if (mem->member == "values") return oid->name + "[]";
+                    }
+                }
                 // instance: search the object's hierarchy; static: the named class.
                 std::string owner = methodOwner(typeName(*mem->object), mem->member);
                 if (owner.empty() && classes.count(flattenCallee(*mem->object)) > 0) {
@@ -1207,6 +1213,24 @@ struct CodeGenerator::Impl {
                 if (block == nullptr) return nullptr;
                 llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "len");
                 return builder.CreateTrunc(len, builder.getInt32Ty());
+            }
+            // Enum built-ins (spec 12.5): EnumName.count() / EnumName.values().
+            if (const auto* eid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                auto eit = enums.find(eid->name);
+                if (eit != enums.end()) {
+                    const int n = static_cast<int>(eit->second.size());
+                    if (mem->member == "count") return builder.getInt32(n);
+                    if (mem->member == "values") {
+                        // Build an int[] of ordinals [0 .. n-1].
+                        llvm::Value* total = builder.getInt64(8 + static_cast<long long>(n) * 4);
+                        llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "enum.vals");
+                        builder.CreateStore(builder.getInt64(n), block);  // length header
+                        for (int i = 0; i < n; ++i)
+                            builder.CreateStore(builder.getInt32(i),
+                                                arrayElemPtr(block, builder.getInt32(i)));
+                        return block;
+                    }
+                }
             }
             // Static call: the receiver names a class, not a local/this.
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {

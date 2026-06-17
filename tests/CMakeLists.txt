@@ -584,6 +584,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=t0 = 10 t1 = 20 t2 = 30"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # enum built-ins count()/values() (spec 12.5).
+        add_test(NAME codegen_enum_builtins_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/enum_builtins.ldp3"
+            "-DEXPECTED=count = 3 sum of ordinals = 3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

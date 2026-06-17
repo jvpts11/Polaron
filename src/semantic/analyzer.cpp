@@ -1223,6 +1223,16 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     }
                 }
             }
+            // Enum built-ins: EnumName.count() / EnumName.values() (spec 12.5).
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                if (lookupLocal(oid->name) == nullptr && enums_.count(oid->name) > 0) {
+                    if (mem->member == "count" && call->args.empty()) return "int";
+                    if (mem->member == "values" && call->args.empty()) return oid->name + "[]";
+                    error("enum '" + oid->name + "' has no built-in '" + mem->member + "'",
+                          call->loc);
+                    return "";
+                }
+            }
             const std::string objType = typeOf(*mem->object);
             if (objType.empty()) return "";
             if (isArrayType(objType)) {

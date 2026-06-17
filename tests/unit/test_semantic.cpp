@@ -918,6 +918,14 @@ TEST_CASE("semantic accepts operator[] overloading") {
         "Triple t = new Triple() on stack; int x = t[0];")));
 }
 
+TEST_CASE("semantic accepts enum count() and values()") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public enum E { A, B, C }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " int k = E.count(); mutable int s = 0; for (int x in E.values()) { s = s + x; } } } } }"));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"
