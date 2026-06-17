@@ -1,0 +1,33 @@
+program OptionTest;
+
+// A generic Option<T> built from generic inheritance + virtual dispatch.
+public bundle main {
+    public namespace app {
+        public class Option<T> {
+            public constructor Option() {}
+            public method isSome() returns boolean { return false; }
+            public method orElse(T fallback) returns T { return fallback; }
+        }
+        public class Some<T> extends Option<T> {
+            private T value;
+            public constructor Some(T value) { this.value = value; }
+            public override method isSome() returns boolean { return true; }
+            public override method orElse(T fallback) returns T { return this.value; }
+        }
+        public class None<T> extends Option<T> {
+            public constructor None() {}
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Option<int>* a = new Some<int>(42) on heap;
+                Option<int>* b = new None<int>() on heap;
+                System.IO.println($"a: some={a.isSome()} val={a.orElse(0)}");    // some=1 val=42
+                System.IO.println($"b: some={b.isSome()} val={b.orElse(99)}");   // some=0 val=99
+                delete a;
+                delete b;
+                return;
+            }
+        }
+    }
+}
