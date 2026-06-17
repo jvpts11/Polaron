@@ -1,0 +1,34 @@
+program ResultTest;
+
+// Result<T, E> -- two type parameters + generic inheritance + virtual dispatch.
+public bundle main {
+    public namespace app {
+        public class Result<T, E> {
+            public constructor Result() {}
+            public method isOk() returns boolean { return false; }
+        }
+        public class Ok<T, E> extends Result<T, E> {
+            private T value;
+            public constructor Ok(T value) { this.value = value; }
+            public override method isOk() returns boolean { return true; }
+            public method get() returns T { return this.value; }
+        }
+        public class Err<T, E> extends Result<T, E> {
+            private E error;
+            public constructor Err(E error) { this.error = error; }
+            public method code() returns E { return this.error; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Ok<int, int>* ok = new Ok<int, int>(7) on heap;
+                Err<int, int>* err = new Err<int, int>(404) on heap;
+                System.IO.println($"ok: {ok.isOk()} {ok.get()}");      // 1 7
+                System.IO.println($"err: {err.isOk()} {err.code()}");  // 0 404
+                delete ok;
+                delete err;
+                return;
+            }
+        }
+    }
+}
