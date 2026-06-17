@@ -182,6 +182,7 @@ struct CodeGenerator::Impl {
     llvm::Type* currentRetType = nullptr;
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
     const std::vector<ast::ExprPtr>* currentInvariants = nullptr;  // contracts: class invariants
+    std::vector<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>> loopStack;  // (break, continue) targets
 
     Impl(const ast::Program& p, const EntryPoint& e, std::string_view name,
          std::vector<CodegenError>& errs)
@@ -1244,8 +1245,18 @@ struct CodeGenerator::Impl {
     }
 
     void emitStatement(const ast::Stmt& stmt) {
+        // No code after a terminator (statements following break/continue/return are dead).
+        if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
         // static_assert is a compile-time check (spec 28.2); it emits no code.
         if (dynamic_cast<const ast::StaticAssertStmt*>(&stmt) != nullptr) return;
+        if (dynamic_cast<const ast::BreakStmt*>(&stmt) != nullptr) {
+            if (!loopStack.empty()) builder.CreateBr(loopStack.back().first);
+            return;
+        }
+        if (dynamic_cast<const ast::ContinueStmt*>(&stmt) != nullptr) {
+            if (!loopStack.empty()) builder.CreateBr(loopStack.back().second);
+            return;
+        }
         if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(&stmt)) {
             emitIf(*ifs);
             return;
@@ -1543,7 +1554,9 @@ struct CodeGenerator::Impl {
         if (condV == nullptr) return;
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
+        loopStack.push_back({endBB, condBB});  // break -> end, continue -> cond
         emitBlock(s.body);
+        loopStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(condBB);
         builder.SetInsertPoint(endBB);
     }
@@ -1553,6 +1566,7 @@ struct CodeGenerator::Impl {
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "for.cond", fn);
         llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "for.body", fn);
+        llvm::BasicBlock* updateBB = llvm::BasicBlock::Create(context, "for.update", fn);
         llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "for.end", fn);
         builder.CreateBr(condBB);
         builder.SetInsertPoint(condBB);
@@ -1560,11 +1574,13 @@ struct CodeGenerator::Impl {
         if (condV == nullptr) return;
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
+        loopStack.push_back({endBB, updateBB});  // break -> end, continue -> update
         emitBlock(s.body);
-        if (builder.GetInsertBlock()->getTerminator() == nullptr) {
-            if (s.update) emitStatement(*s.update);
-            builder.CreateBr(condBB);
-        }
+        loopStack.pop_back();
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(updateBB);
+        builder.SetInsertPoint(updateBB);
+        if (s.update) emitStatement(*s.update);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(condBB);
         builder.SetInsertPoint(endBB);
     }
 

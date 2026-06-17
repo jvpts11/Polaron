@@ -213,6 +213,16 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->condition = cloneExpr(x->condition.get(), s);
         return n;
     }
+    if (dynamic_cast<const ast::BreakStmt*>(st)) {
+        auto n = std::make_unique<ast::BreakStmt>();
+        n->loc = st->loc;
+        return n;
+    }
+    if (dynamic_cast<const ast::ContinueStmt*>(st)) {
+        auto n = std::make_unique<ast::ContinueStmt>();
+        n->loc = st->loc;
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) {
         auto n = std::make_unique<ast::ReturnStmt>();
         n->loc = x->loc;

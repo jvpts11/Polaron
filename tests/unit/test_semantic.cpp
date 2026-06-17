@@ -853,6 +853,12 @@ TEST_CASE("semantic rejects a non-constant static_assert") {
         " mutable int x = 3; static_assert(x == 3, \"not const\"); }")));
 }
 
+TEST_CASE("semantic accepts break and continue inside loops") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " for (mutable int i = 0; i < 3; i++) { if (i == 1) { continue; } if (i == 2) { break; } } }")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

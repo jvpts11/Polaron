@@ -728,6 +728,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             error("static assertion failed: " + sa->message, sa->loc);
         return;
     }
+    if (dynamic_cast<const ast::BreakStmt*>(&stmt) != nullptr ||
+        dynamic_cast<const ast::ContinueStmt*>(&stmt) != nullptr) {
+        return;  // loop-context validation (break/continue only inside a loop) is a later refinement
+    }
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
         const std::string initType = typeOf(*vd->init);
         const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);

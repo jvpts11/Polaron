@@ -294,6 +294,14 @@ struct StaticAssertStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// break; / continue; -- loop control (spec 7). Labeled forms are a later refinement.
+struct BreakStmt : Stmt {
+    void dump(std::string& out, int indent) const override;
+};
+struct ContinueStmt : Stmt {
+    void dump(std::string& out, int indent) const override;
+};
+
 // Base for class-body members (method now; field/constructor/destructor later).
 struct MemberDecl {
     SourceLocation loc;

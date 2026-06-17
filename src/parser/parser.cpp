@@ -779,6 +779,20 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return sa;
     }
+    if (check(TokenKind::KwBreak)) {
+        auto b = std::make_unique<ast::BreakStmt>();
+        b->loc = current().loc;
+        advance();
+        expect(TokenKind::Semicolon, "';'");
+        return b;
+    }
+    if (check(TokenKind::KwContinue)) {
+        auto c = std::make_unique<ast::ContinueStmt>();
+        c->loc = current().loc;
+        advance();
+        expect(TokenKind::Semicolon, "';'");
+        return c;
+    }
     if (check(TokenKind::KwReturn)) {
         auto ret = std::make_unique<ast::ReturnStmt>();
         ret->loc = current().loc;

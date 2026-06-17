@@ -172,6 +172,9 @@ void StaticAssertStmt::dump(std::string& out, int indent) const {
     condition->dump(out, indent + 1);
 }
 
+void BreakStmt::dump(std::string& out, int indent) const { line(out, indent, "Break"); }
+void ContinueStmt::dump(std::string& out, int indent) const { line(out, indent, "Continue"); }
+
 void DeferStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Defer");
     body.dump(out, indent + 1);
