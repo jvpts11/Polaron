@@ -368,6 +368,16 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     // Generic parameters: class Box<T>, class Pair<K, V>.
     if (match(TokenKind::Lt)) {
         do {
+            // Variance marker (spec 15): <out T> covariant, <in T> contravariant. With
+            // monomorphization each instantiation is a distinct concrete type, so variance
+            // imposes no subtyping and is a no-op; accept and skip it. Only consume out/in
+            // when a parameter name follows, so a parameter literally named "out" still works.
+            if (check(TokenKind::KwIn) && peek(1).kind == TokenKind::Identifier) {
+                advance();
+            } else if (check(TokenKind::Identifier) && current().lexeme == "out" &&
+                       peek(1).kind == TokenKind::Identifier) {
+                advance();
+            }
             const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
             c.typeParams.push_back(tp);
             // Constraint (spec 15.2): `<T extends Base>` or `<T implements Iface>`.

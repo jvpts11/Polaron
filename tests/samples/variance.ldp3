@@ -1,0 +1,21 @@
+program Variance;
+
+public bundle main {
+    public namespace app {
+        // <out T> covariant marker (spec 15). With monomorphization it is a no-op:
+        // each instantiation (Box<int>) is a distinct concrete type with no subtyping.
+        public class Box<out T> {
+            private T v;
+            public constructor Box(T v) { this.v = v; }
+            public method get() returns T { return this.v; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box<int> b = new Box<int>(5) on stack;
+                System.IO.println($"get = {b.get()}");   // 5
+                return;
+            }
+        }
+    }
+}

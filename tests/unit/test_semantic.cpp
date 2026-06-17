@@ -827,6 +827,15 @@ TEST_CASE("semantic accepts a generic instantiation that satisfies its constrain
         "Circle c = new Circle() on stack; Box<Circle> b = new Box<Circle>(&c) on stack;")));
 }
 
+TEST_CASE("semantic accepts variance markers (out/in) on type parameters") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public class A<out T> { public constructor A() {} }"
+        " public class C<in T> { public constructor C() {} }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " A<int> a = new A<int>() on stack; C<int> c = new C<int>() on stack; return; } } } }"));
+}
+
 TEST_CASE("semantic accepts a generic pointer variable and generic upcast") {
     CHECK(checkSrc(
         "program P; public bundle b { public namespace n {"
