@@ -877,6 +877,13 @@ TEST_CASE("semantic accepts a switch with cases and default") {
         " mutable int x = 1; switch (x) { case 1 { } case 2 { break; } default { } } }")));
 }
 
+TEST_CASE("semantic accepts labeled break and continue") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " outer: for (mutable int i = 0; i < 3; i++) { for (mutable int j = 0; j < 3; j++) {"
+        " if (i == j) { break outer; } if (j == 0) { continue outer; } } } }")));
+}
+
 TEST_CASE("semantic accepts a do-while loop") {
     CHECK(checkSrc(wrapMain(
         "public static method main(string[] args) returns void {"

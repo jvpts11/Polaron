@@ -322,11 +322,19 @@ struct StaticAssertStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
-// break; / continue; -- loop control (spec 7). Labeled forms are a later refinement.
+// break [label]; / continue [label]; -- loop control (spec 7). Empty label = innermost.
 struct BreakStmt : Stmt {
+    std::string label;
     void dump(std::string& out, int indent) const override;
 };
 struct ContinueStmt : Stmt {
+    std::string label;
+    void dump(std::string& out, int indent) const override;
+};
+// label: <loop> -- names a loop so break/continue can target it (spec 7.4).
+struct LabeledStmt : Stmt {
+    std::string label;
+    StmtPtr stmt;
     void dump(std::string& out, int indent) const override;
 };
 

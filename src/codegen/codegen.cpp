@@ -182,7 +182,9 @@ struct CodeGenerator::Impl {
     llvm::Type* currentRetType = nullptr;
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
     const std::vector<ast::ExprPtr>* currentInvariants = nullptr;  // contracts: class invariants
-    std::vector<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>> loopStack;  // (break, continue) targets
+    struct LoopTargets { llvm::BasicBlock* brk; llvm::BasicBlock* cont; std::string label; };
+    std::vector<LoopTargets> loopStack;  // (break, continue, label) per active loop / switch
+    std::string pendingLoopLabel;        // label to attach to the next loop (from a LabeledStmt)
 
     Impl(const ast::Program& p, const EntryPoint& e, std::string_view name,
          std::vector<CodegenError>& errs)
@@ -1328,17 +1330,30 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // Finds the loop targeted by break/continue: the named loop, or the innermost.
+    const LoopTargets* findLoop(const std::string& label) {
+        if (label.empty()) return loopStack.empty() ? nullptr : &loopStack.back();
+        for (auto it = loopStack.rbegin(); it != loopStack.rend(); ++it)
+            if (it->label == label) return &*it;
+        return nullptr;
+    }
+
     void emitStatement(const ast::Stmt& stmt) {
         // No code after a terminator (statements following break/continue/return are dead).
         if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
         // static_assert is a compile-time check (spec 28.2); it emits no code.
         if (dynamic_cast<const ast::StaticAssertStmt*>(&stmt) != nullptr) return;
-        if (dynamic_cast<const ast::BreakStmt*>(&stmt) != nullptr) {
-            if (!loopStack.empty()) builder.CreateBr(loopStack.back().first);
+        if (const auto* br = dynamic_cast<const ast::BreakStmt*>(&stmt)) {
+            if (const LoopTargets* t = findLoop(br->label)) builder.CreateBr(t->brk);
             return;
         }
-        if (dynamic_cast<const ast::ContinueStmt*>(&stmt) != nullptr) {
-            if (!loopStack.empty()) builder.CreateBr(loopStack.back().second);
+        if (const auto* co = dynamic_cast<const ast::ContinueStmt*>(&stmt)) {
+            if (const LoopTargets* t = findLoop(co->label)) builder.CreateBr(t->cont);
+            return;
+        }
+        if (const auto* lbl = dynamic_cast<const ast::LabeledStmt*>(&stmt)) {
+            pendingLoopLabel = lbl->label;
+            emitStatement(*lbl->stmt);
             return;
         }
         if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(&stmt)) {
@@ -1650,7 +1665,8 @@ struct CodeGenerator::Impl {
         if (condV == nullptr) return;
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
-        loopStack.push_back({endBB, condBB});  // break -> end, continue -> cond
+        loopStack.push_back({endBB, condBB, pendingLoopLabel});  // break -> end, continue -> cond
+        pendingLoopLabel.clear();
         emitBlock(s.body);
         loopStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(condBB);
@@ -1665,7 +1681,8 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "do.end", fn);
         builder.CreateBr(bodyBB);
         builder.SetInsertPoint(bodyBB);
-        loopStack.push_back({endBB, condBB});  // break -> end, continue -> cond
+        loopStack.push_back({endBB, condBB, pendingLoopLabel});  // break -> end, continue -> cond
+        pendingLoopLabel.clear();
         emitBlock(s.body);
         loopStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(condBB);
@@ -1689,7 +1706,8 @@ struct CodeGenerator::Impl {
         if (condV == nullptr) return;
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
-        loopStack.push_back({endBB, updateBB});  // break -> end, continue -> update
+        loopStack.push_back({endBB, updateBB, pendingLoopLabel});  // break -> end, continue -> update
+        pendingLoopLabel.clear();
         emitBlock(s.body);
         loopStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(updateBB);
@@ -1724,7 +1742,8 @@ struct CodeGenerator::Impl {
         llvm::Value* elem =
             builder.CreateLoad(builder.getInt32Ty(), arrayElemPtr(block, i), "fe.el");
         builder.CreateStore(elem, vSlot);
-        loopStack.push_back({endBB, updateBB});
+        loopStack.push_back({endBB, updateBB, pendingLoopLabel});
+        pendingLoopLabel.clear();
         emitBlock(s.body);
         loopStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(updateBB);
@@ -1758,8 +1777,9 @@ struct CodeGenerator::Impl {
         }
         builder.CreateBr(defaultBB);  // nothing matched
         // break exits the switch; continue (if any) targets the enclosing loop.
-        const std::pair<llvm::BasicBlock*, llvm::BasicBlock*> brk = {
-            endBB, loopStack.empty() ? endBB : loopStack.back().second};
+        const LoopTargets brk = {
+            endBB, loopStack.empty() ? endBB : loopStack.back().cont, pendingLoopLabel};
+        pendingLoopLabel.clear();
         for (std::size_t i = 0; i < n; ++i) {
             builder.SetInsertPoint(bodyBBs[i]);
             loopStack.push_back(brk);

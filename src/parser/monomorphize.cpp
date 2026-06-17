@@ -221,14 +221,23 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->condition = cloneExpr(x->condition.get(), s);
         return n;
     }
-    if (dynamic_cast<const ast::BreakStmt*>(st)) {
+    if (const auto* x = dynamic_cast<const ast::BreakStmt*>(st)) {
         auto n = std::make_unique<ast::BreakStmt>();
         n->loc = st->loc;
+        n->label = x->label;
         return n;
     }
-    if (dynamic_cast<const ast::ContinueStmt*>(st)) {
+    if (const auto* x = dynamic_cast<const ast::ContinueStmt*>(st)) {
         auto n = std::make_unique<ast::ContinueStmt>();
         n->loc = st->loc;
+        n->label = x->label;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) {
+        auto n = std::make_unique<ast::LabeledStmt>();
+        n->loc = st->loc;
+        n->label = x->label;
+        n->stmt = cloneStmt(x->stmt.get(), s);
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) {
@@ -451,6 +460,7 @@ void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& o
     if (st == nullptr) return;
     if (const auto* x = dynamic_cast<const ast::ExprStmt*>(st)) { collectExpr(x->expr.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::StaticAssertStmt*>(st)) { collectExpr(x->condition.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) { collectStmt(x->stmt.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) { collectType(x->elemType, g, out); collectExpr(x->iterable.get(), g, out); collectBlock(x->body, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) { collectExpr(x->subject.get(), g, out); for (const auto& c : x->cases) { collectExpr(c.value.get(), g, out); collectBlock(c.body, g, out); } if (x->defaultBody) collectBlock(*x->defaultBody, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) { collectExpr(x->value.get(), g, out); return; }

@@ -172,8 +172,14 @@ void StaticAssertStmt::dump(std::string& out, int indent) const {
     condition->dump(out, indent + 1);
 }
 
-void BreakStmt::dump(std::string& out, int indent) const { line(out, indent, "Break"); }
-void ContinueStmt::dump(std::string& out, int indent) const { line(out, indent, "Continue"); }
+void BreakStmt::dump(std::string& out, int indent) const { line(out, indent, "Break " + label); }
+void ContinueStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Continue " + label);
+}
+void LabeledStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Label " + label);
+    stmt->dump(out, indent + 1);
+}
 
 void TernaryExpr::dump(std::string& out, int indent) const {
     line(out, indent, "Ternary");

@@ -769,6 +769,15 @@ ast::Block Parser::parseBlock() {
 }
 
 ast::StmtPtr Parser::parseStatement() {
+    // Loop label: `name: <loop>` (spec 7.4). A bare identifier followed by ':'.
+    if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon) {
+        auto lbl = std::make_unique<ast::LabeledStmt>();
+        lbl->loc = current().loc;
+        lbl->label = advance().lexeme;  // the name
+        advance();                      // ':'
+        lbl->stmt = parseStatement();
+        return lbl;
+    }
     if (check(TokenKind::KwIf)) {
         return parseIfStatement();
     }
@@ -803,6 +812,7 @@ ast::StmtPtr Parser::parseStatement() {
         auto b = std::make_unique<ast::BreakStmt>();
         b->loc = current().loc;
         advance();
+        if (check(TokenKind::Identifier)) b->label = advance().lexeme;  // break label;
         expect(TokenKind::Semicolon, "';'");
         return b;
     }
@@ -810,6 +820,7 @@ ast::StmtPtr Parser::parseStatement() {
         auto c = std::make_unique<ast::ContinueStmt>();
         c->loc = current().loc;
         advance();
+        if (check(TokenKind::Identifier)) c->label = advance().lexeme;  // continue label;
         expect(TokenKind::Semicolon, "';'");
         return c;
     }
