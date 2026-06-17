@@ -732,6 +732,16 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         dynamic_cast<const ast::ContinueStmt*>(&stmt) != nullptr) {
         return;  // loop-context validation (break/continue only inside a loop) is a later refinement
     }
+    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&stmt)) {
+        const std::string it = typeOf(*fe->iterable);
+        if (!it.empty() && !isArrayType(it))
+            error("foreach requires an array, got '" + it + "'", fe->loc);
+        pushScope();
+        declareLocal(fe->varName, LocalVar{typeRefStr(fe->elemType), false});
+        analyzeBlock(fe->body);
+        popScope();
+        return;
+    }
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
         const std::string initType = typeOf(*vd->init);
         const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);

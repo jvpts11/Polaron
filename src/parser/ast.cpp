@@ -175,6 +175,12 @@ void StaticAssertStmt::dump(std::string& out, int indent) const {
 void BreakStmt::dump(std::string& out, int indent) const { line(out, indent, "Break"); }
 void ContinueStmt::dump(std::string& out, int indent) const { line(out, indent, "Continue"); }
 
+void ForeachStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Foreach " + elemType.name + " " + varName);
+    iterable->dump(out, indent + 1);
+    body.dump(out, indent + 1);
+}
+
 void DeferStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Defer");
     body.dump(out, indent + 1);

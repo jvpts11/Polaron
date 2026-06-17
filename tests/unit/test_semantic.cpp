@@ -859,6 +859,18 @@ TEST_CASE("semantic accepts break and continue inside loops") {
         " for (mutable int i = 0; i < 3; i++) { if (i == 1) { continue; } if (i == 2) { break; } } }")));
 }
 
+TEST_CASE("semantic accepts foreach over an array") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " int[] a = new int[3](); mutable int s = 0; for (int x in a) { s = s + x; } }")));
+}
+
+TEST_CASE("semantic rejects foreach over a non-array") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " mutable int a = 3; for (int x in a) { } }")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

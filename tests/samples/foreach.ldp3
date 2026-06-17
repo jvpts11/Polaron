@@ -1,0 +1,22 @@
+program Foreach;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int[] nums = new int[5]();
+                for (mutable int i = 0; i < 5; i++) {
+                    nums[i] = i * i;
+                }
+                // foreach over the array (spec 7).
+                mutable int sum = 0;
+                for (int x in nums) {
+                    sum = sum + x;
+                }
+                System.IO.println($"sum of squares = {sum}");   // 0+1+4+9+16 = 30
+                delete nums;
+                return;
+            }
+        }
+    }
+}

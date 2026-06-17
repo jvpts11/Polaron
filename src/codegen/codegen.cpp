@@ -1273,6 +1273,10 @@ struct CodeGenerator::Impl {
             emitFor(*fs);
             return;
         }
+        if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&stmt)) {
+            emitForeach(*fe);
+            return;
+        }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
             const std::string declType = vd->isVar ? typeName(*vd->init) : typeRefName(vd->type);
             llvm::Value* initV = emitExpr(*vd->init);
@@ -1582,6 +1586,43 @@ struct CodeGenerator::Impl {
         if (s.update) emitStatement(*s.update);
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(condBB);
         builder.SetInsertPoint(endBB);
+    }
+
+    // for (T v in array) { ... } -- iterate an array's elements (spec 7). Elements
+    // are i32 (int/char/boolean) in the current array model.
+    void emitForeach(const ast::ForeachStmt& s) {
+        llvm::Value* block = emitExpr(*s.iterable);
+        if (block == nullptr) return;
+        llvm::Value* len64 = builder.CreateLoad(builder.getInt64Ty(), block, "fe.len");
+        llvm::Value* len = builder.CreateTrunc(len64, builder.getInt32Ty(), "fe.len32");
+        llvm::Value* iSlot = createEntryAlloca("fe.i", builder.getInt32Ty());
+        builder.CreateStore(builder.getInt32(0), iSlot);
+        const std::string et = typeRefName(s.elemType);
+        llvm::Value* vSlot = createEntryAlloca(s.varName, llvmType(et));
+        locals[s.varName] = LocalSlot{vSlot, et};
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "fe.cond", fn);
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "fe.body", fn);
+        llvm::BasicBlock* updateBB = llvm::BasicBlock::Create(context, "fe.update", fn);
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "fe.end", fn);
+        builder.CreateBr(condBB);
+        builder.SetInsertPoint(condBB);
+        llvm::Value* i = builder.CreateLoad(builder.getInt32Ty(), iSlot, "fe.iv");
+        builder.CreateCondBr(builder.CreateICmpSLT(i, len), bodyBB, endBB);
+        builder.SetInsertPoint(bodyBB);
+        llvm::Value* elem =
+            builder.CreateLoad(builder.getInt32Ty(), arrayElemPtr(block, i), "fe.el");
+        builder.CreateStore(elem, vSlot);
+        loopStack.push_back({endBB, updateBB});
+        emitBlock(s.body);
+        loopStack.pop_back();
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(updateBB);
+        builder.SetInsertPoint(updateBB);
+        llvm::Value* iv = builder.CreateLoad(builder.getInt32Ty(), iSlot);
+        builder.CreateStore(builder.CreateAdd(iv, builder.getInt32(1)), iSlot);
+        builder.CreateBr(condBB);
+        builder.SetInsertPoint(endBB);
+        locals.erase(s.varName);
     }
 
     // ---- Top-level generation ----

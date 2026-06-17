@@ -899,10 +899,25 @@ ast::StmtPtr Parser::parseWhileStatement() {
 }
 
 ast::StmtPtr Parser::parseForStatement() {
-    auto s = std::make_unique<ast::ForStmt>();
-    s->loc = current().loc;
+    const SourceLocation loc = current().loc;
     expect(TokenKind::KwFor, "'for'");
     expect(TokenKind::LParen, "'('");
+    // foreach over an array: `for (T name in iterable) { ... }` (spec 7). Ranges
+    // (`0..10`) and the `index i, T v` form are later refinements.
+    if ((isTypeKeyword(current().kind) || check(TokenKind::Identifier)) &&
+        peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::KwIn) {
+        auto fe = std::make_unique<ast::ForeachStmt>();
+        fe->loc = loc;
+        fe->elemType = parseTypeRef();
+        fe->varName = expect(TokenKind::Identifier, "a loop variable name").lexeme;
+        expect(TokenKind::KwIn, "'in'");
+        fe->iterable = parseExpression();
+        expect(TokenKind::RParen, "')'");
+        fe->body = parseBlock();
+        return fe;
+    }
+    auto s = std::make_unique<ast::ForStmt>();
+    s->loc = loc;
     if (check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
         isTypeKeyword(current().kind)) {
         s->init = parseVarDeclCore();

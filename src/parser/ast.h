@@ -302,6 +302,16 @@ struct ContinueStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// for (T v in array) { ... } -- foreach over an array (spec 7). Ranges and the
+// `index i, T v` form are later refinements.
+struct ForeachStmt : Stmt {
+    TypeRef elemType;
+    std::string varName;
+    ExprPtr iterable;
+    Block body;
+    void dump(std::string& out, int indent) const override;
+};
+
 // Base for class-body members (method now; field/constructor/destructor later).
 struct MemberDecl {
     SourceLocation loc;

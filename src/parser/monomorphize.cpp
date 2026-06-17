@@ -223,6 +223,15 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->loc = st->loc;
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) {
+        auto n = std::make_unique<ast::ForeachStmt>();
+        n->loc = x->loc;
+        n->elemType = substType(x->elemType, s);
+        n->varName = x->varName;
+        n->iterable = cloneExpr(x->iterable.get(), s);
+        n->body = cloneBlock(x->body, s);
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) {
         auto n = std::make_unique<ast::ReturnStmt>();
         n->loc = x->loc;
@@ -412,6 +421,7 @@ void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& o
     if (st == nullptr) return;
     if (const auto* x = dynamic_cast<const ast::ExprStmt*>(st)) { collectExpr(x->expr.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::StaticAssertStmt*>(st)) { collectExpr(x->condition.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) { collectType(x->elemType, g, out); collectExpr(x->iterable.get(), g, out); collectBlock(x->body, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) { collectExpr(x->value.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::DeleteStmt*>(st)) { collectExpr(x->target.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::VarDeclStmt*>(st)) { collectType(x->type, g, out); collectExpr(x->init.get(), g, out); return; }
