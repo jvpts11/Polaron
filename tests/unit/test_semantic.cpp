@@ -378,6 +378,20 @@ TEST_CASE("semantic accepts implementing an interface") {
         "")));
 }
 
+TEST_CASE("semantic accepts a class implementing two interfaces and dispatching each") {
+    // Regression: a class implementing two interfaces must resolve each interface's
+    // method through its own pointer. Codegen lays vtables out by global per-name
+    // slots so n.nameCode() and s.size() land on the right slots (codegen_multi_iface).
+    CHECK(checkSrc(withClass(
+        "public interface Named { method nameCode() returns int; }"
+        " public interface Sized { method size() returns int; }"
+        " public class Item implements Named, Sized {"
+        " public override method nameCode() returns int { return 7; }"
+        " public override method size() returns int { return 42; } }",
+        "Item it = new Item() on stack; Named* n = &it; Sized* s = &it;"
+        " int a = n.nameCode(); int b = s.size();")));
+}
+
 TEST_CASE("semantic rejects an inheritance cycle") {
     CHECK_FALSE(checkSrc(withClass(
         "public class A extends B { } public class B extends A { }", "")));

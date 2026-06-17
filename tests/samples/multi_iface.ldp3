@@ -1,0 +1,39 @@
+program MultiIface;
+
+// A class implementing TWO interfaces must dispatch each interface's methods to
+// the right vtable slot. The fix lays out every polymorphic class's vtable by a
+// global per-method-name slot, so a call through any interface (or the class)
+// resolves to the same slot the class implements.
+// Expected output: name 7 size 42
+
+public bundle main {
+    public namespace app {
+
+        public interface Named {
+            method nameCode() returns int;
+        }
+
+        public interface Sized {
+            method size() returns int;
+        }
+
+        public class Item implements Named, Sized {
+            public override method nameCode() returns int {
+                return 7;
+            }
+            public override method size() returns int {
+                return 42;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Item it = new Item() on stack;
+                Named* n = &it;     // shares it, static type Named
+                Sized* s = &it;     // shares it, static type Sized
+                System.IO.println($"name {n.nameCode()} size {s.size()}");
+                return;
+            }
+        }
+    }
+}

@@ -169,6 +169,13 @@ struct CodeGenerator::Impl {
     llvm::IRBuilder<> builder;
 
     std::unordered_map<std::string, ClassLayout> classes;
+    // Global per-method-name vtable slots. Every distinct virtual method name gets
+    // one stable index, and every polymorphic class's vtable is laid out by these
+    // indices. Because LDP3 has no method overloading (unique name per method), a
+    // call through a class OR any interface resolves to the same global slot, so a
+    // class implementing several interfaces dispatches each one correctly.
+    std::unordered_map<std::string, int> methodSlots;  // virtual method name -> global slot
+    std::vector<std::string> methodSlotNames;          // global slot -> method name
     std::unordered_map<std::string, std::vector<std::string>> enums;  // name -> constants (ordinals)
     std::unordered_map<std::string, const ast::EnumDecl*> javaEnums;  // java-style enum decls
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
@@ -331,27 +338,35 @@ struct CodeGenerator::Impl {
         return result;
     }
 
-    // Virtual method names in vtable-slot order: superclass slots first, then
-    // interface methods, then own new instance methods. Overrides reuse a slot.
-    std::vector<std::string> computeSlots(const std::string& className) {
-        std::vector<std::string> slots;
+    // Every virtual method name this class participates in: its own instance
+    // methods plus everything inherited from its superclass and interfaces.
+    // Order is irrelevant now that slots are global; we just need the set.
+    void collectVirtualNames(const std::string& className, std::vector<std::string>& out) {
         auto it = classes.find(className);
-        if (it == classes.end()) return slots;
+        if (it == classes.end()) return;
         const ClassLayout& l = it->second;
-        if (!l.superclass.empty()) slots = computeSlots(l.superclass);
-        for (const std::string& iface : l.interfaces) {
-            for (const std::string& m : computeSlots(iface)) {
-                if (std::find(slots.begin(), slots.end(), m) == slots.end()) slots.push_back(m);
-            }
-        }
+        if (!l.superclass.empty()) collectVirtualNames(l.superclass, out);
+        for (const std::string& iface : l.interfaces) collectVirtualNames(iface, out);
         if (l.decl != nullptr) {
             for (const ast::MemberPtr& member : l.decl->members) {
                 const auto* md = dynamic_cast<const ast::MethodDecl*>(member.get());
                 if (md == nullptr || md->isStatic) continue;
-                if (std::find(slots.begin(), slots.end(), md->name) == slots.end()) {
-                    slots.push_back(md->name);
-                }
+                if (std::find(out.begin(), out.end(), md->name) == out.end()) out.push_back(md->name);
             }
+        }
+    }
+
+    // The class's vtable laid out by global slot: vtslots[g] is the method name the
+    // class provides at global slot g, or "" for slots it does not implement (those
+    // become a null entry in the emitted vtable). Sized so an indirect call's GEP is
+    // valid for every polymorphic class regardless of which methods it has.
+    std::vector<std::string> computeSlots(const std::string& className) {
+        std::vector<std::string> own;
+        collectVirtualNames(className, own);
+        std::vector<std::string> slots(methodSlotNames.size());
+        for (const std::string& name : own) {
+            auto sit = methodSlots.find(name);
+            if (sit != methodSlots.end()) slots[sit->second] = name;
         }
         return slots;
     }
@@ -389,14 +404,13 @@ struct CodeGenerator::Impl {
         return nullptr;
     }
 
+    // The vtable slot for `method`. Slots are global per method name, so this is the
+    // same whether the call goes through the class or any interface it implements.
+    // The staticType is kept for the signature but no longer affects the index.
     int slotIndex(const std::string& staticType, const std::string& method) {
-        auto it = classes.find(staticType);
-        if (it == classes.end()) return -1;
-        const std::vector<std::string>& slots = it->second.vtslots;
-        for (std::size_t i = 0; i < slots.size(); ++i) {
-            if (slots[i] == method) return static_cast<int>(i);
-        }
-        return -1;
+        (void)staticType;
+        auto it = methodSlots.find(method);
+        return it == methodSlots.end() ? -1 : it->second;
     }
 
     // Signature of an instance method as called through a vtable: (this, params) -> ret.
@@ -1907,6 +1921,26 @@ struct CodeGenerator::Impl {
         for (auto& [name, l] : classes) {
             l.hasVtable = !l.superclass.empty() || !l.interfaces.empty() || l.isAbstract ||
                           l.isInterface || bases.count(name) > 0;
+        }
+        // Assign a stable global slot to every distinct virtual method name, walking
+        // the AST in declaration order (deterministic, unlike the classes map). A
+        // single global numbering shared by all classes/interfaces is what makes a
+        // class with multiple interfaces dispatch each one to the correct slot.
+        for (const ast::Bundle& bundle : program.bundles) {
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ClassDecl& cls : ns.classes) {
+                    auto cit = classes.find(cls.name);
+                    if (cit == classes.end() || !cit->second.hasVtable) continue;
+                    for (const ast::MemberPtr& member : cls.members) {
+                        const auto* md = dynamic_cast<const ast::MethodDecl*>(member.get());
+                        if (md == nullptr || md->isStatic) continue;
+                        if (methodSlots.count(md->name) == 0) {
+                            methodSlots[md->name] = static_cast<int>(methodSlotNames.size());
+                            methodSlotNames.push_back(md->name);
+                        }
+                    }
+                }
+            }
         }
         for (auto& [name, l] : classes) {
             if (l.hasVtable) l.vtslots = computeSlots(name);
