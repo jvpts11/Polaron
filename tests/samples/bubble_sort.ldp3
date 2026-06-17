@@ -1,0 +1,31 @@
+program BubbleSort;
+
+public bundle main {
+    public namespace app {
+        public class Sorter {
+            public static method sort(int[] a) returns void {
+                int n = a.length();
+                for (mutable int i = 0; i < n - 1; i++) {
+                    for (mutable int j = 0; j < n - 1 - i; j++) {
+                        if (a[j] > a[j + 1]) {
+                            int tmp = a[j];
+                            a[j] = a[j + 1];
+                            a[j + 1] = tmp;
+                        }
+                    }
+                }
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                int[] a = new int[5]();
+                a[0] = 5; a[1] = 2; a[2] = 8; a[3] = 1; a[4] = 9;
+                Sorter.sort(a);
+                System.IO.println($"{a[0]} {a[1]} {a[2]} {a[3]} {a[4]}");   // 1 2 5 8 9
+                delete a;
+                return;
+            }
+        }
+    }
+}
