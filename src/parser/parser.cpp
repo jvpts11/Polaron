@@ -1181,7 +1181,20 @@ ast::StmtPtr Parser::parseExprStatement() {
     return s;
 }
 
-ast::ExprPtr Parser::parseExpression() { return parseBinary(1); }
+ast::ExprPtr Parser::parseExpression() { return parseTernary(); }
+
+ast::ExprPtr Parser::parseTernary() {
+    ast::ExprPtr cond = parseBinary(1);
+    if (!check(TokenKind::Question)) return cond;
+    auto t = std::make_unique<ast::TernaryExpr>();
+    t->loc = current().loc;
+    advance();  // '?'
+    t->thenExpr = parseExpression();
+    expect(TokenKind::Colon, "':' in a ternary expression");
+    t->elseExpr = parseExpression();
+    t->cond = std::move(cond);
+    return t;
+}
 
 // Splits an interpolated string's raw content into literal chunks and embedded
 // {expr} expressions. Each expression is lexed and parsed on its own (a nested

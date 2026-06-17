@@ -1,0 +1,20 @@
+program Ternary;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = 7;
+                int b = 3;
+                int max = a > b ? a : b;
+                int min = a < b ? a : b;
+                System.IO.println($"max = {max}");   // 7
+                System.IO.println($"min = {min}");   // 3
+                // ternaries nest and combine with other operators
+                int sign = a - b > 0 ? 1 : (a == b ? 0 : -1);
+                System.IO.println($"sign = {sign}"); // 1
+                return;
+            }
+        }
+    }
+}

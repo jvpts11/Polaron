@@ -1018,6 +1018,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         return dst;
     }
 
+    if (const auto* tern = dynamic_cast<const ast::TernaryExpr*>(&expr)) {
+        const std::string ct = typeOf(*tern->cond);
+        if (!ct.empty() && ct != "boolean")
+            error("ternary condition must be boolean, got '" + ct + "'", tern->loc);
+        const std::string tt = typeOf(*tern->thenExpr);
+        typeOf(*tern->elseExpr);
+        return tt;
+    }
     if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
         const std::string lt = typeOf(*bin->lhs);
         const std::string rt = typeOf(*bin->rhs);

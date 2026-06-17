@@ -175,6 +175,13 @@ void StaticAssertStmt::dump(std::string& out, int indent) const {
 void BreakStmt::dump(std::string& out, int indent) const { line(out, indent, "Break"); }
 void ContinueStmt::dump(std::string& out, int indent) const { line(out, indent, "Continue"); }
 
+void TernaryExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Ternary");
+    cond->dump(out, indent + 1);
+    thenExpr->dump(out, indent + 1);
+    elseExpr->dump(out, indent + 1);
+}
+
 void SwitchStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Switch");
     subject->dump(out, indent + 1);

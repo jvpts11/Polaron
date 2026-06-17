@@ -566,6 +566,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=and = 8 or = 14 xor = 6 shl = 48 shr = 6"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ternary conditional expression: c ? a : b (spec 6).
+        add_test(NAME codegen_ternary_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ternary.ldp3"
+            "-DEXPECTED=max = 7 min = 3 sign = 1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

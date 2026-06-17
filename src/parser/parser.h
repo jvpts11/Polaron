@@ -82,6 +82,7 @@ private:
     ast::StmtPtr parseSimpleStatement();                    // same, without ';'
     ast::ExprPtr parseExpression();
     ast::ExprPtr parseInterpolation(const std::string& raw, SourceLocation loc);
+    ast::ExprPtr parseTernary();
     ast::ExprPtr parseBinary(int minPrec);
     ast::ExprPtr parseUnary();
     ast::ExprPtr parsePostfix();

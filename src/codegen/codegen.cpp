@@ -429,6 +429,9 @@ struct CodeGenerator::Impl {
             if (me->defaultResult) return typeName(*me->defaultResult);
             return "int";
         }
+        if (const auto* tern = dynamic_cast<const ast::TernaryExpr*>(&expr)) {
+            return typeName(*tern->thenExpr);
+        }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
             const std::string& op = bin->op;
             // Operator overloading: result type is the operator method's return type.
@@ -798,6 +801,9 @@ struct CodeGenerator::Impl {
             error("unsupported unary operator '" + un->op + "'", un->loc);
             return nullptr;
         }
+        if (const auto* tern = dynamic_cast<const ast::TernaryExpr*>(&expr)) {
+            return emitTernary(*tern);
+        }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
             return emitBinary(*bin);
         }
@@ -860,6 +866,36 @@ struct CodeGenerator::Impl {
         phi->addIncoming(builder.getInt1(!isAnd), startBB);  // && short-circuits to false, || to true
         phi->addIncoming(b, rhsEnd);
         return builder.CreateZExt(phi, builder.getInt32Ty());
+    }
+
+    // cond ? a : b -- evaluates one branch and merges with a phi (spec 6).
+    llvm::Value* emitTernary(const ast::TernaryExpr& t) {
+        llvm::Value* c = emitExpr(*t.cond);
+        if (c == nullptr) return nullptr;
+        c = builder.CreateICmpNE(c, builder.getInt32(0), "tern.c");
+        const std::string rt = typeName(*t.thenExpr);
+        llvm::Type* rty = llvmType(rt);
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context, "tern.then", fn);
+        llvm::BasicBlock* elseBB = llvm::BasicBlock::Create(context, "tern.else", fn);
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "tern.end", fn);
+        builder.CreateCondBr(c, thenBB, elseBB);
+        builder.SetInsertPoint(thenBB);
+        llvm::Value* tv = emitExpr(*t.thenExpr);
+        if (tv != nullptr) tv = coerce(tv, typeName(*t.thenExpr), rt);
+        llvm::BasicBlock* thenEnd = builder.GetInsertBlock();
+        builder.CreateBr(endBB);
+        builder.SetInsertPoint(elseBB);
+        llvm::Value* ev = emitExpr(*t.elseExpr);
+        if (ev != nullptr) ev = coerce(ev, typeName(*t.elseExpr), rt);
+        llvm::BasicBlock* elseEnd = builder.GetInsertBlock();
+        builder.CreateBr(endBB);
+        builder.SetInsertPoint(endBB);
+        if (tv == nullptr || ev == nullptr) return tv != nullptr ? tv : ev;
+        llvm::PHINode* phi = builder.CreatePHI(rty, 2, "tern");
+        phi->addIncoming(tv, thenEnd);
+        phi->addIncoming(ev, elseEnd);
+        return phi;
     }
 
     llvm::Value* emitBinary(const ast::BinaryExpr& bin) {

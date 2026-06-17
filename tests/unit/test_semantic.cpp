@@ -900,6 +900,17 @@ TEST_CASE("semantic rejects bitwise on a float operand") {
         "public static method main(string[] args) returns void { double f = 1.5; int c = f & 3; }")));
 }
 
+TEST_CASE("semantic accepts a ternary expression") {
+    CHECK(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void {"
+        " int a = 1; int b = 2; int m = a > b ? a : b; }")));
+}
+
+TEST_CASE("semantic rejects a ternary with a non-boolean condition") {
+    CHECK_FALSE(checkSrc(wrapMain(
+        "public static method main(string[] args) returns void { int a = 5; int m = a ? 1 : 2; }")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

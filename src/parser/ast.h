@@ -91,6 +91,14 @@ struct BinaryExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// cond ? a : b -- conditional expression (spec 6).
+struct TernaryExpr : Expr {
+    ExprPtr cond;
+    ExprPtr thenExpr;
+    ExprPtr elseExpr;
+    void dump(std::string& out, int indent) const override;
+};
+
 struct UnaryExpr : Expr {
     std::string op;  // "-"
     ExprPtr operand;

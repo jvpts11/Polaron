@@ -98,6 +98,14 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->rhs = cloneExpr(x->rhs.get(), s);
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::TernaryExpr*>(e)) {
+        auto n = std::make_unique<ast::TernaryExpr>();
+        n->loc = x->loc;
+        n->cond = cloneExpr(x->cond.get(), s);
+        n->thenExpr = cloneExpr(x->thenExpr.get(), s);
+        n->elseExpr = cloneExpr(x->elseExpr.get(), s);
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::UnaryExpr*>(e)) {
         auto n = std::make_unique<ast::UnaryExpr>();
         n->loc = x->loc;
@@ -424,6 +432,7 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
         return;
     }
     if (const auto* x = dynamic_cast<const ast::BinaryExpr*>(e)) { collectExpr(x->lhs.get(), g, out); collectExpr(x->rhs.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::TernaryExpr*>(e)) { collectExpr(x->cond.get(), g, out); collectExpr(x->thenExpr.get(), g, out); collectExpr(x->elseExpr.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::UnaryExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::IndexExpr*>(e)) { collectExpr(x->array.get(), g, out); collectExpr(x->index.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::MoveExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
