@@ -2229,6 +2229,58 @@ struct CodeGenerator::Impl {
     // disk store at startup (registered as a global ctor) and written back at exit (a global
     // dtor). The store sits next to the executable, fields matched positionally. MVP:
     // primitive fields; renaming/reshaping is a future build-time schema check.
+    // Serialize/deserialize one persistent pointer field (step C / graphs). `fieldSlot` is the
+    // address of the pointer inside the block; `cls` is the pointee class. Writes a 1-byte flag
+    // (0 = null, 1 = present) then, when present, the pointee's fields. MVP: one level deep,
+    // primitive pointee fields, no cycles. `flagSlot` is a reusable i8 scratch alloca.
+    void emitPointerIO(llvm::Value* fieldSlot, const std::string& cls, bool isLoad,
+                       llvm::FunctionCallee io, llvm::Value* f, llvm::Value* flagSlot) {
+        auto cit = classes.find(cls);
+        if (cit == classes.end()) return;
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::PointerType* ptrTy = builder.getPtrTy();
+        llvm::StructType* tty = cit->second.type;
+        const auto fields = collectFields(cls);
+        llvm::Value* one = builder.getInt64(1);
+        llvm::BasicBlock* afterBB = llvm::BasicBlock::Create(context, "ptr.after", fn);
+        if (!isLoad) {
+            llvm::Value* target = builder.CreateLoad(ptrTy, fieldSlot, "ptr.tgt");
+            llvm::Value* present =
+                builder.CreateICmpNE(target, llvm::ConstantPointerNull::get(ptrTy));
+            builder.CreateStore(builder.CreateZExt(present, builder.getInt8Ty()), flagSlot);
+            builder.CreateCall(io, {flagSlot, one, one, f});
+            llvm::BasicBlock* writeBB = llvm::BasicBlock::Create(context, "ptr.write", fn);
+            builder.CreateCondBr(present, writeBB, afterBB);
+            builder.SetInsertPoint(writeBB);
+            for (const auto& [pn, pt] : fields) {
+                llvm::Value* cfp =
+                    builder.CreateStructGEP(tty, target, cit->second.fieldIndex.at(pn));
+                builder.CreateCall(io, {cfp, sizeOf(llvmType(pt)), one, f});
+            }
+            builder.CreateBr(afterBB);
+        } else {
+            builder.CreateCall(io, {flagSlot, one, one, f});
+            llvm::Value* present = builder.CreateICmpNE(
+                builder.CreateLoad(builder.getInt8Ty(), flagSlot, "pflag.v"), builder.getInt8(0));
+            llvm::BasicBlock* allocBB = llvm::BasicBlock::Create(context, "ptr.alloc", fn);
+            llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(context, "ptr.null", fn);
+            builder.CreateCondBr(present, allocBB, nullBB);
+            builder.SetInsertPoint(allocBB);
+            llvm::Value* target = builder.CreateCall(mallocFn(), {sizeOf(tty)}, "ptr.new");
+            for (const auto& [pn, pt] : fields) {
+                llvm::Value* cfp =
+                    builder.CreateStructGEP(tty, target, cit->second.fieldIndex.at(pn));
+                builder.CreateCall(io, {cfp, sizeOf(llvmType(pt)), one, f});
+            }
+            builder.CreateStore(target, fieldSlot);
+            builder.CreateBr(afterBB);
+            builder.SetInsertPoint(nullBB);
+            builder.CreateStore(llvm::ConstantPointerNull::get(ptrTy), fieldSlot);
+            builder.CreateBr(afterBB);
+        }
+        builder.SetInsertPoint(afterBB);
+    }
+
     void emitPersistence() {
         if (persistentStatics.empty()) return;
         llvm::PointerType* ptrTy = builder.getPtrTy();
@@ -2245,7 +2297,7 @@ struct CodeGenerator::Impl {
         const std::string storeName = program.name + ".ldpstore";
 
         auto buildIO = [&](const char* fnName, const char* mode, llvm::FunctionCallee io,
-                           llvm::Function* atexitTarget) -> llvm::Function* {
+                           bool isLoad, llvm::Function* atexitTarget) -> llvm::Function* {
             llvm::Function* fn = llvm::Function::Create(
                 llvm::FunctionType::get(builder.getVoidTy(), {}, false),
                 llvm::Function::InternalLinkage, fnName, module);
@@ -2253,6 +2305,7 @@ struct CodeGenerator::Impl {
             llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "io", fn);
             llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "done", fn);
             builder.SetInsertPoint(entry);
+            llvm::Value* flagSlot = builder.CreateAlloca(builder.getInt8Ty(), nullptr, "pflag");
             // The ctor registers the save with atexit (global_dtors isn't reliable on Windows).
             if (atexitTarget != nullptr) builder.CreateCall(atexitF, {atexitTarget});
             llvm::Value* path = builder.CreateGlobalStringPtr(storeName, ".store");
@@ -2266,13 +2319,17 @@ struct CodeGenerator::Impl {
                     builder.CreateCall(io, {gt.global, sizeOf(gt.type), builder.getInt64(1), f});
                     continue;
                 }
-                // Object block: serialize field-by-field, so pointers can be followed (step C).
+                // Object block: serialize field-by-field; a pointer field is followed (step C).
                 const ClassLayout& cl = classes.at(gt.cls);
                 for (std::size_t i = 0; i < cl.persistOrder.size(); ++i) {
                     llvm::Value* fp = builder.CreateStructGEP(gt.type, gt.global,
                                                               static_cast<unsigned>(i));
-                    llvm::Type* ft = llvmType(cl.fieldType.at(cl.persistOrder[i]));
-                    builder.CreateCall(io, {fp, sizeOf(ft), builder.getInt64(1), f});
+                    const std::string& fty = cl.fieldType.at(cl.persistOrder[i]);
+                    if (!fty.empty() && fty.back() == '*') {
+                        emitPointerIO(fp, baseType(fty), isLoad, io, f, flagSlot);
+                    } else {
+                        builder.CreateCall(io, {fp, sizeOf(llvmType(fty)), builder.getInt64(1), f});
+                    }
                 }
             }
             builder.CreateCall(fcloseF, {f});
@@ -2295,8 +2352,8 @@ struct CodeGenerator::Impl {
                                      llvm::GlobalValue::AppendingLinkage,
                                      llvm::ConstantArray::get(arrTy, {entry}), arrayName);
         };
-        llvm::Function* saveFn = buildIO("__ldp3_persist_save", "wb", fwriteF, nullptr);
-        llvm::Function* loadFn = buildIO("__ldp3_persist_load", "rb", freadF, saveFn);
+        llvm::Function* saveFn = buildIO("__ldp3_persist_save", "wb", fwriteF, false, nullptr);
+        llvm::Function* loadFn = buildIO("__ldp3_persist_load", "rb", freadF, true, saveFn);
         registerXtor("llvm.global_ctors", loadFn);
     }
 

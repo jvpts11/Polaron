@@ -194,6 +194,17 @@ TEST_CASE("semantic accepts a persistent instance field used via this in a metho
         " Car c = new Car() on heap; c.bump(); delete c; return; } } } }"));
 }
 
+TEST_CASE("semantic accepts a persistent pointer field (graph serialization)") {
+    CHECK(checkSrc(
+        "program P; public bundle main { public namespace app {"
+        " public class Engine { public mutable int power = 0; public constructor Engine() {} }"
+        " public class Car { public persistent mutable Engine* engine;"
+        " public constructor Car() {} }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Car c = new Car() on heap; c.engine = new Engine() on heap;"
+        " c.engine.power = 1; delete c; return; } } } }"));
+}
+
 TEST_CASE("semantic rejects assignment to an immutable field") {
     CHECK_FALSE(checkSrc(withClass(
         "public class Box { private int v;"
