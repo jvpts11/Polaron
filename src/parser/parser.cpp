@@ -542,8 +542,13 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
     m->loc = current().loc;
     m->visibility = std::move(visibility);
     expect(TokenKind::KwOperator, "'operator'");
-    const Token op = advance();  // the operator symbol token (+, -, ==, <, ...)
-    m->name = "operator" + op.lexeme;
+    const Token op = advance();  // the operator symbol token (+, -, ==, <, [, ...)
+    std::string sym = op.lexeme;
+    if (op.kind == TokenKind::LBracket) {  // operator [] (indexing)
+        expect(TokenKind::RBracket, "']' to form operator[]");
+        sym = "[]";
+    }
+    m->name = "operator" + sym;
     expect(TokenKind::LParen, "'('");
     m->params = parseParams();
     expect(TokenKind::RParen, "')'");

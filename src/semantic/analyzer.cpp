@@ -1112,6 +1112,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
         const std::string at = typeOf(*ix->array);
         const std::string it = typeOf(*ix->index);
+        // operator[] overload (spec 6.5): `obj[i]` where obj's class defines operator[].
+        if (const MethodInfo* om = findMethod(baseType(at), "operator[]")) {
+            return om->returnType;
+        }
         if (!it.empty() && it != "int") error("array index must be an int", ix->loc);
         if (at.empty()) return "";
         if (!isArrayType(at)) {

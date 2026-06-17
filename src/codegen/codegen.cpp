@@ -461,6 +461,8 @@ struct CodeGenerator::Impl {
         }
         if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
             const std::string at = typeName(*ix->array);
+            const std::string owner = methodOwner(baseType(at), "operator[]");
+            if (!owner.empty()) return classes[owner].methodReturnType["operator[]"];
             return isArrayType(at) ? at.substr(0, at.size() - 2) : std::string("int");
         }
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
@@ -825,6 +827,18 @@ struct CodeGenerator::Impl {
             return emitNewArray(*na);
         }
         if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
+            // operator[] overload (spec 6.5): obj[i] -> obj.operator[](i).
+            const std::string at = typeName(*ix->array);
+            const std::string owner = methodOwner(baseType(at), "operator[]");
+            auto fnit = owner.empty() ? functions.end() : functions.find(owner + ".operator[]");
+            if (fnit != functions.end()) {
+                llvm::Value* recv = emitExpr(*ix->array);
+                llvm::Value* idx = emitExpr(*ix->index);
+                if (recv == nullptr || idx == nullptr) return nullptr;
+                if (fnit->second->arg_size() >= 2)
+                    idx = coerceToType(idx, fnit->second->getArg(1)->getType());
+                return builder.CreateCall(fnit->second, {recv, idx});
+            }
             llvm::Value* elemPtr = emitLValue(*ix);
             if (elemPtr == nullptr) return nullptr;
             return builder.CreateLoad(builder.getInt32Ty(), elemPtr, "elem");

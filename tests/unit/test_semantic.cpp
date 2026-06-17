@@ -911,6 +911,13 @@ TEST_CASE("semantic rejects a ternary with a non-boolean condition") {
         "public static method main(string[] args) returns void { int a = 5; int m = a ? 1 : 2; }")));
 }
 
+TEST_CASE("semantic accepts operator[] overloading") {
+    CHECK(checkSrc(withClass(
+        "public class Triple { private int a; public constructor Triple() { this.a = 7; }"
+        " public operator [] (int i) returns int { return this.a; } }",
+        "Triple t = new Triple() on stack; int x = t[0];")));
+}
+
 TEST_CASE("semantic rejects a class extending a sealed type not in its permits") {
     CHECK_FALSE(checkSrc(withClass(
         "public sealed class Base permits Ok { public constructor Base() {} }"

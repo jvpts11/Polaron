@@ -1,0 +1,32 @@
+program OperatorIndex;
+
+public bundle main {
+    public namespace app {
+        public class Triple {
+            private int a;
+            private int b;
+            private int c;
+            public constructor Triple(int a, int b, int c) {
+                this.a = a;
+                this.b = b;
+                this.c = c;
+            }
+            // operator[] overload (spec 6.5): read by index.
+            public operator [] (int i) returns int {
+                if (i == 0) { return this.a; }
+                if (i == 1) { return this.b; }
+                return this.c;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Triple t = new Triple(10, 20, 30) on stack;
+                System.IO.println($"t0 = {t[0]}");   // 10
+                System.IO.println($"t1 = {t[1]}");   // 20
+                System.IO.println($"t2 = {t[2]}");   // 30
+                return;
+            }
+        }
+    }
+}
