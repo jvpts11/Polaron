@@ -13,7 +13,9 @@ execute_process(COMMAND "${LDP3C}" "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "ldp3c failed (exit ${rc})")
 endif()
-execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}" -o "${exe}"
+# Link the minimal LDP3 runtime (graph-identity tables for persistent serialization).
+execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}"
+    "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.c" -o "${exe}"
     -llegacy_stdio_definitions RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})")

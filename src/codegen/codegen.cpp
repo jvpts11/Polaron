@@ -2301,6 +2301,12 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", fn));
         llvm::Value* file = fn->getArg(0);
         llvm::Value* obj = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "obj");
+        // Register BEFORE reading fields so cycles / back-references resolve to this object.
+        builder.CreateCall(
+            module.getOrInsertFunction(
+                "__ldp3_made_add",
+                llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false)),
+            {obj});
         llvm::Value* flagSlot = builder.CreateAlloca(builder.getInt8Ty(), nullptr, "flag");
         auto freadF = module.getOrInsertFunction(
             "fread", llvm::FunctionType::get(i64, {ptrTy, i64, i64, ptrTy}, false));
@@ -2325,32 +2331,65 @@ struct CodeGenerator::Impl {
         if (cit == classes.end()) return;
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::PointerType* ptrTy = builder.getPtrTy();
+        llvm::Type* i8 = builder.getInt8Ty();
+        llvm::Type* i32 = builder.getInt32Ty();
         llvm::Value* one = builder.getInt64(1);
+        llvm::Value* four = builder.getInt64(4);
+        llvm::Value* idSlot = builder.CreateAlloca(i32, nullptr, "id");
+        auto internF = module.getOrInsertFunction(
+            "__ldp3_intern", llvm::FunctionType::get(i32, {ptrTy}, false));
+        auto madeAtF = module.getOrInsertFunction(
+            "__ldp3_made_at", llvm::FunctionType::get(ptrTy, {i32}, false));
         llvm::BasicBlock* afterBB = llvm::BasicBlock::Create(context, "ptr.after", fn);
+        // Flag byte: 0 = null, 1 = new object (recurse), 2 = back-reference to an existing id
+        // (dedups DAGs and breaks cycles).
         if (!isLoad) {
             llvm::Value* target = builder.CreateLoad(ptrTy, fieldSlot, "ptr.tgt");
-            llvm::Value* present =
-                builder.CreateICmpNE(target, llvm::ConstantPointerNull::get(ptrTy));
-            builder.CreateStore(builder.CreateZExt(present, builder.getInt8Ty()), flagSlot);
+            llvm::BasicBlock* nnBB = llvm::BasicBlock::Create(context, "ptr.nn", fn);
+            llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(context, "ptr.0", fn);
+            builder.CreateCondBr(
+                builder.CreateICmpEQ(target, llvm::ConstantPointerNull::get(ptrTy)), nullBB, nnBB);
+            builder.SetInsertPoint(nullBB);
+            builder.CreateStore(builder.getInt8(0), flagSlot);
             builder.CreateCall(io, {flagSlot, one, one, f});
-            llvm::BasicBlock* writeBB = llvm::BasicBlock::Create(context, "ptr.write", fn);
-            builder.CreateCondBr(present, writeBB, afterBB);
-            builder.SetInsertPoint(writeBB);
+            builder.CreateBr(afterBB);
+            builder.SetInsertPoint(nnBB);
+            llvm::Value* id = builder.CreateCall(internF, {target}, "id");
+            llvm::BasicBlock* newBB = llvm::BasicBlock::Create(context, "ptr.1", fn);
+            llvm::BasicBlock* refBB = llvm::BasicBlock::Create(context, "ptr.2", fn);
+            builder.CreateCondBr(builder.CreateICmpSLT(id, builder.getInt32(0)), newBB, refBB);
+            builder.SetInsertPoint(newBB);
+            builder.CreateStore(builder.getInt8(1), flagSlot);
+            builder.CreateCall(io, {flagSlot, one, one, f});
             if (llvm::Function* sub = getSerFn(cls)) builder.CreateCall(sub, {target, f});
+            builder.CreateBr(afterBB);
+            builder.SetInsertPoint(refBB);
+            builder.CreateStore(builder.getInt8(2), flagSlot);
+            builder.CreateCall(io, {flagSlot, one, one, f});
+            builder.CreateStore(id, idSlot);
+            builder.CreateCall(io, {idSlot, four, one, f});
             builder.CreateBr(afterBB);
         } else {
             builder.CreateCall(io, {flagSlot, one, one, f});
-            llvm::Value* present = builder.CreateICmpNE(
-                builder.CreateLoad(builder.getInt8Ty(), flagSlot, "pflag.v"), builder.getInt8(0));
-            llvm::BasicBlock* allocBB = llvm::BasicBlock::Create(context, "ptr.alloc", fn);
-            llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(context, "ptr.null", fn);
-            builder.CreateCondBr(present, allocBB, nullBB);
-            builder.SetInsertPoint(allocBB);
-            llvm::Value* target = builder.CreateCall(getDeserFn(cls), {f}, "ptr.new");
-            builder.CreateStore(target, fieldSlot);
-            builder.CreateBr(afterBB);
+            llvm::Value* flag = builder.CreateLoad(i8, flagSlot, "flag");
+            llvm::BasicBlock* nnBB = llvm::BasicBlock::Create(context, "ptr.nn", fn);
+            llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(context, "ptr.0", fn);
+            builder.CreateCondBr(builder.CreateICmpEQ(flag, builder.getInt8(0)), nullBB, nnBB);
             builder.SetInsertPoint(nullBB);
             builder.CreateStore(llvm::ConstantPointerNull::get(ptrTy), fieldSlot);
+            builder.CreateBr(afterBB);
+            builder.SetInsertPoint(nnBB);
+            llvm::BasicBlock* newBB = llvm::BasicBlock::Create(context, "ptr.1", fn);
+            llvm::BasicBlock* refBB = llvm::BasicBlock::Create(context, "ptr.2", fn);
+            builder.CreateCondBr(builder.CreateICmpEQ(flag, builder.getInt8(1)), newBB, refBB);
+            builder.SetInsertPoint(newBB);
+            builder.CreateStore(builder.CreateCall(getDeserFn(cls), {f}, "ptr.new"), fieldSlot);
+            builder.CreateBr(afterBB);
+            builder.SetInsertPoint(refBB);
+            builder.CreateCall(io, {idSlot, four, one, f});
+            builder.CreateStore(
+                builder.CreateCall(madeAtF, {builder.CreateLoad(i32, idSlot, "rid")}, "ref"),
+                fieldSlot);
             builder.CreateBr(afterBB);
         }
         builder.SetInsertPoint(afterBB);
@@ -2389,6 +2428,9 @@ struct CodeGenerator::Impl {
             builder.CreateCondBr(
                 builder.CreateICmpNE(f, llvm::ConstantPointerNull::get(ptrTy)), bodyBB, endBB);
             builder.SetInsertPoint(bodyBB);
+            auto resetF = module.getOrInsertFunction(
+                "__ldp3_graph_reset", llvm::FunctionType::get(builder.getVoidTy(), {}, false));
+            builder.CreateCall(resetF);  // fresh graph-identity tables for this pass
             for (const auto& gt : persistentStatics) {
                 if (gt.cls.empty()) {  // primitive global: raw bytes
                     builder.CreateCall(io, {gt.global, sizeOf(gt.type), builder.getInt64(1), f});

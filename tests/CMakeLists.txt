@@ -213,6 +213,25 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
 
+        # graph identity (object ids): a DAG (two pointers to one object) dedups; a self-cycle
+        # does not loop. Both survive runs -> a=4 b=5 c=6 on run 2.
+        add_test(NAME codegen_persist_dag_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_dag.ldp3"
+            "-DEXPECTED=a=4 b=5 c=6"
+            "-DSTORE=PersistDag.ldpstore"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
+        add_test(NAME codegen_persist_cycle_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_cycle.ldp3"
+            "-DEXPECTED=a=4 b=5 c=6"
+            "-DSTORE=PersistCycle.ldpstore"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
+
         # M4: inline field initializers + synthesized default constructor.
         add_test(NAME codegen_field_init_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
