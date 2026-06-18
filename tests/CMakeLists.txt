@@ -227,6 +227,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # closure: lambda captures a local byref (sees post-capture mutation).
+        add_test(NAME codegen_lambda_byref_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_byref.ldp3"
+            "-DEXPECTED=b=9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # persistents (spec 18, F7): a `static persistent` value survives across runs.
         # Runs the exe twice; the second run must observe the persisted value (runs = 2).
         add_test(NAME codegen_persist_runs COMMAND "${CMAKE_COMMAND}"

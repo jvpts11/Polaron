@@ -1,0 +1,18 @@
+program LambdaByref;
+
+// Closure with byref capture: the lambda shares the variable's storage, so it sees changes made
+// after the capture. counter is 5, then 9 before the call -> get() returns 9 (byvalue would copy 5).
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int counter = 5;
+                function<int> get =
+                    lambda[captures: byref counter]() returns int { return counter; };
+                counter = 9;
+                System.IO.printf("b=%d\n", get());
+                return;
+            }
+        }
+    }
+}
