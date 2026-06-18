@@ -875,7 +875,8 @@ struct CodeGenerator::Impl {
             return llvm::ConstantPointerNull::get(builder.getPtrTy());
         }
         if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(&expr)) {
-            // MVP (no captures): lower to a top-level function and yield its pointer.
+            // Lower to a top-level function, then wrap it in a heap closure {code, env}. The env
+            // is null until captures fill it; a function value is always a pointer to this pair.
             std::vector<llvm::Type*> pts;
             for (const auto& p : lam->params) pts.push_back(llvmType(typeRefName(p.type)));
             llvm::Type* rt = llvmType(typeRefName(lam->returnType));
@@ -892,7 +893,11 @@ struct CodeGenerator::Impl {
             currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
             locals = sLoc; scopeObjects = sScope; deferred = sDef;
             builder.restoreIP(sIP);
-            return fn;
+            llvm::Value* clos = builder.CreateCall(mallocFn(), {builder.getInt64(16)}, "closure");
+            builder.CreateStore(fn, clos);  // [0] = code pointer
+            llvm::Value* envSlot = builder.CreateGEP(builder.getPtrTy(), clos, builder.getInt32(1));
+            builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), envSlot);  // [1] = env
+            return clos;
         }
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
             const std::int64_t v = parseIntLiteral(n->text);
@@ -1377,8 +1382,9 @@ struct CodeGenerator::Impl {
                 std::vector<llvm::Type*> pts;
                 for (std::size_t i = 1; i < parts.size(); i++) pts.push_back(llvmType(parts[i]));
                 auto* fty = llvm::FunctionType::get(llvmType(parts[0]), pts, false);
-                llvm::Value* fnPtr =
+                llvm::Value* closPtr =
                     builder.CreateLoad(builder.getPtrTy(), lit->second.storage, id->name);
+                llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), closPtr, "code");
                 std::vector<llvm::Value*> args;
                 for (const auto& a : call.args) {
                     llvm::Value* v = emitExpr(*a);
@@ -1408,7 +1414,8 @@ struct CodeGenerator::Impl {
                 std::vector<llvm::Type*> pts;
                 for (std::size_t i = 1; i < parts.size(); i++) pts.push_back(llvmType(parts[i]));
                 auto* fty = llvm::FunctionType::get(llvmType(parts[0]), pts, false);
-                llvm::Value* fnPtr = emitExpr(*call.callee);  // loads the field's function pointer
+                llvm::Value* closPtr = emitExpr(*call.callee);  // the closure pointer
+                llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), closPtr, "code");
                 std::vector<llvm::Value*> args;
                 for (const auto& a : call.args) {
                     llvm::Value* v = emitExpr(*a);
