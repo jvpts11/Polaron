@@ -222,6 +222,9 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, std::unordered_set<std::string>> persistentInstanceFields;
     // set by a var-decl just before emitNew so the new object can wire up its persistent block
     std::string pendingPersistKey;
+    // per-class recursive (de)serializers for graph/list persistence (generated on demand)
+    std::unordered_map<std::string, llvm::Function*> serFns;
+    std::unordered_map<std::string, llvm::Function*> deserFns;
     std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
@@ -2247,14 +2250,81 @@ struct CodeGenerator::Impl {
     // address of the pointer inside the block; `cls` is the pointee class. Writes a 1-byte flag
     // (0 = null, 1 = present) then, when present, the pointee's fields. MVP: one level deep,
     // primitive pointee fields, no cycles. `flagSlot` is a reusable i8 scratch alloca.
+    // Recursive per-class serializer (graphs/lists). Registered before its body so it can
+    // recurse on itself; IP is saved/restored since it's generated mid-emission of another fn.
+    llvm::Function* getSerFn(const std::string& cls) {
+        auto it = serFns.find(cls);
+        if (it != serFns.end()) return it->second;
+        auto cit = classes.find(cls);
+        if (cit == classes.end()) return nullptr;
+        llvm::PointerType* ptrTy = builder.getPtrTy();
+        llvm::Type* i64 = builder.getInt64Ty();
+        llvm::Function* fn = llvm::Function::Create(
+            llvm::FunctionType::get(builder.getVoidTy(), {ptrTy, ptrTy}, false),
+            llvm::Function::InternalLinkage, "__ldp3_ser_" + cls, module);
+        serFns[cls] = fn;
+        llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", fn));
+        llvm::Value* obj = fn->getArg(0);
+        llvm::Value* file = fn->getArg(1);
+        llvm::Value* flagSlot = builder.CreateAlloca(builder.getInt8Ty(), nullptr, "flag");
+        auto fwriteF = module.getOrInsertFunction(
+            "fwrite", llvm::FunctionType::get(i64, {ptrTy, i64, i64, ptrTy}, false));
+        for (const auto& [pn, pt] : collectFields(cls)) {
+            llvm::Value* slot =
+                builder.CreateStructGEP(cit->second.type, obj, cit->second.fieldIndex.at(pn));
+            if (!pt.empty() && pt.back() == '*') {
+                emitPointerIO(slot, baseType(pt), false, fwriteF, file, flagSlot);
+            } else {
+                builder.CreateCall(fwriteF,
+                                   {slot, sizeOf(llvmType(pt)), builder.getInt64(1), file});
+            }
+        }
+        builder.CreateRetVoid();
+        builder.restoreIP(saved);
+        return fn;
+    }
+
+    // Recursive per-class deserializer: mallocs the object, reads fields, follows pointers.
+    llvm::Function* getDeserFn(const std::string& cls) {
+        auto it = deserFns.find(cls);
+        if (it != deserFns.end()) return it->second;
+        auto cit = classes.find(cls);
+        if (cit == classes.end()) return nullptr;
+        llvm::PointerType* ptrTy = builder.getPtrTy();
+        llvm::Type* i64 = builder.getInt64Ty();
+        llvm::Function* fn = llvm::Function::Create(
+            llvm::FunctionType::get(ptrTy, {ptrTy}, false),
+            llvm::Function::InternalLinkage, "__ldp3_deser_" + cls, module);
+        deserFns[cls] = fn;
+        llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", fn));
+        llvm::Value* file = fn->getArg(0);
+        llvm::Value* obj = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "obj");
+        llvm::Value* flagSlot = builder.CreateAlloca(builder.getInt8Ty(), nullptr, "flag");
+        auto freadF = module.getOrInsertFunction(
+            "fread", llvm::FunctionType::get(i64, {ptrTy, i64, i64, ptrTy}, false));
+        for (const auto& [pn, pt] : collectFields(cls)) {
+            llvm::Value* slot =
+                builder.CreateStructGEP(cit->second.type, obj, cit->second.fieldIndex.at(pn));
+            if (!pt.empty() && pt.back() == '*') {
+                emitPointerIO(slot, baseType(pt), true, freadF, file, flagSlot);
+            } else {
+                builder.CreateCall(freadF,
+                                   {slot, sizeOf(llvmType(pt)), builder.getInt64(1), file});
+            }
+        }
+        builder.CreateRet(obj);
+        builder.restoreIP(saved);
+        return fn;
+    }
+
     void emitPointerIO(llvm::Value* fieldSlot, const std::string& cls, bool isLoad,
                        llvm::FunctionCallee io, llvm::Value* f, llvm::Value* flagSlot) {
         auto cit = classes.find(cls);
         if (cit == classes.end()) return;
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::PointerType* ptrTy = builder.getPtrTy();
-        llvm::StructType* tty = cit->second.type;
-        const auto fields = collectFields(cls);
         llvm::Value* one = builder.getInt64(1);
         llvm::BasicBlock* afterBB = llvm::BasicBlock::Create(context, "ptr.after", fn);
         if (!isLoad) {
@@ -2266,11 +2336,7 @@ struct CodeGenerator::Impl {
             llvm::BasicBlock* writeBB = llvm::BasicBlock::Create(context, "ptr.write", fn);
             builder.CreateCondBr(present, writeBB, afterBB);
             builder.SetInsertPoint(writeBB);
-            for (const auto& [pn, pt] : fields) {
-                llvm::Value* cfp =
-                    builder.CreateStructGEP(tty, target, cit->second.fieldIndex.at(pn));
-                builder.CreateCall(io, {cfp, sizeOf(llvmType(pt)), one, f});
-            }
+            if (llvm::Function* sub = getSerFn(cls)) builder.CreateCall(sub, {target, f});
             builder.CreateBr(afterBB);
         } else {
             builder.CreateCall(io, {flagSlot, one, one, f});
@@ -2280,12 +2346,7 @@ struct CodeGenerator::Impl {
             llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(context, "ptr.null", fn);
             builder.CreateCondBr(present, allocBB, nullBB);
             builder.SetInsertPoint(allocBB);
-            llvm::Value* target = builder.CreateCall(mallocFn(), {sizeOf(tty)}, "ptr.new");
-            for (const auto& [pn, pt] : fields) {
-                llvm::Value* cfp =
-                    builder.CreateStructGEP(tty, target, cit->second.fieldIndex.at(pn));
-                builder.CreateCall(io, {cfp, sizeOf(llvmType(pt)), one, f});
-            }
+            llvm::Value* target = builder.CreateCall(getDeserFn(cls), {f}, "ptr.new");
             builder.CreateStore(target, fieldSlot);
             builder.CreateBr(afterBB);
             builder.SetInsertPoint(nullBB);

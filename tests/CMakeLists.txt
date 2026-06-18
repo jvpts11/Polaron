@@ -202,6 +202,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
 
+        # persistent linked list (recursive graph serialization): the whole Node chain reached
+        # via a persistent head pointer survives runs and grows -> a=4 b=5 c=6 on run 2.
+        add_test(NAME codegen_persist_list_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_list.ldp3"
+            "-DEXPECTED=a=4 b=5 c=6"
+            "-DSTORE=PersistList.ldpstore"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
+
         # M4: inline field initializers + synthesized default constructor.
         add_test(NAME codegen_field_init_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

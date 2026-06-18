@@ -1,0 +1,40 @@
+program PersistList;
+
+// Persistent LINKED LIST (graph recursion): List.head is a persistent pointer; the whole Node
+// chain is serialized recursively (__ldp3_ser_Node calls itself for `next`) and rebuilt on load.
+// Each tick() prepends a node and sums the list -- it grows across calls AND across runs:
+// run 1 -> a=1 b=2 c=3, run 2 -> a=4 b=5 c=6.
+public bundle main {
+    public namespace app {
+        public class Node {
+            public mutable int value = 0;
+            public mutable Node* next;
+            public constructor Node() {}
+        }
+        public class List {
+            public persistent mutable Node* head;
+            public constructor List() {}
+        }
+        public class Main {
+            public static method tick() returns int {
+                List l = new List() on heap;
+                Node* n = new Node() on heap;
+                n.value = 1;
+                n.next = l.head;
+                l.head = n;
+                mutable int s = 0;
+                mutable Node* cur = l.head;
+                while (cur != null) {
+                    s = s + cur.value;
+                    cur = cur.next;
+                }
+                delete l;
+                return s;
+            }
+            public static method main(string[] args) returns void {
+                System.IO.println($"a={Main.tick()} b={Main.tick()} c={Main.tick()}");
+                return;
+            }
+        }
+    }
+}
