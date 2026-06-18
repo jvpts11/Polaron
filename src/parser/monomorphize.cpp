@@ -69,6 +69,7 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         }
         n->returnType = substType(x->returnType, s);
         n->body = cloneBlock(x->body, s);
+        n->captures = x->captures;  // captures carry no types to substitute -- copy as-is
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::StringLiteralExpr*>(e)) {
