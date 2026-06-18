@@ -1,0 +1,15 @@
+program LambdaVoid;
+
+// A void lambda with no parameters: function<void>. Lowered to a top-level fn and called
+// like the others (indirect call, void return). Prints hi=7.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                function<void> greet = lambda() returns void { System.IO.printf("hi=%d\n", 7); };
+                greet();
+                return;
+            }
+        }
+    }
+}
