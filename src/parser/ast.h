@@ -309,7 +309,16 @@ struct Param {
 
 // A lambda value: `lambda(params) returns T { body }`. Its type is function<T, Params...>.
 // MVP: no captures (lowers to a top-level function pointer).
+// One lambda capture: `byvalue x` (copy) or `byref y` (reference). Parsed now; the codegen for
+// closures (a function value that carries an environment) is the next step.
+struct Capture {
+    bool byRef = false;
+    std::string name;
+    SourceLocation loc;
+};
+
 struct LambdaExpr : Expr {
+    std::vector<Capture> captures;  // lambda[captures: ...]; empty = no-capture (current MVP)
     std::vector<Param> params;
     TypeRef returnType;
     Block body;

@@ -1686,7 +1686,28 @@ ast::ExprPtr Parser::parsePrimary() {
         case TokenKind::KwLambda: {
             auto e = std::make_unique<ast::LambdaExpr>();
             e->loc = tok.loc;
-            advance();  // 'lambda'  (MVP: no captures yet)
+            advance();  // 'lambda'
+            // Optional capture list: lambda[captures: byvalue x, byref y](...). Parsed now;
+            // the codegen for closures (carrying an environment) is the next step.
+            if (check(TokenKind::LBracket)) {
+                advance();  // '['
+                expect(TokenKind::Identifier, "'captures' in the lambda capture list");
+                expect(TokenKind::Colon, "':' after 'captures'");
+                do {
+                    ast::Capture cap;
+                    cap.loc = current().loc;
+                    const std::string mode = current().lexeme;
+                    expect(TokenKind::Identifier, "'byvalue' or 'byref'");
+                    if (mode != "byvalue" && mode != "byref") {
+                        fail("expected 'byvalue' or 'byref' but found '" + mode + "'", cap.loc);
+                    }
+                    cap.byRef = (mode == "byref");
+                    cap.name = current().lexeme;
+                    expect(TokenKind::Identifier, "a captured variable name");
+                    e->captures.push_back(std::move(cap));
+                } while (match(TokenKind::Comma));
+                expect(TokenKind::RBracket, "']' to close the capture list");
+            }
             expect(TokenKind::LParen, "'(' after lambda");
             e->params = parseParams();
             expect(TokenKind::RParen, "')' to close lambda parameters");
