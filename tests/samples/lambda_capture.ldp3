@@ -1,0 +1,17 @@
+program LambdaCapture;
+
+// Closure: a lambda captures a local by value (byvalue). The value is copied into the closure's
+// environment and read inside the lambda. With base=10, addBase(5) = 15.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int base = 10;
+                function<int, int> addBase =
+                    lambda[captures: byvalue base](int n) returns int { return n + base; };
+                System.IO.printf("c=%d\n", addBase(5));
+                return;
+            }
+        }
+    }
+}

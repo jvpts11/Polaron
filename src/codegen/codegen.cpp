@@ -884,21 +884,50 @@ struct CodeGenerator::Impl {
             llvm::Function* fn = llvm::Function::Create(
                 llvm::FunctionType::get(rt, pts, false), llvm::Function::InternalLinkage,
                 "__ldp3_lambda_" + std::to_string(lambdaCounter++), module);
+            // Collect each captured variable's storage and type from the enclosing scope before
+            // emitBody clears `locals`.
+            std::vector<llvm::Value*> capStorages;
+            std::vector<std::string> capTypes;
+            for (const auto& cap : lam->captures) {
+                auto cit = locals.find(cap.name);
+                capStorages.push_back(cit != locals.end() ? cit->second.storage : nullptr);
+                capTypes.push_back(cit != locals.end() ? cit->second.type : std::string("int"));
+            }
             // emitBody clobbers all function-local state -- save and restore it.
             auto sFn = currentFn; auto sCls = currentClass; auto sRet = currentRetType;
             auto sEns = currentEnsures; auto sInv = currentInvariants; auto sThis = currentThis;
             auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
             auto sIP = builder.saveIP();
             emitBody(fn, lam->body, lam->params, "", rt, nullptr, nullptr, nullptr, nullptr,
-                     /*hasEnv=*/true);
+                     /*hasEnv=*/true, &lam->captures, &capTypes);
             currentFn = sFn; currentClass = sCls; currentRetType = sRet;
             currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
             locals = sLoc; scopeObjects = sScope; deferred = sDef;
             builder.restoreIP(sIP);
+            // Build the environment: one pointer slot per capture. byvalue copies the value into a
+            // fresh heap slot; byref shares the variable's own storage.
+            llvm::Value* envPtr = llvm::ConstantPointerNull::get(builder.getPtrTy());
+            if (!lam->captures.empty()) {
+                envPtr = builder.CreateCall(
+                    mallocFn(), {builder.getInt64(8 * (std::int64_t)lam->captures.size())}, "env");
+                for (std::size_t i = 0; i < lam->captures.size(); i++) {
+                    llvm::Value* dst =
+                        builder.CreateGEP(builder.getPtrTy(), envPtr, builder.getInt32(i));
+                    if (lam->captures[i].byRef) {
+                        builder.CreateStore(capStorages[i], dst);  // share the original storage
+                    } else {
+                        llvm::Type* vt = llvmType(capTypes[i]);
+                        llvm::Value* copy =
+                            builder.CreateCall(mallocFn(), {builder.getInt64(8)}, "cap");
+                        builder.CreateStore(builder.CreateLoad(vt, capStorages[i]), copy);
+                        builder.CreateStore(copy, dst);
+                    }
+                }
+            }
             llvm::Value* clos = builder.CreateCall(mallocFn(), {builder.getInt64(16)}, "closure");
             builder.CreateStore(fn, clos);  // [0] = code pointer
             llvm::Value* envSlot = builder.CreateGEP(builder.getPtrTy(), clos, builder.getInt32(1));
-            builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), envSlot);  // [1] = env
+            builder.CreateStore(envPtr, envSlot);  // [1] = env
             return clos;
         }
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
@@ -2726,7 +2755,8 @@ struct CodeGenerator::Impl {
                   const std::vector<ast::ExprPtr>* requiresClauses = nullptr,
                   const std::vector<ast::ExprPtr>* ensuresClauses = nullptr,
                   const std::vector<ast::ExprPtr>* invariants = nullptr,
-                  bool hasEnv = false) {
+                  bool hasEnv = false, const std::vector<ast::Capture>* caps = nullptr,
+                  const std::vector<std::string>* capTypes = nullptr) {
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
@@ -2752,6 +2782,19 @@ struct CodeGenerator::Impl {
             builder.CreateStore(fn->getArg(argIdx), slot);
             locals[p.name] = LocalSlot{slot, pt};
             ++argIdx;
+        }
+        // Captured variables: env (arg 0) is an array of pointers, one per capture. Each slot
+        // holds a pointer to the captured variable's storage (a private copy for byvalue, or the
+        // original variable for byref); the lambda body reads/writes through it.
+        if (caps != nullptr) {
+            llvm::Value* envArg = fn->getArg(0);
+            for (std::size_t i = 0; i < caps->size(); i++) {
+                llvm::Value* slotPtr =
+                    builder.CreateGEP(builder.getPtrTy(), envArg, builder.getInt32(i));
+                llvm::Value* storage =
+                    builder.CreateLoad(builder.getPtrTy(), slotPtr, (*caps)[i].name);
+                locals[(*caps)[i].name] = LocalSlot{storage, (*capTypes)[i]};
+            }
         }
 
         // A constructor first runs super() (base constructor) -- implicit, or
