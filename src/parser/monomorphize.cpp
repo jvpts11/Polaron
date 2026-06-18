@@ -57,6 +57,20 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->text = x->text;
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::LambdaExpr*>(e)) {
+        auto n = std::make_unique<ast::LambdaExpr>();
+        n->loc = x->loc;
+        for (const auto& p : x->params) {
+            ast::Param np;
+            np.type = substType(p.type, s);
+            np.name = p.name;
+            np.loc = p.loc;
+            n->params.push_back(std::move(np));
+        }
+        n->returnType = substType(x->returnType, s);
+        n->body = cloneBlock(x->body, s);
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::StringLiteralExpr*>(e)) {
         auto n = std::make_unique<ast::StringLiteralExpr>();
         n->loc = x->loc;
