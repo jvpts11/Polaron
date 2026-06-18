@@ -481,6 +481,7 @@ struct CodeGenerator::Impl {
             const std::int64_t v = parseIntLiteral(n->text);
             return (v >= INT32_MIN && v <= INT32_MAX) ? "int" : "int64";
         }
+        if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) return "null";
         if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
             std::string s = "(";
             for (std::size_t i = 0; i < tup->elements.size(); ++i)
@@ -860,6 +861,9 @@ struct CodeGenerator::Impl {
         if (const auto* s = dynamic_cast<const ast::StringLiteralExpr*>(&expr)) {
             return builder.CreateGlobalStringPtr(resolveEscapes(s->value), ".str");
         }
+        if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) {
+            return llvm::ConstantPointerNull::get(builder.getPtrTy());
+        }
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
             const std::int64_t v = parseIntLiteral(n->text);
             if (v >= INT32_MIN && v <= INT32_MAX) {
@@ -1118,6 +1122,16 @@ struct CodeGenerator::Impl {
             if (fc != nullptr) return builder.CreateZExt(fc, builder.getInt32Ty());
             error("unsupported float operator '" + op + "'", bin.loc);
             return nullptr;
+        }
+        // Pointer path: == / != on pointers (incl. null) compares addresses directly,
+        // skipping integer promotion (which would try to cast a pointer to int).
+        auto isPtrish = [](const std::string& t) {
+            return t == "null" || (!t.empty() && (t.back() == '*' || t.back() == '&'));
+        };
+        if ((op == "==" || op == "!=") && (isPtrish(lt) || isPtrish(rt))) {
+            llvm::Value* cmp = (op == "==") ? builder.CreateICmpEQ(l, r)
+                                            : builder.CreateICmpNE(l, r);
+            return builder.CreateZExt(cmp, builder.getInt32Ty());
         }
         // Integer path: promote both operands to the wider bit width. If either
         // side is unsigned the operation is unsigned (zero-extend, udiv/urem,

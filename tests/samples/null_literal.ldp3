@@ -1,0 +1,20 @@
+program NullLiteral;
+
+// The `null` pointer literal: assign it to a pointer, and compare with == / !=.
+public bundle main {
+    public namespace app {
+        public class Node {
+            public mutable int v = 0;
+            public constructor Node() {}
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Node* p = null;
+                if (p == null) { System.IO.printf("null=%d ", 1); }
+                p = new Node() on heap;
+                if (p != null) { System.IO.printf("set=%d\n", 1); }
+                return;
+            }
+        }
+    }
+}

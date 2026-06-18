@@ -108,6 +108,7 @@ const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
 
 bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& super) const {
     if (sub == super) return true;
+    if (sub == "null" && isRefType(super)) return true;  // null binds to any pointer/reference
     // int and float both widen to a float type (no implicit narrowing).
     if (isFloatType(super) && isNumeric(sub)) return true;
     // Integers widen to a wider integer (no implicit narrowing).
@@ -984,6 +985,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
     if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
     if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
+    if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) return "null";
 
     if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
         // A tuple literal's type is "(c0,c1,...)" of its components' types.
@@ -1149,7 +1151,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return "boolean";
         }
         if (op == "==" || op == "!=") {
-            if (!lt.empty() && !rt.empty() && lt != rt) {
+            const bool nullPtr =
+                (lt == "null" && isRefType(rt)) || (rt == "null" && isRefType(lt));
+            if (!lt.empty() && !rt.empty() && lt != rt && !nullPtr) {
                 error("operator '" + op + "' requires operands of the same type", bin->loc);
             }
             return "boolean";

@@ -79,6 +79,10 @@ struct BoolLiteralExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+struct NullLiteralExpr : Expr {  // the `null` pointer literal
+    void dump(std::string& out, int /*indent*/) const override { out += "null"; }
+};
+
 struct MemberExpr : Expr {
     ExprPtr object;
     std::string member;

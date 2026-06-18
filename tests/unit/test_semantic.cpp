@@ -194,6 +194,15 @@ TEST_CASE("semantic accepts a persistent instance field used via this in a metho
         " Car c = new Car() on heap; c.bump(); delete c; return; } } } }"));
 }
 
+TEST_CASE("semantic accepts null assigned to a pointer and compared with ==/!=") {
+    CHECK(checkSrc(
+        "program P; public bundle main { public namespace app {"
+        " public class Node { public mutable int v = 0; public constructor Node() {} }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " mutable Node* p = null; if (p == null) { p = new Node() on heap; }"
+        " if (p != null) { delete p; } return; } } } }"));
+}
+
 TEST_CASE("semantic accepts a persistent pointer field (graph serialization)") {
     CHECK(checkSrc(
         "program P; public bundle main { public namespace app {"

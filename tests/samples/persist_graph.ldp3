@@ -11,16 +11,14 @@ public bundle main {
             public constructor Engine() {}
         }
         public class Car {
-            public persistent mutable boolean built = false;
             public persistent mutable Engine* engine;
             public constructor Car() {}
         }
         public class Main {
             public static method tick() returns int {
                 Car c = new Car() on heap;
-                if (!c.built) {
+                if (c.engine == null) {
                     c.engine = new Engine() on heap;
-                    c.built = true;
                 }
                 c.engine.power = c.engine.power + 1;
                 int r = c.engine.power;

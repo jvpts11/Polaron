@@ -1327,6 +1327,11 @@ static ast::ExprPtr cloneLValue(const ast::Expr* e) {
         n->text = il->text;
         return n;
     }
+    if (const auto* nl = dynamic_cast<const ast::NullLiteralExpr*>(e)) {
+        auto n = std::make_unique<ast::NullLiteralExpr>();
+        n->loc = nl->loc;
+        return n;
+    }
     return nullptr;
 }
 
@@ -1652,6 +1657,12 @@ ast::ExprPtr Parser::parsePrimary() {
             e->text = tok.lexeme;
             advance();
             return maybeLiteralSuffix(std::move(e));
+        }
+        case TokenKind::KwNull: {
+            auto e = std::make_unique<ast::NullLiteralExpr>();
+            e->loc = tok.loc;
+            advance();
+            return e;
         }
         case TokenKind::StringLiteral: {
             auto e = std::make_unique<ast::StringLiteralExpr>();

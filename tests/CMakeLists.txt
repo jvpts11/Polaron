@@ -137,6 +137,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # null pointer literal: assign to a pointer, compare with == / != .
+        add_test(NAME codegen_null_literal_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/null_literal.ldp3"
+            "-DEXPECTED=null=1 set=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # persistents (spec 18, F7): a `static persistent` value survives across runs.
         # Runs the exe twice; the second run must observe the persisted value (runs = 2).
         add_test(NAME codegen_persist_runs COMMAND "${CMAKE_COMMAND}"
