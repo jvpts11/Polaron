@@ -1363,10 +1363,15 @@ struct CodeGenerator::Impl {
                 const std::string& ft = lit->second.type;
                 const std::string inner = ft.substr(9, ft.size() - 10);  // strip "function<" ">"
                 std::vector<std::string> parts;
+                int depth = 0;
                 for (std::size_t i = 0, s = 0; i <= inner.size(); i++) {
-                    if (i == inner.size() || inner[i] == ',') {
+                    if (i == inner.size() || (inner[i] == ',' && depth == 0)) {
                         parts.push_back(inner.substr(s, i - s));
                         s = i + 1;
+                    } else if (inner[i] == '<') {
+                        depth++;
+                    } else if (inner[i] == '>') {
+                        depth--;
                     }
                 }
                 std::vector<llvm::Type*> pts;

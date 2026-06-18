@@ -808,7 +808,11 @@ ast::TypeRef Parser::parseTypeRef() {
             ast::TypeRef arg = parseTypeRef();
             nm += (fn++ ? "," : "") + ast::canonicalType(arg);
         } while (match(TokenKind::Comma));
-        expect(TokenKind::Gt, "'>' to close function type");
+        if (current().kind == TokenKind::Shr) {
+            tokens_[pos_].kind = TokenKind::Gt;  // split ">>": take one ">", leave one for the outer type
+        } else {
+            expect(TokenKind::Gt, "'>' to close function type");
+        }
         t.name = nm + ">";
         return t;
     }

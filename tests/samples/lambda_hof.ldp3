@@ -1,0 +1,18 @@
+program LambdaHOF;
+
+// Higher-order lambda: a function that returns a function (function<function<int,int>>).
+// Exercises nested function types (">>" token splitting) + a balanced type split. Prints d=42.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                function<function<int, int>> makeDoubler = lambda() returns function<int, int> {
+                    return lambda(int n) returns int { return n * 2; };
+                };
+                function<int, int> dbl = makeDoubler();
+                System.IO.printf("d=%d\n", dbl(21));
+                return;
+            }
+        }
+    }
+}

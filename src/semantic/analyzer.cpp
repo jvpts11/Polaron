@@ -1246,8 +1246,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 fv != nullptr && fv->type.rfind("function<", 0) == 0) {
                 for (const auto& arg : call->args) typeOf(*arg);
                 const std::string inner = fv->type.substr(9, fv->type.size() - 10);
-                const std::size_t comma = inner.find(',');
-                return comma == std::string::npos ? inner : inner.substr(0, comma);
+                for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
+                    if (inner[i] == '<') depth++;
+                    else if (inner[i] == '>') depth--;
+                    else if (inner[i] == ',' && depth == 0) return inner.substr(0, i);  // the Ret
+                }
+                return inner;  // no params -> the whole inner is the return type
             }
         }
         // super(args): explicitly call the base constructor to pass arguments.
