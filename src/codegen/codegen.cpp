@@ -878,6 +878,7 @@ struct CodeGenerator::Impl {
             // Lower to a top-level function, then wrap it in a heap closure {code, env}. The env
             // is null until captures fill it; a function value is always a pointer to this pair.
             std::vector<llvm::Type*> pts;
+            pts.push_back(builder.getPtrTy());  // arg 0: captured-environment pointer
             for (const auto& p : lam->params) pts.push_back(llvmType(typeRefName(p.type)));
             llvm::Type* rt = llvmType(typeRefName(lam->returnType));
             llvm::Function* fn = llvm::Function::Create(
@@ -888,7 +889,8 @@ struct CodeGenerator::Impl {
             auto sEns = currentEnsures; auto sInv = currentInvariants; auto sThis = currentThis;
             auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
             auto sIP = builder.saveIP();
-            emitBody(fn, lam->body, lam->params, "", rt);
+            emitBody(fn, lam->body, lam->params, "", rt, nullptr, nullptr, nullptr, nullptr,
+                     /*hasEnv=*/true);
             currentFn = sFn; currentClass = sCls; currentRetType = sRet;
             currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
             locals = sLoc; scopeObjects = sScope; deferred = sDef;
@@ -1380,12 +1382,17 @@ struct CodeGenerator::Impl {
                     }
                 }
                 std::vector<llvm::Type*> pts;
+                pts.push_back(builder.getPtrTy());  // arg 0: env
                 for (std::size_t i = 1; i < parts.size(); i++) pts.push_back(llvmType(parts[i]));
                 auto* fty = llvm::FunctionType::get(llvmType(parts[0]), pts, false);
                 llvm::Value* closPtr =
                     builder.CreateLoad(builder.getPtrTy(), lit->second.storage, id->name);
                 llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), closPtr, "code");
+                llvm::Value* envSlot =
+                    builder.CreateGEP(builder.getPtrTy(), closPtr, builder.getInt32(1));
+                llvm::Value* env = builder.CreateLoad(builder.getPtrTy(), envSlot, "env");
                 std::vector<llvm::Value*> args;
+                args.push_back(env);  // arg 0: env
                 for (const auto& a : call.args) {
                     llvm::Value* v = emitExpr(*a);
                     if (v == nullptr) return nullptr;
@@ -1412,11 +1419,16 @@ struct CodeGenerator::Impl {
                     }
                 }
                 std::vector<llvm::Type*> pts;
+                pts.push_back(builder.getPtrTy());  // arg 0: env
                 for (std::size_t i = 1; i < parts.size(); i++) pts.push_back(llvmType(parts[i]));
                 auto* fty = llvm::FunctionType::get(llvmType(parts[0]), pts, false);
                 llvm::Value* closPtr = emitExpr(*call.callee);  // the closure pointer
                 llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), closPtr, "code");
+                llvm::Value* envSlot =
+                    builder.CreateGEP(builder.getPtrTy(), closPtr, builder.getInt32(1));
+                llvm::Value* env = builder.CreateLoad(builder.getPtrTy(), envSlot, "env");
                 std::vector<llvm::Value*> args;
+                args.push_back(env);  // arg 0: env
                 for (const auto& a : call.args) {
                     llvm::Value* v = emitExpr(*a);
                     if (v == nullptr) return nullptr;
@@ -2713,7 +2725,8 @@ struct CodeGenerator::Impl {
                   llvm::Type* retType, const ast::ClassDecl* ctorOf = nullptr,
                   const std::vector<ast::ExprPtr>* requiresClauses = nullptr,
                   const std::vector<ast::ExprPtr>* ensuresClauses = nullptr,
-                  const std::vector<ast::ExprPtr>* invariants = nullptr) {
+                  const std::vector<ast::ExprPtr>* invariants = nullptr,
+                  bool hasEnv = false) {
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
@@ -2727,7 +2740,9 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(block);
 
         unsigned argIdx = 0;
-        if (!thisClass.empty()) {
+        if (hasEnv) {
+            argIdx = 1;  // arg 0 is the captured-environment pointer (a lambda)
+        } else if (!thisClass.empty()) {
             currentThis = fn->getArg(0);
             argIdx = 1;
         }
