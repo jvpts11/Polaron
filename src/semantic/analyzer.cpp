@@ -1355,6 +1355,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                       call->loc);
                 return "";
             }
+            // A field of function<...> type is a function value: obj.f(args) calls it.
+            if (const FieldInfo* fld = findField(objType, mem->member);
+                fld != nullptr && fld->type.rfind("function<", 0) == 0) {
+                for (const auto& arg : call->args) typeOf(*arg);
+                const std::string inner = fld->type.substr(9, fld->type.size() - 10);
+                for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
+                    if (inner[i] == '<') depth++;
+                    else if (inner[i] == '>') depth--;
+                    else if (inner[i] == ',' && depth == 0) return inner.substr(0, i);
+                }
+                return inner;
+            }
             const MethodInfo* m = findMethod(objType, mem->member);
             if (m == nullptr) {
                 error("class '" + objType + "' has no method '" + mem->member + "'", call->loc);

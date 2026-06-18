@@ -1,0 +1,24 @@
+program LambdaField;
+
+// A lambda stored in a class field (strategy pattern): the field has function<...> type, gets a
+// lambda in the constructor, and is called as this.op(x). Prints v=105.
+public bundle main {
+    public namespace app {
+        public class Calc {
+            private function<int, int> op;
+            public constructor Calc() {
+                this.op = lambda(int n) returns int { return n + 100; };
+            }
+            public method apply(int x) returns int {
+                return this.op(x);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Calc c = new Calc();
+                System.IO.printf("v=%d\n", c.apply(5));
+                return;
+            }
+        }
+    }
+}

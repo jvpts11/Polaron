@@ -1388,6 +1388,36 @@ struct CodeGenerator::Impl {
                 return builder.CreateCall(fty, fnPtr, args);
             }
         }
+        // A function-valued field/member: obj.f(args) -> indirect call through the loaded pointer.
+        if (dynamic_cast<const ast::MemberExpr*>(call.callee.get()) != nullptr) {
+            const std::string ft = typeName(*call.callee);
+            if (ft.rfind("function<", 0) == 0) {
+                const std::string inner = ft.substr(9, ft.size() - 10);
+                std::vector<std::string> parts;
+                int depth = 0;
+                for (std::size_t i = 0, s = 0; i <= inner.size(); i++) {
+                    if (i == inner.size() || (inner[i] == ',' && depth == 0)) {
+                        parts.push_back(inner.substr(s, i - s));
+                        s = i + 1;
+                    } else if (inner[i] == '<') {
+                        depth++;
+                    } else if (inner[i] == '>') {
+                        depth--;
+                    }
+                }
+                std::vector<llvm::Type*> pts;
+                for (std::size_t i = 1; i < parts.size(); i++) pts.push_back(llvmType(parts[i]));
+                auto* fty = llvm::FunctionType::get(llvmType(parts[0]), pts, false);
+                llvm::Value* fnPtr = emitExpr(*call.callee);  // loads the field's function pointer
+                std::vector<llvm::Value*> args;
+                for (const auto& a : call.args) {
+                    llvm::Value* v = emitExpr(*a);
+                    if (v == nullptr) return nullptr;
+                    args.push_back(v);
+                }
+                return builder.CreateCall(fty, fnPtr, args);
+            }
+        }
         if (name == "System.IO.readInt") {
             llvm::Value* tmp = createEntryAlloca("readtmp", builder.getInt32Ty());
             llvm::Value* fmt = builder.CreateGlobalStringPtr("%d", ".scanfmt");
