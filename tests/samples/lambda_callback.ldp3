@@ -1,0 +1,18 @@
+program LambdaCallback;
+
+// Lambda passed as an argument (callback): apply() takes a function<int,int> and calls it.
+// Works because a function-typed parameter is just a local function value. Prints r=49.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method apply(function<int, int> f, int x) returns int {
+                return f(x);
+            }
+            public static method main(string[] args) returns void {
+                function<int, int> sq = lambda(int n) returns int { return n * n; };
+                System.IO.printf("r=%d\n", Main.apply(sq, 7));
+                return;
+            }
+        }
+    }
+}
