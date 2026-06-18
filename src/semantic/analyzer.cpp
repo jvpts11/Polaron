@@ -986,6 +986,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
     if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
     if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) return "null";
+    if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(&expr)) {
+        std::string s = "function<" + typeRefStr(lam->returnType);
+        for (const auto& p : lam->params) s += "," + typeRefStr(p.type);
+        return s + ">";
+    }
 
     if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
         // A tuple literal's type is "(c0,c1,...)" of its components' types.
@@ -1235,6 +1240,16 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+        // Calling a function value: callee is a local of type function<Ret, Params...> -> Ret.
+        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
+            if (const LocalVar* fv = lookupLocal(cid->name);
+                fv != nullptr && fv->type.rfind("function<", 0) == 0) {
+                for (const auto& arg : call->args) typeOf(*arg);
+                const std::string inner = fv->type.substr(9, fv->type.size() - 10);
+                const std::size_t comma = inner.find(',');
+                return comma == std::string::npos ? inner : inner.substr(0, comma);
+            }
+        }
         // super(args): explicitly call the base constructor to pass arguments.
         if (dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr) {
             if (!inConstructor_) {

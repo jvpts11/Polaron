@@ -798,8 +798,21 @@ ast::TypeRef Parser::parseTypeRef() {
         t.name = canonical + ")";
         return t;  // tuple components carry their own markers; no outer [] / * / &
     }
-    if (isTypeKeyword(tok.kind) || tok.kind == TokenKind::Identifier ||
-        tok.kind == TokenKind::KwFunction) {  // function<Ret, Params...> is a first-class type
+    // function<Ret, Params...> -- the whole canonical string is the type name (no generic mangling).
+    if (tok.kind == TokenKind::KwFunction) {
+        advance();
+        std::string nm = "function<";
+        expect(TokenKind::Lt, "'<' after function");
+        std::size_t fn = 0;
+        do {
+            ast::TypeRef arg = parseTypeRef();
+            nm += (fn++ ? "," : "") + ast::canonicalType(arg);
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Gt, "'>' to close function type");
+        t.name = nm + ">";
+        return t;
+    }
+    if (isTypeKeyword(tok.kind) || tok.kind == TokenKind::Identifier) {
         t.name = tok.lexeme;
         advance();
     } else {
@@ -948,6 +961,7 @@ ast::StmtPtr Parser::parseStatement() {
           peek(3).kind == TokenKind::Identifier));
     if (check(TokenKind::KwFinal) || check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
         check(TokenKind::KwPersistent) || check(TokenKind::KwEternal) ||
+        check(TokenKind::KwFunction) ||  // function<Ret, Params...> local
         isTypeKeyword(current().kind) || classVarDecl || looksLikeGenericVarDecl()) {
         return parseVarDecl();
     }

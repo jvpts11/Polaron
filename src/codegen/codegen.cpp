@@ -222,6 +222,7 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, std::unordered_set<std::string>> persistentInstanceFields;
     // set by a var-decl just before emitNew so the new object can wire up its persistent block
     std::string pendingPersistKey;
+    int lambdaCounter = 0;  // unique names for lowered lambda functions
     // per-class recursive (de)serializers for graph/list persistence (generated on demand)
     std::unordered_map<std::string, llvm::Function*> serFns;
     std::unordered_map<std::string, llvm::Function*> deserFns;
@@ -267,6 +268,7 @@ struct CodeGenerator::Impl {
         if (isFloatType(t)) return isF32(t) ? builder.getFloatTy() : builder.getDoubleTy();
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
+        if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
         if (classes.count(t) > 0) return builder.getPtrTy();
         return builder.getIntNTy(intBits(t));
     }
@@ -485,6 +487,11 @@ struct CodeGenerator::Impl {
             return (v >= INT32_MIN && v <= INT32_MAX) ? "int" : "int64";
         }
         if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) return "null";
+        if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(&expr)) {
+            std::string s = "function<" + typeRefName(lam->returnType);
+            for (const auto& p : lam->params) s += "," + typeRefName(p.type);
+            return s + ">";
+        }
         if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
             std::string s = "(";
             for (std::size_t i = 0; i < tup->elements.size(); ++i)
@@ -866,6 +873,26 @@ struct CodeGenerator::Impl {
         }
         if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) {
             return llvm::ConstantPointerNull::get(builder.getPtrTy());
+        }
+        if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(&expr)) {
+            // MVP (no captures): lower to a top-level function and yield its pointer.
+            std::vector<llvm::Type*> pts;
+            for (const auto& p : lam->params) pts.push_back(llvmType(typeRefName(p.type)));
+            llvm::Type* rt = llvmType(typeRefName(lam->returnType));
+            llvm::Function* fn = llvm::Function::Create(
+                llvm::FunctionType::get(rt, pts, false), llvm::Function::InternalLinkage,
+                "__ldp3_lambda_" + std::to_string(lambdaCounter++), module);
+            // emitBody clobbers all function-local state -- save and restore it.
+            auto sFn = currentFn; auto sCls = currentClass; auto sRet = currentRetType;
+            auto sEns = currentEnsures; auto sInv = currentInvariants; auto sThis = currentThis;
+            auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
+            auto sIP = builder.saveIP();
+            emitBody(fn, lam->body, lam->params, "", rt);
+            currentFn = sFn; currentClass = sCls; currentRetType = sRet;
+            currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
+            locals = sLoc; scopeObjects = sScope; deferred = sDef;
+            builder.restoreIP(sIP);
+            return fn;
         }
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
             const std::int64_t v = parseIntLiteral(n->text);
@@ -1329,6 +1356,33 @@ struct CodeGenerator::Impl {
 
     llvm::Value* emitCall(const ast::CallExpr& call) {
         const std::string name = flattenCallee(*call.callee);
+        // Calling a function value: a local of type function<Ret, Params...> -> indirect call.
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(call.callee.get())) {
+            auto lit = locals.find(id->name);
+            if (lit != locals.end() && lit->second.type.rfind("function<", 0) == 0) {
+                const std::string& ft = lit->second.type;
+                const std::string inner = ft.substr(9, ft.size() - 10);  // strip "function<" ">"
+                std::vector<std::string> parts;
+                for (std::size_t i = 0, s = 0; i <= inner.size(); i++) {
+                    if (i == inner.size() || inner[i] == ',') {
+                        parts.push_back(inner.substr(s, i - s));
+                        s = i + 1;
+                    }
+                }
+                std::vector<llvm::Type*> pts;
+                for (std::size_t i = 1; i < parts.size(); i++) pts.push_back(llvmType(parts[i]));
+                auto* fty = llvm::FunctionType::get(llvmType(parts[0]), pts, false);
+                llvm::Value* fnPtr =
+                    builder.CreateLoad(builder.getPtrTy(), lit->second.storage, id->name);
+                std::vector<llvm::Value*> args;
+                for (const auto& a : call.args) {
+                    llvm::Value* v = emitExpr(*a);
+                    if (v == nullptr) return nullptr;
+                    args.push_back(v);
+                }
+                return builder.CreateCall(fty, fnPtr, args);
+            }
+        }
         if (name == "System.IO.readInt") {
             llvm::Value* tmp = createEntryAlloca("readtmp", builder.getInt32Ty());
             llvm::Value* fmt = builder.CreateGlobalStringPtr("%d", ".scanfmt");
