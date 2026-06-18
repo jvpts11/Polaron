@@ -30,3 +30,16 @@ int __ldp3_intern(void* x) {
 // Load side: objects are registered in first-seen order, matching the save side's ids.
 void  __ldp3_made_add(void* obj) { ldp3_made[ldp3_made_n++] = obj; }
 void* __ldp3_made_at(int id)     { return ldp3_made[id]; }
+
+// The persistent store lives next to the executable (spec 18), not in the cwd. Builds
+// "<exe directory>\<name>" into a static buffer. kernel32's GetModuleFileNameA is declared
+// here to avoid pulling in the whole <windows.h>.
+unsigned long __stdcall GetModuleFileNameA(void* hModule, char* buf, unsigned long size);
+char* __ldp3_store_path(const char* name) {
+    static char buf[1024];
+    unsigned long n = GetModuleFileNameA((void*)0, buf, (unsigned long)sizeof(buf));
+    while (n > 0 && buf[n - 1] != '\\' && buf[n - 1] != '/') n--;  // strip the exe filename
+    for (int i = 0; name[i] != 0 && n < (unsigned long)sizeof(buf) - 1; i++) buf[n++] = name[i];
+    buf[n] = 0;
+    return buf;
+}

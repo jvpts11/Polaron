@@ -2422,7 +2422,10 @@ struct CodeGenerator::Impl {
             llvm::Value* flagSlot = builder.CreateAlloca(builder.getInt8Ty(), nullptr, "pflag");
             // The ctor registers the save with atexit (global_dtors isn't reliable on Windows).
             if (atexitTarget != nullptr) builder.CreateCall(atexitF, {atexitTarget});
-            llvm::Value* path = builder.CreateGlobalStringPtr(storeName, ".store");
+            auto storePathF = module.getOrInsertFunction(
+                "__ldp3_store_path", llvm::FunctionType::get(ptrTy, {ptrTy}, false));
+            llvm::Value* path = builder.CreateCall(
+                storePathF, {builder.CreateGlobalStringPtr(storeName, ".store")}, "store.path");
             llvm::Value* m = builder.CreateGlobalStringPtr(mode, ".mode");
             llvm::Value* f = builder.CreateCall(fopenF, {path, m}, "f");
             builder.CreateCondBr(
