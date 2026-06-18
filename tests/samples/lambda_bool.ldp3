@@ -1,0 +1,15 @@
+program LambdaBool;
+
+// Lambda with a non-int type: returns boolean. Confirms function values work beyond int.
+// Prints p=1 q=0.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                function<boolean, int> isPos = lambda(int n) returns boolean { return n > 0; };
+                System.IO.printf("p=%d q=%d\n", isPos(5), isPos(0));
+                return;
+            }
+        }
+    }
+}
