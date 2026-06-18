@@ -79,6 +79,8 @@ TokenKind keywordKind(std::string_view text) {
         {"persistent", TokenKind::KwPersistent},
         {"eternal", TokenKind::KwEternal},
         {"transient", TokenKind::KwTransient},
+        {"lambda", TokenKind::KwLambda},
+        {"function", TokenKind::KwFunction},
         {"comptime", TokenKind::KwComptime},
         {"literal", TokenKind::KwLiteral},
         {"import", TokenKind::KwImport},

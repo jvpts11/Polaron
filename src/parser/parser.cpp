@@ -798,7 +798,8 @@ ast::TypeRef Parser::parseTypeRef() {
         t.name = canonical + ")";
         return t;  // tuple components carry their own markers; no outer [] / * / &
     }
-    if (isTypeKeyword(tok.kind) || tok.kind == TokenKind::Identifier) {
+    if (isTypeKeyword(tok.kind) || tok.kind == TokenKind::Identifier ||
+        tok.kind == TokenKind::KwFunction) {  // function<Ret, Params...> is a first-class type
         t.name = tok.lexeme;
         advance();
     } else {
@@ -1662,6 +1663,18 @@ ast::ExprPtr Parser::parsePrimary() {
             auto e = std::make_unique<ast::NullLiteralExpr>();
             e->loc = tok.loc;
             advance();
+            return e;
+        }
+        case TokenKind::KwLambda: {
+            auto e = std::make_unique<ast::LambdaExpr>();
+            e->loc = tok.loc;
+            advance();  // 'lambda'  (MVP: no captures yet)
+            expect(TokenKind::LParen, "'(' after lambda");
+            e->params = parseParams();
+            expect(TokenKind::RParen, "')' to close lambda parameters");
+            expect(TokenKind::KwReturns, "'returns' in a lambda");
+            e->returnType = parseTypeRef();
+            e->body = parseBlock();
             return e;
         }
         case TokenKind::StringLiteral: {

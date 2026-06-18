@@ -307,6 +307,15 @@ struct Param {
     SourceLocation loc;
 };
 
+// A lambda value: `lambda(params) returns T { body }`. Its type is function<T, Params...>.
+// MVP: no captures (lowers to a top-level function pointer).
+struct LambdaExpr : Expr {
+    std::vector<Param> params;
+    TypeRef returnType;
+    Block body;
+    void dump(std::string& out, int /*indent*/) const override { out += "lambda"; }
+};
+
 // One arm of a match: `case Type(t1 b1, ...) { body }` (spec 16). The bindings
 // are positional -- they bind the case type's own fields, in declaration order.
 struct MatchCase {
