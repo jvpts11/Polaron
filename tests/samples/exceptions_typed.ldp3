@@ -1,0 +1,46 @@
+program ExceptionsTyped;
+
+// Typed multi-catch (spec 21.1): clauses are matched in order against the exception's dynamic type,
+// subtype-aware. handle(1) throws IoError -- the NetError clause is skipped, the AppError clause
+// matches (IoError is-a AppError); handle(2) throws NetError -- the NetError clause matches.
+// The caught exception keeps full behaviour: inherited fields (code) and virtual dispatch (kind()).
+// Prints: app code=5 kind=2 / net code=9 kind=3.
+public bundle main {
+    public namespace app {
+        public class AppError {
+            public mutable int code;
+            public constructor AppError() { this.code = 0; }
+            public method kind() returns int { return 1; }
+        }
+        public class IoError extends AppError {
+            public constructor IoError() { this.code = 5; }
+            public override method kind() returns int { return 2; }
+        }
+        public class NetError extends AppError {
+            public constructor NetError() { this.code = 9; }
+            public override method kind() returns int { return 3; }
+        }
+        public class Main {
+            public static method raise(int which) returns void {
+                if (which == 1) { throw new IoError() on heap; }
+                if (which == 2) { throw new NetError() on heap; }
+                return;
+            }
+            public static method handle(int which) returns void {
+                try {
+                    Main.raise(which);
+                } catch (NetError e) {
+                    System.IO.printf("net code=%d kind=%d\n", e.code, e.kind());
+                } catch (AppError e) {
+                    System.IO.printf("app code=%d kind=%d\n", e.code, e.kind());
+                }
+                return;
+            }
+            public static method main(string[] args) returns void {
+                Main.handle(1);
+                Main.handle(2);
+                return;
+            }
+        }
+    }
+}

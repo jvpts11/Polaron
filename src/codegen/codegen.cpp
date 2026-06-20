@@ -1767,10 +1767,29 @@ struct CodeGenerator::Impl {
         return emitMaybeInvoke(callee.getFunctionType(), callee.getCallee(), args, name);
     }
 
-    // try { body } catch (T e) { ... } ... [finally { ... }] (spec 21.1). MVP: catches the carrier
-    // (any LDP3 exception); per-type matching and exceptional-path finally are later slices.
+    // Vtables of every concrete class that is `t` or a subclass of `t` -- used to match a caught
+    // exception's dynamic type against a catch clause (subtype-aware). Empty if `t` is not a
+    // polymorphic class, in which case the clause is treated as a catch-all (preserves the carrier).
+    std::vector<llvm::Constant*> subtypeVtables(const std::string& t) {
+        std::vector<llvm::Constant*> out;
+        for (const auto& [cn, cl] : classes) {
+            if (cl.vtable == nullptr) continue;
+            for (std::string c = cn; !c.empty();) {
+                if (c == t) { out.push_back(cl.vtable); break; }
+                auto it = classes.find(c);
+                c = (it != classes.end()) ? it->second.superclass : std::string();
+            }
+        }
+        return out;
+    }
+
+    // try { body } catch (T e) { ... } ... [finally { ... }] (spec 21.1). One catchpad catches the
+    // canonical carrier; the clauses are matched in order against the exception's LDP3 runtime type
+    // (subtype-aware via vtables). If none match, the current exception is rethrown. finally runs on
+    // the normal and caught paths (the uncaught-propagation finally is a later slice).
     void emitTry(const ast::TryStmt& s) {
         ensurePersonality();
+        llvm::PointerType* ptrTy = builder.getPtrTy();
         llvm::BasicBlock* ehpad = llvm::BasicBlock::Create(context, "ehpad", currentFn);
         llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "try.cont", currentFn);
         ehPadStack.push_back(ehpad);
@@ -1778,26 +1797,34 @@ struct CodeGenerator::Impl {
         ehPadStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(contBB);
         builder.SetInsertPoint(ehpad);
-        std::vector<llvm::BasicBlock*> catchBBs;
-        for (std::size_t i = 0; i < s.catches.size(); ++i)
-            catchBBs.push_back(llvm::BasicBlock::Create(context, "catch", currentFn));
+        llvm::Value* caughtSlot = createEntryAlloca("exc.caught", ptrTy);
         llvm::CatchSwitchInst* cs =
-            builder.CreateCatchSwitch(llvm::ConstantTokenNone::get(context), nullptr,
-                                      static_cast<unsigned>(catchBBs.size()));
-        for (llvm::BasicBlock* bb : catchBBs) cs->addHandler(bb);
-        for (std::size_t i = 0; i < s.catches.size(); ++i) {
-            const ast::CatchClause& cc = s.catches[i];
-            builder.SetInsertPoint(catchBBs[i]);
-            llvm::Value* caughtSlot = createEntryAlloca("exc.caught", builder.getPtrTy());
-            llvm::CatchPadInst* cp =
-                builder.CreateCatchPad(cs, {ehTypeDesc(), builder.getInt32(0), caughtSlot});
-            llvm::Value* obj = builder.CreateLoad(builder.getPtrTy(), caughtSlot, "caught");
+            builder.CreateCatchSwitch(llvm::ConstantTokenNone::get(context), nullptr, 1);
+        llvm::BasicBlock* dispatchBB =
+            llvm::BasicBlock::Create(context, "catch.dispatch", currentFn);
+        cs->addHandler(dispatchBB);
+        builder.SetInsertPoint(dispatchBB);
+        llvm::CatchPadInst* cp =
+            builder.CreateCatchPad(cs, {ehTypeDesc(), builder.getInt32(0), caughtSlot});
+        llvm::Value* obj = builder.CreateLoad(ptrTy, caughtSlot, "caught");
+        llvm::Value* objVtbl = builder.CreateLoad(ptrTy, obj, "exc.vtbl");  // field 0 (polymorphic)
+        for (const ast::CatchClause& cc : s.catches) {
             const std::string cty = baseType(typeRefName(cc.type));
-            llvm::Value* eSlot = createEntryAlloca(cc.name, builder.getPtrTy());
+            llvm::Value* match = nullptr;
+            for (llvm::Constant* vt : subtypeVtables(cty)) {
+                llvm::Value* eq = builder.CreateICmpEQ(objVtbl, vt, "is");
+                match = (match == nullptr) ? eq : builder.CreateOr(match, eq, "or");
+            }
+            if (match == nullptr) match = builder.getInt1(true);  // non-polymorphic: catch-all
+            llvm::BasicBlock* retBB = llvm::BasicBlock::Create(context, "catch.match", currentFn);
+            llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(context, "catch.next", currentFn);
+            builder.CreateCondBr(match, retBB, nextBB);
+            // Matched: bind e, leave the funclet, run the handler in normal context.
+            builder.SetInsertPoint(retBB);
+            llvm::Value* eSlot = createEntryAlloca(cc.name, ptrTy);
             builder.CreateStore(obj, eSlot);
             llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "catch.body", currentFn);
             builder.CreateCatchRet(cp, bodyBB);
-            // The handler runs in normal context (after catchret), so its calls need no funclet bundle.
             builder.SetInsertPoint(bodyBB);
             const bool had = locals.count(cc.name) > 0;
             LocalSlot saved = had ? locals[cc.name] : LocalSlot{};
@@ -1805,7 +1832,14 @@ struct CodeGenerator::Impl {
             emitBlock(cc.body);
             if (had) locals[cc.name] = saved; else locals.erase(cc.name);
             if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(contBB);
+            builder.SetInsertPoint(nextBB);  // keep dispatching inside the funclet
         }
+        // No clause matched: rethrow the current exception (handled by an outer try, or terminates).
+        builder.CreateCall(
+            cxxThrowFn(),
+            {llvm::ConstantPointerNull::get(ptrTy), llvm::ConstantPointerNull::get(ptrTy)},
+            {llvm::OperandBundleDef("funclet", llvm::ArrayRef<llvm::Value*>{cp})});
+        builder.CreateUnreachable();
         builder.SetInsertPoint(contBB);
         if (s.finallyBlock != nullptr) emitBlock(*s.finallyBlock);
     }
