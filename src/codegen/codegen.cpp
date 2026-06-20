@@ -1750,15 +1750,56 @@ struct CodeGenerator::Impl {
                                     false));
     }
 
-    // A user call that may throw: inside a try it becomes an invoke unwinding to the active landing
-    // pad (so an exception thrown by the callee reaches the catch); otherwise an ordinary call.
+    // S4 RAII-on-unwind: build a fresh chain of cleanuppads that destruct the live stack objects in
+    // reverse declaration order, then unwind to finalUnwind (null = to the caller). Returns the
+    // innermost pad (the unwind target for a faulting call), or finalUnwind if no live object has a
+    // destructor. Mirrors clang's WinEH pattern (pad_n -> ... -> pad_0 -> finalUnwind). Materialized
+    // lazily -- only when an exception is actually propagating out of the function -- so no orphan
+    // pads are emitted. The normal-path destructors (emitScopeCleanup) are emitted separately and
+    // are mutually exclusive with these pads (a cleanuppad is only reached via unwind).
+    llvm::BasicBlock* buildCleanupChain(llvm::BasicBlock* finalUnwind) {
+        llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
+        llvm::BasicBlock* succ = finalUnwind;
+        for (const ScopeObject& so : scopeObjects) {
+            auto fnit = functions.find(so.className + ".~" + so.className);
+            if (fnit == functions.end()) continue;  // no destructor: not part of the chain
+            ensurePersonality();
+            llvm::BasicBlock* pad =
+                llvm::BasicBlock::Create(context, "cleanup." + so.className, currentFn);
+            builder.SetInsertPoint(pad);
+            llvm::CleanupPadInst* cp =
+                builder.CreateCleanupPad(llvm::ConstantTokenNone::get(context), {});
+            llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
+            builder.CreateCall(
+                fnit->second, {objPtr},
+                {llvm::OperandBundleDef("funclet", llvm::ArrayRef<llvm::Value*>{cp})});
+            builder.CreateCleanupRet(cp, succ);
+            succ = pad;
+        }
+        builder.restoreIP(saved);
+        return succ;
+    }
+    // Where a faulting call/throw at the current point must unwind to: the enclosing try's landing
+    // pad if inside a try (unchanged S1/S2); else, if stack objects are live, a fresh cleanup chain
+    // that runs their destructors before propagating to the caller; else null (an ordinary call).
+    // MVP note: inside a try we go straight to the catchswitch -- objects declared in the try body
+    // are cleaned only on the normal/return path (emitScopeCleanup), not on the caught-exception
+    // path. Full block-scoped unwind cleanup is a later slice.
+    llvm::BasicBlock* computeUnwindDest() {
+        if (!ehPadStack.empty()) return ehPadStack.back();
+        if (scopeObjects.empty()) return nullptr;
+        return buildCleanupChain(nullptr);
+    }
+
+    // A user call that may throw: when there is an active unwind target (an enclosing try, or live
+    // stack objects to destruct), it becomes an invoke unwinding there; otherwise an ordinary call.
     // Builtins that cannot throw (printf/malloc/scanf/...) keep using CreateCall directly.
     llvm::Value* emitMaybeInvoke(llvm::FunctionType* fty, llvm::Value* callee,
                                  llvm::ArrayRef<llvm::Value*> args, const std::string& name = "") {
-        if (ehPadStack.empty()) return builder.CreateCall(fty, callee, args, name);
+        llvm::BasicBlock* ud = computeUnwindDest();
+        if (ud == nullptr) return builder.CreateCall(fty, callee, args, name);
         llvm::BasicBlock* cont = llvm::BasicBlock::Create(context, "invoke.cont", currentFn);
-        llvm::InvokeInst* inv =
-            builder.CreateInvoke(fty, callee, cont, ehPadStack.back(), args, name);
+        llvm::InvokeInst* inv = builder.CreateInvoke(fty, callee, cont, ud, args, name);
         builder.SetInsertPoint(cont);
         return inv;
     }
@@ -1889,9 +1930,11 @@ struct CodeGenerator::Impl {
             llvm::Value* slot = createEntryAlloca("exc.thrown", builder.getPtrTy());
             builder.CreateStore(obj, slot);  // carrier: the object pointer, thrown as void*
             std::vector<llvm::Value*> args = {slot, ehThrowInfo()};
-            if (!ehPadStack.empty()) {  // inside a try -> unwind to its landing pad
+            // Unwind through any live stack-object destructors and into an enclosing try (if any).
+            llvm::BasicBlock* ud = computeUnwindDest();
+            if (ud != nullptr) {
                 llvm::BasicBlock* cont = llvm::BasicBlock::Create(context, "throw.cont", currentFn);
-                builder.CreateInvoke(cxxThrowFn(), cont, ehPadStack.back(), args);
+                builder.CreateInvoke(cxxThrowFn(), cont, ud, args);
                 builder.SetInsertPoint(cont);
             } else {
                 builder.CreateCall(cxxThrowFn(), args);  // propagates to the caller

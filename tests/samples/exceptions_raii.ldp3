@@ -1,0 +1,34 @@
+program ExceptionsRaii;
+
+// RAII on unwind (spec 21.1): when an exception propagates out of a function, the destructors of its
+// live stack objects run -- in reverse declaration order -- before the exception reaches the caller.
+// risky() throws after declaring two stack Guards; their destructors run during the unwind, then
+// main's catch handles it. Prints: dtor 2 / dtor 1 / caught 5.
+public bundle main {
+    public namespace app {
+        public class Guard {
+            public mutable int id;
+            public constructor Guard(int id) { this.id = id; }
+            public destructor ~Guard() returns void { System.IO.printf("dtor %d\n", this.id); }
+        }
+        public class MyError {
+            public mutable int code;
+            public constructor MyError() { this.code = 5; }
+        }
+        public class Main {
+            public static method risky() returns void {
+                Guard a = new Guard(1) on stack;
+                Guard b = new Guard(2) on stack;
+                throw new MyError() on heap;
+            }
+            public static method main(string[] args) returns void {
+                try {
+                    Main.risky();
+                } catch (MyError e) {
+                    System.IO.printf("caught %d\n", e.code);
+                }
+                return;
+            }
+        }
+    }
+}
