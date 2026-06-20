@@ -329,6 +329,29 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         if (x->defaultBody) n->defaultBody = std::make_unique<ast::Block>(cloneBlock(*x->defaultBody, s));
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) {  // was missing -> null deref crash
+        auto n = std::make_unique<ast::MatchStmt>();
+        n->loc = x->loc;
+        n->subject = cloneExpr(x->subject.get(), s);
+        for (const auto& c : x->cases) {
+            ast::MatchCase nc;
+            nc.loc = c.loc;
+            auto it = s.find(c.typeName);
+            nc.typeName = it != s.end() ? it->second : c.typeName;
+            for (const auto& b : c.bindings) {
+                ast::Param p;
+                p.type = substType(b.type, s);
+                p.name = b.name;
+                p.loc = b.loc;
+                nc.bindings.push_back(std::move(p));
+            }
+            nc.body = cloneBlock(c.body, s);
+            if (c.result) nc.result = cloneExpr(c.result.get(), s);
+            n->cases.push_back(std::move(nc));
+        }
+        if (x->defaultBody) n->defaultBody = std::make_unique<ast::Block>(cloneBlock(*x->defaultBody, s));
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) {
         auto n = std::make_unique<ast::ReturnStmt>();
         n->loc = x->loc;
@@ -552,6 +575,9 @@ void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& o
     if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) { collectStmt(x->stmt.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) { collectType(x->elemType, g, out); collectExpr(x->iterable.get(), g, out); collectBlock(x->body, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) { collectExpr(x->subject.get(), g, out); for (const auto& c : x->cases) { collectExpr(c.value.get(), g, out); collectBlock(c.body, g, out); } if (x->defaultBody) collectBlock(*x->defaultBody, g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) { collectExpr(x->subject.get(), g, out); for (const auto& c : x->cases) collectBlock(c.body, g, out); if (x->defaultBody) collectBlock(*x->defaultBody, g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::ThrowStmt*>(st)) { collectExpr(x->value.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::TryStmt*>(st)) { collectBlock(x->body, g, out); for (const auto& c : x->catches) { collectType(c.type, g, out); collectBlock(c.body, g, out); } if (x->finallyBlock) collectBlock(*x->finallyBlock, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) { collectExpr(x->value.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::DeleteStmt*>(st)) { collectExpr(x->target.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::VarDeclStmt*>(st)) { collectType(x->type, g, out); collectExpr(x->init.get(), g, out); return; }

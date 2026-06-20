@@ -1,0 +1,32 @@
+program GenMatch;
+
+// Regression: a generic class/method whose body contains a `match` used to crash the compiler
+// (the monomorphizer's cloneStmt dropped MatchStmt -> null statement -> codegen null-deref).
+// Here Box<T>.describe matches on a Shape. Prints: 10.
+public bundle main {
+    public namespace app {
+        public sealed abstract class Shape permits Dot, Line {
+            public abstract method k() returns int;
+        }
+        public class Dot extends Shape { public override method k() returns int { return 1; } }
+        public class Line extends Shape { public override method k() returns int { return 2; } }
+        public class Box<T> {
+            public constructor Box() {}
+            public method describe(Shape* s) returns int {
+                match (s) {
+                    case Dot() { return 10; }
+                    case Line() { return 20; }
+                }
+                return 0;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box<int>* b = new Box<int>() on heap;
+                Shape* d = new Dot() on heap;
+                System.IO.printf("%d\n", b.describe(d));
+                return;
+            }
+        }
+    }
+}
