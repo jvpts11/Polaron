@@ -5,7 +5,8 @@ program ExceptionsFinally;
 // Prints: caught / finally / body ok / finally.
 public bundle main {
     public namespace app {
-        public class MyError {
+        public interface Throwable { }
+        public class MyError implements Throwable {
             public constructor MyError() {}
         }
         public class Main {

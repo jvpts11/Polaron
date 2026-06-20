@@ -144,6 +144,20 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     return false;
 }
 
+bool SemanticAnalyzer::isPolymorphic(const std::string& name) const {
+    const ClassInfo* c = lookupClass(name);
+    if (c == nullptr) return false;
+    if (c->isAbstract || c->isInterface || !c->superclass.empty() || !c->interfaces.empty())
+        return true;
+    for (const auto& [n, info] : classes_) {
+        (void)n;
+        if (info.superclass == name) return true;
+        for (const std::string& i : info.interfaces)
+            if (i == name) return true;
+    }
+    return false;
+}
+
 void SemanticAnalyzer::validateHierarchy() {
     for (const auto& [name, info] : classes_) {
         if (!info.superclass.empty()) {
@@ -1045,8 +1059,16 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (lookupLocal(vd->name) != nullptr) {
             error("redeclaration or shadowing of variable '" + vd->name + "'", vd->loc);
         } else {
+            // A class value bound to a `new ... on stack` (the default for objects) is a
+            // stack object: RAII frees it, and it is not throwable (its carrier would
+            // dangle after unwind).
+            bool stackObj = false;
+            if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get()))
+                stackObj = nw->location != "heap" && !declType.empty() &&
+                           lookupClass(baseType(declType)) != nullptr && !isRefType(declType) &&
+                           !isArrayType(declType);
             declareLocal(vd->name, LocalVar{declType.empty() ? std::string("int") : declType,
-                                            vd->isMutable});
+                                            vd->isMutable, stackObj});
         }
         // Remember a region's accepts/rejects constraints, keyed by variable.
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get())) {
@@ -1185,6 +1207,57 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         popScope();
         return;
     }
+    if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&stmt)) {
+        const std::string t = typeOf(*th->value);
+        if (!t.empty()) {
+            const std::string bt = baseType(t);
+            if (lookupClass(bt) == nullptr) {
+                error("'throw' expects an object value; got '" + t + "'", th->loc);
+            } else if (!isPolymorphic(bt)) {
+                // A non-polymorphic class has no vtable, so a catch can't match it by
+                // dynamic type (it would become a catch-all). Require a hierarchy.
+                error("thrown type '" + bt +
+                          "' must participate in a class hierarchy (extend a base or implement an "
+                          "interface) so it can be matched by 'catch'",
+                      th->loc);
+            }
+            // The carrier must outlive unwinding: a stack object's pointer would dangle.
+            bool stackThrow = false;
+            if (const auto* nw = dynamic_cast<const ast::NewExpr*>(th->value.get()))
+                stackThrow = nw->location != "heap";
+            else if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(th->value.get()))
+                if (const LocalVar* v = lookupLocal(id->name)) stackThrow = v->isStackObject;
+            if (stackThrow) {
+                error("a thrown object must be heap-allocated; use 'new ... on heap'", th->loc);
+            }
+        }
+        return;
+    }
+    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(&stmt)) {
+        analyzeBlock(tr->body);
+        for (const ast::CatchClause& cc : tr->catches) {
+            const std::string ct = baseType(typeRefStr(cc.type));
+            checkTypeAccessible(typeRefStr(cc.type), cc.loc);
+            if (lookupClass(ct) == nullptr) {
+                error("catch type '" + ct + "' is not a class", cc.loc);
+            } else if (!isPolymorphic(ct)) {
+                error("catch type '" + ct +
+                          "' must participate in a class hierarchy (a standalone class cannot be "
+                          "matched by dynamic type)",
+                      cc.loc);
+            }
+            pushScope();
+            declareLocal(cc.name, LocalVar{typeRefStr(cc.type), false});
+            for (const auto& st : cc.body.statements) analyzeStatement(*st);
+            popScope();
+        }
+        if (tr->finallyBlock) analyzeBlock(*tr->finallyBlock);
+        return;
+    }
+    // `label`/`comefrom` (spec 7.10) are accepted but not analyzed beyond this (out of
+    // current type-checking scope); handled explicitly so they are not silently ignored.
+    if (dynamic_cast<const ast::LabelMarkStmt*>(&stmt) != nullptr) return;
+    if (dynamic_cast<const ast::ComefromStmt*>(&stmt) != nullptr) return;
 }
 
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {

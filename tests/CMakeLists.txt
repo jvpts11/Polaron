@@ -41,6 +41,18 @@ add_test(NAME sema_rejects_bad_arg_count
 set_tests_properties(sema_rejects_bad_arg_count PROPERTIES
     PASS_REGULAR_EXPRESSION "expects 2 argument")
 
+# throw of a non-object must be reported (was an unchecked codegen crash).
+add_test(NAME sema_rejects_throw_int
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/throw_int_bad.ldp3")
+set_tests_properties(sema_rejects_throw_int PROPERTIES
+    PASS_REGULAR_EXPRESSION "'throw' expects an object")
+
+# catch of a non-polymorphic class must be rejected (was a silent catch-all).
+add_test(NAME sema_rejects_catch_nonpoly
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/catch_nonpoly_bad.ldp3")
+set_tests_properties(sema_rejects_catch_nonpoly PROPERTIES
+    PASS_REGULAR_EXPRESSION "must participate in a class hierarchy")
+
 # ---- Codegen tests (only when the LLVM backend is built) ----
 if(LDP3_WITH_LLVM)
     # The emitted IR contains an i32 main and a printf call.

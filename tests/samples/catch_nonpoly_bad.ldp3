@@ -1,0 +1,20 @@
+program CatchNonPolyBad;
+
+// Negative test: catching a non-polymorphic (standalone) class is rejected --
+// it has no vtable, so the handler would match by no type info (a catch-all /
+// type confusion). Exceptions must participate in a class hierarchy.
+
+public bundle main {
+    public namespace app {
+        public class Plain { public constructor Plain() {} }
+        public class Main {
+            public static method main(string[] args) returns void {
+                try {
+                    System.IO.printf("x\n");
+                } catch (Plain p) {
+                }
+                return;
+            }
+        }
+    }
+}

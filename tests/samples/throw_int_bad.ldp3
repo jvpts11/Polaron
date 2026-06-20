@@ -1,0 +1,16 @@
+program ThrowIntBad;
+
+// Negative test: `throw` of a non-object (here an int) must be a clean compile
+// error -- previously the analyzer never visited throw, so `throw 5` reached
+// codegen and crashed (an i32 read as a vtable pointer).
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                throw 5;
+                return;
+            }
+        }
+    }
+}

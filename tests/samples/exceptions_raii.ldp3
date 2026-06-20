@@ -11,7 +11,8 @@ public bundle main {
             public constructor Guard(int id) { this.id = id; }
             public destructor ~Guard() returns void { System.IO.printf("dtor %d\n", this.id); }
         }
-        public class MyError {
+        public interface Throwable { }
+        public class MyError implements Throwable {
             public mutable int code;
             public constructor MyError() { this.code = 5; }
         }

@@ -5,7 +5,8 @@ program ExceptionsPropagate;
 // Prints: caught code=7 / done.
 public bundle main {
     public namespace app {
-        public class MyError {
+        public interface Throwable { }
+        public class MyError implements Throwable {
             public mutable int code;
             public constructor MyError() { this.code = 7; }
         }

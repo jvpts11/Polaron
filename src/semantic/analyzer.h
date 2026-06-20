@@ -26,6 +26,7 @@ struct EntryPoint {
 struct LocalVar {
     std::string type;
     bool isMutable = false;
+    bool isStackObject = false;  // bound to a `new ... on stack` class value (RAII; not throwable)
 };
 
 // Class members collected in pass 1, for name resolution / type checking.
@@ -134,6 +135,10 @@ private:
     // True if `sub` is `super` or transitively extends/implements it. `depth`
     // bounds the recursion so a malformed (cyclic) type graph can't overflow.
     bool isSubtype(const std::string& sub, const std::string& super, int depth = 0) const;
+    // True if the class participates in a hierarchy (abstract/interface, has a super/
+    // interface, or is extended/implemented elsewhere) -- so it carries a vtable and
+    // can be matched by dynamic type in a catch.
+    bool isPolymorphic(const std::string& name) const;
 
     // Lexical scopes (innermost last); shadowing is forbidden.
     void pushScope();
