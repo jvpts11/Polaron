@@ -1,8 +1,7 @@
 program PersistDemo;
 
-// A static persistent field survives across program runs: its value is loaded from
-// a disk store (PersistDemo.ldpstore, next to the working dir) at startup and saved
-// at exit. Run the exe repeatedly: runs = 1, then 2, then 3, ...
+// A static persistent field is run-lifetime storage (spec 18, in-process): like a static field,
+// it holds its value for the duration of the run. bump() is called 3x -> runs = 3.
 public bundle main {
     public namespace app {
         public class Counter {
@@ -13,6 +12,8 @@ public bundle main {
 
         public class Main {
             public static method main(string[] args) returns void {
+                Counter.bump();
+                Counter.bump();
                 Counter.bump();
                 System.IO.println($"runs = {Counter.get()}");
                 return;

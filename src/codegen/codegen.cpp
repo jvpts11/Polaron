@@ -214,18 +214,11 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
     std::unordered_map<std::string, llvm::GlobalVariable*> staticGlobals;  // "Class.field" -> global
     std::unordered_map<std::string, std::string> staticFieldType;  // "Class.field" -> LDP3 type
-    // persistent roots serialized to/from disk (spec 18, cross-run). `cls` is the class whose
-    // persistent fields fill the block (serialized field-by-field); empty = a primitive global.
-    struct PersistEntry { llvm::GlobalVariable* global; llvm::Type* type; std::string cls; };
-    std::vector<PersistEntry> persistentStatics;
     // class -> its persistent instance field names (spec 18: object reattach via per-variable globals)
     std::unordered_map<std::string, std::unordered_set<std::string>> persistentInstanceFields;
     // set by a var-decl just before emitNew so the new object can wire up its persistent block
     std::string pendingPersistKey;
     int lambdaCounter = 0;  // unique names for lowered lambda functions
-    // per-class recursive (de)serializers for graph/list persistence (generated on demand)
-    std::unordered_map<std::string, llvm::Function*> serFns;
-    std::unordered_map<std::string, llvm::Function*> deserFns;
     std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
@@ -769,16 +762,14 @@ struct CodeGenerator::Impl {
         return staticGlobals.count(key) > 0 ? key : std::string();
     }
 
-    // The disk-backed persistent block for an identity key (one per variable that binds a
-    // persistent-bearing object). Created lazily; serialized via persistentStatics.
-    llvm::GlobalVariable* getPersistBlock(const std::string& key, llvm::StructType* blockTy,
-                                          const std::string& cls) {
+    // The in-process persistent block for an identity key (one per variable that binds a
+    // persistent-bearing object). A private global, created lazily; survives delete within a run.
+    llvm::GlobalVariable* getPersistBlock(const std::string& key, llvm::StructType* blockTy) {
         const std::string gname = key + ".__pblock";
         if (staticGlobals.count(gname) == 0) {
             staticGlobals[gname] = new llvm::GlobalVariable(
                 module, blockTy, /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
                 llvm::Constant::getNullValue(blockTy), gname);
-            persistentStatics.push_back({staticGlobals[gname], blockTy, cls});
         }
         return staticGlobals[gname];
     }
@@ -1305,7 +1296,7 @@ struct CodeGenerator::Impl {
             llvm::Value* slot = builder.CreateStructGEP(cit->second.type, objPtr,
                                                         cit->second.persistPtrIdx, "__persist");
             builder.CreateStore(
-                getPersistBlock(pendingPersistKey, cit->second.persistBlock, cn), slot);
+                getPersistBlock(pendingPersistKey, cit->second.persistBlock), slot);
             pendingPersistKey.clear();
         }
         auto fnit = functions.find(cn + "." + cn);
@@ -1771,7 +1762,6 @@ struct CodeGenerator::Impl {
                     staticGlobals[key] = new llvm::GlobalVariable(
                         module, lty, /*isConstant=*/false,
                         llvm::GlobalValue::PrivateLinkage, init, key);
-                    persistentStatics.push_back({staticGlobals[key], lty, ""});
                 }
                 locals[vd->name] = LocalSlot{staticGlobals[key], declType};
                 return;
@@ -2428,241 +2418,9 @@ struct CodeGenerator::Impl {
 
     // Emits one zero-initialized (or literal-initialized) LLVM global per static
     // field, named "Class.field". Static fields are class-wide, not per instance.
-    // Cross-run persistents (spec 18): each `static persistent` global is loaded from a
-    // disk store at startup (registered as a global ctor) and written back at exit (a global
-    // dtor). The store sits next to the executable, fields matched positionally. MVP:
-    // primitive fields; renaming/reshaping is a future build-time schema check.
-    // Serialize/deserialize one persistent pointer field (step C / graphs). `fieldSlot` is the
-    // address of the pointer inside the block; `cls` is the pointee class. Writes a 1-byte flag
-    // (0 = null, 1 = present) then, when present, the pointee's fields. MVP: one level deep,
-    // primitive pointee fields, no cycles. `flagSlot` is a reusable i8 scratch alloca.
-    // Recursive per-class serializer (graphs/lists). Registered before its body so it can
-    // recurse on itself; IP is saved/restored since it's generated mid-emission of another fn.
-    llvm::Function* getSerFn(const std::string& cls) {
-        auto it = serFns.find(cls);
-        if (it != serFns.end()) return it->second;
-        auto cit = classes.find(cls);
-        if (cit == classes.end()) return nullptr;
-        llvm::PointerType* ptrTy = builder.getPtrTy();
-        llvm::Type* i64 = builder.getInt64Ty();
-        llvm::Function* fn = llvm::Function::Create(
-            llvm::FunctionType::get(builder.getVoidTy(), {ptrTy, ptrTy}, false),
-            llvm::Function::InternalLinkage, "__ldp3_ser_" + cls, module);
-        serFns[cls] = fn;
-        llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
-        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", fn));
-        llvm::Value* obj = fn->getArg(0);
-        llvm::Value* file = fn->getArg(1);
-        llvm::Value* flagSlot = builder.CreateAlloca(builder.getInt8Ty(), nullptr, "flag");
-        auto fwriteF = module.getOrInsertFunction(
-            "fwrite", llvm::FunctionType::get(i64, {ptrTy, i64, i64, ptrTy}, false));
-        for (const auto& [pn, pt] : collectFields(cls)) {
-            llvm::Value* slot =
-                builder.CreateStructGEP(cit->second.type, obj, cit->second.fieldIndex.at(pn));
-            if (!pt.empty() && pt.back() == '*') {
-                emitPointerIO(slot, baseType(pt), false, fwriteF, file, flagSlot);
-            } else {
-                builder.CreateCall(fwriteF,
-                                   {slot, sizeOf(llvmType(pt)), builder.getInt64(1), file});
-            }
-        }
-        builder.CreateRetVoid();
-        builder.restoreIP(saved);
-        return fn;
-    }
-
-    // Recursive per-class deserializer: mallocs the object, reads fields, follows pointers.
-    llvm::Function* getDeserFn(const std::string& cls) {
-        auto it = deserFns.find(cls);
-        if (it != deserFns.end()) return it->second;
-        auto cit = classes.find(cls);
-        if (cit == classes.end()) return nullptr;
-        llvm::PointerType* ptrTy = builder.getPtrTy();
-        llvm::Type* i64 = builder.getInt64Ty();
-        llvm::Function* fn = llvm::Function::Create(
-            llvm::FunctionType::get(ptrTy, {ptrTy}, false),
-            llvm::Function::InternalLinkage, "__ldp3_deser_" + cls, module);
-        deserFns[cls] = fn;
-        llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
-        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", fn));
-        llvm::Value* file = fn->getArg(0);
-        llvm::Value* obj = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "obj");
-        // Register BEFORE reading fields so cycles / back-references resolve to this object.
-        builder.CreateCall(
-            module.getOrInsertFunction(
-                "__ldp3_made_add",
-                llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false)),
-            {obj});
-        llvm::Value* flagSlot = builder.CreateAlloca(builder.getInt8Ty(), nullptr, "flag");
-        auto freadF = module.getOrInsertFunction(
-            "fread", llvm::FunctionType::get(i64, {ptrTy, i64, i64, ptrTy}, false));
-        for (const auto& [pn, pt] : collectFields(cls)) {
-            llvm::Value* slot =
-                builder.CreateStructGEP(cit->second.type, obj, cit->second.fieldIndex.at(pn));
-            if (!pt.empty() && pt.back() == '*') {
-                emitPointerIO(slot, baseType(pt), true, freadF, file, flagSlot);
-            } else {
-                builder.CreateCall(freadF,
-                                   {slot, sizeOf(llvmType(pt)), builder.getInt64(1), file});
-            }
-        }
-        builder.CreateRet(obj);
-        builder.restoreIP(saved);
-        return fn;
-    }
-
-    void emitPointerIO(llvm::Value* fieldSlot, const std::string& cls, bool isLoad,
-                       llvm::FunctionCallee io, llvm::Value* f, llvm::Value* flagSlot) {
-        auto cit = classes.find(cls);
-        if (cit == classes.end()) return;
-        llvm::Function* fn = builder.GetInsertBlock()->getParent();
-        llvm::PointerType* ptrTy = builder.getPtrTy();
-        llvm::Type* i8 = builder.getInt8Ty();
-        llvm::Type* i32 = builder.getInt32Ty();
-        llvm::Value* one = builder.getInt64(1);
-        llvm::Value* four = builder.getInt64(4);
-        llvm::Value* idSlot = builder.CreateAlloca(i32, nullptr, "id");
-        auto internF = module.getOrInsertFunction(
-            "__ldp3_intern", llvm::FunctionType::get(i32, {ptrTy}, false));
-        auto madeAtF = module.getOrInsertFunction(
-            "__ldp3_made_at", llvm::FunctionType::get(ptrTy, {i32}, false));
-        llvm::BasicBlock* afterBB = llvm::BasicBlock::Create(context, "ptr.after", fn);
-        // Flag byte: 0 = null, 1 = new object (recurse), 2 = back-reference to an existing id
-        // (dedups DAGs and breaks cycles).
-        if (!isLoad) {
-            llvm::Value* target = builder.CreateLoad(ptrTy, fieldSlot, "ptr.tgt");
-            llvm::BasicBlock* nnBB = llvm::BasicBlock::Create(context, "ptr.nn", fn);
-            llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(context, "ptr.0", fn);
-            builder.CreateCondBr(
-                builder.CreateICmpEQ(target, llvm::ConstantPointerNull::get(ptrTy)), nullBB, nnBB);
-            builder.SetInsertPoint(nullBB);
-            builder.CreateStore(builder.getInt8(0), flagSlot);
-            builder.CreateCall(io, {flagSlot, one, one, f});
-            builder.CreateBr(afterBB);
-            builder.SetInsertPoint(nnBB);
-            llvm::Value* id = builder.CreateCall(internF, {target}, "id");
-            llvm::BasicBlock* newBB = llvm::BasicBlock::Create(context, "ptr.1", fn);
-            llvm::BasicBlock* refBB = llvm::BasicBlock::Create(context, "ptr.2", fn);
-            builder.CreateCondBr(builder.CreateICmpSLT(id, builder.getInt32(0)), newBB, refBB);
-            builder.SetInsertPoint(newBB);
-            builder.CreateStore(builder.getInt8(1), flagSlot);
-            builder.CreateCall(io, {flagSlot, one, one, f});
-            if (llvm::Function* sub = getSerFn(cls)) builder.CreateCall(sub, {target, f});
-            builder.CreateBr(afterBB);
-            builder.SetInsertPoint(refBB);
-            builder.CreateStore(builder.getInt8(2), flagSlot);
-            builder.CreateCall(io, {flagSlot, one, one, f});
-            builder.CreateStore(id, idSlot);
-            builder.CreateCall(io, {idSlot, four, one, f});
-            builder.CreateBr(afterBB);
-        } else {
-            builder.CreateCall(io, {flagSlot, one, one, f});
-            llvm::Value* flag = builder.CreateLoad(i8, flagSlot, "flag");
-            llvm::BasicBlock* nnBB = llvm::BasicBlock::Create(context, "ptr.nn", fn);
-            llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(context, "ptr.0", fn);
-            builder.CreateCondBr(builder.CreateICmpEQ(flag, builder.getInt8(0)), nullBB, nnBB);
-            builder.SetInsertPoint(nullBB);
-            builder.CreateStore(llvm::ConstantPointerNull::get(ptrTy), fieldSlot);
-            builder.CreateBr(afterBB);
-            builder.SetInsertPoint(nnBB);
-            llvm::BasicBlock* newBB = llvm::BasicBlock::Create(context, "ptr.1", fn);
-            llvm::BasicBlock* refBB = llvm::BasicBlock::Create(context, "ptr.2", fn);
-            builder.CreateCondBr(builder.CreateICmpEQ(flag, builder.getInt8(1)), newBB, refBB);
-            builder.SetInsertPoint(newBB);
-            builder.CreateStore(builder.CreateCall(getDeserFn(cls), {f}, "ptr.new"), fieldSlot);
-            builder.CreateBr(afterBB);
-            builder.SetInsertPoint(refBB);
-            builder.CreateCall(io, {idSlot, four, one, f});
-            builder.CreateStore(
-                builder.CreateCall(madeAtF, {builder.CreateLoad(i32, idSlot, "rid")}, "ref"),
-                fieldSlot);
-            builder.CreateBr(afterBB);
-        }
-        builder.SetInsertPoint(afterBB);
-    }
-
-    void emitPersistence() {
-        if (persistentStatics.empty()) return;
-        llvm::PointerType* ptrTy = builder.getPtrTy();
-        llvm::Type* i64 = builder.getInt64Ty();
-        auto fopenF = module.getOrInsertFunction(
-            "fopen", llvm::FunctionType::get(ptrTy, {ptrTy, ptrTy}, false));
-        auto* fioTy = llvm::FunctionType::get(i64, {ptrTy, i64, i64, ptrTy}, false);
-        auto freadF = module.getOrInsertFunction("fread", fioTy);
-        auto fwriteF = module.getOrInsertFunction("fwrite", fioTy);
-        auto fcloseF = module.getOrInsertFunction(
-            "fclose", llvm::FunctionType::get(builder.getInt32Ty(), {ptrTy}, false));
-        auto atexitF = module.getOrInsertFunction(
-            "atexit", llvm::FunctionType::get(builder.getInt32Ty(), {ptrTy}, false));
-        const std::string storeName = program.name + ".ldpstore";
-
-        auto buildIO = [&](const char* fnName, const char* mode, llvm::FunctionCallee io,
-                           bool isLoad, llvm::Function* atexitTarget) -> llvm::Function* {
-            llvm::Function* fn = llvm::Function::Create(
-                llvm::FunctionType::get(builder.getVoidTy(), {}, false),
-                llvm::Function::InternalLinkage, fnName, module);
-            llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", fn);
-            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "io", fn);
-            llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "done", fn);
-            builder.SetInsertPoint(entry);
-            llvm::Value* flagSlot = builder.CreateAlloca(builder.getInt8Ty(), nullptr, "pflag");
-            // The ctor registers the save with atexit (global_dtors isn't reliable on Windows).
-            if (atexitTarget != nullptr) builder.CreateCall(atexitF, {atexitTarget});
-            auto storePathF = module.getOrInsertFunction(
-                "__ldp3_store_path", llvm::FunctionType::get(ptrTy, {ptrTy}, false));
-            llvm::Value* path = builder.CreateCall(
-                storePathF, {builder.CreateGlobalStringPtr(storeName, ".store")}, "store.path");
-            llvm::Value* m = builder.CreateGlobalStringPtr(mode, ".mode");
-            llvm::Value* f = builder.CreateCall(fopenF, {path, m}, "f");
-            builder.CreateCondBr(
-                builder.CreateICmpNE(f, llvm::ConstantPointerNull::get(ptrTy)), bodyBB, endBB);
-            builder.SetInsertPoint(bodyBB);
-            auto resetF = module.getOrInsertFunction(
-                "__ldp3_graph_reset", llvm::FunctionType::get(builder.getVoidTy(), {}, false));
-            builder.CreateCall(resetF);  // fresh graph-identity tables for this pass
-            for (const auto& gt : persistentStatics) {
-                if (gt.cls.empty()) {  // primitive global: raw bytes
-                    builder.CreateCall(io, {gt.global, sizeOf(gt.type), builder.getInt64(1), f});
-                    continue;
-                }
-                // Object block: serialize field-by-field; a pointer field is followed (step C).
-                const ClassLayout& cl = classes.at(gt.cls);
-                for (std::size_t i = 0; i < cl.persistOrder.size(); ++i) {
-                    llvm::Value* fp = builder.CreateStructGEP(gt.type, gt.global,
-                                                              static_cast<unsigned>(i));
-                    const std::string& fty = cl.fieldType.at(cl.persistOrder[i]);
-                    if (!fty.empty() && fty.back() == '*') {
-                        emitPointerIO(fp, baseType(fty), isLoad, io, f, flagSlot);
-                    } else {
-                        builder.CreateCall(io, {fp, sizeOf(llvmType(fty)), builder.getInt64(1), f});
-                    }
-                }
-            }
-            builder.CreateCall(fcloseF, {f});
-            builder.CreateBr(endBB);
-            builder.SetInsertPoint(endBB);
-            builder.CreateRetVoid();
-            return fn;
-        };
-
-        // Register load/save as a global ctor/dtor by hand (avoids the LLVMTransformUtils
-        // helper). @llvm.global_ctors/dtors is an appending array of {i32 priority, ptr fn,
-        // ptr data}; the CRT runs ctors before main and dtors at exit.
-        auto registerXtor = [&](const char* arrayName, llvm::Function* fn) {
-            llvm::StructType* elemTy =
-                llvm::StructType::get(context, {builder.getInt32Ty(), ptrTy, ptrTy});
-            llvm::Constant* entry = llvm::ConstantStruct::get(
-                elemTy, {builder.getInt32(65535), fn, llvm::ConstantPointerNull::get(ptrTy)});
-            llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, 1);
-            new llvm::GlobalVariable(module, arrTy, /*isConstant=*/false,
-                                     llvm::GlobalValue::AppendingLinkage,
-                                     llvm::ConstantArray::get(arrTy, {entry}), arrayName);
-        };
-        llvm::Function* saveFn = buildIO("__ldp3_persist_save", "wb", fwriteF, false, nullptr);
-        llvm::Function* loadFn = buildIO("__ldp3_persist_load", "rb", freadF, true, saveFn);
-        registerXtor("llvm.global_ctors", loadFn);
-    }
-
+    // Persistents (spec 18, in-process): a `static persistent` global keeps its constant initial
+    // value at startup and whatever it accumulates for the lifetime of the run, like a static
+    // field. Per-variable reattach within a run is via the persist blocks (see getPersistBlock).
     void emitStaticFields() {
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
@@ -2683,9 +2441,6 @@ struct CodeGenerator::Impl {
                         staticGlobals[key] =
                             new llvm::GlobalVariable(module, lty, /*isConstant=*/false,
                                                      llvm::GlobalValue::PrivateLinkage, init, key);
-                        if (f->isPersistent) {
-                            persistentStatics.push_back({staticGlobals[key], lty, ""});
-                        }
                     }
                 }
             }
@@ -2960,7 +2715,6 @@ bool CodeGenerator::generate() {
     impl_->declareFunctions();
     impl_->emitVtables();
     impl_->emitFunctions();
-    impl_->emitPersistence();
     if (!errors_.empty()) return false;
 
     std::string verifyMsg;

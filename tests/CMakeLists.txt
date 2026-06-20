@@ -290,91 +290,45 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # persistents (spec 18, F7): a `static persistent` value survives across runs.
-        # Runs the exe twice; the second run must observe the persisted value (runs = 2).
+        # persistents (spec 18, F7): in-process semantics -- a `static persistent` is run-lifetime
+        # storage, like a static field. bump() 3x in one run -> runs = 3.
         add_test(NAME codegen_persist_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_demo.ldp3"
-            "-DEXPECTED=runs = 2"
-            "-DSTORE=PersistDemo.ldpstore"
+            "-DEXPECTED=runs = 3"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # persistents in LOCALS (spec 18): a persistent local retains its value across
-        # calls and runs. Run 1 counts 1/2/3; run 2 continues -> a=4 b=5 c=6.
+        # persistents in LOCALS (spec 18): a persistent local reattaches across CALLS within a run
+        # (it is not reinitialized). 3 calls -> a=1 b=2 c=3.
         add_test(NAME codegen_persist_local_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_local.ldp3"
-            "-DEXPECTED=a=4 b=5 c=6"
-            "-DSTORE=PersistLocal.ldpstore"
+            "-DEXPECTED=a=1 b=2 c=3"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # object reattach (spec 18.2): a persistent INSTANCE field survives delete + reattaches
-        # when the variable is recreated. bump() deletes its Car each call; chassi counts 1/2/3,
-        # then run 2 continues -> a=4 b=5 c=6.
+        # object reattach (spec 18.2): a persistent INSTANCE field lives outside the object and
+        # survives delete, reattaching when the variable is recreated within the run -> a=1 b=2 c=3.
         add_test(NAME codegen_persist_object_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_object.ldp3"
-            "-DEXPECTED=a=4 b=5 c=6"
-            "-DSTORE=PersistObject.ldpstore"
+            "-DEXPECTED=a=1 b=2 c=3"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # object reattach via `this` (spec 18.2): methods/ctor reach persistents through the
-        # object's __persist pointer. tick() uses this.chassi in methods -> a=4 b=5 c=6 on run 2.
+        # object reattach via `this` (spec 18.2): methods/ctor reach the persistent through the
+        # object's __persist pointer; chassi keeps counting across calls in one run -> a=1 b=2 c=3.
         add_test(NAME codegen_persist_this_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_this.ldp3"
-            "-DEXPECTED=a=4 b=5 c=6"
-            "-DSTORE=PersistThis.ldpstore"
+            "-DEXPECTED=a=1 b=2 c=3"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
-
-        # graph serialization (spec 18, step C): a persistent POINTER field is followed -- the
-        # pointee is serialized, reallocated and relinked across runs -> a=4 b=5 c=6 on run 2.
-        add_test(NAME codegen_persist_graph_runs COMMAND "${CMAKE_COMMAND}"
-            "-DLDP3C=$<TARGET_FILE:ldp3c>"
-            "-DCLANG=${LDP3_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_graph.ldp3"
-            "-DEXPECTED=a=4 b=5 c=6"
-            "-DSTORE=PersistGraph.ldpstore"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
-
-        # persistent linked list (recursive graph serialization): the whole Node chain reached
-        # via a persistent head pointer survives runs and grows -> a=4 b=5 c=6 on run 2.
-        add_test(NAME codegen_persist_list_runs COMMAND "${CMAKE_COMMAND}"
-            "-DLDP3C=$<TARGET_FILE:ldp3c>"
-            "-DCLANG=${LDP3_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_list.ldp3"
-            "-DEXPECTED=a=4 b=5 c=6"
-            "-DSTORE=PersistList.ldpstore"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
-
-        # graph identity (object ids): a DAG (two pointers to one object) dedups; a self-cycle
-        # does not loop. Both survive runs -> a=4 b=5 c=6 on run 2.
-        add_test(NAME codegen_persist_dag_runs COMMAND "${CMAKE_COMMAND}"
-            "-DLDP3C=$<TARGET_FILE:ldp3c>"
-            "-DCLANG=${LDP3_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_dag.ldp3"
-            "-DEXPECTED=a=4 b=5 c=6"
-            "-DSTORE=PersistDag.ldpstore"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
-        add_test(NAME codegen_persist_cycle_runs COMMAND "${CMAKE_COMMAND}"
-            "-DLDP3C=$<TARGET_FILE:ldp3c>"
-            "-DCLANG=${LDP3_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_cycle.ldp3"
-            "-DEXPECTED=a=4 b=5 c=6"
-            "-DSTORE=PersistCycle.ldpstore"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_persist_test.cmake")
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # M4: inline field initializers + synthesized default constructor.
         add_test(NAME codegen_field_init_runs COMMAND "${CMAKE_COMMAND}"

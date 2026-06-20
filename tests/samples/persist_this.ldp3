@@ -3,7 +3,7 @@ program PersistThis;
 // Object reattach via `this` (spec 18.2): chassi is persistent. The constructor and methods use
 // this.chassi -- they reach the right per-variable block through the object's __persist pointer
 // (wired at construction). tick() deletes its Car every call, yet chassi keeps counting across
-// calls and across runs. Run 1: a=1 b=2 c=3. Run 2: a=4 b=5 c=6.
+// calls within the run. 3 calls -> a=1 b=2 c=3.
 public bundle main {
     public namespace app {
         public class Car {
