@@ -817,8 +817,10 @@ struct CodeGenerator::Impl {
             // emitLValue + load) to get the object pointer in every case.
             return emitExpr(expr);
         }
-        error("unsupported object expression", expr.loc);
-        return nullptr;
+        // Any other object-producing expression -- a method-call result (f().g(), box.get().m()),
+        // a cast, etc. It yields an object pointer, so emit it directly. The analyzer already
+        // verified the receiver is an object, so no extra check is needed here.
+        return emitExpr(expr);
     }
 
     // Address (pointer) of an assignable expression.

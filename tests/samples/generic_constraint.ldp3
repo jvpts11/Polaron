@@ -1,0 +1,26 @@
+program GenericConstraint;
+
+// Generic constraint (spec 15.2): Box<T extends Shape> only accepts a T that implements Shape
+// (enforced at monomorphization). Also exercises a chained call on a generic method result --
+// box.get().area() -- i.e. a method call whose receiver is itself a call. Prints "area = 9".
+public bundle main {
+    public namespace app {
+        public interface Shape { method area() returns int; }
+        public class Circle implements Shape {
+            public override method area() returns int { return 9; }
+        }
+        public class Box<T extends Shape> {
+            private T item;
+            public constructor Box(T item) { this.item = item; }
+            public method get() returns T { return this.item; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Circle c = new Circle() on heap;
+                Box<Circle> b = new Box<Circle>(c) on heap;
+                System.IO.printf("area = %d\n", b.get().area());
+                return;
+            }
+        }
+    }
+}

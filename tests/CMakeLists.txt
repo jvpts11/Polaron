@@ -290,6 +290,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # generic constraint (spec 15.2) satisfied + a chained call on a generic method result.
+        add_test(NAME codegen_generic_constraint_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/generic_constraint.ldp3"
+            "-DEXPECTED=area = 9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # persistents (spec 18, F7): in-process semantics -- a `static persistent` is run-lifetime
         # storage, like a static field. bump() 3x in one run -> runs = 3.
         add_test(NAME codegen_persist_runs COMMAND "${CMAKE_COMMAND}"
