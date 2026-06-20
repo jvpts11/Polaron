@@ -159,9 +159,25 @@ bool SemanticAnalyzer::isPolymorphic(const std::string& name) const {
 }
 
 void SemanticAnalyzer::validateHierarchy() {
+    // The permitted variants of every sealed type. Match exhaustiveness assumes a
+    // closed world, so these are effectively final: a subclass of a variant would
+    // have a distinct vtable and escape the exact-vtable arm checks (UB on no match).
+    std::unordered_set<std::string> sealedVariants;
+    for (const auto& [name, info] : classes_) {
+        (void)name;
+        if (info.isSealed)
+            for (const std::string& p : info.permits) sealedVariants.insert(p);
+    }
     for (const auto& [name, info] : classes_) {
         if (!info.superclass.empty()) {
             const ClassInfo* sup = lookupClass(info.superclass);
+            const std::string supBare =
+                baseType(info.superclass).substr(0, baseType(info.superclass).find('$'));
+            if (sealedVariants.count(supBare) > 0) {
+                error("class '" + name + "' cannot extend '" + info.superclass +
+                          "', a sealed variant (sum-type variants are final)",
+                      {});
+            }
             if (sup == nullptr) {
                 error("class '" + name + "' extends unknown type '" + info.superclass + "'", {});
             } else if (sup->isInterface) {

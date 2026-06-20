@@ -53,6 +53,13 @@ add_test(NAME sema_rejects_catch_nonpoly
 set_tests_properties(sema_rejects_catch_nonpoly PROPERTIES
     PASS_REGULAR_EXPRESSION "must participate in a class hierarchy")
 
+# extending a sealed type's permitted variant must be rejected (variants are final),
+# else match's exhaustiveness assumption is unsound.
+add_test(NAME sema_rejects_extend_permit
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/extend_permit_bad.ldp3")
+set_tests_properties(sema_rejects_extend_permit PROPERTIES
+    PASS_REGULAR_EXPRESSION "a sealed variant")
+
 # ---- Codegen tests (only when the LLVM backend is built) ----
 if(LDP3_WITH_LLVM)
     # The emitted IR contains an i32 main and a printf call.

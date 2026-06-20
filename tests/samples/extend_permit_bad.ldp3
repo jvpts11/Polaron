@@ -1,0 +1,19 @@
+program ExtendPermitBad;
+
+// Negative test: a permitted variant of a sealed type is effectively final.
+// Subclassing it would give the subclass a distinct vtable that escapes match's
+// exact-vtable arm checks (UB on no match), so it must be rejected.
+
+public bundle main {
+    public namespace app {
+        public sealed abstract class Shape permits Dot, Line {
+            public abstract method k() returns int;
+        }
+        public class Dot extends Shape { public override method k() returns int { return 1; } }
+        public class Line extends Shape { public override method k() returns int { return 2; } }
+        public class Evil extends Dot { public override method k() returns int { return 9; } }
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}
