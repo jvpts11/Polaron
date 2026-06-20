@@ -624,6 +624,14 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     expect(TokenKind::LParen, "'('");
     m->params = parseParams();
     expect(TokenKind::RParen, "')'");
+    // `throws(T1, T2)` clause (spec 21.1), between the signature and `returns`.
+    if (match(TokenKind::KwThrows)) {
+        expect(TokenKind::LParen, "'(' after 'throws'");
+        do {
+            m->throwsTypes.push_back(parseTypeRef());
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::RParen, "')' to close 'throws'");
+    }
     expect(TokenKind::KwReturns, "'returns'");
     m->returnType = parseTypeRef();
     // Contract clauses (spec 29): `requires <expr>` / `ensures <expr>`, between the
@@ -884,6 +892,38 @@ ast::StmtPtr Parser::parseStatement() {
         c->name = expect(TokenKind::Identifier, "a label name after 'comefrom'").lexeme;
         expect(TokenKind::Semicolon, "';'");
         return c;
+    }
+    if (check(TokenKind::KwThrow)) {  // throw expr; (spec 21.1)
+        auto t = std::make_unique<ast::ThrowStmt>();
+        t->loc = current().loc;
+        advance();  // 'throw'
+        t->value = parseExpression();
+        expect(TokenKind::Semicolon, "';'");
+        return t;
+    }
+    if (check(TokenKind::KwTry)) {  // try { } catch (T e) { } ... finally { } (spec 21.1)
+        auto t = std::make_unique<ast::TryStmt>();
+        t->loc = current().loc;
+        advance();  // 'try'
+        t->body = parseBlock();
+        while (check(TokenKind::KwCatch)) {
+            ast::CatchClause cc;
+            cc.loc = current().loc;
+            advance();  // 'catch'
+            expect(TokenKind::LParen, "'(' after 'catch'");
+            cc.type = parseTypeRef();
+            cc.name = expect(TokenKind::Identifier, "a catch variable name").lexeme;
+            expect(TokenKind::RParen, "')'");
+            cc.body = parseBlock();
+            t->catches.push_back(std::move(cc));
+        }
+        if (match(TokenKind::KwFinally)) {
+            t->finallyBlock = std::make_unique<ast::Block>(parseBlock());
+        }
+        if (t->catches.empty() && t->finallyBlock == nullptr) {
+            fail("a 'try' needs at least one 'catch' or a 'finally'", t->loc);
+        }
+        return t;
     }
     if (check(TokenKind::KwIf)) {
         return parseIfStatement();

@@ -56,6 +56,7 @@ enum class TokenKind : std::uint8_t {
     KwDefer, KwUsing,
     KwLambda, KwFunction,
     KwLabel, KwComefrom,
+    KwTry, KwCatch, KwFinally, KwThrow, KwThrows,
 
     // Keywords -- compile-time / literal suffixes (0.2 Fase C)
     KwComptime, KwLiteral, KwImport,

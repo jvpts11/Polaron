@@ -277,6 +277,28 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->name = x->name;
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::ThrowStmt*>(st)) {
+        auto n = std::make_unique<ast::ThrowStmt>();
+        n->loc = x->loc;
+        n->value = cloneExpr(x->value.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::TryStmt*>(st)) {
+        auto n = std::make_unique<ast::TryStmt>();
+        n->loc = x->loc;
+        n->body = cloneBlock(x->body, s);
+        for (const auto& c : x->catches) {
+            ast::CatchClause nc;
+            nc.loc = c.loc;
+            nc.type = substType(c.type, s);
+            nc.name = c.name;
+            nc.body = cloneBlock(c.body, s);
+            n->catches.push_back(std::move(nc));
+        }
+        if (x->finallyBlock)
+            n->finallyBlock = std::make_unique<ast::Block>(cloneBlock(*x->finallyBlock, s));
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) {
         auto n = std::make_unique<ast::ForeachStmt>();
         n->loc = x->loc;

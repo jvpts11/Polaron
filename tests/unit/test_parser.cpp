@@ -91,3 +91,44 @@ TEST_CASE("parser respects arithmetic precedence") {
     REQUIRE(mul != nullptr);
     CHECK(mul->op == "*");
 }
+
+TEST_CASE("parser parses throw, try/catch/finally and a throws clause") {
+    const char* src =
+        "program P; public bundle b { public namespace n {\n"
+        "  public class MyError { public constructor MyError() {} }\n"
+        "  public class Main {\n"
+        "    public static method risky(int x) throws(MyError) returns void {\n"
+        "      if (x > 0) { throw new MyError(); }\n"
+        "    }\n"
+        "    public static method main(string[] args) returns void {\n"
+        "      try { Main.risky(1); } catch (MyError e) { } finally { }\n"
+        "    }\n"
+        "  }\n"
+        "} }";
+    Lexer lexer(src, "test");
+    Parser parser(lexer.tokenize(), "test");
+    const ast::Program prog = parser.parse();
+    REQUIRE_FALSE(parser.hasErrors());
+
+    const auto& classes = prog.bundles.at(0).namespaces.at(0).classes;
+    REQUIRE(classes.size() == 2);
+    const ast::ClassDecl& mainCls = classes.at(1);
+    // risky: declares throws(MyError) and throws inside an if.
+    const auto* risky = dynamic_cast<const ast::MethodDecl*>(mainCls.members.at(0).get());
+    REQUIRE(risky != nullptr);
+    REQUIRE(risky->throwsTypes.size() == 1);
+    const auto* ifStmt = dynamic_cast<const ast::IfStmt*>(risky->body.statements.at(0).get());
+    REQUIRE(ifStmt != nullptr);
+    const auto* thr =
+        dynamic_cast<const ast::ThrowStmt*>(ifStmt->thenBlock.statements.at(0).get());
+    REQUIRE(thr != nullptr);
+    CHECK(thr->value != nullptr);
+    // main: a try with one catch and a finally.
+    const auto* mainM = dynamic_cast<const ast::MethodDecl*>(mainCls.members.at(1).get());
+    REQUIRE(mainM != nullptr);
+    const auto* tryStmt = dynamic_cast<const ast::TryStmt*>(mainM->body.statements.at(0).get());
+    REQUIRE(tryStmt != nullptr);
+    REQUIRE(tryStmt->catches.size() == 1);
+    CHECK(tryStmt->catches.at(0).name == "e");
+    CHECK(tryStmt->finallyBlock != nullptr);
+}

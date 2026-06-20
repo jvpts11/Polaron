@@ -402,6 +402,28 @@ struct ComefromStmt : Stmt {
     void dump(std::string& out, int /*indent*/) const override { out += "comefrom " + name; }
 };
 
+// throw expr; -- raises an exception object (spec 21.1).
+struct ThrowStmt : Stmt {
+    ExprPtr value;
+    void dump(std::string& out, int /*indent*/) const override { out += "throw"; }
+};
+
+// catch (Type name) { ... } -- one handler of a try (spec 21.1).
+struct CatchClause {
+    TypeRef type;
+    std::string name;
+    Block body;
+    SourceLocation loc;
+};
+
+// try { ... } catch (Type e) { ... } ... finally { ... } -- structured exceptions (spec 21.1).
+struct TryStmt : Stmt {
+    Block body;
+    std::vector<CatchClause> catches;
+    std::unique_ptr<Block> finallyBlock;  // null when there is no finally
+    void dump(std::string& out, int /*indent*/) const override { out += "try"; }
+};
+
 // for (T v in array) { ... } -- foreach over an array (spec 7). Ranges and the
 // `index i, T v` form are later refinements.
 struct ForeachStmt : Stmt {
@@ -432,6 +454,7 @@ struct MethodDecl : MemberDecl {
     std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
     std::vector<Param> params;
     TypeRef returnType;
+    std::vector<TypeRef> throwsTypes;  // `throws(...)` declared exceptions (spec 21.1)
     Block body;  // empty when isAbstract
     std::vector<ExprPtr> requiresClauses;  // contracts (spec 29): preconditions
     std::vector<ExprPtr> ensuresClauses;   // contracts (spec 29): postconditions
