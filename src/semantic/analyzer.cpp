@@ -308,7 +308,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                                                          f->isStatic};
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         info.methods[m->name] = MethodInfo{typeRefStr(m->returnType), m->isStatic,
-                                                           m->isAbstract, m->isProperty};
+                                                           m->isAbstract, m->isProperty,
+                                                           m->params.size()};
                     } else if (dynamic_cast<const ast::ConstructorDecl*>(member.get()) != nullptr) {
                         info.hasConstructor = true;
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) != nullptr) {
@@ -1572,6 +1573,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                             return "";
                         }
                         for (const auto& arg : call->args) typeOf(*arg);
+                        if (call->args.size() != mit->second.paramCount) {
+                            error("method '" + mem->member + "' expects " +
+                                      std::to_string(mit->second.paramCount) + " argument(s) but got " +
+                                      std::to_string(call->args.size()),
+                                  call->loc);
+                        }
                         return mit->second.returnType;
                     }
                 }
@@ -1637,6 +1644,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 return "";
             }
             for (const auto& arg : call->args) typeOf(*arg);
+            if (!m->isProperty && call->args.size() != m->paramCount) {
+                error("method '" + mem->member + "' expects " + std::to_string(m->paramCount) +
+                          " argument(s) but got " + std::to_string(call->args.size()),
+                      call->loc);
+            }
             return m->returnType;
         }
         error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call->loc);

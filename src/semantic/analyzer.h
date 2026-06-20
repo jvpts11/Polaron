@@ -39,6 +39,7 @@ struct MethodInfo {
     bool isStatic = false;
     bool isAbstract = false;
     bool isProperty = false;  // computed get-only property: read as obj.name (no parens)
+    std::size_t paramCount = 0;  // declared parameter count (for arg-count checking)
 };
 struct ClassInfo {
     std::string name;

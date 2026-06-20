@@ -35,6 +35,12 @@ add_test(NAME sema_rejects_catalog_cycle
 set_tests_properties(sema_rejects_catalog_cycle PROPERTIES
     PASS_REGULAR_EXPRESSION "catalog cycle involving")
 
+# Wrong argument count must be a clean error, not a codegen "bad signature" crash.
+add_test(NAME sema_rejects_bad_arg_count
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/arg_count_bad.ldp3")
+set_tests_properties(sema_rejects_bad_arg_count PROPERTIES
+    PASS_REGULAR_EXPRESSION "expects 2 argument")
+
 # ---- Codegen tests (only when the LLVM backend is built) ----
 if(LDP3_WITH_LLVM)
     # The emitted IR contains an i32 main and a printf call.

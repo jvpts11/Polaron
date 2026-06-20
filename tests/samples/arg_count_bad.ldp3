@@ -1,0 +1,19 @@
+program ArgCountBad;
+
+// Negative test: calling a method with the wrong number of arguments must be a
+// clean compile error, not a codegen crash (LLVM "bad signature" assertion).
+
+public bundle main {
+    public namespace app {
+        public class C {
+            public method add(int a, int b) returns int { return a + b; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                C c = new C() on heap;
+                System.IO.printf("%d\n", c.add(1, 2, 3));   // expects 2, got 3
+                return;
+            }
+        }
+    }
+}
