@@ -211,6 +211,9 @@ struct CodeGenerator::Impl {
     std::vector<std::string> methodSlotNames;          // global slot -> method name
     std::unordered_map<std::string, std::vector<std::string>> enums;  // name -> constants (ordinals)
     std::unordered_map<std::string, const ast::EnumDecl*> javaEnums;  // java-style enum decls
+    // Catalog-implementing enums kept as enums (int-style ordinals) but carrying
+    // method impls: name -> decl. Methods lower as `Enum.method(i32 this, ...)`.
+    std::unordered_map<std::string, const ast::EnumDecl*> enumMethodDecls;
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
     std::unordered_map<std::string, llvm::GlobalVariable*> staticGlobals;  // "Class.field" -> global
     std::unordered_map<std::string, std::string> staticFieldType;  // "Class.field" -> LDP3 type
@@ -558,6 +561,14 @@ struct CodeGenerator::Impl {
                     if (enums.count(oid->name) > 0) {
                         if (mem->member == "count") return "int";
                         if (mem->member == "values") return oid->name + "[]";
+                    }
+                }
+                // Enum (catalog) instance method: m.pick() -> the method's return type.
+                if (auto eit = enumMethodDecls.find(baseType(typeName(*mem->object)));
+                    eit != enumMethodDecls.end()) {
+                    for (const ast::MemberPtr& member : eit->second->members) {
+                        const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                        if (m != nullptr && m->name == mem->member) return typeRefName(m->returnType);
                     }
                 }
                 // instance: search the object's hierarchy; static: the named class.
@@ -987,6 +998,13 @@ struct CodeGenerator::Impl {
             if (id->name == "this") return currentThis;
             auto it = locals.find(id->name);
             if (it == locals.end()) {
+                // A bare enum constant inside one of that enum's own methods (spec 12.4).
+                if (auto eit = enums.find(currentClass); eit != enums.end()) {
+                    const auto& cs = eit->second;
+                    auto cpos = std::find(cs.begin(), cs.end(), id->name);
+                    if (cpos != cs.end())
+                        return builder.getInt32(static_cast<int>(cpos - cs.begin()));
+                }
                 error("use of undeclared variable '" + id->name + "'", id->loc);
                 return nullptr;
             }
@@ -1622,6 +1640,28 @@ struct CodeGenerator::Impl {
                         args.push_back(v);
                     }
                     return emitMaybeInvoke(fnit->second, args);
+                }
+            }
+            // Enum (catalog) instance method: the receiver is an enum value. Dispatch
+            // statically by the enum type, passing the ordinal as `this` (an i32).
+            // Dispatch through a catalog-typed receiver (cross-enum polymorphism) is
+            // not supported: an i32 ordinal carries no type tag.
+            {
+                const std::string est = baseType(typeName(*mem->object));
+                if (enums.count(est) > 0) {
+                    auto fnit = functions.find(est + "." + mem->member);
+                    if (fnit != functions.end()) {
+                        llvm::Value* recv = emitExpr(*mem->object);  // the ordinal (i32)
+                        if (recv == nullptr) return nullptr;
+                        std::vector<llvm::Value*> args;
+                        args.push_back(recv);
+                        for (const auto& arg : call.args) {
+                            llvm::Value* v = emitExpr(*arg);
+                            if (v == nullptr) return nullptr;
+                            args.push_back(v);
+                        }
+                        return emitMaybeInvoke(fnit->second, args);
+                    }
                 }
             }
             // Virtual dispatch: if the static type is polymorphic and the method
@@ -2518,6 +2558,7 @@ struct CodeGenerator::Impl {
                 for (const ast::EnumDecl& en : ns.enums) {
                     enums[en.name] = en.constants;
                     if (en.isJavaStyle) javaEnums[en.name] = &en;
+                    else if (!en.members.empty()) enumMethodDecls[en.name] = &en;  // catalog enum
                 }
             }
         }
@@ -2824,6 +2865,24 @@ struct CodeGenerator::Impl {
                         ty, llvm::Function::ExternalLinkage, "literal." + lit.name, module);
                     literalReturnType[lit.name] = typeRefName(lit.returnType);
                 }
+                // Catalog-implementing enum methods (spec 12.4). An instance method
+                // receives the enum value (its i32 ordinal) as `this`.
+                for (const ast::EnumDecl& en : ns.enums) {
+                    if (en.isJavaStyle) continue;
+                    for (const ast::MemberPtr& member : en.members) {
+                        const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                        if (m == nullptr || m->isAbstract) continue;
+                        std::vector<llvm::Type*> ptypes;
+                        if (!m->isStatic) ptypes.push_back(builder.getInt32Ty());  // this = ordinal
+                        for (const auto& p : m->params)
+                            ptypes.push_back(llvmType(typeRefName(p.type)));
+                        llvm::FunctionType* ty = llvm::FunctionType::get(
+                            llvmType(typeRefName(m->returnType)), ptypes, false);
+                        const std::string mangled = en.name + "." + m->name;
+                        functions[mangled] = llvm::Function::Create(
+                            ty, llvm::Function::ExternalLinkage, mangled, module);
+                    }
+                }
             }
         }
     }
@@ -2984,6 +3043,20 @@ struct CodeGenerator::Impl {
                 for (const ast::LiteralDecl& lit : ns.literals) {
                     emitBody(functions[lit.name], lit.body, {lit.param}, /*thisClass=*/"",
                              llvmType(typeRefName(lit.returnType)));
+                }
+                // Catalog-implementing enum method bodies (spec 12.4). For an instance
+                // method, `this` is the enum value (an i32 ordinal), so thisClass is the
+                // enum name (binds currentThis to arg 0) but there is no vtable/field init.
+                for (const ast::EnumDecl& en : ns.enums) {
+                    if (en.isJavaStyle) continue;
+                    for (const ast::MemberPtr& member : en.members) {
+                        const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                        if (m == nullptr || m->isAbstract) continue;
+                        emitBody(functions[en.name + "." + m->name], m->body, m->params,
+                                 m->isStatic ? std::string() : en.name,
+                                 llvmType(typeRefName(m->returnType)), nullptr,
+                                 &m->requiresClauses, &m->ensuresClauses);
+                    }
                 }
             }
         }

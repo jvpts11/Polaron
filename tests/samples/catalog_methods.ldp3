@@ -1,0 +1,66 @@
+program CatalogMethods;
+
+// Catalogs, methods axis (spec 12.3/12.4): a catalog declares required method
+// signatures; the implementing enum provides the bodies. Methods are instance
+// methods -- called on an enum value, which is passed as `this` (its ordinal).
+// Dispatch is static (by the enum type). Inside a method, the enum's constants
+// are reachable qualified (Item.cheap) or bare (cheap).
+
+public bundle main {
+    public namespace app {
+
+        public catalog Priced {
+            cheap,
+            pricey
+
+            method price() returns int;
+            method rank() returns int;
+        }
+
+        public enum Item extends Priced {
+            book,
+            phone
+
+            byCatalog {
+                cheap,
+                pricey
+            }
+
+            // `this` is the enum value (an ordinal); compare it to constants.
+            public method price() returns int {
+                if (this == Item.pricey) {
+                    return 100;
+                }
+                if (this == Item.phone) {
+                    return 50;
+                }
+                return 10;
+            }
+
+            public method rank() returns int {
+                if (this == cheap) {   // bare (unqualified) constant reference
+                    return 1;
+                }
+                return 2;
+            }
+
+            // An enum method may call sibling methods on `this` (extra method, not
+            // part of the catalog contract -- enums may add their own).
+            public method tag() returns int {
+                return this.price() + this.rank();
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Item a = Item.pricey;   // ordinal 3
+                Item b = Item.book;     // ordinal 0
+                Item d = Item.cheap;    // ordinal 2
+                System.IO.printf("%d %d %d\n", a.price(), b.price(), d.price());
+                System.IO.printf("%d %d\n", d.rank(), a.rank());
+                System.IO.printf("%d\n", d.tag());
+                return;
+            }
+        }
+    }
+}

@@ -145,6 +145,8 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants
     std::unordered_map<std::string, CatalogInfo> catalogs_;            // name -> catalog contract
     std::unordered_map<std::string, std::vector<std::string>> enumCatalogs_;  // enum -> catalogs it extends
+    // enum -> (method name -> info): methods declared on a catalog-implementing enum.
+    std::unordered_map<std::string, std::unordered_map<std::string, MethodInfo>> enumMethods_;
     std::unordered_map<std::string, LiteralInfo> literals_;  // suffix name -> info
     std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace

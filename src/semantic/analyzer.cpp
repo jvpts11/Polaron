@@ -329,6 +329,15 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                 }
                 enums_[en.name] = en.constants;
                 if (!en.extendsCatalogs.empty()) enumCatalogs_[en.name] = en.extendsCatalogs;
+                // Methods declared on the enum (e.g. catalog method impls) -- recorded so
+                // `value.method()` resolves and the bodies get type-checked.
+                for (const ast::MemberPtr& member : en.members) {
+                    if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                        enumMethods_[en.name][m->name] =
+                            MethodInfo{typeRefStr(m->returnType), m->isStatic, m->isAbstract,
+                                       m->isProperty};
+                    }
+                }
                 typeNamespace_[en.name] = ns.name;
             }
         }
@@ -542,6 +551,23 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                                    dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                         analyzeMethodBody(d->body, {}, cls.name, false);
                     }
+                }
+            }
+            // Catalog-implementing enums keep their method impls on the enum (they are
+            // not desugared to a class); type-check those bodies too. `this` has the
+            // enum type; an instance method receives the enum value (an ordinal).
+            for (const ast::EnumDecl& en : ns.enums) {
+                for (const ast::MemberPtr& member : en.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                    if (m == nullptr || m->isAbstract) continue;
+                    for (const ast::Param& p : m->params)
+                        checkTypeAccessible(typeRefStr(p.type), p.loc);
+                    checkTypeAccessible(typeRefStr(m->returnType), m->loc);
+                    std::vector<const ast::Expr*> contracts;
+                    for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
+                    for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
+                    analyzeMethodBody(m->body, m->params,
+                                      m->isStatic ? std::string() : en.name, false, contracts);
                 }
             }
         }
@@ -1138,6 +1164,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         const LocalVar* var = lookupLocal(id->name);
         if (var == nullptr) {
+            // A bare enum constant inside one of that enum's own methods (spec 12.2/12.4):
+            // `return v8;` resolves to the enum value without the `Enum.` prefix.
+            if (auto eit = enums_.find(currentClass_);
+                eit != enums_.end() &&
+                std::find(eit->second.begin(), eit->second.end(), id->name) != eit->second.end()) {
+                return currentClass_;
+            }
             error("use of undeclared variable '" + id->name + "'", id->loc);
             return "";
         }
@@ -1499,6 +1532,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             const std::string objType = typeOf(*mem->object);
             if (objType.empty()) return "";
+            // Enum (catalog) instance method: m.pick() where m is an enum value.
+            if (auto emit = enumMethods_.find(baseType(objType)); emit != enumMethods_.end()) {
+                auto mit = emit->second.find(mem->member);
+                if (mit != emit->second.end()) {
+                    for (const auto& arg : call->args) typeOf(*arg);
+                    return mit->second.returnType;
+                }
+            }
             if (isArrayType(objType)) {
                 if (mem->member == "length" && call->args.empty()) return "int";
                 error("arrays only support .length(); '" + mem->member + "' is not a method",

@@ -1139,6 +1139,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=0 1 2 3 4 5 5 6"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # catalogs method contract (spec 12.3/12.4): the enum implements the catalog's
+        # methods; instance methods take the enum value as `this`, dispatched statically.
+        add_test(NAME codegen_catalog_methods_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_methods.ldp3"
+            "-DEXPECTED=100 10 10 1 2 11"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()
