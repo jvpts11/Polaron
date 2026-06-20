@@ -1,0 +1,24 @@
+program Comefrom;
+
+// comefrom (spec 7.10, same-method): `comefrom L` transfers control to `label L;`. It serves both
+// directions -- a forward jump (skip ahead) and a backward jump (retry; locals keep their values).
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int a = 1;
+                if (a == 1) { comefrom skip; }     // forward: jump past the next line
+                System.IO.printf("X\n");           // skipped
+                label skip;
+                System.IO.printf("forward ok\n");
+                mutable int n = 0;
+                label loop;
+                n = n + 1;
+                System.IO.printf("n=%d\n", n);
+                if (n < 3) { comefrom loop; }       // backward: retry (n is preserved)
+                System.IO.printf("done\n");
+                return;
+            }
+        }
+    }
+}

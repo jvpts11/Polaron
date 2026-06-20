@@ -869,6 +869,22 @@ ast::StmtPtr Parser::parseStatement() {
         lbl->stmt = parseStatement();
         return lbl;
     }
+    if (check(TokenKind::KwLabel)) {  // `label name;` -- a comefrom target (spec 7.10)
+        auto m = std::make_unique<ast::LabelMarkStmt>();
+        m->loc = current().loc;
+        advance();  // 'label'
+        m->name = expect(TokenKind::Identifier, "a label name").lexeme;
+        expect(TokenKind::Semicolon, "';'");
+        return m;
+    }
+    if (check(TokenKind::KwComefrom)) {  // `comefrom name;` -- jump to label name (spec 7.10)
+        auto c = std::make_unique<ast::ComefromStmt>();
+        c->loc = current().loc;
+        advance();  // 'comefrom'
+        c->name = expect(TokenKind::Identifier, "a label name after 'comefrom'").lexeme;
+        expect(TokenKind::Semicolon, "';'");
+        return c;
+    }
     if (check(TokenKind::KwIf)) {
         return parseIfStatement();
     }

@@ -239,6 +239,7 @@ struct CodeGenerator::Impl {
     struct LoopTargets { llvm::BasicBlock* brk; llvm::BasicBlock* cont; std::string label; };
     std::vector<LoopTargets> loopStack;  // (break, continue, label) per active loop / switch
     std::string pendingLoopLabel;        // label to attach to the next loop (from a LabeledStmt)
+    std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
 
     Impl(const ast::Program& p, const EntryPoint& e, std::string_view name,
          std::vector<CodegenError>& errs)
@@ -1674,8 +1675,12 @@ struct CodeGenerator::Impl {
     }
 
     void emitStatement(const ast::Stmt& stmt) {
-        // No code after a terminator (statements following break/continue/return are dead).
-        if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
+        // No code after a terminator (statements following break/continue/return are dead). A
+        // `label name;` is the exception: it must still place its block so a comefrom can target it.
+        if (builder.GetInsertBlock()->getTerminator() != nullptr &&
+            dynamic_cast<const ast::LabelMarkStmt*>(&stmt) == nullptr) {
+            return;
+        }
         // static_assert is a compile-time check (spec 28.2); it emits no code.
         if (dynamic_cast<const ast::StaticAssertStmt*>(&stmt) != nullptr) return;
         if (const auto* br = dynamic_cast<const ast::BreakStmt*>(&stmt)) {
@@ -1689,6 +1694,22 @@ struct CodeGenerator::Impl {
         if (const auto* lbl = dynamic_cast<const ast::LabeledStmt*>(&stmt)) {
             pendingLoopLabel = lbl->label;
             emitStatement(*lbl->stmt);
+            return;
+        }
+        // `label name;` -- place a target block; fall into it (spec 7.10). comefrom can jump here.
+        if (const auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(&stmt)) {
+            llvm::BasicBlock*& bb = labelBlocks[lm->name];
+            if (bb == nullptr) bb = llvm::BasicBlock::Create(context, "label." + lm->name, currentFn);
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(bb);
+            builder.SetInsertPoint(bb);
+            return;
+        }
+        // `comefrom name;` -- transfer control to label name (forward or backward). Code after is
+        // dead (the terminator guard above skips it).
+        if (const auto* cf = dynamic_cast<const ast::ComefromStmt*>(&stmt)) {
+            llvm::BasicBlock*& bb = labelBlocks[cf->name];
+            if (bb == nullptr) bb = llvm::BasicBlock::Create(context, "label." + cf->name, currentFn);
+            builder.CreateBr(bb);
             return;
         }
         if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(&stmt)) {
@@ -2794,6 +2815,7 @@ struct CodeGenerator::Impl {
         locals.clear();
         scopeObjects.clear();
         deferred.clear();
+        labelBlocks.clear();
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
         builder.SetInsertPoint(block);
 

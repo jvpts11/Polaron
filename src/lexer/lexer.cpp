@@ -81,6 +81,8 @@ TokenKind keywordKind(std::string_view text) {
         {"transient", TokenKind::KwTransient},
         {"lambda", TokenKind::KwLambda},
         {"function", TokenKind::KwFunction},
+        {"label", TokenKind::KwLabel},
+        {"comefrom", TokenKind::KwComefrom},
         {"comptime", TokenKind::KwComptime},
         {"literal", TokenKind::KwLiteral},
         {"import", TokenKind::KwImport},

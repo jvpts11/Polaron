@@ -265,6 +265,18 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->stmt = cloneStmt(x->stmt.get(), s);
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::LabelMarkStmt*>(st)) {
+        auto n = std::make_unique<ast::LabelMarkStmt>();
+        n->loc = st->loc;
+        n->name = x->name;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::ComefromStmt*>(st)) {
+        auto n = std::make_unique<ast::ComefromStmt>();
+        n->loc = st->loc;
+        n->name = x->name;
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) {
         auto n = std::make_unique<ast::ForeachStmt>();
         n->loc = x->loc;

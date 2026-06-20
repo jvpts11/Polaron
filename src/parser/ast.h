@@ -390,6 +390,18 @@ struct LabeledStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// `label name;` -- a standalone target marker for comefrom (spec 7.10).
+struct LabelMarkStmt : Stmt {
+    std::string name;
+    void dump(std::string& out, int /*indent*/) const override { out += "label " + name; }
+};
+
+// `comefrom name;` -- transfers control to `label name;` (spec 7.10, same-method only).
+struct ComefromStmt : Stmt {
+    std::string name;
+    void dump(std::string& out, int /*indent*/) const override { out += "comefrom " + name; }
+};
+
 // for (T v in array) { ... } -- foreach over an array (spec 7). Ranges and the
 // `index i, T v` form are later refinements.
 struct ForeachStmt : Stmt {
