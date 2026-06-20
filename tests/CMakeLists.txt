@@ -1245,6 +1245,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=~Derived ~Base ~Square"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # finally runs on early exits (return out of try, break leaving a nested try), not
+        # only the normal/caught fall-through.
+        add_test(NAME codegen_finally_exits_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/finally_exits.ldp3"
+            "-DEXPECTED=finally-return r=1 iter 0 finally-iter 0 finally-iter 1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

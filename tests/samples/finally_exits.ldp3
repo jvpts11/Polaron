@@ -1,0 +1,40 @@
+program FinallyExits;
+
+// `finally` runs on every exit of the try region, not only normal/caught
+// fall-through: a `return` out of the try body, and a `break` that leaves a try
+// nested in a loop. Previously these silently skipped the finally.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            // finally runs before the return leaves the method.
+            public static method withReturn() returns int {
+                try {
+                    return 1;
+                } finally {
+                    System.IO.printf("finally-return\n");
+                }
+            }
+
+            // finally runs when break leaves the try inside the loop.
+            public static method withBreak() returns void {
+                for (mutable int i = 0; i < 3; i++) {
+                    try {
+                        if (i == 1) { break; }
+                        System.IO.printf("iter %d\n", i);
+                    } finally {
+                        System.IO.printf("finally-iter %d\n", i);
+                    }
+                }
+                return;
+            }
+
+            public static method main(string[] args) returns void {
+                int r = Main.withReturn();
+                System.IO.printf("r=%d\n", r);
+                Main.withBreak();
+                return;
+            }
+        }
+    }
+}
