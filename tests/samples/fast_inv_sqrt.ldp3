@@ -1,0 +1,45 @@
+program FastInvSqrt;
+
+// The famous Quake III "fast inverse square root": approximates 1/sqrt(x) with a
+// magic constant and one Newton-Raphson step. It exercises a good slice of LDP3:
+//   - a C-style `union` for the bit-level reinterpretation float32 <-> int32
+//     (the "evil floating point bit level hacking"),
+//   - the 0x5f3759df magic constant and an arithmetic shift,
+//   - float32 arithmetic + int<->float casts,
+//   - argument coercion (the f64 literal 4.0 passed to a float32 parameter).
+
+public bundle main {
+    public namespace app {
+
+        // Shares one storage between a 32-bit float and its raw integer bits.
+        public union FloatBits {
+            float32 f;
+            int32 i;
+        }
+
+        public class FastMath {
+            public static method invSqrt(float32 number) returns float32 {
+                float32 x2 = number * 0.5;
+                FloatBits conv = new FloatBits();
+                conv.f = number;                       // reinterpret the float's bits...
+                conv.i = 0x5f3759df - (conv.i >> 1);   // ...as an int: the magic step
+                mutable float32 y = conv.f;            // ...and back to a float
+                y = y * (1.5 - (x2 * y * y));          // one Newton-Raphson iteration
+                return y;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Scale by 1000 and truncate so the output is a stable integer.
+                float32 a = FastMath.invSqrt(4.0);     // ~0.5
+                float32 b = FastMath.invSqrt(0.25);    // ~2.0
+                float32 c = FastMath.invSqrt(100.0);   // ~0.1
+                System.IO.printf("rsqrt(4)~=%d/1000  rsqrt(0.25)~=%d/1000  rsqrt(100)~=%d/1000\n",
+                                 cast<int>(a * 1000.0), cast<int>(b * 1000.0),
+                                 cast<int>(c * 1000.0));
+                return;
+            }
+        }
+    }
+}
