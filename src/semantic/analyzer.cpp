@@ -140,8 +140,9 @@ void SemanticAnalyzer::validateHierarchy() {
                           "' (structs have no inheritance)",
                       {});
             } else if (sup->isSealed &&
-                       std::find(sup->permits.begin(), sup->permits.end(), name) ==
-                           sup->permits.end()) {
+                       std::find(sup->permits.begin(), sup->permits.end(),
+                                 name.substr(0, name.find('$'))) == sup->permits.end()) {
+                // ^ permits hold bare names (Ok, Err); a monomorphized subclass is Ok$int$int.
                 error("class '" + name + "' cannot extend sealed '" + info.superclass +
                           "' (not in its permits list)",
                       {});
@@ -879,11 +880,18 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     }
     if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(&stmt)) {
         const std::string subjType = typeOf(*ms->subject);
+        const std::string subjBaseM = baseType(subjType);
+        const auto subjDollarM = subjBaseM.find('$');
         for (const ast::MatchCase& c : ms->cases) {
-            const ClassInfo* ci = lookupClass(c.typeName);
+            // A bare case name (Ok) on a monomorphized sealed subject (Result$int$int) names the
+            // matching instantiation (Ok$int$int). Exhaustiveness below stays bare (permits are bare).
+            const std::string caseType = subjDollarM == std::string::npos
+                                             ? c.typeName
+                                             : c.typeName + subjBaseM.substr(subjDollarM);
+            const ClassInfo* ci = lookupClass(caseType);
             if (ci == nullptr) {
                 error("unknown type '" + c.typeName + "' in match case", c.loc);
-            } else if (!subjType.empty() && !isSubtype(c.typeName, baseType(subjType))) {
+            } else if (!subjType.empty() && !isSubtype(caseType, subjBaseM)) {
                 error("'" + c.typeName + "' is not a subtype of '" + subjType + "'", c.loc);
             }
             // Bindings introduce locals (the case type's fields) in the case body.
@@ -1041,11 +1049,16 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string subjType = typeOf(*me->subject);
         const std::string subjBase = baseType(subjType);
         std::string resultType;
+        const auto subjDollarM = subjBase.find('$');
         for (const ast::MatchCase& c : me->cases) {
-            const ClassInfo* ci = lookupClass(c.typeName);
+            // Map a bare case name to the subject's instantiation (Ok -> Ok$int$int).
+            const std::string caseType = subjDollarM == std::string::npos
+                                             ? c.typeName
+                                             : c.typeName + subjBase.substr(subjDollarM);
+            const ClassInfo* ci = lookupClass(caseType);
             if (ci == nullptr) {
                 error("unknown type '" + c.typeName + "' in match case", c.loc);
-            } else if (!subjType.empty() && !isSubtype(c.typeName, subjBase)) {
+            } else if (!subjType.empty() && !isSubtype(caseType, subjBase)) {
                 error("'" + c.typeName + "' is not a subtype of '" + subjType + "'", c.loc);
             }
             // Bindings introduce the case type's fields as locals in the arm expression.

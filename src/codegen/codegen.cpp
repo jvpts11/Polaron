@@ -2222,8 +2222,12 @@ struct CodeGenerator::Impl {
         llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblAddr, "vtbl");
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "match.end", fn);
+        const std::string mSubjBase = baseType(typeName(*s.subject));
+        const auto mDollar = mSubjBase.find('$');  // map bare case name to the subject instantiation
         for (const ast::MatchCase& c : s.cases) {
-            auto cit = classes.find(c.typeName);
+            const std::string caseType = mDollar == std::string::npos
+                                             ? c.typeName : c.typeName + mSubjBase.substr(mDollar);
+            auto cit = classes.find(caseType);
             if (cit == classes.end() || cit->second.vtable == nullptr) continue;
             llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "match.case", fn);
             llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(context, "match.next", fn);
@@ -2272,8 +2276,12 @@ struct CodeGenerator::Impl {
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "matchx.end", fn);
         std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+        const std::string mSubjBase = baseType(typeName(*s.subject));
+        const auto mDollar = mSubjBase.find('$');  // map bare case name to the subject instantiation
         for (const ast::MatchCase& c : s.cases) {
-            auto cit = classes.find(c.typeName);
+            const std::string caseType = mDollar == std::string::npos
+                                             ? c.typeName : c.typeName + mSubjBase.substr(mDollar);
+            auto cit = classes.find(caseType);
             if (cit == classes.end() || cit->second.vtable == nullptr) continue;
             llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "matchx.case", fn);
             llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(context, "matchx.next", fn);
