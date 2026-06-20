@@ -275,6 +275,8 @@ ast::Namespace Parser::parseNamespace() {
             } else {
                 ns.enums.push_back(std::move(en));
             }
+        } else if (kind == TokenKind::KwCatalog) {
+            ns.catalogs.push_back(parseCatalog());
         } else if (kind == TokenKind::KwComptime || kind == TokenKind::KwLiteral) {
             ns.literals.push_back(parseLiteral());
         } else if (kind == TokenKind::KwRecord) {
@@ -313,6 +315,12 @@ ast::EnumDecl Parser::parseEnum() {
     e.visibility = parseVisibilityOpt();
     expect(TokenKind::KwEnum, "'enum'");
     e.name = expect(TokenKind::Identifier, "the enum name").lexeme;
+    // Catalogs implemented by this enum (spec 12.4): `enum Motor extends TipoMotor`.
+    if (match(TokenKind::KwExtends)) {
+        do {
+            e.extendsCatalogs.push_back(expect(TokenKind::Identifier, "a catalog name").lexeme);
+        } while (match(TokenKind::Comma));
+    }
     expect(TokenKind::LBrace, "'{'");
     // Constants: NAME [ (ctor args) ], comma-separated. Args make it Java-style.
     if (check(TokenKind::Identifier)) {
@@ -331,15 +339,66 @@ ast::EnumDecl Parser::parseEnum() {
             e.constantArgs.push_back(std::move(args));
         } while (match(TokenKind::Comma));
     }
+    // `byCatalog { ... }` block (spec 12.4): constants provided to satisfy a catalog.
+    // They become real enum constants (appended after the own ones, so ordinals
+    // continue), and are recorded as catalog-provided for clarity/validation.
+    if (match(TokenKind::KwByCatalog)) {
+        expect(TokenKind::LBrace, "'{' to open byCatalog");
+        if (check(TokenKind::Identifier)) {
+            do {
+                const std::string v = expect(TokenKind::Identifier, "a catalog value").lexeme;
+                e.byCatalogValues.push_back(v);
+                e.constants.push_back(v);
+                e.constantArgs.push_back({});  // keep parallel to `constants`
+            } while (match(TokenKind::Comma));
+        }
+        expect(TokenKind::RBrace, "'}' to close byCatalog");
+    }
     // Java-style body: `;` then fields / constructor / methods (spec 12.2).
     if (match(TokenKind::Semicolon)) {
         e.isJavaStyle = true;
         while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
             e.members.push_back(parseMember(/*inInterface=*/false));
         }
+    } else if (!e.extendsCatalogs.empty()) {
+        // Catalog-implementing enum: its methods follow the constants/byCatalog block
+        // directly (no leading `;`). Kept on the enum (NOT desugared to a class) so
+        // its constants stay plain i32 ordinals with correct value semantics.
+        while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+            e.members.push_back(parseMember(/*inInterface=*/false));
+        }
     }
     expect(TokenKind::RBrace, "'}'");
     return e;
+}
+
+// A catalog (spec 12.3): an interface for enums declaring required VALUES and
+// required METHOD SIGNATURES (standard form `method name(params) returns T;`).
+ast::CatalogDecl Parser::parseCatalog() {
+    ast::CatalogDecl c;
+    c.loc = current().loc;
+    c.visibility = parseVisibilityOpt();
+    expect(TokenKind::KwCatalog, "'catalog'");
+    c.name = expect(TokenKind::Identifier, "the catalog name").lexeme;
+    // A catalog may extend other catalogs (spec 12.3): `catalog A extends B, C`.
+    if (match(TokenKind::KwExtends)) {
+        do {
+            c.extendsCatalogs.push_back(expect(TokenKind::Identifier, "a catalog name").lexeme);
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::LBrace, "'{'");
+    // Required values: comma-separated bare identifiers (catalogs have no fields).
+    if (check(TokenKind::Identifier)) {
+        do {
+            c.requiredValues.push_back(expect(TokenKind::Identifier, "a catalog value").lexeme);
+        } while (match(TokenKind::Comma));
+    }
+    // Required method signatures (abstract): parsed like interface methods.
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        c.methods.push_back(parseMember(/*inInterface=*/true));
+    }
+    expect(TokenKind::RBrace, "'}'");
+    return c;
 }
 
 ast::ClassDecl Parser::parseClassOrInterface() {

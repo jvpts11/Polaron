@@ -1129,6 +1129,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=q=3 r=2 lo=3 hi=9 x=4 y=10"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # catalogs value contract (spec 12.3/12.4): enum extends catalog, byCatalog
+        # constants continue the ordinals (3..5), enum is a subtype of the catalog.
+        add_test(NAME codegen_catalog_values_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_values.ldp3"
+            "-DEXPECTED=0 1 2 3 4 5 5 6"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

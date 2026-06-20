@@ -116,6 +116,19 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     // Pointer/reference compatibility follows the pointee (T*, T& and T mix
     // freely for now; the strict value-vs-reference rules land with deep copy).
     if (isRefType(sub) || isRefType(super)) return isSubtype(baseType(sub), baseType(super));
+    // An enum is a subtype of every catalog it extends (spec 12.4), transitively
+    // through catalog->catalog extends.
+    if (auto ecit = enumCatalogs_.find(sub); ecit != enumCatalogs_.end()) {
+        for (const std::string& cat : ecit->second) {
+            if (cat == super || isSubtype(cat, super)) return true;
+        }
+    }
+    // A catalog is a subtype of every catalog it extends.
+    if (auto ccit = catalogs_.find(sub); ccit != catalogs_.end()) {
+        for (const std::string& cat : ccit->second.extendsCatalogs) {
+            if (cat == super || isSubtype(cat, super)) return true;
+        }
+    }
     const ClassInfo* c = lookupClass(sub);
     if (c == nullptr) return false;
     if (!c->superclass.empty() && isSubtype(c->superclass, super)) return true;
@@ -309,12 +322,114 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
             for (const ast::EnumDecl& en : ns.enums) {
                 // A java-style enum is desugared into a class of the same name, so
                 // its matching class entry is expected; only flag other clashes.
-                if (enums_.count(en.name) > 0 || (!en.isJavaStyle && classes_.count(en.name) > 0)) {
+                if (enums_.count(en.name) > 0 || catalogs_.count(en.name) > 0 ||
+                    (!en.isJavaStyle && classes_.count(en.name) > 0)) {
                     error("redeclaration of type '" + en.name + "'", en.loc);
                     continue;
                 }
                 enums_[en.name] = en.constants;
+                if (!en.extendsCatalogs.empty()) enumCatalogs_[en.name] = en.extendsCatalogs;
                 typeNamespace_[en.name] = ns.name;
+            }
+        }
+    }
+}
+
+// Registers each catalog's value/method contract so enums can implement it and
+// catalog types participate in subtyping (spec 12.3).
+void SemanticAnalyzer::registerCatalogs(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::CatalogDecl& cat : ns.catalogs) {
+                if (catalogs_.count(cat.name) > 0 || classes_.count(cat.name) > 0 ||
+                    enums_.count(cat.name) > 0) {
+                    error("redeclaration of type '" + cat.name + "'", cat.loc);
+                    continue;
+                }
+                CatalogInfo info;
+                info.requiredValues = cat.requiredValues;
+                info.extendsCatalogs = cat.extendsCatalogs;
+                for (const ast::MemberPtr& member : cat.methods) {
+                    if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                        info.methodNames.push_back(m->name);
+                    }
+                }
+                catalogs_[cat.name] = std::move(info);
+                typeNamespace_[cat.name] = ns.name;
+            }
+        }
+    }
+}
+
+// Validates that every enum implementing a catalog satisfies its contract: the
+// catalog exists, the `byCatalog` block covers exactly the required values, and
+// every required method is implemented (spec 12.4). Also checks catalog->catalog
+// extends targets exist.
+void SemanticAnalyzer::validateCatalogs(const ast::Program& program) {
+    // Catalog `extends` targets must be catalogs.
+    for (const auto& [name, info] : catalogs_) {
+        for (const std::string& parent : info.extendsCatalogs) {
+            if (catalogs_.count(parent) == 0) {
+                error("catalog '" + name + "' extends unknown catalog '" + parent + "'", {});
+            }
+        }
+    }
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::EnumDecl& en : ns.enums) {
+                if (en.extendsCatalogs.empty()) {
+                    if (!en.byCatalogValues.empty()) {
+                        error("enum '" + en.name +
+                                  "' has a 'byCatalog' block but does not extend any catalog",
+                              en.loc);
+                    }
+                    continue;
+                }
+                // Gather the union of every extended catalog's required values/methods.
+                std::vector<std::string> requiredValues;
+                std::vector<std::string> requiredMethods;
+                for (const std::string& catName : en.extendsCatalogs) {
+                    auto cit = catalogs_.find(catName);
+                    if (cit == catalogs_.end()) {
+                        error("enum '" + en.name + "' extends unknown catalog '" + catName + "'",
+                              en.loc);
+                        continue;
+                    }
+                    for (const auto& v : cit->second.requiredValues) requiredValues.push_back(v);
+                    for (const auto& m : cit->second.methodNames) requiredMethods.push_back(m);
+                }
+                // byCatalog must cover exactly the required values: none missing, none extra.
+                for (const std::string& req : requiredValues) {
+                    if (std::find(en.byCatalogValues.begin(), en.byCatalogValues.end(), req) ==
+                        en.byCatalogValues.end()) {
+                        error("enum '" + en.name +
+                                  "' must provide catalog value '" + req + "' in its 'byCatalog' block",
+                              en.loc);
+                    }
+                }
+                for (const std::string& provided : en.byCatalogValues) {
+                    if (std::find(requiredValues.begin(), requiredValues.end(), provided) ==
+                        requiredValues.end()) {
+                        error("enum '" + en.name + "' lists '" + provided +
+                                  "' in 'byCatalog', but no extended catalog requires it",
+                              en.loc);
+                    }
+                }
+                // Every required method must be implemented by the enum (matched by name).
+                for (const std::string& req : requiredMethods) {
+                    bool found = false;
+                    for (const ast::MemberPtr& member : en.members) {
+                        const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                        if (m != nullptr && m->name == req) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        error("enum '" + en.name + "' must implement catalog method '" + req + "'",
+                              en.loc);
+                    }
+                }
             }
         }
     }
@@ -435,6 +550,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
 
 bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerClasses(program);
+    registerCatalogs(program);  // before enums: registerEnums records enum->catalog edges
     registerEnums(program);
     registerLiterals(program);
     processImports(program);
@@ -443,6 +559,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     // recursively below could otherwise loop forever.
     if (!errors_.empty()) return false;
     validateOverrides(program);
+    validateCatalogs(program);
     findEntryPoint(program);
     analyzeBodies(program);
     analyzeLiteralBodies(program);
@@ -1251,7 +1368,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         for (const auto& e : is->exprs) {
             const std::string t = typeOf(*e);
             const bool printable = t.empty() || isIntName(t) || isFloatType(t) || t == "char" ||
-                                   t == "boolean" || enums_.count(t) > 0;
+                                   t == "boolean" || enums_.count(t) > 0 || catalogs_.count(t) > 0;
             if (!printable) {
                 error("string interpolation can only print numeric, char, boolean or enum "
                       "values, got '" + t + "'",

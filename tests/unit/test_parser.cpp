@@ -132,3 +132,52 @@ TEST_CASE("parser parses throw, try/catch/finally and a throws clause") {
     CHECK(tryStmt->catches.at(0).name == "e");
     CHECK(tryStmt->finallyBlock != nullptr);
 }
+
+TEST_CASE("parser parses a catalog and an enum implementing it (spec 12.3/12.4)") {
+    const char* src =
+        "program P; public bundle b { public namespace n {\n"
+        "  public catalog TipoMotor {\n"
+        "    combustao, h2, eletrico\n"
+        "    method pick() returns int;\n"
+        "  }\n"
+        "  public enum Motor extends TipoMotor {\n"
+        "    v8, v12, doisPistoes\n"
+        "    byCatalog { combustao, h2, eletrico }\n"
+        "    public method pick() returns int { return 1; }\n"
+        "  }\n"
+        "  public class Main { public static method main(string[] args) returns void { } }\n"
+        "} }";
+    Lexer lexer(src, "test");
+    Parser parser(lexer.tokenize(), "test");
+    const ast::Program prog = parser.parse();
+    REQUIRE_FALSE(parser.hasErrors());
+
+    const auto& ns = prog.bundles.at(0).namespaces.at(0);
+    // The catalog: declares 3 required values and one required method signature.
+    REQUIRE(ns.catalogs.size() == 1);
+    const ast::CatalogDecl& cat = ns.catalogs.at(0);
+    CHECK(cat.name == "TipoMotor");
+    CHECK(cat.requiredValues.size() == 3);
+    CHECK(cat.requiredValues.at(0) == "combustao");
+    REQUIRE(cat.methods.size() == 1);
+    const auto* pickSig = dynamic_cast<const ast::MethodDecl*>(cat.methods.at(0).get());
+    REQUIRE(pickSig != nullptr);
+    CHECK(pickSig->name == "pick");
+    CHECK(pickSig->isAbstract);  // catalog methods are abstract signatures
+
+    // The enum: NOT desugared to a class (kept as an enum), extends the catalog,
+    // own constants first then byCatalog ones appended (ordinals continue).
+    REQUIRE(ns.enums.size() == 1);
+    const ast::EnumDecl& en = ns.enums.at(0);
+    CHECK(en.name == "Motor");
+    CHECK_FALSE(en.isJavaStyle);
+    REQUIRE(en.extendsCatalogs.size() == 1);
+    CHECK(en.extendsCatalogs.at(0) == "TipoMotor");
+    REQUIRE(en.constants.size() == 6);
+    CHECK(en.constants.at(0) == "v8");
+    CHECK(en.constants.at(3) == "combustao");
+    CHECK(en.constants.at(5) == "eletrico");
+    CHECK(en.byCatalogValues.size() == 3);
+    CHECK(en.constantArgs.size() == 6);  // kept parallel to constants
+    REQUIRE(en.members.size() == 1);     // the catalog method impl stays on the enum
+}

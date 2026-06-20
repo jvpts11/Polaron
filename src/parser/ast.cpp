@@ -1,5 +1,7 @@
 #include "parser/ast.h"
 
+#include <algorithm>
+
 namespace ldp3::ast {
 
 namespace {
@@ -362,9 +364,23 @@ void EnumDecl::dump(std::string& out, int indent) const {
     std::string head = "Enum '" + name + "'";
     if (!visibility.empty()) head += " " + visibility;
     if (isJavaStyle) head += " java-style";
+    for (const auto& cat : extendsCatalogs) head += " extends " + cat;
     line(out, indent, head);
-    for (const auto& c : constants) line(out, indent + 1, "Constant '" + c + "'");
+    for (const auto& c : constants) {
+        const bool fromCatalog =
+            std::find(byCatalogValues.begin(), byCatalogValues.end(), c) != byCatalogValues.end();
+        line(out, indent + 1, std::string("Constant '") + c + "'" + (fromCatalog ? " (byCatalog)" : ""));
+    }
     for (const auto& m : members) m->dump(out, indent + 1);
+}
+
+void CatalogDecl::dump(std::string& out, int indent) const {
+    std::string head = "Catalog '" + name + "'";
+    if (!visibility.empty()) head += " " + visibility;
+    for (const auto& cat : extendsCatalogs) head += " extends " + cat;
+    line(out, indent, head);
+    for (const auto& v : requiredValues) line(out, indent + 1, "Value '" + v + "'");
+    for (const auto& m : methods) m->dump(out, indent + 1);
 }
 
 void LiteralDecl::dump(std::string& out, int indent) const {
@@ -380,6 +396,7 @@ void Namespace::dump(std::string& out, int indent) const {
     if (!visibility.empty()) head += " " + visibility;
     line(out, indent, head);
     for (const auto& e : enums) e.dump(out, indent + 1);
+    for (const auto& c : catalogs) c.dump(out, indent + 1);
     for (const auto& l : literals) l.dump(out, indent + 1);
     for (const auto& c : classes) c.dump(out, indent + 1);
 }

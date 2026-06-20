@@ -57,6 +57,15 @@ struct ClassInfo {
     std::vector<std::string> permits;  // sealed permits list
 };
 
+// A catalog (spec 12.3): an interface for enums. Records the values an
+// implementing enum must provide, the names of methods it must implement, and
+// any catalogs this one extends (catalogs can extend catalogs).
+struct CatalogInfo {
+    std::vector<std::string> requiredValues;
+    std::vector<std::string> methodNames;
+    std::vector<std::string> extendsCatalogs;
+};
+
 // A namespace-level `comptime literal` suffix function (spec 17.10).
 struct LiteralInfo {
     std::string paramType;
@@ -88,6 +97,8 @@ private:
 
     void registerClasses(const ast::Program& program);
     void registerEnums(const ast::Program& program);
+    void registerCatalogs(const ast::Program& program);
+    void validateCatalogs(const ast::Program& program);
     void registerLiterals(const ast::Program& program);
     void processImports(const ast::Program& program);
     void findEntryPoint(const ast::Program& program);
@@ -132,6 +143,8 @@ private:
     EntryPoint entry_;
     std::unordered_map<std::string, ClassInfo> classes_;
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants
+    std::unordered_map<std::string, CatalogInfo> catalogs_;            // name -> catalog contract
+    std::unordered_map<std::string, std::vector<std::string>> enumCatalogs_;  // enum -> catalogs it extends
     std::unordered_map<std::string, LiteralInfo> literals_;  // suffix name -> info
     std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace

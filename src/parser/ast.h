@@ -526,10 +526,28 @@ struct ClassDecl {
 struct EnumDecl {
     std::string visibility;
     std::string name;
-    std::vector<std::string> constants;            // names, in declaration order
+    std::vector<std::string> constants;            // names, in declaration order (own then byCatalog)
     std::vector<std::vector<ExprPtr>> constantArgs;  // java-style: ctor args, parallel to constants
     std::vector<MemberPtr> members;                // java-style: fields/constructor/methods
     bool isJavaStyle = false;
+    // Catalogs implemented by this enum (spec 12.4): `enum Motor extends TipoMotor`.
+    std::vector<std::string> extendsCatalogs;      // catalogs this enum satisfies (IS-A)
+    std::vector<std::string> byCatalogValues;      // constants provided via `byCatalog { ... }`
+                                                   // (also appended to `constants` for ordinals)
+    SourceLocation loc;
+    void dump(std::string& out, int indent) const;
+};
+
+// A catalog (spec 12.3): an interface for enums. It declares the VALUES an
+// implementing enum must provide (`requiredValues`) and the method signatures it
+// must implement (`methods`, abstract MethodDecls). An enum `extends` a catalog
+// and becomes its subtype.
+struct CatalogDecl {
+    std::string visibility;
+    std::string name;
+    std::vector<std::string> requiredValues;       // constants an implementing enum must provide
+    std::vector<MemberPtr> methods;                // required method signatures (abstract)
+    std::vector<std::string> extendsCatalogs;      // catalogs this catalog extends (spec 12.3)
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };
@@ -553,6 +571,7 @@ struct Namespace {
     std::string name;
     std::vector<ClassDecl> classes;
     std::vector<EnumDecl> enums;
+    std::vector<CatalogDecl> catalogs;
     std::vector<LiteralDecl> literals;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
