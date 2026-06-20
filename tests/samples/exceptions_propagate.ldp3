@@ -1,0 +1,29 @@
+program ExceptionsPropagate;
+
+// An exception thrown in a called method unwinds across the call boundary to the caller's catch
+// (spec 21.1): the call to risky() is an invoke, so risky's throw lands in main's handler.
+// Prints: caught code=7 / done.
+public bundle main {
+    public namespace app {
+        public class MyError {
+            public mutable int code;
+            public constructor MyError() { this.code = 7; }
+        }
+        public class Main {
+            public static method risky(int x) returns void {
+                if (x > 0) { throw new MyError() on heap; }
+                return;
+            }
+            public static method main(string[] args) returns void {
+                try {
+                    Main.risky(1);
+                    System.IO.printf("not reached\n");
+                } catch (MyError e) {
+                    System.IO.printf("caught code=%d\n", e.code);
+                }
+                System.IO.printf("done\n");
+                return;
+            }
+        }
+    }
+}

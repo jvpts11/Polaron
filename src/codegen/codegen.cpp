@@ -1313,7 +1313,7 @@ struct CodeGenerator::Impl {
                 if (v == nullptr) return nullptr;
                 args.push_back(v);
             }
-            builder.CreateCall(fnit->second, args);
+            emitMaybeInvoke(fnit->second, args);
         }
         return objPtr;
     }
@@ -1344,7 +1344,7 @@ struct CodeGenerator::Impl {
                 }
                 args.push_back(v);
             }
-            builder.CreateCall(fnit->second, args);
+            emitMaybeInvoke(fnit->second, args);
         }
         return objPtr;
     }
@@ -1428,7 +1428,7 @@ struct CodeGenerator::Impl {
                     if (v == nullptr) return nullptr;
                     args.push_back(v);
                 }
-                return builder.CreateCall(fty, fnPtr, args);
+                return emitMaybeInvoke(fty, fnPtr, args);
             }
         }
         // A function-valued field/member: obj.f(args) -> indirect call through the loaded pointer.
@@ -1464,7 +1464,7 @@ struct CodeGenerator::Impl {
                     if (v == nullptr) return nullptr;
                     args.push_back(v);
                 }
-                return builder.CreateCall(fty, fnPtr, args);
+                return emitMaybeInvoke(fty, fnPtr, args);
             }
         }
         // Low-level thread builtins (used by the System.Concurrency.Thread prelude class) ->
@@ -1541,7 +1541,7 @@ struct CodeGenerator::Impl {
                 args.push_back(v);
             }
             if (!args.empty()) args[0] = coerceToType(args[0], fnit->second->getArg(0)->getType());
-            return builder.CreateCall(fnit->second, args);
+            return emitMaybeInvoke(fnit->second, args);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get())) {
             // array.length(): read the i64 length header and truncate to int.
@@ -1584,7 +1584,7 @@ struct CodeGenerator::Impl {
                         if (v == nullptr) return nullptr;
                         args.push_back(v);
                     }
-                    return builder.CreateCall(fnit->second, args);
+                    return emitMaybeInvoke(fnit->second, args);
                 }
             }
             // Virtual dispatch: if the static type is polymorphic and the method
@@ -1612,7 +1612,7 @@ struct CodeGenerator::Impl {
                         if (v == nullptr) return nullptr;
                         vargs.push_back(v);
                     }
-                    return builder.CreateCall(methodFnType(mdecl), fnPtr, vargs);
+                    return emitMaybeInvoke(methodFnType(mdecl), fnPtr, vargs);
                 }
             }
 
@@ -1633,7 +1633,7 @@ struct CodeGenerator::Impl {
                 if (v == nullptr) return nullptr;
                 args.push_back(v);
             }
-            return builder.CreateCall(fnit->second, args);
+            return emitMaybeInvoke(fnit->second, args);
         }
         error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call.loc);
         return nullptr;
@@ -1748,6 +1748,23 @@ struct CodeGenerator::Impl {
             "_CxxThrowException",
             llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy()},
                                     false));
+    }
+
+    // A user call that may throw: inside a try it becomes an invoke unwinding to the active landing
+    // pad (so an exception thrown by the callee reaches the catch); otherwise an ordinary call.
+    // Builtins that cannot throw (printf/malloc/scanf/...) keep using CreateCall directly.
+    llvm::Value* emitMaybeInvoke(llvm::FunctionType* fty, llvm::Value* callee,
+                                 llvm::ArrayRef<llvm::Value*> args, const std::string& name = "") {
+        if (ehPadStack.empty()) return builder.CreateCall(fty, callee, args, name);
+        llvm::BasicBlock* cont = llvm::BasicBlock::Create(context, "invoke.cont", currentFn);
+        llvm::InvokeInst* inv =
+            builder.CreateInvoke(fty, callee, cont, ehPadStack.back(), args, name);
+        builder.SetInsertPoint(cont);
+        return inv;
+    }
+    llvm::Value* emitMaybeInvoke(llvm::FunctionCallee callee, llvm::ArrayRef<llvm::Value*> args,
+                                 const std::string& name = "") {
+        return emitMaybeInvoke(callee.getFunctionType(), callee.getCallee(), args, name);
     }
 
     // try { body } catch (T e) { ... } ... [finally { ... }] (spec 21.1). MVP: catches the carrier
