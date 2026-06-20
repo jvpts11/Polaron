@@ -822,19 +822,18 @@ ast::TypeRef Parser::parseTypeRef() {
     } else {
         fail("expected a type but found '" + tok.lexeme + "'", tok.loc);
     }
-    // Generic arguments: Box<int>, Pair<int, double>. (Nested args like
-    // Box<List<int>> would need `>>` splitting -- a later refinement.)
+    // Generic arguments: Box<int>, Pair<int, double>, nested like Box<List<int>>. Each arg is a
+    // full type (recursive parseTypeRef); a trailing '>>' (Shr) is split into two '>'.
     if (match(TokenKind::Lt)) {
         do {
-            const Token& at = current();
-            if (isTypeKeyword(at.kind) || at.kind == TokenKind::Identifier) {
-                t.typeArgs.push_back(at.lexeme);
-                advance();
-            } else {
-                fail("expected a type argument but found '" + at.lexeme + "'", at.loc);
-            }
+            ast::TypeRef arg = parseTypeRef();
+            t.typeArgs.push_back(ast::canonicalType(arg));
         } while (match(TokenKind::Comma));
-        expect(TokenKind::Gt, "'>' to close type arguments");
+        if (current().kind == TokenKind::Shr) {
+            tokens_[pos_].kind = TokenKind::Gt;  // split '>>' so the enclosing generic gets a '>'
+        } else {
+            expect(TokenKind::Gt, "'>' to close type arguments");
+        }
     }
     if (match(TokenKind::LBracket)) {
         expect(TokenKind::RBracket, "']'");
@@ -986,6 +985,9 @@ bool Parser::looksLikeGenericVarDecl() const {
             ++depth;
         } else if (k == TokenKind::Gt) {
             if (--depth == 0) break;
+        } else if (k == TokenKind::Shr) {
+            depth -= 2;  // '>>' closes two generic levels at once
+            if (depth <= 0) break;
         } else if (k != TokenKind::Identifier && k != TokenKind::Comma && !isTypeKeyword(k)) {
             return false;  // not a pure type-argument list -> it's a comparison
         }
@@ -1016,6 +1018,9 @@ bool Parser::looksLikeGenericCall() const {
             ++depth;
         } else if (k == TokenKind::Gt) {
             if (--depth == 0) break;
+        } else if (k == TokenKind::Shr) {
+            depth -= 2;  // '>>' closes two generic levels at once
+            if (depth <= 0) break;
         } else if (k != TokenKind::Identifier && k != TokenKind::Comma && !isTypeKeyword(k)) {
             return false;  // not a pure type-argument list -> it's a comparison
         }
@@ -1047,6 +1052,7 @@ bool Parser::looksLikeTupleDestructuring() const {
                 if (k == TokenKind::EndOfFile) return false;
                 if (k == TokenKind::Lt) ++depth;
                 else if (k == TokenKind::Gt) --depth;
+                else if (k == TokenKind::Shr) depth -= 2;  // '>>' closes two levels
                 else if (k != TokenKind::Identifier && k != TokenKind::Comma && !isTypeKeyword(k))
                     return false;
                 ++i;
@@ -1550,15 +1556,14 @@ ast::ExprPtr Parser::parsePostfix() {
             std::vector<std::string> typeArgs;
             advance();  // '<'
             do {
-                const Token& at = current();
-                if (isTypeKeyword(at.kind) || at.kind == TokenKind::Identifier) {
-                    typeArgs.push_back(at.lexeme);
-                    advance();
-                } else {
-                    fail("expected a type argument but found '" + at.lexeme + "'", at.loc);
-                }
+                ast::TypeRef arg = parseTypeRef();
+                typeArgs.push_back(ast::canonicalType(arg));
             } while (match(TokenKind::Comma));
-            expect(TokenKind::Gt, "'>' to close type arguments");
+            if (current().kind == TokenKind::Shr) {
+                tokens_[pos_].kind = TokenKind::Gt;  // split '>>'
+            } else {
+                expect(TokenKind::Gt, "'>' to close type arguments");
+            }
             auto call = std::make_unique<ast::CallExpr>();
             call->loc = current().loc;
             expect(TokenKind::LParen, "'('");
@@ -1824,15 +1829,14 @@ ast::ExprPtr Parser::parseNew() {
     e->className = std::move(typeName);
     if (match(TokenKind::Lt)) {
         do {
-            const Token& at = current();
-            if (isTypeKeyword(at.kind) || at.kind == TokenKind::Identifier) {
-                e->typeArgs.push_back(at.lexeme);
-                advance();
-            } else {
-                fail("expected a type argument but found '" + at.lexeme + "'", at.loc);
-            }
+            ast::TypeRef arg = parseTypeRef();
+            e->typeArgs.push_back(ast::canonicalType(arg));
         } while (match(TokenKind::Comma));
-        expect(TokenKind::Gt, "'>' to close type arguments");
+        if (current().kind == TokenKind::Shr) {
+            tokens_[pos_].kind = TokenKind::Gt;  // split '>>'
+        } else {
+            expect(TokenKind::Gt, "'>' to close type arguments");
+        }
     }
     expect(TokenKind::LParen, "'('");
     if (!check(TokenKind::RParen)) {

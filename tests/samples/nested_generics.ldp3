@@ -1,0 +1,30 @@
+program NestedGenerics;
+
+// Nested generics: Box<List<int>>. The inner List<int> is also instantiated on its own, so it
+// is monomorphized via the normal path; the outer Box<List<int>> -> Box$List$int references it.
+public bundle main {
+    public namespace app {
+
+        public class Box<T> {
+            private T value;
+            public constructor Box(T v) { this.value = v; }
+            public method get() returns T { return this.value; }
+        }
+
+        public class List<E> {
+            private mutable E head;
+            public constructor List(E h) { this.head = h; }
+            public method first() returns E { return this.head; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                List<int> inner = new List<int>(7);
+                Box<List<int>> b = new Box<List<int>>(inner);
+                List<int> got = b.get();
+                System.IO.println($"first = {got.first()}");   // first = 7
+                return;
+            }
+        }
+    }
+}
