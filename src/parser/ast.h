@@ -477,6 +477,7 @@ struct FieldDecl : MemberDecl {
     bool isTransient = false;   // excluded from serialization
     TypeRef type;
     std::string name;
+    int bitWidth = 0;  // `field : N` bit-field width (spec 11.1); 0 = not a bit-field
     ExprPtr init;  // optional inline initializer (null if none); see spec 940
     void dump(std::string& out, int indent) const override;
 };

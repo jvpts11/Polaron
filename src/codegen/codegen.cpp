@@ -161,6 +161,7 @@ struct ClassLayout {
     llvm::StructType* type = nullptr;
     std::unordered_map<std::string, unsigned> fieldIndex;  // includes inherited fields
     std::unordered_map<std::string, std::string> fieldType;  // LDP3 type name per field
+    std::unordered_map<std::string, int> bitFieldWidth;  // field -> bit-field width (spec 11.1)
     std::unordered_map<std::string, std::string> methodReturnType;  // own methods only
     std::unordered_map<std::string, const ast::MethodDecl*> ownMethods;  // own methods, by name
     std::string superclass;
@@ -374,6 +375,24 @@ struct CodeGenerator::Impl {
             if (src->isFloatingPointTy()) return builder.CreateFPToSI(v, ty);  // f -> int
         }
         return v;
+    }
+
+    // Masks a value to a member's bit-field width (spec 11.1): only the low N bits
+    // are kept, so `f : 4 = 20` stores 4. No-op for a non-bit-field member. (Value
+    // masking; physical bit-packing of the struct layout is a later refinement.)
+    llvm::Value* maskBitField(llvm::Value* v, const std::string& className,
+                              const std::string& field) {
+        if (v == nullptr || !v->getType()->isIntegerTy()) return v;
+        auto cit = classes.find(baseType(className));
+        if (cit == classes.end()) return v;
+        auto bit = cit->second.bitFieldWidth.find(field);
+        if (bit == cit->second.bitFieldWidth.end()) return v;
+        const unsigned w = static_cast<unsigned>(bit->second);
+        const unsigned bits = v->getType()->getIntegerBitWidth();
+        if (w == 0 || w >= bits) return v;  // covers the whole type -> nothing to mask
+        return builder.CreateAnd(
+            v, llvm::ConstantInt::get(v->getType(), llvm::APInt::getLowBitsSet(bits, w)),
+            "bitfield");
     }
 
     // If a constructor body opens with `super(...)`, returns that call so the
@@ -2252,7 +2271,10 @@ struct CodeGenerator::Impl {
                                        {destStruct, deep, sizeOf(classes[targetType].type)});
                 }
             } else {
-                builder.CreateStore(coerce(v, typeName(*assign->value), targetType), slot);
+                llvm::Value* sv = coerce(v, typeName(*assign->value), targetType);
+                if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
+                    sv = maskBitField(sv, typeName(*mt->object), mt->member);  // bit-field (spec 11.1)
+                builder.CreateStore(sv, slot);
             }
             return;
         }
@@ -2783,6 +2805,7 @@ struct CodeGenerator::Impl {
                             } else {
                                 layout.ownFields.emplace_back(f->name, ftype);
                                 if (f->isPersistent) layout.persistOrder.push_back(f->name);
+                                if (f->bitWidth > 0) layout.bitFieldWidth[f->name] = f->bitWidth;
                             }
                         } else if (const auto* m =
                                        dynamic_cast<const ast::MethodDecl*>(member.get())) {
@@ -3094,6 +3117,7 @@ struct CodeGenerator::Impl {
             if (idx == layout.fieldIndex.end()) continue;
             llvm::Value* v = emitExpr(*f->init);
             if (v == nullptr) continue;
+            v = maskBitField(v, cls.name, f->name);  // constrain a bit-field initializer (spec 11.1)
             llvm::Value* fp = builder.CreateStructGEP(layout.type, thisPtr, idx->second, f->name);
             builder.CreateStore(v, fp);
         }

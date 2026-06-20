@@ -1,0 +1,30 @@
+program BitFields;
+
+// Bit-fields (spec 11.1): `field : N` constrains the stored value to N bits, so a
+// value that overflows N bits is truncated on store. (Value masking; physical
+// packing of the struct layout is a later refinement.)
+
+public bundle main {
+    public namespace app {
+        public struct Flags {
+            public mutable int a : 4;    // 0..15
+            public mutable int b : 4;
+            public mutable int c : 12;   // 0..4095
+            public constructor Flags() {
+                this.a = 0;
+                this.b = 0;
+                this.c = 0;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Flags f = new Flags();
+                f.a = 20;     // 20 & 0xF  = 4
+                f.b = 7;
+                f.c = 5000;   // 5000 & 0xFFF = 904
+                System.IO.printf("a=%d b=%d c=%d\n", f.a, f.b, f.c);
+                return;
+            }
+        }
+    }
+}

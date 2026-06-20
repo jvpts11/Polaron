@@ -1281,6 +1281,15 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=rgb=255"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # bit-fields (spec 11.1): `field : N` masks the stored value to N bits.
+        add_test(NAME codegen_bit_fields_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bit_fields.ldp3"
+            "-DEXPECTED=a=4 b=7 c=904"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

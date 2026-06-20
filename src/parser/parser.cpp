@@ -1,5 +1,6 @@
 #include "parser/parser.h"
 
+#include <cstdlib>
 #include <utility>
 
 #include "lexer/lexer.h"
@@ -738,6 +739,11 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->isTransient = isTransient;
     f->type = std::move(type);
     f->name = name;
+    // Bit-field width: `field : N` (spec 11.1). Constrains the stored value to N bits.
+    if (match(TokenKind::Colon)) {
+        const Token w = expect(TokenKind::IntLiteral, "a bit-field width");
+        f->bitWidth = static_cast<int>(std::strtol(w.lexeme.c_str(), nullptr, 0));
+    }
     if (match(TokenKind::Assign)) {
         f->init = parseExpression();  // inline field initializer (spec 940)
     }
