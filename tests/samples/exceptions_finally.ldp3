@@ -1,0 +1,30 @@
+program ExceptionsFinally;
+
+// A try's finally runs on both the caught path and the normal-completion path (spec 21.1).
+// run(true) throws -> caught -> finally; run(false) completes -> finally.
+// Prints: caught / finally / body ok / finally.
+public bundle main {
+    public namespace app {
+        public class MyError {
+            public constructor MyError() {}
+        }
+        public class Main {
+            public static method run(boolean fail) returns void {
+                try {
+                    if (fail) { throw new MyError() on heap; }
+                    System.IO.printf("body ok\n");
+                } catch (MyError e) {
+                    System.IO.printf("caught\n");
+                } finally {
+                    System.IO.printf("finally\n");
+                }
+                return;
+            }
+            public static method main(string[] args) returns void {
+                Main.run(true);
+                Main.run(false);
+                return;
+            }
+        }
+    }
+}
