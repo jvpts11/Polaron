@@ -1223,6 +1223,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=dtor 1 after delete in using dtor 2 end"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # virtual destructor dispatch: delete through a base pointer runs the most-derived
+        # destructor (then chains to the base), instead of the static type's.
+        add_test(NAME codegen_virtual_dtor_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/virtual_dtor.ldp3"
+            "-DEXPECTED=~Derived ~Base ~Square"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

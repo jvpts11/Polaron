@@ -231,6 +231,7 @@ struct CodeGenerator::Impl {
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
     std::vector<const ast::Block*> deferred;  // defer blocks, run at scope end (LIFO)
     std::string currentClass;        // "" inside a static method / the entry point
+    std::string currentDtorChain;    // base destructor to chain to (set only in a destructor body)
     llvm::Value* currentThis = nullptr;
     llvm::Function* currentFn = nullptr;
     llvm::Type* currentRetType = nullptr;
@@ -456,6 +457,20 @@ struct CodeGenerator::Impl {
             if (mit != it->second.ownMethods.end() && !mit->second->isAbstract) {
                 return c + "." + method;
             }
+            c = it->second.superclass;
+        }
+        return "";
+    }
+
+    // Mangled name of the most-derived declared destructor at or above `className`
+    // ("" if no class in the hierarchy declares one). Used both for the virtual
+    // destructor vtable slot and for derived->base destructor chaining.
+    std::string dtorImpl(const std::string& className) {
+        std::string c = className;
+        while (!c.empty()) {
+            auto it = classes.find(c);
+            if (it == classes.end()) break;
+            if (it->second.hasDestructor) return c + ".~" + c;
             c = it->second.superclass;
         }
         return "";
@@ -933,11 +948,13 @@ struct CodeGenerator::Impl {
             auto sFn = currentFn; auto sCls = currentClass; auto sRet = currentRetType;
             auto sEns = currentEnsures; auto sInv = currentInvariants; auto sThis = currentThis;
             auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
+            auto sDtorChain = currentDtorChain;
             auto sIP = builder.saveIP();
             emitBody(fn, lam->body, lam->params, "", rt, nullptr, nullptr, nullptr, nullptr,
                      /*hasEnv=*/true, &lam->captures, &capTypes);
             currentFn = sFn; currentClass = sCls; currentRetType = sRet;
             currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
+            currentDtorChain = sDtorChain;
             locals = sLoc; scopeObjects = sScope; deferred = sDef;
             builder.restoreIP(sIP);
             // Build the environment: one pointer slot per capture. byvalue copies the value into a
@@ -1766,6 +1783,12 @@ struct CodeGenerator::Impl {
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), it->slot);
             builder.CreateCall(fnit->second, {objPtr});
         }
+        // Inside a destructor: chain to the base class destructor last (derived-then-base),
+        // so the inherited part is torn down at every exit of this destructor.
+        if (!currentDtorChain.empty()) {
+            if (auto fit = functions.find(currentDtorChain); fit != functions.end() && currentThis)
+                builder.CreateCall(fit->second, {currentThis});
+        }
     }
 
     // Finds the loop targeted by break/continue: the named loop, or the innermost.
@@ -2234,6 +2257,34 @@ struct CodeGenerator::Impl {
                         return;
                     }
                 }
+            }
+            // Polymorphic delete (delete through a base pointer): dispatch the destructor
+            // dynamically through the object's vtable (trailing slot) so the most-derived
+            // destructor runs, not the static type's. The slot is null when no class in
+            // the hierarchy declares a destructor, so guard the call.
+            if (cit != classes.end() && cit->second.hasVtable) {
+                llvm::Value* vtblField =
+                    builder.CreateStructGEP(cit->second.type, objPtr, 0, "vtbl.addr");
+                llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblField, "vtbl");
+                const std::uint64_t dtorIdx = methodSlotNames.size();  // trailing slot
+                llvm::Type* vtArrTy = llvm::ArrayType::get(builder.getPtrTy(), dtorIdx + 1);
+                llvm::Value* slotPtr =
+                    builder.CreateConstGEP2_64(vtArrTy, vtbl, 0, dtorIdx, "dtor.slot");
+                llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), slotPtr, "dtor.fn");
+                llvm::Function* fn = currentFn;
+                llvm::BasicBlock* callBB = llvm::BasicBlock::Create(context, "dtor.call", fn);
+                llvm::BasicBlock* freeBB = llvm::BasicBlock::Create(context, "dtor.free", fn);
+                builder.CreateCondBr(
+                    builder.CreateICmpNE(fnPtr, llvm::ConstantPointerNull::get(builder.getPtrTy())),
+                    callBB, freeBB);
+                builder.SetInsertPoint(callBB);
+                llvm::FunctionType* dtorTy =
+                    llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+                builder.CreateCall(dtorTy, fnPtr, {objPtr});
+                builder.CreateBr(freeBB);
+                builder.SetInsertPoint(freeBB);
+                builder.CreateCall(freeFn(), {objPtr});
+                return;
             }
             if (cit != classes.end() && cit->second.hasDestructor) {
                 builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
@@ -2885,6 +2936,12 @@ struct CodeGenerator::Impl {
                 if (!impl.empty() && fit != functions.end()) slotFn = fit->second;  // Function*
                 entries.push_back(slotFn);
             }
+            // Trailing slot: the most-derived destructor (for virtual `delete`), or null.
+            llvm::Constant* dtorFn = llvm::ConstantPointerNull::get(builder.getPtrTy());
+            if (const std::string di = dtorImpl(name); !di.empty()) {
+                if (auto fit = functions.find(di); fit != functions.end()) dtorFn = fit->second;
+            }
+            entries.push_back(dtorFn);
             llvm::ArrayType* vtType = llvm::ArrayType::get(builder.getPtrTy(), entries.size());
             l.vtable = new llvm::GlobalVariable(module, vtType, /*isConstant=*/true,
                                                 llvm::GlobalValue::PrivateLinkage,
@@ -3003,12 +3060,14 @@ struct CodeGenerator::Impl {
                   const std::vector<ast::ExprPtr>* ensuresClauses = nullptr,
                   const std::vector<ast::ExprPtr>* invariants = nullptr,
                   bool hasEnv = false, const std::vector<ast::Capture>* caps = nullptr,
-                  const std::vector<std::string>* capTypes = nullptr) {
+                  const std::vector<std::string>* capTypes = nullptr,
+                  const std::string& dtorChainBase = "") {
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
         currentEnsures = ensuresClauses;
         currentInvariants = invariants;
+        currentDtorChain = dtorChainBase;  // a destructor calls its base destructor at each exit
         currentThis = nullptr;
         locals.clear();
         scopeObjects.clear();
@@ -3120,8 +3179,10 @@ struct CodeGenerator::Impl {
                                      &c->requiresClauses, &c->ensuresClauses, &cls.invariants);
                         } else if (const auto* d =
                                        dynamic_cast<const ast::DestructorDecl*>(member.get())) {
+                            // Chain to the nearest ancestor's destructor (derived-then-base).
                             emitBody(functions[cls.name + ".~" + cls.name], d->body, {}, cls.name,
-                                     builder.getVoidTy());
+                                     builder.getVoidTy(), nullptr, nullptr, nullptr, nullptr, false,
+                                     nullptr, nullptr, dtorImpl(cls.superclass));
                         }
                     }
                     // Emit the synthesized default constructor (sets the vtable +

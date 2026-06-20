@@ -1,0 +1,41 @@
+program VirtualDtor;
+
+// `delete` through a base pointer dispatches the destructor dynamically (through
+// the object's vtable), so the most-derived destructor runs -- then chains to the
+// base destructor (derived-then-base). Previously delete used the static type and
+// ran the base destructor (or none), leaking the derived part.
+
+public bundle main {
+    public namespace app {
+
+        public class Base {
+            public constructor Base() {}
+            public destructor ~Base() returns void { System.IO.printf("~Base\n"); }
+        }
+
+        public class Derived extends Base {
+            public constructor Derived() {}
+            public destructor ~Derived() returns void { System.IO.printf("~Derived\n"); }
+        }
+
+        // Base with NO destructor; the resource-owning subclass has one.
+        public abstract class Shape {
+            public abstract method area() returns int;
+        }
+
+        public class Square extends Shape {
+            public override method area() returns int { return 4; }
+            public destructor ~Square() returns void { System.IO.printf("~Square\n"); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Base* b = new Derived() on heap;
+                delete b;                      // ~Derived, then ~Base
+                Shape* s = new Square() on heap;
+                delete s;                      // ~Square (Shape declares no destructor)
+                return;
+            }
+        }
+    }
+}
