@@ -19,8 +19,10 @@ if(NOT rc EQUAL 0)
 endif()
 
 # legacy_stdio_definitions.lib resolves the bare printf/scanf symbols (UCRT
-# defines them inline in the headers, which our emitted IR doesn't use).
-execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}" -o "${exe}"
+# defines them inline in the headers, which our emitted IR doesn't use). The minimal runtime is
+# linked in too: the prelude's System.Concurrency.Thread always emits calls to __ldp3_thread_*.
+execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}"
+    "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.c" -o "${exe}"
     -llegacy_stdio_definitions RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})")

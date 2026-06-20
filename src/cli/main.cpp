@@ -70,6 +70,24 @@ public bundle std {
             return new ByteSize(cast<int64>(x) * 1024 * 1024 * 1024 * 1024 * 1024 * 1024) on heap;
         }
     }
+    public namespace System.Concurrency {
+        // An OS thread (spec 20.1). Holds a function<void> and its OS handle; start()/join() call
+        // the low-level thread builtins, which lower to CreateThread / WaitForSingleObject.
+        public class Thread {
+            private function<void> work;
+            private mutable int64 handle;
+            public constructor Thread(function<void> w) {
+                this.work = w;
+                this.handle = cast<int64>(0);
+            }
+            public method start() returns void {
+                this.handle = System.Concurrency.__threadStart(this.work);
+            }
+            public method join() returns void {
+                System.Concurrency.__threadJoin(this.handle);
+            }
+        }
+    }
 }
 )LDP3";
 

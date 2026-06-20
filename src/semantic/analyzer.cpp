@@ -1291,6 +1291,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             return lit->second.returnType;
         }
+        // Low-level thread builtins used by the System.Concurrency.Thread prelude class.
+        if (name == "System.Concurrency.__threadStart") {
+            if (call->args.size() != 1) error("__threadStart takes one function<void>", call->loc);
+            else typeOf(*call->args.front());
+            return "int64";  // the OS thread handle
+        }
+        if (name == "System.Concurrency.__threadJoin") {
+            if (call->args.size() != 1) error("__threadJoin takes one handle", call->loc);
+            else typeOf(*call->args.front());
+            return "void";
+        }
         if (name == "System.IO.readInt") {
             if (!call->args.empty()) error("System.IO.readInt takes no arguments", call->loc);
             return "int";

@@ -1470,6 +1470,24 @@ struct CodeGenerator::Impl {
                 return builder.CreateCall(fty, fnPtr, args);
             }
         }
+        // Low-level thread builtins (used by the System.Concurrency.Thread prelude class) ->
+        // runtime CreateThread/WaitForSingleObject (runtime/ldp3_rt.c).
+        if (name == "System.Concurrency.__threadStart") {
+            llvm::Value* clos = emitExpr(*call.args[0]);  // the function<void> closure pointer
+            if (clos == nullptr) return nullptr;
+            llvm::FunctionType* ft =
+                llvm::FunctionType::get(builder.getInt64Ty(), {builder.getPtrTy()}, false);
+            return builder.CreateCall(module.getOrInsertFunction("__ldp3_thread_spawn", ft), {clos},
+                                      "thread.h");
+        }
+        if (name == "System.Concurrency.__threadJoin") {
+            llvm::Value* h = emitExpr(*call.args[0]);  // the int64 handle
+            if (h == nullptr) return nullptr;
+            llvm::FunctionType* ft =
+                llvm::FunctionType::get(builder.getVoidTy(), {builder.getInt64Ty()}, false);
+            builder.CreateCall(module.getOrInsertFunction("__ldp3_thread_join", ft), {h});
+            return nullptr;
+        }
         if (name == "System.IO.readInt") {
             llvm::Value* tmp = createEntryAlloca("readtmp", builder.getInt32Ty());
             llvm::Value* fmt = builder.CreateGlobalStringPtr("%d", ".scanfmt");

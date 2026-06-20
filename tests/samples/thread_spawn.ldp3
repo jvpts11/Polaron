@@ -1,0 +1,22 @@
+program ThreadSpawn;
+
+// An OS thread (spec 20.1): new Thread(work).start()/.join(). The worker is a function<void>
+// closure capturing n byvalue; join makes the output deterministic (the worker runs to completion
+// before main's final line). Prints "worker n=42" then "main done".
+public bundle main {
+    import System.Concurrency.Thread;
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int n = 21;
+                function<void> work =
+                    lambda[captures: byvalue n]() returns void { System.IO.printf("worker n=%d\n", n * 2); };
+                Thread t = new Thread(work) on heap;
+                t.start();
+                t.join();
+                System.IO.printf("main done\n");
+                return;
+            }
+        }
+    }
+}
