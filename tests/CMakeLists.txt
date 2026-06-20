@@ -53,6 +53,12 @@ add_test(NAME sema_rejects_catch_nonpoly
 set_tests_properties(sema_rejects_catch_nonpoly PROPERTIES
     PASS_REGULAR_EXPRESSION "must participate in a class hierarchy")
 
+# a `const` initializer that is not a compile-time constant must be rejected (spec 28.1).
+add_test(NAME sema_rejects_nonconst_const
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/const_nonconst_bad.ldp3")
+set_tests_properties(sema_rejects_nonconst_const PROPERTIES
+    PASS_REGULAR_EXPRESSION "must be a compile-time constant")
+
 # extending a sealed type's permitted variant must be rejected (variants are final),
 # else match's exhaustiveness assumption is unsound.
 add_test(NAME sema_rejects_extend_permit
@@ -1298,6 +1304,16 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/fast_inv_sqrt.ldp3"
             "-DEXPECTED=rsqrt(4)~=499/1000 rsqrt(0.25)~=1996/1000 rsqrt(100)~=99/1000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # namespace-level compile-time consts (spec 28.1): literals, arithmetic,
+        # bitwise, hex bases, and references to earlier consts -- int/bool/char/double.
+        add_test(NAME codegen_const_values_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/const_values.ldp3"
+            "-DEXPECTED=MAX=100 DOUBLED=200 SHIFT=16 ENABLED=1 GRADE=A MASKED=15 SCALED=150"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()

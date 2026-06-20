@@ -1,0 +1,18 @@
+program ConstNonConstBad;
+
+// A `const` initializer must be a compile-time constant. Referencing something
+// that is not a known const (here an undeclared name) is rejected (spec 28.1).
+
+public bundle main {
+    public namespace app {
+        public const int OK = 10;
+        public const int BAD = OK + mystery;   // 'mystery' is not a constant
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.printf("%d\n", BAD);
+                return;
+            }
+        }
+    }
+}

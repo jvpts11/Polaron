@@ -1,0 +1,28 @@
+program ConstValues;
+
+// Namespace-level compile-time constants (spec 28.1): `const T NAME = expr;`.
+// The initializer is a constant expression -- literals, arithmetic (including
+// bitwise and the magic-constant bases), and references to earlier consts.
+// Folded at compile time; the constants carry no runtime storage.
+
+public bundle main {
+    public namespace app {
+        public const int MAX = 100;
+        public const int DOUBLED = MAX * 2;          // reference + arithmetic
+        public const int SHIFT = 1 << 4;             // bitwise shift
+        public const int MASKED = 0xFF & 0x0F;       // hex literals + bitwise
+        public const boolean ENABLED = true;
+        public const char GRADE = 'A';
+        public const double RATIO = 1.5;
+        public const double SCALED = RATIO * 100.0;  // double reference + arithmetic
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.printf("MAX=%d DOUBLED=%d SHIFT=%d\n", MAX, DOUBLED, SHIFT);
+                System.IO.printf("ENABLED=%d GRADE=%c MASKED=%d\n", ENABLED, GRADE, MASKED);
+                System.IO.printf("SCALED=%d\n", cast<int>(SCALED));
+                return;
+            }
+        }
+    }
+}

@@ -568,6 +568,18 @@ struct LiteralDecl {
     void dump(std::string& out, int indent) const;
 };
 
+// A namespace-level compile-time constant (spec 28.1): `const T NAME = expr;`,
+// where `expr` is a constant expression (literals, arithmetic, and references to
+// previously-declared consts). Folded at compile time; no runtime storage.
+struct ConstDecl {
+    std::string visibility;
+    TypeRef type;
+    std::string name;
+    ExprPtr init;
+    SourceLocation loc;
+    void dump(std::string& out, int indent) const;
+};
+
 struct Namespace {
     std::string visibility;
     std::string name;
@@ -575,6 +587,7 @@ struct Namespace {
     std::vector<EnumDecl> enums;
     std::vector<CatalogDecl> catalogs;
     std::vector<LiteralDecl> literals;
+    std::vector<ConstDecl> consts;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

@@ -59,7 +59,7 @@ enum class TokenKind : std::uint8_t {
     KwTry, KwCatch, KwFinally, KwThrow, KwThrows,
 
     // Keywords -- compile-time / literal suffixes (0.2 Fase C)
-    KwComptime, KwLiteral, KwImport,
+    KwComptime, KwLiteral, KwImport, KwConst,
     // (get / set / init are soft keywords -- not reserved; see parser)
 
     // Keywords -- control flow

@@ -228,6 +228,10 @@ struct CodeGenerator::Impl {
     std::string pendingPersistKey;
     int lambdaCounter = 0;  // unique names for lowered lambda functions
     std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
+    // Namespace-level compile-time constants (spec 28.1), folded once up front.
+    std::unordered_map<std::string, std::string> namespaceConstTypes;  // const name -> LDP3 type
+    std::unordered_map<std::string, long long> constIntVals;           // int/bool/char value
+    std::unordered_map<std::string, double> constDblVals;              // float/double value
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
     std::vector<const ast::Block*> deferred;  // defer blocks, run at scope end (LIFO)
@@ -562,7 +566,10 @@ struct CodeGenerator::Impl {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
             if (id->name == "this") return currentClass;
             auto it = locals.find(id->name);
-            return it == locals.end() ? std::string("int") : it->second.type;
+            if (it != locals.end()) return it->second.type;
+            if (auto cit = namespaceConstTypes.find(id->name); cit != namespaceConstTypes.end())
+                return cit->second;
+            return "int";
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
             if (un->op == "&") return typeName(*un->operand) + "*";  // address-of
@@ -1058,6 +1065,8 @@ struct CodeGenerator::Impl {
             if (id->name == "this") return currentThis;
             auto it = locals.find(id->name);
             if (it == locals.end()) {
+                // A namespace-level compile-time constant (spec 28.1).
+                if (namespaceConstTypes.count(id->name) > 0) return constLiteral(id->name);
                 // A bare enum constant inside one of that enum's own methods (spec 12.4).
                 if (auto eit = enums.find(currentClass); eit != enums.end()) {
                     const auto& cs = eit->second;
@@ -2907,6 +2916,135 @@ struct CodeGenerator::Impl {
     // Folds a simple literal initializer to an LLVM constant of `llvmType(type)`.
     // Returns nullptr when the expression is not a compile-time literal we handle
     // here (the caller then zero-initializes the global).
+    // Folds a constant integer/boolean/char expression, resolving references to
+    // namespace-level consts (spec 28.1). Returns false if not constant.
+    bool foldConstInt(const ast::Expr& e, long long& out) {
+        if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&e)) {
+            out = parseIntLiteral(n->text);
+            return true;
+        }
+        if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&e)) {
+            out = b->value ? 1 : 0;
+            return true;
+        }
+        if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(&e)) {
+            const std::string bytes = resolveEscapes(c->value);
+            out = bytes.empty() ? 0 : static_cast<unsigned char>(bytes[0]);
+            return true;
+        }
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
+            auto it = constIntVals.find(id->name);
+            if (it == constIntVals.end()) return false;
+            out = it->second;
+            return true;
+        }
+        if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
+            long long v;
+            if (!foldConstInt(*u->operand, v)) return false;
+            if (u->op == "-") { out = -v; return true; }
+            if (u->op == "!") { out = v ? 0 : 1; return true; }
+            if (u->op == "~") { out = ~v; return true; }
+            return false;
+        }
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
+            long long l, r;
+            if (!foldConstInt(*bin->lhs, l) || !foldConstInt(*bin->rhs, r)) return false;
+            const std::string& op = bin->op;
+            if (op == "+") out = l + r;
+            else if (op == "-") out = l - r;
+            else if (op == "*") out = l * r;
+            else if (op == "/") { if (r == 0) return false; out = l / r; }
+            else if (op == "%") { if (r == 0) return false; out = l % r; }
+            else if (op == "==") out = (l == r) ? 1 : 0;
+            else if (op == "!=") out = (l != r) ? 1 : 0;
+            else if (op == "<") out = (l < r) ? 1 : 0;
+            else if (op == ">") out = (l > r) ? 1 : 0;
+            else if (op == "<=") out = (l <= r) ? 1 : 0;
+            else if (op == ">=") out = (l >= r) ? 1 : 0;
+            else if (op == "&&") out = (l && r) ? 1 : 0;
+            else if (op == "||") out = (l || r) ? 1 : 0;
+            else if (op == "&") out = l & r;
+            else if (op == "|") out = l | r;
+            else if (op == "^") out = l ^ r;
+            else if (op == "<<") out = l << r;
+            else if (op == ">>") out = l >> r;
+            else return false;
+            return true;
+        }
+        return false;
+    }
+
+    // Folds a constant floating-point expression (int consts/literals promote).
+    bool foldConstDouble(const ast::Expr& e, double& out) {
+        if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(&e)) {
+            std::string s;
+            for (char ch : f->text)
+                if (ch != '_' && ch != 'f' && ch != 'F') s += ch;
+            try { out = std::stod(s); return true; } catch (...) { return false; }
+        }
+        long long iv;
+        if (foldConstInt(e, iv)) { out = static_cast<double>(iv); return true; }
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
+            auto it = constDblVals.find(id->name);
+            if (it == constDblVals.end()) return false;
+            out = it->second;
+            return true;
+        }
+        if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
+            double v;
+            if (u->op == "-" && foldConstDouble(*u->operand, v)) { out = -v; return true; }
+            return false;
+        }
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
+            double l, r;
+            if (!foldConstDouble(*bin->lhs, l) || !foldConstDouble(*bin->rhs, r)) return false;
+            const std::string& op = bin->op;
+            if (op == "+") out = l + r;
+            else if (op == "-") out = l - r;
+            else if (op == "*") out = l * r;
+            else if (op == "/") { if (r == 0.0) return false; out = l / r; }
+            else return false;
+            return true;
+        }
+        return false;
+    }
+
+    // The materialized value of a namespace-level const, at its declared type.
+    llvm::Constant* constLiteral(const std::string& name) {
+        auto tit = namespaceConstTypes.find(name);
+        if (tit == namespaceConstTypes.end()) return nullptr;
+        llvm::Type* lty = llvmType(tit->second);
+        if (isFloatType(tit->second)) {
+            auto vit = constDblVals.find(name);
+            return llvm::ConstantFP::get(lty, vit == constDblVals.end() ? 0.0 : vit->second);
+        }
+        auto vit = constIntVals.find(name);
+        return llvm::ConstantInt::get(
+            lty, static_cast<std::uint64_t>(vit == constIntVals.end() ? 0 : vit->second),
+            /*isSigned=*/true);
+    }
+
+    // Folds every namespace-level const (in declaration order, so later consts may
+    // reference earlier ones). Run before any function body is emitted.
+    void emitNamespaceConsts() {
+        for (const ast::Bundle& bundle : program.bundles) {
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ConstDecl& c : ns.consts) {
+                    const std::string type = typeRefName(c.type);
+                    namespaceConstTypes[c.name] = type;
+                    if (c.init == nullptr) continue;
+                    if (isFloatType(type)) {
+                        double d;
+                        if (foldConstDouble(*c.init, d)) constDblVals[c.name] = d;
+                    } else {
+                        long long v;
+                        if (foldConstInt(*c.init, v)) constIntVals[c.name] = v;
+                    }
+                }
+            }
+        }
+    }
+
     llvm::Constant* constFold(const ast::Expr& expr, const std::string& type) {
         llvm::Type* lty = llvmType(type);
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
@@ -2956,6 +3094,20 @@ struct CodeGenerator::Impl {
                 } catch (...) {
                 }
                 return llvm::ConstantFP::get(lty, -val);
+            }
+        }
+        // A reference to a namespace-level const, or an expression folded from
+        // consts/literals (spec 28.1) -- e.g. a static field initialized from a const.
+        if (dynamic_cast<const ast::IdentifierExpr*>(&expr) != nullptr ||
+            dynamic_cast<const ast::BinaryExpr*>(&expr) != nullptr) {
+            if (isFloatType(type)) {
+                double d;
+                if (foldConstDouble(expr, d)) return llvm::ConstantFP::get(lty, d);
+            } else {
+                long long v;
+                if (foldConstInt(expr, v))
+                    return llvm::ConstantInt::get(lty, static_cast<std::uint64_t>(v),
+                                                  /*isSigned=*/true);
             }
         }
         return nullptr;
@@ -3299,6 +3451,7 @@ bool CodeGenerator::generate() {
         return false;
     }
     impl_->declareClasses();
+    impl_->emitNamespaceConsts();
     impl_->emitStaticFields();
     impl_->declareFunctions();
     impl_->emitVtables();

@@ -280,6 +280,8 @@ ast::Namespace Parser::parseNamespace() {
             ns.catalogs.push_back(parseCatalog());
         } else if (kind == TokenKind::KwComptime || kind == TokenKind::KwLiteral) {
             ns.literals.push_back(parseLiteral());
+        } else if (kind == TokenKind::KwConst) {
+            ns.consts.push_back(parseConstDecl());
         } else if (kind == TokenKind::KwRecord) {
             ns.classes.push_back(parseRecord());
         } else {
@@ -308,6 +310,21 @@ ast::LiteralDecl Parser::parseLiteral() {
     l.returnType = parseTypeRef();
     l.body = parseBlock();
     return l;
+}
+
+// `[visibility] const T NAME = expr;` -- a namespace-level compile-time constant
+// (spec 28.1). The initializer is a constant expression validated by the analyzer.
+ast::ConstDecl Parser::parseConstDecl() {
+    ast::ConstDecl c;
+    c.loc = current().loc;
+    c.visibility = parseVisibilityOpt();
+    expect(TokenKind::KwConst, "'const'");
+    c.type = parseTypeRef();
+    c.name = expect(TokenKind::Identifier, "the constant name").lexeme;
+    expect(TokenKind::Assign, "'='");
+    c.init = parseExpression();
+    expect(TokenKind::Semicolon, "';'");
+    return c;
 }
 
 ast::EnumDecl Parser::parseEnum() {

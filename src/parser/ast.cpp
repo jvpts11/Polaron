@@ -391,6 +391,14 @@ void LiteralDecl::dump(std::string& out, int indent) const {
     line(out, indent, head);
 }
 
+void ConstDecl::dump(std::string& out, int indent) const {
+    std::string head = "Const '" + name + "'";
+    if (!visibility.empty()) head += " " + visibility;
+    head += " : " + type.name;
+    line(out, indent, head);
+    if (init) init->dump(out, indent + 1);
+}
+
 void Namespace::dump(std::string& out, int indent) const {
     std::string head = "Namespace '" + name + "'";
     if (!visibility.empty()) head += " " + visibility;
@@ -398,6 +406,7 @@ void Namespace::dump(std::string& out, int indent) const {
     for (const auto& e : enums) e.dump(out, indent + 1);
     for (const auto& c : catalogs) c.dump(out, indent + 1);
     for (const auto& l : literals) l.dump(out, indent + 1);
+    for (const auto& c : consts) c.dump(out, indent + 1);
     for (const auto& c : classes) c.dump(out, indent + 1);
 }
 

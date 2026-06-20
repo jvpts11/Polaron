@@ -104,6 +104,8 @@ private:
     void registerCatalogs(const ast::Program& program);
     void validateCatalogs(const ast::Program& program);
     void registerLiterals(const ast::Program& program);
+    void registerConsts(const ast::Program& program);   // pass 1: const name -> type
+    void evaluateConsts(const ast::Program& program);    // pass 2: fold + validate
     void processImports(const ast::Program& program);
     void findEntryPoint(const ast::Program& program);
     void analyzeBodies(const ast::Program& program);
@@ -159,6 +161,10 @@ private:
     // enum -> (method name -> declared parameter count), for arg-count checking.
     std::unordered_map<std::string, std::unordered_map<std::string, std::size_t>> enumMethodParams_;
     std::unordered_map<std::string, LiteralInfo> literals_;  // suffix name -> info
+    // Namespace-level compile-time constants (spec 28.1).
+    std::unordered_map<std::string, std::string> constTypes_;     // const name -> type
+    std::unordered_map<std::string, long long> constInts_;        // int/bool/char value
+    std::unordered_map<std::string, double> constDoubles_;        // float/double value
     std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace
     std::string currentNamespace_;  // namespace being analyzed (visibility checks)

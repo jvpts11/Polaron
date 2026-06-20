@@ -71,6 +71,14 @@ std::vector<std::string> tupleElems(const std::string& t) {
 }
 }  // namespace
 
+// Compile-time constant evaluators (spec 28); defined further below, but declared
+// here so const registration (above their definitions) can call them.
+static bool evalConstInt(const ast::Expr& e, long long& out,
+                         const std::unordered_map<std::string, long long>* consts);
+static bool evalConstDouble(const ast::Expr& e, double& out,
+                            const std::unordered_map<std::string, double>* dconsts,
+                            const std::unordered_map<std::string, long long>* iconsts);
+
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
     errors_.push_back(SemaError{std::move(message), loc});
 }
@@ -681,7 +689,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerCatalogs(program);  // before enums: registerEnums records enum->catalog edges
     registerEnums(program);
     registerLiterals(program);
+    registerConsts(program);
     processImports(program);
+    evaluateConsts(program);
     validateHierarchy();
     // If the hierarchy itself is broken (cycle, missing super), stop: walking it
     // recursively below could otherwise loop forever.
@@ -716,6 +726,61 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
                 }
                 literals_[lit.name] = LiteralInfo{paramType, returnType, lit.isComptime, lit.loc};
                 typeNamespace_[lit.name] = ns.name;  // for import-prefix validation
+            }
+        }
+    }
+}
+
+// Pass 1 for namespace-level consts (spec 28.1): record each name's type so that
+// references resolve. Only primitive numeric / boolean / char consts are supported
+// for now (no sizeof, no comptime functions -- those are later tiers).
+void SemanticAnalyzer::registerConsts(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ConstDecl& c : ns.consts) {
+                const std::string type = typeRefStr(c.type);
+                if (!isNumeric(type) && type != "boolean" && type != "char") {
+                    error("a 'const' must have a numeric, boolean, or char type, got '" + type + "'",
+                          c.loc);
+                    continue;
+                }
+                if (constTypes_.count(c.name) > 0) {
+                    error("const '" + c.name + "' is already defined", c.loc);
+                    continue;
+                }
+                constTypes_[c.name] = type;
+            }
+        }
+    }
+}
+
+// Pass 2: fold each const initializer (in declaration order, so a const may refer
+// to earlier ones) and validate it is a compile-time constant of the right kind.
+void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ConstDecl& c : ns.consts) {
+                if (constTypes_.count(c.name) == 0) continue;  // rejected in pass 1
+                const std::string type = constTypes_[c.name];
+                if (c.init == nullptr) {
+                    error("const '" + c.name + "' must have an initializer", c.loc);
+                    continue;
+                }
+                if (isFloatType(type)) {
+                    double d;
+                    if (!evalConstDouble(*c.init, d, &constDoubles_, &constInts_))
+                        error("const '" + c.name + "' initializer must be a compile-time constant",
+                              c.loc);
+                    else
+                        constDoubles_[c.name] = d;
+                } else {
+                    long long v;
+                    if (!evalConstInt(*c.init, v, &constInts_))
+                        error("const '" + c.name + "' initializer must be a compile-time constant",
+                              c.loc);
+                    else
+                        constInts_[c.name] = v;
+                }
             }
         }
     }
@@ -972,31 +1037,74 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, SourceLocation
     if (type != "int") error("'++'/'--' requires an int target", loc);
 }
 
-// Evaluates a constant integer/boolean expression at compile time (spec 28).
-// Returns false if the expression is not a compile-time constant.
-static bool evalConstInt(const ast::Expr& e, long long& out) {
+// The byte value of a char literal's content, resolving the common escapes.
+static long long charLiteralValue(const std::string& s) {
+    if (s.empty()) return 0;
+    if (s[0] != '\\') return static_cast<unsigned char>(s[0]);
+    if (s.size() < 2) return '\\';
+    switch (s[1]) {
+        case 'n': return '\n';
+        case 't': return '\t';
+        case 'r': return '\r';
+        case '0': return '\0';
+        case '\\': return '\\';
+        case '\'': return '\'';
+        case '"': return '"';
+        default: return static_cast<unsigned char>(s[1]);
+    }
+}
+
+// Evaluates a constant integer/boolean/char expression at compile time (spec 28).
+// `consts` (optional) resolves references to previously-declared const names.
+// Returns false if the expression is not a compile-time integer constant.
+static bool evalConstInt(const ast::Expr& e, long long& out,
+                         const std::unordered_map<std::string, long long>* consts = nullptr) {
     if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&e)) {
+        std::string s;
+        for (char c : n->text)
+            if (c != '_' && c != 'L' && c != 'l') s += c;
+        int base = 10;
+        std::size_t start = 0;
+        if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { base = 16; start = 2; }
+        else if (s.size() >= 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) { base = 2; start = 2; }
         try {
-            out = std::stoll(n->text);
+            out = static_cast<long long>(std::stoll(s.substr(start), nullptr, base));
             return true;
         } catch (...) {
-            return false;
+            try {
+                out = static_cast<long long>(std::stoull(s.substr(start), nullptr, base));
+                return true;
+            } catch (...) {
+                return false;
+            }
         }
     }
     if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&e)) {
         out = b->value ? 1 : 0;
         return true;
     }
+    if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(&e)) {
+        out = charLiteralValue(c->value);
+        return true;
+    }
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
+        if (consts == nullptr) return false;
+        auto it = consts->find(id->name);
+        if (it == consts->end()) return false;
+        out = it->second;
+        return true;
+    }
     if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
         long long v;
-        if (!evalConstInt(*u->operand, v)) return false;
+        if (!evalConstInt(*u->operand, v, consts)) return false;
         if (u->op == "!") { out = v ? 0 : 1; return true; }
         if (u->op == "-") { out = -v; return true; }
+        if (u->op == "~") { out = ~v; return true; }
         return false;
     }
     if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
         long long l, r;
-        if (!evalConstInt(*bin->lhs, l) || !evalConstInt(*bin->rhs, r)) return false;
+        if (!evalConstInt(*bin->lhs, l, consts) || !evalConstInt(*bin->rhs, r, consts)) return false;
         const std::string& op = bin->op;
         if (op == "+") out = l + r;
         else if (op == "-") out = l - r;
@@ -1011,6 +1119,53 @@ static bool evalConstInt(const ast::Expr& e, long long& out) {
         else if (op == ">=") out = (l >= r) ? 1 : 0;
         else if (op == "&&") out = (l && r) ? 1 : 0;
         else if (op == "||") out = (l || r) ? 1 : 0;
+        else if (op == "&") out = l & r;
+        else if (op == "|") out = l | r;
+        else if (op == "^") out = l ^ r;
+        else if (op == "<<") out = l << r;
+        else if (op == ">>") out = l >> r;
+        else return false;
+        return true;
+    }
+    return false;
+}
+
+// Evaluates a constant floating-point expression at compile time. Integer consts
+// and literals promote to double. Returns false if it is not a compile-time
+// numeric constant.
+static bool evalConstDouble(const ast::Expr& e, double& out,
+                            const std::unordered_map<std::string, double>* dconsts,
+                            const std::unordered_map<std::string, long long>* iconsts) {
+    if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(&e)) {
+        std::string s;
+        for (char ch : f->text)
+            if (ch != '_' && ch != 'f' && ch != 'F') s += ch;
+        try { out = std::stod(s); return true; } catch (...) { return false; }
+    }
+    long long iv;
+    if (evalConstInt(e, iv, iconsts)) { out = static_cast<double>(iv); return true; }
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
+        if (dconsts == nullptr) return false;
+        auto it = dconsts->find(id->name);
+        if (it == dconsts->end()) return false;
+        out = it->second;
+        return true;
+    }
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
+        double v;
+        if (u->op == "-" && evalConstDouble(*u->operand, v, dconsts, iconsts)) { out = -v; return true; }
+        return false;
+    }
+    if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
+        double l, r;
+        if (!evalConstDouble(*bin->lhs, l, dconsts, iconsts) ||
+            !evalConstDouble(*bin->rhs, r, dconsts, iconsts))
+            return false;
+        const std::string& op = bin->op;
+        if (op == "+") out = l + r;
+        else if (op == "-") out = l - r;
+        else if (op == "*") out = l * r;
+        else if (op == "/") { if (r == 0.0) return false; out = l / r; }
         else return false;
         return true;
     }
@@ -1020,7 +1175,7 @@ static bool evalConstInt(const ast::Expr& e, long long& out) {
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* sa = dynamic_cast<const ast::StaticAssertStmt*>(&stmt)) {
         long long v;
-        if (!evalConstInt(*sa->condition, v))
+        if (!evalConstInt(*sa->condition, v, &constInts_))
             error("static_assert requires a constant expression", sa->loc);
         else if (v == 0)
             error("static assertion failed: " + sa->message, sa->loc);
@@ -1325,6 +1480,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         const LocalVar* var = lookupLocal(id->name);
         if (var == nullptr) {
+            // A namespace-level compile-time constant (spec 28.1).
+            if (auto cit = constTypes_.find(id->name); cit != constTypes_.end())
+                return cit->second;
             // A bare enum constant inside one of that enum's own methods (spec 12.2/12.4):
             // `return v8;` resolves to the enum value without the `Enum.` prefix.
             if (auto eit = enums_.find(currentClass_);
