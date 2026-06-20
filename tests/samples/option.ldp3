@@ -1,27 +1,28 @@
 program OptionTest;
 
-// A generic Option<T> built from generic inheritance + virtual dispatch.
+// A generic Maybe<T> built from generic inheritance + virtual dispatch. (Named Maybe/Just/Nothing
+// rather than Option/Some/None, which are now built-in prelude types; this is a generics demo.)
 public bundle main {
     public namespace app {
-        public class Option<T> {
-            public constructor Option() {}
+        public class Maybe<T> {
+            public constructor Maybe() {}
             public method isSome() returns boolean { return false; }
             public method orElse(T fallback) returns T { return fallback; }
         }
-        public class Some<T> extends Option<T> {
+        public class Just<T> extends Maybe<T> {
             private T value;
-            public constructor Some(T value) { this.value = value; }
+            public constructor Just(T value) { this.value = value; }
             public override method isSome() returns boolean { return true; }
             public override method orElse(T fallback) returns T { return this.value; }
         }
-        public class None<T> extends Option<T> {
-            public constructor None() {}
+        public class Nothing<T> extends Maybe<T> {
+            public constructor Nothing() {}
         }
 
         public class Main {
             public static method main(string[] args) returns void {
-                Option<int>* a = new Some<int>(42) on heap;
-                Option<int>* b = new None<int>() on heap;
+                Maybe<int>* a = new Just<int>(42) on heap;
+                Maybe<int>* b = new Nothing<int>() on heap;
                 System.IO.println($"a: some={a.isSome()} val={a.orElse(0)}");    // some=1 val=42
                 System.IO.println($"b: some={b.isSome()} val={b.orElse(99)}");   // some=0 val=99
                 delete a;

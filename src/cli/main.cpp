@@ -88,6 +88,36 @@ public bundle std {
             }
         }
     }
+    public namespace System.Errors {
+        // Result<T,E> / Option<T> (spec 21.2-21.3): sealed sum types matched with `match`. Ok/Err/
+        // Some/None are constructed with the type args taken from the expected type at the use site.
+        // The abstract method forces a vtable so `match` can dispatch on the variant.
+        public sealed class Result<T, E> permits Ok, Err {
+            public abstract method isOk() returns boolean;
+        }
+        public class Ok<T, E> extends Result<T, E> {
+            public final T value;
+            public constructor Ok(T value) { this.value = value; }
+            public override method isOk() returns boolean { return true; }
+        }
+        public class Err<T, E> extends Result<T, E> {
+            public final E error;
+            public constructor Err(E error) { this.error = error; }
+            public override method isOk() returns boolean { return false; }
+        }
+        public sealed class Option<T> permits Some, None {
+            public abstract method isSome() returns boolean;
+        }
+        public class Some<T> extends Option<T> {
+            public final T value;
+            public constructor Some(T value) { this.value = value; }
+            public override method isSome() returns boolean { return true; }
+        }
+        public class None<T> extends Option<T> {
+            public constructor None() {}
+            public override method isSome() returns boolean { return false; }
+        }
+    }
 }
 )LDP3";
 

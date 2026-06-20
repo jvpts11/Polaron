@@ -480,6 +480,9 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
     c.isStruct = d.isStruct;
     c.isRecord = d.isRecord;
     c.isAbstract = d.isAbstract;
+    c.isSealed = d.isSealed;          // keep sealed + permits so generic-sealed match stays exhaustive
+    c.permits = d.permits;
+    c.typeParamBounds = d.typeParamBounds;
     c.isMovable = d.isMovable;
     c.isUnique = d.isUnique;
     c.superclass = d.superclass;
@@ -862,6 +865,14 @@ bool monomorphize(ast::Program& program) {
             if (insts.find(sm) == insts.end())
                 insts[sm] = {concrete.superclass, concrete.superclassTypeArgs};
             if (done.count(sm) == 0) work.push_back(sm);
+        }
+        // A generic sealed base seeds its permitted subclasses with the same args, so the variants
+        // (e.g. Ok$int$int / Err$int$int for Result$int$int) exist for match and construction.
+        for (const std::string& p : tit->second->permits) {
+            if (generics.count(p) == 0) continue;
+            const std::string pm = ast::mangleGeneric(p, args);
+            if (insts.find(pm) == insts.end()) insts[pm] = {p, args};
+            if (done.count(pm) == 0) work.push_back(pm);
         }
         InstMap more;
         collectClass(concrete, generics, more);
