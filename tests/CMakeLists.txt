@@ -1166,6 +1166,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=own=0 a=1 c=3 foo=7 bar=9 count=4"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # call args are coerced to the parameter's type across ctor/method/static/virtual
+        # (e.g. an i32 literal into an int64 param, an int into a float param).
+        add_test(NAME codegen_arg_coercion_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/arg_coercion.ldp3"
+            "-DEXPECTED=15 3 7 41"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

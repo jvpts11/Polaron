@@ -1,0 +1,57 @@
+program ArgCoercion;
+
+// Call arguments are coerced to the callee's parameter type, so a method,
+// constructor, static call, or virtual dispatch taking a non-i32-width parameter
+// (int64/float32/float64/...) can be called with a differently-typed value (e.g.
+// an i32 literal into an int64 param, or an int into a float param).
+
+public bundle main {
+    public namespace app {
+
+        public class Calc {
+            private int64 base;
+
+            public constructor Calc(int64 b) {   // i32 literal 5 -> int64 param
+                this.base = b;
+            }
+
+            public method addWide(int64 x, float64 d) returns int64 {
+                return this.base + x;            // int64 arithmetic; d unused
+            }
+
+            public method scaleF(float32 f) returns float32 {
+                return f;                        // i32 3 -> float32 param
+            }
+
+            public static method bigStatic(int64 n) returns int64 {
+                return n;                        // i32 7 -> int64 static param
+            }
+        }
+
+        public abstract class Shape {
+            public abstract method shift(int64 by) returns int64;
+        }
+
+        public class Box extends Shape {
+            public override method shift(int64 by) returns int64 {
+                return by + 1;                   // virtual call: i32 40 -> int64 param
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Calc c = new Calc(5) on heap;
+                int64 r = c.addWide(10, 2);          // 5 + 10 = 15
+                float32 f = c.scaleF(3);             // 3.0
+                int64 s = Calc.bigStatic(7);         // 7
+                Shape* sh = new Box() on heap;
+                int64 v = sh.shift(40);              // 41, through a vtable
+                System.IO.printf("%d %d %d %d\n",
+                                 cast<int>(r), cast<int>(f), cast<int>(s), cast<int>(v));
+                delete c;
+                delete sh;
+                return;
+            }
+        }
+    }
+}

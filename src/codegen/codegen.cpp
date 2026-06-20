@@ -341,13 +341,24 @@ struct CodeGenerator::Impl {
     // Coerce a value to a target LLVM type (numeric widen/narrow), e.g. when an
     // argument's static type is a subtype of the parameter type.
     llvm::Value* coerceToType(llvm::Value* v, llvm::Type* ty) {
-        if (v == nullptr || v->getType() == ty) return v;
-        if (ty->isDoubleTy() && v->getType()->isIntegerTy()) return builder.CreateSIToFP(v, ty);
-        if (ty->isIntegerTy() && v->getType()->isIntegerTy()) {
-            const unsigned want = ty->getIntegerBitWidth();
-            const unsigned have = v->getType()->getIntegerBitWidth();
-            if (want > have) return builder.CreateSExt(v, ty);
-            if (want < have) return builder.CreateTrunc(v, ty);
+        if (v == nullptr || ty == nullptr || v->getType() == ty) return v;
+        llvm::Type* src = v->getType();
+        if (ty->isFloatingPointTy()) {
+            if (src->isIntegerTy()) return builder.CreateSIToFP(v, ty);  // int -> f32/f64
+            if (src->isFloatingPointTy())
+                return ty->isDoubleTy() ? builder.CreateFPExt(v, ty)     // f32 -> f64
+                                        : builder.CreateFPTrunc(v, ty);  // f64 -> f32
+            return v;
+        }
+        if (ty->isIntegerTy()) {
+            if (src->isIntegerTy()) {
+                const unsigned want = ty->getIntegerBitWidth();
+                const unsigned have = src->getIntegerBitWidth();
+                if (want > have) return builder.CreateSExt(v, ty);
+                if (want < have) return builder.CreateTrunc(v, ty);
+                return v;
+            }
+            if (src->isFloatingPointTy()) return builder.CreateFPToSI(v, ty);  // f -> int
         }
         return v;
     }
@@ -1363,9 +1374,11 @@ struct CodeGenerator::Impl {
         if (fnit != functions.end()) {
             std::vector<llvm::Value*> args;
             args.push_back(objPtr);
-            for (const auto& arg : nw.args) {
-                llvm::Value* v = emitExpr(*arg);
+            for (std::size_t i = 0; i < nw.args.size(); ++i) {
+                llvm::Value* v = emitExpr(*nw.args[i]);
                 if (v == nullptr) return nullptr;
+                if (i + 1 < fnit->second->arg_size())  // coerce to the ctor's param width/type
+                    v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
                 args.push_back(v);
             }
             emitMaybeInvoke(fnit->second, args);
@@ -1478,9 +1491,10 @@ struct CodeGenerator::Impl {
                 llvm::Value* env = builder.CreateLoad(builder.getPtrTy(), envSlot, "env");
                 std::vector<llvm::Value*> args;
                 args.push_back(env);  // arg 0: env
-                for (const auto& a : call.args) {
-                    llvm::Value* v = emitExpr(*a);
+                for (std::size_t i = 0; i < call.args.size(); ++i) {
+                    llvm::Value* v = emitExpr(*call.args[i]);
                     if (v == nullptr) return nullptr;
+                    if (i + 1 < fty->getNumParams()) v = coerceToType(v, fty->getParamType(i + 1));
                     args.push_back(v);
                 }
                 return emitMaybeInvoke(fty, fnPtr, args);
@@ -1514,9 +1528,10 @@ struct CodeGenerator::Impl {
                 llvm::Value* env = builder.CreateLoad(builder.getPtrTy(), envSlot, "env");
                 std::vector<llvm::Value*> args;
                 args.push_back(env);  // arg 0: env
-                for (const auto& a : call.args) {
-                    llvm::Value* v = emitExpr(*a);
+                for (std::size_t i = 0; i < call.args.size(); ++i) {
+                    llvm::Value* v = emitExpr(*call.args[i]);
                     if (v == nullptr) return nullptr;
+                    if (i + 1 < fty->getNumParams()) v = coerceToType(v, fty->getParamType(i + 1));
                     args.push_back(v);
                 }
                 return emitMaybeInvoke(fty, fnPtr, args);
@@ -1634,9 +1649,11 @@ struct CodeGenerator::Impl {
                         return nullptr;
                     }
                     std::vector<llvm::Value*> args;
-                    for (const auto& arg : call.args) {
-                        llvm::Value* v = emitExpr(*arg);
+                    for (std::size_t i = 0; i < call.args.size(); ++i) {
+                        llvm::Value* v = emitExpr(*call.args[i]);
                         if (v == nullptr) return nullptr;
+                        if (i < fnit->second->arg_size())  // static: no implicit `this`
+                            v = coerceToType(v, fnit->second->getArg(i)->getType());
                         args.push_back(v);
                     }
                     return emitMaybeInvoke(fnit->second, args);
@@ -1655,9 +1672,11 @@ struct CodeGenerator::Impl {
                         if (recv == nullptr) return nullptr;
                         std::vector<llvm::Value*> args;
                         args.push_back(recv);
-                        for (const auto& arg : call.args) {
-                            llvm::Value* v = emitExpr(*arg);
+                        for (std::size_t i = 0; i < call.args.size(); ++i) {
+                            llvm::Value* v = emitExpr(*call.args[i]);
                             if (v == nullptr) return nullptr;
+                            if (i + 1 < fnit->second->arg_size())
+                                v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
                             args.push_back(v);
                         }
                         return emitMaybeInvoke(fnit->second, args);
@@ -1682,14 +1701,16 @@ struct CodeGenerator::Impl {
                     llvm::Value* slotPtr = builder.CreateConstGEP2_64(
                         vtArrTy, vtbl, 0, static_cast<std::uint64_t>(slot), "slot");
                     llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), slotPtr, "fn");
+                    llvm::FunctionType* fty = methodFnType(mdecl);
                     std::vector<llvm::Value*> vargs;
                     vargs.push_back(recv);
-                    for (const auto& arg : call.args) {
-                        llvm::Value* v = emitExpr(*arg);
+                    for (std::size_t i = 0; i < call.args.size(); ++i) {
+                        llvm::Value* v = emitExpr(*call.args[i]);
                         if (v == nullptr) return nullptr;
+                        if (i + 1 < fty->getNumParams()) v = coerceToType(v, fty->getParamType(i + 1));
                         vargs.push_back(v);
                     }
-                    return emitMaybeInvoke(methodFnType(mdecl), fnPtr, vargs);
+                    return emitMaybeInvoke(fty, fnPtr, vargs);
                 }
             }
 
@@ -1705,9 +1726,11 @@ struct CodeGenerator::Impl {
             }
             std::vector<llvm::Value*> args;
             args.push_back(objPtr);
-            for (const auto& arg : call.args) {
-                llvm::Value* v = emitExpr(*arg);
+            for (std::size_t i = 0; i < call.args.size(); ++i) {
+                llvm::Value* v = emitExpr(*call.args[i]);
                 if (v == nullptr) return nullptr;
+                if (i + 1 < fnit->second->arg_size())
+                    v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
                 args.push_back(v);
             }
             return emitMaybeInvoke(fnit->second, args);
