@@ -1192,6 +1192,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=a=10 b=999"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # arrays sized/indexed by the real element width: int64[] and double[] round-trip
+        # 8-byte elements (and a value > INT32_MAX) instead of corrupting the heap.
+        add_test(NAME codegen_wide_arrays_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/wide_arrays.ldp3"
+            "-DEXPECTED=a2=5000000012 d2=3 sum=10000000024 len=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

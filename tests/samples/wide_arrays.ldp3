@@ -1,0 +1,35 @@
+program WideArrays;
+
+// Arrays are sized and indexed by the real element width, so element types wider
+// than 4 bytes (int64, double) round-trip correctly instead of corrupting the
+// heap (previously the allocation, stride and loads all assumed i32).
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int64[] a = new int64[3]();
+                a[0] = 5000000000;   // > INT32_MAX: must survive as 64-bit
+                a[1] = 12;
+                a[2] = a[0] + a[1];
+
+                double[] d = new double[3]();
+                d[0] = 1.5;
+                d[1] = 2.25;
+                d[2] = d[0] + d[1];
+
+                // foreach over a wide array sums in 64-bit.
+                mutable int64 sum = 0;
+                for (int64 x in a) {
+                    sum = sum + x;
+                }
+
+                System.IO.printf("a2=%lld d2=%d sum=%lld len=%d\n",
+                                 a[2], cast<int>(d[2]), sum, a.length());
+                delete a;
+                delete d;
+                return;
+            }
+        }
+    }
+}

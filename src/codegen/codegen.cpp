@@ -80,6 +80,10 @@ std::int64_t parseIntLiteral(const std::string& lexeme) {
 bool isArrayType(const std::string& t) {
     return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;
 }
+// The element type of an array type ("int[]" -> "int"); identity if not an array.
+std::string elementOf(const std::string& t) {
+    return isArrayType(t) ? t.substr(0, t.size() - 2) : t;
+}
 
 // Floating-point types. `float`/`float32` lower to f32; `double`/`float64` to f64.
 bool isFloatType(const std::string& t) {
@@ -719,10 +723,10 @@ struct CodeGenerator::Impl {
 
     // Duplicates an array block [ i64 length | elems... ] into a fresh heap block
     // so a value copy does not share the elements. Elements are 4 bytes in 0.1.
-    llvm::Value* emitArrayDup(llvm::Value* srcBlock) {
+    llvm::Value* emitArrayDup(llvm::Value* srcBlock, const std::string& elemType) {
         llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), srcBlock, "arr.len");
-        llvm::Value* total = builder.CreateAdd(builder.getInt64(8),
-                                               builder.CreateMul(len, builder.getInt64(4)));
+        llvm::Value* total = builder.CreateAdd(
+            builder.getInt64(8), builder.CreateMul(len, builder.getInt64(byteSizeOf(elemType))));
         llvm::Value* newBlock = builder.CreateCall(mallocFn(), {total}, "arr.copy");
         builder.CreateCall(memcpyFn(), {newBlock, srcBlock, total});
         return newBlock;
@@ -746,7 +750,7 @@ struct CodeGenerator::Impl {
             llvm::Value* deep = nullptr;
             if (isArrayType(ftype)) {
                 llvm::Value* srcSlot = builder.CreateStructGEP(st, srcPtr, idx);
-                deep = emitArrayDup(builder.CreateLoad(builder.getPtrTy(), srcSlot));
+                deep = emitArrayDup(builder.CreateLoad(builder.getPtrTy(), srcSlot), elementOf(ftype));
             } else if (isClassValue(ftype) && isCopyDiscipline(ftype)) {
                 llvm::Value* srcSlot = builder.CreateStructGEP(st, srcPtr, idx);
                 deep = emitClassCopy(ftype, builder.CreateLoad(builder.getPtrTy(), srcSlot), heap);
@@ -757,23 +761,24 @@ struct CodeGenerator::Impl {
     }
 
     // Array memory layout: one heap block [ i64 length | elem 0 | elem 1 | ... ].
-    // The array value is a pointer to the length header; elements (i32 in M5)
-    // start 8 bytes in.
+    // The array value is a pointer to the length header (element count); elements
+    // start 8 bytes in and are sized by the element type.
     llvm::Value* arrayData(llvm::Value* block) {
         return builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 8, "arr.data");
     }
-    llvm::Value* arrayElemPtr(llvm::Value* block, llvm::Value* index) {
-        return builder.CreateGEP(builder.getInt32Ty(), arrayData(block), index, "arr.elem");
+    llvm::Value* arrayElemPtr(llvm::Value* block, llvm::Value* index, llvm::Type* elemTy) {
+        return builder.CreateGEP(elemTy, arrayData(block), index, "arr.elem");
     }
 
     llvm::Value* emitNewArray(const ast::NewArrayExpr& na) {
         llvm::Value* n = emitExpr(*na.size);
         if (n == nullptr) return nullptr;
         llvm::Value* n64 = builder.CreateSExt(n, builder.getInt64Ty());
-        llvm::Value* elemBytes = builder.CreateMul(n64, builder.getInt64(4));  // i32 elements
+        const unsigned esz = byteSizeOf(na.elementType);  // real element width (1/2/4/8 bytes)
+        llvm::Value* elemBytes = builder.CreateMul(n64, builder.getInt64(esz));
         llvm::Value* total = builder.CreateAdd(builder.getInt64(8), elemBytes);
         llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "arr");
-        builder.CreateStore(n64, block);  // length header
+        builder.CreateStore(n64, block);  // length header (element count)
         builder.CreateCall(memsetFn(), {arrayData(block), builder.getInt32(0), elemBytes});
         return block;
     }
@@ -892,7 +897,7 @@ struct CodeGenerator::Impl {
             if (block == nullptr) return nullptr;
             llvm::Value* index = emitExpr(*ix->index);
             if (index == nullptr) return nullptr;
-            return arrayElemPtr(block, index);
+            return arrayElemPtr(block, index, llvmType(elementOf(typeName(*ix->array))));
         }
         error("invalid assignment target", expr.loc);
         return nullptr;
@@ -1139,7 +1144,7 @@ struct CodeGenerator::Impl {
             }
             llvm::Value* elemPtr = emitLValue(*ix);
             if (elemPtr == nullptr) return nullptr;
-            return builder.CreateLoad(builder.getInt32Ty(), elemPtr, "elem");
+            return builder.CreateLoad(llvmType(elementOf(at)), elemPtr, "elem");
         }
         if (dynamic_cast<const ast::InterpStringExpr*>(&expr) != nullptr) {
             error("string interpolation is only supported as a printf/println argument for now",
@@ -1633,8 +1638,9 @@ struct CodeGenerator::Impl {
                         llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "enum.vals");
                         builder.CreateStore(builder.getInt64(n), block);  // length header
                         for (int i = 0; i < n; ++i)
-                            builder.CreateStore(builder.getInt32(i),
-                                                arrayElemPtr(block, builder.getInt32(i)));
+                            builder.CreateStore(
+                                builder.getInt32(i),
+                                arrayElemPtr(block, builder.getInt32(i), builder.getInt32Ty()));
                         return block;
                     }
                 }
@@ -2516,8 +2522,9 @@ struct CodeGenerator::Impl {
         llvm::Value* i = builder.CreateLoad(builder.getInt32Ty(), iSlot, "fe.iv");
         builder.CreateCondBr(builder.CreateICmpSLT(i, len), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
+        llvm::Type* feElemTy = llvmType(et);
         llvm::Value* elem =
-            builder.CreateLoad(builder.getInt32Ty(), arrayElemPtr(block, i), "fe.el");
+            builder.CreateLoad(feElemTy, arrayElemPtr(block, i, feElemTy), "fe.el");
         builder.CreateStore(elem, vSlot);
         loopStack.push_back({endBB, updateBB, pendingLoopLabel});
         pendingLoopLabel.clear();
