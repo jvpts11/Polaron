@@ -1,0 +1,33 @@
+program DeepCopyReassign;
+
+// Value semantics on REASSIGNMENT (not just declaration): assigning a class value
+// to an existing local must deep-copy, duplicating owned array/sub-object fields,
+// so the two locals share no storage. Previously reassignment did a shallow
+// memcpy -> the arrays aliased and mutating one changed the other.
+
+public bundle main {
+    public namespace app {
+
+        public class Bag {
+            public mutable int[] items;
+            public constructor Bag() {
+                this.items = new int[3]();
+                this.items[0] = 10;
+            }
+            public method set(int i, int v) returns void { this.items[i] = v; }
+            public method get(int i) returns int { return this.items[i]; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Bag a = new Bag();
+                mutable Bag b = new Bag();
+                b.set(0, 5);
+                b = a;             // reassignment -> deep copy (b.items becomes an independent dup)
+                b.set(0, 999);     // mutate only b
+                System.IO.println($"a={a.get(0)} b={b.get(0)}");  // a=10 b=999
+                return;
+            }
+        }
+    }
+}

@@ -2178,10 +2178,14 @@ struct CodeGenerator::Impl {
                     // fresh heap object and store the pointer (it outlives the constructor frame).
                     builder.CreateStore(emitClassCopy(targetType, v, /*heap=*/true), slot);
                 } else {
-                    // A local already has a backing object (from its declaration); copy into it.
+                    // A local already has a backing object (from its declaration). Deep-copy the
+                    // source into a fresh object (duplicating its arrays / value sub-objects), then
+                    // copy that object's bytes into the local's backing object, so target and source
+                    // share no storage -- matching the declaration and field paths (value semantics).
                     llvm::Value* destStruct = builder.CreateLoad(builder.getPtrTy(), slot);
+                    llvm::Value* deep = emitClassCopy(targetType, v);  // duplicates owned fields
                     builder.CreateCall(memcpyFn(),
-                                       {destStruct, v, sizeOf(classes[targetType].type)});
+                                       {destStruct, deep, sizeOf(classes[targetType].type)});
                 }
             } else {
                 builder.CreateStore(coerce(v, typeName(*assign->value), targetType), slot);
