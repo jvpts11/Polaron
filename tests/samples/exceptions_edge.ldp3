@@ -1,0 +1,54 @@
+program ExcEdge;
+
+// Edge cases (spec 21.1): (1) a `throw` inside a catch handler propagates to the enclosing try
+// (handlerCase: catch A, throw B, outer catches B); (2) a stack object and a try coexist -- the
+// throw is caught by the inner try and the object's destructor still runs on the normal return path
+// (objCase). Prints: rethrow as B / outer B 2 / caught A / dtor 7.
+public bundle main {
+    public namespace app {
+        public class Base {
+            public mutable int code;
+            public constructor Base() { this.code = 0; }
+        }
+        public class A extends Base {
+            public constructor A() { this.code = 1; }
+        }
+        public class B extends Base {
+            public constructor B() { this.code = 2; }
+        }
+        public class Guard {
+            public mutable int id;
+            public constructor Guard(int id) { this.id = id; }
+            public destructor ~Guard() returns void { System.IO.printf("dtor %d\n", this.id); }
+        }
+        public class Main {
+            public static method handlerCase() returns void {
+                try {
+                    try {
+                        throw new A() on heap;
+                    } catch (A e) {
+                        System.IO.printf("rethrow as B\n");
+                        throw new B() on heap;
+                    }
+                } catch (B e) {
+                    System.IO.printf("outer B %d\n", e.code);
+                }
+                return;
+            }
+            public static method objCase() returns void {
+                Guard g = new Guard(7) on stack;
+                try {
+                    throw new A() on heap;
+                } catch (A e) {
+                    System.IO.printf("caught A\n");
+                }
+                return;
+            }
+            public static method main(string[] args) returns void {
+                Main.handlerCase();
+                Main.objCase();
+                return;
+            }
+        }
+    }
+}
