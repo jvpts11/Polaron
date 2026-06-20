@@ -2492,6 +2492,7 @@ struct CodeGenerator::Impl {
             builder.SetInsertPoint(bodyBB);
             // Bind positional fields: binding[i] <- the case type's own field[i].
             std::vector<std::string> added;
+            std::vector<std::pair<std::string, LocalSlot>> prior;  // shadowed outer locals
             for (std::size_t i = 0; i < c.bindings.size() && i < cit->second.ownFields.size(); ++i) {
                 const std::string& fname = cit->second.ownFields[i].first;
                 const std::string ftype = cit->second.fieldType.count(fname) > 0
@@ -2502,11 +2503,14 @@ struct CodeGenerator::Impl {
                 llvm::Value* val = builder.CreateLoad(llvmType(ftype), fptr, fname);
                 llvm::Value* slot = createEntryAlloca(c.bindings[i].name, llvmType(ftype));
                 builder.CreateStore(val, slot);
+                if (auto pit = locals.find(c.bindings[i].name); pit != locals.end())
+                    prior.push_back({c.bindings[i].name, pit->second});
                 locals[c.bindings[i].name] = LocalSlot{slot, ftype};
                 added.push_back(c.bindings[i].name);
             }
             emitBlock(c.body);
             for (const std::string& n : added) locals.erase(n);  // bindings are case-scoped
+            for (const auto& [n, s] : prior) locals[n] = s;       // restore shadowed outer locals
             if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
             builder.SetInsertPoint(nextBB);
         }
@@ -2545,6 +2549,7 @@ struct CodeGenerator::Impl {
             builder.CreateCondBr(builder.CreateICmpEQ(vtbl, cit->second.vtable, "is"), bodyBB, nextBB);
             builder.SetInsertPoint(bodyBB);
             std::vector<std::string> added;
+            std::vector<std::pair<std::string, LocalSlot>> prior;  // shadowed outer locals
             for (std::size_t i = 0; i < c.bindings.size() && i < cit->second.ownFields.size(); ++i) {
                 const std::string& fname = cit->second.ownFields[i].first;
                 const std::string ftype = cit->second.fieldType.count(fname) > 0
@@ -2555,12 +2560,15 @@ struct CodeGenerator::Impl {
                 llvm::Value* val = builder.CreateLoad(llvmType(ftype), fptr, fname);
                 llvm::Value* slot = createEntryAlloca(c.bindings[i].name, llvmType(ftype));
                 builder.CreateStore(val, slot);
+                if (auto pit = locals.find(c.bindings[i].name); pit != locals.end())
+                    prior.push_back({c.bindings[i].name, pit->second});
                 locals[c.bindings[i].name] = LocalSlot{slot, ftype};
                 added.push_back(c.bindings[i].name);
             }
             llvm::Value* v = c.result ? emitExpr(*c.result) : nullptr;
             if (v != nullptr) v = coerce(v, typeName(*c.result), rtype);  // typeName needs bindings
             for (const std::string& n : added) locals.erase(n);  // bindings are arm-scoped
+            for (const auto& [n, s] : prior) locals[n] = s;       // restore shadowed outer locals
             if (v == nullptr) v = llvm::Constant::getNullValue(rty);  // error recovery
             incoming.push_back({v, builder.GetInsertBlock()});
             builder.CreateBr(endBB);

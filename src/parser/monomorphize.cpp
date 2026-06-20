@@ -655,6 +655,7 @@ void collectMethExpr(const ast::Expr* e, MethInsts& out) {
         collectMethExpr(x->defaultResult.get(), out);
         return;
     }
+    if (const auto* x = dynamic_cast<const ast::LambdaExpr*>(e)) { collectMethBlock(x->body, out); return; }
 }
 void collectMethStmt(const ast::Stmt* st, MethInsts& out) {
     if (st == nullptr) return;
@@ -664,6 +665,8 @@ void collectMethStmt(const ast::Stmt* st, MethInsts& out) {
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) { collectMethExpr(x->iterable.get(), out); collectMethBlock(x->body, out); return; }
     if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) { collectMethExpr(x->subject.get(), out); for (const auto& c : x->cases) { collectMethExpr(c.value.get(), out); collectMethBlock(c.body, out); } if (x->defaultBody) collectMethBlock(*x->defaultBody, out); return; }
     if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) { collectMethExpr(x->subject.get(), out); for (const auto& c : x->cases) collectMethBlock(c.body, out); if (x->defaultBody) collectMethBlock(*x->defaultBody, out); return; }
+    if (const auto* x = dynamic_cast<const ast::ThrowStmt*>(st)) { collectMethExpr(x->value.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::TryStmt*>(st)) { collectMethBlock(x->body, out); for (const auto& c : x->catches) collectMethBlock(c.body, out); if (x->finallyBlock) collectMethBlock(*x->finallyBlock, out); return; }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) { collectMethExpr(x->value.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::DeleteStmt*>(st)) { collectMethExpr(x->target.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::VarDeclStmt*>(st)) { collectMethExpr(x->init.get(), out); return; }
@@ -714,6 +717,7 @@ void rewriteMethExpr(ast::Expr* e) {
         rewriteMethExpr(x->defaultResult.get());
         return;
     }
+    if (auto* x = dynamic_cast<ast::LambdaExpr*>(e)) { rewriteMethBlock(x->body); return; }
 }
 void rewriteMethStmt(ast::Stmt* st) {
     if (st == nullptr) return;
@@ -723,6 +727,8 @@ void rewriteMethStmt(ast::Stmt* st) {
     if (auto* x = dynamic_cast<ast::ForeachStmt*>(st)) { rewriteMethExpr(x->iterable.get()); rewriteMethBlock(x->body); return; }
     if (auto* x = dynamic_cast<ast::SwitchStmt*>(st)) { rewriteMethExpr(x->subject.get()); for (auto& c : x->cases) { rewriteMethExpr(c.value.get()); rewriteMethBlock(c.body); } if (x->defaultBody) rewriteMethBlock(*x->defaultBody); return; }
     if (auto* x = dynamic_cast<ast::MatchStmt*>(st)) { rewriteMethExpr(x->subject.get()); for (auto& c : x->cases) rewriteMethBlock(c.body); if (x->defaultBody) rewriteMethBlock(*x->defaultBody); return; }
+    if (auto* x = dynamic_cast<ast::ThrowStmt*>(st)) { rewriteMethExpr(x->value.get()); return; }
+    if (auto* x = dynamic_cast<ast::TryStmt*>(st)) { rewriteMethBlock(x->body); for (auto& c : x->catches) rewriteMethBlock(c.body); if (x->finallyBlock) rewriteMethBlock(*x->finallyBlock); return; }
     if (auto* x = dynamic_cast<ast::ReturnStmt*>(st)) { rewriteMethExpr(x->value.get()); return; }
     if (auto* x = dynamic_cast<ast::DeleteStmt*>(st)) { rewriteMethExpr(x->target.get()); return; }
     if (auto* x = dynamic_cast<ast::VarDeclStmt*>(st)) { rewriteMethExpr(x->init.get()); return; }
