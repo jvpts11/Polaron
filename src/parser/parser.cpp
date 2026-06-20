@@ -596,6 +596,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
     expect(TokenKind::RParen, "')'");
     expect(TokenKind::KwReturns, "'returns'");
     m->returnType = parseTypeRef();
+    currentMethodReturnType_ = m->returnType;  // enables the Ok(x)/.. return-value sugar
     m->body = parseBlock();
     return m;
 }
@@ -634,6 +635,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     }
     expect(TokenKind::KwReturns, "'returns'");
     m->returnType = parseTypeRef();
+    currentMethodReturnType_ = m->returnType;  // enables the Ok(x)/.. return-value sugar
     // Contract clauses (spec 29): `requires <expr>` / `ensures <expr>`, between the
     // signature and the body, no separators. `old(...)` in ensures is not yet supported.
     while (check(TokenKind::KwRequires) || check(TokenKind::KwEnsures)) {
@@ -867,6 +869,26 @@ ast::Block Parser::parseBlock() {
     return block;
 }
 
+// Sugar for Result/Option construction (spec 21.2-3): in a return value or a typed var-decl init,
+// `Ok(x)` / `Err(x)` / `Some(x)` / `None()` become `new Ok<args>(x) on heap`, taking the generic
+// args from the expected type (the method return type or the declared variable type). Those args are
+// syntactically present, so no inference is needed; the normal `new` lowering handles the rest.
+static void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected) {
+    if (expected.typeArgs.empty()) return;
+    auto* call = dynamic_cast<ast::CallExpr*>(value.get());
+    if (call == nullptr) return;
+    const auto* id = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
+    if (id == nullptr) return;
+    if (id->name != "Ok" && id->name != "Err" && id->name != "Some" && id->name != "None") return;
+    auto nw = std::make_unique<ast::NewExpr>();
+    nw->loc = call->loc;
+    nw->className = id->name;
+    nw->typeArgs = expected.typeArgs;
+    nw->args = std::move(call->args);
+    nw->location = "heap";
+    value = std::move(nw);
+}
+
 ast::StmtPtr Parser::parseStatement() {
     // Loop label: `name: <loop>` (spec 7.4). A bare identifier followed by ':'.
     if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon) {
@@ -977,6 +999,7 @@ ast::StmtPtr Parser::parseStatement() {
         advance();
         if (!check(TokenKind::Semicolon)) {
             ret->value = parseExpression();
+            rewriteVariantCtor(ret->value, currentMethodReturnType_);
         }
         expect(TokenKind::Semicolon, "';'");
         return ret;
@@ -1344,6 +1367,7 @@ std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
     decl->name = expect(TokenKind::Identifier, "a variable name").lexeme;
     expect(TokenKind::Assign, "'=' (variables require an initializer)");
     decl->init = parseExpression();
+    if (!decl->isVar) rewriteVariantCtor(decl->init, decl->type);
     return decl;
 }
 

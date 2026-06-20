@@ -1,0 +1,41 @@
+program ResultSugar;
+
+// Construction sugar (spec 21.2-3): Ok(x)/Err(x)/Some(x)/None() instead of new Ok<T,E>(x). The
+// generic args come from the expected type -- the method return type (return Ok(n)) or the declared
+// variable type (Result<int,int>* a = Ok(7)). Prints: a=7 b=-404 / c=5 d=-404 / some 9 / none.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method parse(int n) returns Result<int, int>* {
+                if (n < 0) { return Err(404); }
+                return Ok(n);
+            }
+            public static method grade(Result<int, int>* r) returns int {
+                match (r) {
+                    case Ok(int v) { return v; }
+                    case Err(int e) { return 0 - e; }
+                }
+                return 0;
+            }
+            public static method main(string[] args) returns void {
+                Result<int, int>* a = Ok(7);
+                Result<int, int>* b = Err(404);
+                System.IO.printf("a=%d b=%d\n", Main.grade(a), Main.grade(b));
+                Result<int, int>* c = Main.parse(5);
+                Result<int, int>* d = Main.parse(-1);
+                System.IO.printf("c=%d d=%d\n", Main.grade(c), Main.grade(d));
+                Option<int>* o = Some(9);
+                Option<int>* p = None();
+                match (o) {
+                    case Some(int v) { System.IO.printf("some %d\n", v); }
+                    case None() { System.IO.printf("none\n"); }
+                }
+                match (p) {
+                    case Some(int v) { System.IO.printf("some %d\n", v); }
+                    case None() { System.IO.printf("none\n"); }
+                }
+                return;
+            }
+        }
+    }
+}

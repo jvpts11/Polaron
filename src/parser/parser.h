@@ -100,6 +100,7 @@ private:
     std::string_view file_;
     std::size_t pos_ = 0;
     std::vector<ParseError> errors_;
+    ast::TypeRef currentMethodReturnType_;  // for the Ok(x)/Err(x)/... return-value sugar (spec 21.2)
 };
 
 }  // namespace ldp3
