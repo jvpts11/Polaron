@@ -1202,6 +1202,17 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=a2=5000000012 d2=3 sum=10000000024 len=3"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # block-scoped RAII: a stack dtor / defer runs at its block's end on the path that
+        # ran it -- per loop iteration, and never for a not-taken branch (no dtor on
+        # uninitialized memory).
+        add_test(NAME codegen_block_raii_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/block_raii.ldp3"
+            "-DEXPECTED=start dtor 0 dtor 1 dtor 2 body 0 defer 0 body 1 defer 1 end"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

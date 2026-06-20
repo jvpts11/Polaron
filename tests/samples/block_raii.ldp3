@@ -1,0 +1,41 @@
+program BlockRaii;
+
+// RAII is block-scoped: a stack object's destructor (and a `defer`) runs at the
+// end of the lexical block that declared it, on the path that actually ran it.
+// - An object declared in a NOT-taken `if` block is never constructed and never
+//   destructed (previously its destructor ran at function end on uninit memory).
+// - An object declared in a loop body is destructed each iteration (previously
+//   only the last survived, leaking the rest).
+// - A `defer` in a loop body fires each iteration (previously once, at function
+//   end, with a stale variable).
+
+public bundle main {
+    public namespace app {
+
+        public class Noisy {
+            private int id;
+            public constructor Noisy(int i) { this.id = i; }
+            public destructor ~Noisy() returns void {
+                System.IO.printf("dtor %d\n", this.id);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.printf("start\n");
+                if (1 > 2) {
+                    Noisy bad = new Noisy(99) on stack;   // never runs -> no "dtor 99"
+                }
+                for (mutable int i = 0; i < 3; i++) {
+                    Noisy n = new Noisy(i) on stack;       // dtor 0, dtor 1, dtor 2
+                }
+                for (mutable int j = 0; j < 2; j++) {
+                    defer { System.IO.printf("defer %d\n", j); }
+                    System.IO.printf("body %d\n", j);
+                }
+                System.IO.printf("end\n");
+                return;
+            }
+        }
+    }
+}

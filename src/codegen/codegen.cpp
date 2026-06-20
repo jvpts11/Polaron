@@ -2287,10 +2287,45 @@ struct CodeGenerator::Impl {
         error("unsupported statement in codegen", stmt.loc);
     }
 
-    void emitBlock(const ast::Block& block) {
+    // Runs the deferred blocks and stack-object destructors registered since the
+    // given marks (LIFO), without the function-level contracts. Used to tear down a
+    // lexical block on its normal exit. Stops if a terminator appears.
+    void emitBlockCleanup(std::size_t soBase, std::size_t dfBase) {
+        for (std::size_t i = deferred.size(); i > dfBase; --i) {
+            if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
+            emitBlock(*deferred[i - 1]);
+        }
+        for (std::size_t i = scopeObjects.size(); i > soBase; --i) {
+            const ScopeObject& so = scopeObjects[i - 1];
+            auto fnit = functions.find(so.className + ".~" + so.className);
+            if (fnit == functions.end()) continue;
+            llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
+            builder.CreateCall(fnit->second, {objPtr});
+        }
+    }
+
+    // Emits a lexical block. When `newScope` (every nested block: if/loop/try/case/
+    // etc.), stack objects and `defer`s declared inside are torn down at the block's
+    // normal exit and dropped from tracking -- so a destructor only runs on a path
+    // that actually ran the declaration (no dtor on uninitialized memory), runs once
+    // per loop iteration (no leak), and a defer fires per iteration. The function
+    // body passes newScope=false: emitBody owns that teardown (with contracts).
+    void emitBlock(const ast::Block& block, bool newScope = true) {
+        const std::size_t soBase = scopeObjects.size();
+        const std::size_t dfBase = deferred.size();
         for (const auto& stmt : block.statements) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
             emitStatement(*stmt);
+        }
+        if (newScope) {
+            // Normal fall-through: tear down this block's objects/defers. On a
+            // terminating exit (return runs full cleanup; break/continue branch out)
+            // we skip emission but still drop the entries so they are not re-run or
+            // run on a stale slot at an outer/function exit.
+            if (builder.GetInsertBlock()->getTerminator() == nullptr)
+                emitBlockCleanup(soBase, dfBase);
+            scopeObjects.resize(soBase);
+            deferred.resize(dfBase);
         }
     }
 
@@ -3021,7 +3056,7 @@ struct CodeGenerator::Impl {
         if (requiresClauses != nullptr)
             for (const ast::ExprPtr& r : *requiresClauses) emitContractCheck(*r, "requires");
 
-        emitBlock(body);
+        emitBlock(body, /*newScope=*/false);  // emitBody owns function-level teardown (+ contracts)
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             emitScopeCleanup();
             if (retType->isVoidTy()) {
