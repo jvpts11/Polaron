@@ -1,0 +1,26 @@
+program Exceptions;
+
+// Structured exceptions (spec 21.1) via LLVM WinEH landing pads. `throw` raises an object; the
+// matching `catch` binds it and the stack unwinds, so the line after the throw is skipped.
+// Prints: before / caught code=42 / done.
+public bundle main {
+    public namespace app {
+        public class MyError {
+            public mutable int code;
+            public constructor MyError() { this.code = 42; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                try {
+                    System.IO.printf("before\n");
+                    throw new MyError() on heap;
+                    System.IO.printf("after (should not print)\n");
+                } catch (MyError e) {
+                    System.IO.printf("caught code=%d\n", e.code);
+                }
+                System.IO.printf("done\n");
+                return;
+            }
+        }
+    }
+}

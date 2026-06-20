@@ -233,6 +233,9 @@ struct CodeGenerator::Impl {
     std::vector<LoopTargets> loopStack;  // (break, continue, label) per active loop / switch
     std::string pendingLoopLabel;        // label to attach to the next loop (from a LabeledStmt)
     std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
+    std::vector<llvm::BasicBlock*> ehPadStack;   // active try landing pads (catchswitch blocks)
+    llvm::Constant* ehThrowInfoCache = nullptr;  // shared carrier-ptr ThrowInfo (_TI1PEAX), lazy
+    llvm::Constant* ehTypeDescCache = nullptr;   // shared carrier-ptr type descriptor, lazy
 
     Impl(const ast::Program& p, const EntryPoint& e, std::string_view name,
          std::vector<CodegenError>& errs)
@@ -1667,6 +1670,129 @@ struct CodeGenerator::Impl {
         return nullptr;
     }
 
+    // --- Exceptions (spec 21): Windows WinEH via __CxxFrameHandler3. Every LDP3 exception is thrown
+    // as one canonical carrier -- the object pointer typed void* (PEAX) -- so a single reusable set
+    // of EH tables serves all types; catch clauses match on the LDP3 runtime type, not on RTTI. ---
+    void ensurePersonality() {
+        if (currentFn != nullptr && !currentFn->hasPersonalityFn()) {
+            llvm::FunctionCallee p = module.getOrInsertFunction(
+                "__CxxFrameHandler3", llvm::FunctionType::get(builder.getInt32Ty(), true));
+            currentFn->setPersonalityFn(llvm::cast<llvm::Constant>(p.getCallee()));
+        }
+    }
+    llvm::Constant* imageBaseSym() {
+        llvm::GlobalVariable* g = module.getNamedGlobal("__ImageBase");
+        if (g == nullptr)
+            g = new llvm::GlobalVariable(module, builder.getInt8Ty(), true,
+                                         llvm::GlobalValue::ExternalLinkage, nullptr, "__ImageBase");
+        return g;
+    }
+    // 32-bit image-relative offset of x -- how MSVC EH tables reference their members.
+    llvm::Constant* imageRel(llvm::Constant* x) {
+        llvm::Type* i64 = builder.getInt64Ty();
+        return llvm::ConstantExpr::getTrunc(
+            llvm::ConstantExpr::getSub(llvm::ConstantExpr::getPtrToInt(x, i64),
+                                       llvm::ConstantExpr::getPtrToInt(imageBaseSym(), i64)),
+            builder.getInt32Ty());
+    }
+    void buildEhStructures() {
+        if (ehThrowInfoCache != nullptr) return;
+        llvm::Type* i32 = builder.getInt32Ty();
+        llvm::PointerType* ptrTy = builder.getPtrTy();
+        llvm::GlobalVariable* tiVt = module.getNamedGlobal("??_7type_info@@6B@");
+        if (tiVt == nullptr)
+            tiVt = new llvm::GlobalVariable(module, ptrTy, true, llvm::GlobalValue::ExternalLinkage,
+                                            nullptr, "??_7type_info@@6B@");
+        // Type descriptor for void* (PEAX): { type_info vtable, null, ".PEAX\0" }.
+        llvm::Constant* nameStr = llvm::ConstantDataArray::getString(context, ".PEAX", true);
+        llvm::StructType* tdTy = llvm::StructType::get(context, {ptrTy, ptrTy, nameStr->getType()});
+        auto* td = new llvm::GlobalVariable(
+            module, tdTy, false, llvm::GlobalValue::InternalLinkage,
+            llvm::ConstantStruct::get(tdTy, {tiVt, llvm::ConstantPointerNull::get(ptrTy), nameStr}),
+            "??_R0PEAX@8");
+        // CatchableType { props=1, relTypeDesc, 0, -1, 0, size=8, copyfn=0 }.
+        llvm::StructType* ctTy = llvm::StructType::get(context, {i32, i32, i32, i32, i32, i32, i32});
+        auto* ct = new llvm::GlobalVariable(
+            module, ctTy, true, llvm::GlobalValue::InternalLinkage,
+            llvm::ConstantStruct::get(
+                ctTy, {llvm::ConstantInt::get(i32, 1), imageRel(td), llvm::ConstantInt::get(i32, 0),
+                       llvm::ConstantInt::get(i32, -1), llvm::ConstantInt::get(i32, 0),
+                       llvm::ConstantInt::get(i32, 8), llvm::ConstantInt::get(i32, 0)}),
+            "_CT??_R0PEAX@88");
+        ct->setSection(".xdata");
+        // CatchableTypeArray { count=1, [relCatchableType] }.
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(i32, 1);
+        llvm::StructType* ctaTy = llvm::StructType::get(context, {i32, arrTy});
+        auto* cta = new llvm::GlobalVariable(
+            module, ctaTy, true, llvm::GlobalValue::InternalLinkage,
+            llvm::ConstantStruct::get(ctaTy, {llvm::ConstantInt::get(i32, 1),
+                                              llvm::ConstantArray::get(arrTy, {imageRel(ct)})}),
+            "_CTA1PEAX");
+        cta->setSection(".xdata");
+        // ThrowInfo { attrs=0, dtor=0, fwd=0, relCatchableTypeArray }.
+        llvm::StructType* tiTy = llvm::StructType::get(context, {i32, i32, i32, i32});
+        auto* ti = new llvm::GlobalVariable(
+            module, tiTy, true, llvm::GlobalValue::InternalLinkage,
+            llvm::ConstantStruct::get(tiTy, {llvm::ConstantInt::get(i32, 0),
+                                             llvm::ConstantInt::get(i32, 0),
+                                             llvm::ConstantInt::get(i32, 0), imageRel(cta)}),
+            "_TI1PEAX");
+        ti->setSection(".xdata");
+        ehTypeDescCache = td;
+        ehThrowInfoCache = ti;
+    }
+    llvm::Constant* ehThrowInfo() { buildEhStructures(); return ehThrowInfoCache; }
+    llvm::Constant* ehTypeDesc() { buildEhStructures(); return ehTypeDescCache; }
+    llvm::FunctionCallee cxxThrowFn() {
+        return module.getOrInsertFunction(
+            "_CxxThrowException",
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy()},
+                                    false));
+    }
+
+    // try { body } catch (T e) { ... } ... [finally { ... }] (spec 21.1). MVP: catches the carrier
+    // (any LDP3 exception); per-type matching and exceptional-path finally are later slices.
+    void emitTry(const ast::TryStmt& s) {
+        ensurePersonality();
+        llvm::BasicBlock* ehpad = llvm::BasicBlock::Create(context, "ehpad", currentFn);
+        llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "try.cont", currentFn);
+        ehPadStack.push_back(ehpad);
+        emitBlock(s.body);
+        ehPadStack.pop_back();
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(contBB);
+        builder.SetInsertPoint(ehpad);
+        std::vector<llvm::BasicBlock*> catchBBs;
+        for (std::size_t i = 0; i < s.catches.size(); ++i)
+            catchBBs.push_back(llvm::BasicBlock::Create(context, "catch", currentFn));
+        llvm::CatchSwitchInst* cs =
+            builder.CreateCatchSwitch(llvm::ConstantTokenNone::get(context), nullptr,
+                                      static_cast<unsigned>(catchBBs.size()));
+        for (llvm::BasicBlock* bb : catchBBs) cs->addHandler(bb);
+        for (std::size_t i = 0; i < s.catches.size(); ++i) {
+            const ast::CatchClause& cc = s.catches[i];
+            builder.SetInsertPoint(catchBBs[i]);
+            llvm::Value* caughtSlot = createEntryAlloca("exc.caught", builder.getPtrTy());
+            llvm::CatchPadInst* cp =
+                builder.CreateCatchPad(cs, {ehTypeDesc(), builder.getInt32(0), caughtSlot});
+            llvm::Value* obj = builder.CreateLoad(builder.getPtrTy(), caughtSlot, "caught");
+            const std::string cty = baseType(typeRefName(cc.type));
+            llvm::Value* eSlot = createEntryAlloca(cc.name, builder.getPtrTy());
+            builder.CreateStore(obj, eSlot);
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "catch.body", currentFn);
+            builder.CreateCatchRet(cp, bodyBB);
+            // The handler runs in normal context (after catchret), so its calls need no funclet bundle.
+            builder.SetInsertPoint(bodyBB);
+            const bool had = locals.count(cc.name) > 0;
+            LocalSlot saved = had ? locals[cc.name] : LocalSlot{};
+            locals[cc.name] = LocalSlot{eSlot, cty};
+            emitBlock(cc.body);
+            if (had) locals[cc.name] = saved; else locals.erase(cc.name);
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(contBB);
+        }
+        builder.SetInsertPoint(contBB);
+        if (s.finallyBlock != nullptr) emitBlock(*s.finallyBlock);
+    }
+
     void emitStatement(const ast::Stmt& stmt) {
         // No code after a terminator (statements following break/continue/return are dead). A
         // `label name;` is the exception: it must still place its block so a comefrom can target it.
@@ -1703,6 +1829,27 @@ struct CodeGenerator::Impl {
             llvm::BasicBlock*& bb = labelBlocks[cf->name];
             if (bb == nullptr) bb = llvm::BasicBlock::Create(context, "label." + cf->name, currentFn);
             builder.CreateBr(bb);
+            return;
+        }
+        if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&stmt)) {  // throw expr; (spec 21.1)
+            llvm::Value* obj = emitExpr(*th->value);
+            if (obj == nullptr) return;
+            ensurePersonality();
+            llvm::Value* slot = createEntryAlloca("exc.thrown", builder.getPtrTy());
+            builder.CreateStore(obj, slot);  // carrier: the object pointer, thrown as void*
+            std::vector<llvm::Value*> args = {slot, ehThrowInfo()};
+            if (!ehPadStack.empty()) {  // inside a try -> unwind to its landing pad
+                llvm::BasicBlock* cont = llvm::BasicBlock::Create(context, "throw.cont", currentFn);
+                builder.CreateInvoke(cxxThrowFn(), cont, ehPadStack.back(), args);
+                builder.SetInsertPoint(cont);
+            } else {
+                builder.CreateCall(cxxThrowFn(), args);  // propagates to the caller
+            }
+            builder.CreateUnreachable();  // _CxxThrowException does not return
+            return;
+        }
+        if (const auto* tr = dynamic_cast<const ast::TryStmt*>(&stmt)) {
+            emitTry(*tr);
             return;
         }
         if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(&stmt)) {
