@@ -1,0 +1,38 @@
+program ExceptionsNested;
+
+// Nested try + rethrow (spec 21.1): when the inner try's clauses do not match the thrown type, the
+// exception is rethrown and must reach the ENCLOSING try. Here raise() throws B; the inner
+// catch (A) does not match (B is not an A), so it rethrows to the outer catch (B), which handles it
+// with full behaviour (inherited field code, virtual dispatch tag()). Prints: outer B code=2 tag=2.
+public bundle main {
+    public namespace app {
+        public class Base {
+            public mutable int code;
+            public constructor Base() { this.code = 0; }
+            public method tag() returns int { return 0; }
+        }
+        public class A extends Base {
+            public constructor A() { this.code = 1; }
+            public override method tag() returns int { return 1; }
+        }
+        public class B extends Base {
+            public constructor B() { this.code = 2; }
+            public override method tag() returns int { return 2; }
+        }
+        public class Main {
+            public static method raise() returns void { throw new B() on heap; }
+            public static method main(string[] args) returns void {
+                try {
+                    try {
+                        Main.raise();
+                    } catch (A e) {
+                        System.IO.printf("inner A (wrong)\n");
+                    }
+                } catch (B e) {
+                    System.IO.printf("outer B code=%d tag=%d\n", e.code, e.tag());
+                }
+                return;
+            }
+        }
+    }
+}

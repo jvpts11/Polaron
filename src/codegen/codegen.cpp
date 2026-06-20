@@ -1839,8 +1839,11 @@ struct CodeGenerator::Impl {
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(contBB);
         builder.SetInsertPoint(ehpad);
         llvm::Value* caughtSlot = createEntryAlloca("exc.caught", ptrTy);
+        // An unmatched exception (the rethrow below) must reach the enclosing try if this try is
+        // nested, else the caller -- so the catchswitch unwinds to the enclosing landing pad.
+        llvm::BasicBlock* outerPad = ehPadStack.empty() ? nullptr : ehPadStack.back();
         llvm::CatchSwitchInst* cs =
-            builder.CreateCatchSwitch(llvm::ConstantTokenNone::get(context), nullptr, 1);
+            builder.CreateCatchSwitch(llvm::ConstantTokenNone::get(context), outerPad, 1);
         llvm::BasicBlock* dispatchBB =
             llvm::BasicBlock::Create(context, "catch.dispatch", currentFn);
         cs->addHandler(dispatchBB);
