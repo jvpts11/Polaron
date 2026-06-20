@@ -946,7 +946,14 @@ static void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected
     if (call == nullptr) return;
     const auto* id = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
     if (id == nullptr) return;
-    if (id->name != "Ok" && id->name != "Err" && id->name != "Some" && id->name != "None") return;
+    const bool isResult = id->name == "Ok" || id->name == "Err";
+    const bool isOption = id->name == "Some" || id->name == "None";
+    if (!isResult && !isOption) return;
+    // Only sugar against the matching sealed base with the right arity, so `Some(x)`
+    // in a non-Option (or wrong-arity) context falls through to normal resolution
+    // (a clear error) instead of fabricating a malformed Some$int$int instantiation.
+    if (isResult && !(expected.name == "Result" && expected.typeArgs.size() == 2)) return;
+    if (isOption && !(expected.name == "Option" && expected.typeArgs.size() == 1)) return;
     auto nw = std::make_unique<ast::NewExpr>();
     nw->loc = call->loc;
     nw->className = id->name;
@@ -1874,7 +1881,13 @@ ast::ExprPtr Parser::parsePrimary() {
             expect(TokenKind::RParen, "')' to close lambda parameters");
             expect(TokenKind::KwReturns, "'returns' in a lambda");
             e->returnType = parseTypeRef();
+            // The lambda's body has its OWN return type for the Ok(x)/Some(x) sugar;
+            // save/restore so a return inside it rewrites against the lambda's type,
+            // not the enclosing method's.
+            ast::TypeRef savedRet = currentMethodReturnType_;
+            currentMethodReturnType_ = e->returnType;
             e->body = parseBlock();
+            currentMethodReturnType_ = savedRet;
             return e;
         }
         case TokenKind::StringLiteral: {
