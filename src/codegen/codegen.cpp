@@ -705,11 +705,14 @@ struct CodeGenerator::Impl {
     // bytes are memcpy'd first, then each field that owns its storage -- arrays
     // and value sub-objects -- is duplicated so the two objects share nothing.
     // Pointer/reference fields are shared on purpose; primitives copy inline.
-    llvm::Value* emitClassCopy(const std::string& className, llvm::Value* srcPtr) {
+    llvm::Value* emitClassCopy(const std::string& className, llvm::Value* srcPtr, bool heap = false) {
         auto cit = classes.find(className);
         if (cit == classes.end()) return srcPtr;
         llvm::StructType* st = cit->second.type;
-        llvm::Value* dest = createEntryAlloca(className + ".copy", st);
+        // A copy bound to a field must outlive the current frame -> heap; a copy bound to a local
+        // can live in the frame -> stack.
+        llvm::Value* dest = heap ? builder.CreateCall(mallocFn(), {sizeOf(st)}, className + ".copy")
+                                 : createEntryAlloca(className + ".copy", st);
         builder.CreateCall(memcpyFn(), {dest, srcPtr, sizeOf(st)});  // shallow copy first
         for (const auto& [fname, ftype] : collectFields(className)) {
             const unsigned idx = cit->second.fieldIndex[fname];
@@ -719,7 +722,7 @@ struct CodeGenerator::Impl {
                 deep = emitArrayDup(builder.CreateLoad(builder.getPtrTy(), srcSlot));
             } else if (isClassValue(ftype) && isCopyDiscipline(ftype)) {
                 llvm::Value* srcSlot = builder.CreateStructGEP(st, srcPtr, idx);
-                deep = emitClassCopy(ftype, builder.CreateLoad(builder.getPtrTy(), srcSlot));
+                deep = emitClassCopy(ftype, builder.CreateLoad(builder.getPtrTy(), srcSlot), heap);
             }
             if (deep != nullptr) builder.CreateStore(deep, builder.CreateStructGEP(st, dest, idx));
         }
@@ -1792,13 +1795,19 @@ struct CodeGenerator::Impl {
             if (slot == nullptr) return;
             llvm::Value* v = emitExpr(*assign->value);
             if (v == nullptr) return;
-            // Value semantics: assigning a class value copies into the target's
-            // existing struct, keeping it independent from the source.
+            // Value semantics: assigning a class value makes the target an independent copy.
             if (isClassValue(targetType) && isCopyDiscipline(targetType) &&
                 isCopyableLValue(*assign->value)) {
-                llvm::Value* destStruct = builder.CreateLoad(builder.getPtrTy(), slot);
-                builder.CreateCall(memcpyFn(),
-                                   {destStruct, v, sizeOf(classes[targetType].type)});
+                if (dynamic_cast<const ast::MemberExpr*>(assign->target.get()) != nullptr) {
+                    // A class-value field has no backing object until assigned, so deep-copy into a
+                    // fresh heap object and store the pointer (it outlives the constructor frame).
+                    builder.CreateStore(emitClassCopy(targetType, v, /*heap=*/true), slot);
+                } else {
+                    // A local already has a backing object (from its declaration); copy into it.
+                    llvm::Value* destStruct = builder.CreateLoad(builder.getPtrTy(), slot);
+                    builder.CreateCall(memcpyFn(),
+                                       {destStruct, v, sizeOf(classes[targetType].type)});
+                }
             } else {
                 builder.CreateStore(coerce(v, typeName(*assign->value), targetType), slot);
             }

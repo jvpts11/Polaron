@@ -254,6 +254,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # deep copy of a class-valued field from a variable (heap copy, independent of the source).
+        add_test(NAME codegen_class_field_copy_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/class_field_copy.ldp3"
+            "-DEXPECTED=h = 5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # persistents (spec 18, F7): a `static persistent` value survives across runs.
         # Runs the exe twice; the second run must observe the persisted value (runs = 2).
         add_test(NAME codegen_persist_runs COMMAND "${CMAKE_COMMAND}"

@@ -1,0 +1,25 @@
+program ClassFieldCopy;
+
+// Deep copy of a class-valued field assigned from a variable in a constructor (this.p = src).
+// The field gets an independent heap copy: mutating the source afterwards must not change it.
+public bundle main {
+    public namespace app {
+        public class Point {
+            public mutable int x;
+            public constructor Point(int v) { this.x = v; }
+        }
+        public class Holder {
+            public mutable Point p;
+            public constructor Holder(Point src) { this.p = src; }   // deep copy into the field
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Point pt = new Point(5) on heap;
+                Holder h = new Holder(pt) on heap;
+                pt.x = 99;                              // mutate the source after the copy
+                System.IO.println($"h = {h.p.x}");      // h = 5  (independent copy, not 99)
+                return;
+            }
+        }
+    }
+}
