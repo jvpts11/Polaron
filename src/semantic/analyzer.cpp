@@ -1101,6 +1101,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         return t;
     }
+    if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
+        // try? Result<T,E>/Option<T> yields T (the first type arg of the operand's instantiation).
+        const std::string ot = baseType(typeOf(*tx->operand));
+        const auto p = ot.find('$');
+        if (p == std::string::npos) return "";
+        const std::string rest = ot.substr(p + 1);
+        const auto q = rest.find('$');
+        return q == std::string::npos ? rest : rest.substr(0, q);
+    }
 
     if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
         if (ri->size) typeOf(*ri->size);

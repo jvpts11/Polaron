@@ -1580,6 +1580,15 @@ ast::ExprPtr Parser::parseBinary(int minPrec) {
 }
 
 ast::ExprPtr Parser::parseUnary() {
+    // try? expr -- Result/Option error propagation (spec 21.2): `try` then `?`.
+    if (check(TokenKind::KwTry) && peek(1).kind == TokenKind::Question) {
+        auto t = std::make_unique<ast::TryExpr>();
+        t->loc = current().loc;
+        advance();  // 'try'
+        advance();  // '?'
+        t->operand = parseUnary();
+        return t;
+    }
     // cast<T>(expr) -- explicit conversion.
     if (check(TokenKind::KwCast)) {
         auto c = std::make_unique<ast::CastExpr>();

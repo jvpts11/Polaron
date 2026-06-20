@@ -380,6 +380,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # F6: try? propagation -- Ok/Some yields the value, Err/None early-returns to the caller.
+        add_test(NAME codegen_result_try_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/result_try.ldp3"
+            "-DEXPECTED=a=10 b=-3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # persistents (spec 18, F7): in-process semantics -- a `static persistent` is run-lifetime
         # storage, like a static field. bump() 3x in one run -> runs = 3.
         add_test(NAME codegen_persist_runs COMMAND "${CMAKE_COMMAND}"

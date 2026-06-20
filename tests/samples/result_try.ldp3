@@ -1,0 +1,32 @@
+program ResultTry;
+
+// try? (spec 21.2): on a Result/Option, yields the inner value when Ok/Some, and early-returns the
+// Err/None (propagation) to the enclosing method otherwise. doubleIt(5): parse(5)=Ok(5) -> v=5 ->
+// Ok(10). doubleIt(-3): parse(-3)=Err(3) -> try? propagates the Err. Prints: a=10 b=-3.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method parse(int n) returns Result<int, int>* {
+                if (n < 0) { return Err(0 - n); }
+                return Ok(n);
+            }
+            public static method doubleIt(int n) returns Result<int, int>* {
+                int v = try? Main.parse(n);
+                return Ok(v + v);
+            }
+            public static method grade(Result<int, int>* r) returns int {
+                match (r) {
+                    case Ok(int v) { return v; }
+                    case Err(int e) { return 0 - e; }
+                }
+                return 0;
+            }
+            public static method main(string[] args) returns void {
+                Result<int, int>* a = Main.doubleIt(5);
+                Result<int, int>* b = Main.doubleIt(-3);
+                System.IO.printf("a=%d b=%d\n", Main.grade(a), Main.grade(b));
+                return;
+            }
+        }
+    }
+}

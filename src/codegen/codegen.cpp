@@ -598,6 +598,14 @@ struct CodeGenerator::Impl {
         }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) return cst->targetType;
         if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) return typeName(*mv->operand);
+        if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
+            const std::string ot = baseType(typeName(*tx->operand));  // Result$T$E / Option$T
+            const auto p = ot.find('$');
+            if (p == std::string::npos) return "int";
+            const std::string rest = ot.substr(p + 1);
+            const auto q = rest.find('$');
+            return q == std::string::npos ? rest : rest.substr(0, q);  // T (the value type)
+        }
         return "int";
     }
 
@@ -1048,6 +1056,35 @@ struct CodeGenerator::Impl {
         }
         if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) {
             return emitExpr(*mv->operand);  // move transfers the pointer (no copy)
+        }
+        if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
+            // try? expr (spec 21.2): if Ok/Some, yield the inner value; if Err/None, early-return the
+            // operand to the enclosing method's Result/Option (propagation).
+            llvm::Value* val = emitExpr(*tx->operand);
+            if (val == nullptr) return nullptr;
+            const std::string base = baseType(typeName(*tx->operand));  // Result$T$E / Option$T
+            const auto p = base.find('$');
+            const std::string tag = base.rfind("Option", 0) == 0 ? "Some" : "Ok";
+            auto cit = classes.find(p == std::string::npos ? tag : tag + base.substr(p));
+            if (cit == classes.end() || cit->second.vtable == nullptr ||
+                cit->second.fieldIndex.count("value") == 0) {
+                error("try? requires a Result or Option operand", tx->loc);
+                return nullptr;
+            }
+            llvm::Function* fn = builder.GetInsertBlock()->getParent();
+            llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), val, "try.vtbl");
+            llvm::Value* isOk = builder.CreateICmpEQ(vtbl, cit->second.vtable, "try.ok");
+            llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "try.ok", fn);
+            llvm::BasicBlock* errBB = llvm::BasicBlock::Create(context, "try.err", fn);
+            builder.CreateCondBr(isOk, okBB, errBB);
+            builder.SetInsertPoint(errBB);
+            emitScopeCleanup();           // run destructors/defers before propagating
+            builder.CreateRet(val);       // forward the Err/None as the method's Result/Option
+            builder.SetInsertPoint(okBB);
+            const std::string vt = cit->second.fieldType.at("value");
+            llvm::Value* vp = builder.CreateStructGEP(cit->second.type, val,
+                                                      cit->second.fieldIndex.at("value"), "try.vp");
+            return builder.CreateLoad(llvmType(vt), vp, "try.value");
         }
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
             return emitRegionAllocate(ri->size.get());
@@ -2518,7 +2555,7 @@ struct CodeGenerator::Impl {
                             }
                         } else if (const auto* m =
                                        dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                            layout.methodReturnType[m->name] = m->returnType.name;
+                            layout.methodReturnType[m->name] = ast::canonicalType(m->returnType);
                             layout.ownMethods[m->name] = m;
                         } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) !=
                                    nullptr) {

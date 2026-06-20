@@ -133,6 +133,13 @@ struct MoveExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// `try? expr` -- if expr is Ok/Some, yields its value; if Err/None, early-returns it (propagates)
+// to the enclosing method's Result/Option (spec 21.2).
+struct TryExpr : Expr {
+    ExprPtr operand;
+    void dump(std::string& out, int /*indent*/) const override { out += "try?"; }
+};
+
 // Region initializer: `itself.allocate(size)` with optional `.accepts({...})` /
 // `.rejects({...})` type constraints (spec 17.2-17.3). Constraints are checked
 // at compile time; the runtime exception form arrives with exceptions (F6).
