@@ -1,0 +1,29 @@
+program CastSignedness;
+
+// cast<T> between signed and unsigned integers. The bit-level op is chosen by the SOURCE's
+// signedness (unsigned source zero-extends; signed source sign-extends); same-width is a
+// reinterpret. The print specifier (%u vs %d) comes from the destination local's type.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int neg = 0 - 1;
+                uint32 u = cast<uint32>(neg);          // same width: reinterpret -> 4294967295
+                System.IO.println($"u = {u}");
+                uint32 big = 3000000000;
+                int si = cast<int>(big);               // same width: reinterpret -> -1294967296
+                System.IO.println($"si = {si}");
+                int8 sb = cast<int8>(0 - 1);
+                uint32 wid = cast<uint32>(sb);         // signed source -> sext -> 4294967295
+                System.IO.println($"wid = {wid}");
+                uint8 ub = cast<uint8>(255);
+                int64 ext = cast<int64>(ub);           // unsigned source -> zext -> 255
+                System.IO.println($"ext = {ext}");
+                uint32 umax = 4294967295;
+                int64 wide = cast<int64>(umax);        // unsigned source -> zext (stays positive)
+                System.IO.println($"wide = {wide}");
+                return;
+            }
+        }
+    }
+}
