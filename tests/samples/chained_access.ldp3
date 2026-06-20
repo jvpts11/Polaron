@@ -1,0 +1,35 @@
+program ChainedAccess;
+
+// Chained member access through value-typed class fields (o.inner.x, o.inner.deeper.y) in read
+// and write. Value class fields store a pointer to the object in the slot, so the receiver of a
+// member-of-member must be LOADED (emitExpr), not have its slot address taken. Sub-objects are
+// `on heap` so they outlive the constructor frame (a stack `new` stored in a field would dangle).
+public bundle main {
+    public namespace app {
+        public class Deeper {
+            public mutable int y;
+            public constructor Deeper() { this.y = 100; }
+        }
+        public class Inner {
+            public mutable int x;
+            public mutable Deeper deeper;
+            public constructor Inner() { this.x = 7; this.deeper = new Deeper() on heap; }
+        }
+        public class Outer {
+            public mutable Inner inner;
+            public constructor Outer() { this.inner = new Inner() on heap; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Outer o = new Outer() on heap;
+                System.IO.println($"x = {o.inner.x}");           // x = 7
+                System.IO.println($"y = {o.inner.deeper.y}");    // y = 100  (two value levels)
+                o.inner.x = 42;
+                o.inner.deeper.y = 200;
+                System.IO.println($"x = {o.inner.x}");           // x = 42
+                System.IO.println($"y = {o.inner.deeper.y}");    // y = 200
+                return;
+            }
+        }
+    }
+}

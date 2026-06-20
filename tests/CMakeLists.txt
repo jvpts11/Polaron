@@ -245,6 +245,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # chained member access through value-typed class fields (o.inner.deeper.y), read + write.
+        add_test(NAME codegen_chained_access_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/chained_access.ldp3"
+            "-DEXPECTED=x = 7 y = 100 x = 42 y = 200"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # persistents (spec 18, F7): a `static persistent` value survives across runs.
         # Runs the exe twice; the second run must observe the persisted value (runs = 2).
         add_test(NAME codegen_persist_runs COMMAND "${CMAKE_COMMAND}"

@@ -817,9 +817,10 @@ struct CodeGenerator::Impl {
                     return emitEnumConstant(*jit->second, mem->member);
                 }
             }
-            // Chained access (a.b.c): the receiver `a.b` is itself a member. A pointer
-            // member's value is the object pointer; a value member lives at its address.
-            return isRefType(typeName(expr)) ? emitExpr(expr) : emitLValue(expr);
+            // Chained access (a.b.c): the receiver `a.b` is itself a member. Class/struct values,
+            // pointers and refs are all stored as a pointer in the slot, so load it (emitExpr =
+            // emitLValue + load) to get the object pointer in every case.
+            return emitExpr(expr);
         }
         error("unsupported object expression", expr.loc);
         return nullptr;
