@@ -369,6 +369,14 @@ ast::EnumDecl Parser::parseEnum() {
         }
     }
     expect(TokenKind::RBrace, "'}'");
+    // A catalog-implementing enum stays a plain ordinal enum (its constants are
+    // i32 ordinals with value semantics); it cannot also be java-style (per-constant
+    // constructor args or a `;` body), whose constants are heap objects.
+    if (!e.extendsCatalogs.empty() && e.isJavaStyle) {
+        fail("a catalog-implementing enum cannot use java-style constructor-argument "
+             "constants (it must be a plain ordinal enum)",
+             e.loc);
+    }
     return e;
 }
 

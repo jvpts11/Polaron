@@ -1,0 +1,33 @@
+program CatalogCycle;
+
+// Negative test: a catalog `extends` cycle must be reported, not crash the
+// compiler (it previously overflowed the stack in isSubtype). --check should
+// print "catalog cycle involving ...".
+
+public bundle main {
+    public namespace app {
+
+        public catalog A extends B {
+            method foo() returns int;
+        }
+
+        public catalog B extends A {
+            cheap
+
+            method bar() returns int;
+        }
+
+        public enum Item extends A {
+            byCatalog { cheap }
+            public method foo() returns int { return 1; }
+            public method bar() returns int { return 2; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                A u = Item.cheap;
+                return;
+            }
+        }
+    }
+}

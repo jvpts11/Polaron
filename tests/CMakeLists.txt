@@ -28,6 +28,13 @@ add_test(NAME sema_rejects_no_entry
 set_tests_properties(sema_rejects_no_entry PROPERTIES
     PASS_REGULAR_EXPRESSION "no entry point")
 
+# A catalog `extends` cycle must be reported, not crash (regression: it used to
+# overflow the stack in isSubtype).
+add_test(NAME sema_rejects_catalog_cycle
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_cycle.ldp3")
+set_tests_properties(sema_rejects_catalog_cycle PROPERTIES
+    PASS_REGULAR_EXPRESSION "catalog cycle involving")
+
 # ---- Codegen tests (only when the LLVM backend is built) ----
 if(LDP3_WITH_LLVM)
     # The emitted IR contains an i32 main and a printf call.
@@ -1147,6 +1154,16 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_methods.ldp3"
             "-DEXPECTED=100 10 10 1 2 11"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # catalogs extending catalogs (spec 12.3): the contract is transitive; an enum
+        # satisfying the chain is a subtype of every catalog in it.
+        add_test(NAME codegen_catalog_extends_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_extends.ldp3"
+            "-DEXPECTED=own=0 a=1 c=3 foo=7 bar=9 count=4"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()

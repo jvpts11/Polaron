@@ -130,8 +130,9 @@ private:
     // Resolve a member by walking the class, its superclasses and interfaces.
     const FieldInfo* findField(const std::string& className, const std::string& field) const;
     const MethodInfo* findMethod(const std::string& className, const std::string& method) const;
-    // True if `sub` is `super` or transitively extends/implements it.
-    bool isSubtype(const std::string& sub, const std::string& super) const;
+    // True if `sub` is `super` or transitively extends/implements it. `depth`
+    // bounds the recursion so a malformed (cyclic) type graph can't overflow.
+    bool isSubtype(const std::string& sub, const std::string& super, int depth = 0) const;
 
     // Lexical scopes (innermost last); shadowing is forbidden.
     void pushScope();
@@ -147,6 +148,8 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> enumCatalogs_;  // enum -> catalogs it extends
     // enum -> (method name -> info): methods declared on a catalog-implementing enum.
     std::unordered_map<std::string, std::unordered_map<std::string, MethodInfo>> enumMethods_;
+    // enum -> (method name -> declared parameter count), for arg-count checking.
+    std::unordered_map<std::string, std::unordered_map<std::string, std::size_t>> enumMethodParams_;
     std::unordered_map<std::string, LiteralInfo> literals_;  // suffix name -> info
     std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace

@@ -1,7 +1,9 @@
 #include "semantic/analyzer.h"
 
 #include <algorithm>
+#include <functional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -106,8 +108,11 @@ const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
     return nullptr;
 }
 
-bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& super) const {
+bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& super, int depth) const {
     if (sub == super) return true;
+    // Guard against a cyclic type graph (e.g. `catalog A extends B; B extends A`):
+    // bound the recursion so a malformed program errors instead of overflowing.
+    if (depth > 256) return false;
     if (sub == "null" && isRefType(super)) return true;  // null binds to any pointer/reference
     // int and float both widen to a float type (no implicit narrowing).
     if (isFloatType(super) && isNumeric(sub)) return true;
@@ -115,25 +120,26 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     if (isIntName(sub) && isIntName(super)) return intBits(sub) <= intBits(super);
     // Pointer/reference compatibility follows the pointee (T*, T& and T mix
     // freely for now; the strict value-vs-reference rules land with deep copy).
-    if (isRefType(sub) || isRefType(super)) return isSubtype(baseType(sub), baseType(super));
+    if (isRefType(sub) || isRefType(super))
+        return isSubtype(baseType(sub), baseType(super), depth + 1);
     // An enum is a subtype of every catalog it extends (spec 12.4), transitively
     // through catalog->catalog extends.
     if (auto ecit = enumCatalogs_.find(sub); ecit != enumCatalogs_.end()) {
         for (const std::string& cat : ecit->second) {
-            if (cat == super || isSubtype(cat, super)) return true;
+            if (cat == super || isSubtype(cat, super, depth + 1)) return true;
         }
     }
     // A catalog is a subtype of every catalog it extends.
     if (auto ccit = catalogs_.find(sub); ccit != catalogs_.end()) {
         for (const std::string& cat : ccit->second.extendsCatalogs) {
-            if (cat == super || isSubtype(cat, super)) return true;
+            if (cat == super || isSubtype(cat, super, depth + 1)) return true;
         }
     }
     const ClassInfo* c = lookupClass(sub);
     if (c == nullptr) return false;
-    if (!c->superclass.empty() && isSubtype(c->superclass, super)) return true;
+    if (!c->superclass.empty() && isSubtype(c->superclass, super, depth + 1)) return true;
     for (const std::string& iface : c->interfaces) {
-        if (isSubtype(iface, super)) return true;
+        if (isSubtype(iface, super, depth + 1)) return true;
     }
     return false;
 }
@@ -327,6 +333,14 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                     error("redeclaration of type '" + en.name + "'", en.loc);
                     continue;
                 }
+                // Reject duplicate constant names (own constants and byCatalog values share
+                // one ordinal space; a repeat would create a hidden, unreachable constant).
+                for (std::size_t i = 0; i < en.constants.size(); ++i)
+                    for (std::size_t j = i + 1; j < en.constants.size(); ++j)
+                        if (en.constants[i] == en.constants[j])
+                            error("duplicate enum constant '" + en.constants[i] + "' in enum '" +
+                                      en.name + "'",
+                                  en.loc);
                 enums_[en.name] = en.constants;
                 if (!en.extendsCatalogs.empty()) enumCatalogs_[en.name] = en.extendsCatalogs;
                 // Methods declared on the enum (e.g. catalog method impls) -- recorded so
@@ -336,6 +350,7 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                         enumMethods_[en.name][m->name] =
                             MethodInfo{typeRefStr(m->returnType), m->isStatic, m->isAbstract,
                                        m->isProperty};
+                        enumMethodParams_[en.name][m->name] = m->params.size();
                     }
                 }
                 typeNamespace_[en.name] = ns.name;
@@ -355,6 +370,13 @@ void SemanticAnalyzer::registerCatalogs(const ast::Program& program) {
                     error("redeclaration of type '" + cat.name + "'", cat.loc);
                     continue;
                 }
+                // Reject duplicate required-value names in the catalog itself.
+                for (std::size_t i = 0; i < cat.requiredValues.size(); ++i)
+                    for (std::size_t j = i + 1; j < cat.requiredValues.size(); ++j)
+                        if (cat.requiredValues[i] == cat.requiredValues[j])
+                            error("duplicate catalog value '" + cat.requiredValues[i] +
+                                      "' in catalog '" + cat.name + "'",
+                                  cat.loc);
                 CatalogInfo info;
                 info.requiredValues = cat.requiredValues;
                 info.extendsCatalogs = cat.extendsCatalogs;
@@ -383,6 +405,38 @@ void SemanticAnalyzer::validateCatalogs(const ast::Program& program) {
             }
         }
     }
+    // A catalog `extends` cycle makes the contract ill-defined (and would make the
+    // transitive walk below loop). Detect and report it (cf. class cycle detection).
+    for (const auto& [name, info] : catalogs_) {
+        std::unordered_set<std::string> visited;
+        std::vector<std::string> stack(info.extendsCatalogs.begin(), info.extendsCatalogs.end());
+        bool cyclic = false;
+        while (!stack.empty()) {
+            const std::string cur = stack.back();
+            stack.pop_back();
+            if (cur == name) { cyclic = true; break; }
+            if (!visited.insert(cur).second) continue;
+            if (auto it = catalogs_.find(cur); it != catalogs_.end())
+                for (const auto& p : it->second.extendsCatalogs) stack.push_back(p);
+        }
+        if (cyclic) error("catalog cycle involving '" + name + "'", {});
+    }
+    // Collects a catalog's required values and methods transitively through its
+    // `extends` parents (deduped); the visited set bounds it against any cycle.
+    std::function<void(const std::string&, std::unordered_set<std::string>&,
+                       std::vector<std::string>&, std::vector<std::string>&)>
+        collect = [&](const std::string& catName, std::unordered_set<std::string>& seen,
+                      std::vector<std::string>& vals, std::vector<std::string>& meths) {
+            if (!seen.insert(catName).second) return;
+            auto cit = catalogs_.find(catName);
+            if (cit == catalogs_.end()) return;
+            for (const auto& v : cit->second.requiredValues)
+                if (std::find(vals.begin(), vals.end(), v) == vals.end()) vals.push_back(v);
+            for (const auto& m : cit->second.methodNames)
+                if (std::find(meths.begin(), meths.end(), m) == meths.end()) meths.push_back(m);
+            for (const auto& parent : cit->second.extendsCatalogs)
+                collect(parent, seen, vals, meths);
+        };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::EnumDecl& en : ns.enums) {
@@ -394,18 +448,18 @@ void SemanticAnalyzer::validateCatalogs(const ast::Program& program) {
                     }
                     continue;
                 }
-                // Gather the union of every extended catalog's required values/methods.
+                // Gather the transitive contract (values + methods) of every catalog the
+                // enum extends, including grandparents reached via catalog->catalog extends.
                 std::vector<std::string> requiredValues;
                 std::vector<std::string> requiredMethods;
+                std::unordered_set<std::string> seen;
                 for (const std::string& catName : en.extendsCatalogs) {
-                    auto cit = catalogs_.find(catName);
-                    if (cit == catalogs_.end()) {
+                    if (catalogs_.count(catName) == 0) {
                         error("enum '" + en.name + "' extends unknown catalog '" + catName + "'",
                               en.loc);
                         continue;
                     }
-                    for (const auto& v : cit->second.requiredValues) requiredValues.push_back(v);
-                    for (const auto& m : cit->second.methodNames) requiredMethods.push_back(m);
+                    collect(catName, seen, requiredValues, requiredMethods);
                 }
                 // byCatalog must cover exactly the required values: none missing, none extra.
                 for (const std::string& req : requiredValues) {
@@ -424,19 +478,21 @@ void SemanticAnalyzer::validateCatalogs(const ast::Program& program) {
                               en.loc);
                     }
                 }
-                // Every required method must be implemented by the enum (matched by name).
+                // Every required method must be implemented as a (non-static) instance
+                // method of the enum -- a catalog method receives the enum value as `this`.
                 for (const std::string& req : requiredMethods) {
-                    bool found = false;
+                    const ast::MethodDecl* impl = nullptr;
                     for (const ast::MemberPtr& member : en.members) {
                         const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
-                        if (m != nullptr && m->name == req) {
-                            found = true;
-                            break;
-                        }
+                        if (m != nullptr && m->name == req) { impl = m; break; }
                     }
-                    if (!found) {
+                    if (impl == nullptr) {
                         error("enum '" + en.name + "' must implement catalog method '" + req + "'",
                               en.loc);
+                    } else if (impl->isStatic) {
+                        error("enum '" + en.name + "' implements catalog method '" + req +
+                                  "' as static; catalog methods are instance methods",
+                              impl->loc);
                     }
                 }
             }
@@ -778,7 +834,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             return;
         }
         const std::string et = elementOf(at);
-        if (!valueType.empty() && !et.empty() && valueType != et) {
+        if (!valueType.empty() && !et.empty() && !isSubtype(valueType, et)) {
             error("cannot assign a value of type '" + valueType +
                       "' to an array element of type '" + et + "'",
                   loc);
@@ -1537,6 +1593,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 auto mit = emit->second.find(mem->member);
                 if (mit != emit->second.end()) {
                     for (const auto& arg : call->args) typeOf(*arg);
+                    const std::size_t want = enumMethodParams_[baseType(objType)][mem->member];
+                    if (call->args.size() != want) {
+                        error("method '" + mem->member + "' expects " + std::to_string(want) +
+                                  " argument(s) but got " + std::to_string(call->args.size()),
+                              call->loc);
+                    }
                     return mit->second.returnType;
                 }
             }
@@ -1557,6 +1619,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     else if (inner[i] == ',' && depth == 0) return inner.substr(0, i);
                 }
                 return inner;
+            }
+            // Calling a catalog method through a catalog-TYPED receiver would need
+            // cross-enum dynamic dispatch, which an i32 ordinal can't carry (no type
+            // tag). Give a clear message rather than "class has no method".
+            if (catalogs_.count(baseType(objType)) > 0) {
+                error("cannot call catalog method '" + mem->member + "' through a catalog-typed "
+                          "value of type '" + baseType(objType) +
+                          "'; call it on the concrete enum (dispatch through a catalog type is "
+                          "not supported)",
+                      call->loc);
+                return "";
             }
             const MethodInfo* m = findMethod(objType, mem->member);
             if (m == nullptr) {
