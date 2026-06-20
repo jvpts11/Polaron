@@ -60,6 +60,16 @@ add_test(NAME sema_rejects_extend_permit
 set_tests_properties(sema_rejects_extend_permit PROPERTIES
     PASS_REGULAR_EXPRESSION "a sealed variant")
 
+# a `final class` cannot be extended; a `final method` cannot be overridden (spec 15).
+add_test(NAME sema_rejects_final_class
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/final_class_bad.ldp3")
+set_tests_properties(sema_rejects_final_class PROPERTIES
+    PASS_REGULAR_EXPRESSION "cannot extend final class")
+add_test(NAME sema_rejects_final_method
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/final_method_bad.ldp3")
+set_tests_properties(sema_rejects_final_method PROPERTIES
+    PASS_REGULAR_EXPRESSION "cannot override final method")
+
 # ---- Codegen tests (only when the LLVM backend is built) ----
 if(LDP3_WITH_LLVM)
     # The emitted IR contains an i32 main and a printf call.
@@ -1260,6 +1270,15 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/finally_exits.ldp3"
             "-DEXPECTED=finally-return r=1 iter 0 finally-iter 0 finally-iter 1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # final class + final method used correctly compile and run.
+        add_test(NAME codegen_final_types_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/final_types.ldp3"
+            "-DEXPECTED=rgb=255"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()

@@ -1,0 +1,22 @@
+program FinalTypes;
+
+// `final class` cannot be extended and a `final method` cannot be overridden
+// (spec 15). Used correctly they compile and run like any other class/method.
+
+public bundle main {
+    public namespace app {
+        public final class Color {
+            private int rgb;
+            public constructor Color(int v) { this.rgb = v; }
+            public final method value() returns int { return this.rgb; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Color c = new Color(255) on heap;
+                System.IO.printf("rgb=%d\n", c.value());
+                delete c;
+                return;
+            }
+        }
+    }
+}

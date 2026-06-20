@@ -1,0 +1,15 @@
+program FinalMethodBad;
+
+// Negative test: a `final method` cannot be overridden.
+
+public bundle main {
+    public namespace app {
+        public class Base { public final method k() returns int { return 1; } }
+        public class Sub extends Base {
+            public override method k() returns int { return 2; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

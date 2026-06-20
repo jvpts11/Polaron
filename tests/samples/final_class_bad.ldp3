@@ -1,0 +1,13 @@
+program FinalClassBad;
+
+// Negative test: a `final class` cannot be extended.
+
+public bundle main {
+    public namespace app {
+        public final class Leaf { public constructor Leaf() {} }
+        public class Sub extends Leaf { public constructor Sub() {} }
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

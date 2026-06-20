@@ -507,6 +507,7 @@ struct ClassDecl {
     bool isRecord = false;                // declared with `record` -- immutable value type
     bool isUnion = false;                 // declared with `union` -- fields share one storage
     bool isAbstract = false;              // `abstract class` (interfaces are abstract too)
+    bool isFinal = false;                 // `final class` -- cannot be extended
     bool isSealed = false;                // `sealed` -- only `permits` types may extend it
     bool isMovable = false;               // `movable class` -- move discipline
     bool isUnique = false;                // `unique class` -- single live reference

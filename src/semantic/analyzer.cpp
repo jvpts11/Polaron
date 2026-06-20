@@ -188,6 +188,9 @@ void SemanticAnalyzer::validateHierarchy() {
                 error("class '" + name + "' extends struct '" + info.superclass +
                           "' (structs have no inheritance)",
                       {});
+            } else if (sup->isFinal) {
+                error("class '" + name + "' cannot extend final class '" + info.superclass + "'",
+                      {});
             } else if (sup->isSealed &&
                        std::find(sup->permits.begin(), sup->permits.end(),
                                  name.substr(0, name.find('$'))) == sup->permits.end()) {
@@ -264,6 +267,17 @@ void SemanticAnalyzer::validateOverrides(const ast::Program& program) {
                                   "' overrides an inherited method; mark it 'override'",
                               m->loc);
                     }
+                    // A `final` inherited method may not be overridden.
+                    if (inherited) {
+                        const MethodInfo* base = nullptr;
+                        if (!ci->superclass.empty()) base = findMethod(ci->superclass, m->name);
+                        for (const std::string& iface : ci->interfaces)
+                            if (base == nullptr) base = findMethod(iface, m->name);
+                        if (base != nullptr && base->isFinal)
+                            error("method '" + m->name + "' cannot override final method '" +
+                                      m->name + "'",
+                                  m->loc);
+                    }
                 }
 
                 // A concrete class must implement every abstract method it inherits.
@@ -326,6 +340,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 info.superclass = cls.superclass;
                 info.interfaces = cls.interfaces;
                 info.isAbstract = cls.isAbstract;
+                info.isFinal = cls.isFinal;
                 info.isInterface = cls.isInterface;
                 info.isStruct = cls.isStruct;
                 info.isSealed = cls.isSealed;
@@ -339,7 +354,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         info.methods[m->name] = MethodInfo{typeRefStr(m->returnType), m->isStatic,
                                                            m->isAbstract, m->isProperty,
-                                                           m->params.size()};
+                                                           m->params.size(), m->isFinal};
                     } else if (dynamic_cast<const ast::ConstructorDecl*>(member.get()) != nullptr) {
                         info.hasConstructor = true;
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) != nullptr) {

@@ -414,6 +414,7 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     c.loc = current().loc;
     c.visibility = parseVisibilityOpt();
     if (match(TokenKind::KwSealed)) c.isSealed = true;
+    if (match(TokenKind::KwFinal)) c.isFinal = true;
     if (match(TokenKind::KwAbstract)) c.isAbstract = true;
     if (match(TokenKind::KwMovable)) {
         c.isMovable = true;

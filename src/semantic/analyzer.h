@@ -41,6 +41,7 @@ struct MethodInfo {
     bool isAbstract = false;
     bool isProperty = false;  // computed get-only property: read as obj.name (no parens)
     std::size_t paramCount = 0;  // declared parameter count (for arg-count checking)
+    bool isFinal = false;     // `final` method -- cannot be overridden
 };
 struct ClassInfo {
     std::string name;
@@ -49,6 +50,7 @@ struct ClassInfo {
     std::string superclass;               // "" when none
     std::vector<std::string> interfaces;
     bool isAbstract = false;
+    bool isFinal = false;    // `final class` -- cannot be extended
     bool isInterface = false;
     bool isStruct = false;   // value type, no inheritance
     bool isSealed = false;   // only `permits` types may extend it
