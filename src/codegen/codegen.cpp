@@ -2221,6 +2221,20 @@ struct CodeGenerator::Impl {
             if (objPtr == nullptr) return;
             const std::string cn = baseType(t);  // see through T*
             auto cit = classes.find(cn);
+            // A stack-allocated owned object (tracked for RAII): `delete` is an early
+            // destruct -- run the destructor once and drop it from tracking, but never
+            // free() a stack pointer or let scope-exit destruct it again.
+            if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(del->target.get())) {
+                if (auto lit = locals.find(tid->name); lit != locals.end()) {
+                    for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so) {
+                        if (so->slot != lit->second.storage) continue;
+                        if (cit != classes.end() && cit->second.hasDestructor)
+                            builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+                        scopeObjects.erase(so);
+                        return;
+                    }
+                }
+            }
             if (cit != classes.end() && cit->second.hasDestructor) {
                 builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
             }
@@ -2244,7 +2258,9 @@ struct CodeGenerator::Impl {
         if (const auto* us = dynamic_cast<const ast::UsingStmt*>(&stmt)) {
             emitStatement(*us->decl);  // declare the resource
             emitBlock(us->body);       // use it
-            // Dispose it (destructor if any, then free) at the block's end.
+            // Dispose it at the block's end. A heap resource is freed; a stack
+            // resource is an alloca (never free it). Either way drop it from RAII
+            // tracking so scope-exit does not destruct it a second time.
             auto it = locals.find(us->varName);
             if (it != locals.end() && builder.GetInsertBlock()->getTerminator() == nullptr) {
                 const std::string cn = baseType(it->second.type);
@@ -2254,7 +2270,15 @@ struct CodeGenerator::Impl {
                 if (cit != classes.end() && cit->second.hasDestructor) {
                     builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
                 }
-                builder.CreateCall(freeFn(), {objPtr});
+                bool onStack = false;
+                for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so) {
+                    if (so->slot == it->second.storage) {
+                        onStack = true;
+                        scopeObjects.erase(so);
+                        break;
+                    }
+                }
+                if (!onStack) builder.CreateCall(freeFn(), {objPtr});
             }
             return;
         }

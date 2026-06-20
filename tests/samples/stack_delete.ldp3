@@ -1,0 +1,31 @@
+program StackDelete;
+
+// `delete` and `using` on an `on stack` object must run the destructor exactly
+// once and must NOT free() a stack pointer (and must not let scope-exit destruct
+// it again). Previously both free()'d an alloca and double-destructed -> crash.
+
+public bundle main {
+    public namespace app {
+
+        public class Guard {
+            private int id;
+            public constructor Guard(int i) { this.id = i; }
+            public destructor ~Guard() returns void {
+                System.IO.printf("dtor %d\n", this.id);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Guard g = new Guard(1) on stack;
+                delete g;                       // early destruct: "dtor 1" once, no free-of-stack
+                System.IO.printf("after delete\n");
+                using (Guard r = new Guard(2) on stack) {
+                    System.IO.printf("in using\n");
+                }                               // "dtor 2" once, no free-of-stack
+                System.IO.printf("end\n");
+                return;
+            }
+        }
+    }
+}
