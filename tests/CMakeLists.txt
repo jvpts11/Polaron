@@ -72,6 +72,12 @@ add_test(NAME sema_rejects_static_assert_fail
 set_tests_properties(sema_rejects_static_assert_fail PROPERTIES
     PASS_REGULAR_EXPRESSION "static assertion failed: fib.10. is not 99")
 
+# a non-eternal persistent with no release anywhere is a compile error (spec 18.15).
+add_test(NAME sema_rejects_unreleased_persistent
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_unreleased_bad.ldp3")
+set_tests_properties(sema_rejects_unreleased_persistent PROPERTIES
+    PASS_REGULAR_EXPRESSION "no 'release persistent'")
+
 # extending a sealed type's permitted variant must be rejected (variants are final),
 # else match's exhaustiveness assumption is unsound.
 add_test(NAME sema_rejects_extend_permit
@@ -1393,6 +1399,16 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lazy_init.ldp3"
             "-DEXPECTED=before after decl constructing 1 x=1 y=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # release persistent (spec 18.15) satisfies a non-eternal persistent's
+        # release obligation; the program compiles and runs.
+        add_test(NAME codegen_persist_release_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_release.ldp3"
+            "-DEXPECTED=slot=2"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()

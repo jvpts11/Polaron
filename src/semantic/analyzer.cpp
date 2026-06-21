@@ -695,6 +695,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerLiterals(program);
     registerConsts(program);
     registerComptimeMethods(program);
+    registerPersistentFields(program);
     processImports(program);
     evaluateConsts(program);
     validateHierarchy();
@@ -706,6 +707,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     findEntryPoint(program);
     analyzeBodies(program);
     analyzeLiteralBodies(program);
+    checkPersistentReleases();  // spec 18.15: after all bodies, so releases are collected
     return errors_.empty();
 }
 
@@ -773,6 +775,45 @@ void SemanticAnalyzer::registerComptimeMethods(const ast::Program& program) {
                 }
             }
         }
+    }
+}
+
+// Indexes persistent fields (spec 18.15). Non-eternal ones must be released
+// somewhere in the program; eternal ones are exempt.
+void SemanticAnalyzer::registerPersistentFields(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles)
+        for (const ast::Namespace& ns : bundle.namespaces)
+            for (const ast::ClassDecl& cls : ns.classes)
+                for (const ast::MemberPtr& member : cls.members)
+                    if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
+                        f != nullptr && f->isPersistent)
+                        persistentFields_.push_back({cls.name, f->name, f->isEternal, f->loc});
+}
+
+// The class in `cls`'s hierarchy that declares persistent field `field`, or "".
+std::string SemanticAnalyzer::persistentFieldOwner(const std::string& cls,
+                                                   const std::string& field) const {
+    std::string cur = cls;
+    for (int depth = 0; !cur.empty() && depth < 256; ++depth) {
+        for (const PersistentFieldInfo& pf : persistentFields_)
+            if (pf.cls == cur && pf.name == field) return cur;
+        auto it = classes_.find(cur);
+        if (it == classes_.end()) break;
+        cur = it->second.superclass;
+    }
+    return "";
+}
+
+// Enforces the release obligation (spec 18.15): a non-eternal persistent field
+// with no `release persistent` anywhere in the program is a compile error.
+void SemanticAnalyzer::checkPersistentReleases() {
+    for (const PersistentFieldInfo& pf : persistentFields_) {
+        if (pf.isEternal) continue;
+        if (releasedPersistents_.count(pf.cls + "." + pf.name) > 0) continue;
+        error("persistent '" + pf.cls + "." + pf.name +
+                  "' has no 'release persistent' anywhere in the program; non-eternal "
+                  "persistents require explicit release (or mark the field 'eternal persistent')",
+              pf.loc);
     }
 }
 
@@ -1318,6 +1359,23 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {
+        if (rel->isPersistent) {
+            // `release [persistent|eternal] obj.field;` -- record that this persistent
+            // field is released somewhere, satisfying the obligation (spec 18.15).
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(rel->target.get())) {
+                const std::string ot = baseType(typeOf(*mem->object));
+                if (const std::string owner = persistentFieldOwner(ot, mem->member); !owner.empty())
+                    releasedPersistents_.insert(owner + "." + mem->member);
+                else if (!ot.empty())
+                    error("'" + mem->member + "' is not a persistent field of '" + ot + "'",
+                          rel->loc);
+            } else if (rel->target != nullptr) {
+                typeOf(*rel->target);  // still type-check the operand
+                error("'release persistent' expects a persistent field access (obj.field)",
+                      rel->loc);
+            }
+            return;
+        }
         const LocalVar* r = lookupLocal(rel->region);
         if (r == nullptr) {
             error("unknown region '" + rel->region + "'", rel->loc);

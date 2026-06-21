@@ -107,6 +107,10 @@ private:
     void registerConsts(const ast::Program& program);   // pass 1: const name -> type
     void registerComptimeMethods(const ast::Program& program);  // index `comptime` methods
     void evaluateConsts(const ast::Program& program);    // pass 2: fold + validate
+    void registerPersistentFields(const ast::Program& program);  // spec 18.15
+    void checkPersistentReleases();                              // spec 18.15 obligation
+    // The class in `cls`'s hierarchy that declares persistent field `field` (or "").
+    std::string persistentFieldOwner(const std::string& cls, const std::string& field) const;
     void processImports(const ast::Program& program);
     void findEntryPoint(const ast::Program& program);
     void analyzeBodies(const ast::Program& program);
@@ -176,6 +180,15 @@ private:
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state
     std::unordered_map<std::string, RegionConstraints> regionConstraints_;  // region var -> accepts/rejects
+    // Persistent fields (spec 18.15): each must be released somewhere unless eternal.
+    struct PersistentFieldInfo {
+        std::string cls;
+        std::string name;
+        bool isEternal = false;
+        SourceLocation loc;
+    };
+    std::vector<PersistentFieldInfo> persistentFields_;
+    std::unordered_set<std::string> releasedPersistents_;  // "Class.field" released anywhere
     std::vector<std::unordered_map<std::string, LocalVar>> scopes_;
 };
 

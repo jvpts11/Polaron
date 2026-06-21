@@ -163,7 +163,7 @@ TEST_CASE("semantic accepts persistent / eternal / transient field modifiers") {
     CHECK(checkSrc(withClass(
         "public class Config {"
         " public eternal persistent int counter = 0;"
-        " private persistent int sessions = 0;"
+        " private eternal persistent int sessions = 0;"
         " private transient int cache = 0;"
         " public constructor Config() {} }",
         "")));
@@ -178,7 +178,7 @@ TEST_CASE("semantic accepts a persistent local variable") {
 TEST_CASE("semantic accepts a persistent instance field accessed via a variable") {
     CHECK(checkSrc(
         "program P; public bundle main { public namespace app {"
-        " public class Car { public persistent mutable int chassi = 0;"
+        " public class Car { public eternal persistent mutable int chassi = 0;"
         " public constructor Car() {} }"
         " public class Main { public static method main(string[] args) returns void {"
         " Car c = new Car() on heap; c.chassi = c.chassi + 1; delete c; return; } } } }"));
@@ -187,7 +187,7 @@ TEST_CASE("semantic accepts a persistent instance field accessed via a variable"
 TEST_CASE("semantic accepts a persistent instance field used via this in a method") {
     CHECK(checkSrc(
         "program P; public bundle main { public namespace app {"
-        " public class Car { public persistent mutable int chassi = 0;"
+        " public class Car { public eternal persistent mutable int chassi = 0;"
         " public constructor Car() {}"
         " public method bump() returns void { this.chassi = this.chassi + 1; } }"
         " public class Main { public static method main(string[] args) returns void {"
@@ -207,11 +207,29 @@ TEST_CASE("semantic accepts a persistent pointer field (graph serialization)") {
     CHECK(checkSrc(
         "program P; public bundle main { public namespace app {"
         " public class Engine { public mutable int power = 0; public constructor Engine() {} }"
-        " public class Car { public persistent mutable Engine* engine;"
+        " public class Car { public eternal persistent mutable Engine* engine;"
         " public constructor Car() {} }"
         " public class Main { public static method main(string[] args) returns void {"
         " Car c = new Car() on heap; c.engine = new Engine() on heap;"
         " c.engine.power = 1; delete c; return; } } } }"));
+}
+
+TEST_CASE("semantic rejects a non-eternal persistent field never released (spec 18.15)") {
+    CHECK_FALSE(checkSrc(
+        "program P; public bundle main { public namespace app {"
+        " public class Cache { public persistent mutable int slot = 0;"
+        " public constructor Cache() {} }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Cache c = new Cache() on heap; delete c; return; } } } }"));
+}
+
+TEST_CASE("semantic accepts a non-eternal persistent field released somewhere (spec 18.15)") {
+    CHECK(checkSrc(
+        "program P; public bundle main { public namespace app {"
+        " public class Cache { public persistent mutable int slot = 0;"
+        " public constructor Cache() {} }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Cache c = new Cache() on heap; release persistent c.slot; delete c; return; } } } }"));
 }
 
 TEST_CASE("semantic rejects assignment to an immutable field") {

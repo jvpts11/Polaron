@@ -1,0 +1,21 @@
+program PersistUnreleased;
+
+// A non-eternal persistent field with no `release persistent` anywhere in the
+// program is a compile error (spec 18.15): either release it or mark it eternal.
+
+public bundle main {
+    public namespace app {
+        public class Cache {
+            public persistent mutable int slot = 0;
+            public constructor Cache() {}
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Cache c = new Cache() on heap;
+                System.IO.printf("%d\n", c.slot);
+                delete c;
+                return;
+            }
+        }
+    }
+}

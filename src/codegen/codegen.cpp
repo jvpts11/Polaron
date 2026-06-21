@@ -2471,6 +2471,13 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {
+            if (rel->isPersistent) {
+                // `release persistent obj.field`: persistents are in-process (spec 18) and
+                // reclaimed at program shutdown, so the explicit release is a no-op for now;
+                // its role is to satisfy the static release obligation (spec 18.15). Freeing
+                // the backing storage on release is a later runtime refinement.
+                return;
+            }
             // Free the whole region block. (Per-object destructors on release are
             // a later refinement; the region is a bump allocator.)
             auto it = locals.find(rel->region);

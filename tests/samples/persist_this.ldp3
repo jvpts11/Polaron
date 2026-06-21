@@ -7,7 +7,7 @@ program PersistThis;
 public bundle main {
     public namespace app {
         public class Car {
-            public persistent mutable int chassi = 0;
+            public eternal persistent mutable int chassi = 0;  // run-lifetime: no release required (spec 18.13)
             public constructor Car() {}
             public method bump() returns void { this.chassi = this.chassi + 1; }
             public method get() returns int { return this.chassi; }

@@ -219,9 +219,13 @@ struct DeleteStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
-// `release region R;` -- frees a region and everything allocated in it (spec 17.7).
+// `release region R;` frees a region (spec 17.7). `release persistent obj.field;`
+// (and `release eternal obj.field;`) frees a persistent and satisfies the
+// non-eternal-persistent release obligation (spec 18.15).
 struct ReleaseStmt : Stmt {
-    std::string region;
+    std::string region;       // set for `release region R`
+    bool isPersistent = false;  // set for `release [persistent|eternal] <expr>`
+    ExprPtr target;           // the persistent lvalue (obj.field), when isPersistent
     void dump(std::string& out, int indent) const override;
 };
 

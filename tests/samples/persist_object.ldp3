@@ -7,7 +7,7 @@ program PersistObject;
 public bundle main {
     public namespace app {
         public class Car {
-            public persistent mutable int chassi = 0;
+            public eternal persistent mutable int chassi = 0;  // run-lifetime: no release required (spec 18.13)
             public constructor Car() {}
         }
 

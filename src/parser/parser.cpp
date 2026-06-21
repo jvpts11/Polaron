@@ -1131,8 +1131,14 @@ ast::StmtPtr Parser::parseStatement() {
         auto rel = std::make_unique<ast::ReleaseStmt>();
         rel->loc = current().loc;
         advance();  // 'release'
-        expect(TokenKind::KwRegion, "'region' after 'release'");
-        rel->region = expect(TokenKind::Identifier, "the region name").lexeme;
+        if (match(TokenKind::KwRegion)) {
+            rel->region = expect(TokenKind::Identifier, "the region name").lexeme;
+        } else {
+            // `release persistent obj.field;` / `release eternal obj.field;` (spec 18.13/18.15).
+            if (!match(TokenKind::KwPersistent)) expect(TokenKind::KwEternal, "'region', 'persistent' or 'eternal' after 'release'");
+            rel->isPersistent = true;
+            rel->target = parseExpression();
+        }
         expect(TokenKind::Semicolon, "';'");
         return rel;
     }
