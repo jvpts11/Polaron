@@ -1,0 +1,49 @@
+program CatalogCollision;
+
+// Namespaces scope catalog names too (F4): app and lib each declare a `Tier`
+// catalog; they are distinct, each extended by its own enum. Without
+// namespace-qualified type names this would be a redeclaration error.
+
+public bundle main {
+    import lib.LibHelper;
+
+    public namespace app {
+        public catalog Tier {
+            low
+            method weight() returns int;
+        }
+        public enum AppLevel extends Tier {
+            a
+            byCatalog { low }
+            public method weight() returns int { return 1; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                AppLevel x = AppLevel.a;
+                LibHelper* h = new LibHelper() on heap;
+                System.IO.printf("app=%d lib=%d\n", x.weight(), h.libWeight());
+                delete h;
+                return;
+            }
+        }
+    }
+
+    public namespace lib {
+        public catalog Tier {
+            high
+            method weight() returns int;
+        }
+        public enum LibLevel extends Tier {
+            b
+            byCatalog { high }
+            public method weight() returns int { return 9; }
+        }
+        public class LibHelper {
+            public constructor LibHelper() {}
+            public method libWeight() returns int {
+                LibLevel y = LibLevel.b;
+                return y.weight();
+            }
+        }
+    }
+}

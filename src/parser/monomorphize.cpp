@@ -877,6 +877,7 @@ void qualifyNamespaces(ast::Program& program) {
         for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) declNs[c.name].insert(ns.name);
             for (auto& e : ns.enums) declNs[e.name].insert(ns.name);
+            for (auto& cat : ns.catalogs) declNs[cat.name].insert(ns.name);
         }
     std::set<std::string> ambiguous;
     for (auto& [name, nss] : declNs)
@@ -903,6 +904,7 @@ void qualifyNamespaces(ast::Program& program) {
             std::set<std::string> ownNames;
             for (auto& c : ns.classes) ownNames.insert(c.name);
             for (auto& e : ns.enums) ownNames.insert(e.name);
+            for (auto& cat : ns.catalogs) ownNames.insert(cat.name);
             // For each ambiguous name visible here, map it to its owning namespace's
             // unique name. Own declarations win; otherwise an import decides.
             Subst subst;
@@ -934,6 +936,11 @@ void qualifyNamespaces(ast::Program& program) {
                 if (subst.count(e.name) > 0) e.name = subst[e.name];
                 for (auto& cat : e.extendsCatalogs)
                     if (auto it = subst.find(cat); it != subst.end()) cat = it->second;
+            }
+            for (auto& cat : ns.catalogs) {
+                if (subst.count(cat.name) > 0) cat.name = subst[cat.name];
+                for (auto& parent : cat.extendsCatalogs)
+                    if (auto it = subst.find(parent); it != subst.end()) parent = it->second;
             }
         }
     }
