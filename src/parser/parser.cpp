@@ -1064,6 +1064,11 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwIf)) {
         return parseIfStatement();
     }
+    // `comptime if (...)` -- the branch is selected at compile time (spec 37.4).
+    if (check(TokenKind::KwComptime) && peek(1).kind == TokenKind::KwIf) {
+        advance();  // consume 'comptime'
+        return parseIfStatement(/*isComptime=*/true);
+    }
     if (check(TokenKind::KwWhile)) {
         return parseWhileStatement();
     }
@@ -1295,9 +1300,10 @@ ast::StmtPtr Parser::parseTupleDecl() {
     return decl;
 }
 
-ast::StmtPtr Parser::parseIfStatement() {
+ast::StmtPtr Parser::parseIfStatement(bool isComptime) {
     auto s = std::make_unique<ast::IfStmt>();
     s->loc = current().loc;
+    s->isComptime = isComptime;
     expect(TokenKind::KwIf, "'if'");
     expect(TokenKind::LParen, "'('");
     s->cond = parseExpression();

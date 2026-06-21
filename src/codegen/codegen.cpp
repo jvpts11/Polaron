@@ -2592,6 +2592,16 @@ struct CodeGenerator::Impl {
     }
 
     void emitIf(const ast::IfStmt& s) {
+        // `comptime if` (spec 37.4): fold the condition and emit only the taken branch;
+        // the dead branch produces no code. The analyzer guaranteed the condition folds.
+        if (s.isComptime) {
+            long long c = 0;
+            if (foldConstInt(*s.cond, c)) {
+                if (c != 0) emitBlock(s.thenBlock);
+                else if (s.elseBlock) emitBlock(*s.elseBlock);
+                return;
+            }
+        }
         llvm::Value* condV = emitExpr(*s.cond);
         if (condV == nullptr) return;
         llvm::Value* condBool = builder.CreateICmpNE(condV, builder.getInt32(0));

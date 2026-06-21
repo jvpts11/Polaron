@@ -1411,6 +1411,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=slot=2"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # comptime if (spec 37.4): the branch is chosen at compile time from a const
+        # condition; here DEBUG=false and LEVEL>=2, so "debug off" and "level high".
+        add_test(NAME codegen_comptime_if_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/comptime_if.ldp3"
+            "-DEXPECTED=debug off level high"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

@@ -1267,6 +1267,11 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (!ct.empty() && ct != "boolean") {
             error("'if' condition must be boolean, got '" + ct + "'", ifs->loc);
         }
+        if (ifs->isComptime) {
+            long long v;
+            if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_))
+                error("'comptime if' requires a compile-time constant condition", ifs->loc);
+        }
         analyzeBlock(ifs->thenBlock);
         if (ifs->elseBlock) analyzeBlock(*ifs->elseBlock);
         return;

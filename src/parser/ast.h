@@ -290,6 +290,7 @@ struct IfStmt : Stmt {
     ExprPtr cond;
     Block thenBlock;
     std::unique_ptr<Block> elseBlock;  // null when there is no else
+    bool isComptime = false;  // spec 37.4: `comptime if` -- the branch is chosen at compile time
     void dump(std::string& out, int indent) const override;
 };
 

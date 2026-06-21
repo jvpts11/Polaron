@@ -75,7 +75,7 @@ private:
     bool looksLikeGenericCall() const;
     bool looksLikeTupleDestructuring() const;
     ast::StmtPtr parseTupleDecl();
-    ast::StmtPtr parseIfStatement();
+    ast::StmtPtr parseIfStatement(bool isComptime = false);
     ast::StmtPtr parseWhileStatement();
     ast::StmtPtr parseDoStatement();
     ast::StmtPtr parseForStatement();

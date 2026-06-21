@@ -1,0 +1,28 @@
+program ComptimeIf;
+
+// `comptime if` (spec 37.4): the branch is chosen at compile time from a constant
+// condition; the dead branch produces no code at all. Here DEBUG is false and
+// LEVEL >= 2 is true, so only "debug off" and "level high" are compiled in.
+
+public bundle main {
+    public namespace app {
+        public const boolean DEBUG = false;
+        public const int LEVEL = 2;
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                comptime if (DEBUG) {
+                    System.IO.printf("debug on\n");
+                } else {
+                    System.IO.printf("debug off\n");
+                }
+                comptime if (LEVEL >= 2) {
+                    System.IO.printf("level high\n");
+                } else {
+                    System.IO.printf("level low\n");
+                }
+                return;
+            }
+        }
+    }
+}
