@@ -1469,6 +1469,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=tag=9"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # finally runs even when the exception propagates uncaught out of the try,
+        # to be caught by an outer try (spec 21.1).
+        add_test(NAME codegen_finally_uncaught_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/finally_uncaught.ldp3"
+            "-DEXPECTED=throwing inner finally outer caught done"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

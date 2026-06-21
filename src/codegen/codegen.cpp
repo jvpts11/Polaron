@@ -2120,6 +2120,24 @@ struct CodeGenerator::Impl {
         return emitMaybeInvoke(callee.getFunctionType(), callee.getCallee(), args, name);
     }
 
+    // Throws (or re-throws) the object `obj` as the canonical void* carrier, unwinding
+    // through live destructors into an enclosing try (if any) or to the caller. Ends
+    // the current block with unreachable. Shared by `throw` and the uncaught-rethrow path.
+    void emitThrowObject(llvm::Value* obj) {
+        ensurePersonality();
+        llvm::Value* slot = createEntryAlloca("exc.thrown", builder.getPtrTy());
+        builder.CreateStore(obj, slot);  // carrier: the object pointer, thrown as void*
+        std::vector<llvm::Value*> args = {slot, ehThrowInfo()};
+        if (llvm::BasicBlock* ud = computeUnwindDest(); ud != nullptr) {
+            llvm::BasicBlock* cont = llvm::BasicBlock::Create(context, "throw.cont", currentFn);
+            builder.CreateInvoke(cxxThrowFn(), cont, ud, args);
+            builder.SetInsertPoint(cont);
+        } else {
+            builder.CreateCall(cxxThrowFn(), args);  // propagates to the caller
+        }
+        builder.CreateUnreachable();  // _CxxThrowException does not return
+    }
+
     // Vtables of every concrete class that is `t` or a subclass of `t` -- used to match a caught
     // exception's dynamic type against a catch clause (subtype-aware). Empty if `t` is not a
     // polymorphic class, in which case the clause is treated as a catch-all (preserves the carrier).
@@ -2193,16 +2211,17 @@ struct CodeGenerator::Impl {
             if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(contBB);
             builder.SetInsertPoint(nextBB);  // keep dispatching inside the funclet
         }
-        // No clause matched: rethrow the current exception (handled by an outer try, or terminates).
-        builder.CreateCall(
-            cxxThrowFn(),
-            {llvm::ConstantPointerNull::get(ptrTy), llvm::ConstantPointerNull::get(ptrTy)},
-            {llvm::OperandBundleDef("funclet", llvm::ArrayRef<llvm::Value*>{cp})});
-        builder.CreateUnreachable();
-        // Done with the body/handlers: this try's finally is no longer pending for early
-        // exits; it runs once here on the normal/caught fall-through. (The uncaught-
-        // propagation finally, on the rethrow path above, is still a later slice.)
-        if (s.finallyBlock != nullptr) finallyStack.pop_back();
+        // No clause matched: leave the funclet (catchret to normal context) so the
+        // finally can run with ordinary calls, then re-throw the caught exception to
+        // the enclosing try or the caller (spec 21.1: finally always runs).
+        if (s.finallyBlock != nullptr) finallyStack.pop_back();  // no longer pending for early exits
+        llvm::BasicBlock* rethrowBB = llvm::BasicBlock::Create(context, "rethrow", currentFn);
+        builder.CreateCatchRet(cp, rethrowBB);
+        builder.SetInsertPoint(rethrowBB);
+        llvm::Value* rethrown = builder.CreateLoad(ptrTy, caughtSlot, "rethrow.obj");
+        if (s.finallyBlock != nullptr) emitBlock(*s.finallyBlock);  // uncaught path: finally runs
+        emitThrowObject(rethrown);
+        // Normal / caught fall-through: the finally runs once here too.
         builder.SetInsertPoint(contBB);
         if (s.finallyBlock != nullptr) emitBlock(*s.finallyBlock);
     }
@@ -2256,20 +2275,7 @@ struct CodeGenerator::Impl {
         if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&stmt)) {  // throw expr; (spec 21.1)
             llvm::Value* obj = emitExpr(*th->value);
             if (obj == nullptr) return;
-            ensurePersonality();
-            llvm::Value* slot = createEntryAlloca("exc.thrown", builder.getPtrTy());
-            builder.CreateStore(obj, slot);  // carrier: the object pointer, thrown as void*
-            std::vector<llvm::Value*> args = {slot, ehThrowInfo()};
-            // Unwind through any live stack-object destructors and into an enclosing try (if any).
-            llvm::BasicBlock* ud = computeUnwindDest();
-            if (ud != nullptr) {
-                llvm::BasicBlock* cont = llvm::BasicBlock::Create(context, "throw.cont", currentFn);
-                builder.CreateInvoke(cxxThrowFn(), cont, ud, args);
-                builder.SetInsertPoint(cont);
-            } else {
-                builder.CreateCall(cxxThrowFn(), args);  // propagates to the caller
-            }
-            builder.CreateUnreachable();  // _CxxThrowException does not return
+            emitThrowObject(obj);
             return;
         }
         if (const auto* tr = dynamic_cast<const ast::TryStmt*>(&stmt)) {

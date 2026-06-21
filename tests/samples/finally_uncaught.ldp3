@@ -1,0 +1,32 @@
+program FinallyUncaught;
+
+// `finally` runs even when the exception is NOT caught locally and propagates out
+// (spec 21.1: finally always runs). The inner try has only a finally; the throw
+// is caught by the OUTER try, but the inner finally must run on the way out.
+
+public bundle main {
+    public namespace app {
+        public interface Throwable { }
+        public class MyError implements Throwable {
+            public constructor MyError() {}
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                try {
+                    try {
+                        System.IO.printf("throwing\n");
+                        MyError* e = new MyError() on heap;
+                        throw e;
+                    } finally {
+                        System.IO.printf("inner finally\n");   // runs though uncaught here
+                    }
+                } catch (MyError ex) {
+                    System.IO.printf("outer caught\n");
+                }
+                System.IO.printf("done\n");
+                return;
+            }
+        }
+    }
+}
