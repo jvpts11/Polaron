@@ -59,7 +59,8 @@ private:
                                                  bool isAbstract, bool isOverride, bool isFinal,
                                                  bool inInterface);
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
-                              bool isPersistent, bool isEternal, bool isTransient);
+                              bool isPersistent, bool isEternal, bool isTransient,
+                              bool isVolatile = false);
     ast::MemberPtr parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
                                  const std::string& name, SourceLocation loc);
     std::unique_ptr<ast::ConstructorDecl> parseConstructor(std::string visibility);

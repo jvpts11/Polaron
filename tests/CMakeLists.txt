@@ -84,6 +84,13 @@ if(LDP3_WITH_LLVM)
     set_tests_properties(codegen_emits_ir PROPERTIES
         PASS_REGULAR_EXPRESSION "define i32 @main")
 
+    # volatile (spec 37.5) must lower to volatile loads/stores in the IR, not be
+    # optimized away. (The run test only proves the result is unchanged.)
+    add_test(NAME codegen_volatile_emits_volatile
+        COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/volatile_access.ldp3")
+    set_tests_properties(codegen_volatile_emits_volatile PROPERTIES
+        PASS_REGULAR_EXPRESSION "store volatile")
+
     # Full pipeline: compile to .exe with clang and check it prints correctly.
     find_program(LDP3_CLANG clang HINTS "C:/Program Files/LLVM/bin")
     if(LDP3_CLANG)
@@ -1314,6 +1321,16 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/const_values.ldp3"
             "-DEXPECTED=MAX=100 DOUBLED=200 SHIFT=16 ENABLED=1 GRADE=A MASKED=15 SCALED=150"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # volatile (spec 37.5): a volatile field and local still round-trip correctly
+        # (volatility doesn't change a single-threaded result).
+        add_test(NAME codegen_volatile_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/volatile_access.ldp3"
+            "-DEXPECTED=reg=42 sum=84"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()

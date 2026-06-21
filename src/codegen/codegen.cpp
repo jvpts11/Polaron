@@ -162,6 +162,7 @@ struct ClassLayout {
     std::unordered_map<std::string, unsigned> fieldIndex;  // includes inherited fields
     std::unordered_map<std::string, std::string> fieldType;  // LDP3 type name per field
     std::unordered_map<std::string, int> bitFieldWidth;  // field -> bit-field width (spec 11.1)
+    std::unordered_set<std::string> volatileFields;  // fields whose accesses are volatile (spec 37.5)
     std::unordered_map<std::string, std::string> methodReturnType;  // own methods only
     std::unordered_map<std::string, const ast::MethodDecl*> ownMethods;  // own methods, by name
     std::string superclass;
@@ -187,6 +188,7 @@ struct ClassLayout {
 struct LocalSlot {
     llvm::Value* storage = nullptr;
     std::string type;
+    bool isVolatile = false;  // spec 37.5: loads/stores of this local are volatile
 };
 
 // A stack object with a destructor, pending end-of-scope cleanup (RAII).
@@ -397,6 +399,20 @@ struct CodeGenerator::Impl {
         return builder.CreateAnd(
             v, llvm::ConstantInt::get(v->getType(), llvm::APInt::getLowBitsSet(bits, w)),
             "bitfield");
+    }
+
+    // True if the lvalue denotes a `volatile` local or field (spec 37.5), so its
+    // load/store must not be optimized away. Walks T*/T& field access too.
+    bool isVolatileAccess(const ast::Expr& expr) {
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
+            auto it = locals.find(id->name);
+            return it != locals.end() && it->second.isVolatile;
+        }
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            auto cit = classes.find(baseType(typeName(*mem->object)));
+            return cit != classes.end() && cit->second.volatileFields.count(mem->member) > 0;
+        }
+        return false;
     }
 
     // If a constructor body opens with `super(...)`, returns that call so the
@@ -1077,7 +1093,8 @@ struct CodeGenerator::Impl {
                 error("use of undeclared variable '" + id->name + "'", id->loc);
                 return nullptr;
             }
-            return builder.CreateLoad(llvmType(it->second.type), it->second.storage, id->name);
+            return builder.CreateLoad(llvmType(it->second.type), it->second.storage,
+                                      it->second.isVolatile, id->name);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
             if (const std::string key = staticFieldKey(*mem); !key.empty()) {
@@ -1117,7 +1134,8 @@ struct CodeGenerator::Impl {
             }
             llvm::Value* fieldPtr = emitLValue(*mem);
             if (fieldPtr == nullptr) return nullptr;
-            return builder.CreateLoad(llvmType(typeName(*mem)), fieldPtr, mem->member);
+            return builder.CreateLoad(llvmType(typeName(*mem)), fieldPtr, isVolatileAccess(*mem),
+                                      mem->member);
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
             if (un->op == "&") return emitObjectPtr(*un->operand);  // address-of: the object pointer
@@ -2226,8 +2244,8 @@ struct CodeGenerator::Impl {
             }
             initV = coerce(initV, typeName(*vd->init), declType);  // int -> float widening
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
-            builder.CreateStore(initV, slot);
-            locals[vd->name] = LocalSlot{slot, declType};
+            builder.CreateStore(initV, slot, vd->isVolatile);  // spec 37.5
+            locals[vd->name] = LocalSlot{slot, declType, vd->isVolatile};
             // RAII: a freshly built `new ... on stack` object with a destructor
             // gets cleaned up when the function returns.
             if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
@@ -2283,7 +2301,7 @@ struct CodeGenerator::Impl {
                 llvm::Value* sv = coerce(v, typeName(*assign->value), targetType);
                 if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
                     sv = maskBitField(sv, typeName(*mt->object), mt->member);  // bit-field (spec 11.1)
-                builder.CreateStore(sv, slot);
+                builder.CreateStore(sv, slot, isVolatileAccess(*assign->target));  // spec 37.5
             }
             return;
         }
@@ -2815,6 +2833,7 @@ struct CodeGenerator::Impl {
                                 layout.ownFields.emplace_back(f->name, ftype);
                                 if (f->isPersistent) layout.persistOrder.push_back(f->name);
                                 if (f->bitWidth > 0) layout.bitFieldWidth[f->name] = f->bitWidth;
+                                if (f->isVolatile) layout.volatileFields.insert(f->name);
                             }
                         } else if (const auto* m =
                                        dynamic_cast<const ast::MethodDecl*>(member.get())) {

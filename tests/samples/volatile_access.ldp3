@@ -1,0 +1,31 @@
+program VolatileAccess;
+
+// `volatile` (spec 37.5): the compiler must not optimize away reads or writes --
+// every read fetches and every write stores, for hardware registers / MMIO. It
+// does not change a single-threaded program's result, so this exercises that a
+// volatile field and a volatile local still round-trip their values correctly.
+
+public bundle main {
+    public namespace app {
+        public class Device {
+            private volatile mutable int reg;
+            public constructor Device() { this.reg = 0; }
+            public method poke(int v) returns void { this.reg = v; }
+            public method peek() returns int { return this.reg; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Device d = new Device() on heap;
+                d.poke(7);
+                d.poke(42);                         // last write must win (not folded away)
+                volatile mutable int sum = 0;
+                sum = sum + d.peek();               // volatile load of the register
+                sum = sum + d.peek();
+                System.IO.printf("reg=%d sum=%d\n", d.peek(), sum);
+                delete d;
+                return;
+            }
+        }
+    }
+}

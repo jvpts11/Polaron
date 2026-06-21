@@ -602,6 +602,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isPersistent = false;
     bool isEternal = false;
     bool isTransient = false;
+    bool isVolatile = false;
     for (;;) {
         if (!isStatic && check(TokenKind::KwStatic)) {
             advance();
@@ -643,6 +644,11 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isTransient = true;
             continue;
         }
+        if (!isVolatile && check(TokenKind::KwVolatile)) {
+            advance();
+            isVolatile = true;
+            continue;
+        }
         break;
     }
     if (check(TokenKind::KwMethod)) {
@@ -660,7 +666,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     }
     // Otherwise it is a field:  <type> <name> ;
     return parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
-                      isTransient);
+                      isTransient, isVolatile);
 }
 
 // `operator <op> (params) returns T { body }` (spec 6.5). Modeled as a method
@@ -738,7 +744,8 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
 }
 
 ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable,
-                                  bool isPersistent, bool isEternal, bool isTransient) {
+                                  bool isPersistent, bool isEternal, bool isTransient,
+                                  bool isVolatile) {
     const SourceLocation loc = current().loc;
     ast::TypeRef type = parseTypeRef();
     const std::string name = expect(TokenKind::Identifier, "a field name").lexeme;
@@ -754,6 +761,7 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->isPersistent = isPersistent;
     f->isEternal = isEternal;
     f->isTransient = isTransient;
+    f->isVolatile = isVolatile;
     f->type = std::move(type);
     f->name = name;
     // Bit-field width: `field : N` (spec 11.1). Constrains the stored value to N bits.
@@ -1141,6 +1149,7 @@ ast::StmtPtr Parser::parseStatement() {
           peek(3).kind == TokenKind::Identifier));
     if (check(TokenKind::KwFinal) || check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
         check(TokenKind::KwPersistent) || check(TokenKind::KwEternal) ||
+        check(TokenKind::KwVolatile) ||  // spec 37.5: volatile local
         check(TokenKind::KwFunction) ||  // function<Ret, Params...> local
         isTypeKeyword(current().kind) || classVarDecl || looksLikeGenericVarDecl()) {
         return parseVarDecl();
@@ -1448,8 +1457,10 @@ ast::ExprPtr Parser::parseMatchExpr() {
 std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
     auto decl = std::make_unique<ast::VarDeclStmt>();
     decl->loc = current().loc;
-    while (check(TokenKind::KwPersistent) || check(TokenKind::KwEternal)) {
+    while (check(TokenKind::KwPersistent) || check(TokenKind::KwEternal) ||
+           check(TokenKind::KwVolatile)) {
         if (match(TokenKind::KwPersistent)) decl->isPersistent = true;
+        else if (match(TokenKind::KwVolatile)) decl->isVolatile = true;  // spec 37.5
         else { advance(); decl->isEternal = true; }  // eternal [persistent]
     }
     if (match(TokenKind::KwFinal)) {  // final = explicitly immutable (the default)

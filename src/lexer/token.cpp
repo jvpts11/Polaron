@@ -74,6 +74,7 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwLiteral:       return "KwLiteral";
         case TokenKind::KwImport:        return "KwImport";
         case TokenKind::KwConst:         return "KwConst";
+        case TokenKind::KwVolatile:      return "KwVolatile";
 
         case TokenKind::KwIf:       return "KwIf";
         case TokenKind::KwElse:     return "KwElse";

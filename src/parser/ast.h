@@ -229,6 +229,7 @@ struct VarDeclStmt : Stmt {
     bool isVar = false;  // `var` type inference; `type` then unused
     bool isPersistent = false;  // spec 18: disk-backed local, retained across calls/runs
     bool isEternal = false;     // eternal persistent
+    bool isVolatile = false;    // spec 37.5: loads/stores are never optimized away
     TypeRef type;        // used when !isVar
     std::string name;
     ExprPtr init;        // M2: an initializer is required
@@ -475,6 +476,7 @@ struct FieldDecl : MemberDecl {
     bool isPersistent = false;  // spec 18: lifetime decoupled from the object (cross-run via disk)
     bool isEternal = false;     // eternal persistent: never requires explicit release
     bool isTransient = false;   // excluded from serialization
+    bool isVolatile = false;    // spec 37.5: loads/stores are never optimized away
     TypeRef type;
     std::string name;
     int bitWidth = 0;  // `field : N` bit-field width (spec 11.1); 0 = not a bit-field
