@@ -1,0 +1,21 @@
+program VarianceInvariantBad;
+
+// An invariant generic (no `out`/`in`) gives no subtyping between instantiations
+// (spec 15.3): Box<Dog> is NOT a Box<Animal>, so this assignment is rejected.
+
+public bundle main {
+    public namespace app {
+        public class Animal { public constructor Animal() {} }
+        public class Dog extends Animal { public constructor Dog() {} }
+        public class Box<T> { public constructor Box() {} }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box<Dog>* bd = new Box<Dog>() on heap;
+                Box<Animal>* ba = bd;        // invariant: must be rejected
+                delete bd;
+                return;
+            }
+        }
+    }
+}

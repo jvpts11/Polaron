@@ -147,6 +147,39 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
             if (cat == super || isSubtype(cat, super, depth + 1)) return true;
         }
     }
+    // Generic variance (spec 15.3): two instantiations of the same generic relate per
+    // the declared variance of each type parameter (covariant `out`, contravariant
+    // `in`, invariant otherwise). Instantiations are mangled "Base$arg[$arg...]".
+    if (const auto subD = sub.find('$'), supD = super.find('$');
+        subD != std::string::npos && supD != std::string::npos &&
+        sub.compare(0, subD, super, 0, supD) == 0) {
+        if (auto vit = genericVariance_.find(sub.substr(0, subD)); vit != genericVariance_.end()) {
+            auto split = [](const std::string& s) {
+                std::vector<std::string> out;
+                std::size_t i = 0;
+                while (i < s.size()) {
+                    std::size_t j = s.find('$', i);
+                    if (j == std::string::npos) j = s.size();
+                    out.push_back(s.substr(i, j - i));
+                    i = j + 1;
+                }
+                return out;
+            };
+            const std::vector<std::string> subArgs = split(sub.substr(subD + 1));
+            const std::vector<std::string> supArgs = split(super.substr(supD + 1));
+            if (subArgs.size() == supArgs.size() && subArgs.size() == vit->second.size()) {
+                bool ok = true;
+                for (std::size_t i = 0; i < subArgs.size() && ok; ++i) {
+                    if (subArgs[i] == supArgs[i]) continue;
+                    const std::string& var = vit->second[i];
+                    if (var == "out") ok = isSubtype(subArgs[i], supArgs[i], depth + 1);
+                    else if (var == "in") ok = isSubtype(supArgs[i], subArgs[i], depth + 1);
+                    else ok = false;  // invariant: arguments must be identical
+                }
+                if (ok) return true;
+            }
+        }
+    }
     const ClassInfo* c = lookupClass(sub);
     if (c == nullptr) return false;
     if (!c->superclass.empty() && isSubtype(c->superclass, super, depth + 1)) return true;
@@ -689,6 +722,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
 }
 
 bool SemanticAnalyzer::analyze(const ast::Program& program) {
+    genericVariance_ = program.genericVariance;  // variance of generic type params (spec 15.3)
     registerClasses(program);
     registerCatalogs(program);  // before enums: registerEnums records enum->catalog edges
     registerEnums(program);

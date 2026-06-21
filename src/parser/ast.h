@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -511,6 +512,8 @@ struct ClassDecl {
     std::string visibility;
     std::string name;
     std::vector<std::string> typeParams;  // generic parameters, e.g. Box<T> -> ["T"]
+    // Variance per type param (spec 15.3): "out" covariant, "in" contravariant, "" invariant.
+    std::vector<std::string> typeParamVariance;
     // Constraint per type param, if any: (param, bound) from `<T extends X>` / `<T implements I>`.
     std::vector<std::pair<std::string, std::string>> typeParamBounds;
     bool isInterface = false;             // declared with `interface`
@@ -525,6 +528,7 @@ struct ClassDecl {
     std::string superclass;               // "" when none (from `extends`)
     std::vector<std::string> superclassTypeArgs;  // type args on `extends Base<...>` (generics)
     std::vector<std::string> interfaces;  // from `implements`
+    std::vector<std::vector<std::string>> interfaceTypeArgs;  // type args per interface (generics)
     std::vector<std::string> permits;     // sealed permits list (subtypes)
     std::vector<ExprPtr> invariants;      // class invariants (spec 29), checked per method
     std::vector<MemberPtr> members;
@@ -621,6 +625,10 @@ struct Bundle {
 struct Program {
     std::string name;
     std::vector<Bundle> bundles;
+    // Variance of each generic's type params (spec 15.3), recorded by monomorphize
+    // before templates are dropped, so the analyzer can apply variance subtyping to
+    // the surviving concrete instantiations. Keyed by the generic's (mangled) name.
+    std::map<std::string, std::vector<std::string>> genericVariance;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

@@ -1,0 +1,29 @@
+program VarianceContravariant;
+
+// Declaration-site contravariance (spec 15.3): `Consumer<in T>` consumes T, so a
+// Consumer<Animal> may be used where a Consumer<Dog> is expected.
+
+public bundle main {
+    public namespace app {
+        public class Animal { public constructor Animal() {} }
+        public class Dog extends Animal { public constructor Dog() {} }
+
+        public interface Consumer<in T> {
+            method tag() returns int;
+        }
+        public class AnimalConsumer implements Consumer<Animal> {
+            public constructor AnimalConsumer() {}
+            public override method tag() returns int { return 9; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Consumer<Animal>* ca = new AnimalConsumer() on heap;
+                Consumer<Dog>* cd = ca;             // contravariance: Consumer<Animal> <: Consumer<Dog>
+                System.IO.printf("tag=%d\n", cd.tag());
+                delete ca;
+                return;
+            }
+        }
+    }
+}

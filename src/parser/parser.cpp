@@ -454,18 +454,21 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     // Generic parameters: class Box<T>, class Pair<K, V>.
     if (match(TokenKind::Lt)) {
         do {
-            // Variance marker (spec 15): <out T> covariant, <in T> contravariant. With
-            // monomorphization each instantiation is a distinct concrete type, so variance
-            // imposes no subtyping and is a no-op; accept and skip it. Only consume out/in
-            // when a parameter name follows, so a parameter literally named "out" still works.
+            // Variance marker (spec 15.3): <out T> covariant, <in T> contravariant,
+            // <T> invariant. Only consume out/in when a parameter name follows, so a
+            // parameter literally named "out" still works.
+            std::string variance;
             if (check(TokenKind::KwIn) && peek(1).kind == TokenKind::Identifier) {
                 advance();
+                variance = "in";
             } else if (check(TokenKind::Identifier) && current().lexeme == "out" &&
                        peek(1).kind == TokenKind::Identifier) {
                 advance();
+                variance = "out";
             }
             const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
             c.typeParams.push_back(tp);
+            c.typeParamVariance.push_back(variance);
             // Constraint (spec 15.2): `<T extends Base>` or `<T implements Iface>`.
             if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {
                 c.typeParamBounds.push_back(
@@ -498,12 +501,14 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     if (match(TokenKind::KwImplements)) {
         do {
             c.interfaces.push_back(expect(TokenKind::Identifier, "an interface name").lexeme);
-            if (match(TokenKind::Lt)) {  // generic interface args (skipped for now)
+            std::vector<std::string> args;  // generic interface args: implements Producer<Dog>
+            if (match(TokenKind::Lt)) {
                 do {
-                    expect(TokenKind::Identifier, "a type argument");
+                    args.push_back(expect(TokenKind::Identifier, "a type argument").lexeme);
                 } while (match(TokenKind::Comma));
                 expect(TokenKind::Gt, "'>' to close type arguments");
             }
+            c.interfaceTypeArgs.push_back(std::move(args));
         } while (match(TokenKind::Comma));
     }
     // `sealed ... permits A, B, C`: only the listed types may extend it (spec 12/16).

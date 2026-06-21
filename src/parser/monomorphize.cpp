@@ -531,6 +531,14 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
         c.superclassTypeArgs.push_back(it != s.end() ? it->second : a);
     }
     c.interfaces = d.interfaces;
+    for (const auto& argList : d.interfaceTypeArgs) {  // substitute T in `implements Iface<T>`
+        std::vector<std::string> sub;
+        for (const auto& a : argList) {
+            auto it = s.find(a);
+            sub.push_back(it != s.end() ? it->second : a);
+        }
+        c.interfaceTypeArgs.push_back(std::move(sub));
+    }
     for (const auto& m : d.members) c.members.push_back(cloneMember(m.get(), s));
     return c;
 }
@@ -617,6 +625,12 @@ void collectClass(const ast::ClassDecl& c, const std::set<std::string>& g, InstM
         } else if (const auto* x = dynamic_cast<const ast::DestructorDecl*>(m.get())) {
             collectBlock(x->body, g, out);
         }
+    }
+    // A generic interface used in `implements Iface<Args>` is an instantiation too.
+    for (std::size_t k = 0; k < c.interfaceTypeArgs.size() && k < c.interfaces.size(); ++k) {
+        const auto& args = c.interfaceTypeArgs[k];
+        if (!args.empty() && g.count(c.interfaces[k]) > 0)
+            out[ast::mangleGeneric(c.interfaces[k], args)] = {c.interfaces[k], args};
     }
 }
 
@@ -905,6 +919,7 @@ void qualifyNamespaces(ast::Program& program) {
                 const std::string newName = subst.count(c.name) ? subst[c.name] : c.name;
                 ast::ClassDecl rewritten = cloneClass(c, subst, newName);
                 rewritten.typeParams = c.typeParams;  // cloneClass drops these; keep generics generic
+                rewritten.typeParamVariance = c.typeParamVariance;
                 // cloneClass does not run these name fields through the subst:
                 if (auto it = subst.find(rewritten.superclass); it != subst.end())
                     rewritten.superclass = it->second;
@@ -933,6 +948,10 @@ bool monomorphize(ast::Program& program) {
                 if (!c.typeParams.empty()) {
                     templates[c.name] = &c;
                     generics.insert(c.name);
+                    // Record variance (spec 15.3) before the template is dropped, so the
+                    // analyzer can apply variance subtyping to the concrete instantiations.
+                    if (!c.typeParamVariance.empty())
+                        program.genericVariance[c.name] = c.typeParamVariance;
                 }
     // No generic classes: still expand any generic methods, then done.
     if (templates.empty()) {
@@ -1026,9 +1045,16 @@ bool monomorphize(ast::Program& program) {
     // extends Base$int). Applies to generated and plain classes alike.
     for (auto& b : program.bundles)
         for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes)
+            for (auto& c : ns.classes) {
                 if (!c.superclassTypeArgs.empty())
                     c.superclass = ast::mangleGeneric(c.superclass, c.superclassTypeArgs);
+                // `implements Iface<Args>` now refers to the concrete instantiation.
+                for (std::size_t k = 0;
+                     k < c.interfaceTypeArgs.size() && k < c.interfaces.size(); ++k)
+                    if (!c.interfaceTypeArgs[k].empty())
+                        c.interfaces[k] =
+                            ast::mangleGeneric(c.interfaces[k], c.interfaceTypeArgs[k]);
+            }
     // Generic methods live on both plain and monomorphized classes; expand them
     // now that every concrete class (and its cloned bodies) exists.
     expandGenericMethods(program);

@@ -78,6 +78,12 @@ add_test(NAME sema_rejects_unreleased_persistent
 set_tests_properties(sema_rejects_unreleased_persistent PROPERTIES
     PASS_REGULAR_EXPRESSION "no 'release persistent'")
 
+# an invariant generic gives no subtyping between instantiations (spec 15.3).
+add_test(NAME sema_rejects_invariant_assign
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/variance_invariant_bad.ldp3")
+set_tests_properties(sema_rejects_invariant_assign PROPERTIES
+    PASS_REGULAR_EXPRESSION "Box.Animal")
+
 # extending a sealed type's permitted variant must be rejected (variants are final),
 # else match's exhaustiveness assumption is unsound.
 add_test(NAME sema_rejects_extend_permit
@@ -1444,6 +1450,23 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_raii.ldp3"
             "-DEXPECTED=a = 5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # generic variance (spec 15.3): covariant `out` and contravariant `in` make
+        # a Producer<Dog>/Consumer<Animal> usable as Producer<Animal>/Consumer<Dog>.
+        add_test(NAME codegen_variance_covariant_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/variance_covariant.ldp3"
+            "-DEXPECTED=make=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_variance_contravariant_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/variance_contravariant.ldp3"
+            "-DEXPECTED=tag=9"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()

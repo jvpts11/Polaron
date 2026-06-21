@@ -1,0 +1,30 @@
+program VarianceCovariant;
+
+// Declaration-site covariance (spec 15.3): `Producer<out T>` produces T, so a
+// Producer<Dog> may be used where a Producer<Animal> is expected. (Also exercises
+// implementing a generic interface, `implements Producer<Dog>`.)
+
+public bundle main {
+    public namespace app {
+        public class Animal { public constructor Animal() {} }
+        public class Dog extends Animal { public constructor Dog() {} }
+
+        public interface Producer<out T> {
+            method make() returns int;
+        }
+        public class DogProducer implements Producer<Dog> {
+            public constructor DogProducer() {}
+            public override method make() returns int { return 7; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Producer<Dog>* pd = new DogProducer() on heap;
+                Producer<Animal>* pa = pd;          // covariance: Producer<Dog> <: Producer<Animal>
+                System.IO.printf("make=%d\n", pa.make());
+                delete pd;
+                return;
+            }
+        }
+    }
+}
