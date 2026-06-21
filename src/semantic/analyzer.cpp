@@ -76,12 +76,15 @@ std::vector<std::string> tupleElems(const std::string& t) {
 // Compile-time constant evaluators (spec 28); defined further below, but declared
 // here so const registration (above their definitions) can call them.
 static bool evalConstInt(const ast::Expr& e, long long& out,
-                         const std::unordered_map<std::string, long long>* consts,
-                         const std::unordered_map<std::string, const ast::MethodDecl*>* methods);
+                         const std::unordered_map<std::string, long long>* consts = nullptr,
+                         const std::unordered_map<std::string, const ast::MethodDecl*>* methods =
+                             nullptr,
+                         const std::unordered_map<std::string, double>* dconsts = nullptr);
 static bool evalConstDouble(const ast::Expr& e, double& out,
                             const std::unordered_map<std::string, double>* dconsts,
                             const std::unordered_map<std::string, long long>* iconsts,
-                            const std::unordered_map<std::string, const ast::MethodDecl*>* methods);
+                            const std::unordered_map<std::string, const ast::MethodDecl*>* methods =
+                                nullptr);
 
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
     errors_.push_back(SemaError{std::move(message), loc});
@@ -872,7 +875,7 @@ void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
                         constDoubles_[c.name] = d;
                 } else {
                     long long v;
-                    if (!evalConstInt(*c.init, v, &constInts_, &comptimeMethods_))
+                    if (!evalConstInt(*c.init, v, &constInts_, &comptimeMethods_, &constDoubles_))
                         error("const '" + c.name + "' initializer must be a compile-time constant",
                               c.loc);
                     else
@@ -1138,63 +1141,33 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, SourceLocation
 // delegating to the shared comptime evaluator so consts and `comptime` method calls
 // resolve uniformly. `consts`/`methods` are optional resolution tables.
 static bool evalConstInt(const ast::Expr& e, long long& out,
-                         const std::unordered_map<std::string, long long>* consts = nullptr,
-                         const std::unordered_map<std::string, const ast::MethodDecl*>* methods =
-                             nullptr) {
+                         const std::unordered_map<std::string, long long>* consts,
+                         const std::unordered_map<std::string, const ast::MethodDecl*>* methods,
+                         const std::unordered_map<std::string, double>* dconsts) {
     comptime::Context ctx;
     ctx.consts = consts;
+    ctx.dconsts = dconsts;  // so a double const in e.g. a comparison still resolves
     ctx.methods = methods;
     return comptime::evalInt(e, out, ctx);
 }
 
-// Evaluates a constant floating-point expression at compile time. Integer consts
-// and literals promote to double. Returns false if it is not a compile-time
-// numeric constant.
+// Evaluates a constant floating-point expression at compile time (integers promote),
+// resolving consts and `comptime` method calls via the shared evaluator.
 static bool evalConstDouble(const ast::Expr& e, double& out,
                             const std::unordered_map<std::string, double>* dconsts,
                             const std::unordered_map<std::string, long long>* iconsts,
-                            const std::unordered_map<std::string, const ast::MethodDecl*>* methods =
-                                nullptr) {
-    if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(&e)) {
-        std::string s;
-        for (char ch : f->text)
-            if (ch != '_' && ch != 'f' && ch != 'F') s += ch;
-        try { out = std::stod(s); return true; } catch (...) { return false; }
-    }
-    long long iv;
-    if (evalConstInt(e, iv, iconsts, methods)) { out = static_cast<double>(iv); return true; }
-    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
-        if (dconsts == nullptr) return false;
-        auto it = dconsts->find(id->name);
-        if (it == dconsts->end()) return false;
-        out = it->second;
-        return true;
-    }
-    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
-        double v;
-        if (u->op == "-" && evalConstDouble(*u->operand, v, dconsts, iconsts)) { out = -v; return true; }
-        return false;
-    }
-    if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
-        double l, r;
-        if (!evalConstDouble(*bin->lhs, l, dconsts, iconsts) ||
-            !evalConstDouble(*bin->rhs, r, dconsts, iconsts))
-            return false;
-        const std::string& op = bin->op;
-        if (op == "+") out = l + r;
-        else if (op == "-") out = l - r;
-        else if (op == "*") out = l * r;
-        else if (op == "/") { if (r == 0.0) return false; out = l / r; }
-        else return false;
-        return true;
-    }
-    return false;
+                            const std::unordered_map<std::string, const ast::MethodDecl*>* methods) {
+    comptime::Context ctx;
+    ctx.consts = iconsts;
+    ctx.dconsts = dconsts;
+    ctx.methods = methods;
+    return comptime::evalDouble(e, out, ctx);
 }
 
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* sa = dynamic_cast<const ast::StaticAssertStmt*>(&stmt)) {
         long long v;
-        if (!evalConstInt(*sa->condition, v, &constInts_, &comptimeMethods_))
+        if (!evalConstInt(*sa->condition, v, &constInts_, &comptimeMethods_, &constDoubles_))
             error("static_assert requires a constant expression", sa->loc);
         else if (v == 0)
             error("static assertion failed: " + sa->message, sa->loc);
@@ -1303,7 +1276,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         if (ifs->isComptime) {
             long long v;
-            if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_))
+            if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_, &constDoubles_))
                 error("'comptime if' requires a compile-time constant condition", ifs->loc);
         }
         analyzeBlock(ifs->thenBlock);

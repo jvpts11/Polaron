@@ -1,0 +1,31 @@
+program ComptimeDouble;
+
+// `comptime` methods may return floating-point values (spec 28.3): the evaluator
+// is numeric (int/double), so a mixed-type body (int counter, double accumulator)
+// folds at compile time into a `const double`.
+
+public bundle main {
+    public namespace app {
+        public class Math {
+            public static comptime method scale(int n, float64 factor) returns float64 {
+                mutable float64 acc = 0.0;
+                for (mutable int i = 0; i < n; i++) {
+                    acc = acc + factor;
+                }
+                return acc;
+            }
+            public static comptime method half(int x) returns float64 { return x * 0.5; }
+        }
+
+        public const double TOTAL = Math.scale(3, 1.5);   // 4.5
+        public const double H = Math.half(7);             // 3.5
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.printf("total=%d half=%d\n",
+                                 cast<int>(TOTAL * 100.0), cast<int>(H * 100.0));
+                return;
+            }
+        }
+    }
+}

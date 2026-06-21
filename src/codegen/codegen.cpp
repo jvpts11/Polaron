@@ -3132,46 +3132,21 @@ struct CodeGenerator::Impl {
     // Folds a constant integer/boolean/char expression, resolving references to
     // namespace-level consts and `comptime` method calls (spec 28) via the shared
     // evaluator. Returns false if not a compile-time integer constant.
-    bool foldConstInt(const ast::Expr& e, long long& out) {
+    comptime::Context comptimeCtx() {
         comptime::Context ctx;
         ctx.consts = &constIntVals;
+        ctx.dconsts = &constDblVals;
         ctx.methods = &comptimeMethods;
+        return ctx;
+    }
+    bool foldConstInt(const ast::Expr& e, long long& out) {
+        comptime::Context ctx = comptimeCtx();
         return comptime::evalInt(e, out, ctx);
     }
-
-    // Folds a constant floating-point expression (int consts/literals promote).
+    // Folds a constant floating-point expression (int consts/literals/calls promote).
     bool foldConstDouble(const ast::Expr& e, double& out) {
-        if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(&e)) {
-            std::string s;
-            for (char ch : f->text)
-                if (ch != '_' && ch != 'f' && ch != 'F') s += ch;
-            try { out = std::stod(s); return true; } catch (...) { return false; }
-        }
-        long long iv;
-        if (foldConstInt(e, iv)) { out = static_cast<double>(iv); return true; }
-        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
-            auto it = constDblVals.find(id->name);
-            if (it == constDblVals.end()) return false;
-            out = it->second;
-            return true;
-        }
-        if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
-            double v;
-            if (u->op == "-" && foldConstDouble(*u->operand, v)) { out = -v; return true; }
-            return false;
-        }
-        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
-            double l, r;
-            if (!foldConstDouble(*bin->lhs, l) || !foldConstDouble(*bin->rhs, r)) return false;
-            const std::string& op = bin->op;
-            if (op == "+") out = l + r;
-            else if (op == "-") out = l - r;
-            else if (op == "*") out = l * r;
-            else if (op == "/") { if (r == 0.0) return false; out = l / r; }
-            else return false;
-            return true;
-        }
-        return false;
+        comptime::Context ctx = comptimeCtx();
+        return comptime::evalDouble(e, out, ctx);
     }
 
     // The materialized value of a namespace-level const, at its declared type.

@@ -6,10 +6,21 @@ namespace ldp3::comptime {
 
 namespace {
 
-using Env = std::unordered_map<std::string, long long>;
+// A compile-time number: either an integer or a double (tagged). Comparisons and
+// logical/bitwise ops produce integers; `/` and arithmetic promote to double when
+// either operand is double.
+struct Num {
+    bool isDouble = false;
+    long long i = 0;
+    double d = 0.0;
+    static Num I(long long v) { return {false, v, 0.0}; }
+    static Num D(double v) { return {true, 0, v}; }
+    double dbl() const { return isDouble ? d : static_cast<double>(i); }
+    bool truth() const { return isDouble ? (d != 0.0) : (i != 0); }
+};
 
-// Parses an integer literal lexeme, honoring 0x / 0b prefixes and digit separators
-// (mirrors the lexeme handling used elsewhere in the compiler).
+using Env = std::unordered_map<std::string, Num>;
+
 bool parseIntLexeme(const std::string& lexeme, long long& out) {
     std::string s;
     for (char c : lexeme)
@@ -31,6 +42,13 @@ bool parseIntLexeme(const std::string& lexeme, long long& out) {
     }
 }
 
+bool parseFloatLexeme(const std::string& lexeme, double& out) {
+    std::string s;
+    for (char ch : lexeme)
+        if (ch != '_' && ch != 'f' && ch != 'F') s += ch;
+    try { out = std::stod(s); return true; } catch (...) { return false; }
+}
+
 long long charValue(const std::string& s) {
     if (s.empty()) return 0;
     if (s[0] != '\\') return static_cast<unsigned char>(s[0]);
@@ -47,13 +65,11 @@ long long charValue(const std::string& s) {
     }
 }
 
-bool eval(const ast::Expr& e, long long& out, Context& ctx, const Env& env);
+bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env);
 
-// Executes one statement of a comptime method body. `returned`/`ret` carry an early
-// return out of the body. Returns false on any non-comptime construct or error.
-bool exec(const ast::Stmt& st, Context& ctx, Env& env, long long& ret, bool& returned);
+bool exec(const ast::Stmt& st, Context& ctx, Env& env, Num& ret, bool& returned);
 
-bool execBlock(const ast::Block& block, Context& ctx, Env& env, long long& ret, bool& returned) {
+bool execBlock(const ast::Block& block, Context& ctx, Env& env, Num& ret, bool& returned) {
     for (const ast::StmtPtr& s : block.statements) {
         if (!exec(*s, ctx, env, ret, returned)) return false;
         if (returned) return true;
@@ -62,14 +78,13 @@ bool execBlock(const ast::Block& block, Context& ctx, Env& env, long long& ret, 
 }
 
 // Calls a comptime method with already-evaluated argument values.
-bool callMethod(const ast::MethodDecl& m, const std::vector<long long>& args, long long& out,
-                Context& ctx) {
+bool callMethod(const ast::MethodDecl& m, const std::vector<Num>& args, Num& out, Context& ctx) {
     if (++ctx.steps > ctx.stepLimit) return false;
     if (++ctx.depth > ctx.depthLimit) { --ctx.depth; return false; }  // bound the native stack
     if (m.params.size() != args.size()) { --ctx.depth; return false; }
     Env env;
     for (std::size_t i = 0; i < m.params.size(); ++i) env[m.params[i].name] = args[i];
-    long long ret = 0;
+    Num ret;
     bool returned = false;
     const bool ok = execBlock(m.body, ctx, env, ret, returned);
     --ctx.depth;
@@ -78,63 +93,92 @@ bool callMethod(const ast::MethodDecl& m, const std::vector<long long>& args, lo
     return true;
 }
 
-bool eval(const ast::Expr& e, long long& out, Context& ctx, const Env& env) {
+bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
     if (++ctx.steps > ctx.stepLimit) return false;
 
-    if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&e)) return parseIntLexeme(n->text, out);
-    if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&e)) { out = b->value ? 1 : 0; return true; }
-    if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(&e)) { out = charValue(c->value); return true; }
+    if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&e)) {
+        long long v;
+        if (!parseIntLexeme(n->text, v)) return false;
+        out = Num::I(v);
+        return true;
+    }
+    if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(&e)) {
+        double v;
+        if (!parseFloatLexeme(f->text, v)) return false;
+        out = Num::D(v);
+        return true;
+    }
+    if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&e)) { out = Num::I(b->value ? 1 : 0); return true; }
+    if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(&e)) { out = Num::I(charValue(c->value)); return true; }
 
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
         if (auto it = env.find(id->name); it != env.end()) { out = it->second; return true; }
+        if (ctx.dconsts != nullptr) {
+            if (auto it = ctx.dconsts->find(id->name); it != ctx.dconsts->end()) { out = Num::D(it->second); return true; }
+        }
         if (ctx.consts != nullptr) {
-            if (auto it = ctx.consts->find(id->name); it != ctx.consts->end()) { out = it->second; return true; }
+            if (auto it = ctx.consts->find(id->name); it != ctx.consts->end()) { out = Num::I(it->second); return true; }
         }
         return false;
     }
 
     if (const auto* cast = dynamic_cast<const ast::CastExpr*>(&e)) {
-        // Integer casts are value-preserving here (comptime is the integer domain).
-        return eval(*cast->operand, out, ctx, env);
+        Num v;
+        if (!eval(*cast->operand, v, ctx, env)) return false;
+        // A cast to an integer type truncates; to a float type promotes.
+        const std::string& t = cast->targetType;
+        if (t == "float" || t == "float32" || t == "double" || t == "float64") out = Num::D(v.dbl());
+        else out = Num::I(v.isDouble ? static_cast<long long>(v.d) : v.i);
+        return true;
     }
 
     if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
-        long long v;
+        Num v;
         if (!eval(*u->operand, v, ctx, env)) return false;
-        if (u->op == "-") { out = -v; return true; }
-        if (u->op == "!") { out = v ? 0 : 1; return true; }
-        if (u->op == "~") { out = ~v; return true; }
+        if (u->op == "-") { out = v.isDouble ? Num::D(-v.d) : Num::I(-v.i); return true; }
+        if (u->op == "!") { out = Num::I(v.truth() ? 0 : 1); return true; }
+        if (u->op == "~") { if (v.isDouble) return false; out = Num::I(~v.i); return true; }
         return false;
     }
 
     if (const auto* t = dynamic_cast<const ast::TernaryExpr*>(&e)) {
-        long long c;
+        Num c;
         if (!eval(*t->cond, c, ctx, env)) return false;
-        return eval(c ? *t->thenExpr : *t->elseExpr, out, ctx, env);
+        return eval(c.truth() ? *t->thenExpr : *t->elseExpr, out, ctx, env);
     }
 
     if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
-        long long l, r;
+        Num l, r;
         if (!eval(*bin->lhs, l, ctx, env) || !eval(*bin->rhs, r, ctx, env)) return false;
         const std::string& op = bin->op;
-        if (op == "+") out = l + r;
-        else if (op == "-") out = l - r;
-        else if (op == "*") out = l * r;
-        else if (op == "/") { if (r == 0) return false; out = l / r; }
-        else if (op == "%") { if (r == 0) return false; out = l % r; }
-        else if (op == "==") out = (l == r) ? 1 : 0;
-        else if (op == "!=") out = (l != r) ? 1 : 0;
-        else if (op == "<") out = (l < r) ? 1 : 0;
-        else if (op == ">") out = (l > r) ? 1 : 0;
-        else if (op == "<=") out = (l <= r) ? 1 : 0;
-        else if (op == ">=") out = (l >= r) ? 1 : 0;
-        else if (op == "&&") out = (l && r) ? 1 : 0;
-        else if (op == "||") out = (l || r) ? 1 : 0;
-        else if (op == "&") out = l & r;
-        else if (op == "|") out = l | r;
-        else if (op == "^") out = l ^ r;
-        else if (op == "<<") out = l << r;
-        else if (op == ">>") out = l >> r;
+        const bool fp = l.isDouble || r.isDouble;
+        // Comparisons and logical operators yield an integer (boolean) result.
+        if (op == "==") { out = Num::I((fp ? l.dbl() == r.dbl() : l.i == r.i) ? 1 : 0); return true; }
+        if (op == "!=") { out = Num::I((fp ? l.dbl() != r.dbl() : l.i != r.i) ? 1 : 0); return true; }
+        if (op == "<")  { out = Num::I((fp ? l.dbl() < r.dbl()  : l.i < r.i)  ? 1 : 0); return true; }
+        if (op == ">")  { out = Num::I((fp ? l.dbl() > r.dbl()  : l.i > r.i)  ? 1 : 0); return true; }
+        if (op == "<=") { out = Num::I((fp ? l.dbl() <= r.dbl() : l.i <= r.i) ? 1 : 0); return true; }
+        if (op == ">=") { out = Num::I((fp ? l.dbl() >= r.dbl() : l.i >= r.i) ? 1 : 0); return true; }
+        if (op == "&&") { out = Num::I((l.truth() && r.truth()) ? 1 : 0); return true; }
+        if (op == "||") { out = Num::I((l.truth() || r.truth()) ? 1 : 0); return true; }
+        if (fp) {  // floating-point arithmetic
+            if (op == "+") out = Num::D(l.dbl() + r.dbl());
+            else if (op == "-") out = Num::D(l.dbl() - r.dbl());
+            else if (op == "*") out = Num::D(l.dbl() * r.dbl());
+            else if (op == "/") { if (r.dbl() == 0.0) return false; out = Num::D(l.dbl() / r.dbl()); }
+            else return false;  // %, bitwise, shifts are integer-only
+            return true;
+        }
+        if (op == "+") out = Num::I(l.i + r.i);
+        else if (op == "-") out = Num::I(l.i - r.i);
+        else if (op == "*") out = Num::I(l.i * r.i);
+        else if (op == "/") { if (r.i == 0) return false; out = Num::I(l.i / r.i); }
+        else if (op == "%") { if (r.i == 0) return false; out = Num::I(l.i % r.i); }
+        else if (op == "&") out = Num::I(l.i & r.i);
+        else if (op == "|") out = Num::I(l.i | r.i);
+        else if (op == "^") out = Num::I(l.i ^ r.i);
+        else if (op == "<<") out = Num::I(l.i << r.i);
+        else if (op == ">>") out = Num::I(l.i >> r.i);
         else return false;
         return true;
     }
@@ -150,10 +194,10 @@ bool eval(const ast::Expr& e, long long& out, Context& ctx, const Env& env) {
             return false;
         auto mit = ctx.methods->find(name);
         if (mit == ctx.methods->end()) return false;
-        std::vector<long long> args;
+        std::vector<Num> args;
         args.reserve(call->args.size());
         for (const ast::ExprPtr& a : call->args) {
-            long long v;
+            Num v;
             if (!eval(*a, v, ctx, env)) return false;
             args.push_back(v);
         }
@@ -163,7 +207,7 @@ bool eval(const ast::Expr& e, long long& out, Context& ctx, const Env& env) {
     return false;
 }
 
-bool exec(const ast::Stmt& st, Context& ctx, Env& env, long long& ret, bool& returned) {
+bool exec(const ast::Stmt& st, Context& ctx, Env& env, Num& ret, bool& returned) {
     if (++ctx.steps > ctx.stepLimit) return false;
 
     if (const auto* r = dynamic_cast<const ast::ReturnStmt*>(&st)) {
@@ -173,7 +217,7 @@ bool exec(const ast::Stmt& st, Context& ctx, Env& env, long long& ret, bool& ret
         return true;
     }
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
-        long long v;
+        Num v;
         if (vd->init == nullptr || !eval(*vd->init, v, ctx, env)) return false;
         env[vd->name] = v;
         return true;
@@ -181,7 +225,7 @@ bool exec(const ast::Stmt& st, Context& ctx, Env& env, long long& ret, bool& ret
     if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
         const auto* id = dynamic_cast<const ast::IdentifierExpr*>(as->target.get());
         if (id == nullptr) return false;  // only local-variable assignment is comptime
-        long long v;
+        Num v;
         if (!eval(*as->value, v, ctx, env)) return false;
         env[id->name] = v;
         return true;
@@ -191,22 +235,23 @@ bool exec(const ast::Stmt& st, Context& ctx, Env& env, long long& ret, bool& ret
         if (id == nullptr) return false;
         auto it = env.find(id->name);
         if (it == env.end()) return false;
-        it->second += idc->isIncrement ? 1 : -1;
+        if (it->second.isDouble) it->second.d += idc->isIncrement ? 1.0 : -1.0;
+        else it->second.i += idc->isIncrement ? 1 : -1;
         return true;
     }
     if (const auto* iff = dynamic_cast<const ast::IfStmt*>(&st)) {
-        long long c;
+        Num c;
         if (!eval(*iff->cond, c, ctx, env)) return false;
-        if (c) return execBlock(iff->thenBlock, ctx, env, ret, returned);
+        if (c.truth()) return execBlock(iff->thenBlock, ctx, env, ret, returned);
         if (iff->elseBlock) return execBlock(*iff->elseBlock, ctx, env, ret, returned);
         return true;
     }
     if (const auto* w = dynamic_cast<const ast::WhileStmt*>(&st)) {
         for (;;) {
             if (++ctx.steps > ctx.stepLimit) return false;
-            long long c;
+            Num c;
             if (!eval(*w->cond, c, ctx, env)) return false;
-            if (!c) return true;
+            if (!c.truth()) return true;
             if (!execBlock(w->body, ctx, env, ret, returned)) return false;
             if (returned) return true;
         }
@@ -216,9 +261,9 @@ bool exec(const ast::Stmt& st, Context& ctx, Env& env, long long& ret, bool& ret
             if (++ctx.steps > ctx.stepLimit) return false;
             if (!execBlock(dw->body, ctx, env, ret, returned)) return false;
             if (returned) return true;
-            long long c;
+            Num c;
             if (!eval(*dw->cond, c, ctx, env)) return false;
-            if (!c) return true;
+            if (!c.truth()) return true;
         }
     }
     if (const auto* f = dynamic_cast<const ast::ForStmt*>(&st)) {
@@ -227,9 +272,9 @@ bool exec(const ast::Stmt& st, Context& ctx, Env& env, long long& ret, bool& ret
         for (;;) {
             if (++ctx.steps > ctx.stepLimit) return false;
             if (f->cond != nullptr) {
-                long long c;
+                Num c;
                 if (!eval(*f->cond, c, ctx, env)) return false;
-                if (!c) return true;
+                if (!c.truth()) return true;
             }
             if (!execBlock(f->body, ctx, env, ret, returned)) return false;
             if (returned) return true;
@@ -237,7 +282,7 @@ bool exec(const ast::Stmt& st, Context& ctx, Env& env, long long& ret, bool& ret
         }
     }
     if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
-        long long v;
+        Num v;
         return eval(*es->expr, v, ctx, env);  // a call evaluated for its (pure) value
     }
     return false;  // any other statement is not comptime-evaluable
@@ -246,7 +291,18 @@ bool exec(const ast::Stmt& st, Context& ctx, Env& env, long long& ret, bool& ret
 }  // namespace
 
 bool evalInt(const ast::Expr& e, long long& out, Context& ctx) {
-    return eval(e, out, ctx, Env{});
+    Num n;
+    if (!eval(e, n, ctx, Env{})) return false;
+    if (n.isDouble) return false;  // an integer context rejects a double result
+    out = n.i;
+    return true;
+}
+
+bool evalDouble(const ast::Expr& e, double& out, Context& ctx) {
+    Num n;
+    if (!eval(e, n, ctx, Env{})) return false;
+    out = n.dbl();
+    return true;
 }
 
 }  // namespace ldp3::comptime
