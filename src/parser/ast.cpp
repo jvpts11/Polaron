@@ -142,6 +142,11 @@ void ReleaseStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Release region " + region);
 }
 
+void CascadeMoveStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "CascadeMove from " + fromRegion + " to " + toRegion);
+    if (target) target->dump(out, indent + 1);
+}
+
 void MatchStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Match");
     subject->dump(out, indent + 1);

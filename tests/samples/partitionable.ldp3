@@ -1,0 +1,22 @@
+program Partitionable;
+
+// `partitionable` (spec 19.9): a class whose fields may be moved separately. It
+// combines with `movable` but not with `unique`. Here it simply compiles and runs.
+
+public bundle main {
+    public namespace app {
+        public partitionable class Tree {
+            private mutable int value;
+            public constructor Tree(int v) { this.value = v; }
+            public method get() returns int { return this.value; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Tree t = new Tree(5) on heap;
+                System.IO.printf("value=%d\n", t.get());
+                delete t;
+                return;
+            }
+        }
+    }
+}

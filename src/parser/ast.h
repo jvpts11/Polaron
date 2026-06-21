@@ -231,6 +231,16 @@ struct ReleaseStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// `cascade move tree from region A to region B [leaving persistents];` (spec 19.8):
+// moves an object and the graph it owns from one region to another.
+struct CascadeMoveStmt : Stmt {
+    ExprPtr target;            // the object (an lvalue) to move
+    std::string fromRegion;
+    std::string toRegion;
+    bool leavingPersistents = false;
+    void dump(std::string& out, int indent) const override;
+};
+
 struct VarDeclStmt : Stmt {
     bool isMutable = false;
     bool isVar = false;  // `var` type inference; `type` then unused
@@ -527,6 +537,7 @@ struct ClassDecl {
     bool isSealed = false;                // `sealed` -- only `permits` types may extend it
     bool isMovable = false;               // `movable class` -- move discipline
     bool isUnique = false;                // `unique class` -- single live reference
+    bool isPartitionable = false;         // `partitionable class` -- fields movable separately (spec 19.9)
     std::string superclass;               // "" when none (from `extends`)
     std::vector<std::string> superclassTypeArgs;  // type args on `extends Base<...>` (generics)
     std::vector<std::string> interfaces;  // from `implements`

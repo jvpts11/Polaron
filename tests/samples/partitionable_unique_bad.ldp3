@@ -1,0 +1,19 @@
+program PartitionableUniqueBad;
+
+// `unique` and `partitionable` are contradictory (spec 19.9): unique keeps a
+// single live reference to the whole object; partitionable hands out independent
+// references to its parts. The compiler rejects the combination.
+
+public bundle main {
+    public namespace app {
+        public unique partitionable class Tree {
+            private mutable int value;
+            public constructor Tree() { this.value = 0; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                return;
+            }
+        }
+    }
+}

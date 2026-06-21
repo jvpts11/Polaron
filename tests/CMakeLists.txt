@@ -84,6 +84,12 @@ add_test(NAME sema_rejects_invariant_assign
 set_tests_properties(sema_rejects_invariant_assign PROPERTIES
     PASS_REGULAR_EXPRESSION "Box.Animal")
 
+# `unique partitionable` is contradictory and must be rejected (spec 19.9).
+add_test(NAME sema_rejects_unique_partitionable
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/partitionable_unique_bad.ldp3")
+set_tests_properties(sema_rejects_unique_partitionable PROPERTIES
+    PASS_REGULAR_EXPRESSION "contradictory")
+
 # extending a sealed type's permitted variant must be rejected (variants are final),
 # else match's exhaustiveness assumption is unsound.
 add_test(NAME sema_rejects_extend_permit
@@ -1438,6 +1444,25 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/qualified_explicit.ldp3"
             "-DEXPECTED=app=1 lib=2"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # partitionable (spec 19.9): a partitionable class compiles and runs.
+        add_test(NAME codegen_partitionable_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/partitionable.ldp3"
+            "-DEXPECTED=value=5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # cascade move (spec 19.8): a graph moved to another region survives the
+        # release of the source region.
+        add_test(NAME codegen_cascade_move_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/cascade_move.ldp3"
+            "-DEXPECTED=id=42 v=7"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

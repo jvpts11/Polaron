@@ -57,6 +57,7 @@ struct ClassInfo {
     bool isSealed = false;   // only `permits` types may extend it
     bool isMovable = false;  // move discipline
     bool isUnique = false;   // single-live-reference discipline
+    bool isPartitionable = false;  // fields movable separately (spec 19.9)
     bool hasConstructor = false;
     bool hasDestructor = false;
     std::vector<std::string> permits;  // sealed permits list

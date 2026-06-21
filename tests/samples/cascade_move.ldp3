@@ -1,0 +1,35 @@
+program CascadeMove;
+
+// `cascade move` (spec 19.8) moves an object and the graph it owns from one region
+// to another. After moving `t` from `old` to `fresh` and releasing `old`, the
+// object (and its owned Leaf) survive because they now live in `fresh`.
+
+public bundle main {
+    import System.Memory.Units.kilobytes;
+
+    public namespace app {
+        public class Leaf {
+            public mutable int v;
+            public constructor Leaf() { this.v = 0; }
+        }
+        public class Tree {
+            public mutable int id;
+            public mutable Leaf leaf;
+            public constructor Tree() { this.id = 0; this.leaf = new Leaf() on heap; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                region old = itself.allocate(1 kilobytes);
+                region fresh = itself.allocate(1 kilobytes);
+                Tree* t = new Tree() in region old;
+                t.id = 42;
+                t.leaf.v = 7;
+                cascade move t from region old to region fresh;   // move the graph to fresh
+                release region old;                                // old freed; t lives in fresh
+                System.IO.printf("id=%d v=%d\n", t.id, t.leaf.v);
+                release region fresh;
+                return;
+            }
+        }
+    }
+}

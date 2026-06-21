@@ -440,6 +440,7 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     } else if (match(TokenKind::KwUnique)) {
         c.isUnique = true;
     }
+    if (match(TokenKind::KwPartitionable)) c.isPartitionable = true;  // spec 19.9
     if (match(TokenKind::KwInterface)) {
         c.isInterface = true;
         c.isAbstract = true;  // interfaces are abstract by nature
@@ -1144,11 +1145,36 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return ret;
     }
+    // `cascade move tree from region A to region B [leaving persistents];` (spec 19.8).
+    if (check(TokenKind::KwCascade) && peek(1).kind == TokenKind::KwMove) {
+        auto cm = std::make_unique<ast::CascadeMoveStmt>();
+        cm->loc = current().loc;
+        advance();  // 'cascade'
+        advance();  // 'move'
+        cm->target = parseExpression();
+        if (!(check(TokenKind::Identifier) && current().lexeme == "from"))
+            fail("expected 'from' in cascade move", current().loc);
+        advance();  // 'from'
+        expect(TokenKind::KwRegion, "'region' after 'from'");
+        cm->fromRegion = expect(TokenKind::Identifier, "the source region name").lexeme;
+        if (!(check(TokenKind::Identifier) && current().lexeme == "to"))
+            fail("expected 'to' in cascade move", current().loc);
+        advance();  // 'to'
+        expect(TokenKind::KwRegion, "'region' after 'to'");
+        cm->toRegion = expect(TokenKind::Identifier, "the destination region name").lexeme;
+        if (check(TokenKind::Identifier) && current().lexeme == "leaving") {
+            advance();  // 'leaving'
+            if (check(TokenKind::Identifier) && current().lexeme == "persistents") advance();
+            cm->leavingPersistents = true;
+        }
+        expect(TokenKind::Semicolon, "';'");
+        return cm;
+    }
     if (check(TokenKind::KwCascade) || check(TokenKind::KwDelete)) {
         auto del = std::make_unique<ast::DeleteStmt>();
         del->loc = current().loc;
         if (match(TokenKind::KwCascade)) del->isCascade = true;  // spec 37.1
-        expect(TokenKind::KwDelete, "'delete' (cascade currently applies only to delete)");
+        expect(TokenKind::KwDelete, "'delete' (cascade applies to delete or move)");
         del->target = parseExpression();
         expect(TokenKind::Semicolon, "';'");
         return del;

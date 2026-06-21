@@ -519,6 +519,49 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // `cascade move` (spec 19.8): copy `src` (a `cn` object) into `region` (bump-
+    // allocated), then recursively move the objects it owns by value composition,
+    // repointing the copy's field pointers. Returns the moved object's new address.
+    // The old objects are reclaimed when their source region is released.
+    llvm::Value* emitCascadeMove(llvm::Value* src, const std::string& cn, const std::string& region,
+                                 SourceLocation loc) {
+        auto cit = classes.find(cn);
+        if (cit == classes.end()) return src;  // not a class: leave the value as-is
+        llvm::Value* dst = emitRegionBumpAlloc(region, cit->second.type, loc);
+        if (dst == nullptr) return src;
+        builder.CreateCall(memcpyFn(), {dst, src, sizeOf(cit->second.type)});
+        std::unordered_set<std::string> seen;
+        for (std::string cur = cn; !cur.empty();) {
+            auto cc = classes.find(cur);
+            if (cc == classes.end()) break;
+            for (const auto& [fname, ftype] : cc->second.ownFields) {
+                if (!seen.insert(fname).second) continue;
+                if (ftype.find('*') != std::string::npos || ftype.find('&') != std::string::npos ||
+                    isArrayType(ftype))
+                    continue;  // an association: not moved (shared)
+                const std::string fcn = baseType(ftype);
+                if (classes.find(fcn) == classes.end()) continue;
+                auto idxIt = cit->second.fieldIndex.find(fname);
+                if (idxIt == cit->second.fieldIndex.end()) continue;
+                llvm::Value* fieldPtr =
+                    builder.CreateStructGEP(cit->second.type, dst, idxIt->second, fname);
+                llvm::Value* child = builder.CreateLoad(builder.getPtrTy(), fieldPtr, fname);
+                llvm::Function* fn = currentFn;
+                llvm::BasicBlock* doBB = llvm::BasicBlock::Create(context, "cmove.do", fn);
+                llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "cmove.cont", fn);
+                builder.CreateCondBr(
+                    builder.CreateICmpNE(child, llvm::ConstantPointerNull::get(builder.getPtrTy())),
+                    doBB, contBB);
+                builder.SetInsertPoint(doBB);
+                builder.CreateStore(emitCascadeMove(child, fcn, region, loc), fieldPtr);
+                builder.CreateBr(contBB);
+                builder.SetInsertPoint(contBB);
+            }
+            cur = cc->second.superclass;
+        }
+        return dst;
+    }
+
     // If a constructor body opens with `super(...)`, returns that call so the
     // prologue can forward its arguments to the base constructor.
     static const ast::CallExpr* explicitSuperCall(const ast::Block& body) {
@@ -2497,6 +2540,15 @@ struct CodeGenerator::Impl {
             llvm::Value* res =
                 incdec->isIncrement ? builder.CreateAdd(cur, one) : builder.CreateSub(cur, one);
             builder.CreateStore(res, slot);
+            return;
+        }
+        if (const auto* cm = dynamic_cast<const ast::CascadeMoveStmt*>(&stmt)) {
+            // Move the object graph into the destination region, then repoint the target.
+            const std::string cn = baseType(typeName(*cm->target));
+            llvm::Value* src = emitObjectPtr(*cm->target);
+            if (src == nullptr) return;
+            llvm::Value* dst = emitCascadeMove(src, cn, cm->toRegion, cm->loc);
+            if (llvm::Value* slot = emitLValue(*cm->target)) builder.CreateStore(dst, slot);
             return;
         }
         if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {

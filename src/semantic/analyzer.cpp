@@ -395,6 +395,15 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 info.permits = cls.permits;
                 info.isMovable = cls.isMovable;
                 info.isUnique = cls.isUnique;
+                info.isPartitionable = cls.isPartitionable;
+                // `unique` + `partitionable` is contradictory (spec 19.9): unique keeps a
+                // single live reference to the whole object; partitionable hands out
+                // independent references to its parts.
+                if (cls.isUnique && cls.isPartitionable)
+                    error("'unique' and 'partitionable' are contradictory: 'unique' guarantees a "
+                          "single live reference to the whole object, 'partitionable' allows moving "
+                          "its fields separately (spec 19.9)",
+                          cls.loc);
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
                         info.fields[f->name] = FieldInfo{typeRefStr(f->type), f->isMutable,
@@ -1395,6 +1404,17 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             error("unknown region '" + rel->region + "'", rel->loc);
         } else if (r->type != "region") {
             error("'" + rel->region + "' is not a region", rel->loc);
+        }
+        return;
+    }
+    if (const auto* cm = dynamic_cast<const ast::CascadeMoveStmt*>(&stmt)) {
+        const std::string t = typeOf(*cm->target);  // type-check the moved object
+        if (!t.empty() && lookupClass(baseType(t)) == nullptr)
+            error("'cascade move' expects a class object, got '" + t + "'", cm->loc);
+        for (const std::string& rn : {cm->fromRegion, cm->toRegion}) {
+            const LocalVar* rv = lookupLocal(rn);
+            if (rv == nullptr) error("unknown region '" + rn + "'", cm->loc);
+            else if (rv->type != "region") error("'" + rn + "' is not a region", cm->loc);
         }
         return;
     }

@@ -526,6 +526,7 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
     c.typeParamBounds = d.typeParamBounds;
     c.isMovable = d.isMovable;
     c.isUnique = d.isUnique;
+    c.isPartitionable = d.isPartitionable;
     c.superclass = d.superclass;
     for (const auto& a : d.superclassTypeArgs) {  // substitute T in `extends Base<T>`
         auto it = s.find(a);
