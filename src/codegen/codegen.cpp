@@ -460,20 +460,29 @@ struct CodeGenerator::Impl {
     void emitCascadeDelete(llvm::Value* objPtr, const std::string& cn) {
         auto cit = classes.find(cn);
         if (cit == classes.end()) { emitDeleteObject(objPtr, cn); return; }
-        // Read owned child pointers BEFORE freeing this object.
+        // Read owned child pointers BEFORE freeing this object. Walk the whole
+        // hierarchy so inherited value-typed class fields are cascaded too; the
+        // derived layout's fieldIndex addresses each field (own and inherited).
         std::vector<std::pair<llvm::Value*, std::string>> children;
-        for (const auto& [fname, ftype] : cit->second.ownFields) {
-            if (ftype.find('*') != std::string::npos || ftype.find('&') != std::string::npos ||
-                isArrayType(ftype))
-                continue;  // an association, not owned by value
-            const std::string fcn = baseType(ftype);
-            if (classes.find(fcn) == classes.end()) continue;  // not a class-typed field
-            auto idxIt = cit->second.fieldIndex.find(fname);
-            if (idxIt == cit->second.fieldIndex.end()) continue;
-            llvm::Value* childPtr = builder.CreateLoad(
-                builder.getPtrTy(),
-                builder.CreateStructGEP(cit->second.type, objPtr, idxIt->second, fname), fname);
-            children.emplace_back(childPtr, fcn);
+        std::unordered_set<std::string> seen;  // a shadowed name resolves to the most-derived
+        for (std::string cur = cn; !cur.empty();) {
+            auto cc = classes.find(cur);
+            if (cc == classes.end()) break;
+            for (const auto& [fname, ftype] : cc->second.ownFields) {
+                if (!seen.insert(fname).second) continue;
+                if (ftype.find('*') != std::string::npos || ftype.find('&') != std::string::npos ||
+                    isArrayType(ftype))
+                    continue;  // an association, not owned by value
+                const std::string fcn = baseType(ftype);
+                if (classes.find(fcn) == classes.end()) continue;  // not a class-typed field
+                auto idxIt = cit->second.fieldIndex.find(fname);
+                if (idxIt == cit->second.fieldIndex.end()) continue;
+                llvm::Value* childPtr = builder.CreateLoad(
+                    builder.getPtrTy(),
+                    builder.CreateStructGEP(cit->second.type, objPtr, idxIt->second, fname), fname);
+                children.emplace_back(childPtr, fcn);
+            }
+            cur = cc->second.superclass;
         }
         emitDeleteObject(objPtr, cn);
         for (const auto& [childPtr, fcn] : children) {

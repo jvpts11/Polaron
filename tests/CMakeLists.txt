@@ -1382,6 +1382,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # cascade delete also frees objects owned through INHERITED value fields.
+        add_test(NAME codegen_cascade_inherited_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/cascade_inherited.ldp3"
+            "-DEXPECTED=~Derived ~Base ~Leaf done"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # qualified names (F4): the same type name in two namespaces (app.Box vs
         # lib.Box) is two distinct types, each resolved within its own namespace.
         add_test(NAME codegen_qualified_names_runs COMMAND "${CMAKE_COMMAND}"
