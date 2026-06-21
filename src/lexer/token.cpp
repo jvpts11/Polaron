@@ -77,6 +77,9 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwVolatile:      return "KwVolatile";
         case TokenKind::KwCascade:       return "KwCascade";
         case TokenKind::KwLazy:          return "KwLazy";
+        case TokenKind::KwGoto:          return "KwGoto";
+        case TokenKind::KwAbstainfrom:   return "KwAbstainfrom";
+        case TokenKind::KwReinstate:     return "KwReinstate";
 
         case TokenKind::KwIf:       return "KwIf";
         case TokenKind::KwElse:     return "KwElse";

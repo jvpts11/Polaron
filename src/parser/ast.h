@@ -429,6 +429,22 @@ struct ComefromStmt : Stmt {
     void dump(std::string& out, int /*indent*/) const override { out += "comefrom " + name; }
 };
 
+// `goto name;` -- jump to a label in the same method (spec 7.9).
+struct GotoStmt : Stmt {
+    std::string name;
+    void dump(std::string& out, int /*indent*/) const override { out += "goto " + name; }
+};
+
+// `abstainfrom name;` / `reinstate name;` -- disable/re-enable the code guarded by
+// label `name` at runtime, via reference counting (spec 7.11).
+struct AbstainfromStmt : Stmt {
+    std::string name;
+    bool isReinstate = false;  // `reinstate` decrements; `abstainfrom` increments
+    void dump(std::string& out, int /*indent*/) const override {
+        out += (isReinstate ? "reinstate " : "abstainfrom ") + name;
+    }
+};
+
 // throw expr; -- raises an exception object (spec 21.1).
 struct ThrowStmt : Stmt {
     ExprPtr value;

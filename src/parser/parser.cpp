@@ -1051,6 +1051,25 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return c;
     }
+    if (check(TokenKind::KwGoto)) {  // `goto name;` -- jump to a label (spec 7.9)
+        auto g = std::make_unique<ast::GotoStmt>();
+        g->loc = current().loc;
+        advance();  // 'goto'
+        g->name = expect(TokenKind::Identifier, "a label name after 'goto'").lexeme;
+        expect(TokenKind::Semicolon, "';'");
+        return g;
+    }
+    if (check(TokenKind::KwAbstainfrom) || check(TokenKind::KwReinstate)) {  // spec 7.11
+        auto a = std::make_unique<ast::AbstainfromStmt>();
+        a->loc = current().loc;
+        a->isReinstate = match(TokenKind::KwReinstate);
+        if (!a->isReinstate) advance();  // 'abstainfrom'
+        a->name = expect(TokenKind::Identifier, "a label name").lexeme;
+        // Accept (and ignore) a cross-method `method.label` form: take the last component.
+        while (match(TokenKind::Dot)) a->name = expect(TokenKind::Identifier, "a label name").lexeme;
+        expect(TokenKind::Semicolon, "';'");
+        return a;
+    }
     if (check(TokenKind::KwThrow)) {  // throw expr; (spec 21.1)
         auto t = std::make_unique<ast::ThrowStmt>();
         t->loc = current().loc;

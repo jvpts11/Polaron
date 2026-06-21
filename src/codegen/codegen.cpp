@@ -269,6 +269,8 @@ struct CodeGenerator::Impl {
     // (return / break / continue / try?) emits the pending finallys before branching.
     std::vector<const ast::Block*> finallyStack;
     std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
+    std::unordered_set<std::string> abstainedLabels;  // labels named by some `abstainfrom` (spec 7.11)
+    std::unordered_map<std::string, llvm::GlobalVariable*> abstainCounters;  // label -> runtime counter
     std::vector<llvm::BasicBlock*> ehPadStack;   // active try landing pads (catchswitch blocks)
     llvm::Constant* ehThrowInfoCache = nullptr;  // shared carrier-ptr ThrowInfo (_TI1PEAX), lazy
     llvm::Constant* ehTypeDescCache = nullptr;   // shared carrier-ptr type descriptor, lazy
@@ -2045,6 +2047,66 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // The runtime reference counter for an abstainable label (spec 7.11), lazily
+    // created as a private global initialized to 0 (enabled).
+    llvm::GlobalVariable* abstainCounter(const std::string& name) {
+        auto it = abstainCounters.find(name);
+        if (it != abstainCounters.end()) return it->second;
+        auto* g = new llvm::GlobalVariable(module, builder.getInt32Ty(), /*isConstant=*/false,
+                                           llvm::GlobalValue::PrivateLinkage, builder.getInt32(0),
+                                           "abstain." + name);
+        abstainCounters[name] = g;
+        return g;
+    }
+
+    // Pre-scan: collect every label named by an `abstainfrom`/`reinstate` anywhere in
+    // the program, so only those labels get a runtime guard (spec 7.11).
+    void scanAbstained(const ast::Stmt* st) {
+        if (st == nullptr) return;
+        if (const auto* a = dynamic_cast<const ast::AbstainfromStmt*>(st)) { abstainedLabels.insert(a->name); return; }
+        auto blk = [&](const ast::Block& b) { for (const auto& s : b.statements) scanAbstained(s.get()); };
+        if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) { blk(i->thenBlock); if (i->elseBlock) blk(*i->elseBlock); return; }
+        if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
+        if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) { blk(d->body); return; }
+        if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) { blk(f->body); return; }
+        if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) { blk(fe->body); return; }
+        if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) { for (auto& c : sw->cases) blk(c.body); if (sw->defaultBody) blk(*sw->defaultBody); return; }
+        if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) { for (auto& c : ms->cases) blk(c.body); if (ms->defaultBody) blk(*ms->defaultBody); return; }
+        if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) { blk(tr->body); for (auto& c : tr->catches) blk(c.body); if (tr->finallyBlock) blk(*tr->finallyBlock); return; }
+        if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) { blk(df->body); return; }
+        if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) { blk(us->body); return; }
+        if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) { scanAbstained(lb->stmt.get()); return; }
+    }
+    void collectAbstainedLabels() {
+        for (const ast::Bundle& bundle : program.bundles)
+            for (const ast::Namespace& ns : bundle.namespaces)
+                for (const ast::ClassDecl& cls : ns.classes)
+                    for (const ast::MemberPtr& member : cls.members) {
+                        if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get()))
+                            for (const auto& s : m->body.statements) scanAbstained(s.get());
+                        else if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(member.get()))
+                            for (const auto& s : c->body.statements) scanAbstained(s.get());
+                        else if (const auto* d = dynamic_cast<const ast::DestructorDecl*>(member.get()))
+                            for (const auto& s : d->body.statements) scanAbstained(s.get());
+                    }
+    }
+
+    // Exits the current function early with the default value for its return type,
+    // running finallys and destructors (used by the abstainfrom skip path).
+    void emitDefaultReturn() {
+        emitPendingFinallys(0);
+        emitScopeCleanup();
+        if (currentRetType->isVoidTy()) builder.CreateRetVoid();
+        else if (currentRetType->isDoubleTy() || currentRetType->isFloatTy())
+            builder.CreateRet(llvm::ConstantFP::get(currentRetType, 0.0));
+        else if (currentRetType->isPointerTy())
+            builder.CreateRet(llvm::ConstantPointerNull::get(builder.getPtrTy()));
+        else if (currentRetType->isStructTy())
+            builder.CreateRet(llvm::UndefValue::get(currentRetType));
+        else
+            builder.CreateRet(llvm::ConstantInt::get(currentRetType, 0));
+    }
+
     // Emits the `finally` blocks of the try regions being left, innermost-out, down to
     // (but not including) finallyStack index `downTo`. Each is a fresh copy because an
     // exit edge has its own predecessor. Used by return/break/continue/try? so finally
@@ -2344,6 +2406,19 @@ struct CodeGenerator::Impl {
             if (bb == nullptr) bb = llvm::BasicBlock::Create(context, "label." + lm->name, currentFn);
             if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(bb);
             builder.SetInsertPoint(bb);
+            // `abstainfrom` (spec 7.11): if the label is ever abstained anywhere, guard
+            // its block -- while the runtime counter is non-zero, skip the guarded code
+            // (to the method's end). Labels never abstained get no guard (unchanged).
+            if (abstainedLabels.count(lm->name) > 0) {
+                llvm::Value* c =
+                    builder.CreateLoad(builder.getInt32Ty(), abstainCounter(lm->name), "abstain.c");
+                llvm::BasicBlock* body = llvm::BasicBlock::Create(context, "label.on", currentFn);
+                llvm::BasicBlock* skip = llvm::BasicBlock::Create(context, "label.off", currentFn);
+                builder.CreateCondBr(builder.CreateICmpNE(c, builder.getInt32(0)), skip, body);
+                builder.SetInsertPoint(skip);
+                emitDefaultReturn();  // disabled: skip the guarded region (to method end)
+                builder.SetInsertPoint(body);
+            }
             return;
         }
         // `comefrom name;` -- transfer control to label name (forward or backward). Code after is
@@ -2352,6 +2427,22 @@ struct CodeGenerator::Impl {
             llvm::BasicBlock*& bb = labelBlocks[cf->name];
             if (bb == nullptr) bb = llvm::BasicBlock::Create(context, "label." + cf->name, currentFn);
             builder.CreateBr(bb);
+            return;
+        }
+        if (const auto* g = dynamic_cast<const ast::GotoStmt*>(&stmt)) {  // `goto name;` (spec 7.9)
+            llvm::BasicBlock*& bb = labelBlocks[g->name];
+            if (bb == nullptr) bb = llvm::BasicBlock::Create(context, "label." + g->name, currentFn);
+            builder.CreateBr(bb);
+            return;
+        }
+        if (const auto* ab = dynamic_cast<const ast::AbstainfromStmt*>(&stmt)) {  // spec 7.11
+            // Adjust the label's runtime reference counter; the guard at `label name;`
+            // skips the guarded code while the counter is non-zero.
+            llvm::GlobalVariable* ctr = abstainCounter(ab->name);
+            llvm::Value* cur = builder.CreateLoad(builder.getInt32Ty(), ctr, "abstain.c");
+            llvm::Value* nv = ab->isReinstate ? builder.CreateSub(cur, builder.getInt32(1))
+                                              : builder.CreateAdd(cur, builder.getInt32(1));
+            builder.CreateStore(nv, ctr);
             return;
         }
         if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&stmt)) {  // throw expr; (spec 21.1)
@@ -3665,6 +3756,7 @@ bool CodeGenerator::generate() {
         return false;
     }
     impl_->declareClasses();
+    impl_->collectAbstainedLabels();
     impl_->emitNamespaceConsts();
     impl_->emitStaticFields();
     impl_->declareFunctions();

@@ -1,0 +1,29 @@
+program GotoAbstainfrom;
+
+// `goto` (spec 7.9) jumps to a label; `abstainfrom`/`reinstate` (spec 7.11)
+// disable/re-enable the code guarded by a label at runtime. Here `goto skip`
+// jumps over a line, and abstainfrom silences run()'s body until reinstated.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method run() returns void {
+                label proc;
+                System.IO.printf("running\n");
+            }
+            public static method main(string[] args) returns void {
+                mutable int x = 1;
+                if (x == 1) { goto skip; }
+                System.IO.printf("unreachable\n");
+                label skip;
+                System.IO.printf("after goto\n");
+                Main.run();              // running
+                abstainfrom proc;
+                Main.run();              // disabled -> prints nothing
+                reinstate proc;
+                Main.run();              // running again
+                return;
+            }
+        }
+    }
+}

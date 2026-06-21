@@ -1480,6 +1480,8 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     // current type-checking scope); handled explicitly so they are not silently ignored.
     if (dynamic_cast<const ast::LabelMarkStmt*>(&stmt) != nullptr) return;
     if (dynamic_cast<const ast::ComefromStmt*>(&stmt) != nullptr) return;
+    if (dynamic_cast<const ast::GotoStmt*>(&stmt) != nullptr) return;          // label jump (spec 7.9)
+    if (dynamic_cast<const ast::AbstainfromStmt*>(&stmt) != nullptr) return;   // spec 7.11
 }
 
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
