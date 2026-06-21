@@ -110,6 +110,13 @@ if(LDP3_WITH_LLVM)
     set_tests_properties(codegen_volatile_emits_volatile PROPERTIES
         PASS_REGULAR_EXPRESSION "store volatile")
 
+    # region RAII (spec 17.7): a region with no explicit release is still freed at
+    # the end of its block -- the IR must contain the scope-end free.
+    add_test(NAME codegen_region_raii_frees
+        COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_raii.ldp3")
+    set_tests_properties(codegen_region_raii_frees PROPERTIES
+        PASS_REGULAR_EXPRESSION "call void @free")
+
     # Full pipeline: compile to .exe with clang and check it prints correctly.
     find_program(LDP3_CLANG clang HINTS "C:/Program Files/LLVM/bin")
     if(LDP3_CLANG)
@@ -1428,6 +1435,15 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/comptime_if.ldp3"
             "-DEXPECTED=debug off level high"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # region RAII: a region with no explicit release still runs and frees cleanly.
+        add_test(NAME codegen_region_raii_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_raii.ldp3"
+            "-DEXPECTED=a = 5"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()

@@ -242,6 +242,10 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, const ast::MethodDecl*> comptimeMethods;  // spec 28.3, by name
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
+    // Region locals (spec 17.7): freed at the end of their lexical block unless
+    // `eternal` or already released. Mirrors scopeObjects.
+    struct RegionLocal { llvm::Value* slot; bool isEternal; };
+    std::vector<RegionLocal> scopeRegions;
     std::vector<const ast::Block*> deferred;  // defer blocks, run at scope end (LIFO)
     std::string currentClass;        // "" inside a static method / the entry point
     std::string currentDtorChain;    // base destructor to chain to (set only in a destructor body)
@@ -1106,6 +1110,7 @@ struct CodeGenerator::Impl {
             auto sFn = currentFn; auto sCls = currentClass; auto sRet = currentRetType;
             auto sEns = currentEnsures; auto sInv = currentInvariants; auto sThis = currentThis;
             auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
+            auto sRegions = scopeRegions;
             auto sDtorChain = currentDtorChain;
             auto sIP = builder.saveIP();
             emitBody(fn, lam->body, lam->params, "", rt, nullptr, nullptr, nullptr, nullptr,
@@ -1114,6 +1119,7 @@ struct CodeGenerator::Impl {
             currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
             currentDtorChain = sDtorChain;
             locals = sLoc; scopeObjects = sScope; deferred = sDef;
+            scopeRegions = sRegions;
             builder.restoreIP(sIP);
             // Build the environment: one pointer slot per capture. byvalue copies the value into a
             // fresh heap slot; byref shares the variable's own storage.
@@ -1948,6 +1954,7 @@ struct CodeGenerator::Impl {
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), it->slot);
             builder.CreateCall(fnit->second, {objPtr});
         }
+        freeRegionsFrom(0);  // region RAII (spec 17.7): free every live region at this exit
         // Inside a destructor: chain to the base class destructor last (derived-then-base),
         // so the inherited part is torn down at every exit of this destructor.
         if (!currentDtorChain.empty()) {
@@ -2380,6 +2387,11 @@ struct CodeGenerator::Impl {
                     scopeObjects.push_back(ScopeObject{slot, nw->className});
                 }
             }
+            // RAII for regions (spec 17.7): freed at the end of the lexical block
+            // unless eternal. An explicit `release region` nulls the slot first, so
+            // the scope-end free is a harmless free(null).
+            if (declType == "region" && !vd->isEternal)
+                scopeRegions.push_back(RegionLocal{slot, vd->isEternal});
             return;
         }
         if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
@@ -2488,11 +2500,14 @@ struct CodeGenerator::Impl {
                 return;
             }
             // Free the whole region block. (Per-object destructors on release are
-            // a later refinement; the region is a bump allocator.)
+            // a later refinement; the region is a bump allocator.) Null the slot so
+            // the scope-end region RAII (spec 17.7) does not free it again.
             auto it = locals.find(rel->region);
             if (it != locals.end()) {
                 llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage);
                 builder.CreateCall(freeFn(), {block});
+                builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()),
+                                    it->second.storage);
             }
             return;
         }
@@ -2561,7 +2576,17 @@ struct CodeGenerator::Impl {
     // Runs the deferred blocks and stack-object destructors registered since the
     // given marks (LIFO), without the function-level contracts. Used to tear down a
     // lexical block on its normal exit. Stops if a terminator appears.
-    void emitBlockCleanup(std::size_t soBase, std::size_t dfBase) {
+    // Frees every region in scopeRegions at index >= base (load the block and free;
+    // a released region's slot is null, so free(null) is a harmless no-op).
+    void freeRegionsFrom(std::size_t base) {
+        for (std::size_t i = scopeRegions.size(); i > base; --i) {
+            llvm::Value* block =
+                builder.CreateLoad(builder.getPtrTy(), scopeRegions[i - 1].slot, "region");
+            builder.CreateCall(freeFn(), {block});
+        }
+    }
+
+    void emitBlockCleanup(std::size_t soBase, std::size_t dfBase, std::size_t regBase) {
         for (std::size_t i = deferred.size(); i > dfBase; --i) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
             emitBlock(*deferred[i - 1]);
@@ -2573,6 +2598,7 @@ struct CodeGenerator::Impl {
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
             builder.CreateCall(fnit->second, {objPtr});
         }
+        freeRegionsFrom(regBase);  // region RAII (spec 17.7)
     }
 
     // Emits a lexical block. When `newScope` (every nested block: if/loop/try/case/
@@ -2584,19 +2610,21 @@ struct CodeGenerator::Impl {
     void emitBlock(const ast::Block& block, bool newScope = true) {
         const std::size_t soBase = scopeObjects.size();
         const std::size_t dfBase = deferred.size();
+        const std::size_t regBase = scopeRegions.size();
         for (const auto& stmt : block.statements) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
             emitStatement(*stmt);
         }
         if (newScope) {
-            // Normal fall-through: tear down this block's objects/defers. On a
+            // Normal fall-through: tear down this block's objects/defers/regions. On a
             // terminating exit (return runs full cleanup; break/continue branch out)
             // we skip emission but still drop the entries so they are not re-run or
             // run on a stale slot at an outer/function exit.
             if (builder.GetInsertBlock()->getTerminator() == nullptr)
-                emitBlockCleanup(soBase, dfBase);
+                emitBlockCleanup(soBase, dfBase, regBase);
             scopeObjects.resize(soBase);
             deferred.resize(dfBase);
+            scopeRegions.resize(regBase);
         }
     }
 
@@ -3392,6 +3420,7 @@ struct CodeGenerator::Impl {
         currentThis = nullptr;
         locals.clear();
         scopeObjects.clear();
+        scopeRegions.clear();
         deferred.clear();
         labelBlocks.clear();
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
