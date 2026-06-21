@@ -59,6 +59,13 @@ add_test(NAME sema_rejects_nonconst_const
 set_tests_properties(sema_rejects_nonconst_const PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
 
+# a non-terminating comptime evaluation hits the step/recursion budget and is
+# rejected gracefully (spec 28.3), not a hang or crash.
+add_test(NAME sema_rejects_comptime_runaway
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/comptime_runaway_bad.ldp3")
+set_tests_properties(sema_rejects_comptime_runaway PROPERTIES
+    PASS_REGULAR_EXPRESSION "must be a compile-time constant")
+
 # extending a sealed type's permitted variant must be rejected (variants are final),
 # else match's exhaustiveness assumption is unsound.
 add_test(NAME sema_rejects_extend_permit
@@ -1331,6 +1338,16 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/volatile_access.ldp3"
             "-DEXPECTED=reg=42 sum=84"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # comptime methods (spec 28.3): recursive fib + iterative factorial folded
+        # at compile time into namespace consts (and a const built from them).
+        add_test(NAME codegen_comptime_fn_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/comptime_fn.ldp3"
+            "-DEXPECTED=fib10=55 fact5=120 combined=175"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()

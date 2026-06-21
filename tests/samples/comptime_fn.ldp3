@@ -1,0 +1,36 @@
+program ComptimeFn;
+
+// `comptime` methods (spec 28.3) run at compile time when their arguments are
+// constant: the value is folded into the binary with zero runtime cost. Here a
+// recursive Fibonacci and an iterative factorial seed namespace-level consts.
+
+public bundle main {
+    public namespace app {
+        public class Math {
+            // Recursive comptime function (the spec's flagship example).
+            public static comptime method fib(int n) returns int {
+                if (n < 2) { return n; }
+                return Math.fib(n - 1) + Math.fib(n - 2);
+            }
+            // Iterative comptime function: exercises locals + a loop at compile time.
+            public static comptime method factorial(int n) returns int {
+                mutable int acc = 1;
+                for (mutable int i = 2; i <= n; i++) {
+                    acc = acc * i;
+                }
+                return acc;
+            }
+        }
+
+        public const int FIB10 = Math.fib(10);          // 55
+        public const int FACT5 = Math.factorial(5);     // 120
+        public const int COMBINED = FIB10 + FACT5;      // const referencing comptime consts
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.printf("fib10=%d fact5=%d combined=%d\n", FIB10, FACT5, COMBINED);
+                return;
+            }
+        }
+    }
+}

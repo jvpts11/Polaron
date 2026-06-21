@@ -105,6 +105,7 @@ private:
     void validateCatalogs(const ast::Program& program);
     void registerLiterals(const ast::Program& program);
     void registerConsts(const ast::Program& program);   // pass 1: const name -> type
+    void registerComptimeMethods(const ast::Program& program);  // index `comptime` methods
     void evaluateConsts(const ast::Program& program);    // pass 2: fold + validate
     void processImports(const ast::Program& program);
     void findEntryPoint(const ast::Program& program);
@@ -165,6 +166,8 @@ private:
     std::unordered_map<std::string, std::string> constTypes_;     // const name -> type
     std::unordered_map<std::string, long long> constInts_;        // int/bool/char value
     std::unordered_map<std::string, double> constDoubles_;        // float/double value
+    // `comptime` methods (spec 28.3), by name, for compile-time call evaluation.
+    std::unordered_map<std::string, const ast::MethodDecl*> comptimeMethods_;
     std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace
     std::string currentNamespace_;  // namespace being analyzed (visibility checks)

@@ -20,6 +20,7 @@ set(LDP3_CORE_SOURCES
     src/parser/parser.cpp
     src/parser/monomorphize.cpp
     src/semantic/analyzer.cpp
+    src/semantic/comptime.cpp
 )
 
 # The codegen backend needs the LLVM dev SDK (vcpkg: llvm:x64-windows).

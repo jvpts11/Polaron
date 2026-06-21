@@ -1,5 +1,7 @@
 #include "semantic/analyzer.h"
 
+#include "semantic/comptime.h"
+
 #include <algorithm>
 #include <functional>
 #include <string>
@@ -74,10 +76,12 @@ std::vector<std::string> tupleElems(const std::string& t) {
 // Compile-time constant evaluators (spec 28); defined further below, but declared
 // here so const registration (above their definitions) can call them.
 static bool evalConstInt(const ast::Expr& e, long long& out,
-                         const std::unordered_map<std::string, long long>* consts);
+                         const std::unordered_map<std::string, long long>* consts,
+                         const std::unordered_map<std::string, const ast::MethodDecl*>* methods);
 static bool evalConstDouble(const ast::Expr& e, double& out,
                             const std::unordered_map<std::string, double>* dconsts,
-                            const std::unordered_map<std::string, long long>* iconsts);
+                            const std::unordered_map<std::string, long long>* iconsts,
+                            const std::unordered_map<std::string, const ast::MethodDecl*>* methods);
 
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
     errors_.push_back(SemaError{std::move(message), loc});
@@ -690,6 +694,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerEnums(program);
     registerLiterals(program);
     registerConsts(program);
+    registerComptimeMethods(program);
     processImports(program);
     evaluateConsts(program);
     validateHierarchy();
@@ -754,6 +759,23 @@ void SemanticAnalyzer::registerConsts(const ast::Program& program) {
     }
 }
 
+// Indexes every `comptime` method by its (simple) name so the shared evaluator can
+// resolve compile-time calls (spec 28.3). A comptime method is also an ordinary
+// method, callable at runtime; the flag only enables compile-time folding.
+void SemanticAnalyzer::registerComptimeMethods(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
+                for (const ast::MemberPtr& member : cls.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                    if (m != nullptr && m->isComptime && !m->isAbstract)
+                        comptimeMethods_.emplace(m->name, m);
+                }
+            }
+        }
+    }
+}
+
 // Pass 2: fold each const initializer (in declaration order, so a const may refer
 // to earlier ones) and validate it is a compile-time constant of the right kind.
 void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
@@ -768,14 +790,14 @@ void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
                 }
                 if (isFloatType(type)) {
                     double d;
-                    if (!evalConstDouble(*c.init, d, &constDoubles_, &constInts_))
+                    if (!evalConstDouble(*c.init, d, &constDoubles_, &constInts_, &comptimeMethods_))
                         error("const '" + c.name + "' initializer must be a compile-time constant",
                               c.loc);
                     else
                         constDoubles_[c.name] = d;
                 } else {
                     long long v;
-                    if (!evalConstInt(*c.init, v, &constInts_))
+                    if (!evalConstInt(*c.init, v, &constInts_, &comptimeMethods_))
                         error("const '" + c.name + "' initializer must be a compile-time constant",
                               c.loc);
                     else
@@ -1037,97 +1059,17 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, SourceLocation
     if (type != "int") error("'++'/'--' requires an int target", loc);
 }
 
-// The byte value of a char literal's content, resolving the common escapes.
-static long long charLiteralValue(const std::string& s) {
-    if (s.empty()) return 0;
-    if (s[0] != '\\') return static_cast<unsigned char>(s[0]);
-    if (s.size() < 2) return '\\';
-    switch (s[1]) {
-        case 'n': return '\n';
-        case 't': return '\t';
-        case 'r': return '\r';
-        case '0': return '\0';
-        case '\\': return '\\';
-        case '\'': return '\'';
-        case '"': return '"';
-        default: return static_cast<unsigned char>(s[1]);
-    }
-}
-
-// Evaluates a constant integer/boolean/char expression at compile time (spec 28).
-// `consts` (optional) resolves references to previously-declared const names.
-// Returns false if the expression is not a compile-time integer constant.
+// Evaluates a constant integer/boolean/char expression at compile time (spec 28),
+// delegating to the shared comptime evaluator so consts and `comptime` method calls
+// resolve uniformly. `consts`/`methods` are optional resolution tables.
 static bool evalConstInt(const ast::Expr& e, long long& out,
-                         const std::unordered_map<std::string, long long>* consts = nullptr) {
-    if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&e)) {
-        std::string s;
-        for (char c : n->text)
-            if (c != '_' && c != 'L' && c != 'l') s += c;
-        int base = 10;
-        std::size_t start = 0;
-        if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { base = 16; start = 2; }
-        else if (s.size() >= 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) { base = 2; start = 2; }
-        try {
-            out = static_cast<long long>(std::stoll(s.substr(start), nullptr, base));
-            return true;
-        } catch (...) {
-            try {
-                out = static_cast<long long>(std::stoull(s.substr(start), nullptr, base));
-                return true;
-            } catch (...) {
-                return false;
-            }
-        }
-    }
-    if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&e)) {
-        out = b->value ? 1 : 0;
-        return true;
-    }
-    if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(&e)) {
-        out = charLiteralValue(c->value);
-        return true;
-    }
-    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
-        if (consts == nullptr) return false;
-        auto it = consts->find(id->name);
-        if (it == consts->end()) return false;
-        out = it->second;
-        return true;
-    }
-    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
-        long long v;
-        if (!evalConstInt(*u->operand, v, consts)) return false;
-        if (u->op == "!") { out = v ? 0 : 1; return true; }
-        if (u->op == "-") { out = -v; return true; }
-        if (u->op == "~") { out = ~v; return true; }
-        return false;
-    }
-    if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
-        long long l, r;
-        if (!evalConstInt(*bin->lhs, l, consts) || !evalConstInt(*bin->rhs, r, consts)) return false;
-        const std::string& op = bin->op;
-        if (op == "+") out = l + r;
-        else if (op == "-") out = l - r;
-        else if (op == "*") out = l * r;
-        else if (op == "/") { if (r == 0) return false; out = l / r; }
-        else if (op == "%") { if (r == 0) return false; out = l % r; }
-        else if (op == "==") out = (l == r) ? 1 : 0;
-        else if (op == "!=") out = (l != r) ? 1 : 0;
-        else if (op == "<") out = (l < r) ? 1 : 0;
-        else if (op == ">") out = (l > r) ? 1 : 0;
-        else if (op == "<=") out = (l <= r) ? 1 : 0;
-        else if (op == ">=") out = (l >= r) ? 1 : 0;
-        else if (op == "&&") out = (l && r) ? 1 : 0;
-        else if (op == "||") out = (l || r) ? 1 : 0;
-        else if (op == "&") out = l & r;
-        else if (op == "|") out = l | r;
-        else if (op == "^") out = l ^ r;
-        else if (op == "<<") out = l << r;
-        else if (op == ">>") out = l >> r;
-        else return false;
-        return true;
-    }
-    return false;
+                         const std::unordered_map<std::string, long long>* consts = nullptr,
+                         const std::unordered_map<std::string, const ast::MethodDecl*>* methods =
+                             nullptr) {
+    comptime::Context ctx;
+    ctx.consts = consts;
+    ctx.methods = methods;
+    return comptime::evalInt(e, out, ctx);
 }
 
 // Evaluates a constant floating-point expression at compile time. Integer consts
@@ -1135,7 +1077,9 @@ static bool evalConstInt(const ast::Expr& e, long long& out,
 // numeric constant.
 static bool evalConstDouble(const ast::Expr& e, double& out,
                             const std::unordered_map<std::string, double>* dconsts,
-                            const std::unordered_map<std::string, long long>* iconsts) {
+                            const std::unordered_map<std::string, long long>* iconsts,
+                            const std::unordered_map<std::string, const ast::MethodDecl*>* methods =
+                                nullptr) {
     if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(&e)) {
         std::string s;
         for (char ch : f->text)
@@ -1143,7 +1087,7 @@ static bool evalConstDouble(const ast::Expr& e, double& out,
         try { out = std::stod(s); return true; } catch (...) { return false; }
     }
     long long iv;
-    if (evalConstInt(e, iv, iconsts)) { out = static_cast<double>(iv); return true; }
+    if (evalConstInt(e, iv, iconsts, methods)) { out = static_cast<double>(iv); return true; }
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
         if (dconsts == nullptr) return false;
         auto it = dconsts->find(id->name);
@@ -1175,7 +1119,7 @@ static bool evalConstDouble(const ast::Expr& e, double& out,
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* sa = dynamic_cast<const ast::StaticAssertStmt*>(&stmt)) {
         long long v;
-        if (!evalConstInt(*sa->condition, v, &constInts_))
+        if (!evalConstInt(*sa->condition, v, &constInts_, &comptimeMethods_))
             error("static_assert requires a constant expression", sa->loc);
         else if (v == 0)
             error("static assertion failed: " + sa->message, sa->loc);

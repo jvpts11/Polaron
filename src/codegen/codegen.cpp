@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "parser/ast.h"
+#include "semantic/comptime.h"
 
 namespace ldp3 {
 
@@ -234,6 +235,7 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, std::string> namespaceConstTypes;  // const name -> LDP3 type
     std::unordered_map<std::string, long long> constIntVals;           // int/bool/char value
     std::unordered_map<std::string, double> constDblVals;              // float/double value
+    std::unordered_map<std::string, const ast::MethodDecl*> comptimeMethods;  // spec 28.3, by name
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
     std::vector<const ast::Block*> deferred;  // defer blocks, run at scope end (LIFO)
@@ -2936,61 +2938,13 @@ struct CodeGenerator::Impl {
     // Returns nullptr when the expression is not a compile-time literal we handle
     // here (the caller then zero-initializes the global).
     // Folds a constant integer/boolean/char expression, resolving references to
-    // namespace-level consts (spec 28.1). Returns false if not constant.
+    // namespace-level consts and `comptime` method calls (spec 28) via the shared
+    // evaluator. Returns false if not a compile-time integer constant.
     bool foldConstInt(const ast::Expr& e, long long& out) {
-        if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&e)) {
-            out = parseIntLiteral(n->text);
-            return true;
-        }
-        if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&e)) {
-            out = b->value ? 1 : 0;
-            return true;
-        }
-        if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(&e)) {
-            const std::string bytes = resolveEscapes(c->value);
-            out = bytes.empty() ? 0 : static_cast<unsigned char>(bytes[0]);
-            return true;
-        }
-        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
-            auto it = constIntVals.find(id->name);
-            if (it == constIntVals.end()) return false;
-            out = it->second;
-            return true;
-        }
-        if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
-            long long v;
-            if (!foldConstInt(*u->operand, v)) return false;
-            if (u->op == "-") { out = -v; return true; }
-            if (u->op == "!") { out = v ? 0 : 1; return true; }
-            if (u->op == "~") { out = ~v; return true; }
-            return false;
-        }
-        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
-            long long l, r;
-            if (!foldConstInt(*bin->lhs, l) || !foldConstInt(*bin->rhs, r)) return false;
-            const std::string& op = bin->op;
-            if (op == "+") out = l + r;
-            else if (op == "-") out = l - r;
-            else if (op == "*") out = l * r;
-            else if (op == "/") { if (r == 0) return false; out = l / r; }
-            else if (op == "%") { if (r == 0) return false; out = l % r; }
-            else if (op == "==") out = (l == r) ? 1 : 0;
-            else if (op == "!=") out = (l != r) ? 1 : 0;
-            else if (op == "<") out = (l < r) ? 1 : 0;
-            else if (op == ">") out = (l > r) ? 1 : 0;
-            else if (op == "<=") out = (l <= r) ? 1 : 0;
-            else if (op == ">=") out = (l >= r) ? 1 : 0;
-            else if (op == "&&") out = (l && r) ? 1 : 0;
-            else if (op == "||") out = (l || r) ? 1 : 0;
-            else if (op == "&") out = l & r;
-            else if (op == "|") out = l | r;
-            else if (op == "^") out = l ^ r;
-            else if (op == "<<") out = l << r;
-            else if (op == ">>") out = l >> r;
-            else return false;
-            return true;
-        }
-        return false;
+        comptime::Context ctx;
+        ctx.consts = &constIntVals;
+        ctx.methods = &comptimeMethods;
+        return comptime::evalInt(e, out, ctx);
     }
 
     // Folds a constant floating-point expression (int consts/literals promote).
@@ -3046,6 +3000,14 @@ struct CodeGenerator::Impl {
     // Folds every namespace-level const (in declaration order, so later consts may
     // reference earlier ones). Run before any function body is emitted.
     void emitNamespaceConsts() {
+        // Index `comptime` methods first, so const initializers can call them (spec 28.3).
+        for (const ast::Bundle& bundle : program.bundles)
+            for (const ast::Namespace& ns : bundle.namespaces)
+                for (const ast::ClassDecl& cls : ns.classes)
+                    for (const ast::MemberPtr& member : cls.members)
+                        if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                            m != nullptr && m->isComptime && !m->isAbstract)
+                            comptimeMethods.emplace(m->name, m);
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ConstDecl& c : ns.consts) {

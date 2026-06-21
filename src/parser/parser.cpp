@@ -603,6 +603,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isEternal = false;
     bool isTransient = false;
     bool isVolatile = false;
+    bool isComptime = false;
     for (;;) {
         if (!isStatic && check(TokenKind::KwStatic)) {
             advance();
@@ -649,11 +650,16 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isVolatile = true;
             continue;
         }
+        if (!isComptime && check(TokenKind::KwComptime)) {
+            advance();
+            isComptime = true;
+            continue;
+        }
         break;
     }
     if (check(TokenKind::KwMethod)) {
         return parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
-                           inInterface);
+                           inInterface, isComptime);
     }
     if (check(TokenKind::KwConstructor)) {
         return parseConstructor(std::move(visibility));
@@ -695,7 +701,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
 
 std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, bool isStatic,
                                                      bool isAbstract, bool isOverride, bool isFinal,
-                                                     bool inInterface) {
+                                                     bool inInterface, bool isComptime) {
     auto m = std::make_unique<ast::MethodDecl>();
     m->loc = current().loc;
     m->visibility = std::move(visibility);
@@ -703,6 +709,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     m->isAbstract = isAbstract || inInterface;  // interface methods are abstract
     m->isOverride = isOverride;
     m->isFinal = isFinal;
+    m->isComptime = isComptime;  // `comptime` prefix (spec 37.4); suffix handled below
     expect(TokenKind::KwMethod, "'method'");
     m->name = expect(TokenKind::Identifier, "the method name").lexeme;
     // Generic method type parameters: method identity<T>(...) (spec 15). Each
@@ -727,6 +734,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     }
     expect(TokenKind::KwReturns, "'returns'");
     m->returnType = parseTypeRef();
+    if (match(TokenKind::KwComptime)) m->isComptime = true;  // suffix form (spec 28.3)
     currentMethodReturnType_ = m->returnType;  // enables the Ok(x)/.. return-value sugar
     // Contract clauses (spec 29): `requires <expr>` / `ensures <expr>`, between the
     // signature and the body, no separators. `old(...)` in ensures is not yet supported.

@@ -1,0 +1,22 @@
+program ComptimeRunaway;
+
+// A comptime evaluation that never terminates must be rejected (the evaluator's
+// step / recursion budget kicks in), not hang or crash the compiler.
+
+public bundle main {
+    public namespace app {
+        public class M {
+            public static comptime method spin(int n) returns int {
+                return M.spin(n) + 1;   // unbounded recursion
+            }
+        }
+        public const int BAD = M.spin(1);
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.printf("%d\n", BAD);
+                return;
+            }
+        }
+    }
+}

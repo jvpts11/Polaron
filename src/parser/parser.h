@@ -57,7 +57,7 @@ private:
     ast::MemberPtr parseMember(bool inInterface);
     std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic,
                                                  bool isAbstract, bool isOverride, bool isFinal,
-                                                 bool inInterface);
+                                                 bool inInterface, bool isComptime = false);
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
                               bool isPersistent, bool isEternal, bool isTransient,
                               bool isVolatile = false);

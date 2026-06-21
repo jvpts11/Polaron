@@ -458,6 +458,7 @@ struct MethodDecl : MemberDecl {
     bool isOverride = false;  // overrides an inherited/interface method
     bool isFinal = false;     // cannot be overridden
     bool isProperty = false;  // computed get-only property: read as obj.name (no parens)
+    bool isComptime = false;  // spec 28.3/37.4: may be evaluated at compile time
     std::string name;
     std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
     std::vector<Param> params;
