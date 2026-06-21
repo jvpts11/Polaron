@@ -1,0 +1,21 @@
+program StaticAssertFail;
+
+// A static_assert whose condition is false (here using a comptime function call)
+// must fail compilation with its message (spec 28.2).
+
+public bundle main {
+    public namespace app {
+        public class Math {
+            public static comptime method fib(int n) returns int {
+                if (n < 2) { return n; }
+                return Math.fib(n - 1) + Math.fib(n - 2);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                static_assert(Math.fib(10) == 99, "fib(10) is not 99");
+                return;
+            }
+        }
+    }
+}

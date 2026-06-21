@@ -66,6 +66,12 @@ add_test(NAME sema_rejects_comptime_runaway
 set_tests_properties(sema_rejects_comptime_runaway PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
 
+# a failing static_assert (spec 28.2) -- condition uses a comptime call -- reports its message.
+add_test(NAME sema_rejects_static_assert_fail
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/static_assert_fail_bad.ldp3")
+set_tests_properties(sema_rejects_static_assert_fail PROPERTIES
+    PASS_REGULAR_EXPRESSION "static assertion failed: fib.10. is not 99")
+
 # extending a sealed type's permitted variant must be rejected (variants are final),
 # else match's exhaustiveness assumption is unsound.
 add_test(NAME sema_rejects_extend_permit
@@ -1348,6 +1354,15 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/comptime_fn.ldp3"
             "-DEXPECTED=fib10=55 fact5=120 combined=175"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # static_assert conditions may use consts + comptime calls (shared evaluator).
+        add_test(NAME codegen_static_assert_comptime_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/static_assert_comptime.ldp3"
+            "-DEXPECTED=static asserts passed"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
