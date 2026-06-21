@@ -104,6 +104,8 @@ private:
     std::size_t pos_ = 0;
     std::vector<ParseError> errors_;
     ast::TypeRef currentMethodReturnType_;  // for the Ok(x)/Err(x)/... return-value sugar (spec 21.2)
+    bool looksLikeQualifiedVarDecl() const;  // `app.Box b` / `app.Box* p`
+    bool sawQualifiedType_ = false;         // a `ns.Type` reference was parsed (spec 15)
 };
 
 }  // namespace ldp3

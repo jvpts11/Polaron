@@ -726,6 +726,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
 
 bool SemanticAnalyzer::analyze(const ast::Program& program) {
     genericVariance_ = program.genericVariance;  // variance of generic type params (spec 15.3)
+    qualifiedTypes_.insert(program.qualifiedTypes.begin(), program.qualifiedTypes.end());
     registerClasses(program);
     registerCatalogs(program);  // before enums: registerEnums records enum->catalog edges
     registerEnums(program);
@@ -1059,6 +1060,7 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     std::string n = baseType(typeName);          // see through T* / T&
     if (isArrayType(n)) n = elementOf(n);         // and through T[]
     if (n.find('$') != std::string::npos) return;  // monomorphized generic -> always visible
+    if (qualifiedTypes_.count(n) > 0) return;      // explicitly namespace-qualified -> visible
     auto it = typeNamespace_.find(n);
     if (it == typeNamespace_.end()) return;        // primitive / unknown (other checks catch it)
     if (it->second == currentNamespace_) return;   // same namespace -> visible

@@ -2,6 +2,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -630,6 +631,10 @@ struct Program {
     // before templates are dropped, so the analyzer can apply variance subtyping to
     // the surviving concrete instantiations. Keyed by the generic's (mangled) name.
     std::map<std::string, std::vector<std::string>> genericVariance;
+    bool hasQualifiedTypeRef = false;  // a `ns.Type` reference was used (gates qualifyNamespaces)
+    // Internal names produced by namespace disambiguation (e.g. app__Box). These are
+    // already explicitly scoped, so they bypass the import/visibility requirement.
+    std::set<std::string> qualifiedTypes;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

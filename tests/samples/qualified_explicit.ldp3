@@ -1,0 +1,30 @@
+program QualifiedExplicit;
+
+// A namespace-qualified type reference `app.Box` / `lib.Box` (spec 15) names a
+// type in a specific namespace, so both same-named types can be used in one scope
+// without importing -- the qualification is the disambiguation.
+
+public bundle main {
+    public namespace app {
+        public class Box {
+            public constructor Box() {}
+            public method val() returns int { return 1; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                app.Box* a = new app.Box() on heap;
+                lib.Box* b = new lib.Box() on heap;
+                System.IO.printf("app=%d lib=%d\n", a.val(), b.val());
+                delete a;
+                delete b;
+                return;
+            }
+        }
+    }
+    public namespace lib {
+        public class Box {
+            public constructor Box() {}
+            public method val() returns int { return 2; }
+        }
+    }
+}

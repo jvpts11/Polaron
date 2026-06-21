@@ -209,6 +209,7 @@ ast::Program Parser::parse() {
     } catch (const ParseError&) {
         // Already recorded; stop here (panic mode for the walking skeleton).
     }
+    program.hasQualifiedTypeRef = sawQualifiedType_;
     return program;
 }
 
@@ -948,6 +949,14 @@ ast::TypeRef Parser::parseTypeRef() {
     if (isTypeKeyword(tok.kind) || tok.kind == TokenKind::Identifier) {
         t.name = tok.lexeme;
         advance();
+        // Namespace-qualified type name: `app.Box` (a type declared in another
+        // namespace). Resolved to the concrete type by qualifyNamespaces.
+        while (tok.kind == TokenKind::Identifier && check(TokenKind::Dot) &&
+               peek(1).kind == TokenKind::Identifier) {
+            advance();  // '.'
+            t.name += "." + expect(TokenKind::Identifier, "a type name after '.'").lexeme;
+            sawQualifiedType_ = true;
+        }
     } else {
         fail("expected a type but found '" + tok.lexeme + "'", tok.loc);
     }
@@ -1184,7 +1193,8 @@ ast::StmtPtr Parser::parseStatement() {
         check(TokenKind::KwVolatile) ||  // spec 37.5: volatile local
         check(TokenKind::KwLazy) ||      // spec 37.3: lazy local
         check(TokenKind::KwFunction) ||  // function<Ret, Params...> local
-        isTypeKeyword(current().kind) || classVarDecl || looksLikeGenericVarDecl()) {
+        isTypeKeyword(current().kind) || classVarDecl || looksLikeGenericVarDecl() ||
+        looksLikeQualifiedVarDecl()) {
         return parseVarDecl();
     }
     return parseExprStatement();
@@ -1220,6 +1230,22 @@ bool Parser::looksLikeGenericVarDecl() const {
         j += 2;
     }
     return peek(j).kind == TokenKind::Identifier;
+}
+
+// Distinguishes a namespace-qualified-typed declaration (`app.Box b`, `app.Box* p`)
+// from an expression. Requires a dotted name (Identifier.Identifier...) then an
+// optional *, &, or [] then a name. A trailing `(`, `=` etc. (a member call or
+// assignment) does not match, so those stay expressions.
+bool Parser::looksLikeQualifiedVarDecl() const {
+    if (!check(TokenKind::Identifier) || peek(1).kind != TokenKind::Dot) return false;
+    int i = 1;
+    while (peek(i).kind == TokenKind::Dot && peek(i + 1).kind == TokenKind::Identifier) i += 2;
+    if (peek(i).kind == TokenKind::Star || peek(i).kind == TokenKind::Amp) {
+        ++i;
+    } else if (peek(i).kind == TokenKind::LBracket && peek(i + 1).kind == TokenKind::RBracket) {
+        i += 2;
+    }
+    return peek(i).kind == TokenKind::Identifier;
 }
 
 // Distinguishes a generic method call `obj.m<int>(...)` from a comparison
@@ -2040,7 +2066,14 @@ ast::ExprPtr Parser::parseNew() {
     // Base type: a primitive keyword (int/char/...) or a class name.
     std::string typeName;
     if (isTypeKeyword(current().kind) || check(TokenKind::Identifier)) {
+        const bool isIdent = check(TokenKind::Identifier);
         typeName = advance().lexeme;
+        // Namespace-qualified class name: new app.Box(...).
+        while (isIdent && check(TokenKind::Dot) && peek(1).kind == TokenKind::Identifier) {
+            advance();  // '.'
+            typeName += "." + expect(TokenKind::Identifier, "a type name after '.'").lexeme;
+            sawQualifiedType_ = true;
+        }
     } else {
         fail("expected a type after 'new' but found '" + current().lexeme + "'", current().loc);
     }

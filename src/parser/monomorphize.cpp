@@ -882,13 +882,34 @@ void qualifyNamespaces(ast::Program& program) {
     std::set<std::string> ambiguous;
     for (auto& [name, nss] : declNs)
         if (nss.size() > 1) ambiguous.insert(name);
-    if (ambiguous.empty()) return;  // nothing collides: leave every name as written
+    // Nothing collides and no explicit `ns.Type` reference was written: leave every
+    // name as-is (the common single-namespace case stays a no-op).
+    if (ambiguous.empty() && !program.hasQualifiedTypeRef) return;
 
     auto qualified = [](const std::string& ns, const std::string& simple) {
         std::string s = ns;
         for (char& c : s) if (c == '.') c = '_';
         return s + "__" + simple;
     };
+
+    // Explicit `ns.Type` references resolve to that namespace's concrete type name
+    // (its qualified form if the simple name collides, else the simple name itself).
+    Subst dotted;
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces) {
+            auto add = [&](const std::string& name) {
+                if (ambiguous.count(name)) {
+                    const std::string q = qualified(ns.name, name);
+                    dotted[ns.name + "." + name] = q;
+                    program.qualifiedTypes.insert(q);  // explicitly scoped: import-exempt
+                } else {
+                    dotted[ns.name + "." + name] = name;
+                }
+            };
+            for (auto& c : ns.classes) add(c.name);
+            for (auto& e : ns.enums) add(e.name);
+            for (auto& cat : ns.catalogs) add(cat.name);
+        }
 
     for (auto& b : program.bundles) {
         // Imported symbols of this bundle: type name -> the namespace it comes from.
@@ -915,8 +936,12 @@ void qualifyNamespaces(ast::Program& program) {
                 else if (auto it = importNs.find(amb);
                          it != importNs.end() && declNs[amb].count(it->second) > 0)
                     owner = it->second;
-                if (!owner.empty()) subst[amb] = qualified(owner, amb);
+                if (!owner.empty()) {
+                    subst[amb] = qualified(owner, amb);
+                    program.qualifiedTypes.insert(qualified(owner, amb));
+                }
             }
+            for (const auto& [k, v] : dotted) subst[k] = v;  // explicit ns.Type -> concrete name
             if (subst.empty()) continue;
             for (auto& c : ns.classes) {
                 const std::string newName = subst.count(c.name) ? subst[c.name] : c.name;

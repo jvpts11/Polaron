@@ -253,6 +253,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath) 
             return 1;
         }
         for (auto& bundle : prog.bundles) program.bundles.push_back(std::move(bundle));
+        program.hasQualifiedTypeRef |= prog.hasQualifiedTypeRef;
     }
 
     appendPrelude(program);

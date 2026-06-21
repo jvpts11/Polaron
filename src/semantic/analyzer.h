@@ -176,6 +176,7 @@ private:
     std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace
     std::map<std::string, std::vector<std::string>> genericVariance_;  // generic -> per-param variance (spec 15.3)
+    std::unordered_set<std::string> qualifiedTypes_;  // namespace-disambiguated names: import-exempt
     std::string currentNamespace_;  // namespace being analyzed (visibility checks)
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
