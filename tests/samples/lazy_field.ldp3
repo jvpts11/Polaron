@@ -1,0 +1,31 @@
+program LazyField;
+
+// A `lazy` class-typed field (spec 28.4) is initialized on first access, not at
+// construction, and only once. Here `thing` is not built when the Holder is
+// created -- "constructing" prints only when use() first reads it.
+
+public bundle main {
+    public namespace app {
+        public class Thing {
+            public constructor Thing() { System.IO.printf("constructing\n"); }
+            public method val() returns int { return 42; }
+        }
+        public class Holder {
+            private lazy Thing* thing = new Thing() on heap;
+            public constructor Holder() {}
+            public method use() returns int { return this.thing.val(); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.printf("before\n");
+                Holder* h = new Holder() on heap;       // Thing not constructed yet
+                System.IO.printf("after holder\n");
+                int a = h.use();                          // first access -> "constructing"
+                int b = h.use();                          // already built -> no repeat
+                System.IO.printf("a=%d b=%d\n", a, b);
+                delete h;
+                return;
+            }
+        }
+    }
+}

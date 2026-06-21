@@ -486,6 +486,7 @@ struct FieldDecl : MemberDecl {
     bool isEternal = false;     // eternal persistent: never requires explicit release
     bool isTransient = false;   // excluded from serialization
     bool isVolatile = false;    // spec 37.5: loads/stores are never optimized away
+    bool isLazy = false;        // spec 28.4: a class-typed field initialized on first access
     TypeRef type;
     std::string name;
     int bitWidth = 0;  // `field : N` bit-field width (spec 11.1); 0 = not a bit-field

@@ -1424,6 +1424,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # lazy field (spec 28.4): a class-typed field is built on first access, once.
+        add_test(NAME codegen_lazy_field_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lazy_field.ldp3"
+            "-DEXPECTED=before after holder constructing a=42 b=42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # release persistent (spec 18.15) satisfies a non-eternal persistent's
         # release obligation; the program compiles and runs.
         add_test(NAME codegen_persist_release_runs COMMAND "${CMAKE_COMMAND}"

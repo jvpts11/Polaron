@@ -609,6 +609,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isTransient = false;
     bool isVolatile = false;
     bool isComptime = false;
+    bool isLazy = false;
     for (;;) {
         if (!isStatic && check(TokenKind::KwStatic)) {
             advance();
@@ -660,6 +661,11 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isComptime = true;
             continue;
         }
+        if (!isLazy && check(TokenKind::KwLazy)) {
+            advance();
+            isLazy = true;
+            continue;
+        }
         break;
     }
     if (check(TokenKind::KwMethod)) {
@@ -677,7 +683,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     }
     // Otherwise it is a field:  <type> <name> ;
     return parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
-                      isTransient, isVolatile);
+                      isTransient, isVolatile, isLazy);
 }
 
 // `operator <op> (params) returns T { body }` (spec 6.5). Modeled as a method
@@ -758,7 +764,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
 
 ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable,
                                   bool isPersistent, bool isEternal, bool isTransient,
-                                  bool isVolatile) {
+                                  bool isVolatile, bool isLazy) {
     const SourceLocation loc = current().loc;
     ast::TypeRef type = parseTypeRef();
     const std::string name = expect(TokenKind::Identifier, "a field name").lexeme;
@@ -775,6 +781,7 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->isEternal = isEternal;
     f->isTransient = isTransient;
     f->isVolatile = isVolatile;
+    f->isLazy = isLazy;
     f->type = std::move(type);
     f->name = name;
     // Bit-field width: `field : N` (spec 11.1). Constrains the stored value to N bits.

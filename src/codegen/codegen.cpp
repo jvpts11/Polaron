@@ -164,6 +164,9 @@ struct ClassLayout {
     std::unordered_map<std::string, std::string> fieldType;  // LDP3 type name per field
     std::unordered_map<std::string, int> bitFieldWidth;  // field -> bit-field width (spec 11.1)
     std::unordered_set<std::string> volatileFields;  // fields whose accesses are volatile (spec 37.5)
+    // Lazy class-typed fields (spec 28.4): field name -> deferred initializer. Null in the
+    // field means "not yet initialized" (the sentinel), so no extra flag is needed.
+    std::unordered_map<std::string, const ast::Expr*> lazyFieldInit;
     std::unordered_map<std::string, std::string> methodReturnType;  // own methods only
     std::unordered_map<std::string, const ast::MethodDecl*> ownMethods;  // own methods, by name
     std::string superclass;
@@ -423,6 +426,19 @@ struct CodeGenerator::Impl {
             return cit != classes.end() && cit->second.volatileFields.count(mem->member) > 0;
         }
         return false;
+    }
+
+    // The deferred initializer of lazy field `field` declared in `className` or one of
+    // its superclasses (spec 28.4), or null if `field` is not a lazy field.
+    const ast::Expr* lazyFieldInitOf(const std::string& className, const std::string& field) {
+        for (std::string cur = baseType(className); !cur.empty();) {
+            auto cit = classes.find(cur);
+            if (cit == classes.end()) break;
+            auto it = cit->second.lazyFieldInit.find(field);
+            if (it != cit->second.lazyFieldInit.end()) return it->second;
+            cur = cit->second.superclass;
+        }
+        return nullptr;
     }
 
     // Runs a heap object's destructor (virtually, if the class is polymorphic) and
@@ -1250,6 +1266,29 @@ struct CodeGenerator::Impl {
             }
             llvm::Value* fieldPtr = emitLValue(*mem);
             if (fieldPtr == nullptr) return nullptr;
+            // Lazy field (spec 28.4): a null pointer means "not initialized", so run the
+            // deferred initializer on first read. Covers value reads, method receivers
+            // and nested access, since those all route the field through here.
+            if (const ast::Expr* init = lazyFieldInitOf(ot, mem->member); init != nullptr) {
+                llvm::Type* fty = llvmType(typeName(*mem));
+                if (fty->isPointerTy()) {
+                    llvm::Value* cur = builder.CreateLoad(fty, fieldPtr, mem->member);
+                    llvm::Function* fn = currentFn;
+                    llvm::BasicBlock* initBB = llvm::BasicBlock::Create(context, "lazyf.init", fn);
+                    llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(context, "lazyf.done", fn);
+                    builder.CreateCondBr(
+                        builder.CreateICmpEQ(cur, llvm::ConstantPointerNull::get(builder.getPtrTy())),
+                        initBB, doneBB);
+                    builder.SetInsertPoint(initBB);
+                    if (llvm::Value* iv = emitExpr(*init); iv != nullptr) {
+                        iv = coerce(iv, typeName(*init), typeName(*mem));
+                        builder.CreateStore(iv, fieldPtr);
+                    }
+                    builder.CreateBr(doneBB);
+                    builder.SetInsertPoint(doneBB);
+                    return builder.CreateLoad(fty, fieldPtr, mem->member);
+                }
+            }
             return builder.CreateLoad(llvmType(typeName(*mem)), fieldPtr, isVolatileAccess(*mem),
                                       mem->member);
         }
@@ -2988,6 +3027,7 @@ struct CodeGenerator::Impl {
                                 if (f->isPersistent) layout.persistOrder.push_back(f->name);
                                 if (f->bitWidth > 0) layout.bitFieldWidth[f->name] = f->bitWidth;
                                 if (f->isVolatile) layout.volatileFields.insert(f->name);
+                                if (f->isLazy && f->init) layout.lazyFieldInit[f->name] = f->init.get();
                             }
                         } else if (const auto* m =
                                        dynamic_cast<const ast::MethodDecl*>(member.get())) {
@@ -3399,6 +3439,19 @@ struct CodeGenerator::Impl {
             const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
             if (f == nullptr || !f->init || f->isStatic) continue;
             auto idx = layout.fieldIndex.find(f->name);
+            // A lazy field (spec 28.4) is initialized on first access, not here -- but
+            // its storage must start null so the null sentinel is valid (heap objects
+            // come from malloc, which does not zero).
+            if (f->isLazy) {
+                if (idx == layout.fieldIndex.end()) continue;
+                llvm::Type* fty = llvmType(typeRefName(f->type));
+                if (fty->isPointerTy()) {
+                    builder.CreateStore(
+                        llvm::ConstantPointerNull::get(builder.getPtrTy()),
+                        builder.CreateStructGEP(layout.type, thisPtr, idx->second, f->name));
+                }
+                continue;
+            }
             if (idx == layout.fieldIndex.end()) continue;
             llvm::Value* v = emitExpr(*f->init);
             if (v == nullptr) continue;
