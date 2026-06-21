@@ -465,9 +465,15 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         n->isAbstract = x->isAbstract;
         n->isOverride = x->isOverride;
         n->isFinal = x->isFinal;
+        n->isProperty = x->isProperty;
+        n->isComptime = x->isComptime;
         n->name = x->name;
+        n->typeParams = x->typeParams;
         for (const auto& p : x->params) n->params.push_back({substType(p.type, s), p.name, p.loc});
         n->returnType = substType(x->returnType, s);
+        for (const auto& t : x->throwsTypes) n->throwsTypes.push_back(substType(t, s));
+        for (const auto& c : x->requiresClauses) n->requiresClauses.push_back(cloneExpr(c.get(), s));
+        for (const auto& c : x->ensuresClauses) n->ensuresClauses.push_back(cloneExpr(c.get(), s));
         n->body = cloneBlock(x->body, s);
         return n;
     }
@@ -477,8 +483,13 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         n->visibility = x->visibility;
         n->isStatic = x->isStatic;
         n->isMutable = x->isMutable;
+        n->isPersistent = x->isPersistent;
+        n->isEternal = x->isEternal;
+        n->isTransient = x->isTransient;
+        n->isVolatile = x->isVolatile;
         n->type = substType(x->type, s);
         n->name = x->name;
+        n->bitWidth = x->bitWidth;
         n->init = cloneExpr(x->init.get(), s);
         return n;
     }
@@ -836,6 +847,81 @@ bool isSubtypeOf(const std::string& sub, const std::string& base,
 }
 
 }  // namespace
+
+// Disambiguates type names that are declared in more than one namespace so that
+// `app.Foo` and `lib.Foo` become distinct types (spec: namespaces scope type
+// names). Each colliding declaration -- and every reference to it, resolved per
+// the referring namespace's own declarations and imports -- is rewritten to a
+// unique internal name (e.g. "app__Foo"). When no name collides across
+// namespaces (the common case) this is a no-op, so single-namespace programs are
+// untouched. Runs before monomorphize, so generic mangling sees unique names too.
+void qualifyNamespaces(ast::Program& program) {
+    // 1. Index each simple type name to the set of namespaces declaring it.
+    std::map<std::string, std::set<std::string>> declNs;
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) declNs[c.name].insert(ns.name);
+            for (auto& e : ns.enums) declNs[e.name].insert(ns.name);
+        }
+    std::set<std::string> ambiguous;
+    for (auto& [name, nss] : declNs)
+        if (nss.size() > 1) ambiguous.insert(name);
+    if (ambiguous.empty()) return;  // nothing collides: leave every name as written
+
+    auto qualified = [](const std::string& ns, const std::string& simple) {
+        std::string s = ns;
+        for (char& c : s) if (c == '.') c = '_';
+        return s + "__" + simple;
+    };
+
+    for (auto& b : program.bundles) {
+        // Imported symbols of this bundle: type name -> the namespace it comes from.
+        std::map<std::string, std::string> importNs;
+        for (auto& imp : b.imports) {
+            if (imp.path.size() < 2) continue;
+            std::string nsPrefix;
+            for (std::size_t i = 0; i + 1 < imp.path.size(); ++i)
+                nsPrefix += (i ? "." : "") + imp.path[i];
+            importNs[imp.path.back()] = nsPrefix;
+        }
+        for (auto& ns : b.namespaces) {
+            std::set<std::string> ownNames;
+            for (auto& c : ns.classes) ownNames.insert(c.name);
+            for (auto& e : ns.enums) ownNames.insert(e.name);
+            // For each ambiguous name visible here, map it to its owning namespace's
+            // unique name. Own declarations win; otherwise an import decides.
+            Subst subst;
+            for (const std::string& amb : ambiguous) {
+                std::string owner;
+                if (ownNames.count(amb) > 0)
+                    owner = ns.name;
+                else if (auto it = importNs.find(amb);
+                         it != importNs.end() && declNs[amb].count(it->second) > 0)
+                    owner = it->second;
+                if (!owner.empty()) subst[amb] = qualified(owner, amb);
+            }
+            if (subst.empty()) continue;
+            for (auto& c : ns.classes) {
+                const std::string newName = subst.count(c.name) ? subst[c.name] : c.name;
+                ast::ClassDecl rewritten = cloneClass(c, subst, newName);
+                rewritten.typeParams = c.typeParams;  // cloneClass drops these; keep generics generic
+                // cloneClass does not run these name fields through the subst:
+                if (auto it = subst.find(rewritten.superclass); it != subst.end())
+                    rewritten.superclass = it->second;
+                for (auto& iface : rewritten.interfaces)
+                    if (auto it = subst.find(iface); it != subst.end()) iface = it->second;
+                for (auto& p : rewritten.permits)
+                    if (auto it = subst.find(p); it != subst.end()) p = it->second;
+                c = std::move(rewritten);
+            }
+            for (auto& e : ns.enums) {
+                if (subst.count(e.name) > 0) e.name = subst[e.name];
+                for (auto& cat : e.extendsCatalogs)
+                    if (auto it = subst.find(cat); it != subst.end()) cat = it->second;
+            }
+        }
+    }
+}
 
 bool monomorphize(ast::Program& program) {
     // Index generic templates by name.

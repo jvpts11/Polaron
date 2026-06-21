@@ -14,4 +14,9 @@ namespace ldp3 {
 // type-parameter constraint (spec 15.2); true otherwise.
 bool monomorphize(ast::Program& program);
 
+// Rewrites type names that collide across namespaces (app.Foo vs lib.Foo) to
+// unique internal names, so namespaces actually scope type names. A no-op when no
+// simple type name is declared in more than one namespace. Run before monomorphize.
+void qualifyNamespaces(ast::Program& program);
+
 }  // namespace ldp3

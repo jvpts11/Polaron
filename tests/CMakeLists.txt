@@ -1375,6 +1375,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=~Outer ~Mid ~Leaf done"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # qualified names (F4): the same type name in two namespaces (app.Box vs
+        # lib.Box) is two distinct types, each resolved within its own namespace.
+        add_test(NAME codegen_qualified_names_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/qualified_names.ldp3"
+            "-DEXPECTED=app=1 lib=2"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

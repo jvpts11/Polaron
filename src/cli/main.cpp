@@ -208,6 +208,7 @@ int checkProgram(const std::string& path) {
     ldp3::ast::Program program = parser.parse();
     if (reportParseErrors(path, parser)) return 1;
     appendPrelude(program);
+    ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     ldp3::SemanticAnalyzer sema;
     if (!sema.analyze(program)) {
@@ -255,6 +256,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath) 
     }
 
     appendPrelude(program);
+    ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     ldp3::SemanticAnalyzer sema;
     if (!sema.analyze(program)) {

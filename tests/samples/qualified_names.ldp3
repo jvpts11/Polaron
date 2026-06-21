@@ -1,0 +1,43 @@
+program QualifiedNames;
+
+// Two namespaces each declare a `Box` (spec: namespaces scope type names). They
+// are distinct types: app.Box.value() is 1, lib.Box.value() is 2. Each namespace
+// resolves `Box` to its own; `lib.Helper` (a unique name) is imported into app.
+// Without namespace-qualified type names this would be a redeclaration error.
+
+public bundle main {
+    import lib.Helper;
+
+    public namespace app {
+        public class Box {
+            public constructor Box() {}
+            public method value() returns int { return 1; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box b = new Box() on heap;            // app.Box
+                Helper h = new Helper() on heap;       // lib.Helper, uses lib.Box
+                System.IO.printf("app=%d lib=%d\n", b.value(), h.libValue());
+                delete b;
+                delete h;
+                return;
+            }
+        }
+    }
+
+    public namespace lib {
+        public class Box {
+            public constructor Box() {}
+            public method value() returns int { return 2; }
+        }
+        public class Helper {
+            public constructor Helper() {}
+            public method libValue() returns int {
+                Box b = new Box() on heap;             // lib.Box
+                int v = b.value();
+                delete b;
+                return v;
+            }
+        }
+    }
+}
