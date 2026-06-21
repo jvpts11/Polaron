@@ -417,6 +417,75 @@ struct CodeGenerator::Impl {
         return false;
     }
 
+    // Runs a heap object's destructor (virtually, if the class is polymorphic) and
+    // frees it. The single lowering used by both `delete` and `cascade delete`.
+    void emitDeleteObject(llvm::Value* objPtr, const std::string& cn) {
+        auto cit = classes.find(cn);
+        if (cit != classes.end() && cit->second.hasVtable) {
+            llvm::Value* vtblField = builder.CreateStructGEP(cit->second.type, objPtr, 0, "vtbl.addr");
+            llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblField, "vtbl");
+            const std::uint64_t dtorIdx = methodSlotNames.size();  // trailing slot
+            llvm::Type* vtArrTy = llvm::ArrayType::get(builder.getPtrTy(), dtorIdx + 1);
+            llvm::Value* slotPtr = builder.CreateConstGEP2_64(vtArrTy, vtbl, 0, dtorIdx, "dtor.slot");
+            llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), slotPtr, "dtor.fn");
+            llvm::Function* fn = currentFn;
+            llvm::BasicBlock* callBB = llvm::BasicBlock::Create(context, "dtor.call", fn);
+            llvm::BasicBlock* freeBB = llvm::BasicBlock::Create(context, "dtor.free", fn);
+            builder.CreateCondBr(
+                builder.CreateICmpNE(fnPtr, llvm::ConstantPointerNull::get(builder.getPtrTy())),
+                callBB, freeBB);
+            builder.SetInsertPoint(callBB);
+            llvm::FunctionType* dtorTy =
+                llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+            builder.CreateCall(dtorTy, fnPtr, {objPtr});
+            builder.CreateBr(freeBB);
+            builder.SetInsertPoint(freeBB);
+            builder.CreateCall(freeFn(), {objPtr});
+            return;
+        }
+        if (cit != classes.end() && cit->second.hasDestructor)
+            builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+        builder.CreateCall(freeFn(), {objPtr});
+    }
+
+    // `cascade delete` (spec 37.1): delete `objPtr`, then recursively delete the
+    // objects it owns by composition -- its value-typed (non-pointer, non-reference,
+    // non-array) class fields. Pointers/references are associations and are skipped.
+    // Value composition is acyclic (a cycle would need a pointer), so no runtime
+    // cycle detection is required and this recursion terminates.
+    void emitCascadeDelete(llvm::Value* objPtr, const std::string& cn) {
+        auto cit = classes.find(cn);
+        if (cit == classes.end()) { emitDeleteObject(objPtr, cn); return; }
+        // Read owned child pointers BEFORE freeing this object.
+        std::vector<std::pair<llvm::Value*, std::string>> children;
+        for (const auto& [fname, ftype] : cit->second.ownFields) {
+            if (ftype.find('*') != std::string::npos || ftype.find('&') != std::string::npos ||
+                isArrayType(ftype))
+                continue;  // an association, not owned by value
+            const std::string fcn = baseType(ftype);
+            if (classes.find(fcn) == classes.end()) continue;  // not a class-typed field
+            auto idxIt = cit->second.fieldIndex.find(fname);
+            if (idxIt == cit->second.fieldIndex.end()) continue;
+            llvm::Value* childPtr = builder.CreateLoad(
+                builder.getPtrTy(),
+                builder.CreateStructGEP(cit->second.type, objPtr, idxIt->second, fname), fname);
+            children.emplace_back(childPtr, fcn);
+        }
+        emitDeleteObject(objPtr, cn);
+        for (const auto& [childPtr, fcn] : children) {
+            llvm::Function* fn = currentFn;
+            llvm::BasicBlock* doBB = llvm::BasicBlock::Create(context, "cascade.do", fn);
+            llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "cascade.cont", fn);
+            builder.CreateCondBr(
+                builder.CreateICmpNE(childPtr, llvm::ConstantPointerNull::get(builder.getPtrTy())),
+                doBB, contBB);
+            builder.SetInsertPoint(doBB);
+            emitCascadeDelete(childPtr, fcn);
+            builder.CreateBr(contBB);
+            builder.SetInsertPoint(contBB);
+        }
+    }
+
     // If a constructor body opens with `super(...)`, returns that call so the
     // prologue can forward its arguments to the base constructor.
     static const ast::CallExpr* explicitSuperCall(const ast::Block& body) {
@@ -2330,6 +2399,12 @@ struct CodeGenerator::Impl {
             if (objPtr == nullptr) return;
             const std::string cn = baseType(t);  // see through T*
             auto cit = classes.find(cn);
+            // `cascade delete` (spec 37.1): delete the object and everything it owns
+            // by composition. Heap-only (the spec's intent); no stack early-destruct.
+            if (del->isCascade) {
+                emitCascadeDelete(objPtr, cn);
+                return;
+            }
             // A stack-allocated owned object (tracked for RAII): `delete` is an early
             // destruct -- run the destructor once and drop it from tracking, but never
             // free() a stack pointer or let scope-exit destruct it again.
@@ -2344,38 +2419,9 @@ struct CodeGenerator::Impl {
                     }
                 }
             }
-            // Polymorphic delete (delete through a base pointer): dispatch the destructor
-            // dynamically through the object's vtable (trailing slot) so the most-derived
-            // destructor runs, not the static type's. The slot is null when no class in
-            // the hierarchy declares a destructor, so guard the call.
-            if (cit != classes.end() && cit->second.hasVtable) {
-                llvm::Value* vtblField =
-                    builder.CreateStructGEP(cit->second.type, objPtr, 0, "vtbl.addr");
-                llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblField, "vtbl");
-                const std::uint64_t dtorIdx = methodSlotNames.size();  // trailing slot
-                llvm::Type* vtArrTy = llvm::ArrayType::get(builder.getPtrTy(), dtorIdx + 1);
-                llvm::Value* slotPtr =
-                    builder.CreateConstGEP2_64(vtArrTy, vtbl, 0, dtorIdx, "dtor.slot");
-                llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), slotPtr, "dtor.fn");
-                llvm::Function* fn = currentFn;
-                llvm::BasicBlock* callBB = llvm::BasicBlock::Create(context, "dtor.call", fn);
-                llvm::BasicBlock* freeBB = llvm::BasicBlock::Create(context, "dtor.free", fn);
-                builder.CreateCondBr(
-                    builder.CreateICmpNE(fnPtr, llvm::ConstantPointerNull::get(builder.getPtrTy())),
-                    callBB, freeBB);
-                builder.SetInsertPoint(callBB);
-                llvm::FunctionType* dtorTy =
-                    llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
-                builder.CreateCall(dtorTy, fnPtr, {objPtr});
-                builder.CreateBr(freeBB);
-                builder.SetInsertPoint(freeBB);
-                builder.CreateCall(freeFn(), {objPtr});
-                return;
-            }
-            if (cit != classes.end() && cit->second.hasDestructor) {
-                builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
-            }
-            builder.CreateCall(freeFn(), {objPtr});
+            // Polymorphic delete dispatches the destructor through the vtable; a plain
+            // class calls its destructor directly. Both then free (see emitDeleteObject).
+            emitDeleteObject(objPtr, cn);
             return;
         }
         if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {

@@ -54,7 +54,7 @@ enum class TokenKind : std::uint8_t {
     KwItself, KwRelease,
     KwPersistent, KwEternal, KwTransient,
     KwDefer, KwUsing,
-    KwVolatile,
+    KwVolatile, KwCascade,
     KwLambda, KwFunction,
     KwLabel, KwComefrom,
     KwTry, KwCatch, KwFinally, KwThrow, KwThrows,

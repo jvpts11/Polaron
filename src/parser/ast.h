@@ -215,6 +215,7 @@ struct ReturnStmt : Stmt {
 
 struct DeleteStmt : Stmt {
     ExprPtr target;  // a heap object or array to free
+    bool isCascade = false;  // `cascade delete` (spec 37.1): also delete owned member objects
     void dump(std::string& out, int indent) const override;
 };
 

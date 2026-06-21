@@ -1118,10 +1118,11 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return ret;
     }
-    if (check(TokenKind::KwDelete)) {
+    if (check(TokenKind::KwCascade) || check(TokenKind::KwDelete)) {
         auto del = std::make_unique<ast::DeleteStmt>();
         del->loc = current().loc;
-        advance();
+        if (match(TokenKind::KwCascade)) del->isCascade = true;  // spec 37.1
+        expect(TokenKind::KwDelete, "'delete' (cascade currently applies only to delete)");
         del->target = parseExpression();
         expect(TokenKind::Semicolon, "';'");
         return del;

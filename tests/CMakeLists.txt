@@ -1365,6 +1365,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=static asserts passed"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # cascade delete (spec 37.1): deleting an object also deletes the objects it
+        # owns by composition (value-typed class fields), recursively.
+        add_test(NAME codegen_cascade_delete_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/cascade_delete.ldp3"
+            "-DEXPECTED=~Outer ~Mid ~Leaf done"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()
