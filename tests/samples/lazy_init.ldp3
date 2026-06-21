@@ -1,0 +1,32 @@
+program LazyInit;
+
+// `lazy` (spec 37.3): a lazy local's initializer runs on first access, not at the
+// declaration -- and only once. A lazy local that is never accessed is never
+// initialized (here `b` never prints "constructing 2").
+
+public bundle main {
+    public namespace app {
+        public class Thing {
+            private int v;
+            public constructor Thing(int v) {
+                this.v = v;
+                System.IO.printf("constructing %d\n", v);
+            }
+            public method get() returns int { return this.v; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.printf("before\n");
+                lazy Thing a = new Thing(1) on heap;   // deferred
+                lazy Thing b = new Thing(2) on heap;   // never accessed -> never built
+                System.IO.printf("after decl\n");
+                int x = a.get();                       // triggers "constructing 1" now
+                int y = a.get();                       // already built -> no repeat
+                System.IO.printf("x=%d y=%d\n", x, y);
+                delete a;
+                return;
+            }
+        }
+    }
+}

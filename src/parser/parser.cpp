@@ -1159,6 +1159,7 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwFinal) || check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
         check(TokenKind::KwPersistent) || check(TokenKind::KwEternal) ||
         check(TokenKind::KwVolatile) ||  // spec 37.5: volatile local
+        check(TokenKind::KwLazy) ||      // spec 37.3: lazy local
         check(TokenKind::KwFunction) ||  // function<Ret, Params...> local
         isTypeKeyword(current().kind) || classVarDecl || looksLikeGenericVarDecl()) {
         return parseVarDecl();
@@ -1467,9 +1468,10 @@ std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
     auto decl = std::make_unique<ast::VarDeclStmt>();
     decl->loc = current().loc;
     while (check(TokenKind::KwPersistent) || check(TokenKind::KwEternal) ||
-           check(TokenKind::KwVolatile)) {
+           check(TokenKind::KwVolatile) || check(TokenKind::KwLazy)) {
         if (match(TokenKind::KwPersistent)) decl->isPersistent = true;
         else if (match(TokenKind::KwVolatile)) decl->isVolatile = true;  // spec 37.5
+        else if (match(TokenKind::KwLazy)) decl->isLazy = true;          // spec 37.3
         else { advance(); decl->isEternal = true; }  // eternal [persistent]
     }
     if (match(TokenKind::KwFinal)) {  // final = explicitly immutable (the default)

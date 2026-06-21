@@ -1385,6 +1385,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=app=1 lib=2"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # lazy (spec 37.3): a lazy local initializes on first access, once; an
+        # unaccessed lazy local is never initialized.
+        add_test(NAME codegen_lazy_init_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lazy_init.ldp3"
+            "-DEXPECTED=before after decl constructing 1 x=1 y=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
     else()
         message(STATUS "clang not found; skipping end-to-end codegen test")
     endif()

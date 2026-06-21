@@ -190,6 +190,10 @@ struct LocalSlot {
     llvm::Value* storage = nullptr;
     std::string type;
     bool isVolatile = false;  // spec 37.5: loads/stores of this local are volatile
+    // Lazy locals (spec 37.3): the initializer runs on first access. `lazyFlag` is a
+    // bool alloca (false until initialized); `lazyInit` is the deferred initializer.
+    llvm::Value* lazyFlag = nullptr;
+    const ast::Expr* lazyInit = nullptr;
 };
 
 // A stack object with a destructor, pending end-of-scope cleanup (RAII).
@@ -968,6 +972,28 @@ struct CodeGenerator::Impl {
         return builder.CreateStructGEP(cit->second.persistBlock, block, fidx, mem.member);
     }
 
+    // Runs a lazy local's deferred initializer the first time it is read (spec 37.3):
+    // `if (!flag) { storage = init; flag = true; }`. A no-op for non-lazy locals.
+    void ensureLazy(llvm::Value* flag, const ast::Expr* init, llvm::Value* storage,
+                    const std::string& type, const std::string& name) {
+        if (flag == nullptr || init == nullptr) return;
+        llvm::Function* fn = currentFn;
+        llvm::BasicBlock* initBB = llvm::BasicBlock::Create(context, name + ".lazy.init", fn);
+        llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(context, name + ".lazy.done", fn);
+        llvm::Value* done = builder.CreateLoad(builder.getInt1Ty(), flag, name + ".lazy.set");
+        builder.CreateCondBr(done, doneBB, initBB);
+        builder.SetInsertPoint(initBB);
+        if (llvm::Value* initV = emitExpr(*init); initV != nullptr) {
+            if (isClassValue(type) && isCopyDiscipline(type) && isCopyableLValue(*init))
+                initV = emitClassCopy(type, initV);
+            initV = coerce(initV, typeName(*init), type);
+            builder.CreateStore(initV, storage);
+        }
+        builder.CreateStore(builder.getInt1(true), flag);
+        builder.CreateBr(doneBB);
+        builder.SetInsertPoint(doneBB);
+    }
+
     llvm::Value* emitObjectPtr(const ast::Expr& expr) {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
             if (id->name == "this") return currentThis;
@@ -976,7 +1002,9 @@ struct CodeGenerator::Impl {
                 error("use of undeclared variable '" + id->name + "'", id->loc);
                 return nullptr;
             }
-            return builder.CreateLoad(builder.getPtrTy(), it->second.storage, id->name);
+            llvm::Value* storage = it->second.storage;
+            ensureLazy(it->second.lazyFlag, it->second.lazyInit, storage, it->second.type, id->name);
+            return builder.CreateLoad(builder.getPtrTy(), storage, id->name);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
             // A java-style enum constant used as a receiver (Type.CONST.method()).
@@ -1164,8 +1192,10 @@ struct CodeGenerator::Impl {
                 error("use of undeclared variable '" + id->name + "'", id->loc);
                 return nullptr;
             }
-            return builder.CreateLoad(llvmType(it->second.type), it->second.storage,
-                                      it->second.isVolatile, id->name);
+            llvm::Value* storage = it->second.storage;
+            ensureLazy(it->second.lazyFlag, it->second.lazyInit, storage, it->second.type, id->name);
+            return builder.CreateLoad(llvmType(it->second.type), storage, it->second.isVolatile,
+                                      id->name);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
             if (const std::string key = staticFieldKey(*mem); !key.empty()) {
@@ -2275,6 +2305,22 @@ struct CodeGenerator::Impl {
         }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
             const std::string declType = vd->isVar ? typeName(*vd->init) : typeRefName(vd->type);
+            // Lazy local (spec 37.3): allocate storage now (a safe null/zero) plus an
+            // "initialized" flag, but defer the initializer until the first read.
+            if (vd->isLazy) {
+                llvm::Type* lty = llvmType(declType);
+                llvm::Value* storage = createEntryAlloca(vd->name, lty);
+                builder.CreateStore(llvm::Constant::getNullValue(lty), storage);
+                llvm::Value* flag = createEntryAlloca(vd->name + ".lazy", builder.getInt1Ty());
+                builder.CreateStore(builder.getInt1(false), flag);
+                LocalSlot slot;
+                slot.storage = storage;
+                slot.type = declType;
+                slot.lazyFlag = flag;
+                slot.lazyInit = vd->init.get();
+                locals[vd->name] = slot;
+                return;
+            }
             // Persistent local (spec 18): lives in a disk-backed global keyed by function +
             // name, so it keeps its value across calls AND across runs. The initializer seeds
             // the global once; we never re-store it on entry -- that omission is the reattach.

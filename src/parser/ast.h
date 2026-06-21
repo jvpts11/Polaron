@@ -231,6 +231,7 @@ struct VarDeclStmt : Stmt {
     bool isPersistent = false;  // spec 18: disk-backed local, retained across calls/runs
     bool isEternal = false;     // eternal persistent
     bool isVolatile = false;    // spec 37.5: loads/stores are never optimized away
+    bool isLazy = false;        // spec 37.3: initializer runs on first access, not here
     TypeRef type;        // used when !isVar
     std::string name;
     ExprPtr init;        // M2: an initializer is required
