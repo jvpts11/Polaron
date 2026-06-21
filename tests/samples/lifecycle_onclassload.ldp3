@@ -1,0 +1,21 @@
+program LifecycleOnClassLoad;
+
+// `onClassLoad` (spec 32.5): a class-level hook that runs once at program start,
+// before main, for class-level setup. Here Server's hook prints before main's body
+// even though Server is never instantiated.
+
+public bundle main {
+    public namespace app {
+        public class Server {
+            onClassLoad {
+                System.IO.printf("Server loaded\n");
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.printf("main start\n");
+                return;
+            }
+        }
+    }
+}

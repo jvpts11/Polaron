@@ -3517,6 +3517,11 @@ struct CodeGenerator::Impl {
                         functions[mangled] = llvm::Function::Create(
                             ty, llvm::Function::ExternalLinkage, mangled, module);
                     }
+                    if (cls.onClassLoad) {  // spec 32.5 lifecycle hook (void, no this)
+                        llvm::FunctionType* ty = llvm::FunctionType::get(builder.getVoidTy(), false);
+                        functions[cls.name + ".__onClassLoad"] = llvm::Function::Create(
+                            ty, llvm::Function::ExternalLinkage, cls.name + ".__onClassLoad", module);
+                    }
                 }
                 // Namespace-level `comptime literal` suffix functions (spec 17.10).
                 for (const ast::LiteralDecl& lit : ns.literals) {
@@ -3666,6 +3671,15 @@ struct CodeGenerator::Impl {
         if (requiresClauses != nullptr)
             for (const ast::ExprPtr& r : *requiresClauses) emitContractCheck(*r, "requires");
 
+        // Entry point: run every class's onClassLoad hook once, before main (spec 32.5).
+        if (auto eit = functions.find("@entry"); eit != functions.end() && fn == eit->second) {
+            for (const ast::Bundle& b : program.bundles)
+                for (const ast::Namespace& n : b.namespaces)
+                    for (const ast::ClassDecl& c : n.classes)
+                        if (c.onClassLoad)
+                            builder.CreateCall(functions[c.name + ".__onClassLoad"]);
+        }
+
         emitBlock(body, /*newScope=*/false);  // emitBody owns function-level teardown (+ contracts)
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             emitScopeCleanup();
@@ -3718,6 +3732,10 @@ struct CodeGenerator::Impl {
                         const ast::Block emptyBody;
                         emitBody(functions[cls.name + "." + cls.name], emptyBody, {}, cls.name,
                                  builder.getVoidTy(), &cls);
+                    }
+                    if (cls.onClassLoad) {  // spec 32.5: static-context hook body
+                        emitBody(functions[cls.name + ".__onClassLoad"], *cls.onClassLoad, {},
+                                 /*thisClass=*/"", builder.getVoidTy());
                     }
                 }
                 // Literal suffix bodies: emitted as static functions (no `this`).

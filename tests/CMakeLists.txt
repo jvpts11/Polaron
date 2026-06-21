@@ -1475,6 +1475,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # onClassLoad lifecycle hook (spec 32.5): runs once before main.
+        add_test(NAME codegen_lifecycle_onclassload_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lifecycle_onclassload.ldp3"
+            "-DEXPECTED=Server loaded main start"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # lazy (spec 37.3): a lazy local initializes on first access, once; an
         # unaccessed lazy local is never initialized.
         add_test(NAME codegen_lazy_init_runs COMMAND "${CMAKE_COMMAND}"
