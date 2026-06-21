@@ -1640,23 +1640,58 @@ struct CodeGenerator::Impl {
         }
         // Wire up the persistent block (if any) BEFORE the constructor, so the ctor can read
         // and write this.<persistent field>. Keyed by the binding variable's identity.
+        llvm::Value* persistBlockRef = nullptr;
         if (cit->second.persistPtrIdx != 0 && !pendingPersistKey.empty()) {
+            persistBlockRef = getPersistBlock(pendingPersistKey, cit->second.persistBlock);
             llvm::Value* slot = builder.CreateStructGEP(cit->second.type, objPtr,
                                                         cit->second.persistPtrIdx, "__persist");
-            builder.CreateStore(
-                getPersistBlock(pendingPersistKey, cit->second.persistBlock), slot);
+            builder.CreateStore(persistBlockRef, slot);
             pendingPersistKey.clear();
         }
         auto fnit = functions.find(cn + "." + cn);
         if (fnit != functions.end()) {
             std::vector<llvm::Value*> args;
             args.push_back(objPtr);
-            for (std::size_t i = 0; i < nw.args.size(); ++i) {
-                llvm::Value* v = emitExpr(*nw.args[i]);
-                if (v == nullptr) return nullptr;
-                if (i + 1 < fnit->second->arg_size())  // coerce to the ctor's param width/type
-                    v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
-                args.push_back(v);
+            // Partial constructor (spec 18.9): when fewer args are given than the ctor has
+            // parameters, the provided args fill the non-persistent parameters in order, and
+            // each parameter whose name matches a persistent field takes its value from the
+            // persistent block (the reattached value), rather than being passed in.
+            const ast::ConstructorDecl* ctor = nullptr;
+            if (cit->second.decl != nullptr)
+                for (const ast::MemberPtr& m : cit->second.decl->members)
+                    if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(m.get())) { ctor = c; break; }
+            const auto& porder = cit->second.persistOrder;
+            const bool partial =
+                ctor != nullptr && persistBlockRef != nullptr && nw.args.size() < ctor->params.size();
+            if (partial) {
+                std::size_t provided = 0;
+                for (std::size_t pi = 0; pi < ctor->params.size(); ++pi) {
+                    const std::string& pname = ctor->params[pi].name;
+                    auto pp = std::find(porder.begin(), porder.end(), pname);
+                    llvm::Value* v = nullptr;
+                    if (pp != porder.end()) {  // persistent-matching param: read from the block
+                        const auto fidx = static_cast<unsigned>(pp - porder.begin());
+                        llvm::Value* fp = builder.CreateStructGEP(cit->second.persistBlock,
+                                                                  persistBlockRef, fidx, pname);
+                        v = builder.CreateLoad(llvmType(cit->second.fieldType[pname]), fp, pname);
+                    } else if (provided < nw.args.size()) {  // non-persistent: next provided arg
+                        v = emitExpr(*nw.args[provided++]);
+                    } else {
+                        v = llvm::Constant::getNullValue(fnit->second->getArg(pi + 1)->getType());
+                    }
+                    if (v == nullptr) return nullptr;
+                    if (pi + 1 < fnit->second->arg_size())
+                        v = coerceToType(v, fnit->second->getArg(pi + 1)->getType());
+                    args.push_back(v);
+                }
+            } else {
+                for (std::size_t i = 0; i < nw.args.size(); ++i) {
+                    llvm::Value* v = emitExpr(*nw.args[i]);
+                    if (v == nullptr) return nullptr;
+                    if (i + 1 < fnit->second->arg_size())  // coerce to the ctor's param width/type
+                        v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
+                    args.push_back(v);
+                }
             }
             emitMaybeInvoke(fnit->second, args);
         }

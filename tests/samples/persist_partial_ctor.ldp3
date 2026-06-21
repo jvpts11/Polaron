@@ -1,0 +1,36 @@
+program PersistPartialCtor;
+
+// Partial constructor (spec 18.9): a constructor parameter whose name matches a
+// persistent field may be omitted -- its value comes from the (reattached)
+// persistent block instead. Here `new Car(7)` supplies only `motor`; `serial`
+// is read from the block, which persists across calls, so it counts up 0,1,2.
+
+public bundle main {
+    public namespace app {
+        public class Car {
+            public eternal persistent mutable int serial = 0;
+            public mutable int motor;
+            public constructor Car(int serial, int motor) {
+                this.serial = serial;
+                this.motor = motor;
+            }
+        }
+        public class Main {
+            public static method make() returns int {
+                Car c = new Car(7) on heap;   // partial: serial from block, motor = 7
+                int s = c.serial;
+                int m = c.motor;
+                c.serial = c.serial + 1;
+                delete c;
+                return s * 10 + m;
+            }
+            public static method main(string[] args) returns void {
+                int a = Main.make();
+                int b = Main.make();
+                int d = Main.make();
+                System.IO.printf("%d %d %d\n", a, b, d);   // 7 17 27
+                return;
+            }
+        }
+    }
+}
