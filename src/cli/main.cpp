@@ -118,6 +118,36 @@ public bundle std {
             public override method isSome() returns boolean { return false; }
         }
     }
+    public namespace System.Collections {
+        // A growable list backed by a dynamic array that doubles on overflow (spec 31 uses
+        // ArrayList<Method>/ArrayList<Field>; also a general-purpose collection).
+        public class ArrayList<T> {
+            private mutable T[] data;
+            private mutable int count;
+            public constructor ArrayList() {
+                this.data = new T[4]();
+                this.count = 0;
+            }
+            public method add(T item) returns void {
+                if (this.count >= this.data.length()) {
+                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    for (mutable int i = 0; i < this.count; i++) {
+                        bigger[i] = this.data[i];
+                    }
+                    delete this.data;
+                    this.data = bigger;
+                }
+                this.data[this.count] = item;
+                this.count = this.count + 1;
+            }
+            public method get(int i) returns T {
+                return this.data[i];
+            }
+            public method size() returns int {
+                return this.count;
+            }
+        }
+    }
 }
 )LDP3";
 

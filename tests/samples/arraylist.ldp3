@@ -1,0 +1,33 @@
+program ArrayListTest;
+
+// ArrayList<T> (F10 stdlib, System.Collections): a growable list backed by a doubling
+// dynamic array. Works for value elements (int) and reference elements (String).
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<int> nums = new ArrayList<int>() on heap;
+                nums.add(10);
+                nums.add(20);
+                nums.add(30);
+                nums.add(40);
+                nums.add(50);     // grows past the initial capacity of 4
+                mutable int sum = 0;
+                for (mutable int i = 0; i < nums.size(); i++) {
+                    sum = sum + nums.get(i);
+                }
+                System.IO.printf("size=%d sum=%d\n", nums.size(), sum);
+
+                ArrayList<String> names = new ArrayList<String>() on heap;
+                names.add("alpha");
+                names.add("beta");
+                names.add("gamma");
+                for (mutable int i = 0; i < names.size(); i++) {
+                    Console.println(names.get(i));
+                }
+                return;
+            }
+        }
+    }
+}

@@ -1511,6 +1511,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # ArrayList<T> (F10 stdlib): growable list, value and reference elements.
+        add_test(NAME codegen_arraylist_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/arraylist.ldp3"
+            "-DEXPECTED=size=5 sum=150 alpha beta gamma"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # lazy (spec 37.3): a lazy local initializes on first access, once; an
         # unaccessed lazy local is never initialized.
         add_test(NAME codegen_lazy_init_runs COMMAND "${CMAKE_COMMAND}"
