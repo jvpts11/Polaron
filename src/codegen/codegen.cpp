@@ -792,9 +792,11 @@ struct CodeGenerator::Impl {
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
                 if (mem->member == "length" && isArrayType(typeName(*mem->object))) return "int";
-                if (mem->member == "length") {
-                    const std::string ot = typeName(*mem->object);
-                    if (ot == "String" || ot == "string") return "int";
+                if (const std::string ot = typeName(*mem->object); ot == "String" || ot == "string") {
+                    if (mem->member == "length") return "int";
+                    if (mem->member == "charAt") return "char";
+                    if (mem->member == "isEmpty" || mem->member == "equals") return "boolean";
+                    if (mem->member == "concat" || mem->member == "substring") return "String";
                 }
                 if (typeName(*mem->object) == "Type") {
                     if (mem->member == "name" || mem->member == "methodName" ||
@@ -932,6 +934,25 @@ struct CodeGenerator::Impl {
             builder.getPtrTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty()},
             false);
         return module.getOrInsertFunction("memcpy", ty);
+    }
+
+    llvm::FunctionCallee strcmpFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getInt32Ty(), {builder.getPtrTy(), builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("strcmp", ty);
+    }
+
+    // Builds a String object on the heap from a length and a null-terminated byte buffer.
+    llvm::Value* emitStringFromParts(llvm::Value* len, llvm::Value* data) {
+        llvm::Value* obj = builder.CreateCall(mallocFn(), {sizeOf(stringType())}, "newstr");
+        builder.CreateStore(len, builder.CreateStructGEP(stringType(), obj, 0));
+        builder.CreateStore(data, builder.CreateStructGEP(stringType(), obj, 1));
+        return obj;
+    }
+    // Loads the i64 length field of a String object.
+    llvm::Value* stringLen(llvm::Value* strObj) {
+        return builder.CreateLoad(builder.getInt64Ty(),
+                                  builder.CreateStructGEP(stringType(), strObj, 0, "str.len"), "len");
     }
 
     // A class value (not a pointer/ref, not an array, not a primitive/enum).
@@ -2060,16 +2081,58 @@ struct CodeGenerator::Impl {
                 llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "len");
                 return builder.CreateTrunc(len, builder.getInt32Ty());
             }
-            // String.length(): read the i64 length field (struct index 0).
-            if (mem->member == "length") {
-                const std::string ot = typeName(*mem->object);
-                if (ot == "String" || ot == "string") {
-                    llvm::Value* s = emitExpr(*mem->object);
-                    if (s == nullptr) return nullptr;
-                    llvm::Value* len = builder.CreateLoad(
-                        builder.getInt64Ty(),
-                        builder.CreateStructGEP(stringType(), s, 0, "str.len"), "len");
-                    return builder.CreateTrunc(len, builder.getInt32Ty());
+            // String methods (spec 4): length/charAt/isEmpty/equals/concat/substring.
+            if (const std::string ot = typeName(*mem->object); ot == "String" || ot == "string") {
+                llvm::Value* s = emitExpr(*mem->object);
+                if (s == nullptr) return nullptr;
+                if (mem->member == "length")
+                    return builder.CreateTrunc(stringLen(s), builder.getInt32Ty());
+                if (mem->member == "isEmpty")
+                    return builder.CreateZExt(
+                        builder.CreateICmpEQ(stringLen(s), builder.getInt64(0)), builder.getInt32Ty());
+                if (mem->member == "charAt") {
+                    llvm::Value* i = emitExpr(*call.args[0]);
+                    if (i == nullptr) return nullptr;
+                    llvm::Value* byte = builder.CreateLoad(
+                        builder.getInt8Ty(),
+                        builder.CreateGEP(builder.getInt8Ty(), stringData(s), fitInt(i, 64), "ch.addr"),
+                        "ch");
+                    return builder.CreateZExt(byte, builder.getInt32Ty());  // char is i32
+                }
+                if (mem->member == "equals") {
+                    llvm::Value* o = emitExpr(*call.args[0]);
+                    if (o == nullptr) return nullptr;
+                    llvm::Value* cmp = builder.CreateCall(strcmpFn(), {stringData(s), stringData(o)});
+                    return builder.CreateZExt(builder.CreateICmpEQ(cmp, builder.getInt32(0)),
+                                              builder.getInt32Ty());
+                }
+                if (mem->member == "concat") {
+                    llvm::Value* o = emitExpr(*call.args[0]);
+                    if (o == nullptr) return nullptr;
+                    llvm::Value* la = stringLen(s);
+                    llvm::Value* lb = stringLen(o);
+                    llvm::Value* total = builder.CreateAdd(la, lb);
+                    llvm::Value* buf = builder.CreateCall(
+                        mallocFn(), {builder.CreateAdd(total, builder.getInt64(1))}, "cat.buf");
+                    builder.CreateCall(memcpyFn(), {buf, stringData(s), la});
+                    builder.CreateCall(memcpyFn(),
+                                       {builder.CreateGEP(builder.getInt8Ty(), buf, la), stringData(o), lb});
+                    builder.CreateStore(builder.getInt8(0),
+                                        builder.CreateGEP(builder.getInt8Ty(), buf, total));  // NUL
+                    return emitStringFromParts(total, buf);
+                }
+                if (mem->member == "substring") {
+                    llvm::Value* start = fitInt(emitExpr(*call.args[0]), 64);
+                    llvm::Value* end = fitInt(emitExpr(*call.args[1]), 64);
+                    llvm::Value* n = builder.CreateSub(end, start);
+                    llvm::Value* buf = builder.CreateCall(
+                        mallocFn(), {builder.CreateAdd(n, builder.getInt64(1))}, "sub.buf");
+                    builder.CreateCall(
+                        memcpyFn(),
+                        {buf, builder.CreateGEP(builder.getInt8Ty(), stringData(s), start), n});
+                    builder.CreateStore(builder.getInt8(0),
+                                        builder.CreateGEP(builder.getInt8Ty(), buf, n));  // NUL
+                    return emitStringFromParts(n, buf);
                 }
             }
             // Type reflection (spec 31): name(), method/field enumeration.

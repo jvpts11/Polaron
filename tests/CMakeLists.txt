@@ -1529,6 +1529,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # String methods (F10 stdlib): length/isEmpty/charAt/equals/concat/substring.
+        add_test(NAME codegen_string_methods_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/string_methods.ldp3"
+            "-DEXPECTED=Hello, World! len=13 empty=0 char0=H char7=W World eq=1 ne=0 emptyIsEmpty=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # lazy (spec 37.3): a lazy local initializes on first access, once; an
         # unaccessed lazy local is never initialized.
         add_test(NAME codegen_lazy_init_runs COMMAND "${CMAKE_COMMAND}"

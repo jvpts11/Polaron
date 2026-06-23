@@ -1943,7 +1943,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 return "";
             }
             if (objType == "String" || objType == "string") {
+                for (const auto& arg : call->args) typeOf(*arg);
                 if (mem->member == "length" && call->args.empty()) return "int";
+                if (mem->member == "isEmpty" && call->args.empty()) return "boolean";
+                if (mem->member == "charAt" && call->args.size() == 1) return "char";
+                if (mem->member == "equals" && call->args.size() == 1) return "boolean";
+                if (mem->member == "concat" && call->args.size() == 1) return "String";
+                if (mem->member == "substring" && call->args.size() == 2) return "String";
                 error("String has no method '" + mem->member + "'", call->loc);
                 return "";
             }
