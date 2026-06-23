@@ -796,7 +796,12 @@ struct CodeGenerator::Impl {
                     const std::string ot = typeName(*mem->object);
                     if (ot == "String" || ot == "string") return "int";
                 }
-                if (mem->member == "name" && typeName(*mem->object) == "Type") return "String";
+                if (typeName(*mem->object) == "Type") {
+                    if (mem->member == "name" || mem->member == "methodName" ||
+                        mem->member == "fieldName")
+                        return "String";
+                    if (mem->member == "methodCount" || mem->member == "fieldCount") return "int";
+                }
                 if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                     if (enums.count(oid->name) > 0) {
                         if (mem->member == "count") return "int";
@@ -1185,18 +1190,48 @@ struct CodeGenerator::Impl {
         return (t == "String" || t == "string") ? stringData(v) : v;
     }
 
-    // The reflection Type token layout: { ptr name }. Lazily created.
+    // The reflection Type token layout (spec 31): { ptr name, i64 methodCount,
+    // ptr methodNames, i64 fieldCount, ptr fieldNames }. The name arrays are globals
+    // of String pointers. Lazily created.
     llvm::StructType* typeTokenType() {
         if (typeStructTy == nullptr)
-            typeStructTy = llvm::StructType::create(context, {builder.getPtrTy()}, "ReflectType");
+            typeStructTy = llvm::StructType::create(
+                context,
+                {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(),
+                 builder.getPtrTy()},
+                "ReflectType");
         return typeStructTy;
     }
-    // The Type token for a class (spec 31), one shared global per class, holding its name.
+    // Builds a global array of String pointers from a list of names; returns {count, arrayPtr}.
+    std::pair<llvm::Constant*, llvm::Constant*> nameArray(const std::vector<std::string>& names,
+                                                          const std::string& tag) {
+        std::vector<llvm::Constant*> ptrs;
+        for (const std::string& n : names) ptrs.push_back(llvm::cast<llvm::Constant>(emitStringObject(n)));
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(builder.getPtrTy(), ptrs.size());
+        auto* arrG = new llvm::GlobalVariable(module, arrTy, /*isConstant=*/true,
+                                              llvm::GlobalValue::PrivateLinkage,
+                                              llvm::ConstantArray::get(arrTy, ptrs), tag);
+        return {builder.getInt64(names.size()), arrG};
+    }
+    // The Type token for a class (spec 31), one shared global per class, holding its name
+    // and its declared method and field names (in declaration order).
     llvm::Value* typeTokenFor(const std::string& className) {
         auto it = typeGlobals.find(className);
         if (it != typeGlobals.end()) return it->second;
+        std::vector<std::string> methodNames, fieldNames;
+        if (auto cit = classes.find(className); cit != classes.end() && cit->second.decl != nullptr) {
+            for (const ast::MemberPtr& m : cit->second.decl->members) {
+                if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()))
+                    methodNames.push_back(md->name);
+                else if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()))
+                    fieldNames.push_back(fd->name);
+            }
+        }
         auto* nameStr = llvm::cast<llvm::Constant>(emitStringObject(className));
-        llvm::Constant* obj = llvm::ConstantStruct::get(typeTokenType(), {nameStr});
+        auto [mcount, mnames] = nameArray(methodNames, "methods." + className);
+        auto [fcount, fnames] = nameArray(fieldNames, "fields." + className);
+        llvm::Constant* obj =
+            llvm::ConstantStruct::get(typeTokenType(), {nameStr, mcount, mnames, fcount, fnames});
         auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
                                            llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
         typeGlobals[className] = g;
@@ -2037,13 +2072,31 @@ struct CodeGenerator::Impl {
                     return builder.CreateTrunc(len, builder.getInt32Ty());
                 }
             }
-            // Type.name() (spec 31): the class name as a String (struct index 0).
-            if (mem->member == "name" && typeName(*mem->object) == "Type") {
+            // Type reflection (spec 31): name(), method/field enumeration.
+            if (typeName(*mem->object) == "Type") {
                 llvm::Value* t = emitExpr(*mem->object);
                 if (t == nullptr) return nullptr;
-                return builder.CreateLoad(builder.getPtrTy(),
-                                          builder.CreateStructGEP(typeTokenType(), t, 0, "type.name"),
-                                          "name");
+                auto loadCount = [&](unsigned idx) {
+                    return builder.CreateTrunc(
+                        builder.CreateLoad(builder.getInt64Ty(),
+                                           builder.CreateStructGEP(typeTokenType(), t, idx), "cnt"),
+                        builder.getInt32Ty());
+                };
+                auto loadNameAt = [&](unsigned arrIdx) -> llvm::Value* {
+                    llvm::Value* arr = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, arrIdx), "arr");
+                    llvm::Value* i = emitExpr(*call.args[0]);
+                    if (i == nullptr) return nullptr;
+                    llvm::Value* slot = builder.CreateGEP(builder.getPtrTy(), arr, fitInt(i, 64), "slot");
+                    return builder.CreateLoad(builder.getPtrTy(), slot, "elem");
+                };
+                if (mem->member == "name")
+                    return builder.CreateLoad(builder.getPtrTy(),
+                                              builder.CreateStructGEP(typeTokenType(), t, 0), "name");
+                if (mem->member == "methodCount") return loadCount(1);
+                if (mem->member == "methodName") return loadNameAt(2);
+                if (mem->member == "fieldCount") return loadCount(3);
+                if (mem->member == "fieldName") return loadNameAt(4);
             }
             // Enum built-ins (spec 12.5): EnumName.count() / EnumName.values().
             if (const auto* eid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {

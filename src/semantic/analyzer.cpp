@@ -1948,7 +1948,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 return "";
             }
             if (objType == "Type") {  // reflection (spec 31)
+                for (const auto& arg : call->args) typeOf(*arg);
                 if (mem->member == "name" && call->args.empty()) return "String";
+                if (mem->member == "methodCount" && call->args.empty()) return "int";
+                if (mem->member == "fieldCount" && call->args.empty()) return "int";
+                if ((mem->member == "methodName" || mem->member == "fieldName") &&
+                    call->args.size() == 1)
+                    return "String";
                 error("Type has no method '" + mem->member + "'", call->loc);
                 return "";
             }

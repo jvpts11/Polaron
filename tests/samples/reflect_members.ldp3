@@ -1,0 +1,30 @@
+program ReflectMembers;
+
+// Reflection member introspection (spec 31): a Type token exposes the declared
+// methods and fields of a class. methodCount()/methodName(i) and fieldCount()/
+// fieldName(i) enumerate them by name (the runtime backing for methods()/fields()).
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            private int age;
+            private char tag;
+            public constructor Dog() { this.age = 0; this.tag = 'x'; }
+            public method bark() returns void { return; }
+            public method sit() returns void { return; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Type t = reflect.typeOf<Dog>();
+                System.IO.printf("methods=%d fields=%d\n", t.methodCount(), t.fieldCount());
+                for (mutable int i = 0; i < t.methodCount(); i++) {
+                    Console.println(t.methodName(i));
+                }
+                for (mutable int i = 0; i < t.fieldCount(); i++) {
+                    Console.println(t.fieldName(i));
+                }
+                return;
+            }
+        }
+    }
+}
