@@ -268,6 +268,7 @@ struct CodeGenerator::Impl {
     // Active try `finally` blocks (innermost last). An exit that leaves a try region
     // (return / break / continue / try?) emits the pending finallys before branching.
     std::vector<const ast::Block*> finallyStack;
+    llvm::StructType* stringStructTy = nullptr;  // String layout: { i64 length, ptr data } (spec 4)
     std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
     std::unordered_set<std::string> abstainedLabels;  // labels named by some `abstainfrom` (spec 7.11)
     std::unordered_map<std::string, llvm::GlobalVariable*> abstainCounters;  // label -> runtime counter
@@ -304,6 +305,7 @@ struct CodeGenerator::Impl {
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
         if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
+        if (t == "String" || t == "string") return builder.getPtrTy();  // ptr to {i64 len, ptr data}
         if (classes.count(t) > 0) return builder.getPtrTy();
         return builder.getIntNTy(intBits(t));
     }
@@ -1141,9 +1143,42 @@ struct CodeGenerator::Impl {
         return nullptr;
     }
 
+    // The String object layout: { i64 length, ptr data }. Lazily created.
+    llvm::StructType* stringType() {
+        if (stringStructTy == nullptr)
+            stringStructTy =
+                llvm::StructType::create(context, {builder.getInt64Ty(), builder.getPtrTy()}, "String");
+        return stringStructTy;
+    }
+
+    // Materializes an immutable String object as a private global { length, data },
+    // where data points to a null-terminated byte array. Returns a ptr to the object.
+    llvm::Value* emitStringObject(const std::string& bytes) {
+        llvm::Constant* dataArr = llvm::ConstantDataArray::getString(context, bytes, /*AddNull=*/true);
+        auto* dataG = new llvm::GlobalVariable(module, dataArr->getType(), /*isConstant=*/true,
+                                               llvm::GlobalValue::PrivateLinkage, dataArr, ".strdata");
+        llvm::Constant* obj = llvm::ConstantStruct::get(
+            stringType(), {builder.getInt64(bytes.size()), dataG});
+        auto* objG = new llvm::GlobalVariable(module, stringType(), /*isConstant=*/true,
+                                              llvm::GlobalValue::PrivateLinkage, obj, ".strobj");
+        return objG;
+    }
+
+    // Loads the null-terminated byte pointer (data) of a String object, for libc interop.
+    llvm::Value* stringData(llvm::Value* strObj) {
+        return builder.CreateLoad(builder.getPtrTy(),
+                                  builder.CreateStructGEP(stringType(), strObj, 1, "str.data"), "data");
+    }
+    // If `e` is a String/string value, lowers it to its libc byte pointer (for %s); else
+    // returns the value unchanged.
+    llvm::Value* asCStr(const ast::Expr& e, llvm::Value* v) {
+        const std::string t = typeName(e);
+        return (t == "String" || t == "string") ? stringData(v) : v;
+    }
+
     llvm::Value* emitExpr(const ast::Expr& expr) {
         if (const auto* s = dynamic_cast<const ast::StringLiteralExpr*>(&expr)) {
-            return builder.CreateGlobalStringPtr(resolveEscapes(s->value), ".str");
+            return emitStringObject(resolveEscapes(s->value));
         }
         if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) {
             return llvm::ConstantPointerNull::get(builder.getPtrTy());
@@ -1881,10 +1916,19 @@ struct CodeGenerator::Impl {
                 }
             }
             std::vector<llvm::Value*> args;
-            for (const auto& arg : call.args) {
-                llvm::Value* v = emitExpr(*arg);
+            for (std::size_t i = 0; i < call.args.size(); ++i) {
+                // The format string literal lowers directly to a C string (not a String object).
+                if (i == 0) {
+                    if (const auto* lit =
+                            dynamic_cast<const ast::StringLiteralExpr*>(call.args[0].get())) {
+                        args.push_back(
+                            builder.CreateGlobalStringPtr(resolveEscapes(lit->value), ".str"));
+                        continue;
+                    }
+                }
+                llvm::Value* v = emitExpr(*call.args[i]);
                 if (v == nullptr) return nullptr;
-                args.push_back(v);
+                args.push_back(asCStr(*call.args[i], v));  // String value -> %s byte pointer
             }
             return builder.CreateCall(printf(), args);
         }
@@ -1908,9 +1952,26 @@ struct CodeGenerator::Impl {
             for (std::size_t i = 1; i < call.args.size(); ++i) {
                 llvm::Value* v = emitExpr(*call.args[i]);
                 if (v == nullptr) return nullptr;
-                args.push_back(v);
+                args.push_back(asCStr(*call.args[i], v));
             }
             return builder.CreateCall(printf(), args);
+        }
+        // Console.print / Console.println (spec 2.9 / 4): write a String (or interpolated
+        // string) to stdout, the latter with a trailing newline. The real Console of F10.
+        if (name == "Console.println" || name == "Console.print" ||
+            name == "System.Console.println" || name == "System.Console.print") {
+            const bool nl = (name == "Console.println" || name == "System.Console.println");
+            if (call.args.empty()) {
+                if (nl) builder.CreateCall(printf(), {builder.CreateGlobalStringPtr("\n", ".str")});
+                return nullptr;
+            }
+            if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(call.args.front().get()))
+                return emitInterp(*is, nl);
+            llvm::Value* s = emitExpr(*call.args.front());
+            if (s == nullptr) return nullptr;
+            builder.CreateCall(printf(), {builder.CreateGlobalStringPtr(nl ? "%s\n" : "%s", ".str"),
+                                          asCStr(*call.args.front(), s)});
+            return nullptr;
         }
         // Namespace-level literal suffix function: name(arg). (comptime in the
         // spec; for now it runs at runtime with the same result -- see Fase C.)
@@ -1932,6 +1993,18 @@ struct CodeGenerator::Impl {
                 if (block == nullptr) return nullptr;
                 llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "len");
                 return builder.CreateTrunc(len, builder.getInt32Ty());
+            }
+            // String.length(): read the i64 length field (struct index 0).
+            if (mem->member == "length") {
+                const std::string ot = typeName(*mem->object);
+                if (ot == "String" || ot == "string") {
+                    llvm::Value* s = emitExpr(*mem->object);
+                    if (s == nullptr) return nullptr;
+                    llvm::Value* len = builder.CreateLoad(
+                        builder.getInt64Ty(),
+                        builder.CreateStructGEP(stringType(), s, 0, "str.len"), "len");
+                    return builder.CreateTrunc(len, builder.getInt32Ty());
+                }
             }
             // Enum built-ins (spec 12.5): EnumName.count() / EnumName.values().
             if (const auto* eid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {

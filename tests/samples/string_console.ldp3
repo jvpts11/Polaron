@@ -1,0 +1,21 @@
+program StringConsole;
+
+// Real `String` (spec 4): an immutable heap object { i64 length, ptr data }. String
+// literals build a String; `Console.print`/`println` (spec 4) write it to stdout, and
+// `String.length()` reads its length. This is the F10 stdlib foundation.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String s = "Hello, World!";
+                Console.println(s);
+                Console.println("direct literal");
+                Console.print("no newline ");
+                Console.println("end");
+                System.IO.printf("len=%d\n", s.length());
+                return;
+            }
+        }
+    }
+}

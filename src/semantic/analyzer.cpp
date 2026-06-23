@@ -1488,7 +1488,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (dynamic_cast<const ast::IntLiteralExpr*>(&expr) != nullptr) return "int";
     if (dynamic_cast<const ast::FloatLiteralExpr*>(&expr) != nullptr) return "double";
     if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
-    if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
+    if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "String";
     if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
     if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) return "null";
     if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(&expr)) {
@@ -1855,6 +1855,21 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             for (const auto& arg : call->args) typeOf(*arg);
             return "void";
         }
+        // Console.print / Console.println (spec 4): write a String or interpolated string.
+        if (name == "Console.print" || name == "Console.println" ||
+            name == "System.Console.print" || name == "System.Console.println") {
+            for (const auto& arg : call->args) {
+                if (dynamic_cast<const ast::InterpStringExpr*>(arg.get()) != nullptr) {
+                    typeOf(*arg);
+                    continue;
+                }
+                const std::string at = typeOf(*arg);
+                if (!at.empty() && at != "String" && at != "string")
+                    error("Console expects a String or interpolated string, got '" + at + "'",
+                          arg->loc);
+            }
+            return "void";
+        }
         // Otherwise the callee should be a method: obj.method(...) or, when the
         // receiver names a class, a static call ClassName.method(...).
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
@@ -1913,6 +1928,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "length" && call->args.empty()) return "int";
                 error("arrays only support .length(); '" + mem->member + "' is not a method",
                       call->loc);
+                return "";
+            }
+            if (objType == "String" || objType == "string") {
+                if (mem->member == "length" && call->args.empty()) return "int";
+                error("String has no method '" + mem->member + "'", call->loc);
                 return "";
             }
             // A field of function<...> type is a function value: obj.f(args) calls it.
