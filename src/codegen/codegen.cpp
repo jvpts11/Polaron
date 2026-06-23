@@ -269,6 +269,8 @@ struct CodeGenerator::Impl {
     // (return / break / continue / try?) emits the pending finallys before branching.
     std::vector<const ast::Block*> finallyStack;
     llvm::StructType* stringStructTy = nullptr;  // String layout: { i64 length, ptr data } (spec 4)
+    llvm::StructType* typeStructTy = nullptr;     // reflection Type layout: { ptr name } (spec 31)
+    std::unordered_map<std::string, llvm::GlobalVariable*> typeGlobals;  // class name -> its Type global
     std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
     std::unordered_set<std::string> abstainedLabels;  // labels named by some `abstainfrom` (spec 7.11)
     std::unordered_map<std::string, llvm::GlobalVariable*> abstainCounters;  // label -> runtime counter
@@ -306,6 +308,7 @@ struct CodeGenerator::Impl {
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
         if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
         if (t == "String" || t == "string") return builder.getPtrTy();  // ptr to {i64 len, ptr data}
+        if (t == "Type") return builder.getPtrTy();  // reflection Type token (spec 31)
         if (classes.count(t) > 0) return builder.getPtrTy();
         return builder.getIntNTy(intBits(t));
     }
@@ -786,8 +789,14 @@ struct CodeGenerator::Impl {
             return isArrayType(at) ? at.substr(0, at.size() - 2) : std::string("int");
         }
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+            if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
                 if (mem->member == "length" && isArrayType(typeName(*mem->object))) return "int";
+                if (mem->member == "length") {
+                    const std::string ot = typeName(*mem->object);
+                    if (ot == "String" || ot == "string") return "int";
+                }
+                if (mem->member == "name" && typeName(*mem->object) == "Type") return "String";
                 if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                     if (enums.count(oid->name) > 0) {
                         if (mem->member == "count") return "int";
@@ -1174,6 +1183,24 @@ struct CodeGenerator::Impl {
     llvm::Value* asCStr(const ast::Expr& e, llvm::Value* v) {
         const std::string t = typeName(e);
         return (t == "String" || t == "string") ? stringData(v) : v;
+    }
+
+    // The reflection Type token layout: { ptr name }. Lazily created.
+    llvm::StructType* typeTokenType() {
+        if (typeStructTy == nullptr)
+            typeStructTy = llvm::StructType::create(context, {builder.getPtrTy()}, "ReflectType");
+        return typeStructTy;
+    }
+    // The Type token for a class (spec 31), one shared global per class, holding its name.
+    llvm::Value* typeTokenFor(const std::string& className) {
+        auto it = typeGlobals.find(className);
+        if (it != typeGlobals.end()) return it->second;
+        auto* nameStr = llvm::cast<llvm::Constant>(emitStringObject(className));
+        llvm::Constant* obj = llvm::ConstantStruct::get(typeTokenType(), {nameStr});
+        auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
+                                           llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
+        typeGlobals[className] = g;
+        return g;
     }
 
     llvm::Value* emitExpr(const ast::Expr& expr) {
@@ -1973,6 +2000,10 @@ struct CodeGenerator::Impl {
                                           asCStr(*call.args.front(), s)});
             return nullptr;
         }
+        // reflect.typeOf<T>() (spec 31): returns the Type token for class T.
+        if (name == "reflect.typeOf" && !call.typeArgs.empty()) {
+            return typeTokenFor(ast::mangleGeneric(call.typeArgs[0], {}));
+        }
         // Namespace-level literal suffix function: name(arg). (comptime in the
         // spec; for now it runs at runtime with the same result -- see Fase C.)
         if (auto fnit = functions.find(name);
@@ -2005,6 +2036,14 @@ struct CodeGenerator::Impl {
                         builder.CreateStructGEP(stringType(), s, 0, "str.len"), "len");
                     return builder.CreateTrunc(len, builder.getInt32Ty());
                 }
+            }
+            // Type.name() (spec 31): the class name as a String (struct index 0).
+            if (mem->member == "name" && typeName(*mem->object) == "Type") {
+                llvm::Value* t = emitExpr(*mem->object);
+                if (t == nullptr) return nullptr;
+                return builder.CreateLoad(builder.getPtrTy(),
+                                          builder.CreateStructGEP(typeTokenType(), t, 0, "type.name"),
+                                          "name");
             }
             // Enum built-ins (spec 12.5): EnumName.count() / EnumName.values().
             if (const auto* eid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {

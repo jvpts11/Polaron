@@ -1870,6 +1870,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             return "void";
         }
+        // reflect.typeOf<T>() (spec 31): the Type token for class T.
+        if (name == "reflect.typeOf") {
+            if (call->typeArgs.size() != 1) {
+                error("reflect.typeOf expects one type argument, e.g. reflect.typeOf<Dog>()",
+                      call->loc);
+                return "Type";
+            }
+            const std::string t = ast::mangleGeneric(call->typeArgs[0], {});
+            if (lookupClass(t) == nullptr)
+                error("reflect.typeOf<T>: '" + t + "' is not a class", call->loc);
+            return "Type";
+        }
         // Otherwise the callee should be a method: obj.method(...) or, when the
         // receiver names a class, a static call ClassName.method(...).
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
@@ -1933,6 +1945,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (objType == "String" || objType == "string") {
                 if (mem->member == "length" && call->args.empty()) return "int";
                 error("String has no method '" + mem->member + "'", call->loc);
+                return "";
+            }
+            if (objType == "Type") {  // reflection (spec 31)
+                if (mem->member == "name" && call->args.empty()) return "String";
+                error("Type has no method '" + mem->member + "'", call->loc);
                 return "";
             }
             // A field of function<...> type is a function value: obj.f(args) calls it.

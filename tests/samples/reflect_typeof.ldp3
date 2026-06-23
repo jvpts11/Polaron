@@ -1,0 +1,21 @@
+program ReflectTypeof;
+
+// Reflection (spec 31): `reflect.typeOf<T>()` returns a Type token for class T, and
+// `Type.name()` gives its name as a String. Built on the real String of F10.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public constructor Dog() {}
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Type t = reflect.typeOf<Dog>();
+                Console.println(t.name());                            // Dog
+                String n = reflect.typeOf<Dog>().name();
+                System.IO.printf("name=%s len=%d\n", n, n.length());  // name=Dog len=3
+                return;
+            }
+        }
+    }
+}
