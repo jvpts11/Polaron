@@ -1961,7 +1961,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if ((mem->member == "methodName" || mem->member == "fieldName") &&
                     call->args.size() == 1)
                     return "String";
+                if (mem->member == "method" && call->args.size() == 1) return "Method";
                 error("Type has no method '" + mem->member + "'", call->loc);
+                return "";
+            }
+            if (objType == "Method") {  // reflection (spec 31)
+                for (const auto& arg : call->args) typeOf(*arg);
+                if (mem->member == "name" && call->args.empty()) return "String";
+                if (mem->member == "invoke") return "void";  // invoke(receiver [, args])
+                error("Method has no method '" + mem->member + "'", call->loc);
                 return "";
             }
             // A field of function<...> type is a function value: obj.f(args) calls it.

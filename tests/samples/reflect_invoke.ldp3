@@ -1,0 +1,26 @@
+program ReflectInvoke;
+
+// Reflection invoke (spec 31): Type.method(name) looks up a method by name at runtime
+// and returns a Method token; Method.name() gives its name and Method.invoke(receiver)
+// dispatches the call through a stored function pointer. Scoped to no-arg methods.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public constructor Dog() {}
+            public method bark() returns void { Console.println("Woof!"); }
+            public method sit() returns void { Console.println("(sits)"); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog d = new Dog() on heap;
+                Type t = reflect.typeOf<Dog>();
+                Method m = t.method("bark");
+                Console.println(m.name());        // bark
+                m.invoke(d);                       // Woof!
+                t.method("sit").invoke(d);         // (sits)
+                return;
+            }
+        }
+    }
+}

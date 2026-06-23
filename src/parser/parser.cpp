@@ -1857,7 +1857,13 @@ ast::ExprPtr Parser::parsePostfix() {
             auto m = std::make_unique<ast::MemberExpr>();
             m->loc = current().loc;
             advance();  // '.'
-            m->member = expect(TokenKind::Identifier, "a member name").lexeme;
+            // `method` is a keyword but also the reflection accessor t.method("x").
+            if (check(TokenKind::KwMethod)) {
+                m->member = "method";
+                advance();
+            } else {
+                m->member = expect(TokenKind::Identifier, "a member name").lexeme;
+            }
             m->object = std::move(expr);
             expr = std::move(m);
         } else if (check(TokenKind::Lt) && looksLikeGenericCall()) {

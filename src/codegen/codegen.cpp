@@ -269,7 +269,8 @@ struct CodeGenerator::Impl {
     // (return / break / continue / try?) emits the pending finallys before branching.
     std::vector<const ast::Block*> finallyStack;
     llvm::StructType* stringStructTy = nullptr;  // String layout: { i64 length, ptr data } (spec 4)
-    llvm::StructType* typeStructTy = nullptr;     // reflection Type layout: { ptr name } (spec 31)
+    llvm::StructType* typeStructTy = nullptr;     // reflection Type layout (spec 31)
+    llvm::StructType* methodStructTy = nullptr;   // reflection Method layout { ptr name, ptr fn }
     std::unordered_map<std::string, llvm::GlobalVariable*> typeGlobals;  // class name -> its Type global
     std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
     std::unordered_set<std::string> abstainedLabels;  // labels named by some `abstainfrom` (spec 7.11)
@@ -308,7 +309,7 @@ struct CodeGenerator::Impl {
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
         if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
         if (t == "String" || t == "string") return builder.getPtrTy();  // ptr to {i64 len, ptr data}
-        if (t == "Type") return builder.getPtrTy();  // reflection Type token (spec 31)
+        if (t == "Type" || t == "Method") return builder.getPtrTy();  // reflection tokens (spec 31)
         if (classes.count(t) > 0) return builder.getPtrTy();
         return builder.getIntNTy(intBits(t));
     }
@@ -803,6 +804,11 @@ struct CodeGenerator::Impl {
                         mem->member == "fieldName")
                         return "String";
                     if (mem->member == "methodCount" || mem->member == "fieldCount") return "int";
+                    if (mem->member == "method") return "Method";
+                }
+                if (typeName(*mem->object) == "Method") {
+                    if (mem->member == "name") return "String";
+                    if (mem->member == "invoke") return "void";
                 }
                 if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                     if (enums.count(oid->name) > 0) {
@@ -1212,16 +1218,24 @@ struct CodeGenerator::Impl {
     }
 
     // The reflection Type token layout (spec 31): { ptr name, i64 methodCount,
-    // ptr methodNames, i64 fieldCount, ptr fieldNames }. The name arrays are globals
-    // of String pointers. Lazily created.
+    // ptr methodNames, ptr methodFns, i64 fieldCount, ptr fieldNames }. methodFns is a
+    // parallel array of function pointers, one per method (for Method.invoke). The name
+    // arrays are globals of String pointers. Lazily created.
     llvm::StructType* typeTokenType() {
         if (typeStructTy == nullptr)
             typeStructTy = llvm::StructType::create(
                 context,
-                {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(),
-                 builder.getPtrTy()},
+                {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(),
+                 builder.getInt64Ty(), builder.getPtrTy()},
                 "ReflectType");
         return typeStructTy;
+    }
+    // The reflection Method token layout: { ptr name, ptr fn }. Lazily created.
+    llvm::StructType* methodTokenType() {
+        if (methodStructTy == nullptr)
+            methodStructTy = llvm::StructType::create(
+                context, {builder.getPtrTy(), builder.getPtrTy()}, "ReflectMethod");
+        return methodStructTy;
     }
     // Builds a global array of String pointers from a list of names; returns {count, arrayPtr}.
     std::pair<llvm::Constant*, llvm::Constant*> nameArray(const std::vector<std::string>& names,
@@ -1251,8 +1265,21 @@ struct CodeGenerator::Impl {
         auto* nameStr = llvm::cast<llvm::Constant>(emitStringObject(className));
         auto [mcount, mnames] = nameArray(methodNames, "methods." + className);
         auto [fcount, fnames] = nameArray(fieldNames, "fields." + className);
-        llvm::Constant* obj =
-            llvm::ConstantStruct::get(typeTokenType(), {nameStr, mcount, mnames, fcount, fnames});
+        // Parallel array of method function pointers (null where there is no body).
+        std::vector<llvm::Constant*> fns;
+        for (const std::string& mn : methodNames) {
+            auto fit = functions.find(className + "." + mn);
+            fns.push_back(fit != functions.end()
+                              ? llvm::cast<llvm::Constant>(fit->second)
+                              : llvm::ConstantPointerNull::get(builder.getPtrTy()));
+        }
+        llvm::ArrayType* fnArrTy = llvm::ArrayType::get(builder.getPtrTy(), fns.size());
+        auto* fnsG = new llvm::GlobalVariable(module, fnArrTy, /*isConstant=*/true,
+                                              llvm::GlobalValue::PrivateLinkage,
+                                              llvm::ConstantArray::get(fnArrTy, fns),
+                                              "methodfns." + className);
+        llvm::Constant* obj = llvm::ConstantStruct::get(
+            typeTokenType(), {nameStr, mcount, mnames, fnsG, fcount, fnames});
         auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
                                            llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
         typeGlobals[className] = g;
@@ -2158,8 +2185,73 @@ struct CodeGenerator::Impl {
                                               builder.CreateStructGEP(typeTokenType(), t, 0), "name");
                 if (mem->member == "methodCount") return loadCount(1);
                 if (mem->member == "methodName") return loadNameAt(2);
-                if (mem->member == "fieldCount") return loadCount(3);
-                if (mem->member == "fieldName") return loadNameAt(4);
+                if (mem->member == "fieldCount") return loadCount(4);
+                if (mem->member == "fieldName") return loadNameAt(5);
+                // Type.method(name): find a method by name; returns a Method token whose
+                // fn is null if not found (spec 31).
+                if (mem->member == "method") {
+                    llvm::Value* mcount = builder.CreateLoad(
+                        builder.getInt64Ty(), builder.CreateStructGEP(typeTokenType(), t, 1));
+                    llvm::Value* mnamesArr = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 2));
+                    llvm::Value* mfnsArr = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 3));
+                    llvm::Value* want = stringData(emitExpr(*call.args[0]));
+                    llvm::Value* result =
+                        builder.CreateCall(mallocFn(), {sizeOf(methodTokenType())}, "method");
+                    llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
+                    builder.CreateStore(nullp, builder.CreateStructGEP(methodTokenType(), result, 0));
+                    builder.CreateStore(nullp, builder.CreateStructGEP(methodTokenType(), result, 1));
+                    llvm::Function* fn = currentFn;
+                    llvm::Value* iSlot = createEntryAlloca("mi", builder.getInt64Ty());
+                    builder.CreateStore(builder.getInt64(0), iSlot);
+                    auto* hdr = llvm::BasicBlock::Create(context, "m.hdr", fn);
+                    auto* body = llvm::BasicBlock::Create(context, "m.body", fn);
+                    auto* hit = llvm::BasicBlock::Create(context, "m.hit", fn);
+                    auto* nxt = llvm::BasicBlock::Create(context, "m.next", fn);
+                    auto* end = llvm::BasicBlock::Create(context, "m.end", fn);
+                    builder.CreateBr(hdr);
+                    builder.SetInsertPoint(hdr);
+                    llvm::Value* i = builder.CreateLoad(builder.getInt64Ty(), iSlot, "i");
+                    builder.CreateCondBr(builder.CreateICmpSLT(i, mcount), body, end);
+                    builder.SetInsertPoint(body);
+                    llvm::Value* mn = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), mnamesArr, i), "mn");
+                    builder.CreateCondBr(
+                        builder.CreateICmpEQ(builder.CreateCall(strcmpFn(), {stringData(mn), want}),
+                                             builder.getInt32(0)),
+                        hit, nxt);
+                    builder.SetInsertPoint(hit);
+                    builder.CreateStore(mn, builder.CreateStructGEP(methodTokenType(), result, 0));
+                    builder.CreateStore(
+                        builder.CreateLoad(builder.getPtrTy(),
+                                           builder.CreateGEP(builder.getPtrTy(), mfnsArr, i)),
+                        builder.CreateStructGEP(methodTokenType(), result, 1));
+                    builder.CreateBr(end);
+                    builder.SetInsertPoint(nxt);
+                    builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
+                    builder.CreateBr(hdr);
+                    builder.SetInsertPoint(end);
+                    return result;
+                }
+            }
+            // Method reflection (spec 31): name() and invoke(receiver) for no-arg methods.
+            if (typeName(*mem->object) == "Method") {
+                llvm::Value* m = emitExpr(*mem->object);
+                if (m == nullptr) return nullptr;
+                if (mem->member == "name")
+                    return builder.CreateLoad(builder.getPtrTy(),
+                                              builder.CreateStructGEP(methodTokenType(), m, 0), "m.name");
+                if (mem->member == "invoke") {
+                    llvm::Value* fnPtr = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(methodTokenType(), m, 1), "m.fn");
+                    llvm::Value* recv = emitExpr(*call.args[0]);  // first arg is the receiver
+                    if (recv == nullptr) return nullptr;
+                    llvm::FunctionType* ft = llvm::FunctionType::get(
+                        builder.getVoidTy(), {builder.getPtrTy()}, false);
+                    builder.CreateCall(ft, fnPtr, {recv});  // no-arg void method
+                    return nullptr;
+                }
             }
             // Enum built-ins (spec 12.5): EnumName.count() / EnumName.values().
             if (const auto* eid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
