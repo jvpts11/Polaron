@@ -273,6 +273,9 @@ struct CodeGenerator::Impl {
     llvm::Value* currentThis = nullptr;
     llvm::Function* currentFn = nullptr;
     llvm::Type* currentRetType = nullptr;
+    // When emitting an async method's resume function, this is the ldp3_task* (the function's
+    // state arg); `return X` completes that task instead of returning X (spec 20.2).
+    llvm::Value* currentAsyncState = nullptr;
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
     const std::vector<ast::ExprPtr>* currentInvariants = nullptr;  // contracts: class invariants
     struct LoopTargets {
@@ -815,6 +818,10 @@ struct CodeGenerator::Impl {
             if (un->op == "&") return typeName(*un->operand) + "*";  // address-of
             if (un->op == "~") return typeName(*un->operand);  // bitwise not keeps the width
             return un->op == "!" ? "boolean" : "int";
+        }
+        if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
+            const std::string t = baseType(typeName(*aw->operand));  // Task$X -> X
+            return t.rfind("Task$", 0) == 0 ? t.substr(5) : t;
         }
         if (const auto* me = dynamic_cast<const ast::MatchExpr*>(&expr)) {
             // Value type is the arms' common type, computed by sema (bindings in scope).
@@ -1601,6 +1608,30 @@ struct CodeGenerator::Impl {
             }
             return builder.CreateLoad(llvmType(typeName(*mem)), fieldPtr, isVolatileAccess(*mem),
                                       mem->member);
+        }
+        if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
+            // Slice A: await blocks until the awaited task completes (task_wait), then reads its
+            // result slot back as the awaited type. (Suspension inside async = a later slice.)
+            llvm::Value* taskObj = emitExpr(*aw->operand);
+            if (taskObj == nullptr) return nullptr;
+            const std::string taskCls = baseType(typeName(*aw->operand));  // Task$X
+            auto cit = classes.find(taskCls);
+            if (cit == classes.end()) { error("await of a non-Task value", aw->loc); return nullptr; }
+            auto hIt = cit->second.fieldIndex.find("h");
+            llvm::Value* h = builder.CreateLoad(
+                builder.getInt64Ty(),
+                builder.CreateStructGEP(cit->second.type, taskObj, hIt->second, "task.h.addr"),
+                "task.h");
+            llvm::FunctionType* wtTy = llvm::FunctionType::get(
+                builder.getInt64Ty(), {builder.getInt64Ty()}, false);
+            llvm::Value* res = builder.CreateCall(
+                module.getOrInsertFunction("__ldp3_task_wait", wtTy), {h}, "await");
+            llvm::Type* tt =
+                llvmType(taskCls.rfind("Task$", 0) == 0 ? taskCls.substr(5) : taskCls);
+            if (tt->isPointerTy()) return builder.CreateIntToPtr(res, tt);
+            if (tt->isDoubleTy()) return builder.CreateBitCast(res, tt);
+            if (tt->isIntegerTy()) return builder.CreateIntCast(res, tt, true);
+            return res;
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
             if (un->op == "&") return emitObjectPtr(*un->operand);  // address-of: the object pointer
@@ -3446,6 +3477,15 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
+            // Inside an async resume, `return X` completes the task with X (spec 20.2).
+            if (currentAsyncState != nullptr) {
+                llvm::Value* v = rs->value != nullptr ? emitExpr(*rs->value) : nullptr;
+                emitPendingFinallys(0);
+                emitScopeCleanup();
+                emitTaskComplete(v);
+                builder.CreateRetVoid();
+                return;
+            }
             if (rs->value != nullptr) {
                 llvm::Value* v = emitExpr(*rs->value);
                 if (v != nullptr && currentRetType->isDoubleTy() && v->getType()->isIntegerTy()) {
@@ -4192,9 +4232,22 @@ struct CodeGenerator::Impl {
                             if (!m->isStatic) ptypes.push_back(builder.getPtrTy());
                             for (const auto& p : m->params)
                                 ptypes.push_back(llvmType(typeRefName(p.type)));
+                            const std::string mangled = cls.name + "." + m->name;
+                            if (m->isAsync) {
+                                // Wrapper returns a Task<T> object (ptr); a separate resume
+                                // function void(ptr state) runs the body (spec 20.2).
+                                llvm::FunctionType* wty =
+                                    llvm::FunctionType::get(builder.getPtrTy(), ptypes, false);
+                                functions[mangled] = llvm::Function::Create(
+                                    wty, llvm::Function::ExternalLinkage, mangled, module);
+                                llvm::FunctionType* rty = llvm::FunctionType::get(
+                                    builder.getVoidTy(), {builder.getPtrTy()}, false);
+                                functions[mangled + "$resume"] = llvm::Function::Create(
+                                    rty, llvm::Function::ExternalLinkage, mangled + "$resume", module);
+                                continue;
+                            }
                             llvm::FunctionType* ty = llvm::FunctionType::get(
                                 llvmType(typeRefName(m->returnType)), ptypes, false);
-                            const std::string mangled = cls.name + "." + m->name;
                             functions[mangled] = llvm::Function::Create(
                                 ty, llvm::Function::ExternalLinkage, mangled, module);
                         } else if (const auto* c =
@@ -4301,6 +4354,21 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // Completes the current async resume's task with `value` (spec 20.2): the task's result is
+    // stored (as a 64-bit slot) and its continuation/waiters are scheduled by the runtime.
+    void emitTaskComplete(llvm::Value* value) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getInt64Ty(), builder.getInt64Ty()}, false);
+        llvm::Value* h = builder.CreatePtrToInt(currentAsyncState, builder.getInt64Ty());
+        llvm::Value* v;
+        if (value == nullptr) v = builder.getInt64(0);
+        else if (value->getType()->isPointerTy()) v = builder.CreatePtrToInt(value, builder.getInt64Ty());
+        else if (value->getType()->isIntegerTy()) v = builder.CreateIntCast(value, builder.getInt64Ty(), true);
+        else if (value->getType()->isDoubleTy()) v = builder.CreateBitCast(value, builder.getInt64Ty());
+        else v = builder.getInt64(0);
+        builder.CreateCall(module.getOrInsertFunction("__ldp3_task_complete", ft), {h, v});
+    }
+
     void emitBody(llvm::Function* fn, const ast::Block& body,
                   const std::vector<ast::Param>& params, const std::string& thisClass,
                   llvm::Type* retType, const ast::ClassDecl* ctorOf = nullptr,
@@ -4309,7 +4377,8 @@ struct CodeGenerator::Impl {
                   const std::vector<ast::ExprPtr>* invariants = nullptr,
                   bool hasEnv = false, const std::vector<ast::Capture>* caps = nullptr,
                   const std::vector<std::string>* capTypes = nullptr,
-                  const std::string& dtorChainBase = "", const ast::ClassDecl* dtorOf = nullptr) {
+                  const std::string& dtorChainBase = "", const ast::ClassDecl* dtorOf = nullptr,
+                  bool asyncResume = false) {
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
@@ -4317,6 +4386,9 @@ struct CodeGenerator::Impl {
         currentInvariants = invariants;
         currentDtorChain = dtorChainBase;  // a destructor calls its base destructor at each exit
         currentThis = nullptr;
+        // An async resume's single argument is the ldp3_task* state (spec 20.2); `return`
+        // completes it (see the ReturnStmt codegen) rather than returning a value.
+        currentAsyncState = asyncResume ? fn->getArg(0) : nullptr;
         locals.clear();
         scopeObjects.clear();
         scopeRegions.clear();
@@ -4437,7 +4509,10 @@ struct CodeGenerator::Impl {
         emitBlock(body, /*newScope=*/false);  // emitBody owns function-level teardown (+ contracts)
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             emitScopeCleanup();
-            if (retType->isVoidTy()) {
+            if (currentAsyncState != nullptr) {
+                emitTaskComplete(nullptr);  // async body fell through without an explicit return
+                builder.CreateRetVoid();
+            } else if (retType->isVoidTy()) {
                 builder.CreateRetVoid();
             } else if (retType->isDoubleTy()) {
                 builder.CreateRet(llvm::ConstantFP::get(retType, 0.0));
@@ -4447,6 +4522,41 @@ struct CodeGenerator::Impl {
                 builder.CreateRet(builder.getInt32(0));
             }
         }
+    }
+
+    // Emits an async method as two functions (spec 20.2; slice A -- no awaits yet): a resume
+    // function holding the body (whose `return X` completes the task), and a wrapper that creates
+    // a Task, schedules the resume on the worker pool, and returns the Task immediately.
+    void emitAsyncMethod(const ast::ClassDecl& cls, const ast::MethodDecl& m) {
+        const std::string mangled = cls.name + "." + m.name;
+        emitBody(functions[mangled + "$resume"], m.body, {}, "", builder.getVoidTy(), nullptr,
+                 nullptr, nullptr, nullptr, false, nullptr, nullptr, "", nullptr,
+                 /*asyncResume=*/true);
+        llvm::Function* wrap = functions[mangled];
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", wrap));
+        llvm::FunctionType* tnTy = llvm::FunctionType::get(builder.getInt64Ty(), false);
+        llvm::Value* taskH =
+            builder.CreateCall(module.getOrInsertFunction("__ldp3_task_new", tnTy), {}, "task");
+        // Build the Task<T> object and store the runtime handle in its `h` field.
+        const std::string taskCls = ast::mangleGeneric("Task", {typeRefName(m.returnType)});
+        llvm::Value* obj = nullptr;
+        if (auto cit = classes.find(taskCls); cit != classes.end()) {
+            obj = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "task.obj");
+            if (auto ctor = functions.find(taskCls + "." + taskCls); ctor != functions.end())
+                builder.CreateCall(ctor->second, {obj});
+            if (auto hIt = cit->second.fieldIndex.find("h"); hIt != cit->second.fieldIndex.end())
+                builder.CreateStore(taskH, builder.CreateStructGEP(cit->second.type, obj,
+                                                                   hIt->second, "task.h.addr"));
+        }
+        // Schedule the resume on the pool; its state argument is the task handle itself.
+        llvm::FunctionType* schTy = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy()}, false);
+        builder.CreateCall(module.getOrInsertFunction("__ldp3_schedule", schTy),
+                           {functions[mangled + "$resume"],
+                            builder.CreateIntToPtr(taskH, builder.getPtrTy())});
+        builder.CreateRet(obj != nullptr ? obj
+                                         : llvm::ConstantPointerNull::get(builder.getPtrTy()));
+        currentAsyncState = nullptr;
     }
 
     void emitFunctions() {
@@ -4459,6 +4569,8 @@ struct CodeGenerator::Impl {
                             if (m == entry.method) {
                                 emitBody(functions["@entry"], m->body, {}, "",
                                          builder.getInt32Ty());
+                            } else if (m->isAsync && !m->isAbstract) {
+                                emitAsyncMethod(cls, *m);
                             } else if (!m->isAbstract) {
                                 emitBody(functions[cls.name + "." + m->name], m->body, m->params,
                                          m->isStatic ? std::string() : cls.name,

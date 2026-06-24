@@ -43,6 +43,7 @@ struct MethodInfo {
     bool isProperty = false;  // computed get-only property: read as obj.name (no parens)
     std::size_t paramCount = 0;  // declared parameter count (for arg-count checking)
     bool isFinal = false;     // `final` method -- cannot be overridden
+    bool isAsync = false;     // spec 20.2: the call site yields a Task<returnType>
 };
 struct ClassInfo {
     std::string name;

@@ -426,7 +426,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         info.methods[m->name] = MethodInfo{typeRefStr(m->returnType), m->isStatic,
                                                            m->isAbstract, m->isProperty,
-                                                           m->params.size(), m->isFinal};
+                                                           m->params.size(), m->isFinal, m->isAsync};
                     } else if (dynamic_cast<const ast::ConstructorDecl*>(member.get()) != nullptr) {
                         info.hasConstructor = true;
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) != nullptr) {
@@ -1579,6 +1579,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         return var->type;
     }
 
+    if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
+        // await Task<T> -> T (spec 20.2).
+        const std::string t = baseType(typeOf(*aw->operand));
+        if (!t.empty() && t.rfind("Task$", 0) != 0) {
+            error("'await' expects a Task value, got '" + t + "'", aw->loc);
+            return "";
+        }
+        return t.empty() ? std::string() : t.substr(5);  // strip "Task$"
+    }
     if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
         const std::string t = typeOf(*un->operand);
         if (un->op == "&") {
@@ -1992,6 +2001,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                                       std::to_string(call->args.size()),
                                   call->loc);
                         }
+                        // An async static method yields a Task<returnType> (spec 20.2).
+                        if (mit->second.isAsync)
+                            return ast::mangleGeneric("Task", {mit->second.returnType});
                         return mit->second.returnType;
                     }
                 }
@@ -2096,6 +2108,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                           " argument(s) but got " + std::to_string(call->args.size()),
                       call->loc);
             }
+            // An async method call yields a Task<returnType> (spec 20.2), not the bare value.
+            if (m->isAsync) return ast::mangleGeneric("Task", {m->returnType});
             return m->returnType;
         }
         error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call->loc);

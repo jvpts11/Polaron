@@ -1,0 +1,36 @@
+program AsyncBasic;
+
+// async/await (spec 20.2), slice A: an `async method` returns a Task<T> immediately and runs its
+// body on the language's worker pool; `await` yields the result. Here two async tasks run
+// concurrently and main awaits both. (Awaiting inside an async body -- true suspension via the
+// state machine -- is a later slice; here await blocks until the task completes.)
+
+public bundle main {
+    import System.IO.Console;
+    public namespace app {
+        public class Main {
+            public static async method sumA() returns int {
+                mutable int s = 0;
+                for (mutable int i = 1; i <= 100; i++) {
+                    s = s + i;
+                }
+                return s;
+            }
+            public static async method sumB() returns int {
+                mutable int s = 0;
+                for (mutable int i = 1; i <= 200; i++) {
+                    s = s + i;
+                }
+                return s;
+            }
+            public static method main(string[] args) returns void {
+                Task<int> a = Main.sumA();   // scheduled on the pool, returns immediately
+                Task<int> b = Main.sumB();
+                int ra = await a;             // block until each task completes
+                int rb = await b;
+                System.IO.Console.printf("a=%d b=%d\n", ra, rb);
+                return;
+            }
+        }
+    }
+}
