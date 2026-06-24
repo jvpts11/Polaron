@@ -2178,6 +2178,23 @@ struct CodeGenerator::Impl {
             builder.CreateCall(module.getOrInsertFunction("__ldp3_thread_join", ft), {h});
             return nullptr;
         }
+        // Mutex lock builtins (used by System.Concurrency.Mutex) -> runtime CRITICAL_SECTION.
+        if (name == "System.Concurrency.__lockCreate") {
+            llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt64Ty(), {}, false);
+            return builder.CreateCall(module.getOrInsertFunction("__ldp3_lock_create", ft), {},
+                                      "lock.h");
+        }
+        if (name == "System.Concurrency.__lockAcquire" ||
+            name == "System.Concurrency.__lockRelease") {
+            llvm::Value* h = emitExpr(*call.args[0]);
+            if (h == nullptr) return nullptr;
+            llvm::FunctionType* ft =
+                llvm::FunctionType::get(builder.getVoidTy(), {builder.getInt64Ty()}, false);
+            const char* fn = name == "System.Concurrency.__lockAcquire" ? "__ldp3_lock_acquire"
+                                                                        : "__ldp3_lock_release";
+            builder.CreateCall(module.getOrInsertFunction(fn, ft), {h});
+            return nullptr;
+        }
         // Console I/O (spec 4): System.IO.Console.{printf,println,print,readInt}. The pre-F10
         // names (System.IO.printf/println/readInt, bare Console.*) are kept as aliases until
         // the samples are migrated.
@@ -3393,6 +3410,35 @@ struct CodeGenerator::Impl {
                 }
                 if (!onStack) builder.CreateCall(freeFn(), {objPtr});
             }
+            return;
+        }
+        if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(&stmt)) {
+            llvm::Value* mptr = emitObjectPtr(*sy->mutex);  // the Mutex instance
+            if (mptr == nullptr) return;
+            auto cit = classes.find(baseType(typeName(*sy->mutex)));
+            if (cit == classes.end()) return;
+            const ClassLayout& cl = cit->second;
+            auto lockIt = cl.fieldIndex.find("lock");
+            auto valIt = cl.fieldIndex.find("value");
+            if (lockIt == cl.fieldIndex.end() || valIt == cl.fieldIndex.end()) return;
+            llvm::FunctionType* lf =
+                llvm::FunctionType::get(builder.getVoidTy(), {builder.getInt64Ty()}, false);
+            // Acquire the lock for the duration of the block.
+            llvm::Value* lockAddr =
+                builder.CreateStructGEP(cl.type, mptr, lockIt->second, "mtx.lock.addr");
+            llvm::Value* lock = builder.CreateLoad(builder.getInt64Ty(), lockAddr, "mtx.lock");
+            builder.CreateCall(module.getOrInsertFunction("__ldp3_lock_acquire", lf), {lock});
+            // Bind the name to a reference to the protected value: the local's storage *is* the
+            // address of the value field, so reads/writes of the binding hit the field directly.
+            llvm::Value* valAddr =
+                builder.CreateStructGEP(cl.type, mptr, valIt->second, "mtx.value.addr");
+            const bool had = locals.count(sy->bindName) > 0;
+            LocalSlot saved = had ? locals[sy->bindName] : LocalSlot{};
+            locals[sy->bindName] = LocalSlot{valAddr, sy->bindType.name};
+            emitBlock(sy->body);
+            if (builder.GetInsertBlock()->getTerminator() == nullptr)
+                builder.CreateCall(module.getOrInsertFunction("__ldp3_lock_release", lf), {lock});
+            if (had) locals[sy->bindName] = saved; else locals.erase(sy->bindName);
             return;
         }
         if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {

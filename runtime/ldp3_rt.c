@@ -34,6 +34,20 @@ void __ldp3_thread_join(long long handle) {
     CloseHandle((HANDLE)handle);
 }
 
+// Mutex (spec 20.5): a heap CRITICAL_SECTION whose pointer the Mutex<T> object stores as an
+// int64. create/acquire/release back the `synchronized` statement.
+long long __ldp3_lock_create(void) {
+    CRITICAL_SECTION* cs = (CRITICAL_SECTION*)malloc(sizeof(CRITICAL_SECTION));
+    if (cs != NULL) InitializeCriticalSection(cs);
+    return (long long)cs;
+}
+void __ldp3_lock_acquire(long long h) {
+    if (h != 0) EnterCriticalSection((CRITICAL_SECTION*)h);
+}
+void __ldp3_lock_release(long long h) {
+    if (h != 0) LeaveCriticalSection((CRITICAL_SECTION*)h);
+}
+
 // The overwrite/restore length for a function: bounded by the next function's address in
 // the program-wide table, so a neighbour is never touched. Capped for safety.
 static SIZE_T __ldp3_fn_len(void* fn, void** table, long long count) {

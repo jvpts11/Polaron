@@ -53,7 +53,7 @@ enum class TokenKind : std::uint8_t {
     KwRegion, KwOf, KwAccepts, KwRejects,
     KwItself, KwRelease,
     KwPersistent, KwEternal, KwTransient,
-    KwDefer, KwUsing,
+    KwDefer, KwUsing, KwSynchronized,
     KwVolatile, KwCascade, KwLazy,
     KwLambda, KwFunction,
     KwLabel, KwComefrom, KwGoto, KwAbstainfrom, KwReinstate, KwUnimport, KwReimport,

@@ -1456,6 +1456,19 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         popScope();
         return;
     }
+    if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(&stmt)) {
+        const std::string mt = baseType(typeOf(*sy->mutex));  // expect a Mutex<...> instance
+        if (!mt.empty() && mt.rfind("Mutex", 0) != 0)
+            error("synchronized requires a Mutex value, got '" + mt + "'", sy->loc);
+        if (!sy->bindType.isRef)
+            error("synchronized binding must be a reference (e.g. T& name)", sy->loc);
+        pushScope();
+        // Bind name to a mutable reference to the Mutex's protected value.
+        declareLocal(sy->bindName, LocalVar{sy->bindType.name, true});
+        analyzeBlock(sy->body);
+        popScope();
+        return;
+    }
     if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&stmt)) {
         const std::string t = typeOf(*th->value);
         if (!t.empty()) {
@@ -1890,6 +1903,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (call->args.size() != 1) error("__threadStart takes one function<void>", call->loc);
             else typeOf(*call->args.front());
             return "int64";  // the OS thread handle
+        }
+        // Low-level Mutex lock builtins (used by the System.Concurrency.Mutex prelude class).
+        if (name == "System.Concurrency.__lockCreate") {
+            if (!call->args.empty()) error("__lockCreate takes no arguments", call->loc);
+            return "int64";  // an opaque lock handle
+        }
+        if (name == "System.Concurrency.__lockAcquire" ||
+            name == "System.Concurrency.__lockRelease") {
+            if (call->args.size() != 1) error("lock op takes one handle", call->loc);
+            else typeOf(*call->args.front());
+            return "void";
         }
         if (name == "System.Concurrency.__threadJoin") {
             if (call->args.size() != 1) error("__threadJoin takes one handle", call->loc);

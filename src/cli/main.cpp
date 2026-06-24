@@ -87,6 +87,16 @@ public bundle std {
                 System.Concurrency.__threadJoin(this.handle);
             }
         }
+        // A mutual-exclusion lock guarding a value of type T (spec 20.5). The value is reached
+        // only through `synchronized (m) using T& x { ... }`, which holds the lock for the block.
+        public class Mutex<T> {
+            public mutable T value;
+            public mutable int64 lock;
+            public constructor Mutex(T initial) {
+                this.value = initial;
+                this.lock = System.Concurrency.__lockCreate();
+            }
+        }
     }
     public namespace System.Errors {
         // Result<T,E> / Option<T> (spec 21.2-21.3): sealed sum types matched with `match`. Ok/Err/

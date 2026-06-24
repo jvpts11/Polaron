@@ -308,6 +308,16 @@ struct UsingStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// synchronized (mutex) using T& name { ... } -- locks the Mutex<T>, binds `name` to a
+// reference to its protected value, runs the body, then unlocks at the end (spec 20.5).
+struct SynchronizedStmt : Stmt {
+    ExprPtr mutex;
+    TypeRef bindType;
+    std::string bindName;
+    Block body;
+    void dump(std::string& out, int indent) const override;
+};
+
 struct IfStmt : Stmt {
     ExprPtr cond;
     Block thenBlock;

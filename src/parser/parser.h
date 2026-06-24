@@ -83,6 +83,7 @@ private:
     ast::StmtPtr parseSwitch();
     ast::StmtPtr parseDefer();
     ast::StmtPtr parseUsing();
+    ast::StmtPtr parseSynchronized();
     ast::StmtPtr parseVarDecl();
     std::unique_ptr<ast::VarDeclStmt> parseVarDeclCore();   // no trailing ';'
     ast::StmtPtr parseExprStatement();                      // assignment/inc-dec/expr + ';'

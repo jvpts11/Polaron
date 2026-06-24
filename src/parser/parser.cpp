@@ -1252,6 +1252,9 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwUsing)) {
         return parseUsing();
     }
+    if (check(TokenKind::KwSynchronized)) {
+        return parseSynchronized();
+    }
     // Tuple destructuring `(int q, int r) = expr;` (spec 22.5).
     if (looksLikeTupleDestructuring()) {
         return parseTupleDecl();
@@ -1638,6 +1641,20 @@ ast::StmtPtr Parser::parseUsing() {
     expect(TokenKind::RParen, "')'");
     u->body = parseBlock();
     return u;
+}
+
+ast::StmtPtr Parser::parseSynchronized() {
+    auto s = std::make_unique<ast::SynchronizedStmt>();
+    s->loc = current().loc;
+    expect(TokenKind::KwSynchronized, "'synchronized'");
+    expect(TokenKind::LParen, "'('");
+    s->mutex = parseExpression();
+    expect(TokenKind::RParen, "')'");
+    expect(TokenKind::KwUsing, "'using'");
+    s->bindType = parseTypeRef();  // T& -- a reference to the protected value
+    s->bindName = expect(TokenKind::Identifier, "a binding name").lexeme;
+    s->body = parseBlock();
+    return s;
 }
 
 ast::StmtPtr Parser::parseVarDecl() {

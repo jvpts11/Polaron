@@ -374,6 +374,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # F8: Mutex<T> + synchronized -- two threads increment a shared counter under a lock; the
+        # total is deterministic (200000) only because the lock makes each increment atomic.
+        add_test(NAME codegen_mutex_synchronized_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/mutex_synchronized.ldp3"
+            "-DEXPECTED=total=200000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # comefrom (spec 7.10): jump to a label, forward (skip ahead) or backward (retry).
         add_test(NAME codegen_comefrom_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

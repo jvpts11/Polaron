@@ -237,6 +237,12 @@ void UsingStmt::dump(std::string& out, int indent) const {
     body.dump(out, indent + 1);
 }
 
+void SynchronizedStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Synchronized using '" + bindName + "' : " + typeText(bindType));
+    mutex->dump(out, indent + 1);
+    body.dump(out, indent + 1);
+}
+
 void VarDeclStmt::dump(std::string& out, int indent) const {
     std::string head = "VarDecl '" + name + "'";
     if (isMutable) head += " mutable";

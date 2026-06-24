@@ -1,0 +1,35 @@
+program MutexSynchronized;
+
+// Mutex<T> + synchronized (spec 20.5): two OS threads each increment a shared counter 100000
+// times. `synchronized (m) using int& c { ... }` holds the mutex for the block and binds `c` to
+// a reference to the protected value, so the read-modify-write is atomic. The total is exactly
+// 200000 -- without the lock the racing increments would lose updates.
+
+public bundle main {
+    import System.IO.Console;
+    import System.Concurrency.Thread;
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Mutex<int> counter = new Mutex<int>(0) on heap;
+                function<void> work = lambda[captures: byvalue counter]() returns void {
+                    for (mutable int i = 0; i < 100000; i++) {
+                        synchronized (counter) using int& c {
+                            c = c + 1;
+                        }
+                    }
+                };
+                Thread t1 = new Thread(work) on heap;
+                Thread t2 = new Thread(work) on heap;
+                t1.start();
+                t2.start();
+                t1.join();
+                t2.join();
+                synchronized (counter) using int& c {
+                    System.IO.Console.printf("total=%d\n", c);
+                }
+                return;
+            }
+        }
+    }
+}
