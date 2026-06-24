@@ -3158,10 +3158,17 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* um = dynamic_cast<const ast::UnimportStmt*>(&stmt)) {
-            // Logical: flip the class's alive flag. (Physical code unload follows below.)
             const std::string cn = baseType(um->target);
-            builder.CreateStore(builder.getInt32(um->isReimport ? 1 : 0), aliveFlag(cn));
-            if (!um->isReimport) emitPhysicalUnload(cn);  // spec 30: aggressive unload
+            if (!um->isReimport) {
+                // onClassUnload runs first (spec 32.5), while the code still exists, then the
+                // class is marked dead and its code is physically ripped from RAM (spec 30).
+                if (auto f = functions.find(cn + ".__onClassUnload"); f != functions.end())
+                    builder.CreateCall(f->second);
+                builder.CreateStore(builder.getInt32(0), aliveFlag(cn));
+                emitPhysicalUnload(cn);
+            } else {
+                builder.CreateStore(builder.getInt32(1), aliveFlag(cn));  // logical re-enable
+            }
             return;
         }
         if (const auto* cm = dynamic_cast<const ast::CascadeMoveStmt*>(&stmt)) {
@@ -4058,6 +4065,7 @@ struct CodeGenerator::Impl {
                     declHook(cls.onClassLoad, ".__onClassLoad");
                     declHook(cls.onFirstInstance, ".__onFirstInstance");
                     declHook(cls.onLastInstanceDestroyed, ".__onLastInstanceDestroyed");
+                    declHook(cls.onClassUnload, ".__onClassUnload");
                 }
                 // Namespace-level `comptime literal` suffix functions (spec 17.10).
                 for (const ast::LiteralDecl& lit : ns.literals) {
@@ -4315,6 +4323,7 @@ struct CodeGenerator::Impl {
                     emitHook(cls.onClassLoad, ".__onClassLoad");
                     emitHook(cls.onFirstInstance, ".__onFirstInstance");
                     emitHook(cls.onLastInstanceDestroyed, ".__onLastInstanceDestroyed");
+                    emitHook(cls.onClassUnload, ".__onClassUnload");
                 }
                 // Literal suffix bodies: emitted as static functions (no `this`).
                 for (const ast::LiteralDecl& lit : ns.literals) {
