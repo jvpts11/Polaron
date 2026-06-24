@@ -48,6 +48,112 @@ void __ldp3_lock_release(long long h) {
     if (h != 0) LeaveCriticalSection((CRITICAL_SECTION*)h);
 }
 
+// ---- async/await: tasks + worker pool (spec 20.2) -----------------------------------------
+// A task is the handle to an async computation. `resume`/`state` are the state machine to run;
+// `waiter_*` is the continuation scheduled when this task completes (set by __ldp3_await).
+typedef void (*ldp3_resume_fn)(void* state);
+typedef struct ldp3_task {
+    volatile long done;
+    long long result;
+    ldp3_resume_fn waiter_fn;
+    void* waiter_state;
+} ldp3_task;
+
+// Ready queue of (resume, state) pairs run by a fixed pool of worker threads.
+typedef struct { ldp3_resume_fn fn; void* state; } ldp3_work;
+#define LDP3_QCAP 65536
+static ldp3_work g_queue[LDP3_QCAP];
+static long g_qhead = 0, g_qtail = 0;
+static CRITICAL_SECTION g_qlock;
+static CONDITION_VARIABLE g_qcond;   // signalled when work is enqueued
+static CONDITION_VARIABLE g_donecond;  // signalled when any task completes (for __ldp3_task_wait)
+static int g_pool_started = 0;
+
+static DWORD WINAPI __ldp3_worker(LPVOID unused) {
+    (void)unused;
+    for (;;) {
+        EnterCriticalSection(&g_qlock);
+        while (g_qhead == g_qtail) SleepConditionVariableCS(&g_qcond, &g_qlock, INFINITE);
+        ldp3_work w = g_queue[g_qhead];
+        g_qhead = (g_qhead + 1) % LDP3_QCAP;
+        LeaveCriticalSection(&g_qlock);
+        w.fn(w.state);  // resume the state machine; it may complete or re-suspend the task
+    }
+}
+
+static void __ldp3_pool_start(void) {
+    if (g_pool_started) return;
+    g_pool_started = 1;
+    InitializeCriticalSection(&g_qlock);
+    InitializeConditionVariable(&g_qcond);
+    InitializeConditionVariable(&g_donecond);
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    int n = (int)si.dwNumberOfProcessors;
+    if (n < 2) n = 2;
+    if (n > 16) n = 16;
+    for (int i = 0; i < n; i++) CloseHandle(CreateThread(NULL, 0, __ldp3_worker, NULL, 0, NULL));
+}
+
+void __ldp3_schedule(ldp3_resume_fn fn, void* state) {
+    __ldp3_pool_start();
+    EnterCriticalSection(&g_qlock);
+    g_queue[g_qtail] = (ldp3_work){fn, state};
+    g_qtail = (g_qtail + 1) % LDP3_QCAP;
+    LeaveCriticalSection(&g_qlock);
+    WakeConditionVariable(&g_qcond);
+}
+
+long long __ldp3_task_new(void) {
+    ldp3_task* t = (ldp3_task*)calloc(1, sizeof(ldp3_task));
+    return (long long)t;
+}
+
+// Called by an async body when it produces its value: record the result, mark done, and
+// schedule the continuation (the task that awaited this one), if any.
+void __ldp3_task_complete(long long handle, long long value) {
+    ldp3_task* t = (ldp3_task*)handle;
+    if (t == NULL) return;
+    t->result = value;
+    EnterCriticalSection(&g_qlock);
+    t->done = 1;
+    ldp3_resume_fn wf = t->waiter_fn;
+    void* ws = t->waiter_state;
+    LeaveCriticalSection(&g_qlock);
+    if (wf != NULL) __ldp3_schedule(wf, ws);
+    WakeAllConditionVariable(&g_donecond);
+}
+
+long long __ldp3_task_result(long long handle) {
+    ldp3_task* t = (ldp3_task*)handle;
+    return t != NULL ? t->result : 0;
+}
+
+// await from inside an async state machine: if the awaited task is already done, return 0 so
+// the caller falls through and reads the result; otherwise register the caller's continuation
+// and return 1 so the caller suspends (returns from its resume function).
+int __ldp3_await(long long awaited, ldp3_resume_fn resume, void* state) {
+    ldp3_task* a = (ldp3_task*)awaited;
+    if (a == NULL) return 0;
+    EnterCriticalSection(&g_qlock);
+    if (a->done) { LeaveCriticalSection(&g_qlock); return 0; }
+    a->waiter_fn = resume;
+    a->waiter_state = state;
+    LeaveCriticalSection(&g_qlock);
+    return 1;
+}
+
+// await from non-async code (e.g. main): block the calling thread until the task completes.
+long long __ldp3_task_wait(long long handle) {
+    ldp3_task* t = (ldp3_task*)handle;
+    if (t == NULL) return 0;
+    __ldp3_pool_start();
+    EnterCriticalSection(&g_qlock);
+    while (!t->done) SleepConditionVariableCS(&g_donecond, &g_qlock, INFINITE);
+    LeaveCriticalSection(&g_qlock);
+    return t->result;
+}
+
 // The overwrite/restore length for a function: bounded by the next function's address in
 // the program-wide table, so a neighbour is never touched. Capped for safety.
 static SIZE_T __ldp3_fn_len(void* fn, void** table, long long count) {

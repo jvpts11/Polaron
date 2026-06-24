@@ -633,6 +633,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isVolatile = false;
     bool isComptime = false;
     bool isLazy = false;
+    bool isAsync = false;
     for (;;) {
         if (!isStatic && check(TokenKind::KwStatic)) {
             advance();
@@ -689,11 +690,16 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isLazy = true;
             continue;
         }
+        if (!isAsync && check(TokenKind::KwAsync)) {
+            advance();
+            isAsync = true;
+            continue;
+        }
         break;
     }
     if (check(TokenKind::KwMethod)) {
         return parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
-                           inInterface, isComptime);
+                           inInterface, isComptime, isAsync);
     }
     if (check(TokenKind::KwConstructor)) {
         return parseConstructor(std::move(visibility));
@@ -735,7 +741,8 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
 
 std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, bool isStatic,
                                                      bool isAbstract, bool isOverride, bool isFinal,
-                                                     bool inInterface, bool isComptime) {
+                                                     bool inInterface, bool isComptime,
+                                                     bool isAsync) {
     auto m = std::make_unique<ast::MethodDecl>();
     m->loc = current().loc;
     m->visibility = std::move(visibility);
@@ -744,6 +751,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     m->isOverride = isOverride;
     m->isFinal = isFinal;
     m->isComptime = isComptime;  // `comptime` prefix (spec 37.4); suffix handled below
+    m->isAsync = isAsync;
     expect(TokenKind::KwMethod, "'method'");
     m->name = expect(TokenKind::Identifier, "the method name").lexeme;
     // Generic method type parameters: method identity<T>(...) (spec 15). Each
@@ -1845,6 +1853,14 @@ ast::ExprPtr Parser::parseBinary(int minPrec) {
 }
 
 ast::ExprPtr Parser::parseUnary() {
+    // await expr (spec 20.2): suspend until the awaited Task completes, yielding its value.
+    if (check(TokenKind::KwAwait)) {
+        auto a = std::make_unique<ast::AwaitExpr>();
+        a->loc = current().loc;
+        advance();  // 'await'
+        a->operand = parseUnary();
+        return a;
+    }
     // try? expr -- Result/Option error propagation (spec 21.2): `try` then `?`.
     if (check(TokenKind::KwTry) && peek(1).kind == TokenKind::Question) {
         auto t = std::make_unique<ast::TryExpr>();

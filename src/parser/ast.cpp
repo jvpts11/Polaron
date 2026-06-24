@@ -66,6 +66,11 @@ void UnaryExpr::dump(std::string& out, int indent) const {
     operand->dump(out, indent + 1);
 }
 
+void AwaitExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Await");
+    operand->dump(out, indent + 1);
+}
+
 void NewExpr::dump(std::string& out, int indent) const {
     std::string head = "New '" + className + "' on " + location;
     if (!region.empty()) head += " in region " + region;

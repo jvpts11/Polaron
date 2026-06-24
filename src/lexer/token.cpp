@@ -69,6 +69,8 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwDefer:         return "KwDefer";
         case TokenKind::KwUsing:         return "KwUsing";
         case TokenKind::KwSynchronized:  return "KwSynchronized";
+        case TokenKind::KwAsync:         return "KwAsync";
+        case TokenKind::KwAwait:         return "KwAwait";
         case TokenKind::KwItself:        return "KwItself";
         case TokenKind::KwRelease:       return "KwRelease";
         case TokenKind::KwComptime:      return "KwComptime";

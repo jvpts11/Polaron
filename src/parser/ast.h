@@ -120,6 +120,13 @@ struct UnaryExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// await expr (spec 20.2): suspends the enclosing async method until the awaited Task<T>
+// completes, then yields its T. In a non-async context it blocks until the task is done.
+struct AwaitExpr : Expr {
+    ExprPtr operand;
+    void dump(std::string& out, int indent) const override;
+};
+
 struct NewExpr : Expr {
     std::string className;
     std::vector<std::string> typeArgs;  // generic arguments: new Box<int>(...)
@@ -514,6 +521,7 @@ struct MethodDecl : MemberDecl {
     bool isFinal = false;     // cannot be overridden
     bool isProperty = false;  // computed get-only property: read as obj.name (no parens)
     bool isComptime = false;  // spec 28.3/37.4: may be evaluated at compile time
+    bool isAsync = false;     // spec 20.2: returns a Task<T>; body becomes a state machine
     std::string name;
     std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
     std::vector<Param> params;

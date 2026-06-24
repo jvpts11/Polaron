@@ -77,6 +77,8 @@ TokenKind keywordKind(std::string_view text) {
         {"defer", TokenKind::KwDefer},
         {"using", TokenKind::KwUsing},
         {"synchronized", TokenKind::KwSynchronized},
+        {"async", TokenKind::KwAsync},
+        {"await", TokenKind::KwAwait},
         {"itself", TokenKind::KwItself},
         {"release", TokenKind::KwRelease},
         {"persistent", TokenKind::KwPersistent},

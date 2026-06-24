@@ -87,6 +87,12 @@ public bundle std {
                 System.Concurrency.__threadJoin(this.handle);
             }
         }
+        // The handle to an async computation that will produce a T (spec 20.2). `h` is the
+        // runtime ldp3_task*; an async method returns one of these and `await` yields the T.
+        public class Task<T> {
+            public mutable int64 h;
+            public constructor Task() { this.h = cast<int64>(0); }
+        }
         // A mutual-exclusion lock guarding a value of type T (spec 20.5). The value is reached
         // only through `synchronized (m) using T& x { ... }`, which holds the lock for the block.
         public class Mutex<T> {
