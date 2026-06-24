@@ -219,6 +219,101 @@ public bundle std {
             public method size() returns int {
                 return this.count;
             }
+            public method isEmpty() returns boolean {
+                return this.count == 0;
+            }
+        }
+        // LIFO stack backed by a doubling array (spec 34.1).
+        public class Stack<T> {
+            private mutable T[] data;
+            private mutable int count;
+            public constructor Stack() { this.data = new T[4](); this.count = 0; }
+            public method push(T item) returns void {
+                if (this.count >= this.data.length()) {
+                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    for (mutable int i = 0; i < this.count; i++) { bigger[i] = this.data[i]; }
+                    delete this.data;
+                    this.data = bigger;
+                }
+                this.data[this.count] = item;
+                this.count = this.count + 1;
+            }
+            public method pop() returns T {
+                this.count = this.count - 1;
+                return this.data[this.count];
+            }
+            public method peek() returns T { return this.data[this.count - 1]; }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // FIFO queue backed by a doubling ring buffer (spec 34.1).
+        public class Queue<T> {
+            private mutable T[] data;
+            private mutable int head;
+            private mutable int count;
+            public constructor Queue() { this.data = new T[4](); this.head = 0; this.count = 0; }
+            public method enqueue(T item) returns void {
+                if (this.count >= this.data.length()) {
+                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    for (mutable int i = 0; i < this.count; i++) {
+                        bigger[i] = this.data[(this.head + i) % this.data.length()];
+                    }
+                    delete this.data;
+                    this.data = bigger;
+                    this.head = 0;
+                }
+                this.data[(this.head + this.count) % this.data.length()] = item;
+                this.count = this.count + 1;
+            }
+            public method dequeue() returns T {
+                T v = this.data[this.head];
+                this.head = (this.head + 1) % this.data.length();
+                this.count = this.count - 1;
+                return v;
+            }
+            public method peek() returns T { return this.data[this.head]; }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // Double-ended queue backed by a doubling ring buffer (spec 34.1).
+        public class Deque<T> {
+            private mutable T[] data;
+            private mutable int head;
+            private mutable int count;
+            public constructor Deque() { this.data = new T[4](); this.head = 0; this.count = 0; }
+            private method grow() returns void {
+                if (this.count < this.data.length()) { return; }
+                mutable T[] bigger = new T[this.data.length() * 2]();
+                for (mutable int i = 0; i < this.count; i++) {
+                    bigger[i] = this.data[(this.head + i) % this.data.length()];
+                }
+                delete this.data;
+                this.data = bigger;
+                this.head = 0;
+            }
+            public method addLast(T item) returns void {
+                this.grow();
+                this.data[(this.head + this.count) % this.data.length()] = item;
+                this.count = this.count + 1;
+            }
+            public method addFirst(T item) returns void {
+                this.grow();
+                this.head = (this.head + this.data.length() - 1) % this.data.length();
+                this.data[this.head] = item;
+                this.count = this.count + 1;
+            }
+            public method removeFirst() returns T {
+                T v = this.data[this.head];
+                this.head = (this.head + 1) % this.data.length();
+                this.count = this.count - 1;
+                return v;
+            }
+            public method removeLast() returns T {
+                this.count = this.count - 1;
+                return this.data[(this.head + this.count) % this.data.length()];
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
         }
     }
 }
