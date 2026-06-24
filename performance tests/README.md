@@ -19,6 +19,10 @@ checksums confirm correctness.
 | `primes`      | Sieve of Eratosthenes to 20M — integer work + large-array memory |
 | `fibonacci`   | Naive recursive `fib(40)` — function-call overhead |
 | `binarytrees` | Build/check/free depth-18 trees ×30 — allocation churn + pointer chasing |
+| `quicksort`   | In-place quicksort of 5M ints (Hoare) — recursion + branches + memory |
+| `montecarlo`  | 50M-point pi estimation (uint32 LCG) — integer + FP |
+| `collatz`     | Longest Collatz chain below 1M — integer + heavy branching (int64) |
+| `regions`     | Arena allocation: bump-allocate 40M objects via `region` vs malloc/free |
 
 ## Building & running (LDP3)
 
@@ -37,33 +41,36 @@ built (MSVC `/O2` from Visual Studio) and built with the same backend (clang `-O
 isolate language overhead from compiler differences. All checksums matched across the three
 languages.
 
-### vs MSVC (Visual Studio Release /O2)
+All times in ms, best of 3. LDP3 is built with clang `-O2`. Both compilers are shown for
+C/C++: MSVC `/O2` (Visual Studio Release) and clang `-O2` (same backend as LDP3).
 
-| Benchmark   | LDP3 | C (MSVC) | C++ (MSVC) |
-|-------------|-----:|---------:|-----------:|
-| MatrixMul   | 297.9 | 296.5 | 295.5 |
-| Mandelbrot  | 704.5 | 723.7 | 728.0 |
-| Primes      | 295.3 | 286.4 | 286.3 |
-| Fibonacci   | 241.6 | 365.6 | 364.9 |
-| BinaryTrees | 699.7 | 724.6 | 735.8 |
+| Benchmark   |  LDP3 | C (MSVC) | C++ (MSVC) | C (clang) | C++ (clang) |
+|-------------|------:|---------:|-----------:|----------:|------------:|
+| MatrixMul   | 292.2 | 293.1 | 293.8 | 284.9 | 301.0 |
+| Mandelbrot  | 719.8 | 726.2 | 728.9 | 719.2 | 715.3 |
+| Primes      | 270.7 | 264.0 | 269.8 | 256.9 | 264.1 |
+| Fibonacci   | 242.6 | 363.3 | 367.9 | 249.0 | 250.6 |
+| BinaryTrees | 726.9 | 721.2 | 728.4 | 693.9 | 720.7 |
+| QuickSort   | 290.3 | 262.4 | 262.9 | 266.0 | 265.9 |
+| MonteCarlo  |  73.0 | 105.4 | 104.4 |  73.5 |  74.3 |
+| Collatz     | 130.8 | 209.6 | 212.4 | 132.1 | 131.9 |
+| Regions     | 201.2 | 1281.8 | 1285.4 | 1281.5 | 1288.5 |
 
-### Same backend (all clang -O2)
-
-| Benchmark   | LDP3 | C (clang) | C++ (clang) |
-|-------------|-----:|----------:|------------:|
-| MatrixMul   | 304.7 | 311.7 | 314.8 |
-| Mandelbrot  | 707.9 | 715.1 | 721.1 |
-| Primes      | 319.8 | 312.8 | 322.2 |
-| Fibonacci   | 240.3 | 248.5 | 244.8 |
-| BinaryTrees | 731.8 | 710.1 | 715.7 |
+All checksums matched across the three languages and both compilers.
 
 ## Takeaway
 
-With the same backend, **LDP3 is on par with C and C++ (within run-to-run noise)** on these
-raw-compute kernels: it shares the LLVM optimizer and the generated IR is clean enough to
-optimize as well as hand-written C/C++. The value-semantics model does not cost anything
-here because arrays are pointers and there are no class-by-value copies in the hot loops
-(workloads that copy classes by value would be a separate, fairer place to measure that cost).
+- **Raw compute: LDP3 is on par with C and C++** (within run-to-run noise) on the same
+  backend — it shares the LLVM optimizer and the generated IR is clean enough to optimize as
+  well as hand-written C/C++.
+- **vs MSVC, the LDP3 (clang) build wins clearly** on Fibonacci, Collatz, and MonteCarlo —
+  a clang-vs-MSVC codegen difference, not a language one.
+- **`regions` is a ~6.4× win** for LDP3: its built-in region (bump allocator) crushes naive
+  malloc/free-per-object. A hand-rolled C arena would match it — the point is LDP3 gives you
+  that arena for free, safely, with no ceremony.
+- The value-semantics model costs nothing here (arrays are pointers; no class-by-value copies
+  in the hot loops). QuickSort is the one kernel where LDP3 trails slightly (~9% vs clang) —
+  array indexing carries a length-header offset; a candidate for later optimization.
 
 ## Notes / caveats
 

@@ -1,0 +1,34 @@
+program Regions;
+
+// LDP3's trump card: region (arena) allocation. Each iteration bump-allocates many small
+// objects in a region, uses them, then frees the whole region in O(1) with `release`. This
+// is where LDP3 can BEAT naive C/C++ (malloc/free per object), with safety and no ceremony.
+
+public bundle main {
+    import System.Memory.Units.megabytes;
+
+    public namespace app {
+        public class Cell {
+            public mutable int v;
+            public constructor Cell() { this.v = 0; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                int iters = 2000;
+                int per = 20000;
+                mutable int total = 0;
+                for (mutable int it = 0; it < iters; it++) {
+                    region r = itself.allocate(4 megabytes);
+                    for (mutable int i = 0; i < per; i++) {
+                        Cell* c = new Cell() in region r;
+                        c.v = i;
+                        total = (total + c.v) % 1000000007;
+                    }
+                    release region r;
+                }
+                System.IO.printf("total=%d\n", total);
+                return;
+            }
+        }
+    }
+}
