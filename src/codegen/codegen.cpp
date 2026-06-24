@@ -3338,6 +3338,45 @@ struct CodeGenerator::Impl {
                 }
             }
             const std::string targetType = typeName(*assign->target);
+            // atomic<T> assignment (spec 20.6): `counter = counter +/- n` -> atomicrmw add/sub;
+            // any other `counter = v` -> atomic store.
+            if (baseType(targetType).rfind("atomic$", 0) == 0) {
+                llvm::Value* obj = emitObjectPtr(*assign->target);
+                if (obj == nullptr) return;
+                auto cit = classes.find(baseType(targetType));
+                llvm::Value* vp = builder.CreateStructGEP(
+                    cit->second.type, obj, cit->second.fieldIndex["value"], "atomic.value");
+                llvm::Type* et = llvmType(baseType(targetType).substr(7));
+                llvm::Align al(et->getPrimitiveSizeInBits() / 8);
+                const auto seqcst = llvm::AtomicOrdering::SequentiallyConsistent;
+                // Recognise `counter +/- delta` where one side reads the same atomic target.
+                const ast::Expr* delta = nullptr;
+                bool sub = false;
+                const auto* tId = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get());
+                if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(assign->value.get());
+                    bin != nullptr && tId != nullptr) {
+                    auto same = [&](const ast::Expr* e) {
+                        const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e);
+                        return id != nullptr && id->name == tId->name;
+                    };
+                    if (bin->op == "+" && same(bin->lhs.get())) delta = bin->rhs.get();
+                    else if (bin->op == "+" && same(bin->rhs.get())) delta = bin->lhs.get();
+                    else if (bin->op == "-" && same(bin->lhs.get())) { delta = bin->rhs.get(); sub = true; }
+                }
+                if (delta != nullptr) {
+                    llvm::Value* d = emitExpr(*delta);
+                    if (d == nullptr) return;
+                    builder.CreateAtomicRMW(sub ? llvm::AtomicRMWInst::Sub : llvm::AtomicRMWInst::Add,
+                                            vp, d, al, seqcst);
+                    return;
+                }
+                llvm::Value* v = emitExpr(*assign->value);
+                if (v == nullptr) return;
+                llvm::StoreInst* st = builder.CreateStore(v, vp);
+                st->setAtomic(seqcst);
+                st->setAlignment(al);
+                return;
+            }
             llvm::Value* slot = emitLValue(*assign->target);
             if (slot == nullptr) return;
             llvm::Value* v = emitExpr(*assign->value);
@@ -3368,6 +3407,21 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* incdec = dynamic_cast<const ast::IncDecStmt*>(&stmt)) {
+            // atomic<T> ++ / -- lowers to a lock-free atomicrmw add/sub of 1 (spec 20.6).
+            if (const std::string at = baseType(typeName(*incdec->target));
+                at.rfind("atomic$", 0) == 0) {
+                llvm::Value* obj = emitObjectPtr(*incdec->target);
+                if (obj == nullptr) return;
+                auto cit = classes.find(at);
+                llvm::Value* vp = builder.CreateStructGEP(
+                    cit->second.type, obj, cit->second.fieldIndex["value"], "atomic.value");
+                llvm::Type* et = llvmType(at.substr(7));
+                builder.CreateAtomicRMW(
+                    incdec->isIncrement ? llvm::AtomicRMWInst::Add : llvm::AtomicRMWInst::Sub, vp,
+                    llvm::ConstantInt::get(et, 1), llvm::Align(et->getPrimitiveSizeInBits() / 8),
+                    llvm::AtomicOrdering::SequentiallyConsistent);
+                return;
+            }
             llvm::Type* ty = llvmType(typeName(*incdec->target));
             llvm::Value* slot = emitLValue(*incdec->target);
             if (slot == nullptr) return;

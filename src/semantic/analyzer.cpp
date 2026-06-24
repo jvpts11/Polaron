@@ -1164,6 +1164,9 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, SourceLocation
         error("invalid '++'/'--' target", loc);
         return;
     }
+    // atomic<T> ++ / -- is a lock-free atomic update; the cell itself is the mutable container,
+    // so the reference need not be `mutable` (spec 20.6).
+    if (baseType(type).rfind("atomic$", 0) == 0) return;
     if (!mutableTarget) error("cannot modify an immutable target (declare it 'mutable')", loc);
     if (type != "int") error("'++'/'--' requires an int target", loc);
 }
@@ -1287,6 +1290,24 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
+        // atomic<T> assignment (spec 20.6): `counter = counter +/- n` (a lock-free atomicrmw,
+        // from `+=`/`-=`) or `counter = v` (atomic store). The atomic<T> <-> T mixing is allowed
+        // here rather than through the usual numeric checks (which reject atomic + int). Detect via
+        // the local's type (not typeOf, which would read-type the target and error on moved vars).
+        bool atomicTarget = false;
+        if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get()))
+            if (const LocalVar* v = lookupLocal(tid->name);
+                v != nullptr && baseType(v->type).rfind("atomic$", 0) == 0)
+                atomicTarget = true;
+        if (atomicTarget) {
+            if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(assign->value.get())) {
+                typeOf(*bin->lhs);
+                typeOf(*bin->rhs);
+            } else {
+                typeOf(*assign->value);
+            }
+            return;
+        }
         const std::string vt = typeOf(*assign->value);
         checkAssignTarget(*assign->target, vt, assign->loc);
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get())) {
