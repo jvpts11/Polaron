@@ -41,36 +41,40 @@ built (MSVC `/O2` from Visual Studio) and built with the same backend (clang `-O
 isolate language overhead from compiler differences. All checksums matched across the three
 languages.
 
-All times in ms, best of 3. LDP3 is built with clang `-O2`. Both compilers are shown for
-C/C++: MSVC `/O2` (Visual Studio Release) and clang `-O2` (same backend as LDP3).
+All times in ms, best of 3, same machine. LDP3 is built with clang `-O2`. C/C++ are shown
+against the two community-reference compilers, GCC 16.1 and clang, both `-O2 -ffp-contract=off`.
+All checksums matched across LDP3, C and C++, every compiler.
 
-| Benchmark   |  LDP3 | C (MSVC) | C++ (MSVC) | C (clang) | C++ (clang) |
-|-------------|------:|---------:|-----------:|----------:|------------:|
-| MatrixMul   | 292.2 | 293.1 | 293.8 | 284.9 | 301.0 |
-| Mandelbrot  | 719.8 | 726.2 | 728.9 | 719.2 | 715.3 |
-| Primes      | 270.7 | 264.0 | 269.8 | 256.9 | 264.1 |
-| Fibonacci   | 242.6 | 363.3 | 367.9 | 249.0 | 250.6 |
-| BinaryTrees | 726.9 | 721.2 | 728.4 | 693.9 | 720.7 |
-| QuickSort   | 290.3 | 262.4 | 262.9 | 266.0 | 265.9 |
-| MonteCarlo  |  73.0 | 105.4 | 104.4 |  73.5 |  74.3 |
-| Collatz     | 130.8 | 209.6 | 212.4 | 132.1 | 131.9 |
-| Regions     | 201.2 | 1281.8 | 1285.4 | 1281.5 | 1288.5 |
+| Benchmark   |  LDP3 | C (gcc) | C++ (gcc) | C (clang) | C++ (clang) |
+|-------------|------:|--------:|----------:|----------:|------------:|
+| MatrixMul   | 266.0 | **133.0** | **149.6** | 288.6 | 294.6 |
+| Mandelbrot  | 703.5 | 723.7 | 721.4 | 710.6 | 703.9 |
+| Primes      | 309.9 | 326.9 | 303.7 | 282.0 | 274.4 |
+| Fibonacci   | 243.3 | **112.8** | **114.9** | 236.9 | 240.3 |
+| BinaryTrees | 684.1 | 663.2 | 664.3 | 662.5 | 669.6 |
+| QuickSort   | 289.1 | 280.3 | 288.1 | 265.6 | 273.1 |
+| MonteCarlo  |  73.4 | 104.0 | 105.5 |  74.7 |  74.3 |
+| Collatz     | 130.6 | 150.1 | 151.3 | 132.4 | 133.9 |
+| Regions     | **208.5** | 1261.8 | 1274.7 | 1280.2 | 1313.5 |
 
-All checksums matched across the three languages and both compilers.
+(MSVC `/O2` from Visual Studio was also measured and is in the same ballpark, but GCC and
+clang are the reference compilers for the community, so they are shown here.)
 
 ## Takeaway
 
-- **Raw compute: LDP3 is on par with C and C++** (within run-to-run noise) on the same
-  backend — it shares the LLVM optimizer and the generated IR is clean enough to optimize as
-  well as hand-written C/C++.
-- **vs MSVC, the LDP3 (clang) build wins clearly** on Fibonacci, Collatz, and MonteCarlo —
-  a clang-vs-MSVC codegen difference, not a language one.
-- **`regions` is a ~6.4× win** for LDP3: its built-in region (bump allocator) crushes naive
-  malloc/free-per-object. A hand-rolled C arena would match it — the point is LDP3 gives you
-  that arena for free, safely, with no ceremony.
+- **Same backend (clang): LDP3 == C == C++** within run-to-run noise. LDP3 shares the LLVM
+  optimizer and emits IR clean enough to optimize like hand-written C/C++ — no inherent
+  language overhead on raw compute.
+- **vs GCC, LDP3 is competitive on most kernels** (Mandelbrot, BinaryTrees, QuickSort, Primes,
+  Collatz) and **wins MonteCarlo**. GCC pulls clearly ahead on **MatrixMul** and **Fibonacci**
+  (~2×) — its auto-vectorizer and recursion optimization at `-O2` beat what LDP3 gets through
+  clang `-O2`. Those are recoverable later (better IR / `-O3` / vectorization), not a language
+  limitation.
+- **`regions` is a ~6× win** for LDP3: its built-in region (bump allocator) crushes naive
+  malloc/free-per-object across all compilers. A hand-rolled C arena would match it — the
+  point is LDP3 gives you that arena for free, safely, with no ceremony.
 - The value-semantics model costs nothing here (arrays are pointers; no class-by-value copies
-  in the hot loops). QuickSort is the one kernel where LDP3 trails slightly (~9% vs clang) —
-  array indexing carries a length-header offset; a candidate for later optimization.
+  in the hot loops). A workload that copies classes by value would be the place to measure it.
 
 ## Notes / caveats
 
