@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ConstValues;
 
 // Namespace-level compile-time constants (spec 28.1): `const T NAME = expr;`.
@@ -6,7 +7,6 @@ program ConstValues;
 // Folded at compile time; the constants carry no runtime storage.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public const int MAX = 100;
         public const int DOUBLED = MAX * 2;          // reference + arithmetic

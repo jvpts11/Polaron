@@ -1,3 +1,4 @@
+import System.IO.Console;
 program WideArrays;
 
 // Arrays are sized and indexed by the real element width, so element types wider
@@ -5,7 +6,6 @@ program WideArrays;
 // heap (previously the allocation, stride and loads all assumed i32).
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Inherit;
 
 // Structural inheritance: Dog inherits the `legs` field and legCount() from
@@ -5,7 +6,6 @@ program Inherit;
 //   woof! legs=4
 
 public bundle main {
-    import System.IO.Console;
     public namespace zoo {
 
         public class Animal {

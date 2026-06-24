@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Shapes;
 
 // Release 0.1 closing north-star: brings the whole OOP core together in one
@@ -8,7 +9,6 @@ program Shapes;
 //   Circle (kind 1) area: 12
 
 public bundle main {
-    import System.IO.Console;
     public namespace geo {
 
         public enum ShapeKind {

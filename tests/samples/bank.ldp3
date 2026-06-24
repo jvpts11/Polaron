@@ -1,9 +1,9 @@
+import System.IO.Console;
 program Bank;
 
 // A small OOP program: inheritance + super(args) + override + virtual dispatch +
 // contracts (requires) + protected fields.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Account {
             protected mutable int balance;

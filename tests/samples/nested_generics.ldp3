@@ -1,9 +1,9 @@
+import System.IO.Console;
 program NestedGenerics;
 
 // Nested generics: Box<List<int>>. The inner List<int> is also instantiated on its own, so it
 // is monomorphized via the normal path; the outer Box<List<int>> -> Box$List$int references it.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public class Box<T> {

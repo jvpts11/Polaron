@@ -1,3 +1,4 @@
+import System.IO.Console;
 program AtomicOps;
 
 // atomic<T> operators (spec 20.6): ++, --, += and -= on an atomic cell lower to lock-free
@@ -5,7 +6,6 @@ program AtomicOps;
 // get/set/add/increment/compareAndSet -- is in atomic_counter.ldp3.)
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

@@ -1,10 +1,10 @@
+import System.IO.Console;
 program Showcase;
 
 // Combines many 0.2 features end to end: a sealed hierarchy with a virtual method,
 // match-as-expression, contracts, heap allocation + polymorphism, loops, ternary,
 // bitwise and compound assignment, and string interpolation.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public sealed abstract class Shape permits Circle, Square {

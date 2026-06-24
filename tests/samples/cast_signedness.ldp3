@@ -1,10 +1,10 @@
+import System.IO.Console;
 program CastSignedness;
 
 // cast<T> between signed and unsigned integers. The bit-level op is chosen by the SOURCE's
 // signedness (unsigned source zero-extends; signed source sign-extends); same-width is a
 // reinterpret. The print specifier (%u vs %d) comes from the destination local's type.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

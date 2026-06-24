@@ -1,3 +1,4 @@
+import System.IO.Console;
 program PersistObject;
 
 // Object reattach (spec 18.2): `chassi` is a persistent instance field. It lives OUTSIDE the
@@ -5,7 +6,6 @@ program PersistObject;
 // reattaches when a `Car c` is created again. bump() is called repeatedly: chassi counts up
 // 1, 2, 3 across calls within the run even though the Car object is deleted every time.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Car {
             public eternal persistent mutable int chassi = 0;  // run-lifetime: no release required (spec 18.13)

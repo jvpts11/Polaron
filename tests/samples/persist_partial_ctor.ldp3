@@ -1,3 +1,4 @@
+import System.IO.Console;
 program PersistPartialCtor;
 
 // Partial constructor (spec 18.9): a constructor parameter whose name matches a
@@ -6,7 +7,6 @@ program PersistPartialCtor;
 // is read from the block, which persists across calls, so it counts up 0,1,2.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Car {
             public eternal persistent mutable int serial = 0;

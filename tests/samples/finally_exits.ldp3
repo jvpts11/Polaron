@@ -1,3 +1,4 @@
+import System.IO.Console;
 program FinallyExits;
 
 // `finally` runs on every exit of the try region, not only normal/caught
@@ -5,7 +6,6 @@ program FinallyExits;
 // nested in a loop. Previously these silently skipped the finally.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             // finally runs before the return leaves the method.

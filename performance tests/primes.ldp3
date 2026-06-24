@@ -1,10 +1,10 @@
+import System.IO.Console;
 program Primes;
 
 // Sieve of Eratosthenes up to N, counting primes. Integer work + a large array (memory
 // bandwidth / cache). `sieve[i]` true means composite.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

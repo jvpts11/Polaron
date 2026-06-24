@@ -1,9 +1,9 @@
+import System.IO.Console;
 program LambdaByref;
 
 // Closure with byref capture: the lambda shares the variable's storage, so it sees changes made
 // after the capture. counter is 5, then 9 before the call -> get() returns 9 (byvalue would copy 5).
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

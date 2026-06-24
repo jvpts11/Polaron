@@ -1,10 +1,10 @@
+import System.IO.Console;
 program ArgCountBad;
 
 // Negative test: calling a method with the wrong number of arguments must be a
 // clean compile error, not a codegen crash (LLVM "bad signature" assertion).
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class C {
             public method add(int a, int b) returns int { return a + b; }

@@ -1,7 +1,7 @@
+import System.IO.Console;
 program Floats32;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public class Main {

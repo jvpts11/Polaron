@@ -1,7 +1,7 @@
+import System.IO.Console;
 program Literals;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         // A namespace-level comptime literal suffix function (spec 17.10).

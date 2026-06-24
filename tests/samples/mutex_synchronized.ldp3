@@ -1,3 +1,5 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
 program MutexSynchronized;
 
 // Mutex<T> + synchronized (spec 20.5): two OS threads each increment a shared counter 100000
@@ -6,8 +8,6 @@ program MutexSynchronized;
 // 200000 -- without the lock the racing increments would lose updates.
 
 public bundle main {
-    import System.IO.Console;
-    import System.Concurrency.Thread;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

@@ -1,9 +1,9 @@
+import System.IO.Console;
 program LambdaVoid;
 
 // A void lambda with no parameters: function<void>. Lowered to a top-level fn and called
 // like the others (indirect call, void return). Prints hi=7.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

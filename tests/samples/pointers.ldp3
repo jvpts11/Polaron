@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Pointers;
 
 // Fase A1: pointers share an instance. A pointer (T*) and the address-of (&)
@@ -5,7 +6,6 @@ program Pointers;
 // Expected output: b=5 p=5
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public class Box {

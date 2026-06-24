@@ -1,3 +1,4 @@
+import System.IO.Console;
 program QualifiedExplicit;
 
 // A namespace-qualified type reference `app.Box` / `lib.Box` (spec 15) names a
@@ -5,7 +6,6 @@ program QualifiedExplicit;
 // without importing -- the qualification is the disambiguation.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Box {
             public constructor Box() {}

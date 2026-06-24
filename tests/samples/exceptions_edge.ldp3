@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ExcEdge;
 
 // Edge cases (spec 21.1): (1) a `throw` inside a catch handler propagates to the enclosing try
@@ -5,7 +6,6 @@ program ExcEdge;
 // throw is caught by the inner try and the object's destructor still runs on the normal return path
 // (objCase). Prints: rethrow as B / outer B 2 / caught A / dtor 7.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Base {
             public mutable int code;

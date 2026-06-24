@@ -1,3 +1,4 @@
+import System.IO.Console;
 program CascadeDelete;
 
 // `cascade delete` (spec 37.1) deletes an object and everything it owns by
@@ -5,7 +6,6 @@ program CascadeDelete;
 // plain `delete o` would run only ~Outer and leak the owned Mid and Leaf.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Leaf {
             public constructor Leaf() {}

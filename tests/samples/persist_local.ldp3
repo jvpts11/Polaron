@@ -1,10 +1,10 @@
+import System.IO.Console;
 program PersistLocal;
 
 // A `persistent` LOCAL variable (spec 18: persistent applies to internal variables too).
 // It lives in a process-lifetime global, so it keeps its value across CALLS within a run --
 // it reattaches instead of reinitializing. 3 calls -> a=1 b=2 c=3.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method counter() returns int {

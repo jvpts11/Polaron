@@ -1,7 +1,7 @@
+import System.IO.Console;
 program Variance;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         // <out T> covariant marker (spec 15). With monomorphization it is a no-op:
         // each instantiation (Box<int>) is a distinct concrete type with no subtyping.

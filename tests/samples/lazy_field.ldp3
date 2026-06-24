@@ -1,3 +1,4 @@
+import System.IO.Console;
 program LazyField;
 
 // A `lazy` class-typed field (spec 28.4) is initialized on first access, not at
@@ -5,7 +6,6 @@ program LazyField;
 // created -- "constructing" prints only when use() first reads it.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Thing {
             public constructor Thing() { System.IO.Console.printf("constructing\n"); }

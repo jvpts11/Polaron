@@ -1,3 +1,5 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
 program CascadeMove;
 
 // `cascade move` (spec 19.8) moves an object and the graph it owns from one region
@@ -5,8 +7,6 @@ program CascadeMove;
 // object (and its owned Leaf) survive because they now live in `fresh`.
 
 public bundle main {
-    import System.IO.Console;
-    import System.Memory.Units.kilobytes;
 
     public namespace app {
         public class Leaf {

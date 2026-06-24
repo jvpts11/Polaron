@@ -24,20 +24,20 @@ bool checkSrc(const std::string& src, std::string* entryOut = nullptr) {
     return ok;
 }
 
-// Wraps a class member in a minimal program with a public class Main.
-// Tests run sema without the prelude, so a minimal System.IO.Console stub is included so
-// `import System.IO.Console;` resolves; the I/O calls themselves are compiler builtins.
-const char* kIoStub =
-    "import System.IO.Console; public namespace System.IO { public class Console { } } ";
+// Wraps a class member in a minimal program with a public class Main. Imports go before `program`
+// (spec 2.7). Tests run sema without the prelude, so a minimal System.IO.Console stub namespace is
+// included so the import resolves; the I/O calls themselves are compiler builtins.
+const char* kIoHead = "import System.IO.Console; program P; public bundle b { ";
+const char* kIoStub = "public namespace System.IO { public class Console { } } ";
 
 std::string wrapMain(const std::string& member) {
-    return std::string("program P; public bundle b { ") + kIoStub +
+    return std::string(kIoHead) + kIoStub +
            "public namespace n { public class Main { " + member + " } } }";
 }
 
 // A program with a helper class `classDef` plus a Main whose body is `mainBody`.
 std::string withClass(const std::string& classDef, const std::string& mainBody) {
-    return std::string("program P; public bundle b { ") + kIoStub + "public namespace n { " +
+    return std::string(kIoHead) + kIoStub + "public namespace n { " +
            classDef + " public class Main { public static method main(string[] args) returns void { " +
            mainBody + " } } } }";
 }
@@ -692,9 +692,9 @@ TEST_CASE("parser rejects a literal suffix with more than one parameter") {
 
 namespace {
 // A program with a literal suffix `kib` in namespace `n` and a Main in `m`.
-// `importLine` is spliced right after the bundle's `{`.
+// `importLine` goes before `program` (spec 2.7).
 std::string withSuffix(const std::string& importLine, const std::string& mainBody) {
-    return "program P; public bundle b { " + importLine +
+    return importLine + " program P; public bundle b {"
            " public namespace n { public comptime literal kib(int x) returns int64 {"
            " return cast<int64>(x) * 1024; } }"
            " public namespace m { public class Main {"
@@ -1152,10 +1152,10 @@ TEST_CASE("semantic rejects a match case that is not a subtype of the subject") 
 }
 
 namespace {
-// `importLine` after the bundle's `{`. A Widget lives in namespace `lib`; Main
+// `importLine` goes before `program` (spec 2.7). A Widget lives in namespace `lib`; Main
 // in namespace `app` uses it -- visible only with an import.
 std::string crossNs(const std::string& importLine) {
-    return "program P; public bundle b { " + importLine +
+    return importLine + " program P; public bundle b {"
            " public namespace lib { public class Widget { public constructor Widget() {} } }"
            " public namespace app { public class Main {"
            " public static method main(string[] args) returns void {"

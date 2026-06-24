@@ -1,10 +1,10 @@
+import System.IO.Console;
 program Mandelbrot;
 
 // Mandelbrot escape-time over a W x H grid, up to maxIter iterations per pixel. Pure
 // double arithmetic (no sqrt -- escape test uses zr^2 + zi^2 > 4). FP-heavy nested loops.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

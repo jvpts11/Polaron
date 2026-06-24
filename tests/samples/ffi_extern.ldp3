@@ -1,3 +1,4 @@
+import System.IO.Console;
 program FfiExtern;
 
 // FFI (spec 26): `extern <cdecl|stdcall|fastcall> method name(params) returns T;` declares an
@@ -7,7 +8,6 @@ program FfiExtern;
 // C ABI.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         extern cdecl method abs(int x) returns int;
         extern cdecl method labs(int64 x) returns int64;

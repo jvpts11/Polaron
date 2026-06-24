@@ -1,9 +1,9 @@
+import System.IO.Console;
 program OptionTest;
 
 // A generic Maybe<T> built from generic inheritance + virtual dispatch. (Named Maybe/Just/Nothing
 // rather than Option/Some/None, which are now built-in prelude types; this is a generics demo.)
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Maybe<T> {
             public constructor Maybe() {}

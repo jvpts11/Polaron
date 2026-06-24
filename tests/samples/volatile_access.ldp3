@@ -1,3 +1,4 @@
+import System.IO.Console;
 program VolatileAccess;
 
 // `volatile` (spec 37.5): the compiler must not optimize away reads or writes --
@@ -6,7 +7,6 @@ program VolatileAccess;
 // volatile field and a volatile local still round-trip their values correctly.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Device {
             private volatile mutable int reg;

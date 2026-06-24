@@ -1,3 +1,5 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
 program Channel;
 
 // Channel<T> (spec 20.3): a bounded blocking queue for passing values between threads. A producer
@@ -5,8 +7,6 @@ program Channel;
 // receives and sums them. The total is 15. send() blocks while full, receive() blocks while empty.
 
 public bundle main {
-    import System.IO.Console;
-    import System.Concurrency.Thread;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

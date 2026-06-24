@@ -1,9 +1,9 @@
+import System.IO.Console;
 program LambdaField;
 
 // A lambda stored in a class field (strategy pattern): the field has function<...> type, gets a
 // lambda in the constructor, and is called as this.op(x). Prints v=105.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Calc {
             private function<int, int> op;

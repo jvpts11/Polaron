@@ -1,3 +1,4 @@
+import System.IO.Console;
 program MatrixMul;
 
 // Dense N x N double matrix multiply (c = a * b), flat row-major arrays. Heavy FP
@@ -5,7 +6,6 @@ program MatrixMul;
 // so the work is not optimized away.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

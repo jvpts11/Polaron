@@ -1,7 +1,7 @@
+import System.IO.Console;
 program Tuple;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public class MathX {

@@ -1,3 +1,5 @@
+import System.Runtime.UnimportedTypeException;
+import System.IO.Console;
 program Unimport;
 
 // Unimport (spec 30, "unloading agressivo"): `unimport Dog` both marks the class dead
@@ -10,8 +12,6 @@ program Unimport;
 // see reimport.ldp3.)
 
 public bundle main {
-    import System.Runtime.UnimportedTypeException;
-    import System.IO.Console;
     public namespace app {
         public class Dog {
             public constructor Dog() {}

@@ -1,10 +1,10 @@
+import System.IO.Console;
 program ExceptionsFinally;
 
 // A try's finally runs on both the caught path and the normal-completion path (spec 21.1).
 // run(true) throws -> caught -> finally; run(false) completes -> finally.
 // Prints: caught / finally / body ok / finally.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public interface Throwable { }
         public class MyError implements Throwable {

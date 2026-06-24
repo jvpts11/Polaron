@@ -1,10 +1,10 @@
+import System.IO.Console;
 program ResultTry;
 
 // try? (spec 21.2): on a Result/Option, yields the inner value when Ok/Some, and early-returns the
 // Err/None (propagation) to the enclosing method otherwise. doubleIt(5): parse(5)=Ok(5) -> v=5 ->
 // Ok(10). doubleIt(-3): parse(-3)=Err(3) -> try? propagates the Err. Prints: a=10 b=-3.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method parse(int n) returns Result<int, int>* {

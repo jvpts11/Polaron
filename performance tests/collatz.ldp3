@@ -1,10 +1,10 @@
+import System.IO.Console;
 program Collatz;
 
 // Longest Collatz chain for starting values below N. Integer work, heavy branching, and
 // int64 arithmetic (3x+1 can exceed 32 bits mid-sequence).
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

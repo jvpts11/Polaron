@@ -1,3 +1,4 @@
+import System.IO.Console;
 program CatalogExtends;
 
 // Catalogs extending catalogs (spec 12.3): the contract is transitive. An enum
@@ -5,7 +6,6 @@ program CatalogExtends;
 // is a subtype of both. byCatalog must list the full transitive value set.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public catalog Base {

@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ExceptionsRaii;
 
 // RAII on unwind (spec 21.1): when an exception propagates out of a function, the destructors of its
@@ -5,7 +6,6 @@ program ExceptionsRaii;
 // risky() throws after declaring two stack Guards; their destructors run during the unwind, then
 // main's catch handles it. Prints: dtor 2 / dtor 1 / caught 5.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Guard {
             public mutable int id;

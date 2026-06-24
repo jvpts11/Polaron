@@ -1,3 +1,4 @@
+import System.IO.Console;
 program QuickSort;
 
 // In-place quicksort (Hoare partition, middle pivot) of N ints filled by an LCG. Recursion,
@@ -5,7 +6,6 @@ program QuickSort;
 // sort mutates in place across recursive calls.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method qsort(int[] a, int lo, int hi) returns void {

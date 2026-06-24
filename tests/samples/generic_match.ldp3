@@ -1,10 +1,10 @@
+import System.IO.Console;
 program GenMatch;
 
 // Regression: a generic class/method whose body contains a `match` used to crash the compiler
 // (the monomorphizer's cloneStmt dropped MatchStmt -> null statement -> codegen null-deref).
 // Here Box<T>.describe matches on a Shape. Prints: 10.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public sealed abstract class Shape permits Dot, Line {
             public abstract method k() returns int;

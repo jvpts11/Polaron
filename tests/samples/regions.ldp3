@@ -1,9 +1,9 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
 program Regions;
 
 public bundle main {
-    import System.IO.Console;
 
-    import System.Memory.Units.kilobytes;
 
     public namespace app {
 

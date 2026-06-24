@@ -1,10 +1,10 @@
+import System.IO.Console;
 program Exceptions;
 
 // Structured exceptions (spec 21.1) via LLVM WinEH landing pads. `throw` raises an object; the
 // matching `catch` binds it and the stack unwinds, so the line after the throw is skipped.
 // Prints: before / caught code=42 / done.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public interface Throwable { }
         public class MyError implements Throwable {

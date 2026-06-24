@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Floats;
 
 // Floating point: double arithmetic, int -> float widening, %g printing.
@@ -5,7 +6,6 @@ program Floats;
 // Expected output: pi=3.14 area=12.56 half=1.5 n=5
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

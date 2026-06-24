@@ -1,9 +1,9 @@
+import System.IO.Console;
 program GenericStack;
 
 // A real generic data structure: Stack<T> over linked nodes. Integrates generics,
 // pointer fields, chained access, methods, and manual memory (new/delete).
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Node<T> {
             public mutable T val;

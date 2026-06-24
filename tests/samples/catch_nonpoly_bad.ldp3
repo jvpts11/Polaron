@@ -1,3 +1,4 @@
+import System.IO.Console;
 program CatchNonPolyBad;
 
 // Negative test: catching a non-polymorphic (standalone) class is rejected --
@@ -5,7 +6,6 @@ program CatchNonPolyBad;
 // type confusion). Exceptions must participate in a class hierarchy.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Plain { public constructor Plain() {} }
         public class Main {

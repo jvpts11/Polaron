@@ -1,8 +1,8 @@
+import System.IO.Console;
 program ValueCopy;
 
 // LDP3 core: assignment copies (deep). To share an instance, use T* / T&.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Point {
             public mutable int x;

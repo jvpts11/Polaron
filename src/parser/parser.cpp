@@ -200,6 +200,8 @@ ast::Program Parser::parse() {
     ast::Program program;
     try {
         program.loc = current().loc;
+        // File-level imports come before `program` (spec 2.7).
+        while (check(TokenKind::KwImport)) program.imports.push_back(parseImportDecl());
         expect(TokenKind::KwProgram, "'program'");
         program.name = expect(TokenKind::Identifier, "the program name").lexeme;
         if (match(TokenKind::KwFreestanding)) program.isFreestanding = true;  // spec 36.8
@@ -214,6 +216,18 @@ ast::Program Parser::parse() {
     return program;
 }
 
+// `import a.b.c;` (spec 2.7). Written before `program` (file level).
+ast::ImportDecl Parser::parseImportDecl() {
+    ast::ImportDecl imp;
+    imp.loc = current().loc;
+    expect(TokenKind::KwImport, "'import'");
+    imp.path.push_back(expect(TokenKind::Identifier, "an import path").lexeme);
+    while (match(TokenKind::Dot))
+        imp.path.push_back(expect(TokenKind::Identifier, "a name after '.'").lexeme);
+    expect(TokenKind::Semicolon, "';'");
+    return imp;
+}
+
 ast::Bundle Parser::parseBundle() {
     ast::Bundle b;
     b.loc = current().loc;
@@ -222,19 +236,10 @@ ast::Bundle Parser::parseBundle() {
     b.name = expect(TokenKind::Identifier, "the bundle name").lexeme;
     if (match(TokenKind::KwFreestanding)) b.isFreestanding = true;  // spec 36.8
     expect(TokenKind::LBrace, "'{'");
-    // Imports come first: `import a.b.c;` (spec 2.7). The `bundle`/`from program`
-    // forms are later phases.
-    while (check(TokenKind::KwImport)) {
-        ast::ImportDecl imp;
-        imp.loc = current().loc;
-        advance();  // 'import'
-        imp.path.push_back(expect(TokenKind::Identifier, "an import path").lexeme);
-        while (match(TokenKind::Dot)) {
-            imp.path.push_back(expect(TokenKind::Identifier, "a name after '.'").lexeme);
-        }
-        expect(TokenKind::Semicolon, "';'");
-        b.imports.push_back(std::move(imp));
-    }
+    // Imports belong before `program` (spec 2.7), not inside a bundle.
+    if (check(TokenKind::KwImport))
+        fail("imports must be written before 'program', not inside a bundle (spec 2.7)",
+             current().loc);
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
         b.namespaces.push_back(parseNamespace());
     }

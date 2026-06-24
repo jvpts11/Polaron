@@ -1,3 +1,4 @@
+import System.IO.Console;
 program LifecycleOnUnload;
 
 // onClassUnload (spec 32.5): runs when the class is unimported (spec 30). Now that unimport
@@ -5,7 +6,6 @@ program LifecycleOnUnload;
 // from RAM.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Cache {
             onClassUnload { System.IO.Console.println("cache unloaded"); }

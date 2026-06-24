@@ -1,7 +1,7 @@
+import System.IO.Console;
 program GenericVirtual;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Animal<T> {
             public constructor Animal() {}

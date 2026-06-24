@@ -1,10 +1,10 @@
+import System.IO.Console;
 program ReflectTypeof;
 
 // Reflection (spec 31): `reflect.typeOf<T>()` returns a Type token for class T, and
 // `Type.name()` gives its name as a String. Built on the real String of F10.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Dog {
             public constructor Dog() {}

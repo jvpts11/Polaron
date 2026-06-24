@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ExceptionsTyped;
 
 // Typed multi-catch (spec 21.1): clauses are matched in order against the exception's dynamic type,
@@ -6,7 +7,6 @@ program ExceptionsTyped;
 // The caught exception keeps full behaviour: inherited fields (code) and virtual dispatch (kind()).
 // Prints: app code=5 kind=2 / net code=9 kind=3.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class AppError {
             public mutable int code;

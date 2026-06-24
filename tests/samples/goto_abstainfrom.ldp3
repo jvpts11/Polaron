@@ -1,3 +1,4 @@
+import System.IO.Console;
 program GotoAbstainfrom;
 
 // `goto` (spec 7.9) jumps to a label; `abstainfrom`/`reinstate` (spec 7.11)
@@ -5,7 +6,6 @@ program GotoAbstainfrom;
 // jumps over a line, and abstainfrom silences run()'s body until reinstated.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method run() returns void {

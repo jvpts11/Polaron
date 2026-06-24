@@ -1,7 +1,7 @@
+import System.IO.Console;
 program OperatorIndexSet;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Pair {
             private mutable int a;

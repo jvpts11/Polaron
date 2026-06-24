@@ -1,3 +1,4 @@
+import System.IO.Console;
 program StaticAssertComptime;
 
 // static_assert (spec 28.2) shares the one comptime evaluator, so its condition
@@ -5,7 +6,6 @@ program StaticAssertComptime;
 // program compiles and runs.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Math {
             public static comptime method fib(int n) returns int {

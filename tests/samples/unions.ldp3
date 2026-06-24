@@ -1,7 +1,7 @@
+import System.IO.Console;
 program Unions;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         // C-style union (spec 13): all fields share one storage.

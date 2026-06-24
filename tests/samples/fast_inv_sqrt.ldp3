@@ -1,3 +1,4 @@
+import System.IO.Console;
 program FastInvSqrt;
 
 // The famous Quake III "fast inverse square root": approximates 1/sqrt(x) with a
@@ -9,7 +10,6 @@ program FastInvSqrt;
 //   - argument coercion (the f64 literal 4.0 passed to a float32 parameter).
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         // Shares one storage between a 32-bit float and its raw integer bits.

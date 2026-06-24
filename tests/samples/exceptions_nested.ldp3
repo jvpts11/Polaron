@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ExceptionsNested;
 
 // Nested try + rethrow (spec 21.1): when the inner try's clauses do not match the thrown type, the
@@ -5,7 +6,6 @@ program ExceptionsNested;
 // catch (A) does not match (B is not an A), so it rethrows to the outer catch (B), which handles it
 // with full behaviour (inherited field code, virtual dispatch tag()). Prints: outer B code=2 tag=2.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Base {
             public mutable int code;

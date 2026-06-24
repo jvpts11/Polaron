@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ReflectInvoke;
 
 // Reflection invoke (spec 31): Type.method(name) looks up a method by name at runtime
@@ -5,7 +6,6 @@ program ReflectInvoke;
 // dispatches the call through a stored function pointer. Scoped to no-arg methods.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Dog {
             public constructor Dog() {}

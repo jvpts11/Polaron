@@ -1,3 +1,4 @@
+import System.IO.Console;
 program LowLevelMemory;
 
 // Low-level memory for freestanding/systems code (spec 17.8, 36.2): the `address` primitive (a
@@ -5,7 +6,6 @@ program LowLevelMemory;
 // array header), and the Memory API (alloc/free/read<T>/write<T>). No managed runtime involved.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Ergonomics;
 
 // No-ceremony forms:
@@ -6,7 +7,6 @@ program Ergonomics;
 // Expected output: x = 15 / done
 
 public bundle main {
-    import System.IO.Console;
     public namespace examples {
 
         public class Point {

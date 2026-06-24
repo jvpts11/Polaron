@@ -1,3 +1,4 @@
+import System.IO.Console;
 program LifecycleOnClassLoad;
 
 // `onClassLoad` (spec 32.5): a class-level hook that runs once at program start,
@@ -5,7 +6,6 @@ program LifecycleOnClassLoad;
 // even though Server is never instantiated.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Server {
             onClassLoad {

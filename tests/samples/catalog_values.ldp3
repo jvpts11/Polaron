@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Catalogs;
 
 // Catalogs (spec 12.3/12.4), value contract: a `catalog` is an interface for
@@ -7,7 +8,6 @@ program Catalogs;
 // catalog-provided ones continue (3..5). The enum is a subtype of the catalog.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public catalog TipoMotor {

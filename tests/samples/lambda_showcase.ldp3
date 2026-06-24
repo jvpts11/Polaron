@@ -1,9 +1,9 @@
+import System.IO.Console;
 program LambdaShowcase;
 
 // Integration: a lambda used as a value (addTen), as a callback argument (after), and stored in
 // a field (this.stage) -- all in one program. p.run(addTen, 5) = addTen(stage(5)) = addTen(15) = 25.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Pipeline {
             private function<int, int> stage;

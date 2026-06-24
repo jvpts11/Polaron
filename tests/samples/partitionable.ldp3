@@ -1,10 +1,10 @@
+import System.IO.Console;
 program Partitionable;
 
 // `partitionable` (spec 19.9): a class whose fields may be moved separately. It
 // combines with `movable` but not with `unique`. Here it simply compiles and runs.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public partitionable class Tree {
             private mutable int value;

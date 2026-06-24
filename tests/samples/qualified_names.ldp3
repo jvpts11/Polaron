@@ -1,3 +1,5 @@
+import System.IO.Console;
+import lib.Helper;
 program QualifiedNames;
 
 // Two namespaces each declare a `Box` (spec: namespaces scope type names). They
@@ -6,8 +8,6 @@ program QualifiedNames;
 // Without namespace-qualified type names this would be a redeclaration error.
 
 public bundle main {
-    import System.IO.Console;
-    import lib.Helper;
 
     public namespace app {
         public class Box {

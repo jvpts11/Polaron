@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Scoped;
 
 // Fase D: `using` disposes a resource at the block's end; `defer` runs at the
@@ -9,7 +10,6 @@ program Scoped;
 //   deferred 1
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public class Resource {

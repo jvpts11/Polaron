@@ -1,3 +1,4 @@
+import System.IO.Console;
 program DefinedConversions;
 
 // LDP3 has no undefined behaviour: an out-of-range float->int cast SATURATES (clamps to the
@@ -5,7 +6,6 @@ program DefinedConversions;
 // on any numeric type (float, double, sized ints), not just int.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

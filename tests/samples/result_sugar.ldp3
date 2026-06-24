@@ -1,10 +1,10 @@
+import System.IO.Console;
 program ResultSugar;
 
 // Construction sugar (spec 21.2-3): Ok(x)/Err(x)/Some(x)/None() instead of new Ok<T,E>(x). The
 // generic args come from the expected type -- the method return type (return Ok(n)) or the declared
 // variable type (Result<int,int>* a = Ok(7)). Prints: a=7 b=-404 / c=5 d=-404 / some 9 / none.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method parse(int n) returns Result<int, int>* {

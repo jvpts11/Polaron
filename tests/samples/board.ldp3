@@ -1,3 +1,4 @@
+import System.IO.Console;
 program BoardDemo;
 
 // M5: a char[] field, written and read through this.cells[i], freed in the
@@ -5,7 +6,6 @@ program BoardDemo;
 // Expected output: XOX
 
 public bundle main {
-    import System.IO.Console;
     public namespace game {
 
         public class Board {

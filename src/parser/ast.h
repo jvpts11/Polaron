@@ -700,6 +700,7 @@ struct Bundle {
 struct Program {
     std::string name;
     bool isFreestanding = false;  // `program X freestanding;` (spec 36): no managed-runtime features
+    std::vector<ImportDecl> imports;  // file-level imports, written before `program` (spec 2.7)
     std::vector<Bundle> bundles;
     // Variance of each generic's type params (spec 15.3), recorded by monomorphize
     // before templates are dropped, so the analyzer can apply variance subtyping to

@@ -1,7 +1,7 @@
+import System.IO.Console;
 program EnumJava;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         // Java-style enum: constants carry constructor args; fields/methods follow.

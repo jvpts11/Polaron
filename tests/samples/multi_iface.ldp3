@@ -1,3 +1,4 @@
+import System.IO.Console;
 program MultiIface;
 
 // A class implementing TWO interfaces must dispatch each interface's methods to
@@ -7,7 +8,6 @@ program MultiIface;
 // Expected output: name 7 size 42
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public interface Named {

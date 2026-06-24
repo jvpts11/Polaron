@@ -1,9 +1,9 @@
+import System.IO.Console;
 program Fibonacci;
 
 // Naive recursive Fibonacci -- pure function-call overhead (hundreds of millions of calls).
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method fib(int n) returns int {

@@ -1,10 +1,10 @@
+import System.IO.Console;
 program ArrayListTest;
 
 // ArrayList<T> (F10 stdlib, System.Collections): a growable list backed by a doubling
 // dynamic array. Works for value elements (int) and reference elements (String).
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

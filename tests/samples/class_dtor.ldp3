@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Dtor;
 
 // M4: a destructor is called automatically when a stack object leaves scope
@@ -7,7 +8,6 @@ program Dtor;
 //   dtor
 
 public bundle main {
-    import System.IO.Console;
     public namespace examples {
 
         public class Greeter {

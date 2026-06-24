@@ -1,9 +1,9 @@
+import System.IO.Console;
 program LambdaCallback;
 
 // Lambda passed as an argument (callback): apply() takes a function<int,int> and calls it.
 // Works because a function-typed parameter is just a local function value. Prints r=49.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method apply(function<int, int> f, int x) returns int {

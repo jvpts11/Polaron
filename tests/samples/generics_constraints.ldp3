@@ -1,7 +1,7 @@
+import System.IO.Console;
 program GenericsConstraints;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public abstract class Shape {

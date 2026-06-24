@@ -1,3 +1,5 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
 program AtomicCounter;
 
 // atomic<T> (spec 20.6): a lock-free atomic cell. get/set/add/increment/compareAndSet lower to
@@ -6,8 +8,6 @@ program AtomicCounter;
 // lock-free counterpart of mutex_synchronized).
 
 public bundle main {
-    import System.IO.Console;
-    import System.Concurrency.Thread;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

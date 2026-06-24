@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Heap;
 
 // M4: manual heap memory. `new ... on heap` allocates with malloc and runs the
@@ -7,7 +8,6 @@ program Heap;
 //   freeing 42
 
 public bundle main {
-    import System.IO.Console;
     public namespace examples {
 
         public class Box {

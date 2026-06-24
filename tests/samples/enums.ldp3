@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Enums;
 
 // M9: simple (int-style) enum. Constants are ordinals: RED=0, GREEN=1, BLUE=2.
@@ -6,7 +7,6 @@ program Enums;
 //   blue code = 2
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public enum Color {

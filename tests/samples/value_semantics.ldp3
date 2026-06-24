@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ValueSemantics;
 
 // Fase A2: classes have value semantics by default. `Box b = a` makes an
@@ -7,7 +8,6 @@ program ValueSemantics;
 //   after share: a=42 p=42
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public class Box {

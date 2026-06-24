@@ -1,3 +1,4 @@
+import System.IO.Console;
 program VirtualDtor;
 
 // `delete` through a base pointer dispatches the destructor dynamically (through
@@ -6,7 +7,6 @@ program VirtualDtor;
 // ran the base destructor (or none), leaking the derived part.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public class Base {

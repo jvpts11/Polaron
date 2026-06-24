@@ -1,9 +1,9 @@
+import System.IO.Console;
+import app.units.kib;
 program Suffixes;
 
 public bundle main {
-    import System.IO.Console;
 
-    import app.units.kib;
 
     public namespace app.units {
         public comptime literal kib(int x) returns int64 {

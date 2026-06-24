@@ -1,7 +1,7 @@
+import System.IO.Console;
 program Logic;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

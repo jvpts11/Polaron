@@ -1,10 +1,10 @@
+import System.IO.Console;
 program BinaryTrees;
 
 // Allocation churn: build, check, and free perfect binary trees of a given depth, many
 // times. Millions of new/delete -- stresses the allocator and pointer chasing.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Tree {
             public mutable Tree* left;

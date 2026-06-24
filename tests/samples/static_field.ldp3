@@ -1,10 +1,10 @@
+import System.IO.Console;
 program StaticField;
 
 // Static fields: class-wide state shared across all calls, accessed as
 // ClassName.field. Expected output: count = 3
 
 public bundle main {
-    import System.IO.Console;
     public namespace examples {
 
         public class Counter {

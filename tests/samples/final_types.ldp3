@@ -1,10 +1,10 @@
+import System.IO.Console;
 program FinalTypes;
 
 // `final class` cannot be extended and a `final method` cannot be overridden
 // (spec 15). Used correctly they compile and run like any other class/method.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public final class Color {
             private int rgb;

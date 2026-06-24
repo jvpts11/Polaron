@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ReflectMembers;
 
 // Reflection member introspection (spec 31): a Type token exposes the declared
@@ -5,7 +6,6 @@ program ReflectMembers;
 // fieldName(i) enumerate them by name (the runtime backing for methods()/fields()).
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Dog {
             private int age;

@@ -1,7 +1,7 @@
+import System.IO.Console;
 program GenericIface;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public interface Describable {
             method describe() returns int;

@@ -1,11 +1,11 @@
+import System.IO.Console;
+import System.Memory.Units.ByteSize;
+import System.Memory.Units.kilobytes;
+import System.Memory.Units.megabytes;
 program Units;
 
 public bundle main {
-    import System.IO.Console;
 
-    import System.Memory.Units.ByteSize;
-    import System.Memory.Units.kilobytes;
-    import System.Memory.Units.megabytes;
 
     public namespace app {
         public class Main {

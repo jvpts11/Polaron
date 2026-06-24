@@ -683,8 +683,11 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
 
 void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
-        // Imports are per-bundle; collect the imported symbol names.
+        // Imports are written before `program` (file level, spec 2.7); the in-bundle form is still
+        // accepted during migration. Collect the imported symbol names from both.
         currentImports_.clear();
+        for (const ast::ImportDecl& imp : program.imports)
+            if (!imp.path.empty()) currentImports_.insert(imp.path.back());
         for (const ast::ImportDecl& imp : bundle.imports)
             if (!imp.path.empty()) currentImports_.insert(imp.path.back());
         for (const ast::Namespace& ns : bundle.namespaces) {
@@ -932,27 +935,28 @@ void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
 // literal suffix enables its `N suffix` syntax (spec 17.10 rule 5). Importing a
 // type is accepted (names are global in 0.2); an unknown symbol is an error.
 void SemanticAnalyzer::processImports(const ast::Program& program) {
-    for (const ast::Bundle& bundle : program.bundles) {
-        for (const ast::ImportDecl& imp : bundle.imports) {
-            if (imp.path.empty()) continue;
-            const std::string& symbol = imp.path.back();
-            std::string full;
-            for (std::size_t i = 0; i < imp.path.size(); ++i) full += (i > 0 ? "." : "") + imp.path[i];
-            // The prefix (everything before the symbol) must be the symbol's real namespace.
-            std::string prefix;
-            for (std::size_t i = 0; i + 1 < imp.path.size(); ++i)
-                prefix += (i > 0 ? "." : "") + imp.path[i];
-            auto nsIt = typeNamespace_.find(symbol);
-            if (nsIt == typeNamespace_.end()) {
-                error("import of unknown symbol '" + full + "'", imp.loc);
-            } else if (!prefix.empty() && prefix != nsIt->second) {
-                error("'" + symbol + "' is in namespace '" + nsIt->second + "', not '" + prefix + "'",
-                      imp.loc);
-            } else {
-                importedSuffixes_.insert(symbol);  // harmless for non-literals
-            }
+    auto validate = [&](const ast::ImportDecl& imp) {
+        if (imp.path.empty()) return;
+        const std::string& symbol = imp.path.back();
+        std::string full;
+        for (std::size_t i = 0; i < imp.path.size(); ++i) full += (i > 0 ? "." : "") + imp.path[i];
+        // The prefix (everything before the symbol) must be the symbol's real namespace.
+        std::string prefix;
+        for (std::size_t i = 0; i + 1 < imp.path.size(); ++i)
+            prefix += (i > 0 ? "." : "") + imp.path[i];
+        auto nsIt = typeNamespace_.find(symbol);
+        if (nsIt == typeNamespace_.end()) {
+            error("import of unknown symbol '" + full + "'", imp.loc);
+        } else if (!prefix.empty() && prefix != nsIt->second) {
+            error("'" + symbol + "' is in namespace '" + nsIt->second + "', not '" + prefix + "'",
+                  imp.loc);
+        } else {
+            importedSuffixes_.insert(symbol);  // harmless for non-literals
         }
-    }
+    };
+    for (const ast::ImportDecl& imp : program.imports) validate(imp);  // file-level (spec 2.7)
+    for (const ast::Bundle& bundle : program.bundles)
+        for (const ast::ImportDecl& imp : bundle.imports) validate(imp);
 }
 
 // Type-checks the body of each literal suffix, with its single parameter in
@@ -960,6 +964,8 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
 void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         currentImports_.clear();
+        for (const ast::ImportDecl& imp : program.imports)
+            if (!imp.path.empty()) currentImports_.insert(imp.path.back());
         for (const ast::ImportDecl& imp : bundle.imports)
             if (!imp.path.empty()) currentImports_.insert(imp.path.back());
         for (const ast::Namespace& ns : bundle.namespaces) {

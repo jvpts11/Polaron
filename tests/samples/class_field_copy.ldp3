@@ -1,9 +1,9 @@
+import System.IO.Console;
 program ClassFieldCopy;
 
 // Deep copy of a class-valued field assigned from a variable in a constructor (this.p = src).
 // The field gets an independent heap copy: mutating the source afterwards must not change it.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Point {
             public mutable int x;

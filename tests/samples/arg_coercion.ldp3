@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ArgCoercion;
 
 // Call arguments are coerced to the callee's parameter type, so a method,
@@ -6,7 +7,6 @@ program ArgCoercion;
 // an i32 literal into an int64 param, or an int into a float param).
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public class Calc {

@@ -1,3 +1,5 @@
+import System.IO.Console;
+import System.Memory.Units.megabytes;
 program Regions;
 
 // LDP3's trump card: region (arena) allocation. Each iteration bump-allocates many small
@@ -5,8 +7,6 @@ program Regions;
 // is where LDP3 can BEAT naive C/C++ (malloc/free per object), with safety and no ceremony.
 
 public bundle main {
-    import System.IO.Console;
-    import System.Memory.Units.megabytes;
 
     public namespace app {
         public class Cell {

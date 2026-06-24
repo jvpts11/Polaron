@@ -1,8 +1,8 @@
+import System.IO.Console;
 program GenericList;
 
 // A generic linked node: Node<T> with a recursive generic pointer field Node<T>*.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Node<T> {
             public mutable T val;

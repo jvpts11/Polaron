@@ -1,7 +1,7 @@
+import System.IO.Console;
 program Records;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         // Compact form: the parameters are the (immutable) fields.

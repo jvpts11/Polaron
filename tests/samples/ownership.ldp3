@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Ownership;
 
 // Fase B: a movable class transfers ownership with `move`; the source variable
@@ -5,7 +6,6 @@ program Ownership;
 //   moved value = 7
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public movable class Handle {

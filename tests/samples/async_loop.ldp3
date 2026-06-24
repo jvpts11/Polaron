@@ -1,3 +1,4 @@
+import System.IO.Console;
 program AsyncLoop;
 
 // async/await with control flow (spec 20.2), slice C: awaiting INSIDE a loop. The state machine
@@ -6,7 +7,6 @@ program AsyncLoop;
 // suspend/resume pair and the entry switch jumps back into the loop on resume. Sums 1..5 = 15.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static async method val(int n) returns int {

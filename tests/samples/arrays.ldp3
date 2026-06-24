@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Arrays;
 
 // M5: dynamic arrays. `new int[n]()` zero-initializes on the heap; `a[i]` reads
@@ -5,7 +6,6 @@ program Arrays;
 // Expected output: sum=45 len=10
 
 public bundle main {
-    import System.IO.Console;
     public namespace examples {
         public class Main {
             public static method main(string[] args) returns void {

@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ChainedAccess;
 
 // Chained member access through value-typed class fields (o.inner.x, o.inner.deeper.y) in read
@@ -5,7 +6,6 @@ program ChainedAccess;
 // member-of-member must be LOADED (emitExpr), not have its slot address taken. Sub-objects are
 // `on heap` so they outlive the constructor frame (a stack `new` stored in a field would dangle).
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Deeper {
             public mutable int y;

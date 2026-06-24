@@ -1,9 +1,9 @@
+import System.IO.Console;
 program LambdaHOF;
 
 // Higher-order lambda: a function that returns a function (function<function<int,int>>).
 // Exercises nested function types (">>" token splitting) + a balanced type split. Prints d=42.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

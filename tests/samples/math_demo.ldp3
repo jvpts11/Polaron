@@ -1,7 +1,7 @@
+import System.IO.Console;
 program MathDemo;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class MathUtil {
             public static method gcd(int a, int b) returns int {

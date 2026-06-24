@@ -1,3 +1,4 @@
+import System.IO.Console;
 program LazyInit;
 
 // `lazy` (spec 37.3): a lazy local's initializer runs on first access, not at the
@@ -5,7 +6,6 @@ program LazyInit;
 // initialized (here `b` never prints "constructing 2").
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Thing {
             private int v;

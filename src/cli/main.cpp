@@ -332,7 +332,9 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             return 1;
         }
         for (auto& bundle : prog.bundles) program.bundles.push_back(std::move(bundle));
+        for (auto& imp : prog.imports) program.imports.push_back(std::move(imp));  // file-level (spec 2.7)
         program.hasQualifiedTypeRef |= prog.hasQualifiedTypeRef;
+        if (prog.isFreestanding) program.isFreestanding = true;
     }
 
     appendPrelude(program);

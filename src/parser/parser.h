@@ -47,6 +47,7 @@ private:
     std::string parseDottedName();
 
     ast::Bundle parseBundle();
+    ast::ImportDecl parseImportDecl();
     ast::Namespace parseNamespace();
     ast::ClassDecl parseClassOrInterface();
     ast::ClassDecl parseRecord();

@@ -1,3 +1,5 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
 program RegionRaii;
 
 // A region declared in a lexical scope is freed automatically at the end of the
@@ -5,8 +7,6 @@ program RegionRaii;
 // same; RAII just reclaims the arena on the way out.
 
 public bundle main {
-    import System.IO.Console;
-    import System.Memory.Units.kilobytes;
 
     public namespace app {
         public class Dog {

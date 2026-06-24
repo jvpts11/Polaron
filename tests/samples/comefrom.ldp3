@@ -1,9 +1,9 @@
+import System.IO.Console;
 program Comefrom;
 
 // comefrom (spec 7.10, same-method): `comefrom L` transfers control to `label L;`. It serves both
 // directions -- a forward jump (skip ahead) and a backward jump (retry; locals keep their values).
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

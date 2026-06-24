@@ -1,3 +1,4 @@
+import System.IO.Console;
 program MonteCarlo;
 
 // Monte Carlo pi estimation: N random points, count those inside the unit quarter-circle
@@ -5,7 +6,6 @@ program MonteCarlo;
 // `inside` count is exact and identical across languages (same LCG).
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

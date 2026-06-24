@@ -1,7 +1,7 @@
+import System.IO.Console;
 program Counter;
 
 public bundle main {
-    import System.IO.Console;
     public namespace examples {
         public class Counter {
             private mutable int count;

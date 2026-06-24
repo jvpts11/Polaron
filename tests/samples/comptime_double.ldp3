@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ComptimeDouble;
 
 // `comptime` methods may return floating-point values (spec 28.3): the evaluator
@@ -5,7 +6,6 @@ program ComptimeDouble;
 // folds at compile time into a `const double`.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Math {
             public static comptime method scale(int n, float64 factor) returns float64 {

@@ -1,9 +1,9 @@
+import System.IO.Console;
 program ResultTest;
 
 // Either<T, E> -- two type parameters + generic inheritance + virtual dispatch. (Named Either/Left/
 // Right rather than Result/Ok/Err, which are now built-in prelude types; this is a generics demo.)
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Either<T, E> {
             public constructor Either() {}

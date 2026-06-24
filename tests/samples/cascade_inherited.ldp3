@@ -1,3 +1,4 @@
+import System.IO.Console;
 program CascadeInherited;
 
 // `cascade delete` (spec 37.1) also frees objects owned by composition through
@@ -5,7 +6,6 @@ program CascadeInherited;
 // Derived still runs ~Leaf for it.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Leaf {
             public constructor Leaf() {}

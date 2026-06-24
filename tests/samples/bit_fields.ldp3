@@ -1,3 +1,4 @@
+import System.IO.Console;
 program BitFields;
 
 // Bit-fields (spec 11.1): `field : N` constrains the stored value to N bits, so a
@@ -5,7 +6,6 @@ program BitFields;
 // packing of the struct layout is a later refinement.)
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public struct Flags {
             public mutable int a : 4;    // 0..15

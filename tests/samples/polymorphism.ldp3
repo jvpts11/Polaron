@@ -1,3 +1,4 @@
+import System.IO.Console;
 program Polymorphism;
 
 // Virtual dispatch: a variable of the base type calls the derived override.
@@ -6,7 +7,6 @@ program Polymorphism;
 //   meow
 
 public bundle main {
-    import System.IO.Console;
     public namespace zoo {
 
         public class Animal {

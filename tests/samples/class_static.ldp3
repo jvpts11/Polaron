@@ -1,10 +1,10 @@
+import System.IO.Console;
 program Static;
 
 // M4: static methods, called as ClassName.method(args) with no instance.
 // Expected output: square=25 total=125
 
 public bundle main {
-    import System.IO.Console;
     public namespace examples {
 
         public class MathUtil {

@@ -1,7 +1,7 @@
+import System.IO.Console;
 program GenericFactory;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Box<T> {
             public mutable T v;

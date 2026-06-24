@@ -1,3 +1,5 @@
+import System.IO.Console;
+import System.Memory.Units.bytes;
 program RegionAtAddress;
 
 // Region over fixed memory (spec 17.8 / 36.9): `itself.at(addr, size)` makes a region whose
@@ -7,8 +9,6 @@ program RegionAtAddress;
 // hardware address so the test is safe.
 
 public bundle main {
-    import System.IO.Console;
-    import System.Memory.Units.bytes;
     public namespace app {
         public class Cell {
             public mutable int v;

@@ -1,3 +1,5 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
 program ChannelSelect;
 
 // Channel.select (spec 20.4): a fluent builder that waits on several channels at once. The chain
@@ -6,8 +8,6 @@ program ChannelSelect;
 // a worker fills channel b, so select picks b and prints b=42 (a stays empty).
 
 public bundle main {
-    import System.IO.Console;
-    import System.Concurrency.Thread;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {

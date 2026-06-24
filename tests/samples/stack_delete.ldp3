@@ -1,3 +1,4 @@
+import System.IO.Console;
 program StackDelete;
 
 // `delete` and `using` on an `on stack` object must run the destructor exactly
@@ -5,7 +6,6 @@ program StackDelete;
 // it again). Previously both free()'d an alloca and double-destructed -> crash.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
 
         public class Guard {

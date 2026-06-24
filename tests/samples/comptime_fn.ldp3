@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ComptimeFn;
 
 // `comptime` methods (spec 28.3) run at compile time when their arguments are
@@ -5,7 +6,6 @@ program ComptimeFn;
 // recursive Fibonacci and an iterative factorial seed namespace-level consts.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Math {
             // Recursive comptime function (the spec's flagship example).

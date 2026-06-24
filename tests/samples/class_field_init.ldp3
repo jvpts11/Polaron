@@ -1,3 +1,4 @@
+import System.IO.Console;
 program FieldInit;
 
 // M4: inline field initializers (spec 940). Config has initialized fields and
@@ -5,7 +6,6 @@ program FieldInit;
 // initializers. Expected output: area = 1920
 
 public bundle main {
-    import System.IO.Console;
     public namespace examples {
 
         public class Config {

@@ -1,7 +1,7 @@
+import System.IO.Console;
 program Recursion;
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class MathUtil {
             public static method fact(int n) returns int {

@@ -1,3 +1,4 @@
+import System.IO.Console;
 program AsyncBasic;
 
 // async/await (spec 20.2), slice A: an `async method` returns a Task<T> immediately and runs its
@@ -6,7 +7,6 @@ program AsyncBasic;
 // state machine -- is a later slice; here await blocks until the task completes.)
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Main {
             public static async method sumA() returns int {

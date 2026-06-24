@@ -1,3 +1,4 @@
+import System.IO.Console;
 program ReflectInstantiate;
 
 // Reflection construction (spec 31): Type.instantiate() allocates an instance and runs
@@ -5,7 +6,6 @@ program ReflectInstantiate;
 // Combined with method().invoke() this drives an object known only at runtime.
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Dog {
             public mutable int age;

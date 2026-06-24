@@ -1,9 +1,9 @@
+import System.IO.Console;
 program MatchDispatch;
 
 // match as a statement: dynamic-type dispatch + positional destructuring over a
 // sealed hierarchy (exhaustive -> no default needed).
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public sealed abstract class Shape permits Circle, Rect {
             public abstract method tag() returns int;

@@ -1,8 +1,8 @@
+import System.IO.Console;
 program FinalModifier;
 
 // `final` (spec 15 / universal prefixes): explicitly immutable, on a field or a local.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class C {
             private final int x;

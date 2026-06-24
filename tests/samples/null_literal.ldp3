@@ -1,8 +1,8 @@
+import System.IO.Console;
 program NullLiteral;
 
 // The `null` pointer literal: assign it to a pointer, and compare with == / !=.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Node {
             public mutable int v = 0;

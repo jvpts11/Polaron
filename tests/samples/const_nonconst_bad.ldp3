@@ -1,10 +1,10 @@
+import System.IO.Console;
 program ConstNonConstBad;
 
 // A `const` initializer must be a compile-time constant. Referencing something
 // that is not a known const (here an undeclared name) is rejected (spec 28.1).
 
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public const int OK = 10;
         public const int BAD = OK + mystery;   // 'mystery' is not a constant

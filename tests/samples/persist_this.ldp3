@@ -1,3 +1,4 @@
+import System.IO.Console;
 program PersistThis;
 
 // Object reattach via `this` (spec 18.2): chassi is persistent. The constructor and methods use
@@ -5,7 +6,6 @@ program PersistThis;
 // (wired at construction). tick() deletes its Car every call, yet chassi keeps counting across
 // calls within the run. 3 calls -> a=1 b=2 c=3.
 public bundle main {
-    import System.IO.Console;
     public namespace app {
         public class Car {
             public eternal persistent mutable int chassi = 0;  // run-lifetime: no release required (spec 18.13)

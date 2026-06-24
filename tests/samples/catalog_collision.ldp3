@@ -1,3 +1,5 @@
+import System.IO.Console;
+import lib.LibHelper;
 program CatalogCollision;
 
 // Namespaces scope catalog names too (F4): app and lib each declare a `Tier`
@@ -5,8 +7,6 @@ program CatalogCollision;
 // namespace-qualified type names this would be a redeclaration error.
 
 public bundle main {
-    import System.IO.Console;
-    import lib.LibHelper;
 
     public namespace app {
         public catalog Tier {
