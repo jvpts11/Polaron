@@ -1,0 +1,28 @@
+program LifecycleInstances;
+
+// Instance lifecycle hooks (spec 32.5): onFirstInstance runs when the live-instance
+// count first leaves zero (lazy shared setup); onLastInstanceDestroyed runs when the
+// last instance is destroyed (shared teardown). Backed by a per-class counter
+// maintained in the constructor and destructor.
+
+public bundle main {
+    public namespace app {
+        public class Pool {
+            onFirstInstance { Console.println("pool setup"); }
+            onLastInstanceDestroyed { Console.println("pool teardown"); }
+            public constructor Pool() {}
+            public destructor ~Pool() returns void {}
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Console.println("start");
+                Pool a = new Pool() on heap;     // 0 -> 1: setup
+                Pool b = new Pool() on heap;     // 1 -> 2: nothing
+                delete a;                          // 2 -> 1: nothing
+                delete b;                          // 1 -> 0: teardown
+                Console.println("end");
+                return;
+            }
+        }
+    }
+}

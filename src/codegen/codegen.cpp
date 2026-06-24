@@ -275,6 +275,7 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
     std::unordered_set<std::string> abstainedLabels;  // labels named by some `abstainfrom` (spec 7.11)
     std::unordered_map<std::string, llvm::GlobalVariable*> abstainCounters;  // label -> runtime counter
+    std::unordered_map<std::string, llvm::GlobalVariable*> instanceCounters;  // class -> live-instance count
     std::vector<llvm::BasicBlock*> ehPadStack;   // active try landing pads (catchswitch blocks)
     llvm::Constant* ehThrowInfoCache = nullptr;  // shared carrier-ptr ThrowInfo (_TI1PEAX), lazy
     llvm::Constant* ehTypeDescCache = nullptr;   // shared carrier-ptr type descriptor, lazy
@@ -2469,6 +2470,18 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // The live-instance counter for a class (spec 32.5 onFirstInstance/onLastInstanceDestroyed),
+    // a private global initialized to 0.
+    llvm::GlobalVariable* instanceCounter(const std::string& name) {
+        auto it = instanceCounters.find(name);
+        if (it != instanceCounters.end()) return it->second;
+        auto* g = new llvm::GlobalVariable(module, builder.getInt32Ty(), /*isConstant=*/false,
+                                           llvm::GlobalValue::PrivateLinkage, builder.getInt32(0),
+                                           "instances." + name);
+        instanceCounters[name] = g;
+        return g;
+    }
+
     // The runtime reference counter for an abstainable label (spec 7.11), lazily
     // created as a private global initialized to 0 (enabled).
     llvm::GlobalVariable* abstainCounter(const std::string& name) {
@@ -3939,11 +3952,16 @@ struct CodeGenerator::Impl {
                         functions[mangled] = llvm::Function::Create(
                             ty, llvm::Function::ExternalLinkage, mangled, module);
                     }
-                    if (cls.onClassLoad) {  // spec 32.5 lifecycle hook (void, no this)
+                    // spec 32.5 lifecycle hooks (void, no this).
+                    auto declHook = [&](const std::unique_ptr<ast::Block>& b, const char* suffix) {
+                        if (!b) return;
                         llvm::FunctionType* ty = llvm::FunctionType::get(builder.getVoidTy(), false);
-                        functions[cls.name + ".__onClassLoad"] = llvm::Function::Create(
-                            ty, llvm::Function::ExternalLinkage, cls.name + ".__onClassLoad", module);
-                    }
+                        functions[cls.name + suffix] = llvm::Function::Create(
+                            ty, llvm::Function::ExternalLinkage, cls.name + suffix, module);
+                    };
+                    declHook(cls.onClassLoad, ".__onClassLoad");
+                    declHook(cls.onFirstInstance, ".__onFirstInstance");
+                    declHook(cls.onLastInstanceDestroyed, ".__onLastInstanceDestroyed");
                 }
                 // Namespace-level `comptime literal` suffix functions (spec 17.10).
                 for (const ast::LiteralDecl& lit : ns.literals) {
@@ -4014,7 +4032,7 @@ struct CodeGenerator::Impl {
                   const std::vector<ast::ExprPtr>* invariants = nullptr,
                   bool hasEnv = false, const std::vector<ast::Capture>* caps = nullptr,
                   const std::vector<std::string>* capTypes = nullptr,
-                  const std::string& dtorChainBase = "") {
+                  const std::string& dtorChainBase = "", const ast::ClassDecl* dtorOf = nullptr) {
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
@@ -4087,6 +4105,43 @@ struct CodeGenerator::Impl {
                 builder.CreateStore(cl.vtable, vtblField);
             }
             emitFieldInits(*ctorOf, currentThis);
+            // Instance lifecycle (spec 32.5): maintain a live-instance counter; run
+            // onFirstInstance the first time the count goes from zero.
+            if (ctorOf->onFirstInstance || ctorOf->onLastInstanceDestroyed) {
+                llvm::GlobalVariable* ctr = instanceCounter(ctorOf->name);
+                llvm::Value* cur = builder.CreateLoad(builder.getInt32Ty(), ctr, "inst.n");
+                if (ctorOf->onFirstInstance) {
+                    llvm::Function* f = currentFn;
+                    auto* doBB = llvm::BasicBlock::Create(context, "first.do", f);
+                    auto* contBB = llvm::BasicBlock::Create(context, "first.cont", f);
+                    builder.CreateCondBr(builder.CreateICmpEQ(cur, builder.getInt32(0)), doBB, contBB);
+                    builder.SetInsertPoint(doBB);
+                    builder.CreateCall(functions[ctorOf->name + ".__onFirstInstance"]);
+                    builder.CreateBr(contBB);
+                    builder.SetInsertPoint(contBB);
+                }
+                builder.CreateStore(builder.CreateAdd(cur, builder.getInt32(1)), ctr);
+            }
+        }
+
+        // Instance lifecycle (spec 32.5): a destructor decrements the live-instance count
+        // and runs onLastInstanceDestroyed when it reaches zero.
+        if (dtorOf != nullptr && (dtorOf->onLastInstanceDestroyed || dtorOf->onFirstInstance)) {
+            llvm::GlobalVariable* ctr = instanceCounter(dtorOf->name);
+            llvm::Value* dec =
+                builder.CreateSub(builder.CreateLoad(builder.getInt32Ty(), ctr, "inst.n"),
+                                  builder.getInt32(1));
+            builder.CreateStore(dec, ctr);
+            if (dtorOf->onLastInstanceDestroyed) {
+                llvm::Function* f = currentFn;
+                auto* doBB = llvm::BasicBlock::Create(context, "last.do", f);
+                auto* contBB = llvm::BasicBlock::Create(context, "last.cont", f);
+                builder.CreateCondBr(builder.CreateICmpEQ(dec, builder.getInt32(0)), doBB, contBB);
+                builder.SetInsertPoint(doBB);
+                builder.CreateCall(functions[dtorOf->name + ".__onLastInstanceDestroyed"]);
+                builder.CreateBr(contBB);
+                builder.SetInsertPoint(contBB);
+            }
         }
 
         // Contracts: preconditions run after the prologue, before the body (spec 29).
@@ -4145,7 +4200,7 @@ struct CodeGenerator::Impl {
                             // Chain to the nearest ancestor's destructor (derived-then-base).
                             emitBody(functions[cls.name + ".~" + cls.name], d->body, {}, cls.name,
                                      builder.getVoidTy(), nullptr, nullptr, nullptr, nullptr, false,
-                                     nullptr, nullptr, dtorImpl(cls.superclass));
+                                     nullptr, nullptr, dtorImpl(cls.superclass), &cls);
                         }
                     }
                     // Emit the synthesized default constructor (sets the vtable +
@@ -4155,10 +4210,15 @@ struct CodeGenerator::Impl {
                         emitBody(functions[cls.name + "." + cls.name], emptyBody, {}, cls.name,
                                  builder.getVoidTy(), &cls);
                     }
-                    if (cls.onClassLoad) {  // spec 32.5: static-context hook body
-                        emitBody(functions[cls.name + ".__onClassLoad"], *cls.onClassLoad, {},
-                                 /*thisClass=*/"", builder.getVoidTy());
-                    }
+                    // spec 32.5: static-context hook bodies.
+                    auto emitHook = [&](const std::unique_ptr<ast::Block>& b, const char* suffix) {
+                        if (b)
+                            emitBody(functions[cls.name + suffix], *b, {}, /*thisClass=*/"",
+                                     builder.getVoidTy());
+                    };
+                    emitHook(cls.onClassLoad, ".__onClassLoad");
+                    emitHook(cls.onFirstInstance, ".__onFirstInstance");
+                    emitHook(cls.onLastInstanceDestroyed, ".__onLastInstanceDestroyed");
                 }
                 // Literal suffix bodies: emitted as static functions (no `this`).
                 for (const ast::LiteralDecl& lit : ns.literals) {

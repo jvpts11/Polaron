@@ -527,10 +527,25 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             expect(TokenKind::Semicolon, "';'");
             continue;
         }
-        // Lifecycle hook (spec 32.5): `onClassLoad { ... }` -- a soft keyword.
+        // Lifecycle hooks (spec 32.5): `onClassLoad`/`onFirstInstance`/... -- soft keywords.
         if (check(TokenKind::Identifier) && current().lexeme == "onClassLoad") {
             advance();
             c.onClassLoad = std::make_unique<ast::Block>(parseBlock());
+            continue;
+        }
+        if (check(TokenKind::Identifier) && current().lexeme == "onFirstInstance") {
+            advance();
+            c.onFirstInstance = std::make_unique<ast::Block>(parseBlock());
+            continue;
+        }
+        if (check(TokenKind::Identifier) && current().lexeme == "onLastInstanceDestroyed") {
+            advance();
+            c.onLastInstanceDestroyed = std::make_unique<ast::Block>(parseBlock());
+            continue;
+        }
+        if (check(TokenKind::Identifier) && current().lexeme == "onClassUnload") {
+            advance();
+            c.onClassUnload = std::make_unique<ast::Block>(parseBlock());
             continue;
         }
         c.members.push_back(parseMember(c.isInterface));

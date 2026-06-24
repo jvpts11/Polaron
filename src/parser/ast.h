@@ -561,6 +561,9 @@ struct ClassDecl {
     std::vector<std::string> permits;     // sealed permits list (subtypes)
     std::vector<ExprPtr> invariants;      // class invariants (spec 29), checked per method
     std::unique_ptr<Block> onClassLoad;   // spec 32.5: hook run once at program start, before main
+    std::unique_ptr<Block> onFirstInstance;          // spec 32.5: before the first instance is created
+    std::unique_ptr<Block> onLastInstanceDestroyed;  // spec 32.5: after the last instance is destroyed
+    std::unique_ptr<Block> onClassUnload;            // spec 32.5: on unimport (deferred: needs unimport)
     std::vector<MemberPtr> members;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
