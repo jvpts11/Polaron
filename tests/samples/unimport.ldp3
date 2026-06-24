@@ -6,8 +6,8 @@ program Unimport;
 // on a surviving instance) throws UnimportedTypeException via the alive guard, so we never
 // branch into the destroyed code. Method.firstByte() shows the code is gone (0xCC = 204).
 //
-// Physical unload is irreversible here: an AOT executable cannot reload code from disk, so
-// reimport can re-enable the flag but not restore the ripped-out machine code.
+// (Reimport can bring the code back -- it reloads the original bytes from the .exe on disk;
+// see reimport.ldp3.)
 
 public bundle main {
     public namespace app {

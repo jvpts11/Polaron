@@ -2660,24 +2660,29 @@ struct CodeGenerator::Impl {
     // Physically overwrites the machine code of a class's methods (and ctor/dtor) in RAM
     // with int3 traps, via the runtime helper (spec 30 aggressive unload). The code is
     // ripped from memory; the alive guard ensures we never branch into the traps.
-    void emitPhysicalUnload(const std::string& className) {
+    // Calls a runtime code op (__ldp3_unload_fn / __ldp3_reload_fn) on every method, the
+    // constructor, and the destructor of a class -- physically overwriting (unimport) or
+    // restoring from disk (reimport) their machine code (spec 30).
+    void emitPhysicalCodeOp(const std::string& className, const char* runtimeFn) {
         if (fnTableGlobal == nullptr) return;
         auto cit = classes.find(className);
         if (cit == classes.end() || cit->second.decl == nullptr) return;
         llvm::FunctionType* ht = llvm::FunctionType::get(
             builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty()}, false);
-        llvm::FunctionCallee helper = module.getOrInsertFunction("__ldp3_unload_fn", ht);
-        auto unload = [&](const std::string& fnName) {
+        llvm::FunctionCallee helper = module.getOrInsertFunction(runtimeFn, ht);
+        auto op = [&](const std::string& fnName) {
             if (auto f = functions.find(fnName); f != functions.end())
                 builder.CreateCall(helper,
                                    {f->second, fnTableGlobal, builder.getInt64(fnTableCount)});
         };
         for (const ast::MemberPtr& m : cit->second.decl->members)
             if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()); md && !md->isAbstract)
-                unload(className + "." + md->name);
-        unload(className + "." + className);        // constructor
-        unload(className + ".~" + className);        // destructor
+                op(className + "." + md->name);
+        op(className + "." + className);        // constructor
+        op(className + ".~" + className);        // destructor
     }
+    void emitPhysicalUnload(const std::string& cn) { emitPhysicalCodeOp(cn, "__ldp3_unload_fn"); }
+    void emitPhysicalReload(const std::string& cn) { emitPhysicalCodeOp(cn, "__ldp3_reload_fn"); }
 
     // Constructs and throws a System.Runtime.UnimportedTypeException (spec 30): used when
     // an unimported type is instantiated or its methods are called. Terminates the block.
@@ -3312,7 +3317,10 @@ struct CodeGenerator::Impl {
                 builder.CreateStore(builder.getInt32(0), aliveFlag(cn));
                 emitPhysicalUnload(cn);
             } else {
-                builder.CreateStore(builder.getInt32(1), aliveFlag(cn));  // logical re-enable
+                // reimport (spec 30.3): restore the ripped-out code from the .exe on disk,
+                // then re-enable the class.
+                emitPhysicalReload(cn);
+                builder.CreateStore(builder.getInt32(1), aliveFlag(cn));
             }
             return;
         }

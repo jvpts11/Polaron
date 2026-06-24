@@ -1,0 +1,32 @@
+program Reimport;
+
+// Reimport (spec 30.3): after `unimport` physically rips a class's machine code out of RAM
+// (overwriting it with int3), `reimport` reloads the original bytes from the program's own
+// .exe on disk and writes them back -- so the class works again, with no VM and no in-RAM
+// backup. x64 code is RIP-relative, so the restored .text needs no relocation fix-up.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public constructor Dog() {}
+            public method bark() returns void { Console.println("Woof!"); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog a = new Dog() on heap;
+                a.bark();                                  // Woof!
+                unimport Dog;
+                try {
+                    Dog b = new Dog() on heap;
+                    Console.println("should not reach");
+                } catch (UnimportedTypeException e) {
+                    Console.println("unimported");
+                }
+                reimport Dog;                               // restore code from disk
+                Dog c = new Dog() on heap;
+                c.bark();                                   // Woof! -- code reloaded and live again
+                return;
+            }
+        }
+    }
+}
