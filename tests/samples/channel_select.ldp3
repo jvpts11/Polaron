@@ -1,0 +1,30 @@
+program ChannelSelect;
+
+// Channel.select (spec 20.4): a fluent builder that waits on several channels at once. The chain
+// is static, so the compiler unrolls it into a poll loop: each iteration tries a non-blocking
+// receive on every channel and runs the matching handler with the value (or fires .timeout). Here
+// a worker fills channel b, so select picks b and prints b=42 (a stays empty).
+
+public bundle main {
+    import System.IO.Console;
+    import System.Concurrency.Thread;
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Channel<int> a = new Channel<int>(4) on heap;
+                Channel<int> b = new Channel<int>(4) on heap;
+                function<void> prod = lambda[captures: byvalue b]() returns void {
+                    b.send(42);
+                };
+                Thread t = new Thread(prod) on heap;
+                t.start();
+                t.join();   // b now holds a value; a is empty
+                Channel.select()
+                    .receive(a, lambda(int x) returns void { System.IO.Console.printf("a=%d\n", x); })
+                    .receive(b, lambda(int y) returns void { System.IO.Console.printf("b=%d\n", y); })
+                    .run();
+                return;
+            }
+        }
+    }
+}

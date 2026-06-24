@@ -193,6 +193,24 @@ long long __ldp3_chan_receive(long long handle) {
     return v;
 }
 
+// Non-blocking receive for Channel.select (spec 20.4): if a value is ready, store it in *out and
+// return 1; otherwise return 0 immediately.
+int __ldp3_chan_try_receive(long long handle, long long* out) {
+    ldp3_chan* c = (ldp3_chan*)handle;
+    if (c == NULL) return 0;
+    EnterCriticalSection(&c->lock);
+    if (c->count == 0) { LeaveCriticalSection(&c->lock); return 0; }
+    *out = c->buf[c->head];
+    c->head = (c->head + 1) % c->cap;
+    c->count--;
+    LeaveCriticalSection(&c->lock);
+    WakeConditionVariable(&c->notFull);
+    return 1;
+}
+
+long long __ldp3_now_ms(void) { return (long long)GetTickCount64(); }
+void __ldp3_yield(void) { Sleep(0); }  // hand off the rest of the time slice while polling
+
 // await from non-async code (e.g. main): block the calling thread until the task completes.
 long long __ldp3_task_wait(long long handle) {
     ldp3_task* t = (ldp3_task*)handle;

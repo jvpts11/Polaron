@@ -1991,6 +1991,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 return "void";
             }
         }
+        // Channel.select() (spec 20.4): starts a fluent select builder over multiple channels.
+        if (name == "Channel.select") {
+            if (!call->args.empty()) error("Channel.select takes no arguments", call->loc);
+            return "Select";
+        }
         // reflect.typeOf<T>() (spec 31): the Type token for class T.
         if (name == "reflect.typeOf") {
             if (call->typeArgs.size() != 1) {
@@ -2075,6 +2080,16 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "concat" && call->args.size() == 1) return "String";
                 if (mem->member == "substring" && call->args.size() == 2) return "String";
                 error("String has no method '" + mem->member + "'", call->loc);
+                return "";
+            }
+            // Channel.select builder (spec 20.4): .receive(ch, lambda) / .timeout(ms, lambda) chain
+            // fluently (each returns the builder) and .run() executes it.
+            if (objType == "Select") {
+                for (const auto& arg : call->args) typeOf(*arg);
+                if (mem->member == "receive" && call->args.size() == 2) return "Select";
+                if (mem->member == "timeout" && call->args.size() == 2) return "Select";
+                if (mem->member == "run" && call->args.empty()) return "void";
+                error("Select has no method '" + mem->member + "'", call->loc);
                 return "";
             }
             // Channel<T> blocking operations (spec 20.3).

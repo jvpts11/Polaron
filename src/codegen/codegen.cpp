@@ -2145,8 +2145,127 @@ struct CodeGenerator::Impl {
         return builder.CreateCall(printf(), args);
     }
 
+    // One arm of a Channel.select chain (spec 20.4): a `.receive(channel, lambda)` or, when
+    // isTimeout, a `.timeout(ms, lambda)`.
+    struct SelectCase {
+        const ast::Expr* channel;
+        const ast::Expr* lambda;
+        const ast::Expr* ms;
+        bool isTimeout;
+    };
+    // Walks a `Channel.select().receive(...)....` chain bottom-up, collecting its arms in source
+    // order. Returns false if the chain is not a select (so a stray `.run()` is left alone).
+    bool collectSelectChain(const ast::Expr* chain, std::vector<SelectCase>& cases) {
+        const auto* call = dynamic_cast<const ast::CallExpr*>(chain);
+        if (call == nullptr) return false;
+        const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+        if (mem == nullptr) return false;
+        if (mem->member == "select" && call->args.empty()) {
+            const auto* base = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+            return base != nullptr && base->name == "Channel";  // base: Channel.select()
+        }
+        if (!collectSelectChain(mem->object.get(), cases)) return false;  // recurse to the base
+        if (mem->member == "receive" && call->args.size() == 2)
+            cases.push_back({call->args[0].get(), call->args[1].get(), nullptr, false});
+        else if (mem->member == "timeout" && call->args.size() == 2)
+            cases.push_back({nullptr, call->args[1].get(), call->args[0].get(), true});
+        else return false;
+        return true;
+    }
+    // Calls a function<void> / function<void, T> closure value (code+env pair) with an optional arg.
+    void emitClosureCallVoid(llvm::Value* closPtr, const std::string& paramType, llvm::Value* arg) {
+        std::vector<llvm::Type*> pts = {builder.getPtrTy()};
+        if (arg != nullptr) pts.push_back(llvmType(paramType));
+        llvm::FunctionType* fty = llvm::FunctionType::get(builder.getVoidTy(), pts, false);
+        llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), closPtr, "code");
+        llvm::Value* env = builder.CreateLoad(
+            builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), closPtr, builder.getInt32(1)),
+            "env");
+        std::vector<llvm::Value*> args = {env};
+        if (arg != nullptr) args.push_back(coerceToType(arg, llvmType(paramType)));
+        builder.CreateCall(fty, fnPtr, args);
+    }
+    // Emits a Channel.select as a poll loop: each iteration tries a non-blocking receive on every
+    // channel (calling its handler with the value on success), then optionally fires the timeout.
+    void emitSelect(const std::vector<SelectCase>& cases) {
+        struct Recv {
+            llvm::Value* h;
+            llvm::Value* clos;
+            std::string elem;
+        };
+        std::vector<Recv> recvs;
+        llvm::Value* toClos = nullptr;
+        llvm::Value* msVal = nullptr;
+        llvm::Value* startMs = nullptr;
+        llvm::FunctionType* nowTy = llvm::FunctionType::get(builder.getInt64Ty(), false);
+        // Evaluate channel handles and handler closures once, before the loop.
+        for (const auto& c : cases) {
+            if (c.isTimeout) {
+                msVal = builder.CreateIntCast(emitExpr(*c.ms), builder.getInt64Ty(), true);
+                toClos = emitExpr(*c.lambda);
+            } else {
+                llvm::Value* obj = emitObjectPtr(*c.channel);
+                const std::string ct = baseType(typeName(*c.channel));  // Channel$T
+                auto cit = classes.find(ct);
+                llvm::Value* h = builder.CreateLoad(
+                    builder.getInt64Ty(),
+                    builder.CreateStructGEP(cit->second.type, obj, cit->second.fieldIndex["h"]),
+                    "sel.h");
+                recvs.push_back({h, emitExpr(*c.lambda), ct.substr(8)});
+            }
+        }
+        if (msVal != nullptr)
+            startMs = builder.CreateCall(module.getOrInsertFunction("__ldp3_now_ms", nowTy), {});
+        llvm::Value* tmp = createEntryAlloca("sel.tmp", builder.getInt64Ty());
+        llvm::BasicBlock* loopBlk = llvm::BasicBlock::Create(context, "sel.loop", currentFn);
+        llvm::BasicBlock* doneBlk = llvm::BasicBlock::Create(context, "sel.done", currentFn);
+        builder.CreateBr(loopBlk);
+        builder.SetInsertPoint(loopBlk);
+        llvm::FunctionType* trTy = llvm::FunctionType::get(
+            builder.getInt32Ty(), {builder.getInt64Ty(), builder.getPtrTy()}, false);
+        for (const auto& r : recvs) {
+            llvm::Value* got = builder.CreateCall(
+                module.getOrInsertFunction("__ldp3_chan_try_receive", trTy), {r.h, tmp}, "sel.got");
+            llvm::BasicBlock* gotBlk = llvm::BasicBlock::Create(context, "sel.recv", currentFn);
+            llvm::BasicBlock* nextBlk = llvm::BasicBlock::Create(context, "sel.next", currentFn);
+            builder.CreateCondBr(builder.CreateICmpNE(got, builder.getInt32(0)), gotBlk, nextBlk);
+            builder.SetInsertPoint(gotBlk);
+            llvm::Value* v =
+                castTaskResult(builder.CreateLoad(builder.getInt64Ty(), tmp, "sel.v"), r.elem);
+            emitClosureCallVoid(r.clos, r.elem, v);
+            builder.CreateBr(doneBlk);
+            builder.SetInsertPoint(nextBlk);
+        }
+        if (toClos != nullptr) {
+            llvm::Value* now = builder.CreateCall(module.getOrInsertFunction("__ldp3_now_ms", nowTy), {});
+            llvm::BasicBlock* toBlk = llvm::BasicBlock::Create(context, "sel.timeout", currentFn);
+            llvm::BasicBlock* contBlk = llvm::BasicBlock::Create(context, "sel.cont", currentFn);
+            builder.CreateCondBr(
+                builder.CreateICmpSGE(builder.CreateSub(now, startMs), msVal), toBlk, contBlk);
+            builder.SetInsertPoint(toBlk);
+            emitClosureCallVoid(toClos, "", nullptr);
+            builder.CreateBr(doneBlk);
+            builder.SetInsertPoint(contBlk);
+        }
+        builder.CreateCall(
+            module.getOrInsertFunction("__ldp3_yield", llvm::FunctionType::get(builder.getVoidTy(), false)),
+            {});
+        builder.CreateBr(loopBlk);
+        builder.SetInsertPoint(doneBlk);
+    }
+
     llvm::Value* emitCall(const ast::CallExpr& call) {
         const std::string name = flattenCallee(*call.callee);
+        // Channel.select()....run() (spec 20.4): a compile-time-static fluent chain, lowered to a
+        // poll loop over the registered channels (with an optional timeout).
+        if (const auto* runMem = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
+            runMem != nullptr && runMem->member == "run" && call.args.empty()) {
+            std::vector<SelectCase> cases;
+            if (collectSelectChain(runMem->object.get(), cases)) {
+                emitSelect(cases);
+                return nullptr;
+            }
+        }
         // SIMD vector construction: vec4(x,y,z,w) etc. -> a <N x float> built component-wise.
         if (int w = vecWidth(name); w > 0 && static_cast<int>(call.args.size()) == w) {
             llvm::Type* vt = llvm::FixedVectorType::get(builder.getFloatTy(), static_cast<unsigned>(w));
