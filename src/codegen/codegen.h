@@ -26,6 +26,10 @@ public:
     CodeGenerator(const CodeGenerator&) = delete;
     CodeGenerator& operator=(const CodeGenerator&) = delete;
 
+    // Sets the LLVM target triple (e.g. "x86_64-unknown-none" for freestanding/bare metal).
+    // Call before generate(). Default: none (the host applies its triple).
+    void setTargetTriple(const std::string& triple);
+
     // Builds the module. Returns true on success (no errors, module verified).
     bool generate();
 

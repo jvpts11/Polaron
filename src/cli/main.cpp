@@ -304,7 +304,8 @@ int checkProgram(const std::string& path) {
 // file declares `program <Name>;` (all must agree); their bundles are merged
 // (the semantic catalog is flat, so concatenation is enough). `inputs` outlives
 // this call, so token SourceLocations (string_views into the paths) stay valid.
-int compile(const std::vector<std::string>& inputs, const std::string& outPath) {
+int compile(const std::vector<std::string>& inputs, const std::string& outPath,
+            const std::string& target = "") {
     ldp3::ast::Program program;
     std::string programName;
     // Keep each file's source alive only within its iteration: the AST copies
@@ -348,6 +349,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath) 
 
 #ifdef LDP3_WITH_LLVM
     ldp3::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
+    if (!target.empty()) codegen.setTargetTriple(target);  // e.g. --target=x86_64-unknown-none
     if (!codegen.generate()) {
         for (const ldp3::CodegenError& e : codegen.errors()) {
             std::fprintf(stderr, "%.*s:%d:%d: codegen error: %s\n",
@@ -403,6 +405,7 @@ int main(int argc, char** argv) {
     // Compile mode: <input...> [-o <output>]. A program may span several files.
     std::vector<std::string> inputs;
     std::string output;
+    std::string target;  // --target=<triple>, e.g. x86_64-unknown-none for freestanding/bare metal
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "-o") {
             if (i + 1 >= args.size()) {
@@ -411,6 +414,8 @@ int main(int argc, char** argv) {
             }
             output = std::string(args[i + 1]);
             ++i;
+        } else if (args[i].rfind("--target=", 0) == 0) {
+            target = std::string(args[i].substr(9));
         } else {
             inputs.emplace_back(args[i]);
         }
@@ -419,5 +424,5 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: no input files\n");
         return printUsage(argv[0]);
     }
-    return compile(inputs, output);
+    return compile(inputs, output, target);
 }

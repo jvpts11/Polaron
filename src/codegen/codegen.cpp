@@ -5252,6 +5252,10 @@ CodeGenerator::CodeGenerator(const ast::Program& program, const EntryPoint& entr
 
 CodeGenerator::~CodeGenerator() = default;
 
+void CodeGenerator::setTargetTriple(const std::string& triple) {
+    impl_->module.setTargetTriple(triple);
+}
+
 bool CodeGenerator::generate() {
     if (impl_->entry.method == nullptr) {
         errors_.push_back(CodegenError{"no entry point to generate", {}});
