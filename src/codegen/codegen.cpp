@@ -360,6 +360,15 @@ struct CodeGenerator::Impl {
         return v;
     }
 
+    // Defined float->int conversion (LDP3 has no undefined behaviour): saturating, so an
+    // out-of-range value clamps to the integer min/max and NaN becomes 0, instead of the
+    // poison `fptosi`/`fptoui` would produce. Hardware-supported -- no runtime cost.
+    llvm::Value* fpToInt(llvm::Value* v, llvm::Type* intTy, bool uns) {
+        return builder.CreateIntrinsic(
+            uns ? llvm::Intrinsic::fptoui_sat : llvm::Intrinsic::fptosi_sat,
+            {intTy, v->getType()}, {v});
+    }
+
     // Explicit numeric conversion for cast<T>(expr): covers every direction,
     // including the narrowing ones the implicit `coerce` refuses (long->int,
     // float->int, f64->f32). Unsigned source/target selects zero-extension and
@@ -382,8 +391,7 @@ struct CodeGenerator::Impl {
                                     : builder.CreateSIToFP(v, fty);
         }
         if (fromFloat) {
-            return isUnsigned(to) ? builder.CreateFPToUI(v, llvmType(to))   // truncates toward zero
-                                  : builder.CreateFPToSI(v, llvmType(to));
+            return fpToInt(v, llvmType(to), isUnsigned(to));  // saturating, defined
         }
         return fitInt(v, intBits(to), isUnsigned(from));  // int -> int: zext/sext / trunc
     }
@@ -408,7 +416,7 @@ struct CodeGenerator::Impl {
                 if (want < have) return builder.CreateTrunc(v, ty);
                 return v;
             }
-            if (src->isFloatingPointTy()) return builder.CreateFPToSI(v, ty);  // f -> int
+            if (src->isFloatingPointTy()) return fpToInt(v, ty, false);  // f -> int, saturating
         }
         return v;
     }
@@ -1506,7 +1514,9 @@ struct CodeGenerator::Impl {
             if (un->op == "&") return emitObjectPtr(*un->operand);  // address-of: the object pointer
             llvm::Value* v = emitExpr(*un->operand);
             if (v == nullptr) return nullptr;
-            if (un->op == "-") return builder.CreateNeg(v);
+            if (un->op == "-")
+                return v->getType()->isFloatingPointTy() ? builder.CreateFNeg(v)
+                                                          : builder.CreateNeg(v);
             if (un->op == "!") {
                 return builder.CreateZExt(builder.CreateICmpEQ(v, builder.getInt32(0)),
                                           builder.getInt32Ty());

@@ -1493,6 +1493,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # defined behaviour: saturating float->int cast + unary minus on float (no UB).
+        add_test(NAME codegen_defined_conversions_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/defined_conversions.ldp3"
+            "-DEXPECTED=2147483647 -2147483648 42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # unimport (spec 30): physical code overwrite (byte=204) + UnimportedTypeException
         # on new and on a method call to a surviving instance.
         add_test(NAME codegen_unimport_runs COMMAND "${CMAKE_COMMAND}"

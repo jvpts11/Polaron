@@ -1556,8 +1556,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (!t.empty() && t != "boolean") error("unary '!' requires a boolean operand", un->loc);
             return "boolean";
         }
-        if (!t.empty() && t != "int") error("unary '" + un->op + "' requires an int operand", un->loc);
-        return "int";
+        if (un->op == "~") {  // bitwise not: integers only
+            if (!t.empty() && (!isNumeric(t) || isFloatType(t)))
+                error("unary '~' requires an integer operand", un->loc);
+            return t.empty() ? std::string("int") : t;
+        }
+        // unary '-' / '+': any numeric operand, keeping its type (width and int/float).
+        if (!t.empty() && !isNumeric(t))
+            error("unary '" + un->op + "' requires a numeric operand", un->loc);
+        return t.empty() ? std::string("int") : t;
     }
 
     if (const auto* me = dynamic_cast<const ast::MatchExpr*>(&expr)) {
