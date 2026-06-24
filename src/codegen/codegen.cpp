@@ -1,3 +1,4 @@
+#include "llvm/IR/MDBuilder.h"
 #include "codegen/codegen.h"
 
 #include <llvm/IR/BasicBlock.h>
@@ -1076,7 +1077,29 @@ struct CodeGenerator::Impl {
         return builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 8, "arr.data");
     }
     llvm::Value* arrayElemPtr(llvm::Value* block, llvm::Value* index, llvm::Type* elemTy) {
-        return builder.CreateGEP(elemTy, arrayData(block), index, "arr.elem");
+        llvm::Value* idx = index->getType()->isIntegerTy(64)
+                               ? index
+                               : builder.CreateSExt(index, builder.getInt64Ty());
+        // Bounds check (no UB): one unsigned compare catches both index < 0 and index >= length.
+        // The length load and data base are loop-invariant, so LICM hoists them; LLVM elides the
+        // compare itself where it can prove the index in range.
+        llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "arr.len");
+        llvm::Value* oob = builder.CreateICmpUGE(idx, len, "arr.oob");
+        llvm::Function* f = currentFn;
+        auto* badBB = llvm::BasicBlock::Create(context, "idx.bad", f);
+        auto* okBB = llvm::BasicBlock::Create(context, "idx.ok", f);
+        builder.CreateCondBr(oob, badBB, okBB, coldBranchWeights());
+        builder.SetInsertPoint(badBB);
+        emitPanic("array index out of bounds");
+        builder.SetInsertPoint(okBB);
+        return builder.CreateGEP(elemTy, arrayData(block), idx, "arr.elem");
+    }
+
+    // Branch weights marking the true (panic) edge as cold, so the optimizer keeps the hot
+    // path straight-line and the predictor assumes in-bounds.
+    llvm::MDNode* coldBranchWeights() {
+        llvm::MDBuilder mdb(context);
+        return mdb.createBranchWeights(1, 1u << 20);
     }
 
     llvm::Value* emitNewArray(const ast::NewArrayExpr& na) {
