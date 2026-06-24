@@ -4,6 +4,7 @@ program Partitionable;
 // combines with `movable` but not with `unique`. Here it simply compiles and runs.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public partitionable class Tree {
             private mutable int value;
@@ -13,7 +14,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Tree t = new Tree(5) on heap;
-                System.IO.printf("value=%d\n", t.get());
+                System.IO.Console.printf("value=%d\n", t.get());
                 delete t;
                 return;
             }

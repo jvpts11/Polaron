@@ -5,6 +5,7 @@ program ChainedAccess;
 // member-of-member must be LOADED (emitExpr), not have its slot address taken. Sub-objects are
 // `on heap` so they outlive the constructor frame (a stack `new` stored in a field would dangle).
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Deeper {
             public mutable int y;
@@ -22,12 +23,12 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Outer o = new Outer() on heap;
-                System.IO.println($"x = {o.inner.x}");           // x = 7
-                System.IO.println($"y = {o.inner.deeper.y}");    // y = 100  (two value levels)
+                System.IO.Console.println($"x = {o.inner.x}");           // x = 7
+                System.IO.Console.println($"y = {o.inner.deeper.y}");    // y = 100  (two value levels)
                 o.inner.x = 42;
                 o.inner.deeper.y = 200;
-                System.IO.println($"x = {o.inner.x}");           // x = 42
-                System.IO.println($"y = {o.inner.deeper.y}");    // y = 200
+                System.IO.Console.println($"x = {o.inner.x}");           // x = 42
+                System.IO.Console.println($"y = {o.inner.deeper.y}");    // y = 200
                 return;
             }
         }

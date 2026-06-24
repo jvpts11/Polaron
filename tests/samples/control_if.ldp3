@@ -1,6 +1,7 @@
 program ControlIf;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -14,7 +15,7 @@ public bundle main {
                 if (n > 5) {
                     result = result + 100;  // -> 102
                 }
-                System.IO.printf("result=%d\n", result);
+                System.IO.Console.printf("result=%d\n", result);
             }
         }
     }

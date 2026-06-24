@@ -6,6 +6,7 @@ program VolatileAccess;
 // volatile field and a volatile local still round-trip their values correctly.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Device {
             private volatile mutable int reg;
@@ -22,7 +23,7 @@ public bundle main {
                 volatile mutable int sum = 0;
                 sum = sum + d.peek();               // volatile load of the register
                 sum = sum + d.peek();
-                System.IO.printf("reg=%d sum=%d\n", d.peek(), sum);
+                System.IO.Console.printf("reg=%d sum=%d\n", d.peek(), sum);
                 delete d;
                 return;
             }

@@ -1,6 +1,7 @@
 program LinkedList;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         // A pointer field (Node* next) -- enables linked structures. Assigning to a
@@ -21,7 +22,7 @@ public bundle main {
 
                 // Chained member access through the pointer fields.
                 int total = a.val + a.next.val + a.next.next.val;
-                System.IO.println($"total = {total}");   // 1 + 2 + 3 = 6
+                System.IO.Console.println($"total = {total}");   // 1 + 2 + 3 = 6
                 return;
             }
         }

@@ -1,17 +1,18 @@
 program Bitwise;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
                 int a = 12;   // 1100
                 int b = 10;   // 1010
-                System.IO.println($"and = {a & b}");    // 8  (1000)
-                System.IO.println($"or = {a | b}");     // 14 (1110)
-                System.IO.println($"xor = {a ^ b}");    // 6  (0110)
-                System.IO.println($"shl = {a << 2}");   // 48
-                System.IO.println($"shr = {a >> 1}");   // 6
-                System.IO.println($"not = {~a}");        // -13 (two's complement)
+                System.IO.Console.println($"and = {a & b}");    // 8  (1000)
+                System.IO.Console.println($"or = {a | b}");     // 14 (1110)
+                System.IO.Console.println($"xor = {a ^ b}");    // 6  (0110)
+                System.IO.Console.println($"shl = {a << 2}");   // 48
+                System.IO.Console.println($"shr = {a >> 1}");   // 6
+                System.IO.Console.println($"not = {~a}");        // -13 (two's complement)
                 return;
             }
         }

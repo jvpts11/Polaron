@@ -4,6 +4,7 @@ program PersistDemo;
 // it holds its value for the duration of the run. bump() is called 3x -> runs = 3.
 // It is `eternal` (spec 18.13): intended to live the whole run, so no release is required.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Counter {
             public eternal static persistent mutable int runs = 0;
@@ -16,7 +17,7 @@ public bundle main {
                 Counter.bump();
                 Counter.bump();
                 Counter.bump();
-                System.IO.println($"runs = {Counter.get()}");
+                System.IO.Console.println($"runs = {Counter.get()}");
                 return;
             }
         }

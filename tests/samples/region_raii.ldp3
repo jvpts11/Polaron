@@ -5,6 +5,7 @@ program RegionRaii;
 // same; RAII just reclaims the arena on the way out.
 
 public bundle main {
+    import System.IO.Console;
     import System.Memory.Units.kilobytes;
 
     public namespace app {
@@ -17,7 +18,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 region pen = itself.allocate(1 kilobytes);
                 Dog* a = new Dog(5) in region pen;
-                System.IO.println($"a = {a.getAge()}");   // a = 5
+                System.IO.Console.println($"a = {a.getAge()}");   // a = 5
                 return;                                     // pen freed here by RAII
             }
         }

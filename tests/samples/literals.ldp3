@@ -1,6 +1,7 @@
 program Literals;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         // A namespace-level comptime literal suffix function (spec 17.10).
@@ -13,7 +14,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 int64 size = kib(64);
-                System.IO.println($"size = {size}");   // 65536
+                System.IO.Console.println($"size = {size}");   // 65536
                 return;
             }
         }

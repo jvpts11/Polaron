@@ -4,6 +4,7 @@ program BinaryTrees;
 // times. Millions of new/delete -- stresses the allocator and pointer chasing.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Tree {
             public mutable Tree* left;
@@ -43,7 +44,7 @@ public bundle main {
                     total = total + Main.check(t);
                     Main.free(t);
                 }
-                System.IO.printf("nodes=%d\n", total);
+                System.IO.Console.printf("nodes=%d\n", total);
                 return;
             }
         }

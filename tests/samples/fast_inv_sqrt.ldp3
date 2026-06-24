@@ -9,6 +9,7 @@ program FastInvSqrt;
 //   - argument coercion (the f64 literal 4.0 passed to a float32 parameter).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         // Shares one storage between a 32-bit float and its raw integer bits.
@@ -35,7 +36,7 @@ public bundle main {
                 float32 a = FastMath.invSqrt(4.0);     // ~0.5
                 float32 b = FastMath.invSqrt(0.25);    // ~2.0
                 float32 c = FastMath.invSqrt(100.0);   // ~0.1
-                System.IO.printf("rsqrt(4)~=%d/1000  rsqrt(0.25)~=%d/1000  rsqrt(100)~=%d/1000\n",
+                System.IO.Console.printf("rsqrt(4)~=%d/1000  rsqrt(0.25)~=%d/1000  rsqrt(100)~=%d/1000\n",
                                  cast<int>(a * 1000.0), cast<int>(b * 1000.0),
                                  cast<int>(c * 1000.0));
                 return;

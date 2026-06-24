@@ -16,6 +16,7 @@ bool checkSrc(const std::string& src, std::string* entryOut = nullptr) {
     Parser parser(lexer.tokenize(), "test");
     ast::Program prog = parser.parse();
     if (parser.hasErrors()) return false;
+    qualifyNamespaces(prog);  // matches the real pipeline (run before monomorphize)
     if (!monomorphize(prog)) return false;
     SemanticAnalyzer sema;
     const bool ok = sema.analyze(prog);
@@ -24,15 +25,20 @@ bool checkSrc(const std::string& src, std::string* entryOut = nullptr) {
 }
 
 // Wraps a class member in a minimal program with a public class Main.
+// Tests run sema without the prelude, so a minimal System.IO.Console stub is included so
+// `import System.IO.Console;` resolves; the I/O calls themselves are compiler builtins.
+const char* kIoStub =
+    "import System.IO.Console; public namespace System.IO { public class Console { } } ";
+
 std::string wrapMain(const std::string& member) {
-    return "program P; public bundle b { public namespace n { public class Main { " + member +
-           " } } }";
+    return std::string("program P; public bundle b { ") + kIoStub +
+           "public namespace n { public class Main { " + member + " } } }";
 }
 
 // A program with a helper class `classDef` plus a Main whose body is `mainBody`.
 std::string withClass(const std::string& classDef, const std::string& mainBody) {
-    return "program P; public bundle b { public namespace n { " + classDef +
-           " public class Main { public static method main(string[] args) returns void { " +
+    return std::string("program P; public bundle b { ") + kIoStub + "public namespace n { " +
+           classDef + " public class Main { public static method main(string[] args) returns void { " +
            mainBody + " } } } }";
 }
 
@@ -319,13 +325,13 @@ TEST_CASE("semantic rejects a field initializer of the wrong type") {
 TEST_CASE("semantic rejects printf with a non-literal format argument") {
     CHECK_FALSE(checkSrc(withClass(
         kCounter,
-        "Counter c = new Counter() on stack; System.IO.printf(c.get());")));
+        "Counter c = new Counter() on stack; System.IO.Console.printf(c.get());")));
 }
 
 TEST_CASE("semantic accepts printf with a literal format and a value") {
     CHECK(checkSrc(withClass(
         kCounter,
-        "Counter c = new Counter() on stack; System.IO.printf(\"%d\\n\", c.get());")));
+        "Counter c = new Counter() on stack; System.IO.Console.printf(\"%d\\n\", c.get());")));
 }
 
 TEST_CASE("semantic accepts 'new' without an explicit location") {
@@ -333,17 +339,17 @@ TEST_CASE("semantic accepts 'new' without an explicit location") {
 }
 
 TEST_CASE("semantic accepts println with no arguments") {
-    CHECK(checkSrc(withClass(kCounter, "System.IO.println();")));
+    CHECK(checkSrc(withClass(kCounter, "System.IO.Console.println();")));
 }
 
 TEST_CASE("semantic accepts println with a literal and a value") {
     CHECK(checkSrc(withClass(
-        kCounter, "Counter c = new Counter(); System.IO.println(\"%d\", c.get());")));
+        kCounter, "Counter c = new Counter(); System.IO.Console.println(\"%d\", c.get());")));
 }
 
 TEST_CASE("semantic rejects println with a non-literal first argument") {
     CHECK_FALSE(checkSrc(withClass(
-        kCounter, "Counter c = new Counter(); System.IO.println(c.get());")));
+        kCounter, "Counter c = new Counter(); System.IO.Console.println(c.get());")));
 }
 
 // ---- Arrays (M5) ----
@@ -387,23 +393,23 @@ TEST_CASE("semantic rejects calling a non-length method on an array") {
 
 TEST_CASE("semantic accepts readInt into an int") {
     CHECK(checkSrc(wrapMain(
-        "public static method main(string[] args) returns void { int x = System.IO.readInt(); }")));
+        "public static method main(string[] args) returns void { int x = System.IO.Console.read(); }")));
 }
 
 TEST_CASE("semantic rejects readInt with arguments") {
     CHECK_FALSE(checkSrc(wrapMain(
-        "public static method main(string[] args) returns void { int x = System.IO.readInt(5); }")));
+        "public static method main(string[] args) returns void { int x = System.IO.Console.read(5); }")));
 }
 
 TEST_CASE("semantic accepts interpolation in println") {
     CHECK(checkSrc(wrapMain(
         "public static method main(string[] args) returns void "
-        "{ int a = 1; System.IO.println($\"a = {a}, twice = {a + a}\"); }")));
+        "{ int a = 1; System.IO.Console.println($\"a = {a}, twice = {a + a}\"); }")));
 }
 
 TEST_CASE("semantic rejects interpolating a non-printable value") {
     CHECK_FALSE(checkSrc(withClass(
-        kCounter, "Counter c = new Counter(); System.IO.println($\"c = {c}\");")));
+        kCounter, "Counter c = new Counter(); System.IO.Console.println($\"c = {c}\");")));
 }
 
 // ---- Inheritance, interfaces and polymorphism (M8) ----
@@ -1206,7 +1212,7 @@ TEST_CASE("semantic accepts a tuple literal initializer destructured into locals
 
 TEST_CASE("semantic binds tuple components as usable locals") {
     CHECK(checkSrc(withClass(
-        kMathX, "(int q, int r) = MathX.divmod(9, 4); System.IO.println($\"{q} {r}\");")));
+        kMathX, "(int q, int r) = MathX.divmod(9, 4); System.IO.Console.println($\"{q} {r}\");")));
 }
 
 TEST_CASE("semantic rejects a tuple destructuring with the wrong arity") {

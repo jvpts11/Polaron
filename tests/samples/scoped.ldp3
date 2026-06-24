@@ -9,6 +9,7 @@ program Scoped;
 //   deferred 1
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Resource {
@@ -19,19 +20,19 @@ public bundle main {
             }
 
             public destructor ~Resource() returns void {
-                System.IO.println($"closing {this.id}");
+                System.IO.Console.println($"closing {this.id}");
             }
         }
 
         public class Main {
             public static method main(string[] args) returns void {
                 using (Resource r = new Resource(3) on heap) {
-                    System.IO.println("inside using");
+                    System.IO.Console.println("inside using");
                 }   // r disposed here -> closing 3
 
-                defer { System.IO.println("deferred 1"); }
-                defer { System.IO.println("deferred 2"); }
-                System.IO.println("body");
+                defer { System.IO.Console.println("deferred 1"); }
+                defer { System.IO.Console.println("deferred 2"); }
+                System.IO.Console.println("body");
                 return;   // defers run LIFO: deferred 2, then deferred 1
             }
         }

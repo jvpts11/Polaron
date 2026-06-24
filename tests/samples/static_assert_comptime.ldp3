@@ -5,6 +5,7 @@ program StaticAssertComptime;
 // program compiles and runs.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Math {
             public static comptime method fib(int n) returns int {
@@ -19,7 +20,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 static_assert(Math.fib(N) == 55, "fib(10) must be 55");
                 static_assert(N * N < LIMIT, "N squared must fit");
-                System.IO.printf("static asserts passed\n");
+                System.IO.Console.printf("static asserts passed\n");
                 return;
             }
         }

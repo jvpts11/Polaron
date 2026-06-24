@@ -5,6 +5,7 @@ program Floats;
 // Expected output: pi=3.14 area=12.56 half=1.5 n=5
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -13,7 +14,7 @@ public bundle main {
                 double area = pi * r * r;
                 double half = 3.0 / 2.0;
                 double n = 5;                 // int literal widened to double
-                System.IO.println($"pi={pi} area={area} half={half} n={n}");
+                System.IO.Console.println($"pi={pi} area={area} half={half} n={n}");
                 return;
             }
         }

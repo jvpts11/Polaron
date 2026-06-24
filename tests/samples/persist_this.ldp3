@@ -5,6 +5,7 @@ program PersistThis;
 // (wired at construction). tick() deletes its Car every call, yet chassi keeps counting across
 // calls within the run. 3 calls -> a=1 b=2 c=3.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Car {
             public eternal persistent mutable int chassi = 0;  // run-lifetime: no release required (spec 18.13)
@@ -22,7 +23,7 @@ public bundle main {
                 return r;
             }
             public static method main(string[] args) returns void {
-                System.IO.println($"a={Main.tick()} b={Main.tick()} c={Main.tick()}");
+                System.IO.Console.println($"a={Main.tick()} b={Main.tick()} c={Main.tick()}");
                 return;
             }
         }

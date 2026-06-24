@@ -1,6 +1,7 @@
 program Regions;
 
 public bundle main {
+    import System.IO.Console;
 
     import System.Memory.Units.kilobytes;
 
@@ -17,7 +18,7 @@ public bundle main {
                 region pen = itself.allocate(1 kilobytes);   // a 1 KiB arena
                 Dog* a = new Dog(3) in region pen;            // bump-allocated
                 Dog* b = new Dog(7) in region pen;            // bump-allocated
-                System.IO.println($"a = {a.getAge()} b = {b.getAge()}");  // a = 3 b = 7
+                System.IO.Console.println($"a = {a.getAge()} b = {b.getAge()}");  // a = 3 b = 7
                 release region pen;                            // frees both at once
                 return;
             }

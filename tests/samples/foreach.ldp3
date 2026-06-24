@@ -1,6 +1,7 @@
 program Foreach;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -13,7 +14,7 @@ public bundle main {
                 for (var x in nums) {
                     sum = sum + x;
                 }
-                System.IO.println($"sum of squares = {sum}");   // 0+1+4+9+16 = 30
+                System.IO.Console.println($"sum of squares = {sum}");   // 0+1+4+9+16 = 30
                 delete nums;
                 return;
             }

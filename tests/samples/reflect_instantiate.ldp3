@@ -5,17 +5,18 @@ program ReflectInstantiate;
 // Combined with method().invoke() this drives an object known only at runtime.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Dog {
             public mutable int age;
-            public constructor Dog() { this.age = 7; Console.println("Dog built"); }
-            public method bark() returns void { Console.println("Woof!"); }
+            public constructor Dog() { this.age = 7; System.IO.Console.println("Dog built"); }
+            public method bark() returns void { System.IO.Console.println("Woof!"); }
         }
         public class Main {
             public static method main(string[] args) returns void {
                 Type t = reflect.typeOf<Dog>();
                 Dog d = cast<Dog>(t.instantiate());     // dynamic construction
-                System.IO.printf("age=%d\n", d.age);     // 7
+                System.IO.Console.printf("age=%d\n", d.age);     // 7
                 d.bark();                                 // Woof!
                 t.method("bark").invoke(d);               // Woof!
                 return;

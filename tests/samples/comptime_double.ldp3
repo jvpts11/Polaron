@@ -5,6 +5,7 @@ program ComptimeDouble;
 // folds at compile time into a `const double`.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Math {
             public static comptime method scale(int n, float64 factor) returns float64 {
@@ -22,7 +23,7 @@ public bundle main {
 
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.printf("total=%d half=%d\n",
+                System.IO.Console.printf("total=%d half=%d\n",
                                  cast<int>(TOTAL * 100.0), cast<int>(H * 100.0));
                 return;
             }

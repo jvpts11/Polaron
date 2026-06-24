@@ -1,6 +1,7 @@
 program OperatorIndexSet;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Pair {
             private mutable int a;
@@ -17,7 +18,7 @@ public bundle main {
                 Pair p = new Pair() on stack;
                 p[0] = 10;   // operator[]= (write)
                 p[1] = 20;
-                System.IO.println($"p = {p[0]} {p[1]}");   // operator[] (read): 10 20
+                System.IO.Console.println($"p = {p[0]} {p[1]}");   // operator[] (read): 10 20
                 return;
             }
         }

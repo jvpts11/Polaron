@@ -5,6 +5,7 @@ program Inherit;
 //   woof! legs=4
 
 public bundle main {
+    import System.IO.Console;
     public namespace zoo {
 
         public class Animal {
@@ -24,7 +25,7 @@ public bundle main {
             }
 
             public method speak() returns void {
-                System.IO.println($"woof! legs={this.legCount()}");
+                System.IO.Console.println($"woof! legs={this.legCount()}");
                 return;
             }
         }

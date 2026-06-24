@@ -7,20 +7,21 @@ program Dtor;
 //   dtor
 
 public bundle main {
+    import System.IO.Console;
     public namespace examples {
 
         public class Greeter {
             public constructor Greeter() {
-                System.IO.printf("ctor\n");
+                System.IO.Console.printf("ctor\n");
             }
 
             public method hello() returns void {
-                System.IO.printf("hello\n");
+                System.IO.Console.printf("hello\n");
                 return;
             }
 
             public destructor ~Greeter() returns void {
-                System.IO.printf("dtor\n");
+                System.IO.Console.printf("dtor\n");
             }
         }
 

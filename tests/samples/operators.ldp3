@@ -1,6 +1,7 @@
 program Operators;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Vec3 {
@@ -22,7 +23,7 @@ public bundle main {
                 Vec3 a = new Vec3(1, 2, 3) on heap;
                 Vec3 b = new Vec3(10, 20, 30) on heap;
                 Vec3 c = a + b;                       // a.operator+(b)
-                System.IO.println($"c = {c.x} {c.y} {c.z}");   // c = 11 22 33
+                System.IO.Console.println($"c = {c.x} {c.y} {c.z}");   // c = 11 22 33
                 return;
             }
         }

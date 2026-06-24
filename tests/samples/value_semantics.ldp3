@@ -7,6 +7,7 @@ program ValueSemantics;
 //   after share: a=42 p=42
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Box {
@@ -31,11 +32,11 @@ public bundle main {
                 Box a = new Box(1) on stack;
                 Box b = a;            // deep copy -> b is independent
                 b.set(99);
-                System.IO.println($"after copy: a={a.get()} b={b.get()}");   // a=1 b=99
+                System.IO.Console.println($"after copy: a={a.get()} b={b.get()}");   // a=1 b=99
 
                 Box* p = &a;          // share -> p and a are the same object
                 p.set(42);
-                System.IO.println($"after share: a={a.get()} p={p.get()}");  // a=42 p=42
+                System.IO.Console.println($"after share: a={a.get()} p={p.get()}");  // a=42 p=42
                 return;
             }
         }

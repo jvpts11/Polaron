@@ -5,6 +5,7 @@ program ExceptionsNested;
 // catch (A) does not match (B is not an A), so it rethrows to the outer catch (B), which handles it
 // with full behaviour (inherited field code, virtual dispatch tag()). Prints: outer B code=2 tag=2.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Base {
             public mutable int code;
@@ -26,10 +27,10 @@ public bundle main {
                     try {
                         Main.raise();
                     } catch (A e) {
-                        System.IO.printf("inner A (wrong)\n");
+                        System.IO.Console.printf("inner A (wrong)\n");
                     }
                 } catch (B e) {
-                    System.IO.printf("outer B code=%d tag=%d\n", e.code, e.tag());
+                    System.IO.Console.printf("outer B code=%d tag=%d\n", e.code, e.tag());
                 }
                 return;
             }

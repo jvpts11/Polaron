@@ -3,12 +3,13 @@ program Lambda;
 // A lambda value (MVP: no captures): function<Ret, Params...> holds it; it's called like a
 // method. Lowers to a top-level function; the call is indirect through the pointer. add=8 square=36.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
                 function<int, int, int> add = lambda(int a, int b) returns int { return a + b; };
                 function<int, int> square = lambda(int n) returns int { return n * n; };
-                System.IO.printf("add=%d square=%d\n", add(3, 5), square(6));
+                System.IO.Console.printf("add=%d square=%d\n", add(3, 5), square(6));
                 return;
             }
         }

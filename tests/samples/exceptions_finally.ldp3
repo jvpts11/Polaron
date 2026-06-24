@@ -4,6 +4,7 @@ program ExceptionsFinally;
 // run(true) throws -> caught -> finally; run(false) completes -> finally.
 // Prints: caught / finally / body ok / finally.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public interface Throwable { }
         public class MyError implements Throwable {
@@ -13,11 +14,11 @@ public bundle main {
             public static method run(boolean fail) returns void {
                 try {
                     if (fail) { throw new MyError() on heap; }
-                    System.IO.printf("body ok\n");
+                    System.IO.Console.printf("body ok\n");
                 } catch (MyError e) {
-                    System.IO.printf("caught\n");
+                    System.IO.Console.printf("caught\n");
                 } finally {
-                    System.IO.printf("finally\n");
+                    System.IO.Console.printf("finally\n");
                 }
                 return;
             }

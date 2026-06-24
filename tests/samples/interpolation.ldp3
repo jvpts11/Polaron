@@ -5,14 +5,15 @@ program Interp;
 // Expected output: placar: 10 x 7 vez do X / soma = 17
 
 public bundle main {
+    import System.IO.Console;
     public namespace examples {
         public class Main {
             public static method main(string[] args) returns void {
                 int a = 10;
                 int b = 7;
                 char player = 'X';
-                System.IO.println($"placar: {a} x {b} vez do {player}");
-                System.IO.println($"soma = {a + b}");
+                System.IO.Console.println($"placar: {a} x {b} vez do {player}");
+                System.IO.Console.println($"soma = {a + b}");
                 return;
             }
         }

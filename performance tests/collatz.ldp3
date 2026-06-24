@@ -4,6 +4,7 @@ program Collatz;
 // int64 arithmetic (3x+1 can exceed 32 bits mid-sequence).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -30,7 +31,7 @@ public bundle main {
                         maxStart = start;
                     }
                 }
-                System.IO.printf("maxLen=%d maxStart=%d\n", maxLen, maxStart);
+                System.IO.Console.printf("maxLen=%d maxStart=%d\n", maxLen, maxStart);
                 return;
             }
         }

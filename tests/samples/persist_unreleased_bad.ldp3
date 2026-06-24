@@ -4,6 +4,7 @@ program PersistUnreleased;
 // program is a compile error (spec 18.15): either release it or mark it eternal.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Cache {
             public persistent mutable int slot = 0;
@@ -12,7 +13,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Cache c = new Cache() on heap;
-                System.IO.printf("%d\n", c.slot);
+                System.IO.Console.printf("%d\n", c.slot);
                 delete c;
                 return;
             }

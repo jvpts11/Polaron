@@ -1,6 +1,7 @@
 program BitwiseCompound;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -10,7 +11,7 @@ public bundle main {
                 x ^= 3;               // ^ 0011 = 1010 = 10
                 x <<= 2;              // 40
                 x >>= 1;              // 20
-                System.IO.println($"x = {x}");   // 20
+                System.IO.Console.println($"x = {x}");   // 20
                 return;
             }
         }

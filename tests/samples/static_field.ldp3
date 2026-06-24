@@ -4,6 +4,7 @@ program StaticField;
 // ClassName.field. Expected output: count = 3
 
 public bundle main {
+    import System.IO.Console;
     public namespace examples {
 
         public class Counter {
@@ -23,7 +24,7 @@ public bundle main {
                 Counter.inc();
                 Counter.inc();
                 Counter.inc();
-                System.IO.println($"count = {Counter.get()}");
+                System.IO.Console.println($"count = {Counter.get()}");
                 return;
             }
         }

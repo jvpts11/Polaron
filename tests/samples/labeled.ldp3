@@ -1,6 +1,7 @@
 program Labeled;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -14,7 +15,7 @@ public bundle main {
                         }
                     }
                 }
-                System.IO.println($"found = {found}");   // i=2, j=3 -> 23
+                System.IO.Console.println($"found = {found}");   // i=2, j=3 -> 23
 
                 // continue to a labeled outer loop
                 mutable int sum = 0;
@@ -24,7 +25,7 @@ public bundle main {
                         sum = sum + 1;
                     }
                 }
-                System.IO.println($"sum = {sum}");       // 1 per row x 3 = 3
+                System.IO.Console.println($"sum = {sum}");       // 1 per row x 3 = 3
                 return;
             }
         }

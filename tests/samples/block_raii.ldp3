@@ -10,19 +10,20 @@ program BlockRaii;
 //   end, with a stale variable).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Noisy {
             private int id;
             public constructor Noisy(int i) { this.id = i; }
             public destructor ~Noisy() returns void {
-                System.IO.printf("dtor %d\n", this.id);
+                System.IO.Console.printf("dtor %d\n", this.id);
             }
         }
 
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.printf("start\n");
+                System.IO.Console.printf("start\n");
                 if (1 > 2) {
                     Noisy bad = new Noisy(99) on stack;   // never runs -> no "dtor 99"
                 }
@@ -30,10 +31,10 @@ public bundle main {
                     Noisy n = new Noisy(i) on stack;       // dtor 0, dtor 1, dtor 2
                 }
                 for (mutable int j = 0; j < 2; j++) {
-                    defer { System.IO.printf("defer %d\n", j); }
-                    System.IO.printf("body %d\n", j);
+                    defer { System.IO.Console.printf("defer %d\n", j); }
+                    System.IO.Console.printf("body %d\n", j);
                 }
-                System.IO.printf("end\n");
+                System.IO.Console.printf("end\n");
                 return;
             }
         }

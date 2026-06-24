@@ -1,6 +1,7 @@
 program Unsigned;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Main {
@@ -8,13 +9,13 @@ public bundle main {
                 // 3 billion is past INT32_MAX, so a signed int would read it as
                 // negative. As uint32 it stays positive and divides unsigned.
                 uint32 big = 3000000000;
-                System.IO.println($"big = {big}");          // 3000000000, not negative
-                System.IO.println($"half = {big / 2}");      // 1500000000 (udiv, not sdiv)
-                System.IO.println($"big > 1 = {big > 1}");   // 1 (unsigned compare; signed -> 0)
+                System.IO.Console.println($"big = {big}");          // 3000000000, not negative
+                System.IO.Console.println($"half = {big / 2}");      // 1500000000 (udiv, not sdiv)
+                System.IO.Console.println($"big > 1 = {big > 1}");   // 1 (unsigned compare; signed -> 0)
 
                 // 1.8e19 is past INT64_MAX but fits in uint64.
                 uint64 huge = 18000000000000000000;
-                System.IO.println($"huge = {huge}");         // printed with %llu
+                System.IO.Console.println($"huge = {huge}");         // printed with %llu
 
                 return;
             }

@@ -5,6 +5,7 @@ program Regions;
 // is where LDP3 can BEAT naive C/C++ (malloc/free per object), with safety and no ceremony.
 
 public bundle main {
+    import System.IO.Console;
     import System.Memory.Units.megabytes;
 
     public namespace app {
@@ -26,7 +27,7 @@ public bundle main {
                     }
                     release region r;
                 }
-                System.IO.printf("total=%d\n", total);
+                System.IO.Console.printf("total=%d\n", total);
                 return;
             }
         }

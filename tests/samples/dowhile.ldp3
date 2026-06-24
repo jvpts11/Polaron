@@ -1,6 +1,7 @@
 program DoWhile;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -10,14 +11,14 @@ public bundle main {
                     count = count + 1;
                     n = n + 2;
                 } while (n < 10);
-                System.IO.println($"count = {count}");   // n: 2,4,6,8,10 -> 5 iterations
+                System.IO.Console.println($"count = {count}");   // n: 2,4,6,8,10 -> 5 iterations
 
                 // The body runs at least once even when the condition is false up front.
                 mutable int runs = 0;
                 do {
                     runs = runs + 1;
                 } while (runs < 0);
-                System.IO.println($"runs = {runs}");      // 1
+                System.IO.Console.println($"runs = {runs}");      // 1
                 return;
             }
         }

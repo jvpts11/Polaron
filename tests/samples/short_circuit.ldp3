@@ -1,11 +1,12 @@
 program ShortCircuit;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Probe {
             public method touched() returns boolean {
-                System.IO.println("touched!");
+                System.IO.Console.println("touched!");
                 return true;
             }
         }
@@ -16,17 +17,17 @@ public bundle main {
 
                 // false && X : the right side must NOT run.
                 if (false && p.touched()) {
-                    System.IO.println("unreachable-and");
+                    System.IO.Console.println("unreachable-and");
                 }
 
                 // true || X : the right side must NOT run.
                 if (true || p.touched()) {
-                    System.IO.println("or-ok");
+                    System.IO.Console.println("or-ok");
                 }
 
                 // true && X : the right side MUST run (prints "touched!").
                 if (true && p.touched()) {
-                    System.IO.println("and-ok");
+                    System.IO.Console.println("and-ok");
                 }
 
                 return;

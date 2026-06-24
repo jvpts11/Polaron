@@ -4,19 +4,20 @@ program StringMethods;
 // allocating concat / substring (which build a new heap String).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
                 String a = "Hello";
                 String b = "World";
                 String hw = a.concat(", ").concat(b).concat("!");
-                Console.println(hw);                                                  // Hello, World!
-                System.IO.printf("len=%d empty=%d\n", hw.length(), hw.isEmpty());      // len=13 empty=0
-                System.IO.printf("char0=%c char7=%c\n", a.charAt(0), hw.charAt(7));    // H W
-                Console.println(hw.substring(7, 12));                                  // World
-                System.IO.printf("eq=%d ne=%d\n", a.equals("Hello"), a.equals("nope"));// 1 0
+                System.IO.Console.println(hw);                                                  // Hello, World!
+                System.IO.Console.printf("len=%d empty=%d\n", hw.length(), hw.isEmpty());      // len=13 empty=0
+                System.IO.Console.printf("char0=%c char7=%c\n", a.charAt(0), hw.charAt(7));    // H W
+                System.IO.Console.println(hw.substring(7, 12));                                  // World
+                System.IO.Console.printf("eq=%d ne=%d\n", a.equals("Hello"), a.equals("nope"));// 1 0
                 String empty = "";
-                System.IO.printf("emptyIsEmpty=%d\n", empty.isEmpty());               // 1
+                System.IO.Console.printf("emptyIsEmpty=%d\n", empty.isEmpty());               // 1
                 return;
             }
         }

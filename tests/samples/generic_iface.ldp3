@@ -1,6 +1,7 @@
 program GenericIface;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public interface Describable {
             method describe() returns int;
@@ -13,7 +14,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Describable* d = new Box<int>(9) on heap;   // generic upcast to an interface
-                System.IO.println($"describe = {d.describe()}");   // virtual -> 9
+                System.IO.Console.println($"describe = {d.describe()}");   // virtual -> 9
                 delete d;
                 return;
             }

@@ -6,6 +6,7 @@ program QualifiedNames;
 // Without namespace-qualified type names this would be a redeclaration error.
 
 public bundle main {
+    import System.IO.Console;
     import lib.Helper;
 
     public namespace app {
@@ -17,7 +18,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Box b = new Box() on heap;            // app.Box
                 Helper h = new Helper() on heap;       // lib.Helper, uses lib.Box
-                System.IO.printf("app=%d lib=%d\n", b.value(), h.libValue());
+                System.IO.Console.printf("app=%d lib=%d\n", b.value(), h.libValue());
                 delete b;
                 delete h;
                 return;

@@ -4,6 +4,7 @@ program ResultTry;
 // Err/None (propagation) to the enclosing method otherwise. doubleIt(5): parse(5)=Ok(5) -> v=5 ->
 // Ok(10). doubleIt(-3): parse(-3)=Err(3) -> try? propagates the Err. Prints: a=10 b=-3.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method parse(int n) returns Result<int, int>* {
@@ -24,7 +25,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Result<int, int>* a = Main.doubleIt(5);
                 Result<int, int>* b = Main.doubleIt(-3);
-                System.IO.printf("a=%d b=%d\n", Main.grade(a), Main.grade(b));
+                System.IO.Console.printf("a=%d b=%d\n", Main.grade(a), Main.grade(b));
                 return;
             }
         }

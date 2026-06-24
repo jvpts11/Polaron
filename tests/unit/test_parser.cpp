@@ -12,7 +12,7 @@ const char* kHello =
     "  public namespace app {\n"
     "    public class Main {\n"
     "      public static method main(string[] args) returns void {\n"
-    "        System.IO.printf(\"x\", 1);\n"
+    "        System.IO.Console.printf(\"x\", 1);\n"
     "      }\n"
     "    }\n"
     "  }\n"

@@ -5,6 +5,7 @@ program Ownership;
 //   moved value = 7
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public movable class Handle {
@@ -23,7 +24,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Handle a = new Handle(7) on heap;
                 Handle b = move a;     // ownership transfers to b; a is now invalid
-                System.IO.println($"moved value = {b.value()}");
+                System.IO.Console.println($"moved value = {b.value()}");
                 return;
             }
         }

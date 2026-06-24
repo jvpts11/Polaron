@@ -2,6 +2,7 @@ program GenericList;
 
 // A generic linked node: Node<T> with a recursive generic pointer field Node<T>*.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Node<T> {
             public mutable T val;
@@ -17,7 +18,7 @@ public bundle main {
                 a.next = &b;
                 b.next = &c;
                 int total = a.val + a.next.val + a.next.next.val;
-                System.IO.println($"total = {total}");   // 1 + 2 + 3 = 6
+                System.IO.Console.println($"total = {total}");   // 1 + 2 + 3 = 6
                 return;
             }
         }

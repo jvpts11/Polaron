@@ -4,6 +4,7 @@ program ReflectMethodsList;
 // ArrayList of the member names (forced-monomorphized as ArrayList<String>).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Dog {
             private int age;
@@ -15,14 +16,14 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Type t = reflect.typeOf<Dog>();
                 ArrayList<String> ms = t.methods();
-                System.IO.printf("methods size=%d\n", ms.size());
+                System.IO.Console.printf("methods size=%d\n", ms.size());
                 for (mutable int i = 0; i < ms.size(); i++) {
-                    Console.println(ms.get(i));
+                    System.IO.Console.println(ms.get(i));
                 }
                 ArrayList<String> fs = t.fields();
-                System.IO.printf("fields size=%d\n", fs.size());
+                System.IO.Console.printf("fields size=%d\n", fs.size());
                 for (mutable int i = 0; i < fs.size(); i++) {
-                    Console.println(fs.get(i));
+                    System.IO.Console.println(fs.get(i));
                 }
                 return;
             }

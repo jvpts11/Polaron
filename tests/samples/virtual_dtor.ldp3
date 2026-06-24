@@ -6,16 +6,17 @@ program VirtualDtor;
 // ran the base destructor (or none), leaking the derived part.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Base {
             public constructor Base() {}
-            public destructor ~Base() returns void { System.IO.printf("~Base\n"); }
+            public destructor ~Base() returns void { System.IO.Console.printf("~Base\n"); }
         }
 
         public class Derived extends Base {
             public constructor Derived() {}
-            public destructor ~Derived() returns void { System.IO.printf("~Derived\n"); }
+            public destructor ~Derived() returns void { System.IO.Console.printf("~Derived\n"); }
         }
 
         // Base with NO destructor; the resource-owning subclass has one.
@@ -25,7 +26,7 @@ public bundle main {
 
         public class Square extends Shape {
             public override method area() returns int { return 4; }
-            public destructor ~Square() returns void { System.IO.printf("~Square\n"); }
+            public destructor ~Square() returns void { System.IO.Console.printf("~Square\n"); }
         }
 
         public class Main {

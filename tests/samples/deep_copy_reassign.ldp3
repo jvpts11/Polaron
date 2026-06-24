@@ -6,6 +6,7 @@ program DeepCopyReassign;
 // memcpy -> the arrays aliased and mutating one changed the other.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Bag {
@@ -25,7 +26,7 @@ public bundle main {
                 b.set(0, 5);
                 b = a;             // reassignment -> deep copy (b.items becomes an independent dup)
                 b.set(0, 999);     // mutate only b
-                System.IO.println($"a={a.get(0)} b={b.get(0)}");  // a=10 b=999
+                System.IO.Console.println($"a={a.get(0)} b={b.get(0)}");  // a=10 b=999
                 return;
             }
         }

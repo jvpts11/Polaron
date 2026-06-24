@@ -1,6 +1,7 @@
 program Logic;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -8,7 +9,7 @@ public bundle main {
                 int b = 20;
                 boolean less = a < b;            // true
                 boolean both = less && (b > 0);  // true && true
-                System.IO.printf("less=%d both=%d sum_gt=%d\n", less, both, a + b > 25);
+                System.IO.Console.printf("less=%d both=%d sum_gt=%d\n", less, both, a + b > 25);
             }
         }
     }

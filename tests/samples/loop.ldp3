@@ -1,6 +1,7 @@
 program Loop;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -16,7 +17,7 @@ public bundle main {
                     steps++;
                 }
 
-                System.IO.printf("sum=%d steps=%d\n", sum, steps);
+                System.IO.Console.printf("sum=%d steps=%d\n", sum, steps);
             }
         }
     }

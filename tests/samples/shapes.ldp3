@@ -8,6 +8,7 @@ program Shapes;
 //   Circle (kind 1) area: 12
 
 public bundle main {
+    import System.IO.Console;
     public namespace geo {
 
         public enum ShapeKind {
@@ -40,7 +41,7 @@ public bundle main {
             }
 
             public override method describe() returns void {
-                System.IO.println($"Square (kind {this.kind()}) area: {this.area()}");
+                System.IO.Console.println($"Square (kind {this.kind()}) area: {this.area()}");
                 return;
             }
         }
@@ -61,7 +62,7 @@ public bundle main {
             }
 
             public override method describe() returns void {
-                System.IO.println($"Circle (kind {this.kind()}) area: {this.area()}");
+                System.IO.Console.println($"Circle (kind {this.kind()}) area: {this.area()}");
                 return;
             }
         }

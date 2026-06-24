@@ -3,6 +3,7 @@ program MatchDispatch;
 // match as a statement: dynamic-type dispatch + positional destructuring over a
 // sealed hierarchy (exhaustive -> no default needed).
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public sealed abstract class Shape permits Circle, Rect {
             public abstract method tag() returns int;
@@ -23,8 +24,8 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Shape* s = new Rect(3, 4) on heap;
                 match (s) {
-                    case Circle(int r) { System.IO.println($"circle {r}"); }
-                    case Rect(int w, int h) { System.IO.println($"rect area {w * h}"); }
+                    case Circle(int r) { System.IO.Console.println($"circle {r}"); }
+                    case Rect(int w, int h) { System.IO.Console.println($"rect area {w * h}"); }
                 }
                 delete s;
                 return;

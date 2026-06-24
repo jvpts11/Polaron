@@ -7,6 +7,7 @@ program CatalogMethods;
 // are reachable qualified (Item.cheap) or bare (cheap).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public catalog Priced {
@@ -56,9 +57,9 @@ public bundle main {
                 Item a = Item.pricey;   // ordinal 3
                 Item b = Item.book;     // ordinal 0
                 Item d = Item.cheap;    // ordinal 2
-                System.IO.printf("%d %d %d\n", a.price(), b.price(), d.price());
-                System.IO.printf("%d %d\n", d.rank(), a.rank());
-                System.IO.printf("%d\n", d.tag());
+                System.IO.Console.printf("%d %d %d\n", a.price(), b.price(), d.price());
+                System.IO.Console.printf("%d %d\n", d.rank(), a.rank());
+                System.IO.Console.printf("%d\n", d.tag());
                 return;
             }
         }

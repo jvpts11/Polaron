@@ -5,6 +5,7 @@ program BoardDemo;
 // Expected output: XOX
 
 public bundle main {
+    import System.IO.Console;
     public namespace game {
 
         public class Board {
@@ -18,7 +19,7 @@ public bundle main {
             }
 
             public method show() returns void {
-                System.IO.println("%c%c%c", this.cells[0], this.cells[1], this.cells[2]);
+                System.IO.Console.println("%c%c%c", this.cells[0], this.cells[1], this.cells[2]);
                 return;
             }
 

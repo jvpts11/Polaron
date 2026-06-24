@@ -1,20 +1,21 @@
 program EnumBuiltins;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public enum Color { RED, GREEN, BLUE }
 
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.println($"count = {Color.count()}");      // 3
+                System.IO.Console.println($"count = {Color.count()}");      // 3
 
                 // values() returns an array of the ordinals; iterate it with foreach.
                 mutable int sum = 0;
                 for (int c in Color.values()) {
                     sum = sum + c;
                 }
-                System.IO.println($"sum of ordinals = {sum}");      // 0+1+2 = 3
+                System.IO.Console.println($"sum of ordinals = {sum}");      // 0+1+2 = 3
                 return;
             }
         }

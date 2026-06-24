@@ -5,6 +5,7 @@ program WideArrays;
 // heap (previously the allocation, stride and loads all assumed i32).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -24,7 +25,7 @@ public bundle main {
                     sum = sum + x;
                 }
 
-                System.IO.printf("a2=%lld d2=%d sum=%lld len=%d\n",
+                System.IO.Console.printf("a2=%lld d2=%d sum=%lld len=%d\n",
                                  a[2], cast<int>(d[2]), sum, a.length());
                 delete a;
                 delete d;

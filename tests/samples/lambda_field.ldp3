@@ -3,6 +3,7 @@ program LambdaField;
 // A lambda stored in a class field (strategy pattern): the field has function<...> type, gets a
 // lambda in the constructor, and is called as this.op(x). Prints v=105.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Calc {
             private function<int, int> op;
@@ -16,7 +17,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Calc c = new Calc();
-                System.IO.printf("v=%d\n", c.apply(5));
+                System.IO.Console.printf("v=%d\n", c.apply(5));
                 return;
             }
         }

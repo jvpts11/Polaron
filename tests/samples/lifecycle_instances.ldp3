@@ -6,21 +6,22 @@ program LifecycleInstances;
 // maintained in the constructor and destructor.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Pool {
-            onFirstInstance { Console.println("pool setup"); }
-            onLastInstanceDestroyed { Console.println("pool teardown"); }
+            onFirstInstance { System.IO.Console.println("pool setup"); }
+            onLastInstanceDestroyed { System.IO.Console.println("pool teardown"); }
             public constructor Pool() {}
             public destructor ~Pool() returns void {}
         }
         public class Main {
             public static method main(string[] args) returns void {
-                Console.println("start");
+                System.IO.Console.println("start");
                 Pool a = new Pool() on heap;     // 0 -> 1: setup
                 Pool b = new Pool() on heap;     // 1 -> 2: nothing
                 delete a;                          // 2 -> 1: nothing
                 delete b;                          // 1 -> 0: teardown
-                Console.println("end");
+                System.IO.Console.println("end");
                 return;
             }
         }

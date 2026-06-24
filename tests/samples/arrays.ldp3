@@ -5,6 +5,7 @@ program Arrays;
 // Expected output: sum=45 len=10
 
 public bundle main {
+    import System.IO.Console;
     public namespace examples {
         public class Main {
             public static method main(string[] args) returns void {
@@ -16,7 +17,7 @@ public bundle main {
                 for (mutable int j = 0; j < 10; j++) {
                     sum = sum + nums[j];
                 }
-                System.IO.println("sum=%d len=%d", sum, nums.length());
+                System.IO.Console.println("sum=%d len=%d", sum, nums.length());
                 delete nums;
                 return;
             }

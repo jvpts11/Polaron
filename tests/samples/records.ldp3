@@ -1,6 +1,7 @@
 program Records;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         // Compact form: the parameters are the (immutable) fields.
@@ -13,8 +14,8 @@ public bundle main {
                 Point p = new Point(3, 4);
                 Point q = new Point(3, 4);
                 Point r = new Point(5, 6);
-                System.IO.println($"sum = {p.sum()}");                           // 7
-                System.IO.println($"p==q {p.equals(q)} p==r {p.equals(r)}");     // 1 / 0
+                System.IO.Console.println($"sum = {p.sum()}");                           // 7
+                System.IO.Console.println($"p==q {p.equals(q)} p==r {p.equals(r)}");     // 1 / 0
                 return;
             }
         }

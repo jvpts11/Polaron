@@ -1,6 +1,7 @@
 program OperatorIndex;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Triple {
             private int a;
@@ -22,9 +23,9 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Triple t = new Triple(10, 20, 30) on stack;
-                System.IO.println($"t0 = {t[0]}");   // 10
-                System.IO.println($"t1 = {t[1]}");   // 20
-                System.IO.println($"t2 = {t[2]}");   // 30
+                System.IO.Console.println($"t0 = {t[0]}");   // 10
+                System.IO.Console.println($"t1 = {t[1]}");   // 20
+                System.IO.Console.println($"t2 = {t[2]}");   // 30
                 return;
             }
         }

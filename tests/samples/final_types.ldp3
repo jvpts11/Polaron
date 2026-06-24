@@ -4,6 +4,7 @@ program FinalTypes;
 // (spec 15). Used correctly they compile and run like any other class/method.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public final class Color {
             private int rgb;
@@ -13,7 +14,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Color c = new Color(255) on heap;
-                System.IO.printf("rgb=%d\n", c.value());
+                System.IO.Console.printf("rgb=%d\n", c.value());
                 delete c;
                 return;
             }

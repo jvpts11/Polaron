@@ -1,6 +1,7 @@
 program MatchExpr;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public sealed abstract class Shape permits Circle, Square {
@@ -25,7 +26,7 @@ public bundle main {
                     case Circle(int r) -> r * r * 3;
                     case Square(int side) -> side * side;
                 };
-                System.IO.println($"area = {a}");      // Circle(3) -> 27
+                System.IO.Console.println($"area = {a}");      // Circle(3) -> 27
                 delete s;
 
                 Shape* t = new Square(5) on heap;
@@ -33,7 +34,7 @@ public bundle main {
                     case Circle(int r) -> r * r * 3;
                     case Square(int side) -> side * side;
                 };
-                System.IO.println($"area = {b}");      // Square(5) -> 25
+                System.IO.Console.println($"area = {b}");      // Square(5) -> 25
                 delete t;
 
                 // A default arm catches the uncovered case (Square falls through here).
@@ -42,7 +43,7 @@ public bundle main {
                     case Circle(int r) -> r;
                     default -> 7;
                 };
-                System.IO.println($"d = {d}");         // Square -> default -> 7
+                System.IO.Console.println($"d = {d}");         // Square -> default -> 7
                 delete u;
                 return;
             }

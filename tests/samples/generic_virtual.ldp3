@@ -1,6 +1,7 @@
 program GenericVirtual;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Animal<T> {
             public constructor Animal() {}
@@ -13,7 +14,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Animal<int>* a = new Dog<int>() on heap;
-                System.IO.println($"sound = {a.sound()}");   // virtual dispatch -> 7
+                System.IO.Console.println($"sound = {a.sound()}");   // virtual dispatch -> 7
                 delete a;
                 return;
             }

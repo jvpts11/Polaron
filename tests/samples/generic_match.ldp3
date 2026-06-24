@@ -4,6 +4,7 @@ program GenMatch;
 // (the monomorphizer's cloneStmt dropped MatchStmt -> null statement -> codegen null-deref).
 // Here Box<T>.describe matches on a Shape. Prints: 10.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public sealed abstract class Shape permits Dot, Line {
             public abstract method k() returns int;
@@ -24,7 +25,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Box<int>* b = new Box<int>() on heap;
                 Shape* d = new Dot() on heap;
-                System.IO.printf("%d\n", b.describe(d));
+                System.IO.Console.printf("%d\n", b.describe(d));
                 return;
             }
         }

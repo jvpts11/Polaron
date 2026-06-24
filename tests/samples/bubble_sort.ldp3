@@ -1,6 +1,7 @@
 program BubbleSort;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Sorter {
             public static method sort(int[] a) returns void {
@@ -22,7 +23,7 @@ public bundle main {
                 int[] a = new int[5]();
                 a[0] = 5; a[1] = 2; a[2] = 8; a[3] = 1; a[4] = 9;
                 Sorter.sort(a);
-                System.IO.println($"{a[0]} {a[1]} {a[2]} {a[3]} {a[4]}");   // 1 2 5 8 9
+                System.IO.Console.println($"{a[0]} {a[1]} {a[2]} {a[3]} {a[4]}");   // 1 2 5 8 9
                 delete a;
                 return;
             }

@@ -3,6 +3,7 @@ program OptionTest;
 // A generic Maybe<T> built from generic inheritance + virtual dispatch. (Named Maybe/Just/Nothing
 // rather than Option/Some/None, which are now built-in prelude types; this is a generics demo.)
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Maybe<T> {
             public constructor Maybe() {}
@@ -23,8 +24,8 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Maybe<int>* a = new Just<int>(42) on heap;
                 Maybe<int>* b = new Nothing<int>() on heap;
-                System.IO.println($"a: some={a.isSome()} val={a.orElse(0)}");    // some=1 val=42
-                System.IO.println($"b: some={b.isSome()} val={b.orElse(99)}");   // some=0 val=99
+                System.IO.Console.println($"a: some={a.isSome()} val={a.orElse(0)}");    // some=1 val=42
+                System.IO.Console.println($"b: some={b.isSome()} val={b.orElse(99)}");   // some=0 val=99
                 delete a;
                 delete b;
                 return;

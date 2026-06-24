@@ -5,13 +5,14 @@ program DefinedConversions;
 // on any numeric type (float, double, sized ints), not just int.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
                 double big = 1000000000000000000.0;   // way past int range
                 double neg = -big;                      // unary minus on a double
                 double ok = 42.9;
-                System.IO.printf("%d %d %d\n", cast<int>(big), cast<int>(neg), cast<int>(ok));
+                System.IO.Console.printf("%d %d %d\n", cast<int>(big), cast<int>(neg), cast<int>(ok));
                 return;
             }
         }

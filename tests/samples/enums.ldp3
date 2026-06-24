@@ -6,6 +6,7 @@ program Enums;
 //   blue code = 2
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public enum Color {
@@ -18,10 +19,10 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Color c = Color.RED;
                 boolean isRed = c == Color.RED;
-                System.IO.println($"is red? {isRed}");
+                System.IO.Console.println($"is red? {isRed}");
 
                 Color other = Color.BLUE;
-                System.IO.println($"blue code = {other}");
+                System.IO.Console.println($"blue code = {other}");
                 return;
             }
         }

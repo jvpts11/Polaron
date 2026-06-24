@@ -4,6 +4,7 @@ program ReflectTypeof;
 // `Type.name()` gives its name as a String. Built on the real String of F10.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Dog {
             public constructor Dog() {}
@@ -11,9 +12,9 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Type t = reflect.typeOf<Dog>();
-                Console.println(t.name());                            // Dog
+                System.IO.Console.println(t.name());                            // Dog
                 String n = reflect.typeOf<Dog>().name();
-                System.IO.printf("name=%s len=%d\n", n, n.length());  // name=Dog len=3
+                System.IO.Console.printf("name=%s len=%d\n", n, n.length());  // name=Dog len=3
                 return;
             }
         }

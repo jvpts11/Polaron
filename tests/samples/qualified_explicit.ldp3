@@ -5,6 +5,7 @@ program QualifiedExplicit;
 // without importing -- the qualification is the disambiguation.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Box {
             public constructor Box() {}
@@ -14,7 +15,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 app.Box* a = new app.Box() on heap;
                 lib.Box* b = new lib.Box() on heap;
-                System.IO.printf("app=%d lib=%d\n", a.val(), b.val());
+                System.IO.Console.printf("app=%d lib=%d\n", a.val(), b.val());
                 delete a;
                 delete b;
                 return;

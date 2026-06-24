@@ -5,6 +5,7 @@ program FinallyUncaught;
 // is caught by the OUTER try, but the inner finally must run on the way out.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public interface Throwable { }
         public class MyError implements Throwable {
@@ -15,16 +16,16 @@ public bundle main {
             public static method main(string[] args) returns void {
                 try {
                     try {
-                        System.IO.printf("throwing\n");
+                        System.IO.Console.printf("throwing\n");
                         MyError* e = new MyError() on heap;
                         throw e;
                     } finally {
-                        System.IO.printf("inner finally\n");   // runs though uncaught here
+                        System.IO.Console.printf("inner finally\n");   // runs though uncaught here
                     }
                 } catch (MyError ex) {
-                    System.IO.printf("outer caught\n");
+                    System.IO.Console.printf("outer caught\n");
                 }
-                System.IO.printf("done\n");
+                System.IO.Console.printf("done\n");
                 return;
             }
         }

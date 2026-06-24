@@ -1,6 +1,7 @@
 program Suffixes;
 
 public bundle main {
+    import System.IO.Console;
 
     import app.units.kib;
 
@@ -14,7 +15,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 int64 size = 64 kib;        // suffix form -> kib(64), needs the import
-                System.IO.println($"size = {size}");   // 65536
+                System.IO.Console.println($"size = {size}");   // 65536
                 return;
             }
         }

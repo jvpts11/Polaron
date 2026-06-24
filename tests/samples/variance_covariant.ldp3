@@ -5,6 +5,7 @@ program VarianceCovariant;
 // implementing a generic interface, `implements Producer<Dog>`.)
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Animal { public constructor Animal() {} }
         public class Dog extends Animal { public constructor Dog() {} }
@@ -21,7 +22,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Producer<Dog>* pd = new DogProducer() on heap;
                 Producer<Animal>* pa = pd;          // covariance: Producer<Dog> <: Producer<Animal>
-                System.IO.printf("make=%d\n", pa.make());
+                System.IO.Console.printf("make=%d\n", pa.make());
                 delete pd;
                 return;
             }

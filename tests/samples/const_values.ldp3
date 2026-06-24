@@ -6,6 +6,7 @@ program ConstValues;
 // Folded at compile time; the constants carry no runtime storage.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public const int MAX = 100;
         public const int DOUBLED = MAX * 2;          // reference + arithmetic
@@ -18,9 +19,9 @@ public bundle main {
 
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.printf("MAX=%d DOUBLED=%d SHIFT=%d\n", MAX, DOUBLED, SHIFT);
-                System.IO.printf("ENABLED=%d GRADE=%c MASKED=%d\n", ENABLED, GRADE, MASKED);
-                System.IO.printf("SCALED=%d\n", cast<int>(SCALED));
+                System.IO.Console.printf("MAX=%d DOUBLED=%d SHIFT=%d\n", MAX, DOUBLED, SHIFT);
+                System.IO.Console.printf("ENABLED=%d GRADE=%c MASKED=%d\n", ENABLED, GRADE, MASKED);
+                System.IO.Console.printf("SCALED=%d\n", cast<int>(SCALED));
                 return;
             }
         }

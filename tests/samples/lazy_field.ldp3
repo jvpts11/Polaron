@@ -5,9 +5,10 @@ program LazyField;
 // created -- "constructing" prints only when use() first reads it.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Thing {
-            public constructor Thing() { System.IO.printf("constructing\n"); }
+            public constructor Thing() { System.IO.Console.printf("constructing\n"); }
             public method val() returns int { return 42; }
         }
         public class Holder {
@@ -17,12 +18,12 @@ public bundle main {
         }
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.printf("before\n");
+                System.IO.Console.printf("before\n");
                 Holder* h = new Holder() on heap;       // Thing not constructed yet
-                System.IO.printf("after holder\n");
+                System.IO.Console.printf("after holder\n");
                 int a = h.use();                          // first access -> "constructing"
                 int b = h.use();                          // already built -> no repeat
-                System.IO.printf("a=%d b=%d\n", a, b);
+                System.IO.Console.printf("a=%d b=%d\n", a, b);
                 delete h;
                 return;
             }

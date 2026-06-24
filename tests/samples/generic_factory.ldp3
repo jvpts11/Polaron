@@ -1,6 +1,7 @@
 program GenericFactory;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Box<T> {
             public mutable T v;
@@ -14,7 +15,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Factory f = new Factory() on stack;
                 Box<int>* b = f.make();
-                System.IO.println($"v = {b.v}");   // 7
+                System.IO.Console.println($"v = {b.v}");   // 7
                 delete b;
                 return;
             }

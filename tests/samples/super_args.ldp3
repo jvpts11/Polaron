@@ -1,6 +1,7 @@
 program SuperArgs;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Animal {
@@ -20,7 +21,7 @@ public bundle main {
                 this.barks = barks;
             }
             public method describe() returns void {
-                System.IO.println($"legs = {this.legCount()} barks = {this.barks}");
+                System.IO.Console.println($"legs = {this.legCount()} barks = {this.barks}");
             }
         }
 

@@ -5,6 +5,7 @@ program Pointers;
 // Expected output: b=5 p=5
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Box {
@@ -29,7 +30,7 @@ public bundle main {
                 Box b = new Box() on stack;
                 Box* p = &b;        // p shares b (no copy)
                 p.set(5);           // mutate through the pointer
-                System.IO.println($"b={b.get()} p={p.get()}");   // both 5
+                System.IO.Console.println($"b={b.get()} p={p.get()}");   // both 5
                 return;
             }
         }

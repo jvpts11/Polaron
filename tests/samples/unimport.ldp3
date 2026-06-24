@@ -10,10 +10,12 @@ program Unimport;
 // see reimport.ldp3.)
 
 public bundle main {
+    import System.Runtime.UnimportedTypeException;
+    import System.IO.Console;
     public namespace app {
         public class Dog {
             public constructor Dog() {}
-            public method bark() returns void { Console.println("Woof!"); }
+            public method bark() returns void { System.IO.Console.println("Woof!"); }
         }
         public class Main {
             public static method main(string[] args) returns void {
@@ -22,18 +24,18 @@ public bundle main {
                 Type t = reflect.typeOf<Dog>();
                 Method m = t.method("bark");
                 unimport Dog;
-                System.IO.printf("byte=%d\n", m.firstByte());    // 204 -- code physically overwritten
+                System.IO.Console.printf("byte=%d\n", m.firstByte());    // 204 -- code physically overwritten
                 try {
                     Dog b = new Dog() on heap;
-                    Console.println("should not reach");
+                    System.IO.Console.println("should not reach");
                 } catch (UnimportedTypeException e) {
-                    Console.println("new caught");
+                    System.IO.Console.println("new caught");
                 }
                 try {
                     a.bark();                                    // surviving instance: code is gone
-                    Console.println("should not reach");
+                    System.IO.Console.println("should not reach");
                 } catch (UnimportedTypeException e) {
-                    Console.println("call caught");
+                    System.IO.Console.println("call caught");
                 }
                 return;
             }

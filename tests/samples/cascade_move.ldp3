@@ -5,6 +5,7 @@ program CascadeMove;
 // object (and its owned Leaf) survive because they now live in `fresh`.
 
 public bundle main {
+    import System.IO.Console;
     import System.Memory.Units.kilobytes;
 
     public namespace app {
@@ -26,7 +27,7 @@ public bundle main {
                 t.leaf.v = 7;
                 cascade move t from region old to region fresh;   // move the graph to fresh
                 release region old;                                // old freed; t lives in fresh
-                System.IO.printf("id=%d v=%d\n", t.id, t.leaf.v);
+                System.IO.Console.printf("id=%d v=%d\n", t.id, t.leaf.v);
                 release region fresh;
                 return;
             }

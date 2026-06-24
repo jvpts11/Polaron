@@ -4,6 +4,7 @@ program Exceptions;
 // matching `catch` binds it and the stack unwinds, so the line after the throw is skipped.
 // Prints: before / caught code=42 / done.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public interface Throwable { }
         public class MyError implements Throwable {
@@ -13,13 +14,13 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 try {
-                    System.IO.printf("before\n");
+                    System.IO.Console.printf("before\n");
                     throw new MyError() on heap;
-                    System.IO.printf("after (should not print)\n");
+                    System.IO.Console.printf("after (should not print)\n");
                 } catch (MyError e) {
-                    System.IO.printf("caught code=%d\n", e.code);
+                    System.IO.Console.printf("caught code=%d\n", e.code);
                 }
-                System.IO.printf("done\n");
+                System.IO.Console.printf("done\n");
                 return;
             }
         }

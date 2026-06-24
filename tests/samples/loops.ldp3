@@ -1,6 +1,7 @@
 program Loops;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -11,7 +12,7 @@ public bundle main {
                     if (i == 2) { continue; }   // skip 2
                     sum = sum + i;
                 }
-                System.IO.println($"for sum = {sum}");        // 0+1+3+4 = 8
+                System.IO.Console.println($"for sum = {sum}");        // 0+1+3+4 = 8
 
                 // break and continue in a while loop.
                 mutable int n = 0;
@@ -22,7 +23,7 @@ public bundle main {
                     if (n == 6) { break; }      // stop at 6
                     total = total + n;
                 }
-                System.IO.println($"while total = {total}");  // 1+2+4+5 = 12
+                System.IO.Console.println($"while total = {total}");  // 1+2+4+5 = 12
                 return;
             }
         }

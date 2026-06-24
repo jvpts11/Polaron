@@ -5,6 +5,7 @@ program ExcEdge;
 // throw is caught by the inner try and the object's destructor still runs on the normal return path
 // (objCase). Prints: rethrow as B / outer B 2 / caught A / dtor 7.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Base {
             public mutable int code;
@@ -19,7 +20,7 @@ public bundle main {
         public class Guard {
             public mutable int id;
             public constructor Guard(int id) { this.id = id; }
-            public destructor ~Guard() returns void { System.IO.printf("dtor %d\n", this.id); }
+            public destructor ~Guard() returns void { System.IO.Console.printf("dtor %d\n", this.id); }
         }
         public class Main {
             public static method handlerCase() returns void {
@@ -27,11 +28,11 @@ public bundle main {
                     try {
                         throw new A() on heap;
                     } catch (A e) {
-                        System.IO.printf("rethrow as B\n");
+                        System.IO.Console.printf("rethrow as B\n");
                         throw new B() on heap;
                     }
                 } catch (B e) {
-                    System.IO.printf("outer B %d\n", e.code);
+                    System.IO.Console.printf("outer B %d\n", e.code);
                 }
                 return;
             }
@@ -40,7 +41,7 @@ public bundle main {
                 try {
                     throw new A() on heap;
                 } catch (A e) {
-                    System.IO.printf("caught A\n");
+                    System.IO.Console.printf("caught A\n");
                 }
                 return;
             }

@@ -5,6 +5,7 @@ program MonteCarlo;
 // `inside` count is exact and identical across languages (same LCG).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -20,7 +21,7 @@ public bundle main {
                         inside = inside + 1;
                     }
                 }
-                System.IO.printf("inside=%d\n", inside);
+                System.IO.Console.printf("inside=%d\n", inside);
                 return;
             }
         }

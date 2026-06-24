@@ -4,6 +4,7 @@ program PersistLocal;
 // It lives in a process-lifetime global, so it keeps its value across CALLS within a run --
 // it reattaches instead of reinitializing. 3 calls -> a=1 b=2 c=3.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method counter() returns int {
@@ -12,7 +13,7 @@ public bundle main {
                 return n;
             }
             public static method main(string[] args) returns void {
-                System.IO.println($"a={Main.counter()} b={Main.counter()} c={Main.counter()}");
+                System.IO.Console.println($"a={Main.counter()} b={Main.counter()} c={Main.counter()}");
                 return;
             }
         }

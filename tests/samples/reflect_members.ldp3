@@ -5,6 +5,7 @@ program ReflectMembers;
 // fieldName(i) enumerate them by name (the runtime backing for methods()/fields()).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Dog {
             private int age;
@@ -16,12 +17,12 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Type t = reflect.typeOf<Dog>();
-                System.IO.printf("methods=%d fields=%d\n", t.methodCount(), t.fieldCount());
+                System.IO.Console.printf("methods=%d fields=%d\n", t.methodCount(), t.fieldCount());
                 for (mutable int i = 0; i < t.methodCount(); i++) {
-                    Console.println(t.methodName(i));
+                    System.IO.Console.println(t.methodName(i));
                 }
                 for (mutable int i = 0; i < t.fieldCount(); i++) {
-                    Console.println(t.fieldName(i));
+                    System.IO.Console.println(t.fieldName(i));
                 }
                 return;
             }

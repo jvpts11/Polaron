@@ -4,6 +4,7 @@ program VarianceContravariant;
 // Consumer<Animal> may be used where a Consumer<Dog> is expected.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Animal { public constructor Animal() {} }
         public class Dog extends Animal { public constructor Dog() {} }
@@ -20,7 +21,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Consumer<Animal>* ca = new AnimalConsumer() on heap;
                 Consumer<Dog>* cd = ca;             // contravariance: Consumer<Animal> <: Consumer<Dog>
-                System.IO.printf("tag=%d\n", cd.tag());
+                System.IO.Console.printf("tag=%d\n", cd.tag());
                 delete ca;
                 return;
             }

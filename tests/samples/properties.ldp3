@@ -1,6 +1,7 @@
 program Properties;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Rect {
@@ -16,9 +17,9 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Rect r = new Rect(3, 4);
-                System.IO.println($"area = {r.area} w = {r.w} h = {r.h}");  // area = 12 w = 3 h = 4
+                System.IO.Console.println($"area = {r.area} w = {r.w} h = {r.h}");  // area = 12 w = 3 h = 4
                 r.w = 10;
-                System.IO.println($"area = {r.area}");                      // area = 40
+                System.IO.Console.println($"area = {r.area}");                      // area = 40
                 return;
             }
         }

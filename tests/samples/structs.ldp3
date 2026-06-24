@@ -1,6 +1,7 @@
 program Structs;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public struct Point {
@@ -18,11 +19,11 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Point p = new Point(3, 4);
-                System.IO.println($"sum = {p.sum()}");           // 7
+                System.IO.Console.println($"sum = {p.sum()}");           // 7
 
                 Point q = p;          // value copy -> independent
                 q.x = 100;            // mutate only the copy
-                System.IO.println($"p.x = {p.x} q.x = {q.x}");   // p.x = 3 q.x = 100
+                System.IO.Console.println($"p.x = {p.x} q.x = {q.x}");   // p.x = 3 q.x = 100
                 return;
             }
         }

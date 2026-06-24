@@ -5,18 +5,19 @@ program GotoAbstainfrom;
 // jumps over a line, and abstainfrom silences run()'s body until reinstated.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method run() returns void {
                 label proc;
-                System.IO.printf("running\n");
+                System.IO.Console.printf("running\n");
             }
             public static method main(string[] args) returns void {
                 mutable int x = 1;
                 if (x == 1) { goto skip; }
-                System.IO.printf("unreachable\n");
+                System.IO.Console.printf("unreachable\n");
                 label skip;
-                System.IO.printf("after goto\n");
+                System.IO.Console.printf("after goto\n");
                 Main.run();              // running
                 abstainfrom proc;
                 Main.run();              // disabled -> prints nothing

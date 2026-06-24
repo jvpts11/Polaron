@@ -1,10 +1,11 @@
 program HelloWorld;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.printf("Resultado: %d\n", 42);
+                System.IO.Console.printf("Resultado: %d\n", 42);
             }
         }
     }

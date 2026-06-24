@@ -1,6 +1,7 @@
 program Counter;
 
 public bundle main {
+    import System.IO.Console;
     public namespace examples {
         public class Counter {
             private mutable int count;
@@ -23,7 +24,7 @@ public bundle main {
                 Counter c = new Counter() on stack;
                 c.increment();
                 c.increment();
-                System.IO.printf("count = %d\n", c.get());
+                System.IO.Console.printf("count = %d\n", c.get());
             }
         }
     }

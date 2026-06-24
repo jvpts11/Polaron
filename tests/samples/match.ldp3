@@ -1,6 +1,7 @@
 program Match;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public abstract class Shape {
@@ -22,13 +23,13 @@ public bundle main {
                 Shape* s = new Square(4) on heap;
                 match (s) {
                     case Circle(int r) {
-                        System.IO.println($"circle r = {r}");
+                        System.IO.Console.println($"circle r = {r}");
                     }
                     case Square(int side) {
-                        System.IO.println($"square side = {side}");   // this arm
+                        System.IO.Console.println($"square side = {side}");   // this arm
                     }
                     default {
-                        System.IO.println("unknown");
+                        System.IO.Console.println("unknown");
                     }
                 }
                 delete s;

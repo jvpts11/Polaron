@@ -4,6 +4,7 @@ program Mandelbrot;
 // double arithmetic (no sqrt -- escape test uses zr^2 + zi^2 > 4). FP-heavy nested loops.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -33,7 +34,7 @@ public bundle main {
                         total = (total + it) % 1000000007;
                     }
                 }
-                System.IO.printf("checksum=%d\n", total);
+                System.IO.Console.printf("checksum=%d\n", total);
                 return;
             }
         }

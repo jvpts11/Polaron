@@ -118,6 +118,13 @@ public bundle std {
             public override method isSome() returns boolean { return false; }
         }
     }
+    public namespace System.IO {
+        // Console I/O (spec 2.9 / 4). The methods are recognized by the compiler and lower to
+        // libc printf/scanf; this class exists so `import System.IO.Console;` resolves and the
+        // usual namespace-visibility rules require importing it before use.
+        public class Console {
+        }
+    }
     public namespace System.Runtime {
         // Base for runtime exceptions (polymorphic, so it can be caught). UnimportedType
         // Exception is thrown when an unimported type is used (spec 30).

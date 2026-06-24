@@ -1,6 +1,7 @@
 program Recursion;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class MathUtil {
             public static method fact(int n) returns int {
@@ -15,7 +16,7 @@ public bundle main {
 
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.println($"fact(5)={MathUtil.fact(5)} fib(10)={MathUtil.fib(10)}");  // 120, 55
+                System.IO.Console.println($"fact(5)={MathUtil.fact(5)} fib(10)={MathUtil.fib(10)}");  // 120, 55
                 return;
             }
         }

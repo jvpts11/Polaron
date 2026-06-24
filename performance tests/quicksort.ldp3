@@ -5,6 +5,7 @@ program QuickSort;
 // sort mutates in place across recursive calls.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method qsort(int[] a, int lo, int hi) returns void {
@@ -45,7 +46,7 @@ public bundle main {
                 for (mutable int k = 0; k < n; k = k + 1000) {
                     acc = (acc + a[k]) % 1000000007;
                 }
-                System.IO.printf("checksum=%d\n", acc);
+                System.IO.Console.printf("checksum=%d\n", acc);
                 delete a;
                 return;
             }

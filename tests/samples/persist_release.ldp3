@@ -5,6 +5,7 @@ program PersistRelease;
 // compiles and runs.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Cache {
             public persistent mutable int slot = 0;
@@ -16,7 +17,7 @@ public bundle main {
                 Cache c = new Cache() on heap;
                 c.use();
                 c.use();
-                System.IO.printf("slot=%d\n", c.slot);
+                System.IO.Console.printf("slot=%d\n", c.slot);
                 release persistent c.slot;     // satisfies the release obligation
                 delete c;
                 return;

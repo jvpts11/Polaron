@@ -5,6 +5,7 @@ program MatrixMul;
 // so the work is not optimized away.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -31,7 +32,7 @@ public bundle main {
                 for (mutable int i = 0; i < n * n; i++) {
                     acc = (acc + cast<int>(c[i])) % 1000000007;
                 }
-                System.IO.printf("checksum=%d\n", acc);
+                System.IO.Console.printf("checksum=%d\n", acc);
                 delete a;
                 delete b;
                 delete c;

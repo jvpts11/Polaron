@@ -3,6 +3,7 @@ program Fibonacci;
 // Naive recursive Fibonacci -- pure function-call overhead (hundreds of millions of calls).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method fib(int n) returns int {
@@ -13,7 +14,7 @@ public bundle main {
             }
             public static method main(string[] args) returns void {
                 int r = Main.fib(40);
-                System.IO.printf("fib=%d\n", r);
+                System.IO.Console.printf("fib=%d\n", r);
                 return;
             }
         }

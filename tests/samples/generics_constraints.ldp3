@@ -1,6 +1,7 @@
 program GenericsConstraints;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public abstract class Shape {
@@ -24,7 +25,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Circle* c = new Circle(4) on heap;
                 Box<Circle> b = new Box<Circle>() on stack;
-                System.IO.println($"area = {b.areaOf(c)}");   // Circle(4) -> 48
+                System.IO.Console.println($"area = {b.areaOf(c)}");   // Circle(4) -> 48
                 delete c;
                 return;
             }

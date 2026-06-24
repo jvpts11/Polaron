@@ -3,6 +3,7 @@ program LambdaChar;
 // Lambda returning char, with control flow (if) in the body -- confirms a lambda runs full
 // statements, not just a single return expression. Prints g=A h=B.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -10,7 +11,7 @@ public bundle main {
                     if (n >= 90) { return 'A'; }
                     return 'B';
                 };
-                System.IO.printf("g=%c h=%c\n", grade(95), grade(70));
+                System.IO.Console.printf("g=%c h=%c\n", grade(95), grade(70));
                 return;
             }
         }

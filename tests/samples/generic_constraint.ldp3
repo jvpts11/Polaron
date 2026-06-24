@@ -4,6 +4,7 @@ program GenericConstraint;
 // (enforced at monomorphization). Also exercises a chained call on a generic method result --
 // box.get().area() -- i.e. a method call whose receiver is itself a call. Prints "area = 9".
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public interface Shape { method area() returns int; }
         public class Circle implements Shape {
@@ -18,7 +19,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Circle c = new Circle() on heap;
                 Box<Circle> b = new Box<Circle>(c) on heap;
-                System.IO.printf("area = %d\n", b.get().area());
+                System.IO.Console.printf("area = %d\n", b.get().area());
                 return;
             }
         }

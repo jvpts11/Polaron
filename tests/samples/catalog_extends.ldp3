@@ -5,6 +5,7 @@ program CatalogExtends;
 // is a subtype of both. byCatalog must list the full transitive value set.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public catalog Base {
@@ -37,7 +38,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 E e = E.own;
                 Base bz = E.own;   // subtype of the grandparent catalog too
-                System.IO.printf("own=%d a=%d c=%d foo=%d bar=%d count=%d\n",
+                System.IO.Console.printf("own=%d a=%d c=%d foo=%d bar=%d count=%d\n",
                                  E.own, E.a, E.c, e.foo(), e.bar(), E.count());
                 return;
             }

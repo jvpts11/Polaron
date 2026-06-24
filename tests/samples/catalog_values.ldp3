@@ -7,6 +7,7 @@ program Catalogs;
 // catalog-provided ones continue (3..5). The enum is a subtype of the catalog.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public catalog TipoMotor {
@@ -30,14 +31,14 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 // Own constants: 0, 1, 2.
-                System.IO.printf("%d %d %d\n", Motor.v8, Motor.v12, Motor.doisPistoes);
+                System.IO.Console.printf("%d %d %d\n", Motor.v8, Motor.v12, Motor.doisPistoes);
                 // Catalog-provided constants continue the ordinals: 3, 4, 5.
-                System.IO.printf("%d %d %d\n", Motor.combustao, Motor.h2, Motor.eletrico);
+                System.IO.Console.printf("%d %d %d\n", Motor.combustao, Motor.h2, Motor.eletrico);
                 // The enum is a subtype of the catalog: a Motor value fits a TipoMotor slot.
                 TipoMotor t = Motor.eletrico;
-                System.IO.printf("%d\n", t);
+                System.IO.Console.printf("%d\n", t);
                 // Built-in count() sees all six values.
-                System.IO.printf("%d\n", Motor.count());
+                System.IO.Console.printf("%d\n", Motor.count());
                 return;
             }
         }

@@ -1,6 +1,7 @@
 program GenericMethod;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Util {
             public constructor Util() {}
@@ -14,7 +15,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Util u = new Util() on stack;
-                System.IO.println($"id={u.identity<int>(42)} pick={u.pick<int>(true, 7, 9)}");  // id=42 pick=7
+                System.IO.Console.println($"id={u.identity<int>(42)} pick={u.pick<int>(true, 7, 9)}");  // id=42 pick=7
                 return;
             }
         }

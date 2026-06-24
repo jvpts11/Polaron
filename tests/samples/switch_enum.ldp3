@@ -1,6 +1,7 @@
 program SwitchEnum;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public enum Dir { NORTH, EAST, SOUTH, WEST }
@@ -15,7 +16,7 @@ public bundle main {
                     case Dir.SOUTH { code = 2; break; }
                     default { code = 9; }
                 }
-                System.IO.println($"code = {code}");   // EAST -> 1
+                System.IO.Console.println($"code = {code}");   // EAST -> 1
                 return;
             }
         }

@@ -1,13 +1,14 @@
 program Mutable;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
                 mutable int x = 1;
                 x = x + 5;   // reassignment
                 x++;         // increment
-                System.IO.printf("x = %d\n", x);  // x = 7
+                System.IO.Console.printf("x = %d\n", x);  // x = 7
             }
         }
     }

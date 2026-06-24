@@ -5,12 +5,13 @@ program CatchNonPolyBad;
 // type confusion). Exceptions must participate in a class hierarchy.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Plain { public constructor Plain() {} }
         public class Main {
             public static method main(string[] args) returns void {
                 try {
-                    System.IO.printf("x\n");
+                    System.IO.Console.printf("x\n");
                 } catch (Plain p) {
                 }
                 return;

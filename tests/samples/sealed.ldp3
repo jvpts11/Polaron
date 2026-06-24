@@ -1,6 +1,7 @@
 program Sealed;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public sealed abstract class Shape permits Circle, Square {
@@ -21,8 +22,8 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Shape* s = new Circle(3) on heap;
                 match (s) {                    // no default: sealed and exhaustive
-                    case Circle(int r) { System.IO.println($"circle r = {r}"); }
-                    case Square(int side) { System.IO.println($"square side = {side}"); }
+                    case Circle(int r) { System.IO.Console.println($"circle r = {r}"); }
+                    case Square(int side) { System.IO.Console.println($"square side = {side}"); }
                 }
                 delete s;
                 return;

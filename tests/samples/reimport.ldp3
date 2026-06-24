@@ -6,10 +6,12 @@ program Reimport;
 // backup. x64 code is RIP-relative, so the restored .text needs no relocation fix-up.
 
 public bundle main {
+    import System.Runtime.UnimportedTypeException;
+    import System.IO.Console;
     public namespace app {
         public class Dog {
             public constructor Dog() {}
-            public method bark() returns void { Console.println("Woof!"); }
+            public method bark() returns void { System.IO.Console.println("Woof!"); }
         }
         public class Main {
             public static method main(string[] args) returns void {
@@ -18,9 +20,9 @@ public bundle main {
                 unimport Dog;
                 try {
                     Dog b = new Dog() on heap;
-                    Console.println("should not reach");
+                    System.IO.Console.println("should not reach");
                 } catch (UnimportedTypeException e) {
-                    Console.println("unimported");
+                    System.IO.Console.println("unimported");
                 }
                 reimport Dog;                               // restore code from disk
                 Dog c = new Dog() on heap;

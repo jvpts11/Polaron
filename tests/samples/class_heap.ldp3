@@ -7,6 +7,7 @@ program Heap;
 //   freeing 42
 
 public bundle main {
+    import System.IO.Console;
     public namespace examples {
 
         public class Box {
@@ -21,14 +22,14 @@ public bundle main {
             }
 
             public destructor ~Box() returns void {
-                System.IO.printf("freeing %d\n", this.value);
+                System.IO.Console.printf("freeing %d\n", this.value);
             }
         }
 
         public class Main {
             public static method main(string[] args) returns void {
                 Box b = new Box(42) on heap;
-                System.IO.printf("value = %d\n", b.get());
+                System.IO.Console.printf("value = %d\n", b.get());
                 delete b;
                 return;
             }

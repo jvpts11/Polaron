@@ -2178,76 +2178,50 @@ struct CodeGenerator::Impl {
             builder.CreateCall(module.getOrInsertFunction("__ldp3_thread_join", ft), {h});
             return nullptr;
         }
-        if (name == "System.IO.readInt") {
-            llvm::Value* tmp = createEntryAlloca("readtmp", builder.getInt32Ty());
-            llvm::Value* fmt = builder.CreateGlobalStringPtr("%d", ".scanfmt");
-            builder.CreateCall(scanf(), {fmt, tmp});
-            return builder.CreateLoad(builder.getInt32Ty(), tmp, "readInt");
-        }
-        if (name == "System.IO.printf") {
-            if (!call.args.empty()) {
-                if (const auto* is =
-                        dynamic_cast<const ast::InterpStringExpr*>(call.args.front().get())) {
-                    return emitInterp(*is, /*addNewline=*/false);
-                }
+        // Console I/O (spec 4): System.IO.Console.{printf,println,print,readInt}. The pre-F10
+        // names (System.IO.printf/println/readInt, bare Console.*) are kept as aliases until
+        // the samples are migrated.
+        {
+            const bool isRead = name == "System.IO.Console.read";
+            const bool isPrintf = name == "System.IO.Console.printf";
+            const bool isPrintln = name == "System.IO.Console.println";
+            const bool isPrint = name == "System.IO.Console.print";
+            if (isRead) {
+                llvm::Value* tmp = createEntryAlloca("readtmp", builder.getInt32Ty());
+                builder.CreateCall(scanf(), {builder.CreateGlobalStringPtr("%d", ".scanfmt"), tmp});
+                return builder.CreateLoad(builder.getInt32Ty(), tmp, "read");
             }
-            std::vector<llvm::Value*> args;
-            for (std::size_t i = 0; i < call.args.size(); ++i) {
-                // The format string literal lowers directly to a C string (not a String object).
-                if (i == 0) {
-                    if (const auto* lit =
-                            dynamic_cast<const ast::StringLiteralExpr*>(call.args[0].get())) {
-                        args.push_back(
-                            builder.CreateGlobalStringPtr(resolveEscapes(lit->value), ".str"));
-                        continue;
+            if (isPrintf || isPrintln || isPrint) {
+                const bool nl = isPrintln;
+                if (!call.args.empty())
+                    if (const auto* is =
+                            dynamic_cast<const ast::InterpStringExpr*>(call.args.front().get()))
+                        return emitInterp(*is, nl);
+                if (call.args.empty()) {
+                    if (nl)
+                        builder.CreateCall(printf(), {builder.CreateGlobalStringPtr("\n", ".str")});
+                    return nullptr;
+                }
+                std::vector<llvm::Value*> args;
+                // A leading string literal is a printf-style format; otherwise the first arg is a
+                // String value, printed with %s.
+                if (const auto* lit =
+                        dynamic_cast<const ast::StringLiteralExpr*>(call.args.front().get())) {
+                    args.push_back(builder.CreateGlobalStringPtr(
+                        resolveEscapes(lit->value) + (nl ? "\n" : ""), ".str"));
+                    for (std::size_t i = 1; i < call.args.size(); ++i) {
+                        llvm::Value* v = emitExpr(*call.args[i]);
+                        if (v == nullptr) return nullptr;
+                        args.push_back(asCStr(*call.args[i], v));
                     }
+                } else {
+                    llvm::Value* s = emitExpr(*call.args.front());
+                    if (s == nullptr) return nullptr;
+                    args.push_back(builder.CreateGlobalStringPtr(nl ? "%s\n" : "%s", ".str"));
+                    args.push_back(asCStr(*call.args.front(), s));
                 }
-                llvm::Value* v = emitExpr(*call.args[i]);
-                if (v == nullptr) return nullptr;
-                args.push_back(asCStr(*call.args[i], v));  // String value -> %s byte pointer
+                return builder.CreateCall(printf(), args);
             }
-            return builder.CreateCall(printf(), args);
-        }
-        // println: printf with a newline appended to the format string. With no
-        // args it prints a blank line.
-        if (name == "System.IO.println") {
-            if (!call.args.empty()) {
-                if (const auto* is =
-                        dynamic_cast<const ast::InterpStringExpr*>(call.args.front().get())) {
-                    return emitInterp(*is, /*addNewline=*/true);
-                }
-            }
-            std::string fmt = "\n";
-            if (!call.args.empty()) {
-                const auto* lit =
-                    dynamic_cast<const ast::StringLiteralExpr*>(call.args.front().get());
-                fmt = (lit != nullptr ? resolveEscapes(lit->value) : std::string()) + "\n";
-            }
-            std::vector<llvm::Value*> args;
-            args.push_back(builder.CreateGlobalStringPtr(fmt, ".str"));
-            for (std::size_t i = 1; i < call.args.size(); ++i) {
-                llvm::Value* v = emitExpr(*call.args[i]);
-                if (v == nullptr) return nullptr;
-                args.push_back(asCStr(*call.args[i], v));
-            }
-            return builder.CreateCall(printf(), args);
-        }
-        // Console.print / Console.println (spec 2.9 / 4): write a String (or interpolated
-        // string) to stdout, the latter with a trailing newline. The real Console of F10.
-        if (name == "Console.println" || name == "Console.print" ||
-            name == "System.Console.println" || name == "System.Console.print") {
-            const bool nl = (name == "Console.println" || name == "System.Console.println");
-            if (call.args.empty()) {
-                if (nl) builder.CreateCall(printf(), {builder.CreateGlobalStringPtr("\n", ".str")});
-                return nullptr;
-            }
-            if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(call.args.front().get()))
-                return emitInterp(*is, nl);
-            llvm::Value* s = emitExpr(*call.args.front());
-            if (s == nullptr) return nullptr;
-            builder.CreateCall(printf(), {builder.CreateGlobalStringPtr(nl ? "%s\n" : "%s", ".str"),
-                                          asCStr(*call.args.front(), s)});
-            return nullptr;
         }
         // reflect.typeOf<T>() (spec 31): returns the Type token for class T.
         if (name == "reflect.typeOf" && !call.typeArgs.empty()) {

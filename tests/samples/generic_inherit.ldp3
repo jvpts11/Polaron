@@ -1,6 +1,7 @@
 program GenericInherit;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Base<T> {
             public constructor Base() {}
@@ -14,7 +15,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Derived<int> d = new Derived<int>() on stack;
                 int total = d.baseVal() + d.derivedVal();   // inherited + own = 10 + 20
-                System.IO.println($"total = {total}");       // 30
+                System.IO.Console.println($"total = {total}");       // 30
                 return;
             }
         }

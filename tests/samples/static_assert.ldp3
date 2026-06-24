@@ -1,6 +1,7 @@
 program StaticAssert;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -8,7 +9,7 @@ public bundle main {
                 static_assert(2 + 2 == 4, "math is broken");
                 static_assert(16 * 1024 < 65536, "buffer does not fit");
                 static_assert(!(1 > 2), "logic is broken");
-                System.IO.println($"checks passed = {1}");
+                System.IO.Console.println($"checks passed = {1}");
                 return;
             }
         }

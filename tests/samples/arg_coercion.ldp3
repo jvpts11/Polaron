@@ -6,6 +6,7 @@ program ArgCoercion;
 // an i32 literal into an int64 param, or an int into a float param).
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Calc {
@@ -46,7 +47,7 @@ public bundle main {
                 int64 s = Calc.bigStatic(7);         // 7
                 Shape* sh = new Box() on heap;
                 int64 v = sh.shift(40);              // 41, through a vtable
-                System.IO.printf("%d %d %d %d\n",
+                System.IO.Console.printf("%d %d %d %d\n",
                                  cast<int>(r), cast<int>(f), cast<int>(s), cast<int>(v));
                 delete c;
                 delete sh;

@@ -1,6 +1,7 @@
 program DeepCopy;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class Bag {
@@ -24,7 +25,7 @@ public bundle main {
                 Bag a = new Bag();
                 Bag b = a;            // value copy -> the items[] array is duplicated
                 b.set(0, 999);        // mutate only the copy
-                System.IO.println($"a[0] = {a.get(0)} b[0] = {b.get(0)}");
+                System.IO.Console.println($"a[0] = {a.get(0)} b[0] = {b.get(0)}");
                 // deep copy: a[0] = 10 (unchanged), b[0] = 999
                 return;
             }

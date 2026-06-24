@@ -4,6 +4,7 @@ program ResultOption;
 // with `match` (exhaustive, no default needed). Construction here is explicit (new Ok<T,E>); the
 // Ok(x)/Err(x)/Some(x)/None() sugar and try? are the next steps. Prints: r=7 e=-404 / some 9 / none.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method grade(Result<int, int>* r) returns int {
@@ -16,16 +17,16 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Result<int, int>* ok = new Ok<int, int>(7) on heap;
                 Result<int, int>* err = new Err<int, int>(404) on heap;
-                System.IO.printf("r=%d e=%d\n", Main.grade(ok), Main.grade(err));
+                System.IO.Console.printf("r=%d e=%d\n", Main.grade(ok), Main.grade(err));
                 Option<int>* some = new Some<int>(9) on heap;
                 Option<int>* none = new None<int>() on heap;
                 match (some) {
-                    case Some(int v) { System.IO.printf("some %d\n", v); }
-                    case None() { System.IO.printf("none\n"); }
+                    case Some(int v) { System.IO.Console.printf("some %d\n", v); }
+                    case None() { System.IO.Console.printf("none\n"); }
                 }
                 match (none) {
-                    case Some(int v) { System.IO.printf("some %d\n", v); }
-                    case None() { System.IO.printf("none\n"); }
+                    case Some(int v) { System.IO.Console.printf("some %d\n", v); }
+                    case None() { System.IO.Console.printf("none\n"); }
                 }
                 return;
             }

@@ -5,26 +5,27 @@ program CascadeInherited;
 // Derived still runs ~Leaf for it.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Leaf {
             public constructor Leaf() {}
-            public destructor ~Leaf() returns void { System.IO.printf("~Leaf\n"); }
+            public destructor ~Leaf() returns void { System.IO.Console.printf("~Leaf\n"); }
         }
         public class Base {
             private mutable Leaf owned;
             public constructor Base() { this.owned = new Leaf() on heap; }
-            public destructor ~Base() returns void { System.IO.printf("~Base\n"); }
+            public destructor ~Base() returns void { System.IO.Console.printf("~Base\n"); }
         }
         public class Derived extends Base {
             public constructor Derived() {}
-            public override destructor ~Derived() returns void { System.IO.printf("~Derived\n"); }
+            public override destructor ~Derived() returns void { System.IO.Console.printf("~Derived\n"); }
         }
 
         public class Main {
             public static method main(string[] args) returns void {
                 Derived d = new Derived() on heap;
                 cascade delete d;      // ~Derived -> ~Base (chained), then inherited owned -> ~Leaf
-                System.IO.printf("done\n");
+                System.IO.Console.printf("done\n");
                 return;
             }
         }

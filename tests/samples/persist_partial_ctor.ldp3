@@ -6,6 +6,7 @@ program PersistPartialCtor;
 // is read from the block, which persists across calls, so it counts up 0,1,2.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Car {
             public eternal persistent mutable int serial = 0;
@@ -28,7 +29,7 @@ public bundle main {
                 int a = Main.make();
                 int b = Main.make();
                 int d = Main.make();
-                System.IO.printf("%d %d %d\n", a, b, d);   // 7 17 27
+                System.IO.Console.printf("%d %d %d\n", a, b, d);   // 7 17 27
                 return;
             }
         }

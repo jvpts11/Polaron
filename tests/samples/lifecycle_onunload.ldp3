@@ -5,18 +5,19 @@ program LifecycleOnUnload;
 // from RAM.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Cache {
-            onClassUnload { Console.println("cache unloaded"); }
+            onClassUnload { System.IO.Console.println("cache unloaded"); }
             public constructor Cache() {}
-            public method use() returns void { Console.println("using cache"); }
+            public method use() returns void { System.IO.Console.println("using cache"); }
         }
         public class Main {
             public static method main(string[] args) returns void {
                 Cache c = new Cache() on heap;
                 c.use();                 // using cache
                 unimport Cache;          // fires onClassUnload -> cache unloaded
-                Console.println("done");
+                System.IO.Console.println("done");
                 return;
             }
         }

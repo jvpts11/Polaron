@@ -1,6 +1,7 @@
 program Tuple;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         public class MathX {
@@ -18,14 +19,14 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 (int q, int r) = MathX.divmod(17, 5);
-                System.IO.println($"q={q} r={r}");
+                System.IO.Console.println($"q={q} r={r}");
 
                 (int lo, int hi) = MathX.bounds();
-                System.IO.println($"lo={lo} hi={hi}");
+                System.IO.Console.println($"lo={lo} hi={hi}");
 
                 // A tuple local initialized from a literal, then destructured.
                 (int x, int y) = (lo + 1, hi + 1);
-                System.IO.println($"x={x} y={y}");
+                System.IO.Console.println($"x={x} y={y}");
                 return;
             }
         }

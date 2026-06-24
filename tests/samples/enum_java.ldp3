@@ -1,6 +1,7 @@
 program EnumJava;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
 
         // Java-style enum: constants carry constructor args; fields/methods follow.
@@ -23,7 +24,7 @@ public bundle main {
 
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.println($"earth = {Planet.EARTH.density()} mars = {Planet.MARS.density()}");
+                System.IO.Console.println($"earth = {Planet.EARTH.density()} mars = {Planet.MARS.density()}");
                 // earth = 5 (10/2), mars = 10 (30/3)
                 return;
             }

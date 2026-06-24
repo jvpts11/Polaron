@@ -1,6 +1,7 @@
 program RegionConstraints;
 
 public bundle main {
+    import System.IO.Console;
 
     import System.Memory.Units.kilobytes;
 
@@ -17,7 +18,7 @@ public bundle main {
                 // The region only accepts Dog; allocating a Dog is allowed.
                 region pen = itself.allocate(1 kilobytes).accepts({Dog});
                 Dog* d = new Dog(42) in region pen;
-                System.IO.println($"d = {d.get()}");   // 42
+                System.IO.Console.println($"d = {d.get()}");   // 42
                 release region pen;
                 return;
             }

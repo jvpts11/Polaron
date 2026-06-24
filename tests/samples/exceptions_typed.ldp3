@@ -6,6 +6,7 @@ program ExceptionsTyped;
 // The caught exception keeps full behaviour: inherited fields (code) and virtual dispatch (kind()).
 // Prints: app code=5 kind=2 / net code=9 kind=3.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class AppError {
             public mutable int code;
@@ -30,9 +31,9 @@ public bundle main {
                 try {
                     Main.raise(which);
                 } catch (NetError e) {
-                    System.IO.printf("net code=%d kind=%d\n", e.code, e.kind());
+                    System.IO.Console.printf("net code=%d kind=%d\n", e.code, e.kind());
                 } catch (AppError e) {
-                    System.IO.printf("app code=%d kind=%d\n", e.code, e.kind());
+                    System.IO.Console.printf("app code=%d kind=%d\n", e.code, e.kind());
                 }
                 return;
             }

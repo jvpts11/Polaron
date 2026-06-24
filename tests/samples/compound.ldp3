@@ -1,6 +1,7 @@
 program Compound;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
@@ -10,13 +11,13 @@ public bundle main {
                 x *= 2;     // 24
                 x /= 4;     // 6
                 x %= 4;     // 2
-                System.IO.println($"x = {x}");        // 2
+                System.IO.Console.println($"x = {x}");        // 2
 
                 // Compound assignment also works on array elements.
                 int[] a = new int[3]();
                 a[0] = 10;
                 a[0] += 7;  // 17
-                System.IO.println($"a0 = {a[0]}");    // 17
+                System.IO.Console.println($"a0 = {a[0]}");    // 17
                 delete a;
                 return;
             }

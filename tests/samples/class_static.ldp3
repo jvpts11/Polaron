@@ -4,6 +4,7 @@ program Static;
 // Expected output: square=25 total=125
 
 public bundle main {
+    import System.IO.Console;
     public namespace examples {
 
         public class MathUtil {
@@ -20,7 +21,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 int s = MathUtil.square(5);
                 int total = MathUtil.add(s, 100);
-                System.IO.printf("square=%d total=%d\n", s, total);
+                System.IO.Console.printf("square=%d total=%d\n", s, total);
                 return;
             }
         }

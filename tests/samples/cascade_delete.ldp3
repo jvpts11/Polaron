@@ -5,27 +5,28 @@ program CascadeDelete;
 // plain `delete o` would run only ~Outer and leak the owned Mid and Leaf.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Leaf {
             public constructor Leaf() {}
-            public destructor ~Leaf() returns void { System.IO.printf("~Leaf\n"); }
+            public destructor ~Leaf() returns void { System.IO.Console.printf("~Leaf\n"); }
         }
         public class Mid {
             private mutable Leaf leaf;
             public constructor Mid() { this.leaf = new Leaf() on heap; }
-            public destructor ~Mid() returns void { System.IO.printf("~Mid\n"); }
+            public destructor ~Mid() returns void { System.IO.Console.printf("~Mid\n"); }
         }
         public class Outer {
             private mutable Mid mid;
             public constructor Outer() { this.mid = new Mid() on heap; }
-            public destructor ~Outer() returns void { System.IO.printf("~Outer\n"); }
+            public destructor ~Outer() returns void { System.IO.Console.printf("~Outer\n"); }
         }
 
         public class Main {
             public static method main(string[] args) returns void {
                 Outer o = new Outer() on heap;
                 cascade delete o;       // ~Outer, then ~Mid, then ~Leaf
-                System.IO.printf("done\n");
+                System.IO.Console.printf("done\n");
                 return;
             }
         }

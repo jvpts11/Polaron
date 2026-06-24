@@ -5,6 +5,7 @@ program PersistObject;
 // reattaches when a `Car c` is created again. bump() is called repeatedly: chassi counts up
 // 1, 2, 3 across calls within the run even though the Car object is deleted every time.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Car {
             public eternal persistent mutable int chassi = 0;  // run-lifetime: no release required (spec 18.13)
@@ -20,7 +21,7 @@ public bundle main {
                 return r;
             }
             public static method main(string[] args) returns void {
-                System.IO.println($"a={Main.bump()} b={Main.bump()} c={Main.bump()}");
+                System.IO.Console.println($"a={Main.bump()} b={Main.bump()} c={Main.bump()}");
                 return;
             }
         }

@@ -5,6 +5,7 @@ program FinallyExits;
 // nested in a loop. Previously these silently skipped the finally.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Main {
             // finally runs before the return leaves the method.
@@ -12,7 +13,7 @@ public bundle main {
                 try {
                     return 1;
                 } finally {
-                    System.IO.printf("finally-return\n");
+                    System.IO.Console.printf("finally-return\n");
                 }
             }
 
@@ -21,9 +22,9 @@ public bundle main {
                 for (mutable int i = 0; i < 3; i++) {
                     try {
                         if (i == 1) { break; }
-                        System.IO.printf("iter %d\n", i);
+                        System.IO.Console.printf("iter %d\n", i);
                     } finally {
-                        System.IO.printf("finally-iter %d\n", i);
+                        System.IO.Console.printf("finally-iter %d\n", i);
                     }
                 }
                 return;
@@ -31,7 +32,7 @@ public bundle main {
 
             public static method main(string[] args) returns void {
                 int r = Main.withReturn();
-                System.IO.printf("r=%d\n", r);
+                System.IO.Console.printf("r=%d\n", r);
                 Main.withBreak();
                 return;
             }

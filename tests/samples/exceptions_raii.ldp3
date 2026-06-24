@@ -5,11 +5,12 @@ program ExceptionsRaii;
 // risky() throws after declaring two stack Guards; their destructors run during the unwind, then
 // main's catch handles it. Prints: dtor 2 / dtor 1 / caught 5.
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Guard {
             public mutable int id;
             public constructor Guard(int id) { this.id = id; }
-            public destructor ~Guard() returns void { System.IO.printf("dtor %d\n", this.id); }
+            public destructor ~Guard() returns void { System.IO.Console.printf("dtor %d\n", this.id); }
         }
         public interface Throwable { }
         public class MyError implements Throwable {
@@ -26,7 +27,7 @@ public bundle main {
                 try {
                     Main.risky();
                 } catch (MyError e) {
-                    System.IO.printf("caught %d\n", e.code);
+                    System.IO.Console.printf("caught %d\n", e.code);
                 }
                 return;
             }

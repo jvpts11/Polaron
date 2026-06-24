@@ -2,10 +2,11 @@ program Ergonomics;
 
 // No-ceremony forms:
 //   - `new Point()` without `on stack`/`on heap` -> default stack (RAII)
-//   - System.IO.println -> newline appended automatically
+//   - System.IO.Console.println -> newline appended automatically
 // Expected output: x = 15 / done
 
 public bundle main {
+    import System.IO.Console;
     public namespace examples {
 
         public class Point {
@@ -18,8 +19,8 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Point p = new Point();                    // no location -> stack
                 p.bump();
-                System.IO.println("x = %d", p.get());     // 15, newline automatic
-                System.IO.println("done");
+                System.IO.Console.println("x = %d", p.get());     // 15, newline automatic
+                System.IO.Console.println("done");
                 return;
             }
         }

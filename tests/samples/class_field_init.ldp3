@@ -5,6 +5,7 @@ program FieldInit;
 // initializers. Expected output: area = 1920
 
 public bundle main {
+    import System.IO.Console;
     public namespace examples {
 
         public class Config {
@@ -19,7 +20,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Config c = new Config() on stack;
-                System.IO.printf("area = %d\n", c.area());
+                System.IO.Console.printf("area = %d\n", c.area());
                 return;
             }
         }

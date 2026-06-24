@@ -686,8 +686,13 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             currentNamespace_ = ns.name;
             for (const ast::ClassDecl& cls : ns.classes) {
-                // Member signature types must also be visible from this namespace.
+                // Member signature types must also be visible from this namespace -- except for
+                // monomorphized generic instances (name contains '$'), whose members reference the
+                // type arguments by simple name; those were already checked at the template and the
+                // instantiation site, and the generated class is not bound to the arg's namespace.
+                const bool isMono = cls.name.find('$') != std::string::npos;
                 for (const ast::MemberPtr& member : cls.members) {
+                    if (isMono) break;
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         for (const ast::Param& p : m->params)
                             checkTypeAccessible(typeRefStr(p.type), p.loc);
@@ -1088,8 +1093,7 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     auto it = typeNamespace_.find(n);
     if (it == typeNamespace_.end()) return;        // primitive / unknown (other checks catch it)
     if (it->second == currentNamespace_) return;   // same namespace -> visible
-    if (it->second.rfind("System", 0) == 0) return;  // stdlib/prelude -> always available
-    if (currentImports_.count(n) > 0) return;      // brought in by import
+    if (currentImports_.count(n) > 0) return;      // brought in by import (incl. stdlib)
     error("type '" + n + "' is in namespace '" + it->second + "'; import it (import " + it->second +
               "." + n + ";) to use it here",
           loc);
@@ -1892,44 +1896,41 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             else typeOf(*call->args.front());
             return "void";
         }
-        if (name == "System.IO.readInt") {
-            if (!call->args.empty()) error("System.IO.readInt takes no arguments", call->loc);
-            return "int";
-        }
-        if (name == "System.IO.printf" || name == "System.IO.println") {
-            const bool isPrintln = (name == "System.IO.println");
-            if (call->args.empty()) {
-                // println() with no arguments prints just a newline; printf needs a format.
-                if (!isPrintln) error("System.IO.printf requires a format string", call->loc);
-            } else {
-                const ast::Expr* first = call->args.front().get();
-                const bool ok = dynamic_cast<const ast::StringLiteralExpr*>(first) != nullptr ||
-                                dynamic_cast<const ast::InterpStringExpr*>(first) != nullptr;
-                if (!ok) {
-                    error(std::string("the first argument to System.IO.") +
-                              (isPrintln ? "println" : "printf") +
-                              " must be a string literal or interpolated string "
-                              "(e.g. println($\"x = {value}\"))",
-                          first->loc);
+        // Console I/O (spec 4): System.IO.Console.{printf,println,print,readInt}. The pre-F10
+        // names (System.IO.printf/println/readInt, bare Console.*) are kept as aliases until the
+        // samples are migrated. Requires `import System.IO.Console;`.
+        {
+            const bool isRead = name == "System.IO.Console.read";
+            const bool isPrintf = name == "System.IO.Console.printf";
+            const bool isPrintln = name == "System.IO.Console.println";
+            const bool isPrint = name == "System.IO.Console.print";
+            if (isRead || isPrintf || isPrintln || isPrint) {
+                checkTypeAccessible("Console", call->loc);  // require the import
+                if (isRead) {
+                    if (!call->args.empty()) error("Console.read takes no arguments", call->loc);
+                    return "int";
                 }
-            }
-            for (const auto& arg : call->args) typeOf(*arg);
-            return "void";
-        }
-        // Console.print / Console.println (spec 4): write a String or interpolated string.
-        if (name == "Console.print" || name == "Console.println" ||
-            name == "System.Console.print" || name == "System.Console.println") {
-            for (const auto& arg : call->args) {
-                if (dynamic_cast<const ast::InterpStringExpr*>(arg.get()) != nullptr) {
-                    typeOf(*arg);
-                    continue;
+                if (isPrintf && call->args.empty())
+                    error("printf requires a format string", call->loc);
+                // The first argument must be a string literal/interpolation (a format), or -- for
+                // println/print -- a String value. printf requires the format form specifically.
+                if (!call->args.empty()) {
+                    const ast::Expr* f = call->args.front().get();
+                    const bool fmt = dynamic_cast<const ast::StringLiteralExpr*>(f) != nullptr ||
+                                     dynamic_cast<const ast::InterpStringExpr*>(f) != nullptr;
+                    if (!fmt) {
+                        const std::string at = typeOf(*f);
+                        if (isPrintf)
+                            error("the first argument to printf must be a string literal or "
+                                  "interpolated string", f->loc);
+                        else if (!at.empty() && at != "String" && at != "string")
+                            error("println/print expects a string literal, interpolation, or "
+                                  "String value, got '" + at + "'", f->loc);
+                    }
                 }
-                const std::string at = typeOf(*arg);
-                if (!at.empty() && at != "String" && at != "string")
-                    error("Console expects a String or interpolated string, got '" + at + "'",
-                          arg->loc);
+                for (const auto& arg : call->args) typeOf(*arg);
+                return "void";
             }
-            return "void";
         }
         // reflect.typeOf<T>() (spec 31): the Type token for class T.
         if (name == "reflect.typeOf") {

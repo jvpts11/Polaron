@@ -3,6 +3,7 @@ program ResultTest;
 // Either<T, E> -- two type parameters + generic inheritance + virtual dispatch. (Named Either/Left/
 // Right rather than Result/Ok/Err, which are now built-in prelude types; this is a generics demo.)
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Either<T, E> {
             public constructor Either() {}
@@ -24,8 +25,8 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Left<int, int>* ok = new Left<int, int>(7) on heap;
                 Right<int, int>* err = new Right<int, int>(404) on heap;
-                System.IO.println($"ok: {ok.isOk()} {ok.get()}");      // 1 7
-                System.IO.println($"err: {err.isOk()} {err.code()}");  // 0 404
+                System.IO.Console.println($"ok: {ok.isOk()} {ok.get()}");      // 1 7
+                System.IO.Console.println($"err: {err.isOk()} {err.code()}");  // 0 404
                 delete ok;
                 delete err;
                 return;

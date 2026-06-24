@@ -5,6 +5,7 @@ program ComptimeIf;
 // LEVEL >= 2 is true, so only "debug off" and "level high" are compiled in.
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public const boolean DEBUG = false;
         public const int LEVEL = 2;
@@ -12,14 +13,14 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 comptime if (DEBUG) {
-                    System.IO.printf("debug on\n");
+                    System.IO.Console.printf("debug on\n");
                 } else {
-                    System.IO.printf("debug off\n");
+                    System.IO.Console.printf("debug off\n");
                 }
                 comptime if (LEVEL >= 2) {
-                    System.IO.printf("level high\n");
+                    System.IO.Console.printf("level high\n");
                 } else {
-                    System.IO.printf("level low\n");
+                    System.IO.Console.printf("level low\n");
                 }
                 return;
             }

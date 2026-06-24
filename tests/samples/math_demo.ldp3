@@ -1,6 +1,7 @@
 program MathDemo;
 
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class MathUtil {
             public static method gcd(int a, int b) returns int {
@@ -18,7 +19,7 @@ public bundle main {
 
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.println($"gcd(48,18)={MathUtil.gcd(48, 18)} pow(2,10)={MathUtil.pow(2, 10)}");
+                System.IO.Console.println($"gcd(48,18)={MathUtil.gcd(48, 18)} pow(2,10)={MathUtil.pow(2, 10)}");
                 return;   // 6, 1024
             }
         }

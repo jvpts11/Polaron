@@ -3,6 +3,7 @@ program GenericStack;
 // A real generic data structure: Stack<T> over linked nodes. Integrates generics,
 // pointer fields, chained access, methods, and manual memory (new/delete).
 public bundle main {
+    import System.IO.Console;
     public namespace app {
         public class Node<T> {
             public mutable T val;
@@ -40,7 +41,7 @@ public bundle main {
                 s.push(30);
                 int a = s.pop();   // 30
                 int b = s.pop();   // 20
-                System.IO.println($"popped {a} {b}, count {s.count()}");   // 30 20, 1
+                System.IO.Console.println($"popped {a} {b}, count {s.count()}");   // 30 20, 1
                 return;
             }
         }
