@@ -605,10 +605,16 @@ TEST_CASE("semantic accepts an explicit cast that narrows a long to an int") {
         "public static method main(string[] args) returns void { long w = 3; int n = cast<int>(w); }")));
 }
 
-TEST_CASE("semantic rejects a class cast in 0.1 (numeric casts only)") {
-    CHECK_FALSE(checkSrc(withClass(
+TEST_CASE("semantic accepts a reference cast (reflection downcast, F10)") {
+    CHECK(checkSrc(withClass(
         "public class Animal { public constructor Animal() {} }",
         "Animal a = new Animal(); Animal b = cast<Animal>(a);")));
+}
+
+TEST_CASE("semantic rejects casting a number to a class") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class Animal { public constructor Animal() {} }",
+        "int n = 5; Animal a = cast<Animal>(n);")));
 }
 
 namespace {

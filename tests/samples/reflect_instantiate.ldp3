@@ -1,0 +1,25 @@
+program ReflectInstantiate;
+
+// Reflection construction (spec 31): Type.instantiate() allocates an instance and runs
+// its no-arg constructor, returning it as Object; cast<Dog> downcasts the reference.
+// Combined with method().invoke() this drives an object known only at runtime.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int age;
+            public constructor Dog() { this.age = 7; Console.println("Dog built"); }
+            public method bark() returns void { Console.println("Woof!"); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Type t = reflect.typeOf<Dog>();
+                Dog d = cast<Dog>(t.instantiate());     // dynamic construction
+                System.IO.printf("age=%d\n", d.age);     // 7
+                d.bark();                                 // Woof!
+                t.method("bark").invoke(d);               // Woof!
+                return;
+            }
+        }
+    }
+}

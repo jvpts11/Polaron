@@ -1635,12 +1635,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
         const std::string src = typeOf(*cst->operand);
         const std::string& dst = cst->targetType;
-        // Release 0.1 supports numeric casts only; class casts need runtime
-        // type checks and exceptions (a later phase).
-        if (!isNumeric(dst)) {
-            error("cast<" + dst + "> is not supported yet; 0.1 casts only between numeric types", cst->loc);
-        } else if (!src.empty() && !isNumeric(src)) {
-            error("cannot cast '" + src + "' to '" + dst + "'; only numeric casts are supported", cst->loc);
+        const bool dstRef = dst == "Object" || lookupClass(baseType(dst)) != nullptr;
+        const bool srcRef = src.empty() || src == "Object" || src == "Type" || src == "Method" ||
+                            lookupClass(baseType(src)) != nullptr || isRefType(src);
+        if (isNumeric(dst)) {
+            if (!src.empty() && !isNumeric(src))
+                error("cannot cast '" + src + "' to '" + dst + "'; only numeric casts are supported",
+                      cst->loc);
+        } else if (dstRef && srcRef) {
+            // Reference downcast (spec 31): a pointer reinterpret; no runtime check yet.
+        } else {
+            error("cast<" + dst + "> is not supported here", cst->loc);
         }
         return dst;
     }
@@ -1962,6 +1967,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     call->args.size() == 1)
                     return "String";
                 if (mem->member == "method" && call->args.size() == 1) return "Method";
+                if (mem->member == "instantiate") return "Object";  // construct an instance
                 error("Type has no method '" + mem->member + "'", call->loc);
                 return "";
             }

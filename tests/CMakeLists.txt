@@ -1547,6 +1547,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # reflection construction (spec 31): Type.instantiate() + cast<T> downcast.
+        add_test(NAME codegen_reflect_instantiate_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/reflect_instantiate.ldp3"
+            "-DEXPECTED=Dog built age=7 Woof! Woof!"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # lazy (spec 37.3): a lazy local initializes on first access, once; an
         # unaccessed lazy local is never initialized.
         add_test(NAME codegen_lazy_init_runs COMMAND "${CMAKE_COMMAND}"

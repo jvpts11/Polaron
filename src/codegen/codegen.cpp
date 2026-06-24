@@ -310,6 +310,7 @@ struct CodeGenerator::Impl {
         if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
         if (t == "String" || t == "string") return builder.getPtrTy();  // ptr to {i64 len, ptr data}
         if (t == "Type" || t == "Method") return builder.getPtrTy();  // reflection tokens (spec 31)
+        if (t == "Object") return builder.getPtrTy();  // root reference type (spec 3.4)
         if (classes.count(t) > 0) return builder.getPtrTy();
         return builder.getIntNTy(intBits(t));
     }
@@ -360,6 +361,9 @@ struct CodeGenerator::Impl {
     // the unsigned int<->float opcodes.
     llvm::Value* emitCast(llvm::Value* v, const std::string& from, const std::string& to) {
         if (v == nullptr) return v;
+        // Reference cast (class/Object/reflection token): a pointer reinterpret -- a no-op
+        // with opaque pointers. No runtime type check yet (spec 31 downcasts).
+        if (llvmType(to)->isPointerTy() && v->getType()->isPointerTy()) return v;
         const bool toFloat = isFloatType(to);
         const bool fromFloat = isFloatType(from);
         if (toFloat) {
@@ -805,6 +809,7 @@ struct CodeGenerator::Impl {
                         return "String";
                     if (mem->member == "methodCount" || mem->member == "fieldCount") return "int";
                     if (mem->member == "method") return "Method";
+                    if (mem->member == "instantiate") return "Object";
                 }
                 if (typeName(*mem->object) == "Method") {
                     if (mem->member == "name") return "String";
@@ -1226,8 +1231,8 @@ struct CodeGenerator::Impl {
             typeStructTy = llvm::StructType::create(
                 context,
                 {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(),
-                 builder.getInt64Ty(), builder.getPtrTy()},
-                "ReflectType");
+                 builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy()},
+                "ReflectType");  // ..., i64 size, ptr ctorFn  (for instantiate, spec 31)
         return typeStructTy;
     }
     // The reflection Method token layout: { ptr name, ptr fn }. Lazily created.
@@ -1278,8 +1283,16 @@ struct CodeGenerator::Impl {
                                               llvm::GlobalValue::PrivateLinkage,
                                               llvm::ConstantArray::get(fnArrTy, fns),
                                               "methodfns." + className);
+        // size of an instance + the (no-arg) constructor, for Type.instantiate().
+        llvm::Constant* size = llvm::ConstantInt::get(builder.getInt64Ty(), 8);
+        if (auto cit = classes.find(className); cit != classes.end())
+            size = llvm::cast<llvm::Constant>(sizeOf(cit->second.type));
+        auto ctorIt = functions.find(className + "." + className);
+        llvm::Constant* ctorFn = ctorIt != functions.end()
+                                     ? llvm::cast<llvm::Constant>(ctorIt->second)
+                                     : llvm::ConstantPointerNull::get(builder.getPtrTy());
         llvm::Constant* obj = llvm::ConstantStruct::get(
-            typeTokenType(), {nameStr, mcount, mnames, fnsG, fcount, fnames});
+            typeTokenType(), {nameStr, mcount, mnames, fnsG, fcount, fnames, size, ctorFn});
         auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
                                            llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
         typeGlobals[className] = g;
@@ -2233,6 +2246,19 @@ struct CodeGenerator::Impl {
                     builder.CreateBr(hdr);
                     builder.SetInsertPoint(end);
                     return result;
+                }
+                // Type.instantiate(): allocate an instance and run its no-arg constructor,
+                // returning it as Object (spec 31).
+                if (mem->member == "instantiate") {
+                    llvm::Value* size = builder.CreateLoad(
+                        builder.getInt64Ty(), builder.CreateStructGEP(typeTokenType(), t, 6), "size");
+                    llvm::Value* ctorFn = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 7), "ctor");
+                    llvm::Value* obj = builder.CreateCall(mallocFn(), {size}, "inst");
+                    llvm::FunctionType* ft =
+                        llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+                    builder.CreateCall(ft, ctorFn, {obj});  // no-arg constructor
+                    return obj;
                 }
             }
             // Method reflection (spec 31): name() and invoke(receiver) for no-arg methods.
