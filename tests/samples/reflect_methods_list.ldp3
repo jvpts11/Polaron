@@ -1,0 +1,31 @@
+program ReflectMethodsList;
+
+// Reflection collections (spec 31): Type.methods() / Type.fields() return an
+// ArrayList of the member names (forced-monomorphized as ArrayList<String>).
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            private int age;
+            public constructor Dog() { this.age = 0; }
+            public method bark() returns void { return; }
+            public method sit() returns void { return; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Type t = reflect.typeOf<Dog>();
+                ArrayList<String> ms = t.methods();
+                System.IO.printf("methods size=%d\n", ms.size());
+                for (mutable int i = 0; i < ms.size(); i++) {
+                    Console.println(ms.get(i));
+                }
+                ArrayList<String> fs = t.fields();
+                System.IO.printf("fields size=%d\n", fs.size());
+                for (mutable int i = 0; i < fs.size(); i++) {
+                    Console.println(fs.get(i));
+                }
+                return;
+            }
+        }
+    }
+}

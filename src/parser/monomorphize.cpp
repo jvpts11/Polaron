@@ -567,6 +567,11 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
     }
     if (const auto* x = dynamic_cast<const ast::MemberExpr*>(e)) { collectExpr(x->object.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::CallExpr*>(e)) {
+        // Reflection t.methods()/t.fields() return ArrayList<String>; force its
+        // monomorphization here since the user never names the type (spec 31).
+        if (const auto* m = dynamic_cast<const ast::MemberExpr*>(x->callee.get()))
+            if ((m->member == "methods" || m->member == "fields") && g.count("ArrayList") > 0)
+                out["ArrayList$String"] = {"ArrayList", {"String"}};
         collectExpr(x->callee.get(), g, out);
         for (const auto& a : x->args) collectExpr(a.get(), g, out);
         return;

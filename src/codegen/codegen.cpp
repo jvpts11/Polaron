@@ -810,6 +810,7 @@ struct CodeGenerator::Impl {
                     if (mem->member == "methodCount" || mem->member == "fieldCount") return "int";
                     if (mem->member == "method") return "Method";
                     if (mem->member == "instantiate") return "Object";
+                    if (mem->member == "methods" || mem->member == "fields") return "ArrayList$String";
                 }
                 if (typeName(*mem->object) == "Method") {
                     if (mem->member == "name") return "String";
@@ -2259,6 +2260,46 @@ struct CodeGenerator::Impl {
                         llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
                     builder.CreateCall(ft, ctorFn, {obj});  // no-arg constructor
                     return obj;
+                }
+                // Type.methods()/fields() (spec 31): build an ArrayList<String> of the
+                // member names (forced-monomorphized as ArrayList$String).
+                if (mem->member == "methods" || mem->member == "fields") {
+                    const bool isMethods = (mem->member == "methods");
+                    auto clsIt = classes.find("ArrayList$String");
+                    auto ctorIt = functions.find("ArrayList$String.ArrayList$String");
+                    auto addIt = functions.find("ArrayList$String.add");
+                    if (clsIt == classes.end() || ctorIt == functions.end() ||
+                        addIt == functions.end()) {
+                        error("internal: ArrayList<String> not available for reflection", mem->loc);
+                        return nullptr;
+                    }
+                    llvm::Value* list =
+                        builder.CreateCall(mallocFn(), {sizeOf(clsIt->second.type)}, "list");
+                    builder.CreateCall(ctorIt->second, {list});
+                    llvm::Value* count = builder.CreateLoad(
+                        builder.getInt64Ty(),
+                        builder.CreateStructGEP(typeTokenType(), t, isMethods ? 1 : 4), "n");
+                    llvm::Value* arr = builder.CreateLoad(
+                        builder.getPtrTy(),
+                        builder.CreateStructGEP(typeTokenType(), t, isMethods ? 2 : 5), "names");
+                    llvm::Function* curFn = currentFn;
+                    llvm::Value* iSlot = createEntryAlloca("li", builder.getInt64Ty());
+                    builder.CreateStore(builder.getInt64(0), iSlot);
+                    auto* hdr = llvm::BasicBlock::Create(context, "l.hdr", curFn);
+                    auto* body = llvm::BasicBlock::Create(context, "l.body", curFn);
+                    auto* done = llvm::BasicBlock::Create(context, "l.done", curFn);
+                    builder.CreateBr(hdr);
+                    builder.SetInsertPoint(hdr);
+                    llvm::Value* i = builder.CreateLoad(builder.getInt64Ty(), iSlot, "i");
+                    builder.CreateCondBr(builder.CreateICmpSLT(i, count), body, done);
+                    builder.SetInsertPoint(body);
+                    llvm::Value* nm = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), arr, i), "nm");
+                    builder.CreateCall(addIt->second, {list, nm});
+                    builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
+                    builder.CreateBr(hdr);
+                    builder.SetInsertPoint(done);
+                    return list;
                 }
             }
             // Method reflection (spec 31): name() and invoke(receiver) for no-arg methods.

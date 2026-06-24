@@ -1968,6 +1968,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     return "String";
                 if (mem->member == "method" && call->args.size() == 1) return "Method";
                 if (mem->member == "instantiate") return "Object";  // construct an instance
+                if ((mem->member == "methods" || mem->member == "fields") && call->args.empty())
+                    return "ArrayList$String";  // member names as a list
                 error("Type has no method '" + mem->member + "'", call->loc);
                 return "";
             }
