@@ -118,6 +118,17 @@ public bundle std {
             public override method isSome() returns boolean { return false; }
         }
     }
+    public namespace System.Runtime {
+        // Base for runtime exceptions (polymorphic, so it can be caught). UnimportedType
+        // Exception is thrown when an unimported type is used (spec 30).
+        public abstract class Exception {
+            public abstract method message() returns String;
+        }
+        public class UnimportedTypeException extends Exception {
+            public constructor UnimportedTypeException() {}
+            public override method message() returns String { return "type was unimported"; }
+        }
+    }
     public namespace System.Collections {
         // A growable list backed by a dynamic array that doubles on overflow (spec 31 uses
         // ArrayList<Method>/ArrayList<Field>; also a general-purpose collection).

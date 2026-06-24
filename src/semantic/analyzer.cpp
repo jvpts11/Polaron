@@ -1073,6 +1073,7 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     auto it = typeNamespace_.find(n);
     if (it == typeNamespace_.end()) return;        // primitive / unknown (other checks catch it)
     if (it->second == currentNamespace_) return;   // same namespace -> visible
+    if (it->second.rfind("System", 0) == 0) return;  // stdlib/prelude -> always available
     if (currentImports_.count(n) > 0) return;      // brought in by import
     error("type '" + n + "' is in namespace '" + it->second + "'; import it (import " + it->second +
               "." + n + ";) to use it here",
@@ -1405,6 +1406,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         } else if (r->type != "region") {
             error("'" + rel->region + "' is not a region", rel->loc);
         }
+        return;
+    }
+    if (const auto* um = dynamic_cast<const ast::UnimportStmt*>(&stmt)) {
+        if (lookupClass(baseType(um->target)) == nullptr)
+            error("cannot " + std::string(um->isReimport ? "reimport" : "unimport") + " '" +
+                      um->target + "': not a known class",
+                  um->loc);
         return;
     }
     if (const auto* cm = dynamic_cast<const ast::CascadeMoveStmt*>(&stmt)) {

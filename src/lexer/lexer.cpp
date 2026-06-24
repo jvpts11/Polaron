@@ -88,6 +88,8 @@ TokenKind keywordKind(std::string_view text) {
         {"goto", TokenKind::KwGoto},
         {"abstainfrom", TokenKind::KwAbstainfrom},
         {"reinstate", TokenKind::KwReinstate},
+        {"unimport", TokenKind::KwUnimport},
+        {"reimport", TokenKind::KwReimport},
         {"try", TokenKind::KwTry},
         {"catch", TokenKind::KwCatch},
         {"finally", TokenKind::KwFinally},

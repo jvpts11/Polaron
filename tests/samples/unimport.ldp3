@@ -1,0 +1,31 @@
+program Unimport;
+
+// Unimport (spec 30): `unimport Dog` logically removes the class at runtime -- using it
+// (e.g. `new Dog()`) then throws UnimportedTypeException. `reimport Dog` re-enables it.
+// (The aggressive physical code overwrite is layered on top; see the codegen.)
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public constructor Dog() {}
+            public method bark() returns void { Console.println("Woof!"); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog a = new Dog() on heap;
+                a.bark();                            // Woof!
+                unimport Dog;
+                try {
+                    Dog b = new Dog() on heap;       // throws UnimportedTypeException
+                    Console.println("should not reach");
+                } catch (UnimportedTypeException e) {
+                    Console.println("caught unimported");
+                }
+                reimport Dog;
+                Dog c = new Dog() on heap;           // alive again
+                c.bark();                             // Woof!
+                return;
+            }
+        }
+    }
+}

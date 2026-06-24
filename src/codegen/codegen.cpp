@@ -276,6 +276,8 @@ struct CodeGenerator::Impl {
     std::unordered_set<std::string> abstainedLabels;  // labels named by some `abstainfrom` (spec 7.11)
     std::unordered_map<std::string, llvm::GlobalVariable*> abstainCounters;  // label -> runtime counter
     std::unordered_map<std::string, llvm::GlobalVariable*> instanceCounters;  // class -> live-instance count
+    std::unordered_set<std::string> unimportableClasses;  // classes named by unimport/reimport (spec 30)
+    std::unordered_map<std::string, llvm::GlobalVariable*> aliveFlags;  // class -> i32 alive flag (1=alive)
     std::vector<llvm::BasicBlock*> ehPadStack;   // active try landing pads (catchswitch blocks)
     llvm::Constant* ehThrowInfoCache = nullptr;  // shared carrier-ptr ThrowInfo (_TI1PEAX), lazy
     llvm::Constant* ehTypeDescCache = nullptr;   // shared carrier-ptr type descriptor, lazy
@@ -1786,6 +1788,7 @@ struct CodeGenerator::Impl {
             error("unknown class '" + cn + "'", nw.loc);
             return nullptr;
         }
+        emitAliveGuard(cn);  // spec 30: instantiating an unimported type throws
         llvm::Value* objPtr = nullptr;
         if (!nw.region.empty()) {
             objPtr = emitRegionBumpAlloc(nw.region, cit->second.type, nw.loc);
@@ -2482,6 +2485,46 @@ struct CodeGenerator::Impl {
         return g;
     }
 
+    // Physically overwrites the machine code of a class's methods in RAM (spec 30
+    // aggressive unload). Implemented in Slice B; a no-op stub for now.
+    void emitPhysicalUnload(const std::string& /*className*/) {}
+
+    // Constructs and throws a System.Runtime.UnimportedTypeException (spec 30): used when
+    // an unimported type is instantiated or its methods are called. Terminates the block.
+    void emitThrowUnimported() {
+        auto cit = classes.find("UnimportedTypeException");
+        if (cit == classes.end()) { builder.CreateUnreachable(); return; }
+        llvm::Value* exc = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "unimp.exc");
+        if (auto f = functions.find("UnimportedTypeException.UnimportedTypeException");
+            f != functions.end())
+            builder.CreateCall(f->second, {exc});  // sets the vtable, so catch can match the type
+        emitThrowObject(exc);
+    }
+    // If `cn` is unimportable, throws UnimportedTypeException when its alive flag is 0,
+    // continuing on a fresh block for the live path (spec 30).
+    void emitAliveGuard(const std::string& cn) {
+        if (unimportableClasses.count(cn) == 0) return;
+        llvm::Value* alive = builder.CreateLoad(builder.getInt32Ty(), aliveFlag(cn), "alive");
+        llvm::Function* f = currentFn;
+        auto* deadBB = llvm::BasicBlock::Create(context, "unimported", f);
+        auto* okBB = llvm::BasicBlock::Create(context, "alive.ok", f);
+        builder.CreateCondBr(builder.CreateICmpEQ(alive, builder.getInt32(0)), deadBB, okBB);
+        builder.SetInsertPoint(deadBB);
+        emitThrowUnimported();
+        builder.SetInsertPoint(okBB);
+    }
+
+    // The per-class "alive" flag for unimport (spec 30): a private global i32, 1 = alive.
+    llvm::GlobalVariable* aliveFlag(const std::string& name) {
+        auto it = aliveFlags.find(name);
+        if (it != aliveFlags.end()) return it->second;
+        auto* g = new llvm::GlobalVariable(module, builder.getInt32Ty(), /*isConstant=*/false,
+                                           llvm::GlobalValue::PrivateLinkage, builder.getInt32(1),
+                                           "alive." + name);
+        aliveFlags[name] = g;
+        return g;
+    }
+
     // The runtime reference counter for an abstainable label (spec 7.11), lazily
     // created as a private global initialized to 0 (enabled).
     llvm::GlobalVariable* abstainCounter(const std::string& name) {
@@ -2499,6 +2542,7 @@ struct CodeGenerator::Impl {
     void scanAbstained(const ast::Stmt* st) {
         if (st == nullptr) return;
         if (const auto* a = dynamic_cast<const ast::AbstainfromStmt*>(st)) { abstainedLabels.insert(a->name); return; }
+        if (const auto* u = dynamic_cast<const ast::UnimportStmt*>(st)) { unimportableClasses.insert(baseType(u->target)); return; }
         auto blk = [&](const ast::Block& b) { for (const auto& s : b.statements) scanAbstained(s.get()); };
         if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) { blk(i->thenBlock); if (i->elseBlock) blk(*i->elseBlock); return; }
         if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
@@ -3066,6 +3110,13 @@ struct CodeGenerator::Impl {
             llvm::Value* res =
                 incdec->isIncrement ? builder.CreateAdd(cur, one) : builder.CreateSub(cur, one);
             builder.CreateStore(res, slot);
+            return;
+        }
+        if (const auto* um = dynamic_cast<const ast::UnimportStmt*>(&stmt)) {
+            // Logical: flip the class's alive flag. (Physical code unload follows below.)
+            const std::string cn = baseType(um->target);
+            builder.CreateStore(builder.getInt32(um->isReimport ? 1 : 0), aliveFlag(cn));
+            if (!um->isReimport) emitPhysicalUnload(cn);  // spec 30: aggressive unload
             return;
         }
         if (const auto* cm = dynamic_cast<const ast::CascadeMoveStmt*>(&stmt)) {

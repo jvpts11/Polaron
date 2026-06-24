@@ -231,6 +231,16 @@ struct ReleaseStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// `unimport X;` / `reimport X;` (spec 30): logically remove a class at runtime (and
+// physically overwrite its code), or re-enable it.
+struct UnimportStmt : Stmt {
+    std::string target;          // the class name
+    bool isReimport = false;     // `reimport` re-enables; `unimport` removes
+    void dump(std::string& out, int /*indent*/) const override {
+        out += (isReimport ? "reimport " : "unimport ") + target;
+    }
+};
+
 // `cascade move tree from region A to region B [leaving persistents];` (spec 19.8):
 // moves an object and the graph it owns from one region to another.
 struct CascadeMoveStmt : Stmt {

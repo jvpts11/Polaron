@@ -1080,6 +1080,18 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return g;
     }
+    if (check(TokenKind::KwUnimport) || check(TokenKind::KwReimport)) {  // spec 30
+        auto u = std::make_unique<ast::UnimportStmt>();
+        u->loc = current().loc;
+        u->isReimport = match(TokenKind::KwReimport);
+        if (!u->isReimport) advance();  // 'unimport'
+        u->target = expect(TokenKind::Identifier, "a type name to (un)import").lexeme;
+        // Accept (and ignore) extra modifiers/granularity: `force`, `namespace`, dotted names.
+        while (match(TokenKind::Dot)) u->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
+        while (check(TokenKind::Identifier)) advance();  // e.g. `force`
+        expect(TokenKind::Semicolon, "';'");
+        return u;
+    }
     if (check(TokenKind::KwAbstainfrom) || check(TokenKind::KwReinstate)) {  // spec 7.11
         auto a = std::make_unique<ast::AbstainfromStmt>();
         a->loc = current().loc;
