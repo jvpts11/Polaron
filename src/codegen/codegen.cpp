@@ -276,6 +276,16 @@ struct CodeGenerator::Impl {
     // When emitting an async method's resume function, this is the ldp3_task* (the function's
     // state arg); `return X` completes that task instead of returning X (spec 20.2).
     llvm::Value* currentAsyncState = nullptr;
+    // Async state-machine lowering (spec 20.2): while emitting an async body whose code may
+    // suspend, `await` lowers to a suspend/resume split anywhere it appears (incl. inside loops).
+    bool asyncSM = false;
+    llvm::StructType* asyncSMState = nullptr;  // the heap state struct type
+    llvm::Value* asyncSMStatePtr = nullptr;    // the resume function's `st` argument
+    llvm::Function* asyncSMResume = nullptr;   // the resume function (continuation)
+    unsigned asyncSMAwaitBase = 0;             // field index of the first await-handle slot
+    int asyncSMAwaitIdx = 0;                   // next await's index / state number
+    llvm::BasicBlock* asyncSMSuspend = nullptr;
+    std::vector<std::pair<int, llvm::BasicBlock*>> asyncSMCases;  // (state index -> resume block)
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
     const std::vector<ast::ExprPtr>* currentInvariants = nullptr;  // contracts: class invariants
     struct LoopTargets {
@@ -1616,28 +1626,56 @@ struct CodeGenerator::Impl {
                                       mem->member);
         }
         if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
-            // Slice A: await blocks until the awaited task completes (task_wait), then reads its
-            // result slot back as the awaited type. (Suspension inside async = a later slice.)
             llvm::Value* taskObj = emitExpr(*aw->operand);
             if (taskObj == nullptr) return nullptr;
             const std::string taskCls = baseType(typeName(*aw->operand));  // Task$X
             auto cit = classes.find(taskCls);
             if (cit == classes.end()) { error("await of a non-Task value", aw->loc); return nullptr; }
-            auto hIt = cit->second.fieldIndex.find("h");
             llvm::Value* h = builder.CreateLoad(
                 builder.getInt64Ty(),
-                builder.CreateStructGEP(cit->second.type, taskObj, hIt->second, "task.h.addr"),
+                builder.CreateStructGEP(cit->second.type, taskObj,
+                                        cit->second.fieldIndex["h"], "task.h.addr"),
                 "task.h");
+            const std::string elem =
+                taskCls.rfind("Task$", 0) == 0 ? taskCls.substr(5) : taskCls;
+            // Inside an async state machine: save the handle, advance the state, and await -- which
+            // suspends (returns) if the task is not yet done, registering this resume block as the
+            // continuation. The entry switch jumps back here when the awaited task completes.
+            if (asyncSM) {
+                const int k = asyncSMAwaitIdx++;
+                llvm::Value* slot =
+                    builder.CreateStructGEP(asyncSMState, asyncSMStatePtr, asyncSMAwaitBase + k);
+                builder.CreateStore(h, slot);
+                builder.CreateStore(builder.getInt32(k + 1),
+                                    builder.CreateStructGEP(asyncSMState, asyncSMStatePtr, 0));
+                llvm::FunctionType* awTy = llvm::FunctionType::get(
+                    builder.getInt32Ty(),
+                    {builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy()}, false);
+                llvm::Value* suspended = builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_await", awTy),
+                    {h, asyncSMResume, asyncSMStatePtr}, "suspend?");
+                llvm::BasicBlock* resumeBlk = llvm::BasicBlock::Create(
+                    context, "resume" + std::to_string(k + 1), currentFn);
+                builder.CreateCondBr(builder.CreateICmpNE(suspended, builder.getInt32(0)),
+                                     asyncSMSuspend, resumeBlk);
+                asyncSMCases.push_back({k + 1, resumeBlk});
+                builder.SetInsertPoint(resumeBlk);
+                llvm::Value* savedH = builder.CreateLoad(
+                    builder.getInt64Ty(),
+                    builder.CreateStructGEP(asyncSMState, asyncSMStatePtr, asyncSMAwaitBase + k),
+                    "aw.saved");
+                llvm::FunctionType* trTy = llvm::FunctionType::get(
+                    builder.getInt64Ty(), {builder.getInt64Ty()}, false);
+                llvm::Value* r = builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_task_result", trTy), {savedH}, "aw.result");
+                return castTaskResult(r, elem);
+            }
+            // Non-async context (e.g. main): block until the task completes, then read its result.
             llvm::FunctionType* wtTy = llvm::FunctionType::get(
                 builder.getInt64Ty(), {builder.getInt64Ty()}, false);
-            llvm::Value* res = builder.CreateCall(
+            llvm::Value* r = builder.CreateCall(
                 module.getOrInsertFunction("__ldp3_task_wait", wtTy), {h}, "await");
-            llvm::Type* tt =
-                llvmType(taskCls.rfind("Task$", 0) == 0 ? taskCls.substr(5) : taskCls);
-            if (tt->isPointerTy()) return builder.CreateIntToPtr(res, tt);
-            if (tt->isDoubleTy()) return builder.CreateBitCast(res, tt);
-            if (tt->isIntegerTy()) return builder.CreateIntCast(res, tt, true);
-            return res;
+            return castTaskResult(r, elem);
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
             if (un->op == "&") return emitObjectPtr(*un->operand);  // address-of: the object pointer
@@ -3282,6 +3320,18 @@ struct CodeGenerator::Impl {
         }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
             const std::string declType = vd->isVar ? typeName(*vd->init) : typeRefName(vd->type);
+            // Inside an async state machine the local already lives in the heap state object
+            // (pre-bound); just evaluate the initializer (which may itself await) and store it.
+            if (asyncSM) {
+                auto it = locals.find(vd->name);
+                if (it != locals.end()) {
+                    llvm::Value* v = emitExpr(*vd->init);
+                    if (v != nullptr)
+                        builder.CreateStore(coerceToType(v, llvmType(it->second.type)),
+                                            it->second.storage);
+                    return;
+                }
+            }
             // Lazy local (spec 37.3): allocate storage now (a safe null/zero) plus an
             // "initialized" flag, but defer the initializer until the first read.
             if (vd->isLazy) {
@@ -4673,28 +4723,11 @@ struct CodeGenerator::Impl {
         return llvm::StructType::create(context, fields, mangled + "$state");
     }
 
-    // A top-level statement is an await-point if it is `T x = await e;`, `await e;`, or
-    // `return await e;` (slice B handles awaits in these straight-line positions).
-    static const ast::AwaitExpr* awaitPointOf(const ast::Stmt* s) {
-        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s))
-            return dynamic_cast<const ast::AwaitExpr*>(vd->init.get());
-        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s))
-            return dynamic_cast<const ast::AwaitExpr*>(es->expr.get());
-        if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(s))
-            return rs->value ? dynamic_cast<const ast::AwaitExpr*>(rs->value.get()) : nullptr;
-        return nullptr;
-    }
-    static bool asyncHasAwait(const ast::Block& body) {
-        for (const auto& s : body.statements)
-            if (awaitPointOf(s.get()) != nullptr) return true;
-        return false;
-    }
-
     // Emits an async method (spec 20.2) as two functions: a resume function holding the body
     // (whose `return X` completes the task), and a wrapper that allocates the state object, copies
     // the arguments in, schedules the resume on the worker pool, and returns the Task immediately.
     void emitAsyncMethod(const ast::ClassDecl& cls, const ast::MethodDecl& m) {
-        if (asyncHasAwait(m.body)) { emitAsyncStateMachine(cls, m); return; }
+        if (countAsyncAwaits(m.body) > 0) { emitAsyncStateMachine(cls, m); return; }
         const std::string mangled = cls.name + "." + m.name;
         llvm::StructType* stateTy = asyncStateType(m, mangled);
 
@@ -4779,21 +4812,87 @@ struct CodeGenerator::Impl {
         return res64;
     }
 
-    // Emits an async method whose body awaits (spec 20.2) as a state machine. Top-level locals and
-    // each await's task handle live in the heap state object so they survive suspension; the resume
-    // switches on the saved state index, and each await either reads its already-ready result or
-    // registers a continuation and returns (suspending the task until the awaited one completes).
+    // Collects every local declared anywhere in an async body (recursing into control flow), so
+    // they can live in the state object and survive suspension.
+    void scanAsyncLocals(const ast::Block& b, std::vector<std::pair<std::string, std::string>>& out) {
+        for (const auto& sp : b.statements) scanAsyncLocalsS(sp.get(), out);
+    }
+    void scanAsyncLocalsS(const ast::Stmt* s, std::vector<std::pair<std::string, std::string>>& out) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s))
+            out.push_back({vd->name, vd->isVar ? typeName(*vd->init) : typeRefName(vd->type)});
+        else if (const auto* i = dynamic_cast<const ast::IfStmt*>(s)) {
+            scanAsyncLocals(i->thenBlock, out);
+            if (i->elseBlock) scanAsyncLocals(*i->elseBlock, out);
+        } else if (const auto* w = dynamic_cast<const ast::WhileStmt*>(s)) {
+            scanAsyncLocals(w->body, out);
+        } else if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(s)) {
+            scanAsyncLocals(d->body, out);
+        } else if (const auto* f = dynamic_cast<const ast::ForStmt*>(s)) {
+            if (f->init) scanAsyncLocalsS(f->init.get(), out);
+            scanAsyncLocals(f->body, out);
+        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(s)) {
+            scanAsyncLocals(fe->body, out);
+        }
+    }
+    // Counts every await reachable in an async body (recursing into control flow + the await-
+    // bearing expressions), so the state object can reserve a handle slot per await.
+    int countAwaitsE(const ast::Expr* e) {
+        if (e == nullptr) return 0;
+        if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(e))
+            return 1 + countAwaitsE(aw->operand.get());
+        if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e))
+            return countAwaitsE(b->lhs.get()) + countAwaitsE(b->rhs.get());
+        if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e))
+            return countAwaitsE(u->operand.get());
+        if (const auto* c = dynamic_cast<const ast::CallExpr*>(e)) {
+            int n = 0;
+            for (const auto& a : c->args) n += countAwaitsE(a.get());
+            return n;
+        }
+        if (const auto* ca = dynamic_cast<const ast::CastExpr*>(e)) return countAwaitsE(ca->operand.get());
+        if (const auto* mx = dynamic_cast<const ast::MemberExpr*>(e)) return countAwaitsE(mx->object.get());
+        if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e))
+            return countAwaitsE(ix->array.get()) + countAwaitsE(ix->index.get());
+        return 0;
+    }
+    int countAsyncAwaitsS(const ast::Stmt* s) {
+        int n = 0;
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) n += countAwaitsE(vd->init.get());
+        else if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s)) n += countAwaitsE(es->expr.get());
+        else if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(s)) n += countAwaitsE(rs->value.get());
+        else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) n += countAwaitsE(as->value.get());
+        else if (const auto* i = dynamic_cast<const ast::IfStmt*>(s)) {
+            n += countAwaitsE(i->cond.get()) + countAsyncAwaits(i->thenBlock);
+            if (i->elseBlock) n += countAsyncAwaits(*i->elseBlock);
+        } else if (const auto* w = dynamic_cast<const ast::WhileStmt*>(s)) {
+            n += countAwaitsE(w->cond.get()) + countAsyncAwaits(w->body);
+        } else if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(s)) {
+            n += countAsyncAwaits(d->body) + countAwaitsE(d->cond.get());
+        } else if (const auto* f = dynamic_cast<const ast::ForStmt*>(s)) {
+            if (f->init) n += countAsyncAwaitsS(f->init.get());
+            n += countAwaitsE(f->cond.get()) + countAsyncAwaits(f->body);
+        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(s)) {
+            n += countAsyncAwaits(fe->body);
+        }
+        return n;
+    }
+    int countAsyncAwaits(const ast::Block& b) {
+        int n = 0;
+        for (const auto& sp : b.statements) n += countAsyncAwaitsS(sp.get());
+        return n;
+    }
+
+    // Emits an async method whose body awaits (spec 20.2) as a state machine, via coroutine
+    // lowering: every local lives in the heap state object, the body is emitted with its natural
+    // control flow, and each `await` (anywhere -- including inside loops/ifs) splits its block into
+    // a suspend/resume pair. The entry switch jumps to the saved resume block; `await` in emitExpr
+    // either reads an already-ready result or registers a continuation and returns (suspends).
     void emitAsyncStateMachine(const ast::ClassDecl& cls, const ast::MethodDecl& m) {
         const std::string mangled = cls.name + "." + m.name;
-        // Scan top-level locals and count await-points.
-        std::vector<std::pair<std::string, std::string>> tlocals;  // (name, type)
-        int awaitCount = 0;
-        for (const auto& sp : m.body.statements) {
-            if (awaitPointOf(sp.get()) != nullptr) ++awaitCount;
-            if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(sp.get()))
-                tlocals.push_back({vd->name,
-                                   vd->isVar ? typeName(*vd->init) : typeRefName(vd->type)});
-        }
+        std::vector<std::pair<std::string, std::string>> tlocals;
+        scanAsyncLocals(m.body, tlocals);
+        const int awaitCount = countAsyncAwaits(m.body);
+
         // State layout: {i32 state, ptr task, args..., locals..., awaitHandles(i64)...}.
         std::vector<llvm::Type*> fields = {builder.getInt32Ty(), builder.getPtrTy()};
         const unsigned argBase = 2;
@@ -4830,70 +4929,33 @@ struct CodeGenerator::Impl {
                 builder.CreateStructGEP(stateTy, st, localBase + j, tlocals[j].first),
                 tlocals[j].second};
 
-        std::vector<llvm::BasicBlock*> seg;
-        for (int k = 0; k <= awaitCount; ++k)
-            seg.push_back(llvm::BasicBlock::Create(context, "seg" + std::to_string(k), res));
+        llvm::BasicBlock* bodyStart = llvm::BasicBlock::Create(context, "body", res);
         llvm::BasicBlock* suspendBlk = llvm::BasicBlock::Create(context, "suspend", res);
-        // Dispatch on the saved state index (default = start).
         llvm::Value* stateVal = builder.CreateLoad(
             builder.getInt32Ty(), builder.CreateStructGEP(stateTy, st, 0, "st.state.addr"), "st.state");
-        llvm::SwitchInst* sw = builder.CreateSwitch(stateVal, seg[0], awaitCount);
-        for (int k = 1; k <= awaitCount; ++k) sw->addCase(builder.getInt32(k), seg[k]);
+        llvm::SwitchInst* sw = builder.CreateSwitch(stateVal, bodyStart, awaitCount);
 
-        llvm::FunctionType* awTy = llvm::FunctionType::get(
-            builder.getInt32Ty(),
-            {builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy()}, false);
-        llvm::FunctionType* trTy = llvm::FunctionType::get(
-            builder.getInt64Ty(), {builder.getInt64Ty()}, false);
+        // Enter state-machine mode: awaits in emitExpr now suspend/resume and record their cases.
+        asyncSM = true;
+        asyncSMState = stateTy;
+        asyncSMStatePtr = st;
+        asyncSMResume = res;
+        asyncSMAwaitBase = awaitBase;
+        asyncSMAwaitIdx = 0;
+        asyncSMSuspend = suspendBlk;
+        asyncSMCases.clear();
 
-        int k = 0;  // await index
-        builder.SetInsertPoint(seg[0]);
-        for (const auto& sp : m.body.statements) {
-            const ast::Stmt* s = sp.get();
-            if (const ast::AwaitExpr* aw = awaitPointOf(s)) {
-                // Evaluate the awaited Task, save its handle, advance the state, and await.
-                llvm::Value* taskObj = emitExpr(*aw->operand);
-                const std::string taskCls = baseType(typeName(*aw->operand));  // Task$U
-                auto cit = classes.find(taskCls);
-                auto hIt = cit->second.fieldIndex.find("h");
-                llvm::Value* h = builder.CreateLoad(
-                    builder.getInt64Ty(),
-                    builder.CreateStructGEP(cit->second.type, taskObj, hIt->second), "aw.h");
-                builder.CreateStore(h, builder.CreateStructGEP(stateTy, st, awaitBase + k));
-                builder.CreateStore(builder.getInt32(k + 1), builder.CreateStructGEP(stateTy, st, 0));
-                llvm::Value* suspended = builder.CreateCall(
-                    module.getOrInsertFunction("__ldp3_await", awTy), {h, res, st}, "suspend?");
-                builder.CreateCondBr(
-                    builder.CreateICmpNE(suspended, builder.getInt32(0)), suspendBlk, seg[k + 1]);
-                // Resume point: read the awaited result.
-                builder.SetInsertPoint(seg[k + 1]);
-                llvm::Value* savedH = builder.CreateLoad(
-                    builder.getInt64Ty(), builder.CreateStructGEP(stateTy, st, awaitBase + k), "aw.saved");
-                llvm::Value* r = builder.CreateCall(
-                    module.getOrInsertFunction("__ldp3_task_result", trTy), {savedH}, "aw.result");
-                const std::string u = taskCls.rfind("Task$", 0) == 0 ? taskCls.substr(5) : taskCls;
-                llvm::Value* rv = castTaskResult(r, u);
-                if (dynamic_cast<const ast::ReturnStmt*>(s) != nullptr) {
-                    emitTaskComplete(rv);
-                    builder.CreateRetVoid();
-                } else if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) {
-                    builder.CreateStore(rv, locals[vd->name].storage);
-                }
-                ++k;
-            } else if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) {
-                // Non-await local: evaluate and store into its state slot (not an alloca).
-                llvm::Value* v = emitExpr(*vd->init);
-                if (v != nullptr) builder.CreateStore(v, locals[vd->name].storage);
-            } else {
-                emitStatement(*s);
-            }
-        }
+        builder.SetInsertPoint(bodyStart);
+        emitBlock(m.body, /*newScope=*/false);  // natural control flow; awaits split their blocks
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             emitTaskComplete(nullptr);
             builder.CreateRetVoid();
         }
         builder.SetInsertPoint(suspendBlk);
         builder.CreateRetVoid();
+        for (const auto& [idx, blk] : asyncSMCases) sw->addCase(builder.getInt32(idx), blk);
+
+        asyncSM = false;
         currentAsyncState = nullptr;
         emitAsyncWrapper(stateTy, m, mangled);
     }

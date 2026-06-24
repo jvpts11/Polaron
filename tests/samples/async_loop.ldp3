@@ -1,0 +1,30 @@
+program AsyncLoop;
+
+// async/await with control flow (spec 20.2), slice C: awaiting INSIDE a loop. The state machine
+// is lowered as a coroutine -- every local lives in the heap state object and the body keeps its
+// natural control flow, so each `await` (here, once per iteration) splits its block into a
+// suspend/resume pair and the entry switch jumps back into the loop on resume. Sums 1..5 = 15.
+
+public bundle main {
+    import System.IO.Console;
+    public namespace app {
+        public class Main {
+            public static async method val(int n) returns int {
+                return n;
+            }
+            public static async method sumLoop() returns int {
+                mutable int total = 0;
+                for (mutable int i = 1; i <= 5; i++) {
+                    int x = await Main.val(i);   // suspend/resume inside the loop
+                    total = total + x;
+                }
+                return total;
+            }
+            public static method main(string[] args) returns void {
+                Task<int> t = Main.sumLoop();
+                System.IO.Console.printf("loopsum=%d\n", await t);   // 15
+                return;
+            }
+        }
+    }
+}
