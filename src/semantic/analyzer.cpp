@@ -1697,6 +1697,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
 
     if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
         if (ri->size) typeOf(*ri->size);
+        if (ri->atAddress) {  // itself.at(addr, size): the address must be numeric/address
+            const std::string at = typeOf(*ri->atAddress);
+            if (!at.empty() && !isNumeric(at))
+                error("region address must be a number or address, got '" + at + "'", ri->loc);
+        }
         // Constrained types must exist (dotted family names like Animal.X are a
         // later refinement and are skipped here).
         for (const auto& list : {ri->accepts, ri->rejects}) {

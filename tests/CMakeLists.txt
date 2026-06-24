@@ -1576,6 +1576,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # F9 freestanding: region over fixed memory -- itself.at(addr, size), for memory-mapped HW.
+        add_test(NAME codegen_region_at_address_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_at_address.ldp3"
+            "-DEXPECTED=v=77 raw=77"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # SIMD vectors (vec2/3/4): construction, element-wise ops, .xyzw + [i], by-value.
         add_test(NAME codegen_simd_vectors_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

@@ -1750,7 +1750,7 @@ struct CodeGenerator::Impl {
             return builder.CreateLoad(llvmType(vt), vp, "try.value");
         }
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
-            return emitRegionAllocate(ri->size.get());
+            return emitRegionAllocate(ri->size.get(), ri->atAddress.get());
         }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
             return emitCast(emitExpr(*cst->operand), typeName(*cst->operand), cst->targetType);
@@ -1974,7 +1974,9 @@ struct CodeGenerator::Impl {
         }
         llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage, "region");
         llvm::Value* used = builder.CreateLoad(builder.getInt64Ty(), block, "used");
-        llvm::Value* dataBase = builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 16, "rgn.data");
+        llvm::Value* dataBase = builder.CreateLoad(
+            builder.getPtrTy(), builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 16, "rgn.dbase"),
+            "rgn.data");
         llvm::Value* objPtr = builder.CreateGEP(builder.getInt8Ty(), dataBase, used, "rgn.obj");
         llvm::Value* aligned = builder.CreateAnd(builder.CreateAdd(sizeOf(objType), builder.getInt64(7)),
                                                  builder.getInt64(~static_cast<std::uint64_t>(7)));
@@ -1982,10 +1984,12 @@ struct CodeGenerator::Impl {
         return objPtr;
     }
 
-    // itself.allocate(size): malloc a region block and initialize its header.
-    // `size` is a ByteSize (read .bytes) or a raw integer count of bytes.
+    // itself.allocate(size) / itself.at(addr, size): create a region. The block header is
+    // [i64 used][i64 cap][ptr dataBase] (24 bytes). For allocate, dataBase points just past the
+    // header in the same malloc'd block; for `at`, the header is malloc'd but dataBase is the fixed
+    // address (spec 17.8 / 36.9). `size` is a ByteSize (read .bytes) or a raw byte count;
     // accepts/rejects are compile-time only, so codegen ignores them.
-    llvm::Value* emitRegionAllocate(const ast::Expr* sizeExpr) {
+    llvm::Value* emitRegionAllocate(const ast::Expr* sizeExpr, const ast::Expr* atAddr = nullptr) {
         llvm::Value* nbytes = builder.getInt64(0);
         if (sizeExpr != nullptr) {
             llvm::Value* arg = emitExpr(*sizeExpr);
@@ -2000,11 +2004,24 @@ struct CodeGenerator::Impl {
                 nbytes = fitInt(arg, 64);
             }
         }
-        llvm::Value* total = builder.CreateAdd(builder.getInt64(16), nbytes);
-        llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "region");
+        llvm::Value* block;
+        llvm::Value* dataBase;
+        if (atAddr != nullptr) {
+            llvm::Value* addr = emitExpr(*atAddr);
+            if (addr == nullptr) return nullptr;
+            block = builder.CreateCall(mallocFn(), {builder.getInt64(24)}, "region");
+            dataBase = builder.CreateIntToPtr(
+                builder.CreateIntCast(addr, builder.getInt64Ty(), false), builder.getPtrTy());
+        } else {
+            block = builder.CreateCall(
+                mallocFn(), {builder.CreateAdd(builder.getInt64(24), nbytes)}, "region");
+            dataBase = builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 24, "rgn.databegin");
+        }
         builder.CreateStore(builder.getInt64(0), block);  // used = 0
-        llvm::Value* capPtr = builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 8, "rgn.cap");
-        builder.CreateStore(nbytes, capPtr);  // capacity = nbytes
+        builder.CreateStore(nbytes,
+                            builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 8, "rgn.cap"));
+        builder.CreateStore(dataBase,
+                            builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 16, "rgn.dbase"));
         return block;
     }
 

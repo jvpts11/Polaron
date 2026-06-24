@@ -2004,13 +2004,21 @@ ast::ExprPtr Parser::parseRegionInit() {
     e->loc = current().loc;
     expect(TokenKind::KwItself, "'itself'");
     expect(TokenKind::Dot, "'.' after 'itself'");
-    const Token method = expect(TokenKind::Identifier, "'allocate'");
-    if (method.lexeme != "allocate") {
-        fail("only itself.allocate(...) is supported for now, not 'itself." + method.lexeme + "'",
+    const Token method = expect(TokenKind::Identifier, "'allocate' or 'at'");
+    if (method.lexeme != "allocate" && method.lexeme != "at") {
+        fail("only itself.allocate(...) / itself.at(addr, size) are supported, not 'itself." +
+                 method.lexeme + "'",
              method.loc);
     }
     expect(TokenKind::LParen, "'('");
-    e->size = parseExpression();
+    if (method.lexeme == "at") {
+        // itself.at(addr, size): a region over fixed memory (spec 17.8 / 36.9).
+        e->atAddress = parseExpression();
+        expect(TokenKind::Comma, "',' between address and size in itself.at(addr, size)");
+        e->size = parseExpression();
+    } else {
+        e->size = parseExpression();
+    }
     expect(TokenKind::RParen, "')'");
     while (check(TokenKind::Dot)) {
         advance();  // '.'

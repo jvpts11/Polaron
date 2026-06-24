@@ -153,7 +153,8 @@ struct TryExpr : Expr {
 // `.rejects({...})` type constraints (spec 17.2-17.3). Constraints are checked
 // at compile time; the runtime exception form arrives with exceptions (F6).
 struct RegionInitExpr : Expr {
-    ExprPtr size;                      // the allocate(...) byte size
+    ExprPtr size;                      // the allocate(...) / at(...) byte size
+    ExprPtr atAddress;                 // itself.at(addr, size): a region over fixed memory (null = allocate)
     std::vector<std::string> accepts;  // empty = accepts anything
     std::vector<std::string> rejects;
     void dump(std::string& out, int indent) const override;

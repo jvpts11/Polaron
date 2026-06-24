@@ -1,0 +1,30 @@
+program RegionAtAddress;
+
+// Region over fixed memory (spec 17.8 / 36.9): `itself.at(addr, size)` makes a region whose
+// objects live at a fixed address -- the basis for memory-mapped hardware (e.g. a VGA buffer) in
+// freestanding code. `new ... in region` bump-allocates starting at that address; `release` frees
+// only the region's small header, never the fixed memory. Here a heap block stands in for the
+// hardware address so the test is safe.
+
+public bundle main {
+    import System.IO.Console;
+    import System.Memory.Units.bytes;
+    public namespace app {
+        public class Cell {
+            public mutable int v;
+            public constructor Cell() { this.v = 0; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                address mem = Memory.alloc(256);          // stand-in for a fixed hardware address
+                region hw = itself.at(mem, 256 bytes);
+                Cell* c = new Cell() in region hw;         // placed at the fixed address
+                c.v = 77;
+                System.IO.Console.printf("v=%d raw=%d\n", c.v, Memory.read<int>(mem));  // 77 77
+                release region hw;                          // frees the header, not the fixed memory
+                Memory.free(mem);
+                return;
+            }
+        }
+    }
+}
