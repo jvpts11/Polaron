@@ -1493,6 +1493,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # SIMD vectors (vec2/3/4): construction, element-wise ops, .xyzw + [i], by-value.
+        add_test(NAME codegen_simd_vectors_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/simd_vectors.ldp3"
+            "-DEXPECTED=c=11,22,33,44 d.z=6 dot=32 idxsum=110"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # defined behaviour: saturating float->int cast + unary minus on float (no UB).
         add_test(NAME codegen_defined_conversions_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

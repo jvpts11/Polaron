@@ -46,6 +46,21 @@ unsigned intBits(const std::string& t) {
 }
 bool isNumeric(const std::string& t) { return isIntName(t) || isFloatType(t); }
 
+// SIMD vector types vec2/vec3/vec4 (float32 elements). Width (2/3/4) or 0; lane index or -1.
+int vecWidth(const std::string& t) {
+    if (t == "vec2") return 2;
+    if (t == "vec3") return 3;
+    if (t == "vec4") return 4;
+    return 0;
+}
+int vecLane(const std::string& m) {
+    if (m == "x" || m == "r") return 0;
+    if (m == "y" || m == "g") return 1;
+    if (m == "z" || m == "b") return 2;
+    if (m == "w" || m == "a") return 3;
+    return -1;
+}
+
 // Tuple types are spelled "(T0,T1,...)" (spec 22.5).
 bool isTupleType(const std::string& t) {
     return t.size() >= 2 && t.front() == '(' && t.back() == ')';
@@ -1681,6 +1696,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (const MethodInfo* om = findMethod(baseType(lt), "operator" + op)) {
             return om->returnType;
         }
+        // SIMD vectors: element-wise + - * / ; a scalar operand broadcasts.
+        if (int vw = std::max(vecWidth(lt), vecWidth(rt)); vw > 0) {
+            if (op != "+" && op != "-" && op != "*" && op != "/")
+                error("operator '" + op + "' is not defined on vectors", bin->loc);
+            return "vec" + std::to_string(vw);
+        }
         if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
             if ((!lt.empty() && !isNumeric(lt)) || (!rt.empty() && !isNumeric(rt))) {
                 error("operator '" + op + "' requires numeric operands", bin->loc);
@@ -1688,7 +1709,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (op == "%" && (isFloatType(lt) || isFloatType(rt))) {
                 error("operator '%' requires int operands", bin->loc);
             }
-            if (isFloatType(lt) || isFloatType(rt)) return "double";
+            if (isFloatType(lt) || isFloatType(rt)) {  // f32 only if neither side is f64
+                const bool f64 = lt == "double" || lt == "float64" || rt == "double" || rt == "float64";
+                return f64 ? "double" : "float";
+            }
             return intBits(lt) >= intBits(rt) ? lt : rt;  // wider integer wins
         }
         if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
@@ -1765,6 +1789,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (const MethodInfo* om = findMethod(baseType(at), "operator[]")) {
             return om->returnType;
         }
+        if (vecWidth(at) > 0) {  // SIMD vector: v[i] -> float
+            if (!it.empty() && it != "int") error("vector index must be an int", ix->loc);
+            return "float";
+        }
         if (!it.empty() && it != "int") error("array index must be an int", ix->loc);
         if (at.empty()) return "";
         if (!isArrayType(at)) {
@@ -1789,6 +1817,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+        // SIMD vector construction: vec4(x,y,z,w) etc. -- N numeric args -> vecN.
+        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
+            if (int w = vecWidth(cid->name); w > 0) {
+                if (static_cast<int>(call->args.size()) != w)
+                    error(cid->name + " takes " + std::to_string(w) + " components", call->loc);
+                for (const auto& arg : call->args) {
+                    const std::string at = typeOf(*arg);
+                    if (!at.empty() && !isNumeric(at))
+                        error(cid->name + " components must be numeric, got '" + at + "'", arg->loc);
+                }
+                return cid->name;
+            }
+        }
         // Calling a function value: callee is a local of type function<Ret, Params...> -> Ret.
         if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
             if (const LocalVar* fv = lookupLocal(cid->name);
@@ -2037,6 +2078,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+        // SIMD vector lane: v.x / v.y / v.z / v.w -> float. Skip when the receiver is a bare
+        // type name (e.g. EnumName.a is a constant, not a vector lane), so we don't type-probe it.
+        if (int lane = vecLane(mem->member); lane >= 0) {
+            const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+            const bool typeNameRecv = oid != nullptr && oid->name != "this" &&
+                                      lookupLocal(oid->name) == nullptr;
+            if (!typeNameRecv) {
+                if (int w = vecWidth(typeOf(*mem->object)); w > 0) {
+                    if (lane >= w) error("vector has no component '" + mem->member + "'", mem->loc);
+                    return "float";
+                }
+            }
+        }
         // Enum constant access: EnumName.CONSTANT (when the receiver names an enum,
         // not a variable).
         if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {

@@ -104,11 +104,28 @@ unsigned intBits(const std::string& t) {
 // Unsigned integer types (uint8..uint64). `byte` is int8 (signed) per spec 5.
 bool isUnsigned(const std::string& t) { return t.rfind("uint", 0) == 0; }
 
+// SIMD vector types vec2/vec3/vec4 (float32 elements). Returns the element count, or 0.
+int vecWidth(const std::string& t) {
+    if (t == "vec2") return 2;
+    if (t == "vec3") return 3;
+    if (t == "vec4") return 4;
+    return 0;
+}
+// Named vector lane accessor: .x/.y/.z/.w (or .r/.g/.b/.a). Returns the index, or -1.
+int vecLane(const std::string& m) {
+    if (m == "x" || m == "r") return 0;
+    if (m == "y" || m == "g") return 1;
+    if (m == "z" || m == "b") return 2;
+    if (m == "w" || m == "a") return 3;
+    return -1;
+}
+
 // Approximate byte size of a type, used to size a union's shared storage.
 // Pointers/refs/arrays/classes are pointer-sized.
 unsigned byteSizeOf(const std::string& t) {
     if (t == "double" || t == "float64") return 8;
     if (t == "float" || t == "float32") return 4;
+    if (int w = vecWidth(t)) return static_cast<unsigned>(4 * w);  // vecN: N float32 elements
     if (t.back() == '*' || t.back() == '&' || (t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0))
         return 8;  // pointer-sized
     return intBits(t) / 8;  // int family (and class names fall back to 4; refined later)
@@ -311,6 +328,8 @@ struct CodeGenerator::Impl {
         if (t == "void") return builder.getVoidTy();
         if (isTupleType(t)) return tupleStructType(t);
         if (isFloatType(t)) return isF32(t) ? builder.getFloatTy() : builder.getDoubleTy();
+        if (int w = vecWidth(t))  // SIMD vec2/3/4 -> <N x float>
+            return llvm::FixedVectorType::get(builder.getFloatTy(), static_cast<unsigned>(w));
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
         if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
@@ -818,7 +837,11 @@ struct CodeGenerator::Impl {
             }
             const std::string lt = typeName(*bin->lhs);
             const std::string rt = typeName(*bin->rhs);
-            if (isFloatType(lt) || isFloatType(rt)) return "double";
+            if (int vw = std::max(vecWidth(lt), vecWidth(rt)); vw > 0) return "vec" + std::to_string(vw);
+            if (isFloatType(lt) || isFloatType(rt)) {  // f32 only if both are f32
+                const bool f64 = (isFloatType(lt) && !isF32(lt)) || (isFloatType(rt) && !isF32(rt));
+                return f64 ? "double" : "float";
+            }
             // Arithmetic result: the wider operand's width; unsigned is contagious.
             const unsigned w = std::max(intBits(lt), intBits(rt));
             const bool u = isUnsigned(lt) || isUnsigned(rt);
@@ -835,11 +858,14 @@ struct CodeGenerator::Impl {
         }
         if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
             const std::string at = typeName(*ix->array);
+            if (vecWidth(at) > 0) return "float";  // v[i] on a SIMD vector
             const std::string owner = methodOwner(baseType(at), "operator[]");
             if (!owner.empty()) return classes[owner].methodReturnType["operator[]"];
             return isArrayType(at) ? at.substr(0, at.size() - 2) : std::string("int");
         }
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+            if (int w = vecWidth(flattenCallee(*call->callee)); w > 0)
+                return flattenCallee(*call->callee);  // vec2/3/4 construction
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
                 if (mem->member == "length" && isArrayType(typeName(*mem->object))) return "int";
@@ -891,6 +917,8 @@ struct CodeGenerator::Impl {
         }
         if (dynamic_cast<const ast::RegionInitExpr*>(&expr) != nullptr) return "region";
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            if (vecWidth(typeName(*mem->object)) > 0 && vecLane(mem->member) >= 0)
+                return "float";  // v.x / v.y / v.z / v.w
             if (const std::string key = staticFieldKey(*mem); !key.empty()) {
                 return staticFieldType[key];
             }
@@ -1502,6 +1530,15 @@ struct CodeGenerator::Impl {
                                       id->name);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            // SIMD vector lane read: v.x / v.y / v.z / v.w -> extractelement. Gate on the lane
+            // name first so a class/enum-name receiver isn't type-probed here.
+            if (int lane = vecLane(mem->member); lane >= 0) {
+                if (int w = vecWidth(typeName(*mem->object)); lane < w) {
+                    llvm::Value* v = emitExpr(*mem->object);
+                    if (v == nullptr) return nullptr;
+                    return builder.CreateExtractElement(v, builder.getInt32(lane), mem->member);
+                }
+            }
             if (const std::string key = staticFieldKey(*mem); !key.empty()) {
                 return builder.CreateLoad(llvmType(staticFieldType[key]), staticGlobals[key],
                                           mem->member);
@@ -1644,6 +1681,22 @@ struct CodeGenerator::Impl {
                     idx = coerceToType(idx, fnit->second->getArg(1)->getType());
                 return builder.CreateCall(fnit->second, {recv, idx});
             }
+            // SIMD vector index: v[i] -> extractelement, bounds-checked (no UB).
+            if (int w = vecWidth(at); w > 0) {
+                llvm::Value* v = emitExpr(*ix->array);
+                llvm::Value* idx = emitExpr(*ix->index);
+                if (v == nullptr || idx == nullptr) return nullptr;
+                llvm::Value* oob = builder.CreateICmpUGE(
+                    builder.CreateSExt(idx, builder.getInt64Ty()), builder.getInt64(w));
+                llvm::Function* f = currentFn;
+                auto* badBB = llvm::BasicBlock::Create(context, "vidx.bad", f);
+                auto* okBB = llvm::BasicBlock::Create(context, "vidx.ok", f);
+                builder.CreateCondBr(oob, badBB, okBB, coldBranchWeights());
+                builder.SetInsertPoint(badBB);
+                emitPanic("vector index out of bounds");
+                builder.SetInsertPoint(okBB);
+                return builder.CreateExtractElement(v, idx, "vec.elem");
+            }
             llvm::Value* elemPtr = emitLValue(*ix);
             if (elemPtr == nullptr) return nullptr;
             return builder.CreateLoad(llvmType(elementOf(at)), elemPtr, "elem");
@@ -1742,6 +1795,21 @@ struct CodeGenerator::Impl {
         llvm::Value* r = emitExpr(*bin.rhs);
         if (l == nullptr || r == nullptr) return nullptr;
         const std::string& op = bin.op;
+        // SIMD vector path: element-wise + - * / on vecN; a scalar operand is broadcast.
+        if (int vw = std::max(vecWidth(lt), vecWidth(rt)); vw > 0) {
+            auto toVec = [&](llvm::Value* x, const std::string& xt) -> llvm::Value* {
+                if (vecWidth(xt) > 0) return x;  // already a vector
+                return builder.CreateVectorSplat(vw, coerceToType(x, builder.getFloatTy()));
+            };
+            l = toVec(l, lt);
+            r = toVec(r, rt);
+            if (op == "+") return builder.CreateFAdd(l, r);
+            if (op == "-") return builder.CreateFSub(l, r);
+            if (op == "*") return builder.CreateFMul(l, r);
+            if (op == "/") return builder.CreateFDiv(l, r);
+            error("unsupported vector operator '" + op + "'", bin.loc);
+            return nullptr;
+        }
         // Floating-point path: the result is f64 if either side is f64, else f32.
         if (isFloatType(lt) || isFloatType(rt)) {
             const bool f64 = (isFloatType(lt) && !isF32(lt)) || (isFloatType(rt) && !isF32(rt));
@@ -2004,6 +2072,18 @@ struct CodeGenerator::Impl {
 
     llvm::Value* emitCall(const ast::CallExpr& call) {
         const std::string name = flattenCallee(*call.callee);
+        // SIMD vector construction: vec4(x,y,z,w) etc. -> a <N x float> built component-wise.
+        if (int w = vecWidth(name); w > 0 && static_cast<int>(call.args.size()) == w) {
+            llvm::Type* vt = llvm::FixedVectorType::get(builder.getFloatTy(), static_cast<unsigned>(w));
+            llvm::Value* vec = llvm::UndefValue::get(vt);
+            for (int i = 0; i < w; i++) {
+                llvm::Value* c = emitExpr(*call.args[i]);
+                if (c == nullptr) return nullptr;
+                vec = builder.CreateInsertElement(vec, coerceToType(c, builder.getFloatTy()),
+                                                  builder.getInt32(i));
+            }
+            return vec;
+        }
         // Calling a function value: a local of type function<Ret, Params...> -> indirect call.
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(call.callee.get())) {
             auto lit = locals.find(id->name);

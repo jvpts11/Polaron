@@ -1,0 +1,34 @@
+program SimdVectors;
+
+// SIMD vector types vec2/vec3/vec4 (float32, GLSL-style), lowering to LLVM <N x float> (SSE/AVX).
+// Construction vecN(...), element-wise + - * / (scalar operand broadcasts), .x/.y/.z/.w and [i]
+// access, and passing/returning vectors by value. Foundation for 3D graphics math.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method dot3(vec3 a, vec3 b) returns float {
+                vec3 p = a * b;
+                return p.x + p.y + p.z;
+            }
+            public static method main(string[] args) returns void {
+                vec4 a = vec4(1.0, 2.0, 3.0, 4.0);
+                vec4 b = vec4(10.0, 20.0, 30.0, 40.0);
+                vec4 c = a + b;          // element-wise
+                vec4 d = a * 2.0;        // scalar broadcast
+                System.IO.printf("c=%d,%d,%d,%d d.z=%d\n",
+                                 cast<int>(c.x), cast<int>(c.y), cast<int>(c.z), cast<int>(c.w),
+                                 cast<int>(d.z));
+                vec3 u = vec3(1.0, 2.0, 3.0);
+                vec3 v = vec3(4.0, 5.0, 6.0);
+                System.IO.printf("dot=%d\n", cast<int>(Main.dot3(u, v)));   // 4+10+18 = 32
+                mutable int sum = 0;
+                for (mutable int i = 0; i < 4; i++) {
+                    sum = sum + cast<int>(c[i]);   // indexed access
+                }
+                System.IO.printf("idxsum=%d\n", sum);   // 11+22+33+44 = 110
+                return;
+            }
+        }
+    }
+}
