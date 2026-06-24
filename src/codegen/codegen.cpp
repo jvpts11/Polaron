@@ -97,12 +97,12 @@ bool isF32(const std::string& t) { return t == "float" || t == "float32"; }
 unsigned intBits(const std::string& t) {
     if (t == "int8" || t == "uint8" || t == "byte") return 8;
     if (t == "int16" || t == "uint16" || t == "short") return 16;
-    if (t == "int64" || t == "uint64" || t == "long") return 64;
+    if (t == "int64" || t == "uint64" || t == "long" || t == "address") return 64;
     return 32;
 }
 
-// Unsigned integer types (uint8..uint64). `byte` is int8 (signed) per spec 5.
-bool isUnsigned(const std::string& t) { return t.rfind("uint", 0) == 0; }
+// Unsigned integer types (uint8..uint64, address). `byte` is int8 (signed) per spec 5.
+bool isUnsigned(const std::string& t) { return t.rfind("uint", 0) == 0 || t == "address"; }
 
 // SIMD vector types vec2/vec3/vec4 (float32 elements). Returns the element count, or 0.
 int vecWidth(const std::string& t) {
@@ -443,6 +443,12 @@ struct CodeGenerator::Impl {
         // Reference cast (class/Object/reflection token): a pointer reinterpret -- a no-op
         // with opaque pointers. No runtime type check yet (spec 31 downcasts).
         if (llvmType(to)->isPointerTy() && v->getType()->isPointerTy()) return v;
+        // Raw int/address <-> pointer (low-level / freestanding, spec 17.8): a `cast<T*>(addr)`
+        // or `cast<address>(ptr)` reinterprets between an integer address and a pointer.
+        if (llvmType(to)->isPointerTy() && v->getType()->isIntegerTy())
+            return builder.CreateIntToPtr(v, llvmType(to));
+        if (llvmType(to)->isIntegerTy() && v->getType()->isPointerTy())
+            return builder.CreatePtrToInt(v, llvmType(to));
         const bool toFloat = isFloatType(to);
         const bool fromFloat = isFloatType(from);
         if (toFloat) {
@@ -878,6 +884,7 @@ struct CodeGenerator::Impl {
             if (vecWidth(at) > 0) return "float";  // v[i] on a SIMD vector
             const std::string owner = methodOwner(baseType(at), "operator[]");
             if (!owner.empty()) return classes[owner].methodReturnType["operator[]"];
+            if (isRefType(at)) return baseType(at);  // p[i] on a raw pointer T* -> T
             return isArrayType(at) ? at.substr(0, at.size() - 2) : std::string("int");
         }
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
@@ -1304,7 +1311,15 @@ struct CodeGenerator::Impl {
             if (block == nullptr) return nullptr;
             llvm::Value* index = emitExpr(*ix->index);
             if (index == nullptr) return nullptr;
-            return arrayElemPtr(block, index, llvmType(elementOf(typeName(*ix->array))));
+            const std::string at = typeName(*ix->array);
+            // Raw pointer index p[i] (spec 17.8): unchecked GEP, no array header / bounds check.
+            if (isRefType(at)) {
+                llvm::Value* i = index->getType()->isIntegerTy(64)
+                                     ? index
+                                     : builder.CreateSExt(index, builder.getInt64Ty());
+                return builder.CreateGEP(llvmType(baseType(at)), block, i, "ptr.elem");
+            }
+            return arrayElemPtr(block, index, llvmType(elementOf(at)));
         }
         error("invalid assignment target", expr.loc);
         return nullptr;
@@ -1774,7 +1789,8 @@ struct CodeGenerator::Impl {
             }
             llvm::Value* elemPtr = emitLValue(*ix);
             if (elemPtr == nullptr) return nullptr;
-            return builder.CreateLoad(llvmType(elementOf(at)), elemPtr, "elem");
+            const std::string et = isRefType(at) ? baseType(at) : elementOf(at);  // T* -> T
+            return builder.CreateLoad(llvmType(et), elemPtr, "elem");
         }
         if (dynamic_cast<const ast::InterpStringExpr*>(&expr) != nullptr) {
             error("string interpolation is only supported as a printf/println argument for now",
@@ -2377,6 +2393,38 @@ struct CodeGenerator::Impl {
             llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt64Ty(), {}, false);
             return builder.CreateCall(module.getOrInsertFunction("__ldp3_lock_create", ft), {},
                                       "lock.h");
+        }
+        // Memory API (spec 17.8): low-level address-based access. `address` is an i64.
+        if (name == "Memory.alloc") {
+            llvm::Value* n = emitExpr(*call.args[0]);
+            if (n == nullptr) return nullptr;
+            llvm::Value* p = builder.CreateCall(
+                mallocFn(), {builder.CreateIntCast(n, builder.getInt64Ty(), false)}, "mem.alloc");
+            return builder.CreatePtrToInt(p, builder.getInt64Ty());
+        }
+        if (name == "Memory.free") {
+            llvm::Value* a = emitExpr(*call.args[0]);
+            if (a == nullptr) return nullptr;
+            builder.CreateCall(freeFn(), {builder.CreateIntToPtr(a, builder.getPtrTy())});
+            return nullptr;
+        }
+        if (name == "Memory.getMemory") {
+            llvm::Value* p = emitLValue(*call.args[0]);  // the target's storage address
+            if (p == nullptr) return nullptr;
+            return builder.CreatePtrToInt(p, builder.getInt64Ty());
+        }
+        if (name == "Memory.read") {
+            llvm::Value* a = emitExpr(*call.args[0]);
+            if (a == nullptr) return nullptr;
+            llvm::Type* t = llvmType(call.typeArgs.empty() ? "int" : call.typeArgs[0]);
+            return builder.CreateLoad(t, builder.CreateIntToPtr(a, builder.getPtrTy()), "mem.read");
+        }
+        if (name == "Memory.write") {
+            llvm::Value* a = emitExpr(*call.args[0]);
+            llvm::Value* v = emitExpr(*call.args[1]);
+            if (a == nullptr || v == nullptr) return nullptr;
+            builder.CreateStore(v, builder.CreateIntToPtr(a, builder.getPtrTy()));
+            return nullptr;
         }
         if (name == "System.Concurrency.__chanNew") {  // used by the Channel prelude class
             llvm::Value* cap = emitExpr(*call.args[0]);

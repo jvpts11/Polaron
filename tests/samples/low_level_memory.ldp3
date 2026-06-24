@@ -1,0 +1,26 @@
+program LowLevelMemory;
+
+// Low-level memory for freestanding/systems code (spec 17.8, 36.2): the `address` primitive (a
+// pointer-sized raw address), int<->pointer casts, raw pointer indexing p[i] (unchecked GEP, no
+// array header), and the Memory API (alloc/free/read<T>/write<T>). No managed runtime involved.
+
+public bundle main {
+    import System.IO.Console;
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                address mem = Memory.alloc(16);     // raw block, returns an address
+                int* p = cast<int*>(mem);           // reinterpret the address as a pointer
+                p[0] = 100;                          // raw pointer write
+                p[1] = 200;
+                System.IO.Console.printf("sum=%d\n", p[0] + p[1]);          // 300
+                Memory.write<int>(mem, 999);
+                System.IO.Console.printf("read=%d\n", Memory.read<int>(mem));  // 999
+                address back = cast<address>(p);     // pointer -> address round-trip
+                System.IO.Console.printf("addr=%d\n", cast<int>(back - mem));  // 0 (same address)
+                Memory.free(mem);
+                return;
+            }
+        }
+    }
+}

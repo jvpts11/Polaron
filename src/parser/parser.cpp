@@ -1880,6 +1880,7 @@ ast::ExprPtr Parser::parseUnary() {
         if (isTypeKeyword(tt.kind) || tt.kind == TokenKind::Identifier) {
             c->targetType = tt.lexeme;
             advance();
+            if (match(TokenKind::Star)) c->targetType += "*";  // cast<T*>: pointer target (spec 17.8)
         } else {
             fail("expected a type inside cast<...>", tt.loc);
         }

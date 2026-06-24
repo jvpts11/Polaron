@@ -1567,6 +1567,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # F9 freestanding: address type, int<->pointer casts, raw pointer indexing, Memory API.
+        add_test(NAME codegen_low_level_memory_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/low_level_memory.ldp3"
+            "-DEXPECTED=sum=300 read=999 addr=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # SIMD vectors (vec2/3/4): construction, element-wise ops, .xyzw + [i], by-value.
         add_test(NAME codegen_simd_vectors_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

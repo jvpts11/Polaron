@@ -36,12 +36,12 @@ bool isFloatType(const std::string& t) {
 bool isIntName(const std::string& t) {
     return t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" ||
            t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" || t == "short" ||
-           t == "long" || t == "byte";
+           t == "long" || t == "byte" || t == "address";  // address: a pointer-sized raw address
 }
 unsigned intBits(const std::string& t) {
     if (t == "int8" || t == "uint8" || t == "byte") return 8;
     if (t == "int16" || t == "uint16" || t == "short") return 16;
-    if (t == "int64" || t == "uint64" || t == "long") return 64;
+    if (t == "int64" || t == "uint64" || t == "long" || t == "address") return 64;
     return 32;
 }
 bool isNumeric(const std::string& t) { return isIntName(t) || isFloatType(t); }
@@ -1070,11 +1070,11 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         const std::string at = typeOf(*ix->array);
         typeOf(*ix->index);
         if (findMethod(baseType(at), "operator[]=")) return;  // operator[]= overload (spec 6.5)
-        if (!at.empty() && !isArrayType(at)) {
+        if (!at.empty() && !isArrayType(at) && !isRefType(at)) {
             error("cannot index a value of non-array type '" + at + "'", loc);
             return;
         }
-        const std::string et = elementOf(at);
+        const std::string et = isRefType(at) ? baseType(at) : elementOf(at);  // p[i] = v on a T*
         if (!valueType.empty() && !et.empty() && !isSubtype(valueType, et)) {
             error("cannot assign a value of type '" + valueType +
                       "' to an array element of type '" + et + "'",
@@ -1715,12 +1715,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const bool dstRef = dst == "Object" || lookupClass(baseType(dst)) != nullptr;
         const bool srcRef = src.empty() || src == "Object" || src == "Type" || src == "Method" ||
                             lookupClass(baseType(src)) != nullptr || isRefType(src);
+        const bool dstPtr = isRefType(dst) || dstRef;  // pointer/reference target (T*, T&, class)
         if (isNumeric(dst)) {
-            if (!src.empty() && !isNumeric(src))
-                error("cannot cast '" + src + "' to '" + dst + "'; only numeric casts are supported",
-                      cst->loc);
-        } else if (dstRef && srcRef) {
-            // Reference downcast (spec 31): a pointer reinterpret; no runtime check yet.
+            // numeric <- numeric, or a pointer/address reinterpreted as an integer (spec 17.8).
+            if (!src.empty() && !isNumeric(src) && !srcRef)
+                error("cannot cast '" + src + "' to '" + dst + "'", cst->loc);
+        } else if (dstPtr) {
+            // Reference downcast (spec 31), or int/address -> an explicit pointer T* (spec 17.8).
+            // Casting a number to a bare class (not a pointer) stays an error.
+            const bool intToPtr = isRefType(dst) && isNumeric(src);
+            if (!src.empty() && !srcRef && !intToPtr)
+                error("cannot cast '" + src + "' to '" + dst + "'", cst->loc);
         } else {
             error("cast<" + dst + "> is not supported here", cst->loc);
         }
@@ -1840,8 +1845,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (!it.empty() && it != "int") error("vector index must be an int", ix->loc);
             return "float";
         }
-        if (!it.empty() && it != "int") error("array index must be an int", ix->loc);
+        if (!it.empty() && !isIntName(it)) error("index must be an integer", ix->loc);
         if (at.empty()) return "";
+        if (isRefType(at)) return baseType(at);  // p[i] on a raw pointer T* -> T (spec 17.8)
         if (!isArrayType(at)) {
             error("cannot index a value of non-array type '" + at + "'", ix->loc);
             return "";
@@ -1990,6 +1996,31 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 for (const auto& arg : call->args) typeOf(*arg);
                 return "void";
             }
+        }
+        // Memory API (spec 17.8): low-level address-based memory access (freestanding-safe).
+        if (name == "Memory.alloc") {
+            if (call->args.size() != 1) error("Memory.alloc takes a byte count", call->loc);
+            else typeOf(*call->args.front());
+            return "address";
+        }
+        if (name == "Memory.free") {
+            if (call->args.size() != 1) error("Memory.free takes an address", call->loc);
+            else typeOf(*call->args.front());
+            return "void";
+        }
+        if (name == "Memory.getMemory") {
+            if (call->args.size() != 1) error("Memory.getMemory takes one argument", call->loc);
+            else typeOf(*call->args.front());
+            return "address";
+        }
+        if (name == "Memory.read") {
+            if (call->typeArgs.size() != 1) error("Memory.read<T> needs a type argument", call->loc);
+            for (const auto& a : call->args) typeOf(*a);
+            return call->typeArgs.empty() ? "" : call->typeArgs[0];
+        }
+        if (name == "Memory.write") {
+            for (const auto& a : call->args) typeOf(*a);
+            return "void";
         }
         // Channel.select() (spec 20.4): starts a fluent select builder over multiple channels.
         if (name == "Channel.select") {
