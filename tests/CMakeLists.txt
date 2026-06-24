@@ -1493,12 +1493,13 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # unimport / reimport (spec 30): logical removal + UnimportedTypeException + re-enable.
+        # unimport (spec 30): physical code overwrite (byte=204) + UnimportedTypeException
+        # on new and on a method call to a surviving instance.
         add_test(NAME codegen_unimport_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/unimport.ldp3"
-            "-DEXPECTED=Woof! caught unimported Woof!"
+            "-DEXPECTED=Woof! byte=204 new caught call caught"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

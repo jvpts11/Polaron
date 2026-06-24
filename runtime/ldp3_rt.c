@@ -28,3 +28,30 @@ void __ldp3_thread_join(long long handle) {
     WaitForSingleObject(h, 0xFFFFFFFF);  // INFINITE
     CloseHandle(h);
 }
+
+// Physical code unload (spec 30 "unloading agressivo"): overwrite a function's machine
+// code in RAM with int3 (0xCC) traps, so the instructions are physically removed/ripped
+// from memory. `table`/`count` are all the program's function addresses; the overwrite
+// length is bounded by the next function so a neighbor is never clobbered (capped).
+int __stdcall VirtualProtect(void* addr, unsigned long long size, unsigned long newProt,
+                             unsigned long* oldProt);
+int __stdcall FlushInstructionCache(void* proc, const void* base, unsigned long long size);
+void* __stdcall GetCurrentProcess(void);
+
+void __ldp3_unload_fn(void* fn, void** table, long long count) {
+    if (fn == 0) return;
+    unsigned long long base = (unsigned long long)fn;
+    unsigned long long next = 0;  // smallest function address strictly greater than fn
+    for (long long i = 0; i < count; i++) {
+        unsigned long long a = (unsigned long long)table[i];
+        if (a > base && (next == 0 || a < next)) next = a;
+    }
+    unsigned long long len = next ? (next - base) : 64;
+    if (len > 4096) len = 4096;  // cap the blast radius
+    unsigned long old;
+    if (VirtualProtect(fn, len, 0x40 /*PAGE_EXECUTE_READWRITE*/, &old)) {
+        unsigned char* p = (unsigned char*)fn;
+        for (unsigned long long i = 0; i < len; i++) p[i] = 0xCC;  // int3
+        FlushInstructionCache(GetCurrentProcess(), fn, len);
+    }
+}

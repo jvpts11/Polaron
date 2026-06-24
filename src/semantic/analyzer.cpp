@@ -1984,6 +1984,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (objType == "Method") {  // reflection (spec 31)
                 for (const auto& arg : call->args) typeOf(*arg);
                 if (mem->member == "name" && call->args.empty()) return "String";
+                if (mem->member == "firstByte" && call->args.empty()) return "int";
                 if (mem->member == "invoke") return "void";  // invoke(receiver [, args])
                 error("Method has no method '" + mem->member + "'", call->loc);
                 return "";

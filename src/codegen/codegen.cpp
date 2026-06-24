@@ -278,6 +278,8 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, llvm::GlobalVariable*> instanceCounters;  // class -> live-instance count
     std::unordered_set<std::string> unimportableClasses;  // classes named by unimport/reimport (spec 30)
     std::unordered_map<std::string, llvm::GlobalVariable*> aliveFlags;  // class -> i32 alive flag (1=alive)
+    llvm::GlobalVariable* fnTableGlobal = nullptr;  // all function addresses (for physical unload)
+    long long fnTableCount = 0;
     std::vector<llvm::BasicBlock*> ehPadStack;   // active try landing pads (catchswitch blocks)
     llvm::Constant* ehThrowInfoCache = nullptr;  // shared carrier-ptr ThrowInfo (_TI1PEAX), lazy
     llvm::Constant* ehTypeDescCache = nullptr;   // shared carrier-ptr type descriptor, lazy
@@ -818,6 +820,7 @@ struct CodeGenerator::Impl {
                 if (typeName(*mem->object) == "Method") {
                     if (mem->member == "name") return "String";
                     if (mem->member == "invoke") return "void";
+                    if (mem->member == "firstByte") return "int";
                 }
                 if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                     if (enums.count(oid->name) > 0) {
@@ -2313,6 +2316,14 @@ struct CodeGenerator::Impl {
                 if (mem->member == "name")
                     return builder.CreateLoad(builder.getPtrTy(),
                                               builder.CreateStructGEP(methodTokenType(), m, 0), "m.name");
+                // firstByte(): the first machine-code byte of the method (0xCC = 204 after a
+                // physical unimport), so the code overwrite is observable.
+                if (mem->member == "firstByte") {
+                    llvm::Value* fnPtr = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(methodTokenType(), m, 1), "m.fn");
+                    return builder.CreateZExt(builder.CreateLoad(builder.getInt8Ty(), fnPtr, "byte"),
+                                              builder.getInt32Ty());
+                }
                 if (mem->member == "invoke") {
                     llvm::Value* fnPtr = builder.CreateLoad(
                         builder.getPtrTy(), builder.CreateStructGEP(methodTokenType(), m, 1), "m.fn");
@@ -2387,6 +2398,9 @@ struct CodeGenerator::Impl {
                     }
                 }
             }
+            // spec 30: calling a method on an unimported type throws (rather than branching
+            // into the int3-overwritten code).
+            emitAliveGuard(baseType(typeName(*mem->object)));
             // Virtual dispatch: if the static type is polymorphic and the method
             // has a vtable slot, call indirectly through the object's vtable.
             const std::string st = baseType(typeName(*mem->object));  // see through T* / T&
@@ -2485,9 +2499,40 @@ struct CodeGenerator::Impl {
         return g;
     }
 
-    // Physically overwrites the machine code of a class's methods in RAM (spec 30
-    // aggressive unload). Implemented in Slice B; a no-op stub for now.
-    void emitPhysicalUnload(const std::string& /*className*/) {}
+    // Builds a private global table of every function's address, so the physical-unload
+    // runtime helper can bound each overwrite by the next function (spec 30).
+    void buildFunctionTable() {
+        std::vector<llvm::Constant*> fns;
+        for (const auto& [name, f] : functions)
+            if (!f->isDeclaration()) fns.push_back(f);
+        fnTableCount = static_cast<long long>(fns.size());
+        auto* arrTy = llvm::ArrayType::get(builder.getPtrTy(), fns.size());
+        fnTableGlobal = new llvm::GlobalVariable(module, arrTy, /*isConstant=*/true,
+                                                 llvm::GlobalValue::PrivateLinkage,
+                                                 llvm::ConstantArray::get(arrTy, fns), "__ldp3_fns");
+    }
+
+    // Physically overwrites the machine code of a class's methods (and ctor/dtor) in RAM
+    // with int3 traps, via the runtime helper (spec 30 aggressive unload). The code is
+    // ripped from memory; the alive guard ensures we never branch into the traps.
+    void emitPhysicalUnload(const std::string& className) {
+        if (fnTableGlobal == nullptr) return;
+        auto cit = classes.find(className);
+        if (cit == classes.end() || cit->second.decl == nullptr) return;
+        llvm::FunctionType* ht = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty()}, false);
+        llvm::FunctionCallee helper = module.getOrInsertFunction("__ldp3_unload_fn", ht);
+        auto unload = [&](const std::string& fnName) {
+            if (auto f = functions.find(fnName); f != functions.end())
+                builder.CreateCall(helper,
+                                   {f->second, fnTableGlobal, builder.getInt64(fnTableCount)});
+        };
+        for (const ast::MemberPtr& m : cit->second.decl->members)
+            if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()); md && !md->isAbstract)
+                unload(className + "." + md->name);
+        unload(className + "." + className);        // constructor
+        unload(className + ".~" + className);        // destructor
+    }
 
     // Constructs and throws a System.Runtime.UnimportedTypeException (spec 30): used when
     // an unimported type is instantiated or its methods are called. Terminates the block.
@@ -4311,6 +4356,7 @@ bool CodeGenerator::generate() {
     impl_->emitNamespaceConsts();
     impl_->emitStaticFields();
     impl_->declareFunctions();
+    impl_->buildFunctionTable();  // address table for physical unimport (spec 30)
     impl_->emitVtables();
     impl_->emitFunctions();
     if (!errors_.empty()) return false;
