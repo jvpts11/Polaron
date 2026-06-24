@@ -1,0 +1,31 @@
+program Channel;
+
+// Channel<T> (spec 20.3): a bounded blocking queue for passing values between threads. A producer
+// thread sends 1..5 into a capacity-4 channel (so it blocks once full) while the main thread
+// receives and sums them. The total is 15. send() blocks while full, receive() blocks while empty.
+
+public bundle main {
+    import System.IO.Console;
+    import System.Concurrency.Thread;
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Channel<int> ch = new Channel<int>(4) on heap;
+                function<void> producer = lambda[captures: byvalue ch]() returns void {
+                    for (mutable int i = 1; i <= 5; i++) {
+                        ch.send(i);
+                    }
+                };
+                Thread t = new Thread(producer) on heap;
+                t.start();
+                mutable int sum = 0;
+                for (mutable int i = 0; i < 5; i++) {
+                    sum = sum + ch.receive();
+                }
+                t.join();
+                System.IO.Console.printf("sum=%d\n", sum);
+                return;
+            }
+        }
+    }
+}

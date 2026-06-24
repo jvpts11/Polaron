@@ -143,6 +143,56 @@ int __ldp3_await(long long awaited, ldp3_resume_fn resume, void* state) {
     return 1;
 }
 
+// ---- Channels: bounded blocking queue (spec 20.3) -----------------------------------------
+// send blocks while full, receive blocks while empty; values are passed as 64-bit slots (an
+// int or a pointer). One lock plus a not-full / not-empty condition variable.
+typedef struct {
+    long long* buf;
+    long long cap, count, head, tail;
+    CRITICAL_SECTION lock;
+    CONDITION_VARIABLE notFull, notEmpty;
+} ldp3_chan;
+
+long long __ldp3_chan_new(long long cap) {
+    if (cap < 1) cap = 1;
+    ldp3_chan* c = (ldp3_chan*)malloc(sizeof(ldp3_chan));
+    if (c == NULL) return 0;
+    c->buf = (long long*)malloc(sizeof(long long) * (size_t)cap);
+    c->cap = cap;
+    c->count = 0;
+    c->head = 0;
+    c->tail = 0;
+    InitializeCriticalSection(&c->lock);
+    InitializeConditionVariable(&c->notFull);
+    InitializeConditionVariable(&c->notEmpty);
+    return (long long)c;
+}
+
+void __ldp3_chan_send(long long handle, long long value) {
+    ldp3_chan* c = (ldp3_chan*)handle;
+    if (c == NULL) return;
+    EnterCriticalSection(&c->lock);
+    while (c->count == c->cap) SleepConditionVariableCS(&c->notFull, &c->lock, INFINITE);
+    c->buf[c->tail] = value;
+    c->tail = (c->tail + 1) % c->cap;
+    c->count++;
+    LeaveCriticalSection(&c->lock);
+    WakeConditionVariable(&c->notEmpty);
+}
+
+long long __ldp3_chan_receive(long long handle) {
+    ldp3_chan* c = (ldp3_chan*)handle;
+    if (c == NULL) return 0;
+    EnterCriticalSection(&c->lock);
+    while (c->count == 0) SleepConditionVariableCS(&c->notEmpty, &c->lock, INFINITE);
+    long long v = c->buf[c->head];
+    c->head = (c->head + 1) % c->cap;
+    c->count--;
+    LeaveCriticalSection(&c->lock);
+    WakeConditionVariable(&c->notFull);
+    return v;
+}
+
 // await from non-async code (e.g. main): block the calling thread until the task completes.
 long long __ldp3_task_wait(long long handle) {
     ldp3_task* t = (ldp3_task*)handle;

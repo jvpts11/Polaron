@@ -93,6 +93,14 @@ public bundle std {
             public mutable int64 h;
             public constructor Task() { this.h = cast<int64>(0); }
         }
+        // A bounded blocking channel (spec 20.3): send() blocks while full, receive() blocks while
+        // empty. The element T is passed as a 64-bit slot (an int or a reference).
+        public class Channel<T> {
+            public mutable int64 h;
+            public constructor Channel(int capacity) {
+                this.h = System.Concurrency.__chanNew(cast<int64>(capacity));
+            }
+        }
         // A lock-free atomic cell (spec 20.6). get/set/add/increment/compareAndSet (and the atomic
         // ++ / += operators) lower to LLVM atomic instructions; T is an integer type.
         public class atomic<T> {

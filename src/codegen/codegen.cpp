@@ -2221,6 +2221,14 @@ struct CodeGenerator::Impl {
             return builder.CreateCall(module.getOrInsertFunction("__ldp3_lock_create", ft), {},
                                       "lock.h");
         }
+        if (name == "System.Concurrency.__chanNew") {  // used by the Channel prelude class
+            llvm::Value* cap = emitExpr(*call.args[0]);
+            if (cap == nullptr) return nullptr;
+            llvm::FunctionType* ft =
+                llvm::FunctionType::get(builder.getInt64Ty(), {builder.getInt64Ty()}, false);
+            return builder.CreateCall(module.getOrInsertFunction("__ldp3_chan_new", ft), {cap},
+                                      "chan.h");
+        }
         if (name == "System.Concurrency.__lockAcquire" ||
             name == "System.Concurrency.__lockRelease") {
             llvm::Value* h = emitExpr(*call.args[0]);
@@ -2301,6 +2309,35 @@ struct CodeGenerator::Impl {
                 if (block == nullptr) return nullptr;
                 llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "len");
                 return builder.CreateTrunc(len, builder.getInt32Ty());
+            }
+            // Channel<T> blocking operations (spec 20.3): send/receive a 64-bit slot via the
+            // runtime queue (blocks while full / empty).
+            if (const std::string ot = baseType(typeName(*mem->object)); ot.rfind("Channel$", 0) == 0) {
+                llvm::Value* obj = emitObjectPtr(*mem->object);
+                if (obj == nullptr) return nullptr;
+                auto cit = classes.find(ot);
+                llvm::Value* h = builder.CreateLoad(
+                    builder.getInt64Ty(),
+                    builder.CreateStructGEP(cit->second.type, obj, cit->second.fieldIndex["h"],
+                                            "chan.h.addr"),
+                    "chan.h");
+                if (mem->member == "send") {
+                    llvm::Value* v = emitExpr(*call.args[0]);
+                    if (v == nullptr) return nullptr;
+                    llvm::FunctionType* ft = llvm::FunctionType::get(
+                        builder.getVoidTy(), {builder.getInt64Ty(), builder.getInt64Ty()}, false);
+                    builder.CreateCall(module.getOrInsertFunction("__ldp3_chan_send", ft),
+                                       {h, valueToI64(v)});
+                    return nullptr;
+                }
+                if (mem->member == "receive") {
+                    llvm::FunctionType* ft = llvm::FunctionType::get(
+                        builder.getInt64Ty(), {builder.getInt64Ty()}, false);
+                    llvm::Value* r = builder.CreateCall(
+                        module.getOrInsertFunction("__ldp3_chan_receive", ft), {h}, "chan.recv");
+                    return castTaskResult(r, ot.substr(8));
+                }
+                return nullptr;
             }
             // atomic<T> operations (spec 20.6): lower to LLVM atomic instructions.
             if (const std::string ot = baseType(typeName(*mem->object)); ot.rfind("atomic$", 0) == 0) {
@@ -4722,6 +4759,15 @@ struct CodeGenerator::Impl {
                                                                    hIt->second, "task.h.addr"));
         }
         builder.CreateRet(obj);
+    }
+
+    // Widens a value to a 64-bit slot (for task results / channel elements): pointers and doubles
+    // are reinterpreted, integers sign-extended.
+    llvm::Value* valueToI64(llvm::Value* v) {
+        if (v->getType()->isPointerTy()) return builder.CreatePtrToInt(v, builder.getInt64Ty());
+        if (v->getType()->isDoubleTy()) return builder.CreateBitCast(v, builder.getInt64Ty());
+        if (v->getType()->isIntegerTy()) return builder.CreateIntCast(v, builder.getInt64Ty(), true);
+        return v;
     }
 
     // Casts a 64-bit task-result slot back to the awaited type T.

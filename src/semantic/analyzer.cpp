@@ -1939,6 +1939,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (!call->args.empty()) error("__lockCreate takes no arguments", call->loc);
             return "int64";  // an opaque lock handle
         }
+        if (name == "System.Concurrency.__chanNew") {  // used by the Channel prelude class
+            if (call->args.size() != 1) error("__chanNew takes one capacity", call->loc);
+            else typeOf(*call->args.front());
+            return "int64";  // an opaque channel handle
+        }
         if (name == "System.Concurrency.__lockAcquire" ||
             name == "System.Concurrency.__lockRelease") {
             if (call->args.size() != 1) error("lock op takes one handle", call->loc);
@@ -2070,6 +2075,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "concat" && call->args.size() == 1) return "String";
                 if (mem->member == "substring" && call->args.size() == 2) return "String";
                 error("String has no method '" + mem->member + "'", call->loc);
+                return "";
+            }
+            // Channel<T> blocking operations (spec 20.3).
+            if (baseType(objType).rfind("Channel$", 0) == 0) {
+                const std::string elem = baseType(objType).substr(8);
+                for (const auto& arg : call->args) typeOf(*arg);
+                if (mem->member == "send" && call->args.size() == 1) return "void";
+                if (mem->member == "receive" && call->args.empty()) return elem;
+                error("Channel has no method '" + mem->member + "'", call->loc);
                 return "";
             }
             // atomic<T> lock-free operations (spec 20.6).
