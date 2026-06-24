@@ -360,6 +360,38 @@ struct CodeGenerator::Impl {
         return v;
     }
 
+    // Terminates deterministically with a message (LDP3 has no UB): used by runtime checks
+    // such as division by zero or out-of-bounds. Ends the current block.
+    void emitPanic(const std::string& msg) {
+        llvm::FunctionType* ft =
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+        builder.CreateCall(module.getOrInsertFunction("__ldp3_panic", ft),
+                           {builder.CreateGlobalStringPtr(msg, ".panic")});
+        builder.CreateUnreachable();
+    }
+
+    // Integer division/remainder with a defined result: division by zero (and the signed
+    // INT_MIN / -1 overflow) panic instead of being UB.
+    llvm::Value* emitIntDivRem(llvm::Value* l, llvm::Value* r, bool uns, bool rem) {
+        llvm::Type* ty = r->getType();
+        llvm::Value* bad = builder.CreateICmpEQ(r, llvm::ConstantInt::get(ty, 0));
+        if (!uns) {
+            llvm::Value* isMin = builder.CreateICmpEQ(
+                l, llvm::ConstantInt::get(ty, llvm::APInt::getSignedMinValue(ty->getIntegerBitWidth())));
+            llvm::Value* isNeg1 = builder.CreateICmpEQ(r, llvm::ConstantInt::getSigned(ty, -1));
+            bad = builder.CreateOr(bad, builder.CreateAnd(isMin, isNeg1));
+        }
+        llvm::Function* f = currentFn;
+        auto* badBB = llvm::BasicBlock::Create(context, "div.bad", f);
+        auto* okBB = llvm::BasicBlock::Create(context, "div.ok", f);
+        builder.CreateCondBr(bad, badBB, okBB);
+        builder.SetInsertPoint(badBB);
+        emitPanic("integer division by zero or overflow");
+        builder.SetInsertPoint(okBB);
+        if (rem) return uns ? builder.CreateURem(l, r) : builder.CreateSRem(l, r);
+        return uns ? builder.CreateUDiv(l, r) : builder.CreateSDiv(l, r);
+    }
+
     // Defined float->int conversion (LDP3 has no undefined behaviour): saturating, so an
     // out-of-range value clamps to the integer min/max and NaN becomes 0, instead of the
     // poison `fptosi`/`fptoui` would produce. Hardware-supported -- no runtime cost.
@@ -1728,8 +1760,8 @@ struct CodeGenerator::Impl {
         if (op == "+") return builder.CreateAdd(l, r);
         if (op == "-") return builder.CreateSub(l, r);
         if (op == "*") return builder.CreateMul(l, r);
-        if (op == "/") return uns ? builder.CreateUDiv(l, r) : builder.CreateSDiv(l, r);
-        if (op == "%") return uns ? builder.CreateURem(l, r) : builder.CreateSRem(l, r);
+        if (op == "/") return emitIntDivRem(l, r, uns, /*rem=*/false);
+        if (op == "%") return emitIntDivRem(l, r, uns, /*rem=*/true);
         if (op == "&") return builder.CreateAnd(l, r);
         if (op == "|") return builder.CreateOr(l, r);
         if (op == "^") return builder.CreateXor(l, r);

@@ -1,6 +1,18 @@
 // LDP3 minimal runtime: OS thread support for the Thread builtin (spec 20.1). Linked into every
 // executable, because the prelude's System.Concurrency.Thread always emits calls to __ldp3_thread_*.
 
+#include <stdio.h>
+#include <stdlib.h>
+
+// Defined-behaviour panic: LDP3 never invokes UB. When a check fails (division by zero,
+// out-of-bounds, etc.) the program terminates deterministically with a message instead of
+// continuing into undefined territory.
+void __ldp3_panic(const char* msg) {
+    fprintf(stderr, "LDP3 panic: %s\n", msg);
+    fflush(stderr);
+    exit(70);
+}
+
 // OS threads (spec 20.1 Thread). kernel32 declared by hand to avoid <windows.h>. A function value
 // is a pointer to a closure {code, env}; the trampoline loads code/env and calls code(env), which
 // is exactly how a function<void> is invoked (env is the first argument, null if no captures).
