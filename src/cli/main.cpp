@@ -315,6 +315,71 @@ public bundle std {
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
         }
+        // Linked list (spec 34.1) -- index-based nodes (parallel arrays + a free list) instead of
+        // self-referential generic pointer nodes, which currently crash the monomorphizer. Supports
+        // O(1) append and O(1) removal of the head.
+        public class LinkedList<T> {
+            private mutable T[] values;
+            private mutable int[] nxt;     // index of the next node, or -1
+            private mutable int head;
+            private mutable int tail;
+            private mutable int freeList;  // head of the free-slot chain, or -1
+            private mutable int count;
+            private mutable int cap;
+            public constructor LinkedList() {
+                this.values = new T[4]();
+                this.nxt = new int[4]();
+                this.head = cast<int>(0) - 1;
+                this.tail = cast<int>(0) - 1;
+                this.freeList = cast<int>(0) - 1;
+                this.count = 0;
+                this.cap = 4;
+            }
+            private method alloc() returns int {
+                if (this.freeList >= 0) {
+                    int slot = this.freeList;
+                    this.freeList = this.nxt[slot];
+                    return slot;
+                }
+                if (this.count >= this.cap) {
+                    int n = this.cap * 2;
+                    mutable T[] nv = new T[n]();
+                    mutable int[] nn = new int[n]();
+                    for (mutable int i = 0; i < this.cap; i++) { nv[i] = this.values[i]; nn[i] = this.nxt[i]; }
+                    delete this.values;
+                    delete this.nxt;
+                    this.values = nv;
+                    this.nxt = nn;
+                    this.cap = n;
+                }
+                return this.count;
+            }
+            public method add(T item) returns void {
+                int slot = this.alloc();
+                this.values[slot] = item;
+                this.nxt[slot] = cast<int>(0) - 1;
+                if (this.tail < 0) { this.head = slot; } else { this.nxt[this.tail] = slot; }
+                this.tail = slot;
+                this.count = this.count + 1;
+            }
+            public method get(int i) returns T {
+                mutable int cur = this.head;
+                for (mutable int j = 0; j < i; j++) { cur = this.nxt[cur]; }
+                return this.values[cur];
+            }
+            public method removeFirst() returns T {
+                int slot = this.head;
+                T v = this.values[slot];
+                this.head = this.nxt[slot];
+                if (this.head < 0) { this.tail = cast<int>(0) - 1; }
+                this.nxt[slot] = this.freeList;
+                this.freeList = slot;
+                this.count = this.count - 1;
+                return v;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
     }
 }
 )LDP3";

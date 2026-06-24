@@ -1252,3 +1252,13 @@ TEST_CASE("semantic rejects exceptions in freestanding mode") {
         " public class Main { public static method main(string[] args) returns int {"
         " throw new Oops() on heap; } } } }"));
 }
+
+TEST_CASE("semantic accepts a self-referential generic class declaration") {
+    // A `Node<T>* next` field inside Node<T> must not make the monomorphizer generate a bogus
+    // `Node$T` from the template's self-reference (it used to crash). Declared, not instantiated.
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public class Node<T> { public mutable T v; public mutable Node<T>* next;"
+        " public constructor Node(T x) { this.v = x; this.next = null; } }"
+        " public class Main { public static method main(string[] args) returns void { return; } } } }"));
+}

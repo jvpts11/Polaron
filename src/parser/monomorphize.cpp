@@ -992,6 +992,14 @@ bool monomorphize(ast::Program& program) {
                     if (!c.typeParamVariance.empty())
                         program.genericVariance[c.name] = c.typeParamVariance;
                 }
+    // Every generic type-parameter name (T, K, V, ...). An "instantiation" whose argument is one
+    // of these is bogus: it comes from a template referring to itself with its own parameter (e.g.
+    // `Node<T>* next` inside `Node<T>`, or `new Node<T>()` in its own body). Such pseudo-instances
+    // must never be generated -- doing so produced a class with an undefined type and crashed.
+    std::set<std::string> typeParamNames;
+    for (const auto& [tname, tpl] : templates)
+        for (const auto& tp : tpl->typeParams) typeParamNames.insert(tp);
+
     // No generic classes: still expand any generic methods, then done.
     if (templates.empty()) {
         expandGenericMethods(program);
@@ -1022,6 +1030,12 @@ bool monomorphize(ast::Program& program) {
         if (done.count(m) > 0) continue;
         done.insert(m);
         const auto& [base, args] = insts[m];
+        // Skip a template's self-reference with its own type parameter (e.g. Node$T from a
+        // `Node<T>* next` field) -- it is not a real instantiation (see typeParamNames).
+        bool selfParam = false;
+        for (const auto& a : args)
+            if (typeParamNames.count(a) > 0) selfParam = true;
+        if (selfParam) continue;
         auto tit = templates.find(base);
         if (tit == templates.end() || tit->second->typeParams.size() != args.size()) continue;
         // Constraints (spec 15.2): each type argument must satisfy its bound.

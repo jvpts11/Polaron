@@ -1,0 +1,23 @@
+import System.IO.Console;
+program LinkedListStdlib;
+
+// LinkedList<T> (spec 34.1): O(1) append + O(1) head removal. Implemented with index-based nodes
+// (parallel arrays + a free list) rather than self-referential generic pointer nodes; freed slots
+// are reused (here the slot from removeFirst is reused by the next add).
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                LinkedList<int> list = new LinkedList<int>() on heap;
+                list.add(10); list.add(20); list.add(30);
+                System.IO.Console.printf("size=%d g0=%d g2=%d\n", list.size(), list.get(0), list.get(2));
+                int r = list.removeFirst();
+                list.add(40);   // reuses the freed slot
+                System.IO.Console.printf("rm=%d size=%d g0=%d g2=%d\n",
+                                         r, list.size(), list.get(0), list.get(2));
+                return;
+            }
+        }
+    }
+}
