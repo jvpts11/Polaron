@@ -256,6 +256,7 @@ struct CodeGenerator::Impl {
     std::string pendingPersistKey;
     int lambdaCounter = 0;  // unique names for lowered lambda functions
     std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
+    std::unordered_map<std::string, std::string> externReturnType;   // extern C fn -> return type
     // Namespace-level compile-time constants (spec 28.1), folded once up front.
     std::unordered_map<std::string, std::string> namespaceConstTypes;  // const name -> LDP3 type
     std::unordered_map<std::string, long long> constIntVals;           // int/bool/char value
@@ -891,6 +892,9 @@ struct CodeGenerator::Impl {
             if (int w = vecWidth(flattenCallee(*call->callee)); w > 0)
                 return flattenCallee(*call->callee);  // vec2/3/4 construction
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
+            if (auto er = externReturnType.find(flattenCallee(*call->callee));
+                er != externReturnType.end())
+                return er->second;  // external C function (spec 26)
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
                 if (mem->member == "length" && isArrayType(typeName(*mem->object))) return "int";
                 if (const std::string ot = typeName(*mem->object); ot == "String" || ot == "string") {
@@ -2289,6 +2293,20 @@ struct CodeGenerator::Impl {
 
     llvm::Value* emitCall(const ast::CallExpr& call) {
         const std::string name = flattenCallee(*call.callee);
+        // External C function call (spec 26): a bare call to an `extern` declaration.
+        if (auto er = externReturnType.find(name); er != externReturnType.end()) {
+            llvm::Function* fn = functions[name];
+            std::vector<llvm::Value*> args;
+            for (std::size_t i = 0; i < call.args.size(); ++i) {
+                llvm::Value* v = emitExpr(*call.args[i]);
+                if (v == nullptr) return nullptr;
+                if (i < fn->getFunctionType()->getNumParams())
+                    v = coerceToType(v, fn->getFunctionType()->getParamType(i));
+                args.push_back(v);
+            }
+            llvm::Value* r = builder.CreateCall(fn, args);
+            return fn->getReturnType()->isVoidTy() ? nullptr : r;
+        }
         // Channel.select()....run() (spec 20.4): a compile-time-static fluent chain, lowered to a
         // poll loop over the registered channels (with an optional timeout).
         if (const auto* runMem = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
@@ -4590,6 +4608,15 @@ struct CodeGenerator::Impl {
     void declareFunctions() {
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ExternDecl& ex : ns.externs) {  // external C functions (spec 26)
+                    std::vector<llvm::Type*> pts;
+                    for (const auto& p : ex.params) pts.push_back(llvmType(typeRefName(p.type)));
+                    llvm::FunctionType* ty = llvm::FunctionType::get(
+                        llvmType(typeRefName(ex.returnType)), pts, ex.isVariadic);
+                    functions[ex.name] =
+                        llvm::Function::Create(ty, llvm::Function::ExternalLinkage, ex.name, module);
+                    externReturnType[ex.name] = typeRefName(ex.returnType);
+                }
                 for (const ast::ClassDecl& cls : ns.classes) {
                     bool hasCtor = false;
                     for (const ast::MemberPtr& member : cls.members) {

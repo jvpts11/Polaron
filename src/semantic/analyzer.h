@@ -177,6 +177,8 @@ private:
     std::unordered_map<std::string, const ast::MethodDecl*> comptimeMethods_;
     std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace
+    std::unordered_map<std::string, std::string> externReturns_;    // extern fn name -> return type
+    std::unordered_map<std::string, std::size_t> externParamCount_;  // extern fn name -> param count
     std::map<std::string, std::vector<std::string>> genericVariance_;  // generic -> per-param variance (spec 15.3)
     std::unordered_set<std::string> qualifiedTypes_;  // namespace-disambiguated names: import-exempt
     std::string currentNamespace_;  // namespace being analyzed (visibility checks)

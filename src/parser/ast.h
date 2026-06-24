@@ -656,6 +656,17 @@ struct ConstDecl {
     void dump(std::string& out, int indent) const;
 };
 
+// An external C function (spec 26): `extern cdecl method name(params) returns T;`. No body; it
+// resolves to a symbol with C linkage. `convention` is cdecl/stdcall/fastcall (unified on x64).
+struct ExternDecl {
+    std::string convention;
+    std::string name;
+    std::vector<Param> params;
+    TypeRef returnType;
+    bool isVariadic = false;  // `...` trailing parameter
+    SourceLocation loc;
+};
+
 struct Namespace {
     std::string visibility;
     std::string name;
@@ -664,6 +675,7 @@ struct Namespace {
     std::vector<CatalogDecl> catalogs;
     std::vector<LiteralDecl> literals;
     std::vector<ConstDecl> consts;
+    std::vector<ExternDecl> externs;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

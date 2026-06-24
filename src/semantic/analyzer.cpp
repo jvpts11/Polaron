@@ -443,6 +443,10 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
 void SemanticAnalyzer::registerEnums(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ExternDecl& ex : ns.externs) {  // external C functions (spec 26)
+                externReturns_[ex.name] = typeRefStr(ex.returnType);
+                externParamCount_[ex.name] = ex.params.size();
+            }
             for (const ast::EnumDecl& en : ns.enums) {
                 // A java-style enum is desugared into a class of the same name, so
                 // its matching class entry is expected; only flag other clashes.
@@ -2001,6 +2005,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 for (const auto& arg : call->args) typeOf(*arg);
                 return "void";
             }
+        }
+        // External C function (spec 26): a bare call `name(args)` to an `extern` declaration.
+        if (auto ext = externReturns_.find(name); ext != externReturns_.end()) {
+            for (const auto& arg : call->args) typeOf(*arg);
+            return ext->second;
         }
         // Memory API (spec 17.8): low-level address-based memory access (freestanding-safe).
         if (name == "Memory.alloc") {

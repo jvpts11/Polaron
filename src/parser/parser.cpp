@@ -285,12 +285,35 @@ ast::Namespace Parser::parseNamespace() {
             ns.consts.push_back(parseConstDecl());
         } else if (kind == TokenKind::KwRecord) {
             ns.classes.push_back(parseRecord());
+        } else if (kind == TokenKind::KwExtern) {
+            ns.externs.push_back(parseExtern());
         } else {
             ns.classes.push_back(parseClassOrInterface());
         }
     }
     expect(TokenKind::RBrace, "'}'");
     return ns;
+}
+
+// `[visibility] extern <cdecl|stdcall|fastcall> method name(params) returns T;` (spec 26).
+ast::ExternDecl Parser::parseExtern() {
+    ast::ExternDecl e;
+    parseVisibilityOpt();  // optional; an external symbol has no LDP3 visibility
+    e.loc = current().loc;
+    expect(TokenKind::KwExtern, "'extern'");
+    if (match(TokenKind::KwCdecl)) e.convention = "cdecl";
+    else if (match(TokenKind::KwStdcall)) e.convention = "stdcall";
+    else if (match(TokenKind::KwFastcall)) e.convention = "fastcall";
+    else fail("expected a calling convention (cdecl/stdcall/fastcall) after 'extern'", current().loc);
+    expect(TokenKind::KwMethod, "'method' after the calling convention");
+    e.name = expect(TokenKind::Identifier, "the external function name").lexeme;
+    expect(TokenKind::LParen, "'('");
+    e.params = parseParams();
+    expect(TokenKind::RParen, "')'");
+    expect(TokenKind::KwReturns, "'returns'");
+    e.returnType = parseTypeRef();
+    expect(TokenKind::Semicolon, "';' after an extern declaration");
+    return e;
 }
 
 ast::LiteralDecl Parser::parseLiteral() {

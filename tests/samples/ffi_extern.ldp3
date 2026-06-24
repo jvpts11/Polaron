@@ -1,0 +1,23 @@
+program FfiExtern;
+
+// FFI (spec 26): `extern <cdecl|stdcall|fastcall> method name(params) returns T;` declares an
+// external C function (no body) that resolves to a C-linkage symbol. Here two libc functions are
+// declared and called directly -- the basis for talking to the OS / hardware libraries (and, in
+// freestanding, to functions the kernel provides). On x64 the calling conventions converge on the
+// C ABI.
+
+public bundle main {
+    import System.IO.Console;
+    public namespace app {
+        extern cdecl method abs(int x) returns int;
+        extern cdecl method labs(int64 x) returns int64;
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = abs(-42);
+                int64 b = labs(cast<int64>(-1000000));
+                System.IO.Console.printf("abs=%d labs=%d\n", a, cast<int>(b));  // 42 1000000
+                return;
+            }
+        }
+    }
+}

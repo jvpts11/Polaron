@@ -53,6 +53,7 @@ private:
     ast::EnumDecl parseEnum();
     ast::CatalogDecl parseCatalog();
     ast::LiteralDecl parseLiteral();
+    ast::ExternDecl parseExtern();
     ast::ConstDecl parseConstDecl();
     ast::MemberPtr parseMember(bool inInterface);
     std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic,
