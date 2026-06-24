@@ -892,6 +892,13 @@ struct CodeGenerator::Impl {
             if (int w = vecWidth(flattenCallee(*call->callee)); w > 0)
                 return flattenCallee(*call->callee);  // vec2/3/4 construction
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
+            if (const std::string mc = flattenCallee(*call->callee); mc.rfind("Math.", 0) == 0) {
+                const std::string fn = mc.substr(5);  // only the builtin Math.* (spec 34.6) -> double
+                if (fn == "sqrt" || fn == "abs" || fn == "floor" || fn == "ceil" || fn == "round" ||
+                    fn == "trunc" || fn == "sin" || fn == "cos" || fn == "exp" || fn == "log" ||
+                    fn == "pow" || fn == "min" || fn == "max")
+                    return "double";
+            }
             if (auto er = externReturnType.find(flattenCallee(*call->callee));
                 er != externReturnType.end())
                 return er->second;  // external C function (spec 26)
@@ -2428,6 +2435,33 @@ struct CodeGenerator::Impl {
             llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt64Ty(), {}, false);
             return builder.CreateCall(module.getOrInsertFunction("__ldp3_lock_create", ft), {},
                                       "lock.h");
+        }
+        // Math (spec 34.6): static functions on double -> LLVM intrinsics.
+        if (name.rfind("Math.", 0) == 0) {
+            const std::string fn = name.substr(5);
+            llvm::Intrinsic::ID id = llvm::Intrinsic::not_intrinsic;
+            if (fn == "sqrt") id = llvm::Intrinsic::sqrt;
+            else if (fn == "abs") id = llvm::Intrinsic::fabs;
+            else if (fn == "floor") id = llvm::Intrinsic::floor;
+            else if (fn == "ceil") id = llvm::Intrinsic::ceil;
+            else if (fn == "round") id = llvm::Intrinsic::round;
+            else if (fn == "trunc") id = llvm::Intrinsic::trunc;
+            else if (fn == "sin") id = llvm::Intrinsic::sin;
+            else if (fn == "cos") id = llvm::Intrinsic::cos;
+            else if (fn == "exp") id = llvm::Intrinsic::exp;
+            else if (fn == "log") id = llvm::Intrinsic::log;
+            else if (fn == "pow") id = llvm::Intrinsic::pow;
+            else if (fn == "min") id = llvm::Intrinsic::minnum;
+            else if (fn == "max") id = llvm::Intrinsic::maxnum;
+            if (id != llvm::Intrinsic::not_intrinsic) {
+                std::vector<llvm::Value*> args;
+                for (const auto& a : call.args) {
+                    llvm::Value* v = emitExpr(*a);
+                    if (v == nullptr) return nullptr;
+                    args.push_back(coerceToType(v, builder.getDoubleTy()));
+                }
+                return builder.CreateIntrinsic(builder.getDoubleTy(), id, args);
+            }
         }
         // Memory API (spec 17.8): low-level address-based access. `address` is an i64.
         if (name == "Memory.alloc") {

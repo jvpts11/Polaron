@@ -155,6 +155,31 @@ public bundle std {
         public class Console {
         }
     }
+    public namespace System.Math {
+        // Math (spec 34.6) is a compiler builtin (its functions lower to LLVM intrinsics), not a
+        // real class -- a real `Math` class would clash with user classes named Math via namespace
+        // disambiguation. The name `Math` is registered virtually so `import System.Math.Math;`
+        // resolves (see the analyzer). Only Random is a real class here.
+        // A deterministic PRNG (xorshift64), pure LDP3 over a uint64 state (spec 34.6 Random).
+        public class Random {
+            private mutable uint64 state;
+            public constructor Random(uint64 seed) {
+                this.state = seed;
+                if (this.state == cast<uint64>(0)) { this.state = cast<uint64>(1); }
+            }
+            public method nextInt() returns int {
+                mutable uint64 x = this.state;
+                x = x ^ (x << 13);
+                x = x ^ (x >> 7);
+                x = x ^ (x << 17);
+                this.state = x;
+                return cast<int>(x >> 33);   // a non-negative 31-bit value
+            }
+            public method nextIntMax(int max) returns int {
+                return this.nextInt() % max;   // [0, max)
+            }
+        }
+    }
     public namespace System.Runtime {
         // Base for runtime exceptions (polymorphic, so it can be caught). UnimportedType
         // Exception is thrown when an unimported type is used (spec 30).

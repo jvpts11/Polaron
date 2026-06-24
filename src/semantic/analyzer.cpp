@@ -769,6 +769,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     freestanding_ = program.isFreestanding;
     for (const ast::Bundle& b : program.bundles)
         if (b.isFreestanding) freestanding_ = true;
+    // Math (spec 34.6) is a virtual builtin type (no prelude class, to avoid clashing with user
+    // classes named Math); register its namespace so `import System.Math.Math;` resolves.
+    typeNamespace_["Math"] = "System.Math";
     genericVariance_ = program.genericVariance;  // variance of generic type params (spec 15.3)
     qualifiedTypes_.insert(program.qualifiedTypes.begin(), program.qualifiedTypes.end());
     registerClasses(program);
@@ -2038,6 +2041,22 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (auto ext = externReturns_.find(name); ext != externReturns_.end()) {
             for (const auto& arg : call->args) typeOf(*arg);
             return ext->second;
+        }
+        // Math (spec 34.6): static functions on double, lowered to LLVM intrinsics.
+        if (name.rfind("Math.", 0) == 0) {
+            const std::string fn = name.substr(5);
+            const bool unary = fn == "sqrt" || fn == "abs" || fn == "floor" || fn == "ceil" ||
+                               fn == "round" || fn == "trunc" || fn == "sin" || fn == "cos" ||
+                               fn == "exp" || fn == "log";
+            const bool binary = fn == "pow" || fn == "min" || fn == "max";
+            if (unary || binary) {
+                checkTypeAccessible("Math", call->loc);  // require `import System.Math.Math;`
+                for (const auto& a : call->args) typeOf(*a);
+                const std::size_t want = unary ? 1u : 2u;
+                if (call->args.size() != want)
+                    error("Math." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
+                return "double";
+            }
         }
         // Memory API (spec 17.8): low-level address-based memory access (freestanding-safe).
         if (name == "Memory.alloc") {
