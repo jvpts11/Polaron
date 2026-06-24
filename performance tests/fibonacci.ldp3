@@ -1,0 +1,21 @@
+program Fibonacci;
+
+// Naive recursive Fibonacci -- pure function-call overhead (hundreds of millions of calls).
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method fib(int n) returns int {
+                if (n < 2) {
+                    return n;
+                }
+                return Main.fib(n - 1) + Main.fib(n - 2);
+            }
+            public static method main(string[] args) returns void {
+                int r = Main.fib(40);
+                System.IO.printf("fib=%d\n", r);
+                return;
+            }
+        }
+    }
+}

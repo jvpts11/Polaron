@@ -1,0 +1,41 @@
+program Mandelbrot;
+
+// Mandelbrot escape-time over a W x H grid, up to maxIter iterations per pixel. Pure
+// double arithmetic (no sqrt -- escape test uses zr^2 + zi^2 > 4). FP-heavy nested loops.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int w = 1200;
+                int h = 1200;
+                int maxIter = 1000;
+                mutable int total = 0;
+                for (mutable int py = 0; py < h; py++) {
+                    for (mutable int px = 0; px < w; px++) {
+                        double cr = cast<double>(px) / cast<double>(w) * 3.5 - 2.5;
+                        double ci = cast<double>(py) / cast<double>(h) * 2.0 - 1.0;
+                        mutable double zr = 0.0;
+                        mutable double zi = 0.0;
+                        mutable int it = 0;
+                        mutable boolean escaped = false;
+                        while (it < maxIter && escaped == false) {
+                            double zr2 = zr * zr;
+                            double zi2 = zi * zi;
+                            if (zr2 + zi2 > 4.0) {
+                                escaped = true;
+                            } else {
+                                zi = 2.0 * zr * zi + ci;
+                                zr = zr2 - zi2 + cr;
+                                it = it + 1;
+                            }
+                        }
+                        total = (total + it) % 1000000007;
+                    }
+                }
+                System.IO.printf("checksum=%d\n", total);
+                return;
+            }
+        }
+    }
+}

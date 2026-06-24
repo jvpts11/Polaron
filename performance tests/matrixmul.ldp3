@@ -1,0 +1,42 @@
+program MatrixMul;
+
+// Dense N x N double matrix multiply (c = a * b), flat row-major arrays. Heavy FP
+// throughput + cache behavior -- the classic kernel C/C++ are fast at. Prints a checksum
+// so the work is not optimized away.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int n = 512;
+                double[] a = new double[n * n]();
+                double[] b = new double[n * n]();
+                double[] c = new double[n * n]();
+                for (mutable int i = 0; i < n; i++) {
+                    for (mutable int j = 0; j < n; j++) {
+                        a[i * n + j] = cast<double>((i + j) % 100) * 0.5;
+                        b[i * n + j] = cast<double>((i * j) % 100) * 0.25;
+                    }
+                }
+                for (mutable int i = 0; i < n; i++) {
+                    for (mutable int j = 0; j < n; j++) {
+                        mutable double sum = 0.0;
+                        for (mutable int k = 0; k < n; k++) {
+                            sum = sum + a[i * n + k] * b[k * n + j];
+                        }
+                        c[i * n + j] = sum;
+                    }
+                }
+                mutable int acc = 0;
+                for (mutable int i = 0; i < n * n; i++) {
+                    acc = (acc + cast<int>(c[i])) % 1000000007;
+                }
+                System.IO.printf("checksum=%d\n", acc);
+                delete a;
+                delete b;
+                delete c;
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,5 @@
+# Build artifacts from the benchmarks -- only the .ldp3 sources + README are tracked.
+*.ll
+*.exe
+*.obj
+*.pdb
