@@ -915,7 +915,13 @@ struct CodeGenerator::Impl {
                 if (owner.empty() && classes.count(flattenCallee(*mem->object)) > 0) {
                     owner = methodOwner(flattenCallee(*mem->object), mem->member);
                 }
-                if (!owner.empty()) return classes[owner].methodReturnType[mem->member];
+                if (!owner.empty()) {
+                    const std::string rt = classes[owner].methodReturnType[mem->member];
+                    // An async method call yields a Task<returnType> (spec 20.2).
+                    const ast::MethodDecl* md = findMethodDecl(owner, mem->member);
+                    if (md != nullptr && md->isAsync) return ast::mangleGeneric("Task", {rt});
+                    return rt;
+                }
             }
             // Namespace-level literal suffix function: name(arg).
             auto lit = literalReturnType.find(flattenCallee(*call->callee));
@@ -4524,22 +4530,92 @@ struct CodeGenerator::Impl {
         }
     }
 
-    // Emits an async method as two functions (spec 20.2; slice A -- no awaits yet): a resume
-    // function holding the body (whose `return X` completes the task), and a wrapper that creates
-    // a Task, schedules the resume on the worker pool, and returns the Task immediately.
+    // The heap state object for an async method (spec 20.2): field 0 is the resume-point index,
+    // field 1 is the task it produces, then one field per parameter. (Slice B will append the
+    // body's locals + await temporaries here so they survive suspension.)
+    llvm::StructType* asyncStateType(const ast::MethodDecl& m, const std::string& mangled) {
+        std::vector<llvm::Type*> fields = {builder.getInt32Ty(), builder.getPtrTy()};
+        for (const auto& p : m.params) fields.push_back(llvmType(typeRefName(p.type)));
+        return llvm::StructType::create(context, fields, mangled + "$state");
+    }
+
+    // A top-level statement is an await-point if it is `T x = await e;`, `await e;`, or
+    // `return await e;` (slice B handles awaits in these straight-line positions).
+    static const ast::AwaitExpr* awaitPointOf(const ast::Stmt* s) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s))
+            return dynamic_cast<const ast::AwaitExpr*>(vd->init.get());
+        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s))
+            return dynamic_cast<const ast::AwaitExpr*>(es->expr.get());
+        if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(s))
+            return rs->value ? dynamic_cast<const ast::AwaitExpr*>(rs->value.get()) : nullptr;
+        return nullptr;
+    }
+    static bool asyncHasAwait(const ast::Block& body) {
+        for (const auto& s : body.statements)
+            if (awaitPointOf(s.get()) != nullptr) return true;
+        return false;
+    }
+
+    // Emits an async method (spec 20.2) as two functions: a resume function holding the body
+    // (whose `return X` completes the task), and a wrapper that allocates the state object, copies
+    // the arguments in, schedules the resume on the worker pool, and returns the Task immediately.
     void emitAsyncMethod(const ast::ClassDecl& cls, const ast::MethodDecl& m) {
+        if (asyncHasAwait(m.body)) { emitAsyncStateMachine(cls, m); return; }
         const std::string mangled = cls.name + "." + m.name;
-        emitBody(functions[mangled + "$resume"], m.body, {}, "", builder.getVoidTy(), nullptr,
-                 nullptr, nullptr, nullptr, false, nullptr, nullptr, "", nullptr,
-                 /*asyncResume=*/true);
+        llvm::StructType* stateTy = asyncStateType(m, mangled);
+
+        // --- resume(ptr st): bind args from the state, run the body, returns complete the task.
+        llvm::Function* res = functions[mangled + "$resume"];
+        currentFn = res;
+        currentClass = "";  // slice B supports static async methods
+        currentRetType = builder.getVoidTy();
+        currentThis = nullptr;
+        currentEnsures = nullptr;
+        currentInvariants = nullptr;
+        currentDtorChain = "";
+        locals.clear();
+        scopeObjects.clear();
+        scopeRegions.clear();
+        deferred.clear();
+        labelBlocks.clear();
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", res));
+        llvm::Value* st = res->getArg(0);
+        currentAsyncState = builder.CreateLoad(
+            builder.getPtrTy(), builder.CreateStructGEP(stateTy, st, 1, "st.task.addr"), "st.task");
+        for (std::size_t i = 0; i < m.params.size(); ++i)
+            locals[m.params[i].name] = LocalSlot{
+                builder.CreateStructGEP(stateTy, st, 2 + i, m.params[i].name),
+                typeRefName(m.params[i].type)};
+        emitBlock(m.body, /*newScope=*/false);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) {
+            emitTaskComplete(nullptr);
+            builder.CreateRetVoid();
+        }
+        currentAsyncState = nullptr;
+        emitAsyncWrapper(stateTy, m, mangled);
+    }
+
+    // The wrapper foo(args): allocate the state object, copy arguments into it, schedule the
+    // resume on the worker pool, and return a Task<T> immediately (spec 20.2).
+    void emitAsyncWrapper(llvm::StructType* stateTy, const ast::MethodDecl& m,
+                          const std::string& mangled) {
+        llvm::Function* res = functions[mangled + "$resume"];
         llvm::Function* wrap = functions[mangled];
         builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", wrap));
         llvm::FunctionType* tnTy = llvm::FunctionType::get(builder.getInt64Ty(), false);
         llvm::Value* taskH =
             builder.CreateCall(module.getOrInsertFunction("__ldp3_task_new", tnTy), {}, "task");
-        // Build the Task<T> object and store the runtime handle in its `h` field.
+        llvm::Value* state = builder.CreateCall(mallocFn(), {sizeOf(stateTy)}, "state");
+        builder.CreateStore(builder.getInt32(0), builder.CreateStructGEP(stateTy, state, 0));
+        builder.CreateStore(builder.CreateIntToPtr(taskH, builder.getPtrTy()),
+                            builder.CreateStructGEP(stateTy, state, 1));
+        for (std::size_t i = 0; i < m.params.size(); ++i)
+            builder.CreateStore(wrap->getArg(i), builder.CreateStructGEP(stateTy, state, 2 + i));
+        llvm::FunctionType* schTy = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy()}, false);
+        builder.CreateCall(module.getOrInsertFunction("__ldp3_schedule", schTy), {res, state});
         const std::string taskCls = ast::mangleGeneric("Task", {typeRefName(m.returnType)});
-        llvm::Value* obj = nullptr;
+        llvm::Value* obj = llvm::ConstantPointerNull::get(builder.getPtrTy());
         if (auto cit = classes.find(taskCls); cit != classes.end()) {
             obj = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "task.obj");
             if (auto ctor = functions.find(taskCls + "." + taskCls); ctor != functions.end())
@@ -4548,15 +4624,135 @@ struct CodeGenerator::Impl {
                 builder.CreateStore(taskH, builder.CreateStructGEP(cit->second.type, obj,
                                                                    hIt->second, "task.h.addr"));
         }
-        // Schedule the resume on the pool; its state argument is the task handle itself.
-        llvm::FunctionType* schTy = llvm::FunctionType::get(
-            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy()}, false);
-        builder.CreateCall(module.getOrInsertFunction("__ldp3_schedule", schTy),
-                           {functions[mangled + "$resume"],
-                            builder.CreateIntToPtr(taskH, builder.getPtrTy())});
-        builder.CreateRet(obj != nullptr ? obj
-                                         : llvm::ConstantPointerNull::get(builder.getPtrTy()));
+        builder.CreateRet(obj);
+    }
+
+    // Casts a 64-bit task-result slot back to the awaited type T.
+    llvm::Value* castTaskResult(llvm::Value* res64, const std::string& t) {
+        llvm::Type* tt = llvmType(t);
+        if (tt->isPointerTy()) return builder.CreateIntToPtr(res64, tt);
+        if (tt->isDoubleTy()) return builder.CreateBitCast(res64, tt);
+        if (tt->isIntegerTy()) return builder.CreateIntCast(res64, tt, true);
+        return res64;
+    }
+
+    // Emits an async method whose body awaits (spec 20.2) as a state machine. Top-level locals and
+    // each await's task handle live in the heap state object so they survive suspension; the resume
+    // switches on the saved state index, and each await either reads its already-ready result or
+    // registers a continuation and returns (suspending the task until the awaited one completes).
+    void emitAsyncStateMachine(const ast::ClassDecl& cls, const ast::MethodDecl& m) {
+        const std::string mangled = cls.name + "." + m.name;
+        // Scan top-level locals and count await-points.
+        std::vector<std::pair<std::string, std::string>> tlocals;  // (name, type)
+        int awaitCount = 0;
+        for (const auto& sp : m.body.statements) {
+            if (awaitPointOf(sp.get()) != nullptr) ++awaitCount;
+            if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(sp.get()))
+                tlocals.push_back({vd->name,
+                                   vd->isVar ? typeName(*vd->init) : typeRefName(vd->type)});
+        }
+        // State layout: {i32 state, ptr task, args..., locals..., awaitHandles(i64)...}.
+        std::vector<llvm::Type*> fields = {builder.getInt32Ty(), builder.getPtrTy()};
+        const unsigned argBase = 2;
+        for (const auto& p : m.params) fields.push_back(llvmType(typeRefName(p.type)));
+        const unsigned localBase = static_cast<unsigned>(fields.size());
+        for (const auto& l : tlocals) fields.push_back(llvmType(l.second));
+        const unsigned awaitBase = static_cast<unsigned>(fields.size());
+        for (int k = 0; k < awaitCount; ++k) fields.push_back(builder.getInt64Ty());
+        llvm::StructType* stateTy = llvm::StructType::create(context, fields, mangled + "$state");
+
+        llvm::Function* res = functions[mangled + "$resume"];
+        currentFn = res;
+        currentClass = "";
+        currentRetType = builder.getVoidTy();
+        currentThis = nullptr;
+        currentEnsures = nullptr;
+        currentInvariants = nullptr;
+        currentDtorChain = "";
+        locals.clear();
+        scopeObjects.clear();
+        scopeRegions.clear();
+        deferred.clear();
+        labelBlocks.clear();
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", res));
+        llvm::Value* st = res->getArg(0);
+        currentAsyncState = builder.CreateLoad(
+            builder.getPtrTy(), builder.CreateStructGEP(stateTy, st, 1, "st.task.addr"), "st.task");
+        for (std::size_t i = 0; i < m.params.size(); ++i)
+            locals[m.params[i].name] = LocalSlot{
+                builder.CreateStructGEP(stateTy, st, argBase + i, m.params[i].name),
+                typeRefName(m.params[i].type)};
+        for (std::size_t j = 0; j < tlocals.size(); ++j)
+            locals[tlocals[j].first] = LocalSlot{
+                builder.CreateStructGEP(stateTy, st, localBase + j, tlocals[j].first),
+                tlocals[j].second};
+
+        std::vector<llvm::BasicBlock*> seg;
+        for (int k = 0; k <= awaitCount; ++k)
+            seg.push_back(llvm::BasicBlock::Create(context, "seg" + std::to_string(k), res));
+        llvm::BasicBlock* suspendBlk = llvm::BasicBlock::Create(context, "suspend", res);
+        // Dispatch on the saved state index (default = start).
+        llvm::Value* stateVal = builder.CreateLoad(
+            builder.getInt32Ty(), builder.CreateStructGEP(stateTy, st, 0, "st.state.addr"), "st.state");
+        llvm::SwitchInst* sw = builder.CreateSwitch(stateVal, seg[0], awaitCount);
+        for (int k = 1; k <= awaitCount; ++k) sw->addCase(builder.getInt32(k), seg[k]);
+
+        llvm::FunctionType* awTy = llvm::FunctionType::get(
+            builder.getInt32Ty(),
+            {builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy()}, false);
+        llvm::FunctionType* trTy = llvm::FunctionType::get(
+            builder.getInt64Ty(), {builder.getInt64Ty()}, false);
+
+        int k = 0;  // await index
+        builder.SetInsertPoint(seg[0]);
+        for (const auto& sp : m.body.statements) {
+            const ast::Stmt* s = sp.get();
+            if (const ast::AwaitExpr* aw = awaitPointOf(s)) {
+                // Evaluate the awaited Task, save its handle, advance the state, and await.
+                llvm::Value* taskObj = emitExpr(*aw->operand);
+                const std::string taskCls = baseType(typeName(*aw->operand));  // Task$U
+                auto cit = classes.find(taskCls);
+                auto hIt = cit->second.fieldIndex.find("h");
+                llvm::Value* h = builder.CreateLoad(
+                    builder.getInt64Ty(),
+                    builder.CreateStructGEP(cit->second.type, taskObj, hIt->second), "aw.h");
+                builder.CreateStore(h, builder.CreateStructGEP(stateTy, st, awaitBase + k));
+                builder.CreateStore(builder.getInt32(k + 1), builder.CreateStructGEP(stateTy, st, 0));
+                llvm::Value* suspended = builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_await", awTy), {h, res, st}, "suspend?");
+                builder.CreateCondBr(
+                    builder.CreateICmpNE(suspended, builder.getInt32(0)), suspendBlk, seg[k + 1]);
+                // Resume point: read the awaited result.
+                builder.SetInsertPoint(seg[k + 1]);
+                llvm::Value* savedH = builder.CreateLoad(
+                    builder.getInt64Ty(), builder.CreateStructGEP(stateTy, st, awaitBase + k), "aw.saved");
+                llvm::Value* r = builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_task_result", trTy), {savedH}, "aw.result");
+                const std::string u = taskCls.rfind("Task$", 0) == 0 ? taskCls.substr(5) : taskCls;
+                llvm::Value* rv = castTaskResult(r, u);
+                if (dynamic_cast<const ast::ReturnStmt*>(s) != nullptr) {
+                    emitTaskComplete(rv);
+                    builder.CreateRetVoid();
+                } else if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) {
+                    builder.CreateStore(rv, locals[vd->name].storage);
+                }
+                ++k;
+            } else if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) {
+                // Non-await local: evaluate and store into its state slot (not an alloca).
+                llvm::Value* v = emitExpr(*vd->init);
+                if (v != nullptr) builder.CreateStore(v, locals[vd->name].storage);
+            } else {
+                emitStatement(*s);
+            }
+        }
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) {
+            emitTaskComplete(nullptr);
+            builder.CreateRetVoid();
+        }
+        builder.SetInsertPoint(suspendBlk);
+        builder.CreateRetVoid();
         currentAsyncState = nullptr;
+        emitAsyncWrapper(stateTy, m, mangled);
     }
 
     void emitFunctions() {

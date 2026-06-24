@@ -1,0 +1,29 @@
+program AsyncChain;
+
+// async/await state machine (spec 20.2), slice B: awaiting INSIDE an async method suspends it.
+// The compiler splits pipeline() at each `await` into states; its locals and the awaited task
+// handles live in a heap state object, so the method can suspend and resume. When an awaited task
+// is not yet done, a continuation is registered (instead of blocking a worker) and the method
+// returns; the worker pool resumes it once the awaited task completes.
+
+public bundle main {
+    import System.IO.Console;
+    public namespace app {
+        public class Main {
+            public static async method val(int n) returns int {
+                return n;
+            }
+            public static async method pipeline() returns int {
+                int a = await Main.val(10);   // suspend; resume with a = 10
+                int b = await Main.val(20);   // suspend; resume with b = 20
+                int c = await Main.val(30);   // suspend; resume with c = 30
+                return a + b + c;
+            }
+            public static method main(string[] args) returns void {
+                Task<int> t = Main.pipeline();
+                System.IO.Console.printf("sum=%d\n", await t);   // 60
+                return;
+            }
+        }
+    }
+}

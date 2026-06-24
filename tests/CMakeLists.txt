@@ -393,6 +393,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # F8: async/await state machine (slice B) -- awaiting inside an async method suspends it;
+        # the body is split into states across the awaits (sum=60).
+        add_test(NAME codegen_async_chain_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/async_chain.ldp3"
+            "-DEXPECTED=sum=60"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # comefrom (spec 7.10): jump to a label, forward (skip ahead) or backward (retry).
         add_test(NAME codegen_comefrom_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
