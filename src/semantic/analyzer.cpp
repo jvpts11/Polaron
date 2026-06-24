@@ -718,6 +718,9 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         if (m->isAbstract) continue;  // no body to analyze
+                        if (m->isAsync && freestanding_)
+                            error("async methods are not available in freestanding mode (spec 36.3)",
+                                  m->loc);
                         std::vector<const ast::Expr*> contracts;
                         for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
                         for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
@@ -758,6 +761,11 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
 }
 
 bool SemanticAnalyzer::analyze(const ast::Program& program) {
+    // Freestanding mode (spec 36): the whole program, or any bundle, may opt out of the managed
+    // runtime; here we treat the program as freestanding if it or any bundle declares it.
+    freestanding_ = program.isFreestanding;
+    for (const ast::Bundle& b : program.bundles)
+        if (b.isFreestanding) freestanding_ = true;
     genericVariance_ = program.genericVariance;  // variance of generic type params (spec 15.3)
     qualifiedTypes_.insert(program.qualifiedTypes.begin(), program.qualifiedTypes.end());
     registerClasses(program);
@@ -1453,6 +1461,8 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* um = dynamic_cast<const ast::UnimportStmt*>(&stmt)) {
+        if (freestanding_)
+            error("unimport/reimport is not available in freestanding mode (spec 36.3)", um->loc);
         if (lookupClass(baseType(um->target)) == nullptr)
             error("cannot " + std::string(um->isReimport ? "reimport" : "unimport") + " '" +
                       um->target + "': not a known class",
@@ -1495,6 +1505,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&stmt)) {
+        if (freestanding_)
+            error("exceptions are not available in freestanding mode; use Result/Option (spec 36.3)",
+                  th->loc);
         const std::string t = typeOf(*th->value);
         if (!t.empty()) {
             const std::string bt = baseType(t);
@@ -1521,6 +1534,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* tr = dynamic_cast<const ast::TryStmt*>(&stmt)) {
+        if (freestanding_)
+            error("exceptions are not available in freestanding mode; use Result/Option (spec 36.3)",
+                  tr->loc);
         analyzeBlock(tr->body);
         for (const ast::CatchClause& cc : tr->catches) {
             const std::string ct = baseType(typeRefStr(cc.type));
@@ -1605,6 +1621,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
+        if (freestanding_)
+            error("async/await is not available in freestanding mode (spec 36.3)", aw->loc);
         // await Task<T> -> T (spec 20.2).
         const std::string t = baseType(typeOf(*aw->operand));
         if (!t.empty() && t.rfind("Task$", 0) != 0) {
@@ -1979,6 +1997,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             const bool isPrintln = name == "System.IO.Console.println";
             const bool isPrint = name == "System.IO.Console.print";
             if (isRead || isPrintf || isPrintln || isPrint) {
+                if (freestanding_)
+                    error("Console (managed stdlib) is not available in freestanding mode; use FFI "
+                          "for I/O (spec 36.3)",
+                          call->loc);
                 checkTypeAccessible("Console", call->loc);  // require the import
                 if (isRead) {
                     if (!call->args.empty()) error("Console.read takes no arguments", call->loc);
@@ -2043,6 +2065,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         // reflect.typeOf<T>() (spec 31): the Type token for class T.
         if (name == "reflect.typeOf") {
+            if (freestanding_)
+                error("reflection is not available in freestanding mode (spec 36.3)", call->loc);
             if (call->typeArgs.size() != 1) {
                 error("reflect.typeOf expects one type argument, e.g. reflect.typeOf<Dog>()",
                       call->loc);

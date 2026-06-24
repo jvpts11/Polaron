@@ -202,6 +202,7 @@ ast::Program Parser::parse() {
         program.loc = current().loc;
         expect(TokenKind::KwProgram, "'program'");
         program.name = expect(TokenKind::Identifier, "the program name").lexeme;
+        if (match(TokenKind::KwFreestanding)) program.isFreestanding = true;  // spec 36.8
         expect(TokenKind::Semicolon, "';'");
         while (!check(TokenKind::EndOfFile)) {
             program.bundles.push_back(parseBundle());
@@ -219,6 +220,7 @@ ast::Bundle Parser::parseBundle() {
     b.visibility = parseVisibilityOpt();
     expect(TokenKind::KwBundle, "'bundle'");
     b.name = expect(TokenKind::Identifier, "the bundle name").lexeme;
+    if (match(TokenKind::KwFreestanding)) b.isFreestanding = true;  // spec 36.8
     expect(TokenKind::LBrace, "'{'");
     // Imports come first: `import a.b.c;` (spec 2.7). The `bundle`/`from program`
     // forms are later phases.

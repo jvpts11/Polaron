@@ -1576,6 +1576,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # F9 freestanding: a `freestanding` program -- regions/Memory/pointers/FFI, no managed
+        # runtime; emits via an external C function (compiled hosted here).
+        add_test(NAME codegen_freestanding_kernel_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/freestanding_kernel.ldp3"
+            "-DEXPECTED=OK"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # F9 freestanding: FFI -- `extern cdecl method` declares + calls external C functions.
         add_test(NAME codegen_ffi_extern_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

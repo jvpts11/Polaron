@@ -1,0 +1,28 @@
+program FreestandingKernel freestanding;
+
+// Freestanding mode (spec 36): `program X freestanding;` / `bundle X freestanding` opt out of the
+// managed runtime -- the compiler then rejects any feature that needs it (async/await, exceptions,
+// unimport, reflection, the managed Console/stdlib). What remains is the systems core: structs,
+// regions, raw pointers, the Memory API, and FFI. This tiny "kernel" builds a message in raw
+// memory and emits it through an external C function (no managed Console). Compiled hosted here;
+// the same code targets bare metal once ELF output lands.
+
+public bundle main freestanding {
+    public namespace boot {
+        extern cdecl method putchar(int c) returns int;
+        public class Main {
+            public static method main(string[] args) returns int {
+                address buf = Memory.alloc(8);
+                int* msg = cast<int*>(buf);
+                msg[0] = 79;   // 'O'
+                msg[1] = 75;   // 'K'
+                msg[2] = 10;   // newline
+                for (mutable int i = 0; i < 3; i++) {
+                    putchar(msg[i]);
+                }
+                Memory.free(buf);
+                return 0;
+            }
+        }
+    }
+}

@@ -1227,3 +1227,28 @@ TEST_CASE("semantic rejects a tuple component bound to an incompatible type") {
     // The components are int; a boolean binding can't accept an int (no narrowing).
     CHECK_FALSE(checkSrc(withClass(kMathX, "(boolean q, int r) = MathX.divmod(9, 4);")));
 }
+
+// ---- Freestanding mode (spec 36) ----
+
+TEST_CASE("semantic accepts low-level memory in freestanding mode") {
+    CHECK(checkSrc(
+        "program K freestanding; public bundle b freestanding { public namespace n {"
+        " public class Main { public static method main(string[] args) returns int {"
+        " address a = Memory.alloc(8); int* p = cast<int*>(a); p[0] = 5;"
+        " int x = p[0]; Memory.free(a); return x; } } } }"));
+}
+
+TEST_CASE("semantic rejects async in freestanding mode") {
+    CHECK_FALSE(checkSrc(
+        "program K freestanding; public bundle b freestanding { public namespace n {"
+        " public class Main { public static async method foo() returns int { return 1; }"
+        " public static method main(string[] args) returns int { return 0; } } } }"));
+}
+
+TEST_CASE("semantic rejects exceptions in freestanding mode") {
+    CHECK_FALSE(checkSrc(
+        "program K freestanding; public bundle b freestanding { public namespace n {"
+        " public class Oops { public constructor Oops() {} }"
+        " public class Main { public static method main(string[] args) returns int {"
+        " throw new Oops() on heap; } } } }"));
+}

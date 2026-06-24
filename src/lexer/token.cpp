@@ -75,6 +75,7 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwCdecl:         return "KwCdecl";
         case TokenKind::KwStdcall:       return "KwStdcall";
         case TokenKind::KwFastcall:      return "KwFastcall";
+        case TokenKind::KwFreestanding:  return "KwFreestanding";
         case TokenKind::KwItself:        return "KwItself";
         case TokenKind::KwRelease:       return "KwRelease";
         case TokenKind::KwComptime:      return "KwComptime";

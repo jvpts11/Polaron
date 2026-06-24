@@ -83,6 +83,7 @@ TokenKind keywordKind(std::string_view text) {
         {"cdecl", TokenKind::KwCdecl},
         {"stdcall", TokenKind::KwStdcall},
         {"fastcall", TokenKind::KwFastcall},
+        {"freestanding", TokenKind::KwFreestanding},
         {"itself", TokenKind::KwItself},
         {"release", TokenKind::KwRelease},
         {"persistent", TokenKind::KwPersistent},

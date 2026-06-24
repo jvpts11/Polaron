@@ -182,6 +182,7 @@ private:
     std::map<std::string, std::vector<std::string>> genericVariance_;  // generic -> per-param variance (spec 15.3)
     std::unordered_set<std::string> qualifiedTypes_;  // namespace-disambiguated names: import-exempt
     std::string currentNamespace_;  // namespace being analyzed (visibility checks)
+    bool freestanding_ = false;     // spec 36: no managed-runtime features in this program
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     bool inConstructor_ = false;  // immutable fields may be initialized here
