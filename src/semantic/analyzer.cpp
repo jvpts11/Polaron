@@ -2051,6 +2051,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("String has no method '" + mem->member + "'", call->loc);
                 return "";
             }
+            // atomic<T> lock-free operations (spec 20.6).
+            if (baseType(objType).rfind("atomic$", 0) == 0) {
+                const std::string elem = baseType(objType).substr(7);
+                for (const auto& arg : call->args) typeOf(*arg);
+                if (mem->member == "get" && call->args.empty()) return elem;
+                if (mem->member == "set" && call->args.size() == 1) return "void";
+                if (mem->member == "add" && call->args.size() == 1) return elem;
+                if (mem->member == "increment" && call->args.empty()) return elem;
+                if (mem->member == "compareAndSet" && call->args.size() == 2) return "boolean";
+                error("atomic has no method '" + mem->member + "'", call->loc);
+                return "";
+            }
             if (objType == "Type") {  // reflection (spec 31)
                 for (const auto& arg : call->args) typeOf(*arg);
                 if (mem->member == "name" && call->args.empty()) return "String";

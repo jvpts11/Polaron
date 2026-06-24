@@ -93,6 +93,12 @@ public bundle std {
             public mutable int64 h;
             public constructor Task() { this.h = cast<int64>(0); }
         }
+        // A lock-free atomic cell (spec 20.6). get/set/add/increment/compareAndSet (and the atomic
+        // ++ / += operators) lower to LLVM atomic instructions; T is an integer type.
+        public class atomic<T> {
+            public mutable T value;
+            public constructor atomic(T initial) { this.value = initial; }
+        }
         // A mutual-exclusion lock guarding a value of type T (spec 20.5). The value is reached
         // only through `synchronized (m) using T& x { ... }`, which holds the lock for the block.
         public class Mutex<T> {

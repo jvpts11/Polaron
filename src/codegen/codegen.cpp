@@ -2302,6 +2302,49 @@ struct CodeGenerator::Impl {
                 llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "len");
                 return builder.CreateTrunc(len, builder.getInt32Ty());
             }
+            // atomic<T> operations (spec 20.6): lower to LLVM atomic instructions.
+            if (const std::string ot = baseType(typeName(*mem->object)); ot.rfind("atomic$", 0) == 0) {
+                llvm::Value* obj = emitObjectPtr(*mem->object);
+                if (obj == nullptr) return nullptr;
+                auto cit = classes.find(ot);
+                llvm::Value* vp = builder.CreateStructGEP(
+                    cit->second.type, obj, cit->second.fieldIndex["value"], "atomic.value");
+                llvm::Type* et = llvmType(ot.substr(7));
+                llvm::Align al(et->getPrimitiveSizeInBits() / 8);
+                const auto seqcst = llvm::AtomicOrdering::SequentiallyConsistent;
+                if (mem->member == "get") {
+                    llvm::LoadInst* ld = builder.CreateLoad(et, vp, "atomic.get");
+                    ld->setAtomic(seqcst);
+                    ld->setAlignment(al);
+                    return ld;
+                }
+                if (mem->member == "set") {
+                    llvm::Value* n = emitExpr(*call.args[0]);
+                    if (n == nullptr) return nullptr;
+                    llvm::StoreInst* st = builder.CreateStore(n, vp);
+                    st->setAtomic(seqcst);
+                    st->setAlignment(al);
+                    return nullptr;
+                }
+                if (mem->member == "add" || mem->member == "increment") {
+                    llvm::Value* n = mem->member == "increment" ? llvm::ConstantInt::get(et, 1)
+                                                                : emitExpr(*call.args[0]);
+                    if (n == nullptr) return nullptr;
+                    llvm::Value* old = builder.CreateAtomicRMW(llvm::AtomicRMWInst::Add, vp, n, al,
+                                                              seqcst);
+                    return builder.CreateAdd(old, n, "atomic.new");  // return the new value
+                }
+                if (mem->member == "compareAndSet") {
+                    llvm::Value* exp = emitExpr(*call.args[0]);
+                    llvm::Value* des = emitExpr(*call.args[1]);
+                    if (exp == nullptr || des == nullptr) return nullptr;
+                    llvm::AtomicCmpXchgInst* cx =
+                        builder.CreateAtomicCmpXchg(vp, exp, des, al, seqcst, seqcst);
+                    return builder.CreateZExt(builder.CreateExtractValue(cx, 1, "cas.ok"),
+                                              builder.getInt32Ty());
+                }
+                return nullptr;
+            }
             // String methods (spec 4): length/charAt/isEmpty/equals/concat/substring.
             if (const std::string ot = typeName(*mem->object); ot == "String" || ot == "string") {
                 llvm::Value* s = emitExpr(*mem->object);

@@ -1,0 +1,31 @@
+program AtomicCounter;
+
+// atomic<T> (spec 20.6): a lock-free atomic cell. get/set/add/increment/compareAndSet lower to
+// LLVM atomic instructions. Two OS threads each increment a shared atomic counter 100000 times;
+// the total is exactly 200000 because each increment is atomic -- no lock, no lost updates (the
+// lock-free counterpart of mutex_synchronized).
+
+public bundle main {
+    import System.IO.Console;
+    import System.Concurrency.Thread;
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                atomic<int> counter = new atomic<int>(0) on heap;
+                function<void> work = lambda[captures: byvalue counter]() returns void {
+                    for (mutable int i = 0; i < 100000; i++) {
+                        counter.increment();
+                    }
+                };
+                Thread t1 = new Thread(work) on heap;
+                Thread t2 = new Thread(work) on heap;
+                t1.start();
+                t2.start();
+                t1.join();
+                t2.join();
+                System.IO.Console.printf("total=%d\n", counter.get());
+                return;
+            }
+        }
+    }
+}
