@@ -900,6 +900,12 @@ struct CodeGenerator::Impl {
                 return flattenCallee(*call->callee);  // vec2/3/4 construction
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
             if (flattenCallee(*call->callee) == "Memory.readString") return "String";  // StringBuilder
+            if (const std::string fc = flattenCallee(*call->callee); fc.rfind("File.", 0) == 0) {
+                if (fc == "File.readAll") return "String";  // spec 34.4
+                if (fc == "File.writeAll" || fc == "File.appendAll" || fc == "File.exists" ||
+                    fc == "File.remove")
+                    return "boolean";
+            }
             if (const std::string mc = flattenCallee(*call->callee); mc.rfind("Math.", 0) == 0) {
                 const std::string fn = mc.substr(5);  // only the builtin Math.* (spec 34.6) -> double
                 if (fn == "sqrt" || fn == "abs" || fn == "floor" || fn == "ceil" || fn == "round" ||
@@ -2524,6 +2530,39 @@ struct CodeGenerator::Impl {
             if (a == nullptr || v == nullptr) return nullptr;
             builder.CreateStore(v, builder.CreateIntToPtr(a, builder.getPtrTy()));
             return nullptr;
+        }
+        // File I/O (spec 34.4): static methods lowering to runtime stdio helpers.
+        if (name.rfind("File.", 0) == 0) {
+            const std::string fn = name.substr(5);
+            llvm::Type* p = builder.getPtrTy();
+            if (fn == "readAll") {
+                llvm::Value* s = emitExpr(*call.args[0]);
+                if (s == nullptr) return nullptr;
+                llvm::Value* lenSlot = builder.CreateAlloca(builder.getInt64Ty(), nullptr, "fr.len");
+                llvm::FunctionType* ft = llvm::FunctionType::get(p, {p, p}, false);
+                llvm::Value* buf = builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_file_read_all", ft), {stringData(s), lenSlot});
+                llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), lenSlot, "fr.n");
+                return emitStringFromParts(len, buf);
+            }
+            if (fn == "writeAll" || fn == "appendAll") {
+                llvm::Value* path = emitExpr(*call.args[0]);
+                llvm::Value* content = emitExpr(*call.args[1]);
+                if (path == nullptr || content == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(
+                    builder.getInt32Ty(), {p, p, builder.getInt64Ty(), builder.getInt32Ty()}, false);
+                return builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_file_write_all", ft),
+                    {stringData(path), stringData(content), stringLen(content),
+                     builder.getInt32(fn == "appendAll" ? 1 : 0)});
+            }
+            if (fn == "exists" || fn == "remove") {
+                llvm::Value* path = emitExpr(*call.args[0]);
+                if (path == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt32Ty(), {p}, false);
+                const char* rfn = fn == "exists" ? "__ldp3_file_exists" : "__ldp3_file_delete";
+                return builder.CreateCall(module.getOrInsertFunction(rfn, ft), {stringData(path)});
+            }
         }
         // Memory.readString(address, len): build a String by copying `len` bytes from a raw buffer
         // (the new String owns its own copy). Used by StringBuilder.toString().

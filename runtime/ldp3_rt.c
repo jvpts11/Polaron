@@ -1,6 +1,7 @@
 // LDP3 minimal runtime: thread support (spec 20.1), defined-behaviour panic, and the
 // physical code unload/reload behind unimport/reimport (spec 30). Linked into every exe.
 
+#define _CRT_SECURE_NO_WARNINGS  // fopen/remove etc. are used deliberately (File I/O, spec 34.4)
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -210,6 +211,35 @@ int __ldp3_chan_try_receive(long long handle, long long* out) {
 
 long long __ldp3_now_ms(void) { return (long long)GetTickCount64(); }
 void __ldp3_yield(void) { Sleep(0); }  // hand off the rest of the time slice while polling
+
+// ---- File I/O (spec 34.4): whole-file read/write over C stdio. ----
+char* __ldp3_file_read_all(const char* path, long long* outLen) {
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) { *outLen = 0; char* e = (char*)malloc(1); e[0] = 0; return e; }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    if (size < 0) size = 0;
+    fseek(f, 0, SEEK_SET);
+    char* buf = (char*)malloc((size_t)size + 1);
+    size_t n = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[n] = 0;
+    *outLen = (long long)n;
+    return buf;
+}
+int __ldp3_file_write_all(const char* path, const char* data, long long len, int append) {
+    FILE* f = fopen(path, append ? "ab" : "wb");
+    if (f == NULL) return 0;
+    size_t n = fwrite(data, 1, (size_t)len, f);
+    fclose(f);
+    return n == (size_t)len ? 1 : 0;
+}
+int __ldp3_file_exists(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f != NULL) { fclose(f); return 1; }
+    return 0;
+}
+int __ldp3_file_delete(const char* path) { return remove(path) == 0 ? 1 : 0; }
 
 // Decimal text of `n` into `buf` (signed, no NUL needed), returns the digit count. For int.toString().
 long long __ldp3_itoa(long long n, char* buf) {

@@ -772,6 +772,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     // Math (spec 34.6) is a virtual builtin type (no prelude class, to avoid clashing with user
     // classes named Math); register its namespace so `import System.Math.Math;` resolves.
     typeNamespace_["Math"] = "System.Math";
+    // File (spec 34.4) is likewise a virtual builtin (static methods lower to runtime stdio calls);
+    // register it so `import System.IO.File;` resolves.
+    typeNamespace_["File"] = "System.IO";
     genericVariance_ = program.genericVariance;  // variance of generic type params (spec 15.3)
     qualifiedTypes_.insert(program.qualifiedTypes.begin(), program.qualifiedTypes.end());
     registerClasses(program);
@@ -2084,6 +2087,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (name == "Memory.write") {
             for (const auto& a : call->args) typeOf(*a);
             return "void";
+        }
+        // File I/O (spec 34.4): static methods lowering to runtime stdio. Require `import System.IO.File;`.
+        if (name.rfind("File.", 0) == 0) {
+            const std::string fn = name.substr(5);
+            if (fn == "readAll" || fn == "writeAll" || fn == "appendAll" || fn == "exists" ||
+                fn == "remove") {
+                checkTypeAccessible("File", call->loc);
+                for (const auto& a : call->args) typeOf(*a);
+                const std::size_t want = (fn == "writeAll" || fn == "appendAll") ? 2u : 1u;
+                if (call->args.size() != want)
+                    error("File." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
+                return fn == "readAll" ? "String" : "boolean";
+            }
         }
         // Memory.readString(address, len): build a String from a raw byte buffer (StringBuilder).
         if (name == "Memory.readString") {

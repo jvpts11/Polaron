@@ -1,0 +1,26 @@
+import System.IO.Console;
+import System.IO.File;
+program FileIoStdlib;
+
+// File I/O (spec 34.4): whole-file write/read/append/exists/remove, lowering to runtime C stdio.
+// Self-contained: writes a temp file, reads it back, appends, then removes it.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String path = "ldp3_file_io_test.txt";
+                boolean w = File.writeAll(path, "hello file");
+                boolean ex = File.exists(path);
+                String content = File.readAll(path);
+                boolean a = File.appendAll(path, "!");
+                String content2 = File.readAll(path);
+                boolean d = File.remove(path);
+                boolean ex2 = File.exists(path);
+                System.IO.Console.printf("w=%d ex=%d len=%d eq=%d len2=%d d=%d ex2=%d\n",
+                    w, ex, content.length(), content.equals("hello file"), content2.length(), d, ex2);
+                return;
+            }
+        }
+    }
+}
