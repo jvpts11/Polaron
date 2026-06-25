@@ -984,6 +984,104 @@ R"LDP3(
             }
         }
     }
+)LDP3"
+// (split: System.Math reopened for BigInteger, its own literal.)
+R"LDP3(
+    public namespace System.Math {
+        // Arbitrary-precision integer (spec 34): decimal digits (0..9) stored least-significant
+        // first in an int[] (arrays of int work; this avoids the ArrayList<class> path). Supports
+        // construction from long, same-sign add, multiply, compareTo, toString.
+        public class BigInteger {
+            private mutable int[] dig;
+            private mutable int len;
+            private mutable boolean neg;
+            public constructor BigInteger(long value) {
+                this.neg = value < cast<long>(0);
+                mutable long v = value;
+                if (this.neg) { v = cast<long>(0) - v; }
+                this.dig = new int[24]();
+                this.len = 1;
+                this.dig[0] = 0;
+                if (v > cast<long>(0)) {
+                    this.len = 0;
+                    while (v > cast<long>(0)) {
+                        this.dig[this.len] = cast<int>(v % cast<long>(10));
+                        v = v / cast<long>(10);
+                        this.len = this.len + 1;
+                    }
+                }
+            }
+            private method ensure(int n) returns void {
+                if (n <= this.dig.length()) { return; }
+                mutable int cap = this.dig.length() * 2;
+                while (cap < n) { cap = cap * 2; }
+                mutable int[] nd = new int[cap]();
+                for (mutable int i = 0; i < this.len; i++) { nd[i] = this.dig[i]; }
+                delete this.dig;
+                this.dig = nd;
+            }
+            public method isZero() returns boolean { return this.len == 1 && this.dig[0] == 0; }
+            private static method addMag(BigInteger a, BigInteger b) returns BigInteger {
+                BigInteger r = new BigInteger(cast<long>(0)) on heap;
+                int n = a.len > b.len ? a.len : b.len;
+                r.ensure(n + 2);
+                mutable int carry = 0;
+                mutable int i = 0;
+                r.len = 0;
+                while (i < n || carry > 0) {
+                    mutable int s = carry;
+                    if (i < a.len) { s = s + a.dig[i]; }
+                    if (i < b.len) { s = s + b.dig[i]; }
+                    r.dig[i] = s % 10;
+                    carry = s / 10;
+                    i = i + 1;
+                    r.len = i;
+                }
+                return r;
+            }
+            public method add(BigInteger other) returns BigInteger {  // same-sign add (draft)
+                BigInteger r = BigInteger.addMag(this, other);
+                r.neg = this.neg;
+                return r;
+            }
+            public method multiply(BigInteger other) returns BigInteger {
+                BigInteger r = new BigInteger(cast<long>(0)) on heap;
+                int n = this.len + other.len;
+                r.ensure(n + 1);
+                r.len = n;
+                for (mutable int i = 0; i < n; i++) { r.dig[i] = 0; }
+                for (mutable int i = 0; i < this.len; i++) {
+                    for (mutable int j = 0; j < other.len; j++) {
+                        r.dig[i + j] = r.dig[i + j] + this.dig[i] * other.dig[j];
+                    }
+                }
+                mutable int carry = 0;
+                for (mutable int k = 0; k < n; k++) {
+                    int s = r.dig[k] + carry;
+                    r.dig[k] = s % 10;
+                    carry = s / 10;
+                }
+                while (r.len > 1 && r.dig[r.len - 1] == 0) { r.len = r.len - 1; }
+                r.neg = this.neg != other.neg;
+                return r;
+            }
+            public method compareTo(BigInteger other) returns int {
+                if (this.len != other.len) { return this.len < other.len ? -1 : 1; }
+                for (mutable int i = this.len - 1; i >= 0; i--) {
+                    if (this.dig[i] != other.dig[i]) { return this.dig[i] < other.dig[i] ? -1 : 1; }
+                }
+                return 0;
+            }
+            public method toString() returns String {
+                StringBuilder sb = new StringBuilder() on heap;
+                if (this.neg && this.isZero() == false) { sb.appendChar('-'); }
+                for (mutable int i = this.len - 1; i >= 0; i--) {
+                    sb.appendChar(cast<char>(48 + this.dig[i]));
+                }
+                return sb.toString();
+            }
+        }
+    }
 }
 )LDP3";
 

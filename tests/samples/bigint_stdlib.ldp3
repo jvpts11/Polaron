@@ -1,0 +1,24 @@
+import System.IO.Console;
+import System.Math.BigInteger;
+program BigIntStdlib;
+
+// BigInteger (spec 34): arbitrary precision over decimal digits in an int[]. Multiplies two 9-digit
+// numbers into an 18-digit result (beyond 32-bit), adds, and compares.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                BigInteger a = new BigInteger(cast<long>(123456789)) on heap;
+                BigInteger b = new BigInteger(cast<long>(987654321)) on heap;
+                BigInteger sum = a.add(b);          // 1111111110
+                BigInteger prod = a.multiply(b);    // 121932631112635269
+                System.IO.Console.printf("sumEq=%d prodEq=%d cmp=%d\n",
+                    sum.toString().equals("1111111110"),
+                    prod.toString().equals("121932631112635269"),
+                    a.compareTo(b));
+                return;
+            }
+        }
+    }
+}
