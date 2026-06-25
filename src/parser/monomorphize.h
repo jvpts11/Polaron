@@ -19,4 +19,9 @@ bool monomorphize(ast::Program& program);
 // simple type name is declared in more than one namespace. Run before monomorphize.
 void qualifyNamespaces(ast::Program& program);
 
+// Expands every `typealias` to its target type everywhere (transparent, spec 24), so the rest of
+// the pipeline only sees concrete types. `newtype`s are left for the analyzer. A no-op when the
+// program declares no type aliases. Run first, before qualifyNamespaces and monomorphize.
+void resolveTypeAliases(ast::Program& program);
+
 }  // namespace ldp3

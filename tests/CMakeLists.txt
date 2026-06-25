@@ -1586,6 +1586,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Type aliases and newtype (spec 24): transparent `typealias` (primitive, function, generic)
+        # and distinct `newtype` (cast across the boundary).
+        add_test(NAME codegen_type_aliases_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/type_aliases.ldp3"
+            "-DEXPECTED=t=20 r=26 order=1007"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Self-referential generic instantiation (Node<int> with a Node<T>* field) -- regression
         # for the cloneExpr null-literal crash.
         add_test(NAME codegen_self_ref_generic_runs COMMAND "${CMAKE_COMMAND}"

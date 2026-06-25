@@ -1,0 +1,37 @@
+import System.IO.Console;
+program TypeAliases;
+
+// Type aliases and newtype (spec 24). `typealias` is transparent -- the alias and its target are
+// fully interchangeable. `newtype` is a distinct nominal type over the same representation: it does
+// not implicitly convert to or from the underlying type, so crossing the boundary needs a cast.
+
+public bundle main {
+    public namespace app {
+
+        public typealias Celsius = int;               // transparent: Celsius == int
+        public typealias IntFn = function<int, int>;  // a function-type alias
+
+        public newtype OrderId = long;                // distinct: needs a cast to/from long
+        public newtype UserId = long;                 // distinct from OrderId as well
+
+        public class Main {
+            public static method apply(IntFn f, int v) returns int { return f(v); }
+
+            public static method main(string[] args) returns void {
+                // typealias: Celsius and int are the same type, so arithmetic just works.
+                Celsius t = 20;
+                int sum = t + 5;                      // 25
+                IntFn inc = lambda(int x) returns int { return x + 1; };
+                int r = Main.apply(inc, sum);         // 26
+
+                // newtype: a distinct identity; cast across the boundary to use the raw value.
+                OrderId o = cast<OrderId>(cast<long>(1000));
+                long raw = cast<long>(o) + 7;         // 1007 (cast out, compute, cast back)
+                OrderId o2 = cast<OrderId>(raw);
+
+                System.IO.Console.printf("t=%d r=%d order=%d\n", t, r, cast<int>(cast<long>(o2)));
+                return;
+            }
+        }
+    }
+}

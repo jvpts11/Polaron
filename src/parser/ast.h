@@ -677,6 +677,17 @@ struct ExternDecl {
     SourceLocation loc;
 };
 
+// A `typealias Name = Target;` (transparent: Name and Target are interchangeable) or
+// `newtype Name = Target;` (a distinct nominal type with the same representation, requiring a
+// cast to convert to/from the underlying type). spec 24.
+struct TypeAliasDecl {
+    std::string visibility;
+    std::string name;
+    TypeRef target;
+    bool isNewtype = false;
+    SourceLocation loc;
+};
+
 struct Namespace {
     std::string visibility;
     std::string name;
@@ -686,6 +697,7 @@ struct Namespace {
     std::vector<LiteralDecl> literals;
     std::vector<ConstDecl> consts;
     std::vector<ExternDecl> externs;
+    std::vector<TypeAliasDecl> typeAliases;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

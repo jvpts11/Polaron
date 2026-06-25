@@ -16,6 +16,7 @@ bool checkSrc(const std::string& src, std::string* entryOut = nullptr) {
     Parser parser(lexer.tokenize(), "test");
     ast::Program prog = parser.parse();
     if (parser.hasErrors()) return false;
+    resolveTypeAliases(prog);  // expand `typealias` first, as the real pipeline does
     qualifyNamespaces(prog);  // matches the real pipeline (run before monomorphize)
     if (!monomorphize(prog)) return false;
     SemanticAnalyzer sema;
@@ -1313,4 +1314,31 @@ TEST_CASE("semantic rejects methodref to a missing method") {
 TEST_CASE("semantic rejects methodref assigned to the wrong function type") {
     CHECK_FALSE(checkSrc(
         withDog("Dog d = new Dog() on heap; function<void> f = methodref d.bark; return;")));
+}
+
+// Type aliases and newtype (spec 24).
+namespace {
+std::string withAlias(const std::string& decls, const std::string& body) {
+    return "program P; public bundle b { public namespace n {" + decls +
+           " public class Main { public static method main(string[] args) returns void { " + body +
+           " } } } }";
+}
+}  // namespace
+TEST_CASE("semantic treats a typealias as interchangeable with its target") {
+    CHECK(checkSrc(withAlias("public typealias Meters = int;", "Meters m = 5; int x = m + 1; return;")));
+}
+TEST_CASE("semantic accepts a newtype value cast to and from its underlying type") {
+    CHECK(checkSrc(withAlias("public newtype OrderId = int;",
+                             "OrderId o = cast<OrderId>(5); int x = cast<int>(o); return;")));
+}
+TEST_CASE("semantic rejects assigning the underlying type to a newtype without a cast") {
+    CHECK_FALSE(checkSrc(withAlias("public newtype OrderId = int;", "OrderId o = 5; return;")));
+}
+TEST_CASE("semantic rejects assigning a newtype to its underlying type without a cast") {
+    CHECK_FALSE(checkSrc(withAlias("public newtype OrderId = int;",
+                                   "OrderId o = cast<OrderId>(5); int x = o; return;")));
+}
+TEST_CASE("semantic keeps two newtypes over the same underlying distinct") {
+    CHECK_FALSE(checkSrc(withAlias("public newtype A = int; public newtype B = int;",
+                                   "A a = cast<A>(5); B b = a; return;")));
 }

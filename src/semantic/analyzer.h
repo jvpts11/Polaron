@@ -105,6 +105,7 @@ private:
 
     void registerClasses(const ast::Program& program);
     void registerEnums(const ast::Program& program);
+    void registerNewtypes(const ast::Program& program);
     void registerCatalogs(const ast::Program& program);
     void validateCatalogs(const ast::Program& program);
     void registerLiterals(const ast::Program& program);
@@ -164,6 +165,10 @@ private:
     EntryPoint entry_;
     std::unordered_map<std::string, ClassInfo> classes_;
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants
+    // `newtype Name = Underlying;` (spec 24): a distinct nominal type. Maps the newtype name to its
+    // underlying type. Distinct for type-checking (no implicit conversion either way), but shares
+    // the underlying's representation (codegen) and casts freely to/from it.
+    std::unordered_map<std::string, std::string> newtypes_;
     std::unordered_map<std::string, CatalogInfo> catalogs_;            // name -> catalog contract
     std::unordered_map<std::string, std::vector<std::string>> enumCatalogs_;  // enum -> catalogs it extends
     // enum -> (method name -> info): methods declared on a catalog-implementing enum.

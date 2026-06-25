@@ -13,13 +13,37 @@ namespace {
 using Subst = std::map<std::string, std::string>;            // type param -> concrete type
 using InstMap = std::map<std::string, std::pair<std::string, std::vector<std::string>>>;  // mangled -> (base, args)
 
+// `typealias` targets (spec 24), resolved transparently everywhere a type appears. Keyed by the
+// alias name -> its target TypeRef. `newtype`s are NOT here -- they are distinct nominal types and
+// must survive to the analyzer. Populated by resolveTypeAliases and consulted by substType, so the
+// rest of the pipeline only ever sees concrete types.
+std::map<std::string, ast::TypeRef> g_aliases;
+
+// Resolve a bare type-name string (a typeArg, superclass, interface, or cast target) through the
+// alias map, returning the canonical form of its target (or the name unchanged if not an alias).
+std::string resolveAliasName(const std::string& name) {
+    auto it = g_aliases.find(name);
+    return it == g_aliases.end() ? name : ast::canonicalType(it->second);
+}
+
 // Substitutes type parameters in a TypeRef (T -> int). Generic args are
-// substituted in place; typeRefStr/typeRefName mangle them later.
+// substituted in place; typeRefStr/typeRefName mangle them later. Also expands any
+// `typealias` in the base name or type arguments (transparent rewrite, spec 24).
 ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
     ast::TypeRef r = t;
+    if (auto ai = g_aliases.find(r.name); ai != g_aliases.end()) {
+        const ast::TypeRef& tgt = ai->second;  // expand the alias into the target's structure
+        r.name = tgt.name;
+        r.typeArgs.insert(r.typeArgs.begin(), tgt.typeArgs.begin(), tgt.typeArgs.end());
+        r.isArray = r.isArray || tgt.isArray;
+        r.isPointer = r.isPointer || tgt.isPointer;
+        r.isRef = r.isRef || tgt.isRef;
+        r.isNullable = r.isNullable || tgt.isNullable;
+    }
     auto it = s.find(r.name);
     if (it != s.end()) r.name = it->second;
     for (std::string& a : r.typeArgs) {
+        a = resolveAliasName(a);
         auto ai = s.find(a);
         if (ai != s.end()) a = ai->second;
     }
@@ -148,11 +172,17 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         auto n = std::make_unique<ast::NewExpr>();
         n->loc = x->loc;
         n->className = x->className;
+        if (auto ai = g_aliases.find(n->className); ai != g_aliases.end()) {
+            n->className = ai->second.name;  // `new DogList()` -> `new ArrayList<Dog>()`
+            n->typeArgs.insert(n->typeArgs.end(), ai->second.typeArgs.begin(),
+                               ai->second.typeArgs.end());
+        }
         auto it = s.find(n->className);
         if (it != s.end()) n->className = it->second;
         for (const std::string& a : x->typeArgs) {
-            auto ai = s.find(a);
-            n->typeArgs.push_back(ai != s.end() ? ai->second : a);
+            const std::string ra = resolveAliasName(a);
+            auto ai = s.find(ra);
+            n->typeArgs.push_back(ai != s.end() ? ai->second : ra);
         }
         for (const auto& a : x->args) n->args.push_back(cloneExpr(a.get(), s));
         n->location = x->location;
@@ -162,7 +192,7 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
     if (const auto* x = dynamic_cast<const ast::NewArrayExpr*>(e)) {
         auto n = std::make_unique<ast::NewArrayExpr>();
         n->loc = x->loc;
-        n->elementType = x->elementType;
+        n->elementType = resolveAliasName(x->elementType);
         auto it = s.find(n->elementType);
         if (it != s.end()) n->elementType = it->second;
         n->size = cloneExpr(x->size.get(), s);
@@ -191,7 +221,7 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
     if (const auto* x = dynamic_cast<const ast::CastExpr*>(e)) {
         auto n = std::make_unique<ast::CastExpr>();
         n->loc = x->loc;
-        n->targetType = x->targetType;
+        n->targetType = resolveAliasName(x->targetType);
         auto it = s.find(n->targetType);
         if (it != s.end()) n->targetType = it->second;
         n->operand = cloneExpr(x->operand.get(), s);
@@ -897,6 +927,71 @@ bool isSubtypeOf(const std::string& sub, const std::string& base,
 }
 
 }  // namespace
+
+// Expands every `typealias` (spec 24) to its target type, transparently, everywhere a type
+// appears -- so the analyzer and codegen only ever see concrete types. `newtype`s are left alone
+// (they are distinct nominal types handled by the analyzer). Runs before qualifyNamespaces and
+// monomorphize so the substituted targets are qualified and instantiated like any other type.
+void resolveTypeAliases(ast::Program& program) {
+    g_aliases.clear();
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& a : ns.typeAliases)
+                if (!a.isNewtype) g_aliases[a.name] = a.target;
+    if (g_aliases.empty()) return;
+
+    // Resolve alias chains (typealias A = B; typealias B = int) and aliases nested in type args,
+    // up to a bounded number of passes (a cycle just stops changing).
+    for (int iter = 0; iter < 16; ++iter) {
+        bool changed = false;
+        for (auto& [name, tgt] : g_aliases) {
+            if (auto it = g_aliases.find(tgt.name); it != g_aliases.end() && it->first != name) {
+                const ast::TypeRef inner = it->second;
+                const bool arr = tgt.isArray, ptr = tgt.isPointer, ref = tgt.isRef,
+                           nul = tgt.isNullable;
+                tgt = inner;
+                tgt.isArray = tgt.isArray || arr;
+                tgt.isPointer = tgt.isPointer || ptr;
+                tgt.isRef = tgt.isRef || ref;
+                tgt.isNullable = tgt.isNullable || nul;
+                changed = true;
+            }
+            for (auto& arg : tgt.typeArgs) {
+                const std::string r = resolveAliasName(arg);
+                if (r != arg) { arg = r; changed = true; }
+            }
+        }
+        if (!changed) break;
+    }
+
+    // Re-clone every class with an empty substitution: cloneClass runs substType over every
+    // TypeRef it touches (fields, signatures, bodies), so aliases resolve everywhere for free.
+    const Subst empty;
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                ast::ClassDecl rewritten = cloneClass(c, empty, c.name);
+                rewritten.typeParams = c.typeParams;  // cloneClass drops these; keep generics generic
+                rewritten.typeParamVariance = c.typeParamVariance;
+                rewritten.superclass = resolveAliasName(c.superclass);
+                for (auto& iface : rewritten.interfaces) iface = resolveAliasName(iface);
+                for (auto& a : rewritten.superclassTypeArgs) a = resolveAliasName(a);
+                for (auto& argList : rewritten.interfaceTypeArgs)
+                    for (auto& a : argList) a = resolveAliasName(a);
+                c = std::move(rewritten);
+            }
+            for (auto& cst : ns.consts) cst.type = substType(cst.type, empty);
+            for (auto& lit : ns.literals) {
+                lit.param.type = substType(lit.param.type, empty);
+                lit.returnType = substType(lit.returnType, empty);
+            }
+            for (auto& ex : ns.externs) {
+                ex.returnType = substType(ex.returnType, empty);
+                for (auto& p : ex.params) p.type = substType(p.type, empty);
+            }
+        }
+    g_aliases.clear();  // done: later passes must not see alias rewrites
+}
 
 // Disambiguates type names that are declared in more than one namespace so that
 // `app.Foo` and `lib.Foo` become distinct types (spec: namespaces scope type

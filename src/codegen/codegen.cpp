@@ -258,6 +258,9 @@ struct CodeGenerator::Impl {
     llvm::IRBuilder<> builder;
 
     std::unordered_map<std::string, ClassLayout> classes;
+    // `newtype Name = Underlying;` (spec 24): a distinct type that shares the underlying's
+    // representation, so codegen lowers it exactly like the underlying type.
+    std::unordered_map<std::string, std::string> newtypes_;
     std::unordered_map<std::string, llvm::StructType*> tupleTypes;  // "(int,int)" -> { i32, i32 }
     // Global per-method-name vtable slots. Every distinct virtual method name gets
     // one stable index, and every polymorphic class's vtable is laid out by these
@@ -342,7 +345,14 @@ struct CodeGenerator::Impl {
 
     Impl(const ast::Program& p, const EntryPoint& e, std::string_view name,
          std::vector<CodegenError>& errs)
-        : program(p), entry(e), errors(errs), module(std::string(name), context), builder(context) {}
+        : program(p), entry(e), errors(errs), module(std::string(name), context), builder(context) {
+        // newtypes (spec 24) lower to their underlying representation; index them up front so
+        // llvmType resolves a newtype name to its underlying type everywhere.
+        for (const ast::Bundle& b : program.bundles)
+            for (const ast::Namespace& ns : b.namespaces)
+                for (const ast::TypeAliasDecl& a : ns.typeAliases)
+                    if (a.isNewtype) newtypes_[a.name] = typeRefName(a.target);
+    }
 
     void error(std::string message, SourceLocation loc) {
         errors.push_back(CodegenError{std::move(message), loc});
@@ -358,6 +368,14 @@ struct CodeGenerator::Impl {
         llvm::StructType* st = llvm::StructType::get(context, elems);
         tupleTypes[t] = st;
         return st;
+    }
+
+    // Resolve a `newtype` name (spec 24) to its underlying representation type, recursively. Other
+    // types pass through unchanged. Used where the physical representation matters (casts, coercion)
+    // but the free-function type predicates (intBits/isUnsigned/isFloatType) can't see newtypes_.
+    std::string repType(const std::string& t) {
+        auto it = newtypes_.find(t);
+        return it == newtypes_.end() ? t : repType(it->second);
     }
 
     // float/float32 -> f32, double/float64 -> f64; class/array/pointer/ref ->
@@ -384,14 +402,16 @@ struct CodeGenerator::Impl {
         if (t == "Type" || t == "Method") return builder.getPtrTy();  // reflection tokens (spec 31)
         if (t == "Object") return builder.getPtrTy();  // root reference type (spec 3.4)
         if (classes.count(t) > 0) return builder.getPtrTy();
+        if (auto it = newtypes_.find(t); it != newtypes_.end()) return llvmType(it->second);
         return builder.getIntNTy(intBits(t));
     }
 
     // Adjusts a value to the target type: int->float widening, or integer
     // sign/zero-extend / truncate to the target bit width. Unsigned sources
     // zero-extend and use the unsigned int->float opcode.
-    llvm::Value* coerce(llvm::Value* v, const std::string& from, const std::string& to) {
+    llvm::Value* coerce(llvm::Value* v, const std::string& fromRaw, const std::string& toRaw) {
         if (v == nullptr) return v;
+        const std::string from = repType(fromRaw), to = repType(toRaw);  // newtype -> underlying
         if (isFloatType(to)) {
             llvm::Type* fty = llvmType(to);
             if (v->getType()->isIntegerTy()) {
@@ -473,8 +493,11 @@ struct CodeGenerator::Impl {
     // including the narrowing ones the implicit `coerce` refuses (long->int,
     // float->int, f64->f32). Unsigned source/target selects zero-extension and
     // the unsigned int<->float opcodes.
-    llvm::Value* emitCast(llvm::Value* v, const std::string& from, const std::string& to) {
+    llvm::Value* emitCast(llvm::Value* v, const std::string& fromRaw, const std::string& toRaw) {
         if (v == nullptr) return v;
+        // A newtype shares its underlying's representation: cast by the underlying type (spec 24).
+        const std::string from = repType(fromRaw);
+        const std::string to = repType(toRaw);
         // Reference cast (class/Object/reflection token): a pointer reinterpret -- a no-op
         // with opaque pointers. No runtime type check yet (spec 31 downcasts).
         if (llvmType(to)->isPointerTy() && v->getType()->isPointerTy()) return v;

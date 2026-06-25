@@ -294,6 +294,8 @@ ast::Namespace Parser::parseNamespace() {
             ns.classes.push_back(parseRecord());
         } else if (kind == TokenKind::KwExtern) {
             ns.externs.push_back(parseExtern());
+        } else if (kind == TokenKind::KwTypealias || kind == TokenKind::KwNewtype) {
+            ns.typeAliases.push_back(parseTypeAlias());
         } else {
             ns.classes.push_back(parseClassOrInterface());
         }
@@ -341,6 +343,24 @@ ast::LiteralDecl Parser::parseLiteral() {
     l.returnType = parseTypeRef();
     l.body = parseBlock();
     return l;
+}
+
+// `[visibility] (typealias|newtype) Name = Target;` (spec 24). typealias is transparent;
+// newtype creates a distinct nominal type over the same representation.
+ast::TypeAliasDecl Parser::parseTypeAlias() {
+    ast::TypeAliasDecl a;
+    a.loc = current().loc;
+    a.visibility = parseVisibilityOpt();
+    if (match(TokenKind::KwNewtype)) {
+        a.isNewtype = true;
+    } else {
+        expect(TokenKind::KwTypealias, "'typealias' or 'newtype'");
+    }
+    a.name = expect(TokenKind::Identifier, "the alias name").lexeme;
+    expect(TokenKind::Assign, "'=' in a type alias");
+    a.target = parseTypeRef();
+    expect(TokenKind::Semicolon, "';' after a type alias");
+    return a;
 }
 
 // `[visibility] const T NAME = expr;` -- a namespace-level compile-time constant

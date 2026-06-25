@@ -56,6 +56,7 @@ private:
     ast::LiteralDecl parseLiteral();
     ast::ExternDecl parseExtern();
     ast::ConstDecl parseConstDecl();
+    ast::TypeAliasDecl parseTypeAlias();
     ast::MemberPtr parseMember(bool inInterface);
     std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic,
                                                  bool isAbstract, bool isOverride, bool isFinal,

@@ -485,6 +485,24 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
     }
 }
 
+void SemanticAnalyzer::registerNewtypes(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::TypeAliasDecl& a : ns.typeAliases) {
+                if (!a.isNewtype) continue;  // `typealias` is resolved before sema; only newtypes survive
+                if (newtypes_.count(a.name) > 0 || classes_.count(a.name) > 0 ||
+                    enums_.count(a.name) > 0) {
+                    error("redeclaration of type '" + a.name + "'", a.loc);
+                    continue;
+                }
+                const std::string under = typeRefStr(a.target);
+                checkBitCounted(under, a.target.loc);  // newtype over int64 etc. is freestanding-only
+                newtypes_[a.name] = under;
+            }
+        }
+    }
+}
+
 void SemanticAnalyzer::registerEnums(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
@@ -830,6 +848,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerClasses(program);
     registerCatalogs(program);  // before enums: registerEnums records enum->catalog edges
     registerEnums(program);
+    registerNewtypes(program);
     registerLiterals(program);
     registerConsts(program);
     registerComptimeMethods(program);
@@ -1861,19 +1880,27 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
-        const std::string src = typeOf(*cst->operand);
+        const std::string srcRaw = typeOf(*cst->operand);
         const std::string& dst = cst->targetType;
         checkBitCounted(dst, cst->loc);  // reject cast<int64> etc. outside freestanding mode
+        // A `newtype` casts to/from its underlying type (spec 24): classify both by the underlying
+        // so cast<OrderId>(long) and cast<long>(orderId) are accepted while staying distinct types.
+        auto under = [&](const std::string& t) {
+            auto it = newtypes_.find(baseType(t));
+            return it != newtypes_.end() ? it->second : t;
+        };
+        const std::string src = under(srcRaw);
         const bool dstRef = dst == "Object" || lookupClass(baseType(dst)) != nullptr;
         const bool srcRef = src.empty() || src == "Object" || src == "Type" || src == "Method" ||
                             lookupClass(baseType(src)) != nullptr || isRefType(src);
         const bool dstPtr = isRefType(dst) || dstRef;  // pointer/reference target (T*, T&, class)
         // `char` is an integer (i32) for casting purposes -- it converts to/from the int family.
         auto numLike = [](const std::string& t) { return isNumeric(t) || t == "char"; };
-        if (numLike(dst)) {
+        const std::string dstU = under(dst);  // a newtype's underlying decides how the cast lowers
+        if (numLike(dstU)) {
             // numeric <- numeric/char, or a pointer/address reinterpreted as an integer (spec 17.8).
             if (!src.empty() && !numLike(src) && !srcRef)
-                error("cannot cast '" + src + "' to '" + dst + "'", cst->loc);
+                error("cannot cast '" + srcRaw + "' to '" + dst + "'", cst->loc);
         } else if (dstPtr) {
             // Reference downcast (spec 31), or int/address -> an explicit pointer T* (spec 17.8).
             // Casting a number to a bare class (not a pointer) stays an error.
