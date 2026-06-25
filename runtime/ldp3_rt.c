@@ -211,6 +211,16 @@ int __ldp3_chan_try_receive(long long handle, long long* out) {
 long long __ldp3_now_ms(void) { return (long long)GetTickCount64(); }
 void __ldp3_yield(void) { Sleep(0); }  // hand off the rest of the time slice while polling
 
+// FNV-1a hash of `len` bytes, for Hashable<String> (collections).
+long long __ldp3_str_hash(const char* data, long long len) {
+    unsigned long long h = 1469598103934665603ULL;  // FNV offset basis
+    for (long long i = 0; i < len; i++) {
+        h ^= (unsigned char)data[i];
+        h *= 1099511628211ULL;  // FNV prime
+    }
+    return (long long)h;
+}
+
 // await from non-async code (e.g. main): block the calling thread until the task completes.
 long long __ldp3_task_wait(long long handle) {
     ldp3_task* t = (ldp3_task*)handle;

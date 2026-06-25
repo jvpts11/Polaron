@@ -351,6 +351,238 @@ public bundle std {
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
         }
+)LDP3"
+// (split: MSVC caps a single string literal ~16KB; adjacent literals concatenate.)
+R"LDP3(
+        // Keys of HashMap/HashSet implement Hashable<T>; keys of TreeMap/TreeSet implement
+        // Comparable<T> (spec 34). The primitive types (int family, String) satisfy these via
+        // compiler builtins, so they can be used as keys without boxing.
+        public interface Hashable<T> {
+            method hash() returns int64;
+            method equalsKey(T other) returns boolean;
+        }
+        public interface Comparable<T> {
+            method compareTo(T other) returns int;
+        }
+        // Hash map with open addressing (linear probing); capacity is a power of two, load factor
+        // 0.75 (spec 34.1). Keys must be Hashable. get() on an absent key returns a zero/null value;
+        // probe with containsKey() first.
+        public class HashMap<K, V> {
+            private mutable K[] keys;
+            private mutable V[] values;
+            private mutable boolean[] used;
+            private mutable int count;
+            private mutable int cap;
+            public constructor HashMap() {
+                this.cap = 8;
+                this.keys = new K[8]();
+                this.values = new V[8]();
+                this.used = new boolean[8]();
+                this.count = 0;
+            }
+            private method slotFor(K key) returns int {
+                int mask = this.cap - 1;
+                mutable int i = cast<int>(key.hash()) & mask;
+                while (this.used[i]) {
+                    if (this.keys[i].equalsKey(key)) { return i; }
+                    i = (i + 1) & mask;
+                }
+                return i;
+            }
+            private method grow() returns void {
+                int oldCap = this.cap;
+                mutable K[] oldK = this.keys;
+                mutable V[] oldV = this.values;
+                mutable boolean[] oldU = this.used;
+                this.cap = oldCap * 2;
+                this.keys = new K[this.cap]();
+                this.values = new V[this.cap]();
+                this.used = new boolean[this.cap]();
+                this.count = 0;
+                for (mutable int j = 0; j < oldCap; j++) {
+                    if (oldU[j]) { this.put(oldK[j], oldV[j]); }
+                }
+                delete oldK;
+                delete oldV;
+                delete oldU;
+            }
+            public method put(K key, V value) returns void {
+                if ((this.count + 1) * 4 >= this.cap * 3) { this.grow(); }
+                int i = this.slotFor(key);
+                if (!this.used[i]) { this.used[i] = true; this.count = this.count + 1; }
+                this.keys[i] = key;
+                this.values[i] = value;
+            }
+            public method get(K key) returns V {
+                return this.values[this.slotFor(key)];
+            }
+            public method containsKey(K key) returns boolean {
+                return this.used[this.slotFor(key)];
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // Hash set with open addressing (spec 34.1). Elements must be Hashable.
+        public class HashSet<T> {
+            private mutable T[] elems;
+            private mutable boolean[] used;
+            private mutable int count;
+            private mutable int cap;
+            public constructor HashSet() {
+                this.cap = 8;
+                this.elems = new T[8]();
+                this.used = new boolean[8]();
+                this.count = 0;
+            }
+            private method slotFor(T value) returns int {
+                int mask = this.cap - 1;
+                mutable int i = cast<int>(value.hash()) & mask;
+                while (this.used[i]) {
+                    if (this.elems[i].equalsKey(value)) { return i; }
+                    i = (i + 1) & mask;
+                }
+                return i;
+            }
+            private method grow() returns void {
+                int oldCap = this.cap;
+                mutable T[] oldE = this.elems;
+                mutable boolean[] oldU = this.used;
+                this.cap = oldCap * 2;
+                this.elems = new T[this.cap]();
+                this.used = new boolean[this.cap]();
+                this.count = 0;
+                for (mutable int j = 0; j < oldCap; j++) {
+                    if (oldU[j]) { this.add(oldE[j]); }
+                }
+                delete oldE;
+                delete oldU;
+            }
+            public method add(T value) returns void {
+                if ((this.count + 1) * 4 >= this.cap * 3) { this.grow(); }
+                int i = this.slotFor(value);
+                if (!this.used[i]) { this.used[i] = true; this.elems[i] = value; this.count = this.count + 1; }
+            }
+            public method contains(T value) returns boolean {
+                return this.used[this.slotFor(value)];
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // Binary-search-tree node for TreeMap (self-referential generic).
+        public class TreeNode<K, V> {
+            public mutable K key;
+            public mutable V value;
+            public mutable TreeNode<K, V>* left;
+            public mutable TreeNode<K, V>* right;
+            public constructor TreeNode(K k, V v) {
+                this.key = k; this.value = v; this.left = null; this.right = null;
+            }
+        }
+        // Ordered map backed by an (unbalanced) binary search tree (spec 34.1). Keys are Comparable.
+        // get() on an absent key returns a zero/null value; probe with containsKey() first.
+        public class TreeMap<K, V> {
+            private mutable TreeNode<K, V>* root;
+            private mutable int count;
+            public constructor TreeMap() { this.root = null; this.count = 0; }
+            public method put(K key, V value) returns void {
+                if (this.root == null) {
+                    this.root = new TreeNode<K, V>(key, value) on heap;
+                    this.count = this.count + 1;
+                    return;
+                }
+                mutable TreeNode<K, V>* cur = this.root;
+                while (true) {
+                    int c = key.compareTo(cur.key);
+                    if (c == 0) { cur.value = value; return; }
+                    if (c < 0) {
+                        if (cur.left == null) {
+                            cur.left = new TreeNode<K, V>(key, value) on heap;
+                            this.count = this.count + 1;
+                            return;
+                        }
+                        cur = cur.left;
+                    } else {
+                        if (cur.right == null) {
+                            cur.right = new TreeNode<K, V>(key, value) on heap;
+                            this.count = this.count + 1;
+                            return;
+                        }
+                        cur = cur.right;
+                    }
+                }
+            }
+            private method find(K key) returns TreeNode<K, V>* {
+                mutable TreeNode<K, V>* cur = this.root;
+                while (cur != null) {
+                    int c = key.compareTo(cur.key);
+                    if (c == 0) { return cur; }
+                    if (c < 0) { cur = cur.left; } else { cur = cur.right; }
+                }
+                return null;
+            }
+            public method get(K key) returns V {
+                TreeNode<K, V>* n = this.find(key);
+                if (n != null) { return n.value; }
+                mutable V[] zero = new V[1]();  // zero/null default for an absent key
+                V z = zero[0];
+                delete zero;
+                return z;
+            }
+            public method containsKey(K key) returns boolean { return this.find(key) != null; }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // BST node for TreeSet (self-referential generic).
+        public class TreeSetNode<T> {
+            public mutable T value;
+            public mutable TreeSetNode<T>* left;
+            public mutable TreeSetNode<T>* right;
+            public constructor TreeSetNode(T v) { this.value = v; this.left = null; this.right = null; }
+        }
+        // Ordered set backed by an (unbalanced) binary search tree (spec 34.1). Elements Comparable.
+        public class TreeSet<T> {
+            private mutable TreeSetNode<T>* root;
+            private mutable int count;
+            public constructor TreeSet() { this.root = null; this.count = 0; }
+            public method add(T value) returns void {
+                if (this.root == null) {
+                    this.root = new TreeSetNode<T>(value) on heap;
+                    this.count = this.count + 1;
+                    return;
+                }
+                mutable TreeSetNode<T>* cur = this.root;
+                while (true) {
+                    int c = value.compareTo(cur.value);
+                    if (c == 0) { return; }
+                    if (c < 0) {
+                        if (cur.left == null) {
+                            cur.left = new TreeSetNode<T>(value) on heap;
+                            this.count = this.count + 1;
+                            return;
+                        }
+                        cur = cur.left;
+                    } else {
+                        if (cur.right == null) {
+                            cur.right = new TreeSetNode<T>(value) on heap;
+                            this.count = this.count + 1;
+                            return;
+                        }
+                        cur = cur.right;
+                    }
+                }
+            }
+            public method contains(T value) returns boolean {
+                mutable TreeSetNode<T>* cur = this.root;
+                while (cur != null) {
+                    int c = value.compareTo(cur.value);
+                    if (c == 0) { return true; }
+                    if (c < 0) { cur = cur.left; } else { cur = cur.right; }
+                }
+                return false;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
     }
 }
 )LDP3";

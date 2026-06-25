@@ -2173,7 +2173,21 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "equals" && call->args.size() == 1) return "boolean";
                 if (mem->member == "concat" && call->args.size() == 1) return "String";
                 if (mem->member == "substring" && call->args.size() == 2) return "String";
+                // String satisfies Hashable<String>/Comparable<String> (collections, spec 34).
+                if (mem->member == "hash" && call->args.empty()) return "int64";
+                if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";
+                if (mem->member == "compareTo" && call->args.size() == 1) return "int";
                 error("String has no method '" + mem->member + "'", call->loc);
+                return "";
+            }
+            // Integer types satisfy Hashable<T>/Comparable<T> via builtins, so they can be used as
+            // map/set keys without boxing (collections, spec 34).
+            if (isIntName(objType)) {
+                for (const auto& arg : call->args) typeOf(*arg);
+                if (mem->member == "hash" && call->args.empty()) return "int64";
+                if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";
+                if (mem->member == "compareTo" && call->args.size() == 1) return "int";
+                error("'" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";
             }
             // Channel.select builder (spec 20.4): .receive(ch, lambda) / .timeout(ms, lambda) chain

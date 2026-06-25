@@ -104,6 +104,13 @@ unsigned intBits(const std::string& t) {
 // Unsigned integer types (uint8..uint64, address). `byte` is int8 (signed) per spec 5.
 bool isUnsigned(const std::string& t) { return t.rfind("uint", 0) == 0 || t == "address"; }
 
+// Integer-family type names (matches the analyzer's isIntName).
+bool isIntName(const std::string& t) {
+    return t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" ||
+           t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" || t == "short" ||
+           t == "long" || t == "byte" || t == "address";
+}
+
 // SIMD vector types vec2/vec3/vec4 (float32 elements). Returns the element count, or 0.
 int vecWidth(const std::string& t) {
     if (t == "vec2") return 2;
@@ -909,6 +916,15 @@ struct CodeGenerator::Impl {
                     if (mem->member == "charAt") return "char";
                     if (mem->member == "isEmpty" || mem->member == "equals") return "boolean";
                     if (mem->member == "concat" || mem->member == "substring") return "String";
+                    if (mem->member == "hash") return "int64";
+                    if (mem->member == "equalsKey") return "boolean";
+                    if (mem->member == "compareTo") return "int";
+                }
+                // Integer keys: Hashable/Comparable builtins (collections).
+                if (const std::string ot = typeName(*mem->object); isIntName(ot)) {
+                    if (mem->member == "hash") return "int64";
+                    if (mem->member == "equalsKey") return "boolean";
+                    if (mem->member == "compareTo") return "int";
                 }
                 if (typeName(*mem->object) == "Type") {
                     if (mem->member == "name" || mem->member == "methodName" ||
@@ -1068,6 +1084,12 @@ struct CodeGenerator::Impl {
         llvm::FunctionType* ty = llvm::FunctionType::get(
             builder.getInt32Ty(), {builder.getPtrTy(), builder.getPtrTy()}, false);
         return module.getOrInsertFunction("strcmp", ty);
+    }
+    // FNV-1a hash of a string's bytes (runtime helper), for Hashable<String>.
+    llvm::FunctionCallee strHashFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getInt64Ty(), {builder.getPtrTy(), builder.getInt64Ty()}, false);
+        return module.getOrInsertFunction("__ldp3_str_hash", ty);
     }
 
     // Builds a String object on the heap from a length and a null-terminated byte buffer.
@@ -2708,6 +2730,44 @@ struct CodeGenerator::Impl {
                     builder.CreateStore(builder.getInt8(0),
                                         builder.CreateGEP(builder.getInt8Ty(), buf, n));  // NUL
                     return emitStringFromParts(n, buf);
+                }
+                // String satisfies Hashable<String>/Comparable<String> (collections).
+                if (mem->member == "hash")
+                    return builder.CreateCall(strHashFn(), {stringData(s), stringLen(s)});
+                if (mem->member == "equalsKey") {
+                    llvm::Value* o = emitExpr(*call.args[0]);
+                    if (o == nullptr) return nullptr;
+                    llvm::Value* cmp = builder.CreateCall(strcmpFn(), {stringData(s), stringData(o)});
+                    return builder.CreateZExt(builder.CreateICmpEQ(cmp, builder.getInt32(0)),
+                                              builder.getInt32Ty());
+                }
+                if (mem->member == "compareTo") {
+                    llvm::Value* o = emitExpr(*call.args[0]);
+                    if (o == nullptr) return nullptr;
+                    return builder.CreateCall(strcmpFn(), {stringData(s), stringData(o)});  // sign matters
+                }
+            }
+            // Integer keys satisfy Hashable<T>/Comparable<T> via builtins (collections). Gate on the
+            // builtin member names so this never intercepts ClassName.staticMethod() (whose receiver
+            // typeName falls back to "int").
+            if (const std::string ot = typeName(*mem->object);
+                isIntName(ot) && (mem->member == "hash" || mem->member == "equalsKey" ||
+                                  mem->member == "compareTo")) {
+                llvm::Value* a = emitExpr(*mem->object);
+                if (a == nullptr) return nullptr;
+                if (mem->member == "hash") return fitInt(a, 64);
+                llvm::Value* b = emitExpr(*call.args[0]);
+                if (b == nullptr) return nullptr;
+                b = builder.CreateSExtOrTrunc(b, a->getType());
+                if (mem->member == "equalsKey")
+                    return builder.CreateZExt(builder.CreateICmpEQ(a, b), builder.getInt32Ty());
+                if (mem->member == "compareTo") {
+                    const bool u = isUnsigned(ot);
+                    llvm::Value* lt = u ? builder.CreateICmpULT(a, b) : builder.CreateICmpSLT(a, b);
+                    llvm::Value* gt = u ? builder.CreateICmpUGT(a, b) : builder.CreateICmpSGT(a, b);
+                    return builder.CreateSelect(
+                        lt, builder.getInt32(-1),
+                        builder.CreateSelect(gt, builder.getInt32(1), builder.getInt32(0)));
                 }
             }
             // Type reflection (spec 31): name(), method/field enumeration.

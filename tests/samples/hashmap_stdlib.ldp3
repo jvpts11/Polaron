@@ -1,0 +1,34 @@
+import System.IO.Console;
+program HashMapStdlib;
+
+// HashMap<K,V> + HashSet<T> (spec 34.1): open addressing (linear probing), load factor 0.75.
+// Keys are Hashable<K> -- the int family and String satisfy it via compiler builtins (key.hash() /
+// key.equalsKey()), so they work as keys without boxing. Exercises a collision (1 and 17 mod 8),
+// a grow/rehash (20 entries), set de-duplication, and String keys.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                HashMap<int, int> m = new HashMap<int, int>() on heap;
+                m.put(1, 100); m.put(2, 200); m.put(17, 999);   // 1 and 17 collide mod 8
+                System.IO.Console.printf("size=%d g1=%d g2=%d g17=%d has5=%d has2=%d\n",
+                    m.size(), m.get(1), m.get(2), m.get(17), m.containsKey(5), m.containsKey(2));
+                for (mutable int i = 0; i < 20; i++) { m.put(i, i * 10); }   // forces grow/rehash
+                System.IO.Console.printf("after grow: size=%d g7=%d g19=%d g2=%d\n",
+                    m.size(), m.get(7), m.get(19), m.get(2));
+
+                HashSet<int> s = new HashSet<int>() on heap;
+                s.add(5); s.add(5); s.add(9);
+                System.IO.Console.printf("set size=%d has5=%d has6=%d\n",
+                    s.size(), s.contains(5), s.contains(6));
+
+                HashMap<String, int> sm = new HashMap<String, int>() on heap;
+                sm.put("alpha", 1); sm.put("beta", 2);
+                System.IO.Console.printf("str ga=%d gb=%d hasG=%d\n",
+                    sm.get("alpha"), sm.get("beta"), sm.containsKey("gamma"));
+                return;
+            }
+        }
+    }
+}
