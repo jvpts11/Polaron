@@ -775,6 +775,8 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     // File (spec 34.4) is likewise a virtual builtin (static methods lower to runtime stdio calls);
     // register it so `import System.IO.File;` resolves.
     typeNamespace_["File"] = "System.IO";
+    // Time (spec 34): clock + sleep builtins; register so `import System.Time.Time;` resolves.
+    typeNamespace_["Time"] = "System.Time";
     genericVariance_ = program.genericVariance;  // variance of generic type params (spec 15.3)
     qualifiedTypes_.insert(program.qualifiedTypes.begin(), program.qualifiedTypes.end());
     registerClasses(program);
@@ -2099,6 +2101,20 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (call->args.size() != want)
                     error("File." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
                 return fn == "readAll" ? "String" : "boolean";
+            }
+        }
+        // Time (spec 34): clock + sleep builtins. Require `import System.Time.Time;`.
+        if (name.rfind("Time.", 0) == 0) {
+            const std::string fn = name.substr(5);
+            if (fn == "millis" || fn == "nanos" || fn == "unixMillis" || fn == "sleep") {
+                checkTypeAccessible("Time", call->loc);
+                for (const auto& a : call->args) typeOf(*a);
+                if (fn == "sleep") {
+                    if (call->args.size() != 1) error("Time.sleep takes a millisecond count", call->loc);
+                    return "void";
+                }
+                if (!call->args.empty()) error("Time." + fn + " takes no arguments", call->loc);
+                return "int64";
             }
         }
         // Memory.readString(address, len): build a String from a raw byte buffer (StringBuilder).

@@ -900,6 +900,11 @@ struct CodeGenerator::Impl {
                 return flattenCallee(*call->callee);  // vec2/3/4 construction
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
             if (flattenCallee(*call->callee) == "Memory.readString") return "String";  // StringBuilder
+            if (const std::string fc = flattenCallee(*call->callee); fc.rfind("Time.", 0) == 0) {
+                if (fc == "Time.millis" || fc == "Time.nanos" || fc == "Time.unixMillis")
+                    return "int64";  // spec 34
+                if (fc == "Time.sleep") return "void";
+            }
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("File.", 0) == 0) {
                 if (fc == "File.readAll") return "String";  // spec 34.4
                 if (fc == "File.writeAll" || fc == "File.appendAll" || fc == "File.exists" ||
@@ -2530,6 +2535,25 @@ struct CodeGenerator::Impl {
             if (a == nullptr || v == nullptr) return nullptr;
             builder.CreateStore(v, builder.CreateIntToPtr(a, builder.getPtrTy()));
             return nullptr;
+        }
+        // Time (spec 34): clock + sleep builtins lowering to runtime helpers.
+        if (name.rfind("Time.", 0) == 0) {
+            const std::string fn = name.substr(5);
+            if (fn == "sleep") {
+                llvm::Value* ms = fitInt(emitExpr(*call.args[0]), 64);
+                if (ms == nullptr) return nullptr;
+                llvm::FunctionType* ft =
+                    llvm::FunctionType::get(builder.getVoidTy(), {builder.getInt64Ty()}, false);
+                builder.CreateCall(module.getOrInsertFunction("__ldp3_sleep", ft), {ms});
+                return nullptr;
+            }
+            if (fn == "millis" || fn == "nanos" || fn == "unixMillis") {
+                const char* rfn = fn == "millis"  ? "__ldp3_now_ms"
+                                  : fn == "nanos" ? "__ldp3_now_ns"
+                                                  : "__ldp3_unix_ms";
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt64Ty(), {}, false);
+                return builder.CreateCall(module.getOrInsertFunction(rfn, ft), {});
+            }
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio helpers.
         if (name.rfind("File.", 0) == 0) {

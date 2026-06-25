@@ -212,6 +212,25 @@ int __ldp3_chan_try_receive(long long handle, long long* out) {
 long long __ldp3_now_ms(void) { return (long long)GetTickCount64(); }
 void __ldp3_yield(void) { Sleep(0); }  // hand off the rest of the time slice while polling
 
+// ---- Time (spec 34): monotonic + wall-clock + sleep. ----
+// High-resolution monotonic nanoseconds (QueryPerformanceCounter). Split the math to avoid overflow.
+long long __ldp3_now_ns(void) {
+    LARGE_INTEGER freq, c;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&c);
+    long long f = freq.QuadPart;
+    if (f == 0) return 0;
+    return (c.QuadPart / f) * 1000000000LL + ((c.QuadPart % f) * 1000000000LL) / f;
+}
+// Wall-clock milliseconds since the Unix epoch (1970-01-01).
+long long __ldp3_unix_ms(void) {
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    unsigned long long t = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return (long long)((t - 116444736000000000ULL) / 10000ULL);  // 100-ns since 1601 -> ms since 1970
+}
+void __ldp3_sleep(long long ms) { Sleep((DWORD)ms); }
+
 // ---- File I/O (spec 34.4): whole-file read/write over C stdio. ----
 char* __ldp3_file_read_all(const char* path, long long* outLen) {
     FILE* f = fopen(path, "rb");
