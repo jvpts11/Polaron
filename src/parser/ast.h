@@ -516,6 +516,39 @@ struct ForeachStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// ---- Annotations (spec 14.3) ----
+
+// One named argument of an annotation use: `value: 100`.
+struct AnnotationArg {
+    std::string name;   // the annotation field being set
+    ExprPtr value;
+    SourceLocation loc;
+};
+
+// An applied annotation `[Name(arg: val, ...)]`, attached to a declaration it precedes.
+struct AnnotationUse {
+    std::string name;
+    std::vector<AnnotationArg> args;
+    SourceLocation loc;
+};
+
+// A field of a custom annotation: `int value;` (required) or `String msg default "...";` (optional).
+struct AnnotationField {
+    TypeRef type;
+    std::string name;
+    ExprPtr defaultValue;  // null when the field is required
+    SourceLocation loc;
+};
+
+// `public annotation Name { fields... }` (spec 14.3): declares a custom annotation type.
+struct AnnotationDecl {
+    std::string visibility;
+    std::string name;
+    std::vector<AnnotationField> fields;
+    bool isCompileTimeProcessor = false;  // declared with [CompileTimeProcessor] (spec 14.4)
+    SourceLocation loc;
+};
+
 // Base for class-body members (method now; field/constructor/destructor later).
 struct MemberDecl {
     SourceLocation loc;
@@ -541,6 +574,7 @@ struct MethodDecl : MemberDecl {
     Block body;  // empty when isAbstract
     std::vector<ExprPtr> requiresClauses;  // contracts (spec 29): preconditions
     std::vector<ExprPtr> ensuresClauses;   // contracts (spec 29): postconditions
+    std::vector<AnnotationUse> annotations;  // applied `[Name(...)]` annotations (spec 14.3)
     void dump(std::string& out, int indent) const override;
 };
 
@@ -557,6 +591,7 @@ struct FieldDecl : MemberDecl {
     std::string name;
     int bitWidth = 0;  // `field : N` bit-field width (spec 11.1); 0 = not a bit-field
     ExprPtr init;  // optional inline initializer (null if none); see spec 940
+    std::vector<AnnotationUse> annotations;  // applied `[Name(...)]` annotations (spec 14.3)
     void dump(std::string& out, int indent) const override;
 };
 
@@ -604,6 +639,7 @@ struct ClassDecl {
     std::unique_ptr<Block> onLastInstanceDestroyed;  // spec 32.5: after the last instance is destroyed
     std::unique_ptr<Block> onClassUnload;            // spec 32.5: on unimport (deferred: needs unimport)
     std::vector<MemberPtr> members;
+    std::vector<AnnotationUse> annotations;  // applied `[Name(...)]` annotations (spec 14.3)
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };
@@ -698,6 +734,7 @@ struct Namespace {
     std::vector<ConstDecl> consts;
     std::vector<ExternDecl> externs;
     std::vector<TypeAliasDecl> typeAliases;
+    std::vector<AnnotationDecl> annotationDecls;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

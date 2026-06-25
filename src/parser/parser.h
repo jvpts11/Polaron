@@ -57,6 +57,8 @@ private:
     ast::ExternDecl parseExtern();
     ast::ConstDecl parseConstDecl();
     ast::TypeAliasDecl parseTypeAlias();
+    std::vector<ast::AnnotationUse> parseAnnotationUsesOpt();
+    ast::AnnotationDecl parseAnnotationDecl(const std::vector<ast::AnnotationUse>& leading);
     ast::MemberPtr parseMember(bool inInterface);
     std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic,
                                                  bool isAbstract, bool isOverride, bool isFinal,

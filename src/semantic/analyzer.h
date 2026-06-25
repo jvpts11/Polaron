@@ -88,6 +88,13 @@ struct RegionConstraints {
     std::vector<std::string> rejects;
 };
 
+// A custom annotation type (spec 14.3): its fields and which of them are required (no default).
+struct AnnotationInfo {
+    std::vector<std::pair<std::string, std::string>> fields;  // (name, type), in declaration order
+    std::unordered_set<std::string> required;                  // field names without a default
+    bool isCompileTimeProcessor = false;
+};
+
 // Semantic analysis. Release 0.1 / M4 scope: builds a catalog of classes, finds
 // the entry point, and type-checks the body of every method and constructor,
 // resolving locals, `this`, fields, methods and `new`.
@@ -106,6 +113,9 @@ private:
     void registerClasses(const ast::Program& program);
     void registerEnums(const ast::Program& program);
     void registerNewtypes(const ast::Program& program);
+    void registerAnnotations(const ast::Program& program);
+    void validateAnnotations(const ast::Program& program);
+    void checkAnnotationUses(const std::vector<ast::AnnotationUse>& uses);
     void registerCatalogs(const ast::Program& program);
     void validateCatalogs(const ast::Program& program);
     void registerLiterals(const ast::Program& program);
@@ -169,6 +179,8 @@ private:
     // underlying type. Distinct for type-checking (no implicit conversion either way), but shares
     // the underlying's representation (codegen) and casts freely to/from it.
     std::unordered_map<std::string, std::string> newtypes_;
+    // Custom annotation types (spec 14.3): name -> its fields/required set.
+    std::unordered_map<std::string, AnnotationInfo> annotations_;
     std::unordered_map<std::string, CatalogInfo> catalogs_;            // name -> catalog contract
     std::unordered_map<std::string, std::vector<std::string>> enumCatalogs_;  // enum -> catalogs it extends
     // enum -> (method name -> info): methods declared on a catalog-implementing enum.

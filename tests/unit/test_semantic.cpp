@@ -1342,3 +1342,35 @@ TEST_CASE("semantic keeps two newtypes over the same underlying distinct") {
     CHECK_FALSE(checkSrc(withAlias("public newtype A = int; public newtype B = int;",
                                    "A a = cast<A>(5); B b = a; return;")));
 }
+
+// Custom annotations (spec 14.3).
+namespace {
+// A program with one annotation `[MaxLength]` (one required field `value`, one optional `msg`)
+// applied to a class via `appl`, e.g. "[MaxLength(value: 10)]".
+std::string withAnnotation(const std::string& appl) {
+    return "program P; public bundle b { public namespace n {"
+           " public annotation MaxLength { int value; String msg default \"x\"; } " +
+           appl +
+           " public class Foo { public constructor Foo() {} }"
+           " public class Main { public static method main(string[] args) returns void { return; } "
+           "} } }";
+}
+}  // namespace
+TEST_CASE("semantic accepts a valid annotation application") {
+    CHECK(checkSrc(withAnnotation("[MaxLength(value: 10)]")));
+}
+TEST_CASE("semantic accepts an annotation that also sets an optional field") {
+    CHECK(checkSrc(withAnnotation("[MaxLength(value: 10, msg: \"hi\")]")));
+}
+TEST_CASE("semantic rejects an unknown annotation") {
+    CHECK_FALSE(checkSrc(withAnnotation("[Bogus(value: 1)]")));
+}
+TEST_CASE("semantic rejects an annotation missing a required field") {
+    CHECK_FALSE(checkSrc(withAnnotation("[MaxLength]")));
+}
+TEST_CASE("semantic rejects an annotation argument that is not a field") {
+    CHECK_FALSE(checkSrc(withAnnotation("[MaxLength(value: 1, nope: 2)]")));
+}
+TEST_CASE("semantic rejects a duplicate annotation argument") {
+    CHECK_FALSE(checkSrc(withAnnotation("[MaxLength(value: 1, value: 2)]")));
+}

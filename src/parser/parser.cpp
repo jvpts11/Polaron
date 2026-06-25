@@ -255,11 +255,17 @@ ast::Namespace Parser::parseNamespace() {
     ns.name = parseDottedName();
     expect(TokenKind::LBrace, "'{'");
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        // Leading annotations (spec 14.3): `[Name(...)]` applied to the declaration that follows.
+        std::vector<ast::AnnotationUse> anns = parseAnnotationUsesOpt();
         // Peek past an optional visibility modifier to tell enums from classes.
         TokenKind kind = current().kind;
         if (kind == TokenKind::KwPublic || kind == TokenKind::KwPrivate ||
             kind == TokenKind::KwProtected || kind == TokenKind::KwInternal) {
             kind = peek(1).kind;
+        }
+        if (kind == TokenKind::KwAnnotation) {
+            ns.annotationDecls.push_back(parseAnnotationDecl(anns));
+            continue;
         }
         if (kind == TokenKind::KwEnum) {
             ast::EnumDecl en = parseEnum();
@@ -291,13 +297,17 @@ ast::Namespace Parser::parseNamespace() {
         } else if (kind == TokenKind::KwConst) {
             ns.consts.push_back(parseConstDecl());
         } else if (kind == TokenKind::KwRecord) {
-            ns.classes.push_back(parseRecord());
+            ast::ClassDecl rec = parseRecord();
+            rec.annotations = std::move(anns);
+            ns.classes.push_back(std::move(rec));
         } else if (kind == TokenKind::KwExtern) {
             ns.externs.push_back(parseExtern());
         } else if (kind == TokenKind::KwTypealias || kind == TokenKind::KwNewtype) {
             ns.typeAliases.push_back(parseTypeAlias());
         } else {
-            ns.classes.push_back(parseClassOrInterface());
+            ast::ClassDecl cls = parseClassOrInterface();
+            cls.annotations = std::move(anns);
+            ns.classes.push_back(std::move(cls));
         }
     }
     expect(TokenKind::RBrace, "'}'");
@@ -343,6 +353,60 @@ ast::LiteralDecl Parser::parseLiteral() {
     l.returnType = parseTypeRef();
     l.body = parseBlock();
     return l;
+}
+
+// Parses zero or more applied annotations `[Name(arg: val, ...)]` (spec 14.3) that precede a
+// declaration. Each annotation is `[` Name optional-arg-list `]`; args are named (`name: expr`).
+std::vector<ast::AnnotationUse> Parser::parseAnnotationUsesOpt() {
+    std::vector<ast::AnnotationUse> uses;
+    while (check(TokenKind::LBracket)) {
+        ast::AnnotationUse use;
+        use.loc = current().loc;
+        advance();  // '['
+        use.name = expect(TokenKind::Identifier, "an annotation name after '['").lexeme;
+        if (match(TokenKind::LParen)) {
+            if (!check(TokenKind::RParen)) {
+                do {
+                    ast::AnnotationArg arg;
+                    arg.loc = current().loc;
+                    arg.name = expect(TokenKind::Identifier, "an annotation argument name").lexeme;
+                    expect(TokenKind::Colon, "':' after the annotation argument name");
+                    arg.value = parseExpression();
+                    use.args.push_back(std::move(arg));
+                } while (match(TokenKind::Comma));
+            }
+            expect(TokenKind::RParen, "')' to close the annotation arguments");
+        }
+        expect(TokenKind::RBracket, "']' to close the annotation");
+        uses.push_back(std::move(use));
+    }
+    return uses;
+}
+
+// `[visibility] annotation Name { (Type field [default expr];)* }` (spec 14.3): a custom annotation
+// type. A preceding `[CompileTimeProcessor]` (spec 14.4) is passed in via `leading`.
+ast::AnnotationDecl Parser::parseAnnotationDecl(const std::vector<ast::AnnotationUse>& leading) {
+    ast::AnnotationDecl a;
+    a.loc = current().loc;
+    a.visibility = parseVisibilityOpt();
+    expect(TokenKind::KwAnnotation, "'annotation'");
+    a.name = expect(TokenKind::Identifier, "the annotation name").lexeme;
+    for (const ast::AnnotationUse& u : leading)
+        if (u.name == "CompileTimeProcessor") a.isCompileTimeProcessor = true;
+    expect(TokenKind::LBrace, "'{' to open the annotation body");
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        ast::AnnotationField f;
+        f.loc = current().loc;
+        f.type = parseTypeRef();
+        f.name = expect(TokenKind::Identifier, "the annotation field name").lexeme;
+        if (match(TokenKind::KwDefault)) {  // `default expr` -> the field is optional (spec 14.3)
+            f.defaultValue = parseExpression();
+        }
+        expect(TokenKind::Semicolon, "';' after the annotation field");
+        a.fields.push_back(std::move(f));
+    }
+    expect(TokenKind::RBrace, "'}' to close the annotation body");
+    return a;
 }
 
 // `[visibility] (typealias|newtype) Name = Target;` (spec 24). typealias is transparent;
@@ -671,6 +735,7 @@ ast::ClassDecl Parser::parseRecord() {
 }
 
 ast::MemberPtr Parser::parseMember(bool inInterface) {
+    std::vector<ast::AnnotationUse> anns = parseAnnotationUsesOpt();  // leading `[Name(...)]` (spec 14.3)
     std::string visibility = parseVisibilityOpt();
     bool isStatic = false;
     bool isMutable = false;
@@ -747,22 +812,26 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         }
         break;
     }
+    ast::MemberPtr member;
     if (check(TokenKind::KwMethod)) {
-        return parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
-                           inInterface, isComptime, isAsync);
+        member = parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
+                             inInterface, isComptime, isAsync);
+    } else if (check(TokenKind::KwConstructor)) {
+        member = parseConstructor(std::move(visibility));
+    } else if (check(TokenKind::KwDestructor)) {
+        member = parseDestructor(std::move(visibility));
+    } else if (check(TokenKind::KwOperator)) {
+        member = parseOperator(std::move(visibility));
+    } else {
+        // Otherwise it is a field:  <type> <name> ;
+        member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
+                            isTransient, isVolatile, isLazy);
     }
-    if (check(TokenKind::KwConstructor)) {
-        return parseConstructor(std::move(visibility));
+    if (!anns.empty()) {  // attach leading annotations to the declaration they precede
+        if (auto* m = dynamic_cast<ast::MethodDecl*>(member.get())) m->annotations = std::move(anns);
+        else if (auto* f = dynamic_cast<ast::FieldDecl*>(member.get())) f->annotations = std::move(anns);
     }
-    if (check(TokenKind::KwDestructor)) {
-        return parseDestructor(std::move(visibility));
-    }
-    if (check(TokenKind::KwOperator)) {
-        return parseOperator(std::move(visibility));
-    }
-    // Otherwise it is a field:  <type> <name> ;
-    return parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
-                      isTransient, isVolatile, isLazy);
+    return member;
 }
 
 // `operator <op> (params) returns T { body }` (spec 6.5). Modeled as a method

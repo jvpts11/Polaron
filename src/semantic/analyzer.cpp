@@ -503,6 +503,84 @@ void SemanticAnalyzer::registerNewtypes(const ast::Program& program) {
     }
 }
 
+void SemanticAnalyzer::registerAnnotations(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::AnnotationDecl& a : ns.annotationDecls) {
+                if (annotations_.count(a.name) > 0 || classes_.count(a.name) > 0 ||
+                    enums_.count(a.name) > 0 || newtypes_.count(a.name) > 0) {
+                    error("redeclaration of type '" + a.name + "'", a.loc);
+                    continue;
+                }
+                AnnotationInfo info;
+                info.isCompileTimeProcessor = a.isCompileTimeProcessor;
+                std::unordered_set<std::string> seen;
+                for (const ast::AnnotationField& f : a.fields) {
+                    if (!seen.insert(f.name).second) {
+                        error("duplicate field '" + f.name + "' in annotation '" + a.name + "'",
+                              f.loc);
+                        continue;
+                    }
+                    info.fields.emplace_back(f.name, typeRefStr(f.type));
+                    if (f.defaultValue == nullptr) info.required.insert(f.name);
+                }
+                annotations_[a.name] = std::move(info);
+            }
+        }
+    }
+}
+
+// Validates one declaration's applied annotations against the declared annotation types (spec 14.3):
+// the annotation must exist, every named argument must be a real field, with no duplicates, and
+// every required field (one without a default) must be supplied.
+void SemanticAnalyzer::checkAnnotationUses(const std::vector<ast::AnnotationUse>& uses) {
+    for (const ast::AnnotationUse& use : uses) {
+        if (use.name == "CompileTimeProcessor") {  // built-in (spec 14.4): a marker, takes no args
+            if (!use.args.empty())
+                error("'[CompileTimeProcessor]' takes no arguments", use.loc);
+            continue;
+        }
+        auto it = annotations_.find(use.name);
+        if (it == annotations_.end()) {
+            error("unknown annotation '" + use.name + "'", use.loc);
+            continue;
+        }
+        const AnnotationInfo& info = it->second;
+        std::unordered_set<std::string> provided;
+        for (const ast::AnnotationArg& arg : use.args) {
+            const bool isField = std::any_of(info.fields.begin(), info.fields.end(),
+                                             [&](const auto& f) { return f.first == arg.name; });
+            if (!isField) {
+                error("annotation '" + use.name + "' has no field '" + arg.name + "'", arg.loc);
+                continue;
+            }
+            if (!provided.insert(arg.name).second)
+                error("duplicate argument '" + arg.name + "' for annotation '" + use.name + "'",
+                      arg.loc);
+        }
+        for (const std::string& req : info.required)
+            if (provided.count(req) == 0)
+                error("annotation '" + use.name + "' requires a value for field '" + req + "'",
+                      use.loc);
+    }
+}
+
+void SemanticAnalyzer::validateAnnotations(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& c : ns.classes) {
+                checkAnnotationUses(c.annotations);
+                for (const ast::MemberPtr& m : c.members) {
+                    if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()))
+                        checkAnnotationUses(md->annotations);
+                    else if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()))
+                        checkAnnotationUses(fd->annotations);
+                }
+            }
+        }
+    }
+}
+
 void SemanticAnalyzer::registerEnums(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
@@ -849,6 +927,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     registerCatalogs(program);  // before enums: registerEnums records enum->catalog edges
     registerEnums(program);
     registerNewtypes(program);
+    registerAnnotations(program);
     registerLiterals(program);
     registerConsts(program);
     registerComptimeMethods(program);
@@ -864,6 +943,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     findEntryPoint(program);
     analyzeBodies(program);
     analyzeLiteralBodies(program);
+    validateAnnotations(program);  // spec 14.3: applied [Name(...)] match a declared annotation
     checkPersistentReleases();  // spec 18.15: after all bodies, so releases are collected
     return errors_.empty();
 }

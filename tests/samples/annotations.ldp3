@@ -1,0 +1,41 @@
+import System.IO.Console;
+program Annotations;
+
+// Custom annotations (spec 14.3): declared with `annotation`, applied with `[Name(args)]` before a
+// class, method, or field. Fields may be required or carry a `default`. The built-in
+// `[CompileTimeProcessor]` (spec 14.4) marks an annotation for compile-time processing. The
+// compiler validates every application (the annotation exists, named args are real fields, and
+// every required field is supplied); the annotations then ride along on the declarations.
+
+public bundle main {
+    public namespace app {
+
+        public annotation MaxLength {
+            int value;
+            String errorMessage default "too long";
+        }
+
+        [CompileTimeProcessor]
+        public annotation Marker { }
+
+        [MaxLength(value: 100, errorMessage: "name too long")]
+        public class UserName {
+            [MaxLength(value: 50)]
+            private mutable int length;
+
+            public constructor UserName(int n) { this.length = n; }
+
+            [Marker]
+            public method length() returns int { return this.length; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                UserName u = new UserName(42) on heap;
+                System.IO.Console.printf("length=%d\n", u.length());
+                delete u;
+                return;
+            }
+        }
+    }
+}

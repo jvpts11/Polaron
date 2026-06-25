@@ -498,6 +498,23 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
     return nullptr;
 }
 
+// Deep-clones applied annotations (spec 14.3), substituting types inside their argument
+// expressions, so a class/member keeps its annotations through cloning (generics, namespace
+// qualification, alias expansion).
+std::vector<ast::AnnotationUse> cloneAnnotations(const std::vector<ast::AnnotationUse>& anns,
+                                                 const Subst& s) {
+    std::vector<ast::AnnotationUse> out;
+    for (const ast::AnnotationUse& a : anns) {
+        ast::AnnotationUse u;
+        u.loc = a.loc;
+        u.name = a.name;
+        for (const ast::AnnotationArg& arg : a.args)
+            u.args.push_back({arg.name, cloneExpr(arg.value.get(), s), arg.loc});
+        out.push_back(std::move(u));
+    }
+    return out;
+}
+
 ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
     if (const auto* x = dynamic_cast<const ast::MethodDecl*>(m)) {
         auto n = std::make_unique<ast::MethodDecl>();
@@ -517,6 +534,7 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         for (const auto& c : x->requiresClauses) n->requiresClauses.push_back(cloneExpr(c.get(), s));
         for (const auto& c : x->ensuresClauses) n->ensuresClauses.push_back(cloneExpr(c.get(), s));
         n->body = cloneBlock(x->body, s);
+        n->annotations = cloneAnnotations(x->annotations, s);
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::FieldDecl*>(m)) {
@@ -534,6 +552,7 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         n->name = x->name;
         n->bitWidth = x->bitWidth;
         n->init = cloneExpr(x->init.get(), s);
+        n->annotations = cloneAnnotations(x->annotations, s);
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::ConstructorDecl*>(m)) {
@@ -584,6 +603,7 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
         c.interfaceTypeArgs.push_back(std::move(sub));
     }
     for (const auto& m : d.members) c.members.push_back(cloneMember(m.get(), s));
+    c.annotations = cloneAnnotations(d.annotations, s);
     return c;
 }
 
