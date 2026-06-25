@@ -216,6 +216,11 @@ public bundle std {
             public method get(int i) returns T {
                 return this.data[i];
             }
+            public method toArray() returns T[] {
+                mutable T[] out = new T[this.count]();
+                for (mutable int i = 0; i < this.count; i++) { out[i] = this.data[i]; }
+                return out;
+            }
             public method size() returns int {
                 return this.count;
             }
@@ -243,6 +248,11 @@ public bundle std {
                 return this.data[this.count];
             }
             public method peek() returns T { return this.data[this.count - 1]; }
+            public method toArray() returns T[] {  // bottom-to-top (insertion order)
+                mutable T[] out = new T[this.count]();
+                for (mutable int i = 0; i < this.count; i++) { out[i] = this.data[i]; }
+                return out;
+            }
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
         }
@@ -272,6 +282,13 @@ public bundle std {
                 return v;
             }
             public method peek() returns T { return this.data[this.head]; }
+            public method toArray() returns T[] {  // front-to-back
+                mutable T[] out = new T[this.count]();
+                for (mutable int i = 0; i < this.count; i++) {
+                    out[i] = this.data[(this.head + i) % this.data.length()];
+                }
+                return out;
+            }
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
         }
@@ -312,6 +329,13 @@ public bundle std {
                 this.count = this.count - 1;
                 return this.data[(this.head + this.count) % this.data.length()];
             }
+            public method toArray() returns T[] {  // front-to-back
+                mutable T[] out = new T[this.count]();
+                for (mutable int i = 0; i < this.count; i++) {
+                    out[i] = this.data[(this.head + i) % this.data.length()];
+                }
+                return out;
+            }
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
         }
@@ -347,6 +371,12 @@ public bundle std {
                 delete node;
                 this.count = this.count - 1;
                 return v;
+            }
+            public method toArray() returns T[] {  // head-to-tail
+                mutable T[] out = new T[this.count]();
+                mutable LinkedNode<T>* cur = this.head;
+                for (mutable int i = 0; i < this.count; i++) { out[i] = cur.value; cur = cur.next; }
+                return out;
             }
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
@@ -419,6 +449,22 @@ R"LDP3(
             public method containsKey(K key) returns boolean {
                 return this.used[this.slotFor(key)];
             }
+            public method keyArray() returns K[] {  // keys (arbitrary order); field is named `keys`
+                mutable K[] out = new K[this.count]();
+                mutable int j = 0;
+                for (mutable int i = 0; i < this.cap; i++) {
+                    if (this.used[i]) { out[j] = this.keys[i]; j = j + 1; }
+                }
+                return out;
+            }
+            public method valueArray() returns V[] {  // values (arbitrary order)
+                mutable V[] out = new V[this.count]();
+                mutable int j = 0;
+                for (mutable int i = 0; i < this.cap; i++) {
+                    if (this.used[i]) { out[j] = this.values[i]; j = j + 1; }
+                }
+                return out;
+            }
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
         }
@@ -464,6 +510,14 @@ R"LDP3(
             }
             public method contains(T value) returns boolean {
                 return this.used[this.slotFor(value)];
+            }
+            public method toArray() returns T[] {  // elements (arbitrary order)
+                mutable T[] out = new T[this.count]();
+                mutable int j = 0;
+                for (mutable int i = 0; i < this.cap; i++) {
+                    if (this.used[i]) { out[j] = this.elems[i]; j = j + 1; }
+                }
+                return out;
             }
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
@@ -529,6 +583,30 @@ R"LDP3(
                 return z;
             }
             public method containsKey(K key) returns boolean { return this.find(key) != null; }
+            private method fillKeys(TreeNode<K, V>* node, K[] out, int idx) returns int {
+                if (node == null) { return idx; }
+                mutable int i = this.fillKeys(node.left, out, idx);
+                out[i] = node.key;
+                i = i + 1;
+                return this.fillKeys(node.right, out, i);
+            }
+            private method fillValues(TreeNode<K, V>* node, V[] out, int idx) returns int {
+                if (node == null) { return idx; }
+                mutable int i = this.fillValues(node.left, out, idx);
+                out[i] = node.value;
+                i = i + 1;
+                return this.fillValues(node.right, out, i);
+            }
+            public method keyArray() returns K[] {  // sorted (in-order)
+                mutable K[] out = new K[this.count]();
+                this.fillKeys(this.root, out, 0);
+                return out;
+            }
+            public method valueArray() returns V[] {  // by key order
+                mutable V[] out = new V[this.count]();
+                this.fillValues(this.root, out, 0);
+                return out;
+            }
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
         }
@@ -579,6 +657,18 @@ R"LDP3(
                     if (c < 0) { cur = cur.left; } else { cur = cur.right; }
                 }
                 return false;
+            }
+            private method fill(TreeSetNode<T>* node, T[] out, int idx) returns int {
+                if (node == null) { return idx; }
+                mutable int i = this.fill(node.left, out, idx);
+                out[i] = node.value;
+                i = i + 1;
+                return this.fill(node.right, out, i);
+            }
+            public method toArray() returns T[] {  // sorted (in-order)
+                mutable T[] out = new T[this.count]();
+                this.fill(this.root, out, 0);
+                return out;
             }
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
