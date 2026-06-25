@@ -8,14 +8,14 @@ program ComptimeDouble;
 public bundle main {
     public namespace app {
         public class Math {
-            public static comptime method scale(int n, float64 factor) returns float64 {
-                mutable float64 acc = 0.0;
+            public static comptime method scale(int n, double factor) returns double {
+                mutable double acc = 0.0;
                 for (mutable int i = 0; i < n; i++) {
                     acc = acc + factor;
                 }
                 return acc;
             }
-            public static comptime method half(int x) returns float64 { return x * 0.5; }
+            public static comptime method half(int x) returns double { return x * 0.5; }
         }
 
         public const double TOTAL = Math.scale(3, 1.5);   // 4.5

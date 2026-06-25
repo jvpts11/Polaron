@@ -1,7 +1,7 @@
 import System.IO.Console;
 program SimdVectors;
 
-// SIMD vector types vec2/vec3/vec4 (float32, GLSL-style), lowering to LLVM <N x float> (SSE/AVX).
+// SIMD vector types vec2/vec3/vec4 (float, GLSL-style), lowering to LLVM <N x float> (SSE/AVX).
 // Construction vecN(...), element-wise + - * / (scalar operand broadcasts), .x/.y/.z/.w and [i]
 // access, and passing/returning vectors by value. Foundation for 3D graphics math.
 

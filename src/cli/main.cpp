@@ -48,26 +48,26 @@ program __prelude;
 public bundle std {
     public namespace System.Memory.Units {
         public struct ByteSize {
-            public final int64 bytes;
-            public constructor ByteSize(int64 bytes) { this.bytes = bytes; }
+            public final long bytes;
+            public constructor ByteSize(long bytes) { this.bytes = bytes; }
         }
         public comptime literal bytes(int x) returns ByteSize {
-            return new ByteSize(cast<int64>(x)) on heap;
+            return new ByteSize(cast<long>(x)) on heap;
         }
         public comptime literal kilobytes(int x) returns ByteSize {
-            return new ByteSize(cast<int64>(x) * 1024) on heap;
+            return new ByteSize(cast<long>(x) * 1024) on heap;
         }
         public comptime literal megabytes(int x) returns ByteSize {
-            return new ByteSize(cast<int64>(x) * 1024 * 1024) on heap;
+            return new ByteSize(cast<long>(x) * 1024 * 1024) on heap;
         }
         public comptime literal gigabytes(int x) returns ByteSize {
-            return new ByteSize(cast<int64>(x) * 1024 * 1024 * 1024) on heap;
+            return new ByteSize(cast<long>(x) * 1024 * 1024 * 1024) on heap;
         }
         public comptime literal terabytes(int x) returns ByteSize {
-            return new ByteSize(cast<int64>(x) * 1024 * 1024 * 1024 * 1024) on heap;
+            return new ByteSize(cast<long>(x) * 1024 * 1024 * 1024 * 1024) on heap;
         }
         public comptime literal exabytes(int x) returns ByteSize {
-            return new ByteSize(cast<int64>(x) * 1024 * 1024 * 1024 * 1024 * 1024 * 1024) on heap;
+            return new ByteSize(cast<long>(x) * 1024 * 1024 * 1024 * 1024 * 1024 * 1024) on heap;
         }
     }
     public namespace System.Concurrency {
@@ -75,10 +75,10 @@ public bundle std {
         // the low-level thread builtins, which lower to CreateThread / WaitForSingleObject.
         public class Thread {
             private function<void> work;
-            private mutable int64 handle;
+            private mutable long handle;
             public constructor Thread(function<void> w) {
                 this.work = w;
-                this.handle = cast<int64>(0);
+                this.handle = cast<long>(0);
             }
             public method start() returns void {
                 this.handle = System.Concurrency.__threadStart(this.work);
@@ -90,15 +90,15 @@ public bundle std {
         // The handle to an async computation that will produce a T (spec 20.2). `h` is the
         // runtime ldp3_task*; an async method returns one of these and `await` yields the T.
         public class Task<T> {
-            public mutable int64 h;
-            public constructor Task() { this.h = cast<int64>(0); }
+            public mutable long h;
+            public constructor Task() { this.h = cast<long>(0); }
         }
         // A bounded blocking channel (spec 20.3): send() blocks while full, receive() blocks while
         // empty. The element T is passed as a 64-bit slot (an int or a reference).
         public class Channel<T> {
-            public mutable int64 h;
+            public mutable long h;
             public constructor Channel(int capacity) {
-                this.h = System.Concurrency.__chanNew(cast<int64>(capacity));
+                this.h = System.Concurrency.__chanNew(cast<long>(capacity));
             }
         }
         // A lock-free atomic cell (spec 20.6). get/set/add/increment/compareAndSet (and the atomic
@@ -111,7 +111,7 @@ public bundle std {
         // only through `synchronized (m) using T& x { ... }`, which holds the lock for the block.
         public class Mutex<T> {
             public mutable T value;
-            public mutable int64 lock;
+            public mutable long lock;
             public constructor Mutex(T initial) {
                 this.value = initial;
                 this.lock = System.Concurrency.__lockCreate();
@@ -160,15 +160,15 @@ public bundle std {
         // real class -- a real `Math` class would clash with user classes named Math via namespace
         // disambiguation. The name `Math` is registered virtually so `import System.Math.Math;`
         // resolves (see the analyzer). Only Random is a real class here.
-        // A deterministic PRNG (xorshift64), pure LDP3 over a uint64 state (spec 34.6 Random).
+        // A deterministic PRNG (xorshift64), pure LDP3 over a ulong state (spec 34.6 Random).
         public class Random {
-            private mutable uint64 state;
-            public constructor Random(uint64 seed) {
+            private mutable ulong state;
+            public constructor Random(ulong seed) {
                 this.state = seed;
-                if (this.state == cast<uint64>(0)) { this.state = cast<uint64>(1); }
+                if (this.state == cast<ulong>(0)) { this.state = cast<ulong>(1); }
             }
             public method nextInt() returns int {
-                mutable uint64 x = this.state;
+                mutable ulong x = this.state;
                 x = x ^ (x << 13);
                 x = x ^ (x >> 7);
                 x = x ^ (x << 17);
@@ -177,6 +177,15 @@ public bundle std {
             }
             public method nextIntMax(int max) returns int {
                 return this.nextInt() % max;   // [0, max)
+            }
+            public method nextRange(int lo, int hi) returns int {
+                return lo + this.nextIntMax(hi - lo);   // [lo, hi)
+            }
+            public method nextDouble() returns double {
+                return cast<double>(this.nextInt()) / 2147483648.0;   // [0, 1)
+            }
+            public method nextBool() returns boolean {
+                return this.nextIntMax(2) == 0;
             }
         }
     }
@@ -191,6 +200,9 @@ public bundle std {
             public override method message() returns String { return "type was unimported"; }
         }
     }
+)LDP3"
+// (split 0: keep each literal under MSVC's ~16KB cap.)
+R"LDP3(
     public namespace System.Collections {
         // A growable list backed by a dynamic array that doubles on overflow (spec 31 uses
         // ArrayList<Method>/ArrayList<Field>; also a general-purpose collection).
@@ -388,7 +400,7 @@ R"LDP3(
         // Comparable<T> (spec 34). The primitive types (int family, String) satisfy these via
         // compiler builtins, so they can be used as keys without boxing.
         public interface Hashable<T> {
-            method hash() returns int64;
+            method hash() returns long;
             method equalsKey(T other) returns boolean;
         }
         public interface Comparable<T> {
@@ -695,7 +707,7 @@ R"LDP3(
                 while (n < this.count + extra) { n = n * 2; }
                 address nb = Memory.alloc(n);
                 for (mutable int i = 0; i < this.count; i++) {
-                    Memory.write(nb + cast<address>(i), Memory.read<int8>(this.buf + cast<address>(i)));
+                    Memory.write(nb + cast<address>(i), Memory.read<byte>(this.buf + cast<address>(i)));
                 }
                 Memory.free(this.buf);
                 this.buf = nb;
@@ -705,14 +717,14 @@ R"LDP3(
                 int n = s.length();
                 this.ensure(n);
                 for (mutable int i = 0; i < n; i++) {
-                    Memory.write(this.buf + cast<address>(this.count), cast<int8>(s.charAt(i)));
+                    Memory.write(this.buf + cast<address>(this.count), cast<byte>(s.charAt(i)));
                     this.count = this.count + 1;
                 }
                 return this;
             }
             public method appendChar(char c) returns StringBuilder {
                 this.ensure(1);
-                Memory.write(this.buf + cast<address>(this.count), cast<int8>(c));
+                Memory.write(this.buf + cast<address>(this.count), cast<byte>(c));
                 this.count = this.count + 1;
                 return this;
             }
@@ -729,13 +741,13 @@ R"LDP3(
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
         // Instant.now() can call Time.unixMillis() without an import.
         public class Duration {
-            private mutable int64 ms;
-            public constructor Duration(int64 millis) { this.ms = millis; }
-            public static method ofMillis(int64 m) returns Duration { return new Duration(m) on heap; }
-            public static method ofSeconds(int64 s) returns Duration { return new Duration(s * 1000) on heap; }
-            public static method ofMinutes(int64 m) returns Duration { return new Duration(m * 60000) on heap; }
-            public method toMillis() returns int64 { return this.ms; }
-            public method toSeconds() returns int64 { return this.ms / 1000; }
+            private mutable long ms;
+            public constructor Duration(long millis) { this.ms = millis; }
+            public static method ofMillis(long m) returns Duration { return new Duration(m) on heap; }
+            public static method ofSeconds(long s) returns Duration { return new Duration(s * 1000) on heap; }
+            public static method ofMinutes(long m) returns Duration { return new Duration(m * 60000) on heap; }
+            public method toMillis() returns long { return this.ms; }
+            public method toSeconds() returns long { return this.ms / 1000; }
             public method plus(Duration other) returns Duration {
                 return new Duration(this.ms + other.toMillis()) on heap;
             }
@@ -745,15 +757,15 @@ R"LDP3(
         }
         // A moment on the wall clock, as milliseconds since the Unix epoch (spec 34).
         public class Instant {
-            private mutable int64 epochMs;
-            public constructor Instant(int64 ms) { this.epochMs = ms; }
+            private mutable long epochMs;
+            public constructor Instant(long ms) { this.epochMs = ms; }
             public static method now() returns Instant {
                 return new Instant(Time.unixMillis()) on heap;
             }
-            public static method ofEpochMillis(int64 ms) returns Instant {
+            public static method ofEpochMillis(long ms) returns Instant {
                 return new Instant(ms) on heap;
             }
-            public method toEpochMillis() returns int64 { return this.epochMs; }
+            public method toEpochMillis() returns long { return this.epochMs; }
             public method isBefore(Instant other) returns boolean {
                 return this.epochMs < other.toEpochMillis();
             }

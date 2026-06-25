@@ -4,24 +4,24 @@ import System.Time.Instant;
 program DurationStdlib;
 
 // Rich time (spec 34): Duration (a span in ms) and Instant (a moment as epoch ms), both wrapping
-// int64. Instant.now() reads the wall clock via the Time builtin (same namespace, no extra import).
+// long. Instant.now() reads the wall clock via the Time builtin (same namespace, no extra import).
 
 public bundle main {
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
-                Duration a = Duration.ofSeconds(cast<int64>(2));
-                Duration b = Duration.ofMillis(cast<int64>(500));
+                Duration a = Duration.ofSeconds(cast<long>(2));
+                Duration b = Duration.ofMillis(cast<long>(500));
                 Duration sum = a.plus(b);
                 System.IO.Console.printf("aMs=%d aSec=%d sumMs=%d\n",
                     cast<int>(a.toMillis()), cast<int>(a.toSeconds()), cast<int>(sum.toMillis()));
 
-                Instant t0 = Instant.ofEpochMillis(cast<int64>(1000));
-                Instant t1 = Instant.ofEpochMillis(cast<int64>(3500));
+                Instant t0 = Instant.ofEpochMillis(cast<long>(1000));
+                Instant t1 = Instant.ofEpochMillis(cast<long>(3500));
                 Duration el = t1.since(t0);
                 System.IO.Console.printf("before=%d after=%d elapsedMs=%d nowOk=%d\n",
                     t0.isBefore(t1), t1.isAfter(t0), cast<int>(el.toMillis()),
-                    Instant.now().toEpochMillis() > cast<int64>(1000000000000));
+                    Instant.now().toEpochMillis() > cast<long>(1000000000000));
                 return;
             }
         }

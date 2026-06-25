@@ -7,14 +7,14 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 // 3 billion is past INT32_MAX, so a signed int would read it as
-                // negative. As uint32 it stays positive and divides unsigned.
-                uint32 big = 3000000000;
+                // negative. As uint it stays positive and divides unsigned.
+                uint big = 3000000000;
                 System.IO.Console.println($"big = {big}");          // 3000000000, not negative
                 System.IO.Console.println($"half = {big / 2}");      // 1500000000 (udiv, not sdiv)
                 System.IO.Console.println($"big > 1 = {big > 1}");   // 1 (unsigned compare; signed -> 0)
 
-                // 1.8e19 is past INT64_MAX but fits in uint64.
-                uint64 huge = 18000000000000000000;
+                // 1.8e19 is past INT64_MAX but fits in ulong.
+                ulong huge = 18000000000000000000;
                 System.IO.Console.println($"huge = {huge}");         // printed with %llu
 
                 return;

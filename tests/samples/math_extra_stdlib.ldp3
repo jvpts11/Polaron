@@ -1,0 +1,28 @@
+import System.IO.Console;
+import System.Math.Math;
+import System.Math.Random;
+program MathExtraStdlib;
+
+// Extended Math (spec 34.6): trig/transcendental via LLVM intrinsics or libm (tan/atan2/hypot/cbrt/
+// log2), plus clamp/lerp. Extended Random: nextRange/nextDouble/nextBool.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("clamp=%d lerp=%d hypot=%d cbrt=%d log2=%d atan2x100=%d\n",
+                    cast<int>(Math.clamp(15.0, 0.0, 10.0)), cast<int>(Math.lerp(0.0, 100.0, 0.25)),
+                    cast<int>(Math.hypot(3.0, 4.0)), cast<int>(Math.cbrt(27.0)),
+                    cast<int>(Math.log2(8.0)), cast<int>(Math.atan2(1.0, 1.0) * 100.0));
+
+                Random r = new Random(cast<ulong>(7)) on heap;
+                int a = r.nextRange(10, 20);
+                double d = r.nextDouble();
+                boolean bv = r.nextBool();
+                System.IO.Console.printf("rangeOk=%d dOk=%d boolOk=%d\n",
+                    a >= 10 && a < 20, d >= 0.0 && d < 1.0, bv == true || bv == false);
+                return;
+            }
+        }
+    }
+}

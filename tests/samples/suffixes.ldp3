@@ -6,15 +6,15 @@ public bundle main {
 
 
     public namespace app.units {
-        public comptime literal kib(int x) returns int64 {
-            return cast<int64>(x) * 1024;
+        public comptime literal kib(int x) returns long {
+            return cast<long>(x) * 1024;
         }
     }
 
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
-                int64 size = 64 kib;        // suffix form -> kib(64), needs the import
+                long size = 64 kib;        // suffix form -> kib(64), needs the import
                 System.IO.Console.println($"size = {size}");   // 65536
                 return;
             }

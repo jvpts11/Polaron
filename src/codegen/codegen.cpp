@@ -89,26 +89,38 @@ std::string elementOf(const std::string& t) {
 
 // Floating-point types. `float`/`float32` lower to f32; `double`/`float64` to f64.
 bool isFloatType(const std::string& t) {
-    return t == "float" || t == "float32" || t == "double" || t == "float64";
+    return t == "float" || t == "float32" || t == "double" || t == "float64" ||
+           t == "smallfloat" || t == "quadruple";
 }
 bool isF32(const std::string& t) { return t == "float" || t == "float32"; }
+// Bit width of a float type: smallfloat=16, float=32, double=64, quadruple=128.
+unsigned floatBits(const std::string& t) {
+    if (t == "smallfloat") return 16;
+    if (t == "quadruple") return 128;
+    if (t == "double" || t == "float64") return 64;
+    return 32;  // float / float32
+}
 
 // Bit width of an integer-family type (int/char/boolean/enum default to 32).
 unsigned intBits(const std::string& t) {
-    if (t == "int8" || t == "uint8" || t == "byte") return 8;
-    if (t == "int16" || t == "uint16" || t == "short") return 16;
-    if (t == "int64" || t == "uint64" || t == "long" || t == "address") return 64;
+    if (t == "int8" || t == "uint8" || t == "byte" || t == "ubyte") return 8;
+    if (t == "int16" || t == "uint16" || t == "short" || t == "ushort") return 16;
+    if (t == "int64" || t == "uint64" || t == "long" || t == "address" || t == "ulong") return 64;
     return 32;
 }
 
-// Unsigned integer types (uint8..uint64, address). `byte` is int8 (signed) per spec 5.
-bool isUnsigned(const std::string& t) { return t.rfind("uint", 0) == 0 || t == "address"; }
+// Unsigned integer types. `byte` is int8 (signed) per spec 5.
+bool isUnsigned(const std::string& t) {
+    return t.rfind("uint", 0) == 0 || t == "address" || t == "ubyte" || t == "ushort" ||
+           t == "ulong";
+}
 
 // Integer-family type names (matches the analyzer's isIntName).
 bool isIntName(const std::string& t) {
     return t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" ||
            t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" || t == "short" ||
-           t == "long" || t == "byte" || t == "address";
+           t == "long" || t == "byte" || t == "address" || t == "ubyte" || t == "ushort" ||
+           t == "uint" || t == "ulong";
 }
 
 // SIMD vector types vec2/vec3/vec4 (float32 elements). Returns the element count, or 0.
@@ -348,7 +360,14 @@ struct CodeGenerator::Impl {
     llvm::Type* llvmType(const std::string& t) {
         if (t == "void") return builder.getVoidTy();
         if (isTupleType(t)) return tupleStructType(t);
-        if (isFloatType(t)) return isF32(t) ? builder.getFloatTy() : builder.getDoubleTy();
+        if (isFloatType(t)) {
+            switch (floatBits(t)) {
+                case 16: return builder.getHalfTy();           // smallfloat
+                case 128: return llvm::Type::getFP128Ty(context);  // quadruple
+                case 64: return builder.getDoubleTy();         // double / float64
+                default: return builder.getFloatTy();          // float / float32
+            }
+        }
         if (int w = vecWidth(t))  // SIMD vec2/3/4 -> <N x float>
             return llvm::FixedVectorType::get(builder.getFloatTy(), static_cast<unsigned>(w));
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
@@ -373,8 +392,9 @@ struct CodeGenerator::Impl {
                                         : builder.CreateSIToFP(v, fty);
             }
             if (v->getType()->isFloatingPointTy() && v->getType() != fty) {
-                return fty->isDoubleTy() ? builder.CreateFPExt(v, fty)     // f32 -> f64
-                                         : builder.CreateFPTrunc(v, fty);  // f64 -> f32
+                return fty->getPrimitiveSizeInBits() > v->getType()->getPrimitiveSizeInBits()
+                           ? builder.CreateFPExt(v, fty)     // widen (e.g. float -> double)
+                           : builder.CreateFPTrunc(v, fty);  // narrow (e.g. double -> float)
             }
             return v;
         }
@@ -463,8 +483,9 @@ struct CodeGenerator::Impl {
             llvm::Type* fty = llvmType(to);
             if (fromFloat) {
                 if (v->getType() == fty) return v;
-                return fty->isDoubleTy() ? builder.CreateFPExt(v, fty)
-                                         : builder.CreateFPTrunc(v, fty);
+                return fty->getPrimitiveSizeInBits() > v->getType()->getPrimitiveSizeInBits()
+                           ? builder.CreateFPExt(v, fty)
+                           : builder.CreateFPTrunc(v, fty);
             }
             return isUnsigned(from) ? builder.CreateUIToFP(v, fty)
                                     : builder.CreateSIToFP(v, fty);
@@ -483,8 +504,9 @@ struct CodeGenerator::Impl {
         if (ty->isFloatingPointTy()) {
             if (src->isIntegerTy()) return builder.CreateSIToFP(v, ty);  // int -> f32/f64
             if (src->isFloatingPointTy())
-                return ty->isDoubleTy() ? builder.CreateFPExt(v, ty)     // f32 -> f64
-                                        : builder.CreateFPTrunc(v, ty);  // f64 -> f32
+                return ty->getPrimitiveSizeInBits() > src->getPrimitiveSizeInBits()
+                           ? builder.CreateFPExt(v, ty)     // widen
+                           : builder.CreateFPTrunc(v, ty);  // narrow
             return v;
         }
         if (ty->isIntegerTy()) {
@@ -812,7 +834,7 @@ struct CodeGenerator::Impl {
     std::string typeName(const ast::Expr& expr) {
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
             const std::int64_t v = parseIntLiteral(n->text);
-            return (v >= INT32_MIN && v <= INT32_MAX) ? "int" : "int64";
+            return (v >= INT32_MIN && v <= INT32_MAX) ? "int" : "long";
         }
         if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) return "null";
         if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(&expr)) {
@@ -878,7 +900,7 @@ struct CodeGenerator::Impl {
             const bool u = isUnsigned(lt) || isUnsigned(rt);
             if (w == 8) return u ? "uint8" : "int8";
             if (w == 16) return u ? "uint16" : "int16";
-            if (w == 64) return u ? "uint64" : "int64";
+            if (w == 64) return u ? "ulong" : "long";
             return u ? "uint32" : "int";
         }
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
@@ -902,7 +924,7 @@ struct CodeGenerator::Impl {
             if (flattenCallee(*call->callee) == "Memory.readString") return "String";  // StringBuilder
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("Time.", 0) == 0) {
                 if (fc == "Time.millis" || fc == "Time.nanos" || fc == "Time.unixMillis")
-                    return "int64";  // spec 34
+                    return "long";  // spec 34
                 if (fc == "Time.sleep") return "void";
             }
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("File.", 0) == 0) {
@@ -915,7 +937,10 @@ struct CodeGenerator::Impl {
                 const std::string fn = mc.substr(5);  // only the builtin Math.* (spec 34.6) -> double
                 if (fn == "sqrt" || fn == "abs" || fn == "floor" || fn == "ceil" || fn == "round" ||
                     fn == "trunc" || fn == "sin" || fn == "cos" || fn == "exp" || fn == "log" ||
-                    fn == "pow" || fn == "min" || fn == "max")
+                    fn == "pow" || fn == "min" || fn == "max" || fn == "tan" || fn == "asin" ||
+                    fn == "acos" || fn == "atan" || fn == "sinh" || fn == "cosh" || fn == "tanh" ||
+                    fn == "cbrt" || fn == "log2" || fn == "log10" || fn == "atan2" ||
+                    fn == "hypot" || fn == "clamp" || fn == "lerp")
                     return "double";
             }
             if (auto er = externReturnType.find(flattenCallee(*call->callee));
@@ -935,13 +960,13 @@ struct CodeGenerator::Impl {
                         mem->member == "trim" || mem->member == "repeat" ||
                         mem->member == "toString")
                         return "String";
-                    if (mem->member == "hash") return "int64";
+                    if (mem->member == "hash") return "long";
                     if (mem->member == "equalsKey") return "boolean";
                     if (mem->member == "compareTo") return "int";
                 }
                 // Integer keys: Hashable/Comparable builtins (collections) + toString (itoa).
                 if (const std::string ot = typeName(*mem->object); isIntName(ot)) {
-                    if (mem->member == "hash") return "int64";
+                    if (mem->member == "hash") return "long";
                     if (mem->member == "equalsKey") return "boolean";
                     if (mem->member == "compareTo") return "int";
                     if (mem->member == "toString") return "String";
@@ -2498,17 +2523,39 @@ struct CodeGenerator::Impl {
             else if (fn == "cos") id = llvm::Intrinsic::cos;
             else if (fn == "exp") id = llvm::Intrinsic::exp;
             else if (fn == "log") id = llvm::Intrinsic::log;
+            else if (fn == "log2") id = llvm::Intrinsic::log2;
+            else if (fn == "log10") id = llvm::Intrinsic::log10;
             else if (fn == "pow") id = llvm::Intrinsic::pow;
             else if (fn == "min") id = llvm::Intrinsic::minnum;
             else if (fn == "max") id = llvm::Intrinsic::maxnum;
-            if (id != llvm::Intrinsic::not_intrinsic) {
+            const bool isLibm = fn == "tan" || fn == "asin" || fn == "acos" || fn == "atan" ||
+                                fn == "sinh" || fn == "cosh" || fn == "tanh" || fn == "cbrt" ||
+                                fn == "atan2" || fn == "hypot";
+            const bool isClampLerp = fn == "clamp" || fn == "lerp";
+            // Only intercept the known Math builtins; anything else (e.g. a user class named Math)
+            // falls through to ordinary method resolution -- and we must not emit args until then.
+            if (id != llvm::Intrinsic::not_intrinsic || isLibm || isClampLerp) {
+                llvm::Type* d = builder.getDoubleTy();
                 std::vector<llvm::Value*> args;
                 for (const auto& a : call.args) {
                     llvm::Value* v = emitExpr(*a);
                     if (v == nullptr) return nullptr;
-                    args.push_back(coerceToType(v, builder.getDoubleTy()));
+                    args.push_back(coerceToType(v, d));
                 }
-                return builder.CreateIntrinsic(builder.getDoubleTy(), id, args);
+                if (id != llvm::Intrinsic::not_intrinsic)
+                    return builder.CreateIntrinsic(d, id, args);
+                if (fn == "clamp") {  // max(lo, min(x, hi))
+                    llvm::Value* mn =
+                        builder.CreateIntrinsic(d, llvm::Intrinsic::minnum, {args[0], args[2]});
+                    return builder.CreateIntrinsic(d, llvm::Intrinsic::maxnum, {args[1], mn});
+                }
+                if (fn == "lerp") {  // a + (b - a) * t
+                    llvm::Value* diff = builder.CreateFSub(args[1], args[0]);
+                    return builder.CreateFAdd(args[0], builder.CreateFMul(diff, args[2]));
+                }
+                llvm::FunctionType* ft =  // tan/asin/.../atan2/hypot -> libm
+                    llvm::FunctionType::get(d, std::vector<llvm::Type*>(args.size(), d), false);
+                return builder.CreateCall(module.getOrInsertFunction(fn, ft), args);
             }
         }
         // Memory API (spec 17.8): low-level address-based access. `address` is an i64.

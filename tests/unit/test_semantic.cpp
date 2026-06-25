@@ -674,19 +674,19 @@ TEST_CASE("semantic rejects a class that extends a struct") {
 
 TEST_CASE("semantic accepts a comptime literal suffix function") {
     CHECK(checkSrc(withClass(
-        "public comptime literal kib(int x) returns int64 { return cast<int64>(x) * 1024; }",
-        "int64 s = kib(64);")));
+        "public comptime literal kib(int x) returns long { return cast<long>(x) * 1024; }",
+        "long s = kib(64);")));
 }
 
 TEST_CASE("semantic rejects a literal suffix that is not comptime") {
     CHECK_FALSE(checkSrc(withClass(
-        "public literal kib(int x) returns int64 { return cast<int64>(x); }",
-        "int64 s = kib(1);")));
+        "public literal kib(int x) returns long { return cast<long>(x); }",
+        "long s = kib(1);")));
 }
 
 TEST_CASE("parser rejects a literal suffix with more than one parameter") {
     CHECK_FALSE(checkSrc(withClass(
-        "public comptime literal bad(int x, int y) returns int64 { return cast<int64>(x); }",
+        "public comptime literal bad(int x, int y) returns long { return cast<long>(x); }",
         "int n = 0;")));
 }
 
@@ -695,8 +695,8 @@ namespace {
 // `importLine` goes before `program` (spec 2.7).
 std::string withSuffix(const std::string& importLine, const std::string& mainBody) {
     return importLine + " program P; public bundle b {"
-           " public namespace n { public comptime literal kib(int x) returns int64 {"
-           " return cast<int64>(x) * 1024; } }"
+           " public namespace n { public comptime literal kib(int x) returns long {"
+           " return cast<long>(x) * 1024; } }"
            " public namespace m { public class Main {"
            " public static method main(string[] args) returns void { " +
            mainBody + " } } } }";
@@ -704,15 +704,15 @@ std::string withSuffix(const std::string& importLine, const std::string& mainBod
 }  // namespace
 
 TEST_CASE("semantic accepts the N-suffix form when the suffix is imported") {
-    CHECK(checkSrc(withSuffix("import n.kib;", "int64 s = 64 kib;")));
+    CHECK(checkSrc(withSuffix("import n.kib;", "long s = 64 kib;")));
 }
 
 TEST_CASE("semantic rejects the N-suffix form without an import") {
-    CHECK_FALSE(checkSrc(withSuffix("", "int64 s = 64 kib;")));
+    CHECK_FALSE(checkSrc(withSuffix("", "long s = 64 kib;")));
 }
 
 TEST_CASE("semantic still allows an explicit literal call without an import") {
-    CHECK(checkSrc(withSuffix("", "int64 s = kib(64);")));
+    CHECK(checkSrc(withSuffix("", "long s = kib(64);")));
 }
 
 TEST_CASE("semantic rejects an import of an unknown symbol") {
@@ -1183,7 +1183,7 @@ TEST_CASE("semantic rejects an import whose namespace prefix is wrong") {
 
 TEST_CASE("semantic accepts a C-style union and lets its fields be written") {
     CHECK(checkSrc(withClass(
-        "public union Value { int32 asInt; float32 asFloat; }",
+        "public union Value { int asInt; float asFloat; }",
         "Value v = new Value(); v.asFloat = 1.5; int b = v.asInt;")));
 }
 

@@ -10,11 +10,11 @@ program FfiExtern;
 public bundle main {
     public namespace app {
         extern cdecl method abs(int x) returns int;
-        extern cdecl method labs(int64 x) returns int64;
+        extern cdecl method labs(long x) returns long;
         public class Main {
             public static method main(string[] args) returns void {
                 int a = abs(-42);
-                int64 b = labs(cast<int64>(-1000000));
+                long b = labs(cast<long>(-1000000));
                 System.IO.Console.printf("abs=%d labs=%d\n", a, cast<int>(b));  // 42 1000000
                 return;
             }

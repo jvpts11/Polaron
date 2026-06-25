@@ -134,6 +134,7 @@ private:
     // A type from another namespace must be imported (or be a primitive / a
     // monomorphized generic). Errors otherwise (namespace visibility).
     void checkTypeAccessible(const std::string& typeName, SourceLocation loc);
+    void checkBitCounted(const std::string& typeName, SourceLocation loc);
     void checkIncDecTarget(const ast::Expr& target, SourceLocation loc);
     std::string typeOf(const ast::Expr& expr);  // "" on error
     std::string flattenCallee(const ast::Expr& expr) const;

@@ -6,15 +6,15 @@ public bundle main {
 
         // C-style union (spec 13): all fields share one storage.
         public union Value {
-            int32 asInt;
-            float32 asFloat;
+            int asInt;
+            float asFloat;
         }
 
         public class Main {
             public static method main(string[] args) returns void {
                 Value v = new Value();
                 v.asFloat = 1.5;
-                // 1.5f reinterpreted as int32 bits is 1069547520 (0x3FC00000).
+                // 1.5f reinterpreted as int bits is 1069547520 (0x3FC00000).
                 System.IO.Console.println($"bits = {v.asInt}");
                 v.asInt = 1069547520;
                 System.IO.Console.println($"back = {v.asFloat}");   // 1.5

@@ -10,12 +10,12 @@ public bundle main {
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
-                int64 t1 = Time.millis();
+                long t1 = Time.millis();
                 Time.sleep(50);
-                int64 t2 = Time.millis();
+                long t2 = Time.millis();
                 boolean slept = (t2 - t1) >= 40;
-                int64 n1 = Time.nanos();
-                int64 n2 = Time.nanos();
+                long n1 = Time.nanos();
+                long n2 = Time.nanos();
                 boolean nanoOk = n2 >= n1;
                 boolean unixOk = Time.unixMillis() > 1000000000000;
                 System.IO.Console.printf("slept=%d nanoOk=%d unixOk=%d\n", slept, nanoOk, unixOk);

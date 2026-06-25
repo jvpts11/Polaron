@@ -31,20 +31,47 @@ std::string typeRefStr(const ast::TypeRef& t) {
            (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
 }
 bool isFloatType(const std::string& t) {
-    return t == "float" || t == "float32" || t == "double" || t == "float64";
+    // Normal names: smallfloat(16)/float(32)/double(64)/quadruple(128). Bit-counted float32/float64
+    // are freestanding-only aliases (enforced elsewhere).
+    return t == "float" || t == "float32" || t == "double" || t == "float64" ||
+           t == "smallfloat" || t == "quadruple";
 }
 bool isIntName(const std::string& t) {
+    // Normal: byte/short/int/long (signed), ubyte/ushort/uint/ulong (unsigned). Bit-counted
+    // int8..int64/uint8..uint64 are freestanding-only aliases (enforced elsewhere). address: raw.
     return t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" ||
            t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" || t == "short" ||
-           t == "long" || t == "byte" || t == "address";  // address: a pointer-sized raw address
+           t == "long" || t == "byte" || t == "address" || t == "ubyte" || t == "ushort" ||
+           t == "uint" || t == "ulong";
 }
 unsigned intBits(const std::string& t) {
-    if (t == "int8" || t == "uint8" || t == "byte") return 8;
-    if (t == "int16" || t == "uint16" || t == "short") return 16;
-    if (t == "int64" || t == "uint64" || t == "long" || t == "address") return 64;
+    if (t == "int8" || t == "uint8" || t == "byte" || t == "ubyte") return 8;
+    if (t == "int16" || t == "uint16" || t == "short" || t == "ushort") return 16;
+    if (t == "int64" || t == "uint64" || t == "long" || t == "address" || t == "ulong") return 64;
     return 32;
 }
 bool isNumeric(const std::string& t) { return isIntName(t) || isFloatType(t); }
+
+// Bit-counted type names exist only in freestanding mode (the normal names are byte/short/int/long,
+// ubyte/ushort/uint/ulong, smallfloat/float/double/quadruple). Used to reject them in normal mode.
+bool isBitCountedName(const std::string& t) {
+    return t == "int8" || t == "int16" || t == "int32" || t == "int64" || t == "uint8" ||
+           t == "uint16" || t == "uint32" || t == "uint64" || t == "float32" || t == "float64";
+}
+// The normal-mode replacement to suggest for a bit-counted name.
+std::string normalTypeName(const std::string& t) {
+    if (t == "int8") return "byte";
+    if (t == "int16") return "short";
+    if (t == "int32") return "int";
+    if (t == "int64") return "long";
+    if (t == "uint8") return "ubyte";
+    if (t == "uint16") return "ushort";
+    if (t == "uint32") return "uint";
+    if (t == "uint64") return "ulong";
+    if (t == "float32") return "float";
+    if (t == "float64") return "double";
+    return t;
+}
 
 // SIMD vector types vec2/vec3/vec4 (float32 elements). Width (2/3/4) or 0; lane index or -1.
 int vecWidth(const std::string& t) {
@@ -1111,9 +1138,22 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
     error("invalid assignment target", loc);
 }
 
+// Bit-counted type names (int8..int64, uint8..uint64, float32/64) exist only in freestanding mode
+// (spec 3.1); in normal mode the named types (byte/short/int/long, float/double, ...) are required.
+void SemanticAnalyzer::checkBitCounted(const std::string& typeName, SourceLocation loc) {
+    if (freestanding_) return;
+    std::string n = baseType(typeName);
+    if (isArrayType(n)) n = elementOf(n);
+    if (isBitCountedName(n))
+        error("type '" + n + "' exists only in freestanding mode; use '" + normalTypeName(n) +
+                  "' instead",
+              loc);
+}
+
 void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLocation loc) {
     std::string n = baseType(typeName);          // see through T* / T&
     if (isArrayType(n)) n = elementOf(n);         // and through T[]
+    checkBitCounted(typeName, loc);                // bit-counted names are freestanding-only
     if (n.find('$') != std::string::npos) return;  // monomorphized generic -> always visible
     if (qualifiedTypes_.count(n) > 0) return;      // explicitly namespace-qualified -> visible
     auto it = typeNamespace_.find(n);
@@ -1753,6 +1793,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
         const std::string src = typeOf(*cst->operand);
         const std::string& dst = cst->targetType;
+        checkBitCounted(dst, cst->loc);  // reject cast<int64> etc. outside freestanding mode
         const bool dstRef = dst == "Object" || lookupClass(baseType(dst)) != nullptr;
         const bool srcRef = src.empty() || src == "Object" || src == "Type" || src == "Method" ||
                             lookupClass(baseType(src)) != nullptr || isRefType(src);
@@ -1981,17 +2022,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (name == "System.Concurrency.__threadStart") {
             if (call->args.size() != 1) error("__threadStart takes one function<void>", call->loc);
             else typeOf(*call->args.front());
-            return "int64";  // the OS thread handle
+            return "long";  // the OS thread handle
         }
         // Low-level Mutex lock builtins (used by the System.Concurrency.Mutex prelude class).
         if (name == "System.Concurrency.__lockCreate") {
             if (!call->args.empty()) error("__lockCreate takes no arguments", call->loc);
-            return "int64";  // an opaque lock handle
+            return "long";  // an opaque lock handle
         }
         if (name == "System.Concurrency.__chanNew") {  // used by the Channel prelude class
             if (call->args.size() != 1) error("__chanNew takes one capacity", call->loc);
             else typeOf(*call->args.front());
-            return "int64";  // an opaque channel handle
+            return "long";  // an opaque channel handle
         }
         if (name == "System.Concurrency.__lockAcquire" ||
             name == "System.Concurrency.__lockRelease") {
@@ -2054,12 +2095,16 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             const std::string fn = name.substr(5);
             const bool unary = fn == "sqrt" || fn == "abs" || fn == "floor" || fn == "ceil" ||
                                fn == "round" || fn == "trunc" || fn == "sin" || fn == "cos" ||
-                               fn == "exp" || fn == "log";
-            const bool binary = fn == "pow" || fn == "min" || fn == "max";
-            if (unary || binary) {
+                               fn == "exp" || fn == "log" || fn == "tan" || fn == "asin" ||
+                               fn == "acos" || fn == "atan" || fn == "sinh" || fn == "cosh" ||
+                               fn == "tanh" || fn == "cbrt" || fn == "log2" || fn == "log10";
+            const bool binary = fn == "pow" || fn == "min" || fn == "max" || fn == "atan2" ||
+                                fn == "hypot";
+            const bool ternary = fn == "clamp" || fn == "lerp";
+            if (unary || binary || ternary) {
                 checkTypeAccessible("Math", call->loc);  // require `import System.Math.Math;`
                 for (const auto& a : call->args) typeOf(*a);
-                const std::size_t want = unary ? 1u : 2u;
+                const std::size_t want = unary ? 1u : (binary ? 2u : 3u);
                 if (call->args.size() != want)
                     error("Math." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
                 return "double";
@@ -2114,7 +2159,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     return "void";
                 }
                 if (!call->args.empty()) error("Time." + fn + " takes no arguments", call->loc);
-                return "int64";
+                return "long";
             }
         }
         // Memory.readString(address, len): build a String from a raw byte buffer (StringBuilder).
@@ -2225,7 +2270,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "repeat" && call->args.size() == 1) return "String";
                 if (mem->member == "toString" && call->args.empty()) return "String";  // identity
                 // String satisfies Hashable<String>/Comparable<String> (collections, spec 34).
-                if (mem->member == "hash" && call->args.empty()) return "int64";
+                if (mem->member == "hash" && call->args.empty()) return "long";
                 if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";
                 if (mem->member == "compareTo" && call->args.size() == 1) return "int";
                 error("String has no method '" + mem->member + "'", call->loc);
@@ -2235,7 +2280,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // map/set keys without boxing (collections, spec 34).
             if (isIntName(objType)) {
                 for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "hash" && call->args.empty()) return "int64";
+                if (mem->member == "hash" && call->args.empty()) return "long";
                 if (mem->member == "toString" && call->args.empty()) return "String";
                 if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";
                 if (mem->member == "compareTo" && call->args.size() == 1) return "int";
