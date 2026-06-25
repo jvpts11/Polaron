@@ -142,12 +142,14 @@ int vecLane(const std::string& m) {
 // Approximate byte size of a type, used to size a union's shared storage.
 // Pointers/refs/arrays/classes are pointer-sized.
 unsigned byteSizeOf(const std::string& t) {
-    if (t == "double" || t == "float64") return 8;
-    if (t == "float" || t == "float32") return 4;
+    if (isFloatType(t)) return floatBits(t) / 8;  // smallfloat=2 float=4 double=8 quadruple=16
     if (int w = vecWidth(t)) return static_cast<unsigned>(4 * w);  // vecN: N float32 elements
-    if (t.back() == '*' || t.back() == '&' || (t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0))
-        return 8;  // pointer-sized
-    return intBits(t) / 8;  // int family (and class names fall back to 4; refined later)
+    if (!t.empty() && (t.back() == '*' || t.back() == '&' ||
+                       (t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0)))
+        return 8;  // pointer-sized (pointer / reference / array)
+    if (isIntName(t)) return intBits(t) / 8;  // int family
+    if (t == "char" || t == "boolean") return 4;  // i32-backed
+    return 8;  // class / String / Object / reflection token -> array element is a pointer
 }
 
 // Pointer/reference types end with '*' or '&'; both lower to a plain pointer.
@@ -4023,9 +4025,11 @@ struct CodeGenerator::Impl {
             // Value semantics: assigning a class value makes the target an independent copy.
             if (isClassValue(targetType) && isCopyDiscipline(targetType) &&
                 isCopyableLValue(*assign->value)) {
-                if (dynamic_cast<const ast::MemberExpr*>(assign->target.get()) != nullptr) {
-                    // A class-value field has no backing object until assigned, so deep-copy into a
-                    // fresh heap object and store the pointer (it outlives the constructor frame).
+                if (dynamic_cast<const ast::MemberExpr*>(assign->target.get()) != nullptr ||
+                    dynamic_cast<const ast::IndexExpr*>(assign->target.get()) != nullptr) {
+                    // A class-value field or array element is a pointer slot with no backing object
+                    // (a fresh array's elements are null), so deep-copy into a fresh heap object and
+                    // store the pointer rather than memcpy'ing into a (possibly null) existing object.
                     builder.CreateStore(emitClassCopy(targetType, v, /*heap=*/true), slot);
                 } else {
                     // A local already has a backing object (from its declaration). Deep-copy the

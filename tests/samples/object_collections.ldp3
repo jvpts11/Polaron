@@ -1,0 +1,31 @@
+import System.IO.Console;
+program ObjectCollections;
+
+// Collections of class-typed elements (spec 34.1): ArrayList of a self-containing class and a
+// HashMap with object values. Regression for the bug where array elements of a class type were
+// stored/copied as if 4-byte / into a null backing object (segfault).
+
+public bundle main {
+    public namespace app {
+        public class Box { public mutable int v; public constructor Box(int x) { this.v = x; } }
+        public class Node {
+            public mutable int id;
+            public mutable ArrayList<Node> kids;
+            public constructor Node(int i) { this.id = i; this.kids = new ArrayList<Node>() on heap; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node root = new Node(1) on heap;
+                root.kids.add(new Node(2) on heap);
+                root.kids.add(new Node(3) on heap);
+                HashMap<int, Box> m = new HashMap<int, Box>() on heap;
+                m.put(7, new Box(70) on heap);
+                m.put(9, new Box(90) on heap);
+                System.IO.Console.printf("kids=%d k0=%d k1=%d mapv7=%d mapv9=%d\n",
+                    root.kids.size(), root.kids.get(0).id, root.kids.get(1).id,
+                    m.get(7).v, m.get(9).v);
+                return;
+            }
+        }
+    }
+}
