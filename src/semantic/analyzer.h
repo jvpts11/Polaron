@@ -44,6 +44,7 @@ struct MethodInfo {
     std::size_t paramCount = 0;  // declared parameter count (for arg-count checking)
     bool isFinal = false;     // `final` method -- cannot be overridden
     bool isAsync = false;     // spec 20.2: the call site yields a Task<returnType>
+    std::vector<std::string> paramTypes;  // declared parameter types (for methodref's function type)
 };
 struct ClassInfo {
     std::string name;

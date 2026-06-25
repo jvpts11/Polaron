@@ -1,0 +1,69 @@
+import System.IO.Console;
+program Lambdas;
+
+// First-class functions (spec 22): lambda values, explicit captures (byvalue/byref),
+// functions passed as parameters and returned as values, and bound method references
+// (methodref) -- including virtual dispatch through a base-typed receiver.
+
+public bundle main {
+    public namespace app {
+
+        public class Animal {
+            public constructor Animal() {}
+            public method speak(int n) returns int { return n; }
+        }
+
+        public class Cat extends Animal {
+            public constructor Cat() {}
+            public override method speak(int n) returns int { return n * 100; }
+        }
+
+        public class Main {
+            // A function value used as a parameter, applied twice.
+            public static method twice(function<int, int> f, int v) returns int {
+                return f(f(v));
+            }
+
+            // A function value returned from a method (a closure capturing n).
+            public static method adder(int n) returns function<int, int> {
+                return lambda[captures: byvalue n](int x) returns int { return x + n; };
+            }
+
+            public static method main(string[] args) returns void {
+                // No-capture lambda.
+                function<int, int> dbl = lambda(int x) returns int { return x * 2; };
+                int a = dbl(5);                    // 10
+
+                // byvalue capture: copies the captured variable into the closure.
+                int base = 100;
+                function<int, int> addBase =
+                    lambda[captures: byvalue base](int x) returns int { return x + base; };
+                int b = addBase(7);                // 107
+
+                // byref capture: mutations flow back to the original variable.
+                mutable int counter = 0;
+                function<void> inc =
+                    lambda[captures: byref counter]() returns void { counter = counter + 1; };
+                inc(); inc(); inc();               // counter = 3
+
+                // Function value as an argument.
+                int c = Main.twice(dbl, 3);        // dbl(dbl(3)) = 12
+
+                // Function value as a return value.
+                function<int, int> add10 = Main.adder(10);
+                int d = add10(5);                  // 15
+
+                // Bound method reference with virtual dispatch: the receiver is statically
+                // an Animal but dynamically a Cat, so the override runs.
+                Animal cat = new Cat() on heap;
+                function<int, int> sp = methodref cat.speak;
+                int e = sp(4);                     // Cat.speak(4) = 400
+
+                System.IO.Console.printf("a=%d b=%d counter=%d c=%d d=%d e=%d\n",
+                                         a, b, counter, c, d, e);
+                delete cat;
+                return;
+            }
+        }
+    }
+}

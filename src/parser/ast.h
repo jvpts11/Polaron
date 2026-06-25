@@ -381,6 +381,15 @@ struct LambdaExpr : Expr {
     void dump(std::string& out, int /*indent*/) const override { out += "lambda"; }
 };
 
+// A bound method reference: `methodref obj.method` (spec 22.3). Its value is a function value
+// (a closure) whose environment carries the receiver `obj` and whose code forwards to
+// `obj.method`. Its type is function<Ret, Params...> of the referenced method.
+struct MethodRefExpr : Expr {
+    ExprPtr object;       // the receiver expression
+    std::string method;   // the method name
+    void dump(std::string& out, int /*indent*/) const override { out += "methodref"; }
+};
+
 // One arm of a match: `case Type(t1 b1, ...) { body }` (spec 16). The bindings
 // are positional -- they bind the case type's own fields, in declaration order.
 struct MatchCase {

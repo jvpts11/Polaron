@@ -2151,6 +2151,31 @@ ast::ExprPtr Parser::parsePrimary() {
             currentMethodReturnType_ = savedRet;
             return e;
         }
+        case TokenKind::KwMethodref: {
+            // methodref obj.method (spec 22.3): a bound method reference. The object may itself
+            // be a member chain (a.b.c.method) -- everything before the final `.name` is the
+            // receiver, the final `.name` is the method.
+            auto e = std::make_unique<ast::MethodRefExpr>();
+            e->loc = tok.loc;
+            advance();  // 'methodref'
+            ast::ExprPtr obj = parsePrimary();
+            expect(TokenKind::Dot, "'.' in methodref (methodref obj.method)");
+            std::string name = current().lexeme;
+            expect(TokenKind::Identifier, "a method name after '.' in methodref");
+            while (check(TokenKind::Dot)) {  // member chain: fold the prefix into the receiver
+                auto m = std::make_unique<ast::MemberExpr>();
+                m->loc = obj->loc;
+                m->object = std::move(obj);
+                m->member = name;
+                obj = std::move(m);
+                advance();  // '.'
+                name = current().lexeme;
+                expect(TokenKind::Identifier, "a method name after '.' in methodref");
+            }
+            e->object = std::move(obj);
+            e->method = name;
+            return e;
+        }
         case TokenKind::StringLiteral: {
             auto e = std::make_unique<ast::StringLiteralExpr>();
             e->loc = tok.loc;

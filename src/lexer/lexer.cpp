@@ -92,6 +92,7 @@ TokenKind keywordKind(std::string_view text) {
         {"transient", TokenKind::KwTransient},
         {"lambda", TokenKind::KwLambda},
         {"function", TokenKind::KwFunction},
+        {"methodref", TokenKind::KwMethodref},
         {"label", TokenKind::KwLabel},
         {"comefrom", TokenKind::KwComefrom},
         {"goto", TokenKind::KwGoto},

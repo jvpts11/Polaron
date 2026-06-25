@@ -849,6 +849,14 @@ struct CodeGenerator::Impl {
             for (const auto& p : lam->params) s += "," + typeRefName(p.type);
             return s + ">";
         }
+        if (const auto* mr = dynamic_cast<const ast::MethodRefExpr*>(&expr)) {
+            const std::string st = baseType(typeName(*mr->object));
+            const ast::MethodDecl* md = findMethodDecl(st, mr->method);
+            if (md == nullptr) return "function<void>";
+            std::string s = "function<" + typeRefName(md->returnType);
+            for (const auto& p : md->params) s += "," + typeRefName(p.type);
+            return s + ">";
+        }
         if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
             std::string s = "(";
             for (std::size_t i = 0; i < tup->elements.size(); ++i)
@@ -1594,6 +1602,68 @@ struct CodeGenerator::Impl {
             }
             llvm::Value* clos = builder.CreateCall(mallocFn(), {builder.getInt64(16)}, "closure");
             builder.CreateStore(fn, clos);  // [0] = code pointer
+            llvm::Value* envSlot = builder.CreateGEP(builder.getPtrTy(), clos, builder.getInt32(1));
+            builder.CreateStore(envPtr, envSlot);  // [1] = env
+            return clos;
+        }
+        if (const auto* mr = dynamic_cast<const ast::MethodRefExpr*>(&expr)) {
+            // methodref obj.method (spec 22.3): build a closure {thunk, env={receiver}}. The thunk
+            // loads the receiver from its env and forwards to the method, dispatching virtually
+            // when the static type is polymorphic so a base-typed receiver still calls the override.
+            llvm::Value* recv = emitObjectPtr(*mr->object);
+            if (recv == nullptr) return nullptr;
+            const std::string st = baseType(typeName(*mr->object));
+            const std::string owner = methodOwner(typeName(*mr->object), mr->method);
+            auto fnit = functions.find(owner + "." + mr->method);
+            if (owner.empty() || fnit == functions.end()) {
+                error("unknown method '" + mr->method + "' for methodref", expr.loc);
+                return nullptr;
+            }
+            llvm::Function* target = fnit->second;  // signature: (this, params...) -> Ret
+            // The thunk's signature: Ret(env, params...) -- drop the receiver, prepend the env.
+            std::vector<llvm::Type*> tpts;
+            tpts.push_back(builder.getPtrTy());  // arg 0: env
+            for (unsigned i = 1; i < target->arg_size(); i++)
+                tpts.push_back(target->getArg(i)->getType());
+            auto* thunkTy = llvm::FunctionType::get(target->getReturnType(), tpts, false);
+            llvm::Function* thunk = llvm::Function::Create(
+                thunkTy, llvm::Function::InternalLinkage,
+                "__ldp3_methodref_" + std::to_string(lambdaCounter++), module);
+            auto sIP = builder.saveIP();
+            auto* entry = llvm::BasicBlock::Create(context, "entry", thunk);
+            builder.SetInsertPoint(entry);
+            llvm::Value* recvIn = builder.CreateLoad(builder.getPtrTy(), thunk->getArg(0), "recv");
+            std::vector<llvm::Value*> callArgs;
+            callArgs.push_back(recvIn);
+            for (unsigned i = 1; i < thunk->arg_size(); i++) callArgs.push_back(thunk->getArg(i));
+            auto stit = classes.find(st);
+            int slot = (stit != classes.end() && stit->second.hasVtable)
+                           ? slotIndex(st, mr->method)
+                           : -1;
+            llvm::Value* result = nullptr;
+            if (slot >= 0) {  // virtual dispatch through the receiver's vtable
+                llvm::Value* vtblField =
+                    builder.CreateStructGEP(stit->second.type, recvIn, 0, "vtbl.addr");
+                llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblField, "vtbl");
+                llvm::Type* vtArrTy =
+                    llvm::ArrayType::get(builder.getPtrTy(), stit->second.vtslots.size());
+                llvm::Value* slotPtr = builder.CreateConstGEP2_64(
+                    vtArrTy, vtbl, 0, static_cast<std::uint64_t>(slot), "slot");
+                llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), slotPtr, "fn");
+                result = builder.CreateCall(target->getFunctionType(), fnPtr, callArgs);
+            } else {  // direct (static) call
+                result = builder.CreateCall(target, callArgs);
+            }
+            if (target->getReturnType()->isVoidTy())
+                builder.CreateRetVoid();
+            else
+                builder.CreateRet(result);
+            builder.restoreIP(sIP);
+            // env = {receiver}; closure = {thunk, env}.
+            llvm::Value* envPtr = builder.CreateCall(mallocFn(), {builder.getInt64(8)}, "mr.env");
+            builder.CreateStore(recv, envPtr);
+            llvm::Value* clos = builder.CreateCall(mallocFn(), {builder.getInt64(16)}, "mr.closure");
+            builder.CreateStore(thunk, clos);  // [0] = code pointer
             llvm::Value* envSlot = builder.CreateGEP(builder.getPtrTy(), clos, builder.getInt32(1));
             builder.CreateStore(envPtr, envSlot);  // [1] = env
             return clos;

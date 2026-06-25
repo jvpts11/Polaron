@@ -467,9 +467,11 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         info.fields[f->name] = FieldInfo{typeRefStr(f->type), f->isMutable,
                                                          f->isStatic};
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                        info.methods[m->name] = MethodInfo{typeRefStr(m->returnType), m->isStatic,
-                                                           m->isAbstract, m->isProperty,
-                                                           m->params.size(), m->isFinal, m->isAsync};
+                        MethodInfo mi{typeRefStr(m->returnType), m->isStatic,
+                                      m->isAbstract, m->isProperty,
+                                      m->params.size(), m->isFinal, m->isAsync};
+                        for (const ast::Param& p : m->params) mi.paramTypes.push_back(typeRefStr(p.type));
+                        info.methods[m->name] = std::move(mi);
                     } else if (dynamic_cast<const ast::ConstructorDecl*>(member.get()) != nullptr) {
                         info.hasConstructor = true;
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) != nullptr) {
@@ -1676,6 +1678,23 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(&expr)) {
         std::string s = "function<" + typeRefStr(lam->returnType);
         for (const auto& p : lam->params) s += "," + typeRefStr(p.type);
+        return s + ">";
+    }
+    if (const auto* mr = dynamic_cast<const ast::MethodRefExpr*>(&expr)) {
+        // methodref obj.method (spec 22.3): its type is the method's function<Ret, Params...>.
+        const std::string objType = typeOf(*mr->object);
+        const std::string cls = baseType(objType);
+        const MethodInfo* m = findMethod(cls, mr->method);
+        if (m == nullptr) {
+            error("no method '" + mr->method + "' on type '" + cls + "' for methodref", mr->loc);
+            return "function<void>";
+        }
+        if (m->isStatic) {
+            error("methodref cannot bind a static method; reference it by name instead", mr->loc);
+            return "function<void>";
+        }
+        std::string s = "function<" + m->returnType;
+        for (const std::string& pt : m->paramTypes) s += "," + pt;
         return s + ">";
     }
 

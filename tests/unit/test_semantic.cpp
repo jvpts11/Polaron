@@ -1300,3 +1300,17 @@ TEST_CASE("semantic narrows a nullable in the else of an == null check") {
     CHECK(checkSrc(withDog(
         "nullable Dog d = new Dog() on heap; if (d == null) { return; } else { int x = d.bark(); } return;")));
 }
+
+// First-class functions (spec 22): methodref binds a function value to obj.method.
+TEST_CASE("semantic infers a function type for methodref") {
+    CHECK(checkSrc(withDog(
+        "Dog d = new Dog() on heap; function<int> f = methodref d.bark; int x = f(); return;")));
+}
+TEST_CASE("semantic rejects methodref to a missing method") {
+    CHECK_FALSE(
+        checkSrc(withDog("Dog d = new Dog() on heap; function<int> f = methodref d.woof; return;")));
+}
+TEST_CASE("semantic rejects methodref assigned to the wrong function type") {
+    CHECK_FALSE(checkSrc(
+        withDog("Dog d = new Dog() on heap; function<void> f = methodref d.bark; return;")));
+}
