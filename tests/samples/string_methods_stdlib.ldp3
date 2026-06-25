@@ -1,0 +1,26 @@
+import System.IO.Console;
+program StringMethodsStdlib;
+
+// String search + transform methods (spec 34.5): indexOf/contains/startsWith/endsWith and
+// toUpper/toLower/trim/repeat (each transform returns a new owned String).
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String s = "Hello, World";
+                System.IO.Console.printf("idx=%d has=%d sw=%d ew=%d nf=%d\n",
+                    s.indexOf("World"), s.contains("lo,"), s.startsWith("Hello"),
+                    s.endsWith("World"), s.indexOf("xyz"));
+                String up = s.toUpper();
+                String lo = s.toLower();
+                String tr = "  hi  ".trim();
+                String rp = "ab".repeat(3);
+                System.IO.Console.printf("up=%d lo=%d trlen=%d treq=%d rp=%d rpeq=%d\n",
+                    up.equals("HELLO, WORLD"), lo.equals("hello, world"),
+                    tr.length(), tr.equals("hi"), rp.length(), rp.equals("ababab"));
+                return;
+            }
+        }
+    }
+}

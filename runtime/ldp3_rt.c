@@ -275,6 +275,54 @@ long long __ldp3_itoa(long long n, char* buf) {
     return len;
 }
 
+// ---- String methods (spec 34.5): search + transforms over byte buffers. ----
+long long __ldp3_str_index(const char* h, long long hl, const char* n, long long nl) {
+    if (nl == 0) return 0;
+    if (nl > hl) return -1;
+    for (long long i = 0; i + nl <= hl; i++) {
+        long long j = 0;
+        while (j < nl && h[i + j] == n[j]) j++;
+        if (j == nl) return i;
+    }
+    return -1;
+}
+int __ldp3_str_ends(const char* h, long long hl, const char* n, long long nl) {
+    if (nl > hl) return 0;
+    return memcmp(h + (hl - nl), n, (size_t)nl) == 0 ? 1 : 0;
+}
+char* __ldp3_str_upper(const char* d, long long len) {
+    char* b = (char*)malloc((size_t)len + 1);
+    for (long long i = 0; i < len; i++) { char c = d[i]; b[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
+    b[len] = 0;
+    return b;
+}
+char* __ldp3_str_lower(const char* d, long long len) {
+    char* b = (char*)malloc((size_t)len + 1);
+    for (long long i = 0; i < len; i++) { char c = d[i]; b[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+    b[len] = 0;
+    return b;
+}
+char* __ldp3_str_trim(const char* d, long long len, long long* outLen) {
+    long long s = 0, e = len;
+    while (s < e && (d[s] == ' ' || d[s] == '\t' || d[s] == '\n' || d[s] == '\r')) s++;
+    while (e > s && (d[e - 1] == ' ' || d[e - 1] == '\t' || d[e - 1] == '\n' || d[e - 1] == '\r')) e--;
+    long long n = e - s;
+    char* b = (char*)malloc((size_t)n + 1);
+    memcpy(b, d + s, (size_t)n);
+    b[n] = 0;
+    *outLen = n;
+    return b;
+}
+char* __ldp3_str_repeat(const char* d, long long len, long long count, long long* outLen) {
+    if (count < 0) count = 0;
+    long long n = len * count;
+    char* b = (char*)malloc((size_t)n + 1);
+    for (long long k = 0; k < count; k++) memcpy(b + k * len, d, (size_t)len);
+    b[n] = 0;
+    *outLen = n;
+    return b;
+}
+
 // FNV-1a hash of `len` bytes, for Hashable<String> (collections).
 long long __ldp3_str_hash(const char* data, long long len) {
     unsigned long long h = 1469598103934665603ULL;  // FNV offset basis

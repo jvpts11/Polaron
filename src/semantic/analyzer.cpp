@@ -2213,6 +2213,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "equals" && call->args.size() == 1) return "boolean";
                 if (mem->member == "concat" && call->args.size() == 1) return "String";
                 if (mem->member == "substring" && call->args.size() == 2) return "String";
+                // Search / predicates (spec 34.5).
+                if (mem->member == "indexOf" && call->args.size() == 1) return "int";
+                if (mem->member == "contains" && call->args.size() == 1) return "boolean";
+                if (mem->member == "startsWith" && call->args.size() == 1) return "boolean";
+                if (mem->member == "endsWith" && call->args.size() == 1) return "boolean";
+                // Transforms (spec 34.5): new owned Strings.
+                if (mem->member == "toUpper" && call->args.empty()) return "String";
+                if (mem->member == "toLower" && call->args.empty()) return "String";
+                if (mem->member == "trim" && call->args.empty()) return "String";
+                if (mem->member == "repeat" && call->args.size() == 1) return "String";
+                if (mem->member == "toString" && call->args.empty()) return "String";  // identity
                 // String satisfies Hashable<String>/Comparable<String> (collections, spec 34).
                 if (mem->member == "hash" && call->args.empty()) return "int64";
                 if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";

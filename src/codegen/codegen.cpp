@@ -924,10 +924,17 @@ struct CodeGenerator::Impl {
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
                 if (mem->member == "length" && isArrayType(typeName(*mem->object))) return "int";
                 if (const std::string ot = typeName(*mem->object); ot == "String" || ot == "string") {
-                    if (mem->member == "length") return "int";
+                    if (mem->member == "length" || mem->member == "indexOf") return "int";
                     if (mem->member == "charAt") return "char";
-                    if (mem->member == "isEmpty" || mem->member == "equals") return "boolean";
-                    if (mem->member == "concat" || mem->member == "substring") return "String";
+                    if (mem->member == "isEmpty" || mem->member == "equals" ||
+                        mem->member == "contains" || mem->member == "startsWith" ||
+                        mem->member == "endsWith")
+                        return "boolean";
+                    if (mem->member == "concat" || mem->member == "substring" ||
+                        mem->member == "toUpper" || mem->member == "toLower" ||
+                        mem->member == "trim" || mem->member == "repeat" ||
+                        mem->member == "toString")
+                        return "String";
                     if (mem->member == "hash") return "int64";
                     if (mem->member == "equalsKey") return "boolean";
                     if (mem->member == "compareTo") return "int";
@@ -2816,6 +2823,67 @@ struct CodeGenerator::Impl {
                                         builder.CreateGEP(builder.getInt8Ty(), buf, n));  // NUL
                     return emitStringFromParts(n, buf);
                 }
+                // Search / predicates (spec 34.5): indexOf / contains / startsWith / endsWith.
+                if (mem->member == "indexOf" || mem->member == "contains" ||
+                    mem->member == "startsWith") {
+                    llvm::Value* o = emitExpr(*call.args[0]);
+                    if (o == nullptr) return nullptr;
+                    llvm::Type* p = builder.getPtrTy();
+                    llvm::Type* i64 = builder.getInt64Ty();
+                    llvm::FunctionType* ft = llvm::FunctionType::get(i64, {p, i64, p, i64}, false);
+                    llvm::Value* idx = builder.CreateCall(
+                        module.getOrInsertFunction("__ldp3_str_index", ft),
+                        {stringData(s), stringLen(s), stringData(o), stringLen(o)});
+                    if (mem->member == "indexOf") return builder.CreateTrunc(idx, builder.getInt32Ty());
+                    llvm::Value* cmp = mem->member == "contains"
+                                           ? builder.CreateICmpSGE(idx, builder.getInt64(0))
+                                           : builder.CreateICmpEQ(idx, builder.getInt64(0));
+                    return builder.CreateZExt(cmp, builder.getInt32Ty());
+                }
+                if (mem->member == "endsWith") {
+                    llvm::Value* o = emitExpr(*call.args[0]);
+                    if (o == nullptr) return nullptr;
+                    llvm::Type* p = builder.getPtrTy();
+                    llvm::Type* i64 = builder.getInt64Ty();
+                    llvm::FunctionType* ft =
+                        llvm::FunctionType::get(builder.getInt32Ty(), {p, i64, p, i64}, false);
+                    return builder.CreateCall(module.getOrInsertFunction("__ldp3_str_ends", ft),
+                                              {stringData(s), stringLen(s), stringData(o), stringLen(o)});
+                }
+                // Transforms (spec 34.5): toUpper / toLower / trim / repeat (new owned Strings).
+                if (mem->member == "toUpper" || mem->member == "toLower") {
+                    llvm::Type* p = builder.getPtrTy();
+                    llvm::FunctionType* ft =
+                        llvm::FunctionType::get(p, {p, builder.getInt64Ty()}, false);
+                    const char* fn = mem->member == "toUpper" ? "__ldp3_str_upper" : "__ldp3_str_lower";
+                    llvm::Value* len = stringLen(s);
+                    llvm::Value* buf = builder.CreateCall(module.getOrInsertFunction(fn, ft),
+                                                          {stringData(s), len});
+                    return emitStringFromParts(len, buf);
+                }
+                if (mem->member == "trim") {
+                    llvm::Type* p = builder.getPtrTy();
+                    llvm::Type* i64 = builder.getInt64Ty();
+                    llvm::Value* lenSlot = builder.CreateAlloca(i64, nullptr, "trim.len");
+                    llvm::FunctionType* ft = llvm::FunctionType::get(p, {p, i64, p}, false);
+                    llvm::Value* buf = builder.CreateCall(
+                        module.getOrInsertFunction("__ldp3_str_trim", ft),
+                        {stringData(s), stringLen(s), lenSlot});
+                    return emitStringFromParts(builder.CreateLoad(i64, lenSlot), buf);
+                }
+                if (mem->member == "repeat") {
+                    llvm::Value* count = fitInt(emitExpr(*call.args[0]), 64);
+                    if (count == nullptr) return nullptr;
+                    llvm::Type* p = builder.getPtrTy();
+                    llvm::Type* i64 = builder.getInt64Ty();
+                    llvm::Value* lenSlot = builder.CreateAlloca(i64, nullptr, "rep.len");
+                    llvm::FunctionType* ft = llvm::FunctionType::get(p, {p, i64, i64, p}, false);
+                    llvm::Value* buf = builder.CreateCall(
+                        module.getOrInsertFunction("__ldp3_str_repeat", ft),
+                        {stringData(s), stringLen(s), count, lenSlot});
+                    return emitStringFromParts(builder.CreateLoad(i64, lenSlot), buf);
+                }
+                if (mem->member == "toString") return s;  // identity
                 // String satisfies Hashable<String>/Comparable<String> (collections).
                 if (mem->member == "hash")
                     return builder.CreateCall(strHashFn(), {stringData(s), stringLen(s)});
