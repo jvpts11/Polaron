@@ -674,6 +674,9 @@ R"LDP3(
             public method isEmpty() returns boolean { return this.count == 0; }
         }
     }
+)LDP3"
+// (split 2: another ~16KB literal boundary.)
+R"LDP3(
     public namespace System.Text {
         // Growable text buffer (spec 34.5). Bytes live in a raw heap buffer (System.Memory) that
         // doubles on demand, so append is amortized O(1); toString() copies into an owned String.
@@ -719,6 +722,49 @@ R"LDP3(
             public method length() returns int { return this.count; }
             public method toString() returns String {
                 return Memory.readString(this.buf, this.count);
+            }
+        }
+    }
+    public namespace System.Time {
+        // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
+        // Instant.now() can call Time.unixMillis() without an import.
+        public class Duration {
+            private mutable int64 ms;
+            public constructor Duration(int64 millis) { this.ms = millis; }
+            public static method ofMillis(int64 m) returns Duration { return new Duration(m) on heap; }
+            public static method ofSeconds(int64 s) returns Duration { return new Duration(s * 1000) on heap; }
+            public static method ofMinutes(int64 m) returns Duration { return new Duration(m * 60000) on heap; }
+            public method toMillis() returns int64 { return this.ms; }
+            public method toSeconds() returns int64 { return this.ms / 1000; }
+            public method plus(Duration other) returns Duration {
+                return new Duration(this.ms + other.toMillis()) on heap;
+            }
+            public method minus(Duration other) returns Duration {
+                return new Duration(this.ms - other.toMillis()) on heap;
+            }
+        }
+        // A moment on the wall clock, as milliseconds since the Unix epoch (spec 34).
+        public class Instant {
+            private mutable int64 epochMs;
+            public constructor Instant(int64 ms) { this.epochMs = ms; }
+            public static method now() returns Instant {
+                return new Instant(Time.unixMillis()) on heap;
+            }
+            public static method ofEpochMillis(int64 ms) returns Instant {
+                return new Instant(ms) on heap;
+            }
+            public method toEpochMillis() returns int64 { return this.epochMs; }
+            public method isBefore(Instant other) returns boolean {
+                return this.epochMs < other.toEpochMillis();
+            }
+            public method isAfter(Instant other) returns boolean {
+                return this.epochMs > other.toEpochMillis();
+            }
+            public method plus(Duration d) returns Instant {
+                return new Instant(this.epochMs + d.toMillis()) on heap;
+            }
+            public method since(Instant earlier) returns Duration {
+                return new Duration(this.epochMs - earlier.toEpochMillis()) on heap;
             }
         }
     }
