@@ -2,7 +2,11 @@
 // physical code unload/reload behind unimport/reimport (spec 30). Linked into every exe.
 
 #define _CRT_SECURE_NO_WARNINGS  // fopen/remove etc. are used deliberately (File I/O, spec 34.4)
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>   // must precede <windows.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+#pragma comment(lib, "ws2_32.lib")
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -230,6 +234,39 @@ long long __ldp3_unix_ms(void) {
     return (long long)((t - 116444736000000000ULL) / 10000ULL);  // 100-ns since 1601 -> ms since 1970
 }
 void __ldp3_sleep(long long ms) { Sleep((DWORD)ms); }
+
+// ---- Networking (spec 34): minimal TCP client over winsock. ----
+static int g_net_inited = 0;
+static void ldp3_net_init(void) {
+    if (!g_net_inited) { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); g_net_inited = 1; }
+}
+long long __ldp3_tcp_connect(const char* host, int port) {
+    ldp3_net_init();
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    char ports[16];
+    sprintf(ports, "%d", port);
+    struct addrinfo* res = NULL;
+    if (getaddrinfo(host, ports, &hints, &res) != 0 || res == NULL) return -1;
+    SOCKET s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (s == INVALID_SOCKET) { freeaddrinfo(res); return -1; }
+    if (connect(s, res->ai_addr, (int)res->ai_addrlen) != 0) {
+        closesocket(s);
+        freeaddrinfo(res);
+        return -1;
+    }
+    freeaddrinfo(res);
+    return (long long)s;
+}
+long long __ldp3_tcp_send(long long sock, const char* data, long long len) {
+    return (long long)send((SOCKET)sock, data, (int)len, 0);
+}
+long long __ldp3_tcp_recv(long long sock, char* buf, long long cap) {
+    return (long long)recv((SOCKET)sock, buf, (int)cap, 0);
+}
+void __ldp3_tcp_close(long long sock) { closesocket((SOCKET)sock); }
 
 // ---- File I/O (spec 34.4): whole-file read/write over C stdio. ----
 char* __ldp3_file_read_all(const char* path, long long* outLen) {

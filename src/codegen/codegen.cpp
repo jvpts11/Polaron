@@ -927,6 +927,11 @@ struct CodeGenerator::Impl {
                     return "long";  // spec 34
                 if (fc == "Time.sleep") return "void";
             }
+            if (const std::string fc = flattenCallee(*call->callee); fc.rfind("Net.", 0) == 0) {
+                if (fc == "Net.recv") return "String";  // spec 34
+                if (fc == "Net.connect" || fc == "Net.send") return "long";
+                if (fc == "Net.close") return "void";
+            }
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("File.", 0) == 0) {
                 if (fc == "File.readAll") return "String";  // spec 34.4
                 if (fc == "File.writeAll" || fc == "File.appendAll" || fc == "File.exists" ||
@@ -2607,6 +2612,51 @@ struct CodeGenerator::Impl {
                                                   : "__ldp3_unix_ms";
                 llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt64Ty(), {}, false);
                 return builder.CreateCall(module.getOrInsertFunction(rfn, ft), {});
+            }
+        }
+        // Net (spec 34): TCP client builtins lowering to runtime winsock helpers.
+        if (name.rfind("Net.", 0) == 0) {
+            const std::string fn = name.substr(4);
+            llvm::Type* p = builder.getPtrTy();
+            llvm::Type* i64 = builder.getInt64Ty();
+            if (fn == "connect") {
+                llvm::Value* host = emitExpr(*call.args[0]);
+                llvm::Value* port = emitExpr(*call.args[1]);
+                if (host == nullptr || port == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {p, builder.getInt32Ty()}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_tcp_connect", ft),
+                                          {stringData(host), fitInt(port, 32)});
+            }
+            if (fn == "send") {
+                llvm::Value* sock = emitExpr(*call.args[0]);
+                llvm::Value* data = emitExpr(*call.args[1]);
+                if (sock == nullptr || data == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64, p, i64}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_tcp_send", ft),
+                                          {fitInt(sock, 64), stringData(data), stringLen(data)});
+            }
+            if (fn == "recv") {
+                llvm::Value* sock = emitExpr(*call.args[0]);
+                llvm::Value* max = emitExpr(*call.args[1]);
+                if (sock == nullptr || max == nullptr) return nullptr;
+                llvm::Value* cap = fitInt(max, 64);
+                llvm::Value* buf = builder.CreateCall(
+                    mallocFn(), {builder.CreateAdd(cap, builder.getInt64(1))}, "rc.buf");
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64, p, i64}, false);
+                llvm::Value* n = builder.CreateCall(module.getOrInsertFunction("__ldp3_tcp_recv", ft),
+                                                    {fitInt(sock, 64), buf, cap});
+                llvm::Value* len = builder.CreateSelect(
+                    builder.CreateICmpSLT(n, builder.getInt64(0)), builder.getInt64(0), n);
+                builder.CreateStore(builder.getInt8(0),
+                                    builder.CreateGEP(builder.getInt8Ty(), buf, len));  // NUL
+                return emitStringFromParts(len, buf);
+            }
+            if (fn == "close") {
+                llvm::Value* sock = emitExpr(*call.args[0]);
+                if (sock == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getVoidTy(), {i64}, false);
+                builder.CreateCall(module.getOrInsertFunction("__ldp3_tcp_close", ft), {fitInt(sock, 64)});
+                return nullptr;
             }
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio helpers.

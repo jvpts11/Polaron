@@ -1082,6 +1082,21 @@ R"LDP3(
             }
         }
     }
+)LDP3"
+// (split: System.Net in its own literal.)
+R"LDP3(
+    public namespace System.Net {
+        // A blocking TCP client socket (spec 34). The connect happens in the constructor; the handle
+        // is the OS socket (or -1 on failure). send/receive/close lower to runtime winsock helpers.
+        public class Socket {
+            private mutable long handle;
+            public constructor Socket(String host, int port) { this.handle = Net.connect(host, port); }
+            public method isOpen() returns boolean { return this.handle >= cast<long>(0); }
+            public method send(String data) returns long { return Net.send(this.handle, data); }
+            public method receive(int max) returns String { return Net.recv(this.handle, max); }
+            public method close() returns void { Net.close(this.handle); }
+        }
+    }
 }
 )LDP3";
 

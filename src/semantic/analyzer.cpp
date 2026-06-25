@@ -805,6 +805,8 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
     typeNamespace_["File"] = "System.IO";
     // Time (spec 34): clock + sleep builtins; register so `import System.Time.Time;` resolves.
     typeNamespace_["Time"] = "System.Time";
+    // Net (spec 34): TCP builtins lowering to runtime winsock calls; register for the import.
+    typeNamespace_["Net"] = "System.Net";
     genericVariance_ = program.genericVariance;  // variance of generic type params (spec 15.3)
     qualifiedTypes_.insert(program.qualifiedTypes.begin(), program.qualifiedTypes.end());
     registerClasses(program);
@@ -2143,6 +2145,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (name == "Memory.write") {
             for (const auto& a : call->args) typeOf(*a);
             return "void";
+        }
+        // Net (spec 34): TCP client builtins. Require `import System.Net.Net;` (used by Socket).
+        if (name.rfind("Net.", 0) == 0) {
+            const std::string fn = name.substr(4);
+            if (fn == "connect" || fn == "send" || fn == "recv" || fn == "close") {
+                checkTypeAccessible("Net", call->loc);
+                for (const auto& a : call->args) typeOf(*a);
+                if (fn == "connect") return "long";   // (host, port) -> socket handle (or -1)
+                if (fn == "send") return "long";      // (sock, data) -> bytes sent
+                if (fn == "recv") return "String";    // (sock, max) -> received bytes
+                return "void";                        // close(sock)
+            }
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio. Require `import System.IO.File;`.
         if (name.rfind("File.", 0) == 0) {

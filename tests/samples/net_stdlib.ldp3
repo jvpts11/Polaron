@@ -1,0 +1,19 @@
+import System.IO.Console;
+import System.Net.Socket;
+program NetStdlib;
+
+// Networking (spec 34): TCP client over winsock (runtime helpers). Offline-deterministic test --
+// connecting to 127.0.0.1:1 (nothing listening) must fail gracefully, so isOpen() is false and the
+// program does not crash. (A live send/receive needs a server, so it isn't part of the test.)
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Socket s = new Socket("127.0.0.1", 1) on heap;
+                System.IO.Console.printf("open=%d\n", s.isOpen());
+                return;
+            }
+        }
+    }
+}
