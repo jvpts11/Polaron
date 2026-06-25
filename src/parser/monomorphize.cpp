@@ -724,14 +724,20 @@ void rewriteMethStmt(ast::Stmt* st);
 void rewriteMethBlock(ast::Block& b) {
     for (auto& st : b.statements) rewriteMethStmt(st.get());
 }
+// Names of generic methods actually declared in the program; only calls to these get mangled.
+// Without this, a builtin like `Memory.read<int8>(...)` (type args, but not a user generic method)
+// would be wrongly rewritten to `Memory.read$int8` and lose its builtin meaning.
+static const std::set<std::string>* g_genericMethodNames = nullptr;
 void rewriteMethExpr(ast::Expr* e) {
     if (e == nullptr) return;
     if (auto* x = dynamic_cast<ast::CallExpr*>(e)) {
         if (!x->typeArgs.empty())
-            if (auto* mem = dynamic_cast<ast::MemberExpr*>(x->callee.get())) {
-                mem->member = ast::mangleGeneric(mem->member, x->typeArgs);
-                x->typeArgs.clear();
-            }
+            if (auto* mem = dynamic_cast<ast::MemberExpr*>(x->callee.get()))
+                if (g_genericMethodNames == nullptr ||
+                    g_genericMethodNames->count(mem->member) > 0) {
+                    mem->member = ast::mangleGeneric(mem->member, x->typeArgs);
+                    x->typeArgs.clear();
+                }
         rewriteMethExpr(x->callee.get());
         for (auto& a : x->args) rewriteMethExpr(a.get());
         return;
@@ -842,7 +848,17 @@ void expandGenericMethods(ast::Program& program) {
                 }
     }
 
-    // 3. Drop the templates and rewrite all generic calls to the mangled member.
+    // 3. Drop the templates and rewrite all generic calls to the mangled member. Collect the
+    //    declared generic method names first (templates still present) so the rewrite only mangles
+    //    those -- not builtins that merely carry type args (e.g. Memory.read<int8>).
+    std::set<std::string> genNames;
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes)
+                for (auto& m : c.members)
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
+                        if (!meth->typeParams.empty()) genNames.insert(meth->name);
+    g_genericMethodNames = &genNames;
     for (auto& b : program.bundles)
         for (auto& ns : b.namespaces)
             for (auto& c : ns.classes) {
@@ -857,6 +873,7 @@ void expandGenericMethods(ast::Program& program) {
                     if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
                         rewriteMethBlock(meth->body);
             }
+    g_genericMethodNames = nullptr;
 }
 
 // Subtype check over the class hierarchy (AST-level), for constraint validation.

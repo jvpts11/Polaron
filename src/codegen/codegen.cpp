@@ -899,6 +899,7 @@ struct CodeGenerator::Impl {
             if (int w = vecWidth(flattenCallee(*call->callee)); w > 0)
                 return flattenCallee(*call->callee);  // vec2/3/4 construction
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
+            if (flattenCallee(*call->callee) == "Memory.readString") return "String";  // StringBuilder
             if (const std::string mc = flattenCallee(*call->callee); mc.rfind("Math.", 0) == 0) {
                 const std::string fn = mc.substr(5);  // only the builtin Math.* (spec 34.6) -> double
                 if (fn == "sqrt" || fn == "abs" || fn == "floor" || fn == "ceil" || fn == "round" ||
@@ -920,11 +921,12 @@ struct CodeGenerator::Impl {
                     if (mem->member == "equalsKey") return "boolean";
                     if (mem->member == "compareTo") return "int";
                 }
-                // Integer keys: Hashable/Comparable builtins (collections).
+                // Integer keys: Hashable/Comparable builtins (collections) + toString (itoa).
                 if (const std::string ot = typeName(*mem->object); isIntName(ot)) {
                     if (mem->member == "hash") return "int64";
                     if (mem->member == "equalsKey") return "boolean";
                     if (mem->member == "compareTo") return "int";
+                    if (mem->member == "toString") return "String";
                 }
                 if (typeName(*mem->object) == "Type") {
                     if (mem->member == "name" || mem->member == "methodName" ||
@@ -1090,6 +1092,12 @@ struct CodeGenerator::Impl {
         llvm::FunctionType* ty = llvm::FunctionType::get(
             builder.getInt64Ty(), {builder.getPtrTy(), builder.getInt64Ty()}, false);
         return module.getOrInsertFunction("__ldp3_str_hash", ty);
+    }
+    // itoa runtime helper (writes decimal digits to a buffer, returns length), for int.toString().
+    llvm::FunctionCallee itoaFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getInt64Ty(), {builder.getInt64Ty(), builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_itoa", ty);
     }
 
     // Builds a String object on the heap from a length and a null-terminated byte buffer.
@@ -2517,6 +2525,20 @@ struct CodeGenerator::Impl {
             builder.CreateStore(v, builder.CreateIntToPtr(a, builder.getPtrTy()));
             return nullptr;
         }
+        // Memory.readString(address, len): build a String by copying `len` bytes from a raw buffer
+        // (the new String owns its own copy). Used by StringBuilder.toString().
+        if (name == "Memory.readString") {
+            llvm::Value* addr = emitExpr(*call.args[0]);
+            llvm::Value* len = fitInt(emitExpr(*call.args[1]), 64);
+            if (addr == nullptr || len == nullptr) return nullptr;
+            llvm::Value* src = builder.CreateIntToPtr(addr, builder.getPtrTy());
+            llvm::Value* buf = builder.CreateCall(
+                mallocFn(), {builder.CreateAdd(len, builder.getInt64(1))}, "fb.buf");
+            builder.CreateCall(memcpyFn(), {buf, src, len});
+            builder.CreateStore(builder.getInt8(0),
+                                builder.CreateGEP(builder.getInt8Ty(), buf, len));  // NUL
+            return emitStringFromParts(len, buf);
+        }
         if (name == "System.Concurrency.__chanNew") {  // used by the Channel prelude class
             llvm::Value* cap = emitExpr(*call.args[0]);
             if (cap == nullptr) return nullptr;
@@ -2751,11 +2773,17 @@ struct CodeGenerator::Impl {
             // builtin member names so this never intercepts ClassName.staticMethod() (whose receiver
             // typeName falls back to "int").
             if (const std::string ot = typeName(*mem->object);
-                isIntName(ot) && (mem->member == "hash" || mem->member == "equalsKey" ||
-                                  mem->member == "compareTo")) {
+                isIntName(ot) && (mem->member == "hash" || mem->member == "toString" ||
+                                  mem->member == "equalsKey" || mem->member == "compareTo")) {
                 llvm::Value* a = emitExpr(*mem->object);
                 if (a == nullptr) return nullptr;
                 if (mem->member == "hash") return fitInt(a, 64);
+                if (mem->member == "toString") {
+                    llvm::Value* buf =
+                        builder.CreateCall(mallocFn(), {builder.getInt64(24)}, "itoa.buf");
+                    llvm::Value* len = builder.CreateCall(itoaFn(), {fitInt(a, 64), buf});
+                    return emitStringFromParts(len, buf);
+                }
                 llvm::Value* b = emitExpr(*call.args[0]);
                 if (b == nullptr) return nullptr;
                 b = builder.CreateSExtOrTrunc(b, a->getType());

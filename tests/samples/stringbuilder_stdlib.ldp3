@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Text.StringBuilder;
+program StringBuilderStdlib;
+
+// StringBuilder (spec 34.5): amortized-O(1) append over a raw heap byte buffer (System.Memory),
+// with toString() copying into an owned String. Exercises chaining, append(String), appendInt
+// (via int.toString / itoa, including a negative), and appendChar.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                StringBuilder sb = new StringBuilder() on heap;
+                sb.append("count=").appendInt(42).append(", neg=").appendInt(cast<int>(0) - 7)
+                  .appendChar('!');
+                String r = sb.toString();
+                System.IO.Console.printf("len=%d eq=%d c0=%c clast=%c\n",
+                    r.length(), r.equals("count=42, neg=-7!"), r.charAt(0), r.charAt(r.length() - 1));
+                return;
+            }
+        }
+    }
+}

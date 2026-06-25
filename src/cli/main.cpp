@@ -584,6 +584,54 @@ R"LDP3(
             public method isEmpty() returns boolean { return this.count == 0; }
         }
     }
+    public namespace System.Text {
+        // Growable text buffer (spec 34.5). Bytes live in a raw heap buffer (System.Memory) that
+        // doubles on demand, so append is amortized O(1); toString() copies into an owned String.
+        public class StringBuilder {
+            private mutable address buf;
+            private mutable int count;
+            private mutable int cap;
+            public constructor StringBuilder() {
+                this.cap = 16;
+                this.buf = Memory.alloc(16);
+                this.count = 0;
+            }
+            private method ensure(int extra) returns void {
+                if (this.count + extra <= this.cap) { return; }
+                mutable int n = this.cap * 2;
+                while (n < this.count + extra) { n = n * 2; }
+                address nb = Memory.alloc(n);
+                for (mutable int i = 0; i < this.count; i++) {
+                    Memory.write(nb + cast<address>(i), Memory.read<int8>(this.buf + cast<address>(i)));
+                }
+                Memory.free(this.buf);
+                this.buf = nb;
+                this.cap = n;
+            }
+            public method append(String s) returns StringBuilder {
+                int n = s.length();
+                this.ensure(n);
+                for (mutable int i = 0; i < n; i++) {
+                    Memory.write(this.buf + cast<address>(this.count), cast<int8>(s.charAt(i)));
+                    this.count = this.count + 1;
+                }
+                return this;
+            }
+            public method appendChar(char c) returns StringBuilder {
+                this.ensure(1);
+                Memory.write(this.buf + cast<address>(this.count), cast<int8>(c));
+                this.count = this.count + 1;
+                return this;
+            }
+            public method appendInt(int value) returns StringBuilder {
+                return this.append(value.toString());
+            }
+            public method length() returns int { return this.count; }
+            public method toString() returns String {
+                return Memory.readString(this.buf, this.count);
+            }
+        }
+    }
 }
 )LDP3";
 

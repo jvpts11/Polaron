@@ -1752,9 +1752,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const bool srcRef = src.empty() || src == "Object" || src == "Type" || src == "Method" ||
                             lookupClass(baseType(src)) != nullptr || isRefType(src);
         const bool dstPtr = isRefType(dst) || dstRef;  // pointer/reference target (T*, T&, class)
-        if (isNumeric(dst)) {
-            // numeric <- numeric, or a pointer/address reinterpreted as an integer (spec 17.8).
-            if (!src.empty() && !isNumeric(src) && !srcRef)
+        // `char` is an integer (i32) for casting purposes -- it converts to/from the int family.
+        auto numLike = [](const std::string& t) { return isNumeric(t) || t == "char"; };
+        if (numLike(dst)) {
+            // numeric <- numeric/char, or a pointer/address reinterpreted as an integer (spec 17.8).
+            if (!src.empty() && !numLike(src) && !srcRef)
                 error("cannot cast '" + src + "' to '" + dst + "'", cst->loc);
         } else if (dstPtr) {
             // Reference downcast (spec 31), or int/address -> an explicit pointer T* (spec 17.8).
@@ -2083,6 +2085,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             for (const auto& a : call->args) typeOf(*a);
             return "void";
         }
+        // Memory.readString(address, len): build a String from a raw byte buffer (StringBuilder).
+        if (name == "Memory.readString") {
+            if (call->args.size() != 2) error("Memory.readString takes (address, length)", call->loc);
+            for (const auto& a : call->args) typeOf(*a);
+            return "String";
+        }
         // Channel.select() (spec 20.4): starts a fluent select builder over multiple channels.
         if (name == "Channel.select") {
             if (!call->args.empty()) error("Channel.select takes no arguments", call->loc);
@@ -2185,6 +2193,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (isIntName(objType)) {
                 for (const auto& arg : call->args) typeOf(*arg);
                 if (mem->member == "hash" && call->args.empty()) return "int64";
+                if (mem->member == "toString" && call->args.empty()) return "String";
                 if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";
                 if (mem->member == "compareTo" && call->args.size() == 1) return "int";
                 error("'" + objType + "' has no method '" + mem->member + "'", call->loc);

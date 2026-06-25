@@ -211,6 +211,21 @@ int __ldp3_chan_try_receive(long long handle, long long* out) {
 long long __ldp3_now_ms(void) { return (long long)GetTickCount64(); }
 void __ldp3_yield(void) { Sleep(0); }  // hand off the rest of the time slice while polling
 
+// Decimal text of `n` into `buf` (signed, no NUL needed), returns the digit count. For int.toString().
+long long __ldp3_itoa(long long n, char* buf) {
+    char tmp[24];
+    int i = 0;
+    int neg = (n < 0);
+    unsigned long long u = neg ? (unsigned long long)(-(n + 1)) + 1ULL : (unsigned long long)n;
+    if (u == 0) { tmp[i++] = '0'; }
+    while (u > 0) { tmp[i++] = (char)('0' + (u % 10)); u /= 10; }
+    long long len = 0;
+    if (neg) { buf[len++] = '-'; }
+    while (i > 0) { buf[len++] = tmp[--i]; }
+    buf[len] = 0;
+    return len;
+}
+
 // FNV-1a hash of `len` bytes, for Hashable<String> (collections).
 long long __ldp3_str_hash(const char* data, long long len) {
     unsigned long long h = 1469598103934665603ULL;  // FNV offset basis
