@@ -1,0 +1,27 @@
+import System.IO.Console;
+program SelfRefGeneric;
+
+// A self-referential generic class: Node<T> holds a Node<T>* next. Instantiating it (Node<int>)
+// used to crash the compiler (cloneExpr dropped the `null` literal -> null deref). Regression test:
+// build a tiny chain and read a value through the self-referential pointer.
+
+public bundle main {
+    public namespace app {
+        public class Node<T> {
+            public mutable T value;
+            public mutable Node<T>* next;
+            public constructor Node(T x) { this.value = x; this.next = null; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node<int> a = new Node<int>(5) on heap;
+                Node<int> b = new Node<int>(9) on heap;
+                a.next = b;
+                System.IO.Console.printf("a=%d b=%d via=%d\n", a.value, b.value, a.next.value);
+                delete a;
+                delete b;
+                return;
+            }
+        }
+    }
+}

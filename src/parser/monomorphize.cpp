@@ -90,6 +90,11 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->value = x->value;
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::NullLiteralExpr*>(e)) {
+        auto n = std::make_unique<ast::NullLiteralExpr>();
+        n->loc = x->loc;
+        return n;  // was missing -> cloned `null` became nullptr -> typeOf(*nullptr) crash
+    }
     if (const auto* x = dynamic_cast<const ast::MemberExpr*>(e)) {
         auto n = std::make_unique<ast::MemberExpr>();
         n->loc = x->loc;

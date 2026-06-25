@@ -1567,7 +1567,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # F10 stdlib: LinkedList (index-based nodes + free list, O(1) append/head-removal).
+        # Self-referential generic instantiation (Node<int> with a Node<T>* field) -- regression
+        # for the cloneExpr null-literal crash.
+        add_test(NAME codegen_self_ref_generic_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/self_ref_generic.ldp3"
+            "-DEXPECTED=a=5 b=9 via=9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # F10 stdlib: LinkedList (pointer-based self-referential nodes, O(1) append/head-removal).
         add_test(NAME codegen_linkedlist_stdlib_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"

@@ -1253,12 +1253,14 @@ TEST_CASE("semantic rejects exceptions in freestanding mode") {
         " throw new Oops() on heap; } } } }"));
 }
 
-TEST_CASE("semantic accepts a self-referential generic class declaration") {
-    // A `Node<T>* next` field inside Node<T> must not make the monomorphizer generate a bogus
-    // `Node$T` from the template's self-reference (it used to crash). Declared, not instantiated.
+TEST_CASE("semantic accepts a self-referential generic class, declared and instantiated") {
+    // A `Node<T>* next` field inside Node<T>: the monomorphizer must not generate a bogus `Node$T`
+    // from the template's self-reference, and instantiating Node<int> must not crash (cloneExpr used
+    // to drop the `null` literal -> null deref).
     CHECK(checkSrc(
         "program P; public bundle b { public namespace n {"
         " public class Node<T> { public mutable T v; public mutable Node<T>* next;"
         " public constructor Node(T x) { this.v = x; this.next = null; } }"
-        " public class Main { public static method main(string[] args) returns void { return; } } } }"));
+        " public class Main { public static method main(string[] args) returns void {"
+        " Node<int> a = new Node<int>(5) on heap; a.next = a; return; } } } }"));
 }
