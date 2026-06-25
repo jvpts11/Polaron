@@ -1264,3 +1264,39 @@ TEST_CASE("semantic accepts a self-referential generic class, declared and insta
         " public class Main { public static method main(string[] args) returns void {"
         " Node<int> a = new Node<int>(5) on heap; a.next = a; return; } } } }"));
 }
+
+// ---- Null safety (spec 3.7) ----
+namespace {
+// Wraps a method body with a Dog class (has bark()) + Main, for the nullable tests.
+std::string withDog(const std::string& body) {
+    return "program P; public bundle b { public namespace n {"
+           " public class Dog { public constructor Dog() {}"
+           " public method bark() returns int { return 1; } }"
+           " public class Main { public static method main(string[] args) returns void { " +
+           body + " } } } }";
+}
+}  // namespace
+
+TEST_CASE("semantic rejects assigning null to a non-nullable type") {
+    CHECK_FALSE(checkSrc(withDog("Dog d = null; return;")));
+}
+TEST_CASE("semantic accepts null in a nullable type") {
+    CHECK(checkSrc(withDog("nullable Dog d = null; return;")));
+}
+TEST_CASE("semantic accepts a non-null value flowing into a nullable") {
+    CHECK(checkSrc(withDog("nullable Dog d = new Dog() on heap; return;")));
+}
+TEST_CASE("semantic rejects a nullable flowing into a non-nullable") {
+    CHECK_FALSE(checkSrc(withDog("nullable Dog d = null; Dog e = d; return;")));
+}
+TEST_CASE("semantic rejects an unchecked member access on a nullable") {
+    CHECK_FALSE(checkSrc(withDog("nullable Dog d = new Dog() on heap; int x = d.bark(); return;")));
+}
+TEST_CASE("semantic accepts a member access guarded by a null check") {
+    CHECK(checkSrc(withDog(
+        "nullable Dog d = new Dog() on heap; if (d != null) { int x = d.bark(); } return;")));
+}
+TEST_CASE("semantic narrows a nullable in the else of an == null check") {
+    CHECK(checkSrc(withDog(
+        "nullable Dog d = new Dog() on heap; if (d == null) { return; } else { int x = d.bark(); } return;")));
+}

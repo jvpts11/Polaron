@@ -38,7 +38,7 @@ enum class TokenKind : std::uint8_t {
 
     // Keywords -- modifiers / visibility
     KwPublic, KwPrivate, KwProtected, KwInternal,
-    KwStatic, KwAbstract, KwFinal, KwOverride, KwMutable,
+    KwStatic, KwAbstract, KwFinal, KwOverride, KwMutable, KwNullable,
 
     // Keywords -- OOP / memory / type ops
     KwExtends, KwImplements, KwThis, KwSuper,

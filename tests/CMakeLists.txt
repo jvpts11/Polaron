@@ -1567,6 +1567,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Null safety (spec 3.7): nullable T, null assignment, flow narrowing via if (x != null).
+        add_test(NAME codegen_nullable_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/nullable.ldp3"
+            "-DEXPECTED=total=105 aIsNull=1 bIsNull=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Self-referential generic instantiation (Node<int> with a Node<T>* field) -- regression
         # for the cloneExpr null-literal crash.
         add_test(NAME codegen_self_ref_generic_runs COMMAND "${CMAKE_COMMAND}"

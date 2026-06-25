@@ -188,6 +188,7 @@ private:
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state
+    std::unordered_set<std::string> nonNullVars_;  // nullable vars proven non-null by a flow check
     std::unordered_map<std::string, RegionConstraints> regionConstraints_;  // region var -> accepts/rejects
     // Persistent fields (spec 18.15): each must be released somewhere unless eternal.
     struct PersistentFieldInfo {

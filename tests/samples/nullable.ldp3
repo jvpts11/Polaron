@@ -1,0 +1,29 @@
+import System.IO.Console;
+program Nullable;
+
+// Nullable types (spec 3.7): `nullable T` opts a class type into holding null; a non-`nullable`
+// type cannot be null. A nullable must be null-checked before its members are used; inside
+// `if (x != null) { ... }` (or the `else` of `if (x == null)`) the value reads as non-null.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int age;
+            public constructor Dog(int a) { this.age = a; }
+            public method bark() returns int { return this.age; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                nullable Dog a = null;                    // OK: nullable may be null
+                nullable Dog b = new Dog(5) on heap;      // OK: non-null flows into nullable
+                mutable int total = 0;
+                if (b != null) { total = total + b.bark(); }   // flow: b is non-null here -> 5
+                if (a == null) { total = total + 100; }        // else-narrowing not needed here
+                else { total = total + a.bark(); }
+                System.IO.Console.printf("total=%d aIsNull=%d bIsNull=%d\n",
+                    total, a == null, b == null);
+                return;
+            }
+        }
+    }
+}

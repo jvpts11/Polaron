@@ -24,11 +24,16 @@ bool isRefType(const std::string& t) {
     return !t.empty() && (t.back() == '*' || t.back() == '&');
 }
 std::string baseType(const std::string& t) {
-    return isRefType(t) ? t.substr(0, t.size() - 1) : t;
+    std::string s = t;
+    if (!s.empty() && s.back() == '?') s.pop_back();  // strip nullable marker (spec 3.7)
+    if (!s.empty() && (s.back() == '*' || s.back() == '&')) s.pop_back();  // strip pointer/reference
+    return s;
 }
+// True if the type is declared `nullable` (canonical "T?").
+inline bool isNullableType(const std::string& t) { return !t.empty() && t.back() == '?'; }
 std::string typeRefStr(const ast::TypeRef& t) {
     return ast::mangleGeneric(t.name, t.typeArgs) + (t.isArray ? "[]" : "") +
-           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
+           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 bool isFloatType(const std::string& t) {
     // Normal names: smallfloat(16)/float(32)/double(64)/quadruple(128). Bit-counted float32/float64
@@ -170,7 +175,18 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     // Guard against a cyclic type graph (e.g. `catalog A extends B; B extends A`):
     // bound the recursion so a malformed program errors instead of overflowing.
     if (depth > 256) return false;
-    if (sub == "null" && isRefType(super)) return true;  // null binds to any pointer/reference
+    // null binds to a `nullable T` or a raw pointer/reference, but NOT to a plain (non-null) type
+    // (spec 3.7 -- the core null-safety rule).
+    if (sub == "null") return isNullableType(super) || isRefType(super);
+    // Nullability (spec 3.7): a `nullable T` value may not flow into a non-nullable target (you must
+    // check it first); a non-null value flows freely into a `nullable T`. Compare the underlying T.
+    if (isNullableType(sub) || isNullableType(super)) {
+        if (isNullableType(sub) && !isNullableType(super)) return false;
+        auto strip = [](const std::string& s) {
+            return isNullableType(s) ? s.substr(0, s.size() - 1) : s;
+        };
+        return isSubtype(strip(sub), strip(super), depth + 1);
+    }
     // int and float both widen to a float type (no implicit narrowing).
     if (isFloatType(super) && isNumeric(sub)) return true;
     // Integers widen to a wider integer (no implicit narrowing).
@@ -1021,6 +1037,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<const ast::Expr*>& contracts) {
     scopes_.clear();
     moved_.clear();
+    nonNullVars_.clear();
     regionConstraints_.clear();
     currentClass_ = thisClass;
     inConstructor_ = inConstructor;
@@ -1406,8 +1423,29 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_, &constDoubles_))
                 error("'comptime if' requires a compile-time constant condition", ifs->loc);
         }
+        // Null-safety flow narrowing (spec 3.7): `if (x != null)` proves x non-null in the then-branch;
+        // `if (x == null)` proves it in the else-branch.
+        std::string nnThen, nnElse;
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(ifs->cond.get());
+            bin != nullptr && (bin->op == "!=" || bin->op == "==")) {
+            auto varVsNull = [](const ast::Expr* a, const ast::Expr* b) -> std::string {
+                const auto* id = dynamic_cast<const ast::IdentifierExpr*>(a);
+                if (id != nullptr && dynamic_cast<const ast::NullLiteralExpr*>(b) != nullptr)
+                    return id->name;
+                return "";
+            };
+            std::string v = varVsNull(bin->lhs.get(), bin->rhs.get());
+            if (v.empty()) v = varVsNull(bin->rhs.get(), bin->lhs.get());
+            if (!v.empty()) { if (bin->op == "!=") nnThen = v; else nnElse = v; }
+        }
+        const bool addedThen = !nnThen.empty() && nonNullVars_.insert(nnThen).second;
         analyzeBlock(ifs->thenBlock);
-        if (ifs->elseBlock) analyzeBlock(*ifs->elseBlock);
+        if (addedThen) nonNullVars_.erase(nnThen);
+        if (ifs->elseBlock) {
+            const bool addedElse = !nnElse.empty() && nonNullVars_.insert(nnElse).second;
+            analyzeBlock(*ifs->elseBlock);
+            if (addedElse) nonNullVars_.erase(nnElse);
+        }
         return;
     }
     if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(&stmt)) {
@@ -1680,6 +1718,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                       "' after it was moved (reassign it before using)",
                   id->loc);
         }
+        // A `nullable` variable proven non-null by a flow check (`if (x != null)`) reads as its
+        // underlying non-null type, so it can be used/assigned without further checks (spec 3.7).
+        if (isNullableType(var->type) && nonNullVars_.count(id->name) > 0)
+            return var->type.substr(0, var->type.size() - 1);
         return var->type;
     }
 
@@ -1877,7 +1919,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         if (op == "==" || op == "!=") {
             const bool nullPtr =
-                (lt == "null" && isRefType(rt)) || (rt == "null" && isRefType(lt));
+                (lt == "null" && (isRefType(rt) || isNullableType(rt))) ||
+                (rt == "null" && (isRefType(lt) || isNullableType(lt)));
             if (!lt.empty() && !rt.empty() && lt != rt && !nullPtr) {
                 error("operator '" + op + "' requires operands of the same type", bin->loc);
             }
@@ -2253,6 +2296,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             const std::string objType = typeOf(*mem->object);
             if (objType.empty()) return "";
+            // Null safety (spec 3.7): a nullable receiver must be null-checked first (a flow check
+            // `if (x != null)` makes typeOf return the non-null type, so a remaining '?' is unchecked).
+            if (isNullableType(objType)) {
+                error("'" + mem->member + "' called on a nullable value; check it for null first "
+                      "(e.g. `if (x != null) { ... }`)", call->loc);
+                return baseType(objType);  // continue as the underlying type to limit cascade errors
+            }
             // Enum (catalog) instance method: m.pick() where m is an enum value.
             if (auto emit = enumMethods_.find(baseType(objType)); emit != enumMethods_.end()) {
                 auto mit = emit->second.find(mem->member);
@@ -2453,6 +2503,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         const std::string objType = typeOf(*mem->object);
         if (objType.empty()) return "";
+        // Null safety (spec 3.7): reading a field/property through a nullable receiver requires a check.
+        if (isNullableType(objType)) {
+            error("field '" + mem->member + "' read from a nullable value; check it for null first",
+                  mem->loc);
+            return baseType(objType);
+        }
         if (const FieldInfo* f = findField(objType, mem->member)) return f->type;
         // A computed get-only property is read as obj.name (no parens).
         if (const MethodInfo* pm = findMethod(objType, mem->member); pm != nullptr && pm->isProperty)

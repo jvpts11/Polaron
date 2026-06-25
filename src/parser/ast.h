@@ -31,6 +31,7 @@ struct TypeRef {
     bool isArray = false;
     bool isPointer = false;  // T*
     bool isRef = false;      // T&
+    bool isNullable = false;  // `nullable T` (spec 3.7): may hold null; canonical form is "T?"
     std::vector<std::string> typeArgs;  // generic arguments, e.g. Box<int> -> ["int"]
     SourceLocation loc;
 };
@@ -40,7 +41,7 @@ struct TypeRef {
 // A tuple type already carries its full spelling in `name` (e.g. "(int,int)").
 inline std::string canonicalType(const TypeRef& t) {
     return mangleGeneric(t.name, t.typeArgs) + (t.isArray ? "[]" : "") +
-           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
+           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 
 // ---- Expressions ----

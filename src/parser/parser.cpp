@@ -969,6 +969,14 @@ ast::TypeRef Parser::parseTypeRef() {
     ast::TypeRef t;
     const Token& tok = current();
     t.loc = tok.loc;
+    // `nullable T` (spec 3.7): a type modifier; parse the underlying type and mark it nullable.
+    if (tok.kind == TokenKind::KwNullable) {
+        advance();
+        ast::TypeRef inner = parseTypeRef();
+        inner.isNullable = true;
+        inner.loc = t.loc;
+        return inner;
+    }
     // Tuple type (spec 22.5): `(T0, T1, ...)`, with optional component names
     // (e.g. `(int quotient, int remainder)`). The canonical type string is the
     // comma-joined component types in parentheses, e.g. "(int,int)". The names
@@ -1312,6 +1320,7 @@ ast::StmtPtr Parser::parseStatement() {
         check(TokenKind::KwVolatile) ||  // spec 37.5: volatile local
         check(TokenKind::KwLazy) ||      // spec 37.3: lazy local
         check(TokenKind::KwFunction) ||  // function<Ret, Params...> local
+        check(TokenKind::KwNullable) ||  // spec 3.7: `nullable T x` local
         isTypeKeyword(current().kind) || classVarDecl || looksLikeGenericVarDecl() ||
         looksLikeQualifiedVarDecl()) {
         return parseVarDecl();
@@ -1530,7 +1539,7 @@ ast::StmtPtr Parser::parseForStatement() {
     auto s = std::make_unique<ast::ForStmt>();
     s->loc = loc;
     if (check(TokenKind::KwFinal) || check(TokenKind::KwMutable) || check(TokenKind::KwVar) ||
-        isTypeKeyword(current().kind)) {
+        check(TokenKind::KwNullable) || isTypeKeyword(current().kind)) {
         s->init = parseVarDeclCore();
     } else if (!check(TokenKind::Semicolon)) {
         s->init = parseSimpleStatement();

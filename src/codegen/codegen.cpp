@@ -184,7 +184,10 @@ std::vector<std::string> tupleElems(const std::string& t) {
     return out;
 }
 std::string baseType(const std::string& t) {
-    return isRefType(t) ? t.substr(0, t.size() - 1) : t;
+    std::string s = t;
+    if (!s.empty() && s.back() == '?') s.pop_back();  // strip nullable marker (spec 3.7)
+    if (!s.empty() && (s.back() == '*' || s.back() == '&')) s.pop_back();  // strip pointer/reference
+    return s;
 }
 
 // The LDP3 type name of a declaration, including array / pointer / ref markers.
@@ -361,6 +364,8 @@ struct CodeGenerator::Impl {
     // opaque pointer; int/boolean/char/enum -> iN; tuple -> anonymous struct.
     llvm::Type* llvmType(const std::string& t) {
         if (t == "void") return builder.getVoidTy();
+        // `nullable T` (spec 3.7) lowers exactly like T -- it is a compile-time-only marker.
+        if (!t.empty() && t.back() == '?') return llvmType(t.substr(0, t.size() - 1));
         if (isTupleType(t)) return tupleStructType(t);
         if (isFloatType(t)) {
             switch (floatBits(t)) {
