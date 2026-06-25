@@ -780,6 +780,210 @@ R"LDP3(
             }
         }
     }
+)LDP3"
+// (split: System.Json in its own literal.)
+R"LDP3(
+    public namespace System.Json {
+        // A JSON value (spec 34). kind: 0=null, 1=bool, 2=number(long), 3=string, 4=array, 5=object.
+        // Built and read with pure-LDP3 code over System.Collections + System.Text.
+        public class Json {
+            private mutable int kind;
+            private mutable boolean b;
+            private mutable long num;
+            private mutable String str;
+            private mutable String memberKey;   // the key, when this node is an object member
+            private mutable Json* firstChild;   // array elements / object members (sibling chain)
+            private mutable Json* lastChild;    // tail, for O(1) append
+            private mutable Json* nextSibling;
+            private mutable int childCount;
+            public constructor Json(int k) {
+                this.kind = k;
+                this.b = false;
+                this.num = cast<long>(0);
+                this.str = "";
+                this.memberKey = "";
+                this.firstChild = null;
+                this.lastChild = null;
+                this.nextSibling = null;
+                this.childCount = 0;
+            }
+            public static method ofNull() returns Json { return new Json(0) on heap; }
+            public static method ofBool(boolean v) returns Json {
+                Json j = new Json(1) on heap; j.b = v; return j;
+            }
+            public static method ofNum(long v) returns Json {
+                Json j = new Json(2) on heap; j.num = v; return j;
+            }
+            public static method ofStr(String v) returns Json {
+                Json j = new Json(3) on heap; j.str = v; return j;
+            }
+            public static method array() returns Json { return new Json(4) on heap; }
+            public static method object() returns Json { return new Json(5) on heap; }
+            public method add(Json v) returns void {  // append a child (array element / member)
+                if (this.lastChild == null) { this.firstChild = v; } else { this.lastChild.nextSibling = v; }
+                this.lastChild = v;
+                this.childCount = this.childCount + 1;
+            }
+            public method put(String key, Json v) returns void { v.memberKey = key; this.add(v); }
+            public method kindOf() returns int { return this.kind; }
+            public method asBool() returns boolean { return this.b; }
+            public method asNum() returns long { return this.num; }
+            public method asStr() returns String { return this.str; }
+            public method size() returns int { return this.childCount; }
+            public method at(int i) returns Json {
+                mutable Json* cur = this.firstChild;
+                for (mutable int j = 0; j < i; j++) { cur = cur.nextSibling; }
+                return cur;
+            }
+            public method field(String key) returns Json {
+                mutable Json* cur = this.firstChild;
+                while (cur != null) {
+                    if (cur.memberKey.equals(key)) { return cur; }
+                    cur = cur.nextSibling;
+                }
+                return Json.ofNull();
+            }
+            private method escapeInto(StringBuilder sb, String s) returns void {
+                sb.appendChar('"');
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c == '"') { sb.appendChar('\\'); sb.appendChar('"'); }
+                    else {
+                        if (c == '\\') { sb.appendChar('\\'); sb.appendChar('\\'); }
+                        else { sb.appendChar(c); }
+                    }
+                }
+                sb.appendChar('"');
+            }
+            private method writeInto(StringBuilder sb) returns void {
+                if (this.kind == 0) { sb.append("null"); return; }
+                if (this.kind == 1) {
+                    if (this.b) { sb.append("true"); } else { sb.append("false"); }
+                    return;
+                }
+                if (this.kind == 2) { sb.append(this.num.toString()); return; }
+                if (this.kind == 3) { this.escapeInto(sb, this.str); return; }
+                if (this.kind == 4) {
+                    sb.appendChar('[');
+                    mutable Json* cur = this.firstChild;
+                    mutable boolean first = true;
+                    while (cur != null) {
+                        if (!first) { sb.appendChar(','); }
+                        first = false;
+                        cur.writeInto(sb);
+                        cur = cur.nextSibling;
+                    }
+                    sb.appendChar(']');
+                    return;
+                }
+                sb.appendChar('{');
+                mutable Json* m = this.firstChild;
+                mutable boolean firstM = true;
+                while (m != null) {
+                    if (!firstM) { sb.appendChar(','); }
+                    firstM = false;
+                    this.escapeInto(sb, m.memberKey);
+                    sb.appendChar(':');
+                    m.writeInto(sb);
+                    m = m.nextSibling;
+                }
+                sb.appendChar('}');
+            }
+            public method toString() returns String {
+                StringBuilder sb = new StringBuilder() on heap;
+                this.writeInto(sb);
+                return sb.toString();
+            }
+            public static method parse(String src) returns Json {
+                JsonParser p = new JsonParser(src) on heap;
+                return p.parseValue();
+            }
+        }
+        // Recursive-descent JSON parser (minimal: null/bool/integer/string/array/object).
+        public class JsonParser {
+            private mutable String s;
+            private mutable int pos;
+            public constructor JsonParser(String src) { this.s = src; this.pos = 0; }
+            private method skipWs() returns void {
+                while (this.pos < this.s.length()) {
+                    char c = this.s.charAt(this.pos);
+                    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { this.pos = this.pos + 1; }
+                    else { return; }
+                }
+            }
+            private method parseString() returns String {
+                StringBuilder sb = new StringBuilder() on heap;
+                this.pos = this.pos + 1;  // opening quote
+                while (this.pos < this.s.length()) {
+                    char c = this.s.charAt(this.pos);
+                    this.pos = this.pos + 1;
+                    if (c == '"') { return sb.toString(); }
+                    if (c == '\\') {
+                        char e = this.s.charAt(this.pos);
+                        this.pos = this.pos + 1;
+                        if (e == 'n') { sb.appendChar('\n'); }
+                        else { if (e == 't') { sb.appendChar('\t'); } else { sb.appendChar(e); } }
+                    } else { sb.appendChar(c); }
+                }
+                return sb.toString();
+            }
+            public method parseValue() returns Json {
+                this.skipWs();
+                char c = this.s.charAt(this.pos);
+                if (c == '{') { return this.parseObject(); }
+                if (c == '[') { return this.parseArray(); }
+                if (c == '"') { return Json.ofStr(this.parseString()); }
+                if (c == 't') { this.pos = this.pos + 4; return Json.ofBool(true); }
+                if (c == 'f') { this.pos = this.pos + 5; return Json.ofBool(false); }
+                if (c == 'n') { this.pos = this.pos + 4; return Json.ofNull(); }
+                mutable boolean neg = false;
+                if (c == '-') { neg = true; this.pos = this.pos + 1; }
+                mutable long acc = cast<long>(0);
+                mutable boolean more = true;
+                while (more && this.pos < this.s.length()) {
+                    char d = this.s.charAt(this.pos);
+                    if (d >= '0' && d <= '9') {
+                        acc = acc * cast<long>(10) + cast<long>(d - '0');
+                        this.pos = this.pos + 1;
+                    } else { more = false; }
+                }
+                if (neg) { acc = cast<long>(0) - acc; }
+                return Json.ofNum(acc);
+            }
+            private method parseArray() returns Json {
+                Json arr = Json.array();
+                this.pos = this.pos + 1;  // '['
+                this.skipWs();
+                if (this.s.charAt(this.pos) == ']') { this.pos = this.pos + 1; return arr; }
+                while (true) {
+                    arr.add(this.parseValue());
+                    this.skipWs();
+                    char c = this.s.charAt(this.pos);
+                    this.pos = this.pos + 1;  // ',' or ']'
+                    if (c == ']') { return arr; }
+                }
+                return arr;  // unreachable; satisfies the return-type checker
+            }
+            private method parseObject() returns Json {
+                Json obj = Json.object();
+                this.pos = this.pos + 1;  // '{'
+                this.skipWs();
+                if (this.s.charAt(this.pos) == '}') { this.pos = this.pos + 1; return obj; }
+                while (true) {
+                    this.skipWs();
+                    String key = this.parseString();
+                    this.skipWs();
+                    this.pos = this.pos + 1;  // ':'
+                    obj.put(key, this.parseValue());
+                    this.skipWs();
+                    char c = this.s.charAt(this.pos);
+                    this.pos = this.pos + 1;  // ',' or '}'
+                    if (c == '}') { return obj; }
+                }
+                return obj;  // unreachable; satisfies the return-type checker
+            }
+        }
+    }
 }
 )LDP3";
 

@@ -720,6 +720,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             currentNamespace_ = ns.name;
             for (const ast::ClassDecl& cls : ns.classes) {
+                currentClass_ = cls.name;  // keep accurate for checkTypeAccessible's mono exemption
                 // Member signature types must also be visible from this namespace -- except for
                 // monomorphized generic instances (name contains '$'), whose members reference the
                 // type arguments by simple name; those were already checked at the template and the
@@ -1154,12 +1155,18 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     std::string n = baseType(typeName);          // see through T* / T&
     if (isArrayType(n)) n = elementOf(n);         // and through T[]
     checkBitCounted(typeName, loc);                // bit-counted names are freestanding-only
+    // Inside a compiler-generated monomorphized class, type references were already validated at the
+    // template and the instantiation site (and may reach stdlib types like Json from ArrayList<Json>).
+    if (currentClass_.find('$') != std::string::npos) return;
     if (n.find('$') != std::string::npos) return;  // monomorphized generic -> always visible
     if (qualifiedTypes_.count(n) > 0) return;      // explicitly namespace-qualified -> visible
     auto it = typeNamespace_.find(n);
     if (it == typeNamespace_.end()) return;        // primitive / unknown (other checks catch it)
     if (it->second == currentNamespace_) return;   // same namespace -> visible
     if (currentImports_.count(n) > 0) return;      // brought in by import (incl. stdlib)
+    // The stdlib is internally cohesive: a System.* type may use any other System.* type without an
+    // import (e.g. System.Json's Json uses System.Text's StringBuilder).
+    if (currentNamespace_.rfind("System.", 0) == 0 && it->second.rfind("System.", 0) == 0) return;
     error("type '" + n + "' is in namespace '" + it->second + "'; import it (import " + it->second +
               "." + n + ";) to use it here",
           loc);
@@ -1838,8 +1845,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("operator '" + op + "' is not defined on vectors", bin->loc);
             return "vec" + std::to_string(vw);
         }
+        // `char` is an integer (i32) for arithmetic/comparison/bitwise (e.g. c - '0', c >= '0').
+        auto numOk = [](const std::string& t) { return isNumeric(t) || t == "char"; };
         if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
-            if ((!lt.empty() && !isNumeric(lt)) || (!rt.empty() && !isNumeric(rt))) {
+            if ((!lt.empty() && !numOk(lt)) || (!rt.empty() && !numOk(rt))) {
                 error("operator '" + op + "' requires numeric operands", bin->loc);
             }
             if (op == "%" && (isFloatType(lt) || isFloatType(rt))) {
@@ -1852,14 +1861,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return intBits(lt) >= intBits(rt) ? lt : rt;  // wider integer wins
         }
         if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
-            if (isFloatType(lt) || isFloatType(rt) || (!lt.empty() && !isNumeric(lt)) ||
-                (!rt.empty() && !isNumeric(rt))) {
+            if (isFloatType(lt) || isFloatType(rt) || (!lt.empty() && !numOk(lt)) ||
+                (!rt.empty() && !numOk(rt))) {
                 error("operator '" + op + "' requires integer operands", bin->loc);
             }
             return intBits(lt) >= intBits(rt) ? lt : rt;
         }
         if (op == "<" || op == ">" || op == "<=" || op == ">=") {
-            if ((!lt.empty() && !isNumeric(lt)) || (!rt.empty() && !isNumeric(rt))) {
+            if ((!lt.empty() && !numOk(lt)) || (!rt.empty() && !numOk(rt))) {
                 error("operator '" + op + "' requires numeric operands", bin->loc);
             }
             return "boolean";
