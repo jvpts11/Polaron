@@ -19,6 +19,7 @@
 #include "lexer/lexer.h"
 #include "lexer/token.h"
 #include "parser/ast.h"
+#include "parser/loopopt.h"
 #include "parser/monomorphize.h"
 #include "parser/parser.h"
 #include "semantic/analyzer.h"
@@ -1243,6 +1244,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     ldp3::resolveTypeAliases(program);           // expand `typealias` to its target everywhere (spec 24)
     ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
+    if (optLevel > 0) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
     ldp3::SemanticAnalyzer sema;
     if (!sema.analyze(program)) {
         for (const ldp3::SemaError& e : sema.errors()) {

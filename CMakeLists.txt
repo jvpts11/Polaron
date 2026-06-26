@@ -19,6 +19,7 @@ set(LDP3_CORE_SOURCES
     src/parser/ast.cpp
     src/parser/parser.cpp
     src/parser/monomorphize.cpp
+    src/parser/loopopt.cpp
     src/semantic/analyzer.cpp
     src/semantic/comptime.cpp
 )

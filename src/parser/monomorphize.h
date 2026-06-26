@@ -24,4 +24,9 @@ void qualifyNamespaces(ast::Program& program);
 // program declares no type aliases. Run first, before qualifyNamespaces and monomorphize.
 void resolveTypeAliases(ast::Program& program);
 
+// Deep-clone of an expression / statement (no type substitution). Used by AST-level optimization
+// passes (e.g. loop interchange) that need to duplicate sub-trees.
+ast::ExprPtr cloneExprDeep(const ast::Expr* e);
+ast::StmtPtr cloneStmtDeep(const ast::Stmt* s);
+
 }  // namespace ldp3

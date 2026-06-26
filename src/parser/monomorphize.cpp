@@ -954,6 +954,10 @@ bool isSubtypeOf(const std::string& sub, const std::string& base,
 
 }  // namespace
 
+// Public deep-clone entry points (no type substitution), for AST-level passes outside this file.
+ast::ExprPtr cloneExprDeep(const ast::Expr* e) { return cloneExpr(e, Subst{}); }
+ast::StmtPtr cloneStmtDeep(const ast::Stmt* s) { return cloneStmt(s, Subst{}); }
+
 // Expands every `typealias` (spec 24) to its target type, transparently, everywhere a type
 // appears -- so the analyzer and codegen only ever see concrete types. `newtype`s are left alone
 // (they are distinct nominal types handled by the analyzer). Runs before qualifyNamespaces and

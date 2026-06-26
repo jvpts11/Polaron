@@ -1597,6 +1597,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # ldp3c's loop-interchange pass (-O3): the matmul reduction nest is rewritten to the
+        # cache-friendly form and must still produce the exact same checksum.
+        add_test(NAME codegen_matmul_opt_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=-O3"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/../performance tests/matrixmul.ldp3"
+            "-DEXPECTED=checksum=236236288"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Type aliases and newtype (spec 24): transparent `typealias` (primitive, function, generic)
         # and distinct `newtype` (cast across the boundary).
         add_test(NAME codegen_type_aliases_runs COMMAND "${CMAKE_COMMAND}"
