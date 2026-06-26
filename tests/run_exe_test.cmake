@@ -8,11 +8,16 @@
 set(ll "${WORKDIR}/e2e_out.ll")
 set(exe "${WORKDIR}/e2e_out.exe")
 
+# OPT is optional: an ldp3c optimization flag (e.g. -O3) to exercise the in-process pipeline.
+if(NOT DEFINED OPT)
+    set(OPT "")
+endif()
+
 # INPUT2 is optional: a program may span multiple .ldp3 files.
 if(DEFINED INPUT2)
-    execute_process(COMMAND "${LDP3C}" "${INPUT}" "${INPUT2}" -o "${ll}" RESULT_VARIABLE rc)
+    execute_process(COMMAND "${LDP3C}" ${OPT} "${INPUT}" "${INPUT2}" -o "${ll}" RESULT_VARIABLE rc)
 else()
-    execute_process(COMMAND "${LDP3C}" "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
+    execute_process(COMMAND "${LDP3C}" ${OPT} "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
 endif()
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "ldp3c failed (exit ${rc})")

@@ -1586,6 +1586,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # ldp3c's own optimization pipeline (-O3) with the recursive-inlining pass: self- and
+        # mutually-recursive functions must give the same results optimized as not.
+        add_test(NAME codegen_recursion_opt_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=-O3"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/recursion_opt.ldp3"
+            "-DEXPECTED=fib=6765 fact=479001600 even=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Type aliases and newtype (spec 24): transparent `typealias` (primitive, function, generic)
         # and distinct `newtype` (cast across the boundary).
         add_test(NAME codegen_type_aliases_runs COMMAND "${CMAKE_COMMAND}"
