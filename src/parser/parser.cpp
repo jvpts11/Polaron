@@ -898,11 +898,13 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     if (match(TokenKind::KwComptime)) m->isComptime = true;  // suffix form (spec 28.3)
     currentMethodReturnType_ = m->returnType;  // enables the Ok(x)/.. return-value sugar
     // Contract clauses (spec 29): `requires <expr>` / `ensures <expr>`, between the
-    // signature and the body, no separators. `old(...)` in ensures is not yet supported.
+    // signature and the body, no separators. `old(...)` is recognized inside `ensures`.
     while (check(TokenKind::KwRequires) || check(TokenKind::KwEnsures)) {
         const bool isReq = check(TokenKind::KwRequires);
         advance();
+        parsingEnsures_ = !isReq;
         (isReq ? m->requiresClauses : m->ensuresClauses).push_back(parseExpression());
+        parsingEnsures_ = false;
     }
     if (m->isAbstract) {
         expect(TokenKind::Semicolon, "';' (an abstract method has no body)");
@@ -1017,7 +1019,9 @@ std::unique_ptr<ast::ConstructorDecl> Parser::parseConstructor(std::string visib
     while (check(TokenKind::KwRequires) || check(TokenKind::KwEnsures)) {
         const bool isReq = check(TokenKind::KwRequires);
         advance();
+        parsingEnsures_ = !isReq;
         (isReq ? c->requiresClauses : c->ensuresClauses).push_back(parseExpression());
+        parsingEnsures_ = false;
     }
     c->body = parseBlock();
     return c;
@@ -2180,6 +2184,17 @@ ast::ExprPtr Parser::maybeLiteralSuffix(ast::ExprPtr literal) {
 
 ast::ExprPtr Parser::parsePrimary() {
     const Token& tok = current();
+    // `old(expr)` inside an ensures clause (spec 29): the value captured at method entry.
+    if (parsingEnsures_ && tok.kind == TokenKind::Identifier && tok.lexeme == "old" &&
+        peek(1).kind == TokenKind::LParen) {
+        auto e = std::make_unique<ast::OldExpr>();
+        e->loc = tok.loc;
+        advance();  // 'old'
+        expect(TokenKind::LParen, "'(' after 'old'");
+        e->inner = parseExpression();
+        expect(TokenKind::RParen, "')' to close 'old(...)'");
+        return e;
+    }
     switch (tok.kind) {
         case TokenKind::IntLiteral: {
             auto e = std::make_unique<ast::IntLiteralExpr>();

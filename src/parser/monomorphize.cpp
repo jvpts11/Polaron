@@ -133,6 +133,12 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->object = cloneExpr(x->object.get(), s);
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::OldExpr*>(e)) {
+        auto n = std::make_unique<ast::OldExpr>();
+        n->loc = x->loc;
+        n->inner = cloneExpr(x->inner.get(), s);
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::CallExpr*>(e)) {
         auto n = std::make_unique<ast::CallExpr>();
         n->loc = x->loc;

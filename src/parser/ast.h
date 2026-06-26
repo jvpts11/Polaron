@@ -92,6 +92,13 @@ struct MemberExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// `old(expr)` inside an `ensures` contract clause (spec 29): the value of `expr` captured at method
+// entry, compared against the final state at exit. Only valid inside an ensures clause.
+struct OldExpr : Expr {
+    ExprPtr inner;
+    void dump(std::string& out, int /*indent*/) const override { out += "old"; }
+};
+
 struct CallExpr : Expr {
     ExprPtr callee;
     std::vector<ExprPtr> args;

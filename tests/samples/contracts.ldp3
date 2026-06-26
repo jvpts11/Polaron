@@ -1,6 +1,10 @@
 import System.IO.Console;
 program Contracts;
 
+// Contracts (spec 29): preconditions (requires), postconditions (ensures) and class invariants.
+// ensures may use old(e) to refer to the value of e captured at method entry. Each clause is a
+// boolean expression checked at runtime; a violation prints "contract violated: <kind>" and exits.
+
 public bundle main {
     public namespace app {
 
@@ -11,15 +15,24 @@ public bundle main {
 
             public constructor Account(int start)
                 requires start >= 0
+                ensures this.balance == start
             {
                 this.balance = start;
             }
 
             public method deposit(int amount) returns void
                 requires amount > 0
-                ensures this.balance >= 0
+                ensures this.balance == old(this.balance) + amount
             {
                 this.balance = this.balance + amount;
+            }
+
+            public method withdraw(int amount) returns void
+                requires amount > 0
+                requires amount <= this.balance
+                ensures this.balance == old(this.balance) - amount
+            {
+                this.balance = this.balance - amount;
             }
 
             public method getBalance() returns int { return this.balance; }
@@ -29,7 +42,8 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Account a = new Account(100) on stack;
                 a.deposit(50);
-                System.IO.Console.println($"balance = {a.getBalance()}");   // 150
+                a.withdraw(30);
+                System.IO.Console.println($"balance = {a.getBalance()}");   // 120
                 return;
             }
         }

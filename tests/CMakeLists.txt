@@ -973,12 +973,12 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # contracts (spec 29): requires/ensures runtime checks (happy path: all hold).
+        # contracts (spec 29): requires/ensures (with old()) + invariant runtime checks, happy path.
         add_test(NAME codegen_contracts_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/contracts.ldp3"
-            "-DEXPECTED=balance = 150"
+            "-DEXPECTED=balance = 120"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

@@ -1779,6 +1779,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         for (const auto& p : lam->params) s += "," + typeRefStr(p.type);
         return s + ">";
     }
+    if (const auto* old = dynamic_cast<const ast::OldExpr*>(&expr)) {
+        // old(e) in an ensures clause (spec 29): the entry-time value of e, so it has e's type.
+        return typeOf(*old->inner);
+    }
     if (const auto* mr = dynamic_cast<const ast::MethodRefExpr*>(&expr)) {
         // methodref obj.method (spec 22.3): its type is the method's function<Ret, Params...>.
         const std::string objType = typeOf(*mr->object);

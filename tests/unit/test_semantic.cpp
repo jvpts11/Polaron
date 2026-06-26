@@ -1374,3 +1374,32 @@ TEST_CASE("semantic rejects an annotation argument that is not a field") {
 TEST_CASE("semantic rejects a duplicate annotation argument") {
     CHECK_FALSE(checkSrc(withAnnotation("[MaxLength(value: 1, value: 2)]")));
 }
+
+// Contracts (spec 29).
+namespace {
+// A class C with one int field and a `bump` method carrying the given contract clauses, plus Main.
+std::string withContract(const std::string& clauses, const std::string& body) {
+    return "program P; public bundle b { public namespace n {"
+           " public class C { private mutable int v;"
+           " public constructor C() { this.v = 0; }"
+           " public method bump(int n) returns void " +
+           clauses + " { " + body +
+           " } }"
+           " public class Main { public static method main(string[] args) returns void { return; } "
+           "} } }";
+}
+}  // namespace
+TEST_CASE("semantic accepts requires and ensures with old()") {
+    CHECK(checkSrc(withContract("requires n > 0 ensures this.v == old(this.v) + n",
+                                "this.v = this.v + n;")));
+}
+TEST_CASE("semantic rejects a non-boolean contract clause") {
+    CHECK_FALSE(checkSrc(withContract("requires this.v", "this.v = this.v + n;")));
+}
+TEST_CASE("semantic accepts a class invariant") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public class C { private mutable int v; invariant this.v >= 0;"
+        " public constructor C() { this.v = 0; } }"
+        " public class Main { public static method main(string[] args) returns void { return; } } } }"));
+}

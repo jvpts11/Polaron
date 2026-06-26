@@ -316,6 +316,8 @@ struct CodeGenerator::Impl {
     std::vector<std::pair<int, llvm::BasicBlock*>> asyncSMCases;  // (state index -> resume block)
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
     const std::vector<ast::ExprPtr>* currentInvariants = nullptr;  // contracts: class invariants
+    // contracts: each old(e) in an ensures clause -> an entry-captured slot (spec 29).
+    std::unordered_map<const ast::OldExpr*, llvm::Value*> oldValues_;
     struct LoopTargets {
         llvm::BasicBlock* brk;
         llvm::BasicBlock* cont;
@@ -880,6 +882,8 @@ struct CodeGenerator::Impl {
             for (const auto& p : md->params) s += "," + typeRefName(p.type);
             return s + ">";
         }
+        if (const auto* old = dynamic_cast<const ast::OldExpr*>(&expr))
+            return typeName(*old->inner);  // old(e) has e's type (spec 29)
         if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
             std::string s = "(";
             for (std::size_t i = 0; i < tup->elements.size(); ++i)
@@ -1118,6 +1122,35 @@ struct CodeGenerator::Impl {
     }
 
     // Contracts (spec 29): if the boolean condition is false at runtime, report and exit(1).
+    // Collects every old(...) occurrence inside a contract expression so the entry-time values can
+    // be captured before the body runs (spec 29).
+    void collectOld(const ast::Expr* e, std::vector<const ast::OldExpr*>& out) {
+        if (e == nullptr) return;
+        if (const auto* o = dynamic_cast<const ast::OldExpr*>(e)) {
+            out.push_back(o);
+            collectOld(o->inner.get(), out);  // old(... old(x) ...) is odd but harmless
+        } else if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e)) {
+            collectOld(b->lhs.get(), out);
+            collectOld(b->rhs.get(), out);
+        } else if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e)) {
+            collectOld(u->operand.get(), out);
+        } else if (const auto* t = dynamic_cast<const ast::TernaryExpr*>(e)) {
+            collectOld(t->cond.get(), out);
+            collectOld(t->thenExpr.get(), out);
+            collectOld(t->elseExpr.get(), out);
+        } else if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) {
+            collectOld(m->object.get(), out);
+        } else if (const auto* c = dynamic_cast<const ast::CallExpr*>(e)) {
+            collectOld(c->callee.get(), out);
+            for (const auto& a : c->args) collectOld(a.get(), out);
+        } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+            collectOld(ix->array.get(), out);
+            collectOld(ix->index.get(), out);
+        } else if (const auto* ca = dynamic_cast<const ast::CastExpr*>(e)) {
+            collectOld(ca->operand.get(), out);
+        }
+    }
+
     void emitContractCheck(const ast::Expr& cond, const char* kind) {
         llvm::Value* c = emitExpr(cond);
         if (c == nullptr) return;
@@ -1594,12 +1627,14 @@ struct CodeGenerator::Impl {
             auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
             auto sRegions = scopeRegions;
             auto sDtorChain = currentDtorChain;
+            auto sOld = oldValues_;  // emitBody clears these; the enclosing method's old() slots must survive
             auto sIP = builder.saveIP();
             emitBody(fn, lam->body, lam->params, "", rt, nullptr, nullptr, nullptr, nullptr,
                      /*hasEnv=*/true, &lam->captures, &capTypes);
             currentFn = sFn; currentClass = sCls; currentRetType = sRet;
             currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
             currentDtorChain = sDtorChain;
+            oldValues_ = sOld;
             locals = sLoc; scopeObjects = sScope; deferred = sDef;
             scopeRegions = sRegions;
             builder.restoreIP(sIP);
@@ -1628,6 +1663,16 @@ struct CodeGenerator::Impl {
             llvm::Value* envSlot = builder.CreateGEP(builder.getPtrTy(), clos, builder.getInt32(1));
             builder.CreateStore(envPtr, envSlot);  // [1] = env
             return clos;
+        }
+        if (const auto* old = dynamic_cast<const ast::OldExpr*>(&expr)) {
+            // old(e): load the value captured at method entry (spec 29).
+            auto it = oldValues_.find(old);
+            if (it == oldValues_.end()) {
+                error("'old(...)' is only valid inside an ensures clause", expr.loc);
+                return nullptr;
+            }
+            auto* slot = llvm::cast<llvm::AllocaInst>(it->second);
+            return builder.CreateLoad(slot->getAllocatedType(), slot, "old");
         }
         if (const auto* mr = dynamic_cast<const ast::MethodRefExpr*>(&expr)) {
             // methodref obj.method (spec 22.3): build a closure {thunk, env={receiver}}. The thunk
@@ -5349,6 +5394,20 @@ struct CodeGenerator::Impl {
         // Contracts: preconditions run after the prologue, before the body (spec 29).
         if (requiresClauses != nullptr)
             for (const ast::ExprPtr& r : *requiresClauses) emitContractCheck(*r, "requires");
+        // Capture each old(e) in the ensures clauses at entry, so the exit check compares against
+        // the entry-time value (spec 29).
+        oldValues_.clear();
+        if (ensuresClauses != nullptr) {
+            std::vector<const ast::OldExpr*> olds;
+            for (const ast::ExprPtr& e : *ensuresClauses) collectOld(e.get(), olds);
+            for (const ast::OldExpr* o : olds) {
+                llvm::Value* v = emitExpr(*o->inner);
+                if (v == nullptr) continue;
+                llvm::Value* slot = createEntryAlloca("old", v->getType());
+                builder.CreateStore(v, slot);
+                oldValues_[o] = slot;
+            }
+        }
 
         // Entry point: run every class's onClassLoad hook once, before main (spec 32.5).
         if (auto eit = functions.find("@entry"); eit != functions.end() && fn == eit->second) {
