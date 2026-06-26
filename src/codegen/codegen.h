@@ -33,6 +33,11 @@ public:
     // Builds the module. Returns true on success (no errors, module verified).
     bool generate();
 
+    // Runs ldp3c's own optimization pipeline on the module (level 1-3; 0 is a no-op). This is the
+    // LDP3 middle-end: an LLVM PassBuilder per-module pipeline plus the custom passes clang's
+    // default pipeline omits. Call after generate(); clang still does backend codegen and linking.
+    void optimize(int level);
+
     bool hasErrors() const { return !errors_.empty(); }
     const std::vector<CodegenError>& errors() const { return errors_; }
 

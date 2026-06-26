@@ -10,7 +10,10 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/PassManager.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Passes/OptimizationLevel.h>
+#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
@@ -5789,6 +5792,28 @@ bool CodeGenerator::generate() {
         return false;
     }
     return true;
+}
+
+void CodeGenerator::optimize(int level) {
+    if (level <= 0) return;  // O0: leave the IR as generated
+    llvm::OptimizationLevel ol = level >= 3   ? llvm::OptimizationLevel::O3
+                                 : level == 2 ? llvm::OptimizationLevel::O2
+                                              : llvm::OptimizationLevel::O1;
+    // The four analysis managers the new pass manager needs, cross-registered.
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+    llvm::PassBuilder pb;
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+    // The default per-module pipeline (inlining, mem2reg, GVN, loop opts, ...). The custom LDP3
+    // passes that close the gap to GCC (recursive inlining, loop interchange) plug in here.
+    llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(ol);
+    mpm.run(impl_->module, mam);
 }
 
 std::string CodeGenerator::toIR() const {

@@ -1207,7 +1207,7 @@ int checkProgram(const std::string& path) {
 // (the semantic catalog is flat, so concatenation is enough). `inputs` outlives
 // this call, so token SourceLocations (string_views into the paths) stay valid.
 int compile(const std::vector<std::string>& inputs, const std::string& outPath,
-            const std::string& target = "") {
+            const std::string& target = "", int optLevel = 0) {
     ldp3::ast::Program program;
     std::string programName;
     // Keep each file's source alive only within its iteration: the AST copies
@@ -1263,6 +1263,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         }
         return 1;
     }
+    codegen.optimize(optLevel);  // ldp3c's own optimization pipeline (no-op at -O0)
     const std::string ir = codegen.toIR();
     if (outPath.empty()) {
         std::fputs(ir.c_str(), stdout);
@@ -1311,6 +1312,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> inputs;
     std::string output;
     std::string target;  // --target=<triple>, e.g. x86_64-unknown-none for freestanding/bare metal
+    int optLevel = 0;    // -O0..-O3: run ldp3c's own optimization pipeline before emitting IR
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "-o") {
             if (i + 1 >= args.size()) {
@@ -1321,6 +1323,14 @@ int main(int argc, char** argv) {
             ++i;
         } else if (args[i].rfind("--target=", 0) == 0) {
             target = std::string(args[i].substr(9));
+        } else if (args[i] == "-O" || args[i] == "-O2") {
+            optLevel = 2;
+        } else if (args[i] == "-O0") {
+            optLevel = 0;
+        } else if (args[i] == "-O1") {
+            optLevel = 1;
+        } else if (args[i] == "-O3") {
+            optLevel = 3;
         } else {
             inputs.emplace_back(args[i]);
         }
@@ -1329,5 +1339,5 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: no input files\n");
         return printUsage(argv[0]);
     }
-    return compile(inputs, output, target);
+    return compile(inputs, output, target, optLevel);
 }

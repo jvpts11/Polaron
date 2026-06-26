@@ -39,7 +39,10 @@ target_include_directories(ldp3_core PUBLIC src)
 if(LDP3_WITH_LLVM)
     target_include_directories(ldp3_core SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
     target_compile_definitions(ldp3_core PUBLIC LDP3_WITH_LLVM=1)
-    llvm_map_components_to_libnames(LDP3_LLVM_LIBS core)
+    # core: IRBuilder/module. passes: our in-process optimization pipeline (PassBuilder) -- ldp3c
+    # runs its own middle-end passes (the transforms clang's default pipeline omits) before handing
+    # the IR to clang for backend + link.
+    llvm_map_components_to_libnames(LDP3_LLVM_LIBS core passes)
     target_link_libraries(ldp3_core PUBLIC ${LDP3_LLVM_LIBS})
 endif()
 
