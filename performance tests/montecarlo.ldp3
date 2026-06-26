@@ -2,7 +2,7 @@ import System.IO.Console;
 program MonteCarlo;
 
 // Monte Carlo pi estimation: N random points, count those inside the unit quarter-circle
-// (x^2 + y^2 <= 1, no sqrt needed). A uint32 LCG drives it -- integer + FP throughput. The
+// (x^2 + y^2 <= 1, no sqrt needed). A uint LCG drives it -- integer + FP throughput. The
 // `inside` count is exact and identical across languages (same LCG).
 
 public bundle main {
@@ -10,7 +10,7 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 int n = 50000000;
-                mutable uint32 s = cast<uint32>(12345);
+                mutable uint s = cast<uint>(12345);
                 mutable int inside = 0;
                 for (mutable int i = 0; i < n; i++) {
                     s = s * 1103515245 + 12345;

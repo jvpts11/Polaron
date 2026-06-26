@@ -36,7 +36,7 @@ public bundle main {
             public static method main(string[] args) returns void {
                 int n = 5000000;
                 int[] a = new int[n]();
-                mutable uint32 s = cast<uint32>(12345);
+                mutable uint s = cast<uint>(12345);
                 for (mutable int k = 0; k < n; k++) {
                     s = s * 1103515245 + 12345;
                     a[k] = cast<int>(s >> 16);

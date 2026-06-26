@@ -2,7 +2,7 @@ import System.IO.Console;
 program Collatz;
 
 // Longest Collatz chain for starting values below N. Integer work, heavy branching, and
-// int64 arithmetic (3x+1 can exceed 32 bits mid-sequence).
+// long arithmetic (3x+1 can exceed 32 bits mid-sequence).
 
 public bundle main {
     public namespace app {
@@ -11,12 +11,12 @@ public bundle main {
                 int n = 1000000;
                 mutable int maxLen = 0;
                 mutable int maxStart = 0;
-                int64 one = cast<int64>(1);
-                int64 two = cast<int64>(2);
-                int64 three = cast<int64>(3);
-                int64 zero = cast<int64>(0);
+                long one = cast<long>(1);
+                long two = cast<long>(2);
+                long three = cast<long>(3);
+                long zero = cast<long>(0);
                 for (mutable int start = 1; start < n; start++) {
-                    mutable int64 x = cast<int64>(start);
+                    mutable long x = cast<long>(start);
                     mutable int len = 0;
                     while (x != one) {
                         if (x % two == zero) {
