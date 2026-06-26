@@ -1619,6 +1619,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `eternal` local (spec 37.2): lives for the whole program, so its destructor does not run
+        # at scope end -- the output must be exactly "using=1" with no "freed".
+        add_test(NAME codegen_eternal_local_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/eternal_local.ldp3"
+            "-DEXPECTED=using=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Type aliases and newtype (spec 24): transparent `typealias` (primitive, function, generic)
         # and distinct `newtype` (cast across the boundary).
         add_test(NAME codegen_type_aliases_runs COMMAND "${CMAKE_COMMAND}"

@@ -4091,11 +4091,13 @@ struct CodeGenerator::Impl {
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
             builder.CreateStore(initV, slot, vd->isVolatile);  // spec 37.5
             locals[vd->name] = LocalSlot{slot, declType, vd->isVolatile};
-            // RAII: a freshly built `new ... on stack` object with a destructor
-            // gets cleaned up when the function returns.
+            // RAII: a freshly built `new ... on stack` object with a destructor gets cleaned up
+            // when the function returns -- unless it is `eternal` (spec 37.2: lives for the whole
+            // program, no cleanup).
             if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
                 auto cit = classes.find(nw->className);
-                if (nw->location == "stack" && cit != classes.end() && cit->second.hasDestructor) {
+                if (nw->location == "stack" && cit != classes.end() && cit->second.hasDestructor &&
+                    !vd->isEternal) {
                     scopeObjects.push_back(ScopeObject{slot, nw->className});
                 }
             }

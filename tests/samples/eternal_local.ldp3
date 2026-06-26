@@ -1,0 +1,22 @@
+import System.IO.Console;
+program EternalLocal;
+
+// `eternal` on a local (spec 37.2): the object lives for the whole program, so its destructor is
+// NOT run at scope end. The destructor here prints "freed"; an eternal local must never print it.
+
+public bundle main {
+    public namespace app {
+        public class Res {
+            public constructor Res() {}
+            public destructor ~Res() returns void { System.IO.Console.printf("freed\n"); }
+            public method use() returns int { return 1; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                eternal Res r = new Res() on stack;
+                System.IO.Console.printf("using=%d\n", r.use());
+                return;
+            }
+        }
+    }
+}
