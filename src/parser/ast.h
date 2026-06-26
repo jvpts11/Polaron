@@ -573,6 +573,7 @@ struct MethodDecl : MemberDecl {
     bool isProperty = false;  // computed get-only property: read as obj.name (no parens)
     bool isComptime = false;  // spec 28.3/37.4: may be evaluated at compile time
     bool isAsync = false;     // spec 20.2: returns a Task<T>; body becomes a state machine
+    bool isVolatile = false;  // spec 37.5: always executed; never inlined or optimized away
     std::string name;
     std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
     std::vector<Param> params;

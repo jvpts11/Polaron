@@ -1,0 +1,22 @@
+import System.IO.Console;
+program VolatileMethod;
+
+// `volatile method` (spec 37.5): the method is always executed and never inlined or optimized away
+// (it is emitted noinline/optnone). It must still compile and run correctly under optimization.
+
+public bundle main {
+    public namespace app {
+        public class Sensor {
+            public constructor Sensor() {}
+            public volatile method read() returns int { return 42; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Sensor s = new Sensor() on heap;
+                System.IO.Console.printf("v=%d\n", s.read());
+                delete s;
+                return;
+            }
+        }
+    }
+}

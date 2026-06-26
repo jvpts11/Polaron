@@ -532,6 +532,8 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         n->isFinal = x->isFinal;
         n->isProperty = x->isProperty;
         n->isComptime = x->isComptime;
+        n->isAsync = x->isAsync;
+        n->isVolatile = x->isVolatile;
         n->name = x->name;
         n->typeParams = x->typeParams;
         for (const auto& p : x->params) n->params.push_back({substType(p.type, s), p.name, p.loc});

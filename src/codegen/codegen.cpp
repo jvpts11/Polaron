@@ -5152,8 +5152,13 @@ struct CodeGenerator::Impl {
                             }
                             llvm::FunctionType* ty = llvm::FunctionType::get(
                                 llvmType(typeRefName(m->returnType)), ptypes, false);
-                            functions[mangled] = llvm::Function::Create(
+                            llvm::Function* fn = llvm::Function::Create(
                                 ty, llvm::Function::ExternalLinkage, mangled, module);
+                            if (m->isVolatile) {  // spec 37.5: never inlined or optimized away
+                                fn->addFnAttr(llvm::Attribute::NoInline);
+                                fn->addFnAttr(llvm::Attribute::OptimizeNone);
+                            }
+                            functions[mangled] = fn;
                         } else if (const auto* c =
                                        dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                             hasCtor = true;

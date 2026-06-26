@@ -1619,6 +1619,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `volatile method` (spec 37.5): emitted noinline/optnone; must compile and run under -O3.
+        add_test(NAME codegen_volatile_method_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=-O3"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/volatile_method.ldp3"
+            "-DEXPECTED=v=42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # `eternal` local (spec 37.2): lives for the whole program, so its destructor does not run
         # at scope end -- the output must be exactly "using=1" with no "freed".
         add_test(NAME codegen_eternal_local_runs COMMAND "${CMAKE_COMMAND}"

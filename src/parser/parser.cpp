@@ -815,7 +815,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     ast::MemberPtr member;
     if (check(TokenKind::KwMethod)) {
         member = parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
-                             inInterface, isComptime, isAsync);
+                             inInterface, isComptime, isAsync, isVolatile);
     } else if (check(TokenKind::KwConstructor)) {
         member = parseConstructor(std::move(visibility));
     } else if (check(TokenKind::KwDestructor)) {
@@ -861,7 +861,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
 std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, bool isStatic,
                                                      bool isAbstract, bool isOverride, bool isFinal,
                                                      bool inInterface, bool isComptime,
-                                                     bool isAsync) {
+                                                     bool isAsync, bool isVolatile) {
     auto m = std::make_unique<ast::MethodDecl>();
     m->loc = current().loc;
     m->visibility = std::move(visibility);
@@ -871,6 +871,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     m->isFinal = isFinal;
     m->isComptime = isComptime;  // `comptime` prefix (spec 37.4); suffix handled below
     m->isAsync = isAsync;
+    m->isVolatile = isVolatile;  // spec 37.5: always executed; never inlined/elided
     expect(TokenKind::KwMethod, "'method'");
     m->name = expect(TokenKind::Identifier, "the method name").lexeme;
     // Generic method type parameters: method identity<T>(...) (spec 15). Each
