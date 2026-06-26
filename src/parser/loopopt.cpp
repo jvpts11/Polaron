@@ -250,6 +250,42 @@ std::unique_ptr<ast::AssignStmt> makeAssign(ast::ExprPtr target, ast::ExprPtr va
     return a;
 }
 
+// Structural equality of two expressions (conservative: false for shapes we don't model). Used to
+// recognize a direct accumulation `DEST = DEST op EXPR` where the target equals one operand.
+bool sameExpr(const Expr* a, const Expr* b) {
+    if (a == nullptr || b == nullptr) return a == b;
+    if (const auto* x = dynamic_cast<const ast::IdentifierExpr*>(a)) {
+        const auto* y = dynamic_cast<const ast::IdentifierExpr*>(b);
+        return y != nullptr && x->name == y->name;
+    }
+    if (const auto* x = dynamic_cast<const ast::IntLiteralExpr*>(a)) {
+        const auto* y = dynamic_cast<const ast::IntLiteralExpr*>(b);
+        return y != nullptr && x->text == y->text;
+    }
+    if (const auto* x = dynamic_cast<const ast::IndexExpr*>(a)) {
+        const auto* y = dynamic_cast<const ast::IndexExpr*>(b);
+        return y != nullptr && sameExpr(x->array.get(), y->array.get()) &&
+               sameExpr(x->index.get(), y->index.get());
+    }
+    if (const auto* x = dynamic_cast<const ast::BinaryExpr*>(a)) {
+        const auto* y = dynamic_cast<const ast::BinaryExpr*>(b);
+        return y != nullptr && x->op == y->op && sameExpr(x->lhs.get(), y->lhs.get()) &&
+               sameExpr(x->rhs.get(), y->rhs.get());
+    }
+    if (const auto* x = dynamic_cast<const ast::MemberExpr*>(a)) {
+        const auto* y = dynamic_cast<const ast::MemberExpr*>(b);
+        return y != nullptr && x->member == y->member && sameExpr(x->object.get(), y->object.get());
+    }
+    if (const auto* x = dynamic_cast<const ast::CastExpr*>(a)) {
+        const auto* y = dynamic_cast<const ast::CastExpr*>(b);
+        return y != nullptr && x->targetType == y->targetType &&
+               sameExpr(x->operand.get(), y->operand.get());
+    }
+    return false;
+}
+
+bool isReductionOp(const std::string& op) { return op == "+" || op == "-" || op == "*"; }
+
 // Build a `for (<jInit>; <jCond>; <jUpdate>) <body>` from cloned j-loop headers.
 std::unique_ptr<ast::ForStmt> makeJLoop(const ast::ForStmt& jSrc, ast::StmtPtr body) {
     auto f = std::make_unique<ast::ForStmt>();
@@ -263,56 +299,82 @@ std::unique_ptr<ast::ForStmt> makeJLoop(const ast::ForStmt& jSrc, ast::StmtPtr b
 }
 
 // If `jLoop` is an interchangeable reduction nest, returns the replacement statements; else empty.
+// Two shapes are recognized:
+//   A) scalar accumulator:   for(j){ T acc = INIT; for(k) acc = acc OP EXPR; DEST = acc; }
+//   B) direct accumulation:  for(j){ for(k) DEST = DEST OP EXPR; }   (DEST k-independent)
+// Both interchange to `for(k) for(j) DEST = DEST OP EXPR` (A also emits a `for(j) DEST = INIT;`
+// prologue). OP is +, - or *; each DEST accumulates k in the same order, so results are identical.
 std::vector<ast::StmtPtr> tryTransform(const ast::ForStmt& jLoop, const ast::Block& methodBody) {
     std::vector<ast::StmtPtr> none;
     std::string j;
     const Expr* jBound = nullptr;
     if (!matchCounted(&jLoop, j, jBound)) return none;
-    // Body must be exactly: [VarDecl acc = INIT] [ForStmt kLoop] [Assign DEST = acc].
-    if (jLoop.body.statements.size() != 3) return none;
-    const auto* accDecl = dynamic_cast<const ast::VarDeclStmt*>(jLoop.body.statements[0].get());
-    const auto* kLoop = dynamic_cast<const ast::ForStmt*>(jLoop.body.statements[1].get());
-    const auto* store = dynamic_cast<const ast::AssignStmt*>(jLoop.body.statements[2].get());
-    if (accDecl == nullptr || kLoop == nullptr || store == nullptr) return none;
-    if (accDecl->init == nullptr) return none;
-    const std::string acc = accDecl->name;
-    // Store must be `DEST = acc` where DEST does not depend on k and acc is exactly the value.
-    const auto* storeVal = dynamic_cast<const ast::IdentifierExpr*>(store->value.get());
-    if (storeVal == nullptr || storeVal->name != acc) return none;
-    const Expr* dest = store->target.get();
-    // k-loop matching.
+
+    const ast::ForStmt* kLoop = nullptr;
+    const Expr* dest = nullptr;          // the reduction target lvalue
+    const Expr* term = nullptr;          // the per-iteration EXPR
+    std::string op;                      // reduction operator
+    const ast::VarDeclStmt* accDecl = nullptr;  // shape A only (the scalar accumulator decl)
+
+    if (jLoop.body.statements.size() == 3) {
+        // Shape A: [VarDecl acc = INIT] [ForStmt kLoop] [Assign DEST = acc].
+        accDecl = dynamic_cast<const ast::VarDeclStmt*>(jLoop.body.statements[0].get());
+        kLoop = dynamic_cast<const ast::ForStmt*>(jLoop.body.statements[1].get());
+        const auto* store = dynamic_cast<const ast::AssignStmt*>(jLoop.body.statements[2].get());
+        if (accDecl == nullptr || kLoop == nullptr || store == nullptr || accDecl->init == nullptr)
+            return none;
+        const auto* storeVal = dynamic_cast<const ast::IdentifierExpr*>(store->value.get());
+        if (storeVal == nullptr || storeVal->name != accDecl->name) return none;
+        dest = store->target.get();
+        if (kLoop->body.statements.size() != 1) return none;
+        const auto* red = dynamic_cast<const ast::AssignStmt*>(kLoop->body.statements[0].get());
+        if (red == nullptr) return none;
+        const auto* redTgt = dynamic_cast<const ast::IdentifierExpr*>(red->target.get());
+        if (redTgt == nullptr || redTgt->name != accDecl->name) return none;
+        const auto* bin = dynamic_cast<const ast::BinaryExpr*>(red->value.get());
+        if (bin == nullptr || !isReductionOp(bin->op)) return none;
+        op = bin->op;
+        // acc must be one operand; the other is EXPR. For '-', acc must be on the left.
+        if (const auto* l = dynamic_cast<const ast::IdentifierExpr*>(bin->lhs.get());
+            l && l->name == accDecl->name)
+            term = bin->rhs.get();
+        else if (op != "-")
+            if (const auto* r = dynamic_cast<const ast::IdentifierExpr*>(bin->rhs.get());
+                r && r->name == accDecl->name)
+                term = bin->lhs.get();
+        if (term == nullptr || occurs(term, accDecl->name)) return none;
+        if (occurs(dest, accDecl->name)) return none;
+        if (occurs(accDecl->init.get(), j)) return none;  // INIT loop-invariant (k checked below)
+    } else if (jLoop.body.statements.size() == 1) {
+        // Shape B: [ForStmt kLoop] with kLoop body `DEST = DEST OP EXPR`.
+        kLoop = dynamic_cast<const ast::ForStmt*>(jLoop.body.statements[0].get());
+        if (kLoop == nullptr || kLoop->body.statements.size() != 1) return none;
+        const auto* red = dynamic_cast<const ast::AssignStmt*>(kLoop->body.statements[0].get());
+        if (red == nullptr) return none;
+        const auto* bin = dynamic_cast<const ast::BinaryExpr*>(red->value.get());
+        if (bin == nullptr || !isReductionOp(bin->op)) return none;
+        op = bin->op;
+        dest = red->target.get();
+        if (sameExpr(dest, bin->lhs.get())) term = bin->rhs.get();
+        else if (op != "-" && sameExpr(dest, bin->rhs.get())) term = bin->lhs.get();
+        if (term == nullptr) return none;
+    } else {
+        return none;
+    }
+
+    // k-loop matching + shared legality.
     std::string k;
     const Expr* kBound = nullptr;
     if (!matchCounted(kLoop, k, kBound)) return none;
     if (j == k) return none;
-    // k-loop body must be exactly `acc = acc + EXPR`.
-    if (kLoop->body.statements.size() != 1) return none;
-    const auto* red = dynamic_cast<const ast::AssignStmt*>(kLoop->body.statements[0].get());
-    if (red == nullptr) return none;
-    const auto* redTgt = dynamic_cast<const ast::IdentifierExpr*>(red->target.get());
-    if (redTgt == nullptr || redTgt->name != acc) return none;
-    const auto* sum = dynamic_cast<const ast::BinaryExpr*>(red->value.get());
-    if (sum == nullptr || sum->op != "+") return none;
-    // One side of the `+` is `acc`, the other is the reduction term EXPR.
-    const Expr* term = nullptr;
-    if (const auto* l = dynamic_cast<const ast::IdentifierExpr*>(sum->lhs.get()); l && l->name == acc)
-        term = sum->rhs.get();
-    else if (const auto* r = dynamic_cast<const ast::IdentifierExpr*>(sum->rhs.get()); r && r->name == acc)
-        term = sum->lhs.get();
-    if (term == nullptr) return none;
-
-    // ---- Legality ----
-    if (occurs(term, acc)) return none;            // EXPR must not reference the accumulator
-    if (occurs(dest, acc) || occurs(dest, k)) return none;  // DEST must be k-independent (and not acc)
+    if (occurs(dest, k)) return none;                        // DEST must be k-independent
     if (occurs(jBound, k) || occurs(kBound, j)) return none;  // bounds must not cross-depend
-    if (occurs(accDecl->init.get(), j) || occurs(accDecl->init.get(), k)) return none;  // INIT loop-invariant
+    if (accDecl != nullptr && occurs(accDecl->init.get(), k)) return none;
 
-    // ---- Profitability ----
-    if (!hasStridedKUnitJ(term, j, k)) return none;  // interchange must turn a strided access unit-stride
+    // ---- Profitability: interchange must turn a strided-in-k access unit-stride in j ----
+    if (!hasStridedKUnitJ(term, j, k)) return none;
 
-    // ---- Aliasing safety ----
-    // DEST must be an array element whose base buffer is distinct from every buffer read in EXPR,
-    // and all of them must be distinct single-assignment new[] locals.
+    // ---- Aliasing safety: DEST's buffer distinct from every read buffer; all distinct new[] ----
     const auto* destIx = dynamic_cast<const ast::IndexExpr*>(dest);
     if (destIx == nullptr) return none;
     const auto* destBaseId = dynamic_cast<const ast::IdentifierExpr*>(destIx->array.get());
@@ -323,21 +385,17 @@ std::vector<ast::StmtPtr> tryTransform(const ast::ForStmt& jLoop, const ast::Blo
     if (readBases.empty()) return none;
     if (!isDistinctBuffer(methodBody, destBase)) return none;
     for (const std::string& rb : readBases) {
-        if (rb == destBase) return none;  // DEST aliases a read array
+        if (rb == destBase) return none;
         if (!isDistinctBuffer(methodBody, rb)) return none;
     }
 
-    // ---- Build the replacement ----
-    // 1) init loop:  for (j) DEST = INIT;
-    auto initStore = makeAssign(cloneExprDeep(dest), cloneExprDeep(accDecl->init.get()), store->loc);
-    auto initLoop = makeJLoop(jLoop, std::move(initStore));
-    // 2) interchanged loop: for (k) for (j) DEST = DEST + EXPR;
+    // ---- Build: for(k) for(j) DEST = DEST OP EXPR; (shape A prepends for(j) DEST = INIT;) ----
     auto accumVal = std::make_unique<ast::BinaryExpr>();
-    accumVal->loc = red->loc;
-    accumVal->op = "+";
+    accumVal->loc = kLoop->loc;
+    accumVal->op = op;
     accumVal->lhs = cloneExprDeep(dest);
     accumVal->rhs = cloneExprDeep(term);
-    auto accum = makeAssign(cloneExprDeep(dest), std::move(accumVal), red->loc);
+    auto accum = makeAssign(cloneExprDeep(dest), std::move(accumVal), kLoop->loc);
     auto innerJ = makeJLoop(jLoop, std::move(accum));
     auto kOuter = std::make_unique<ast::ForStmt>();
     kOuter->loc = kLoop->loc;
@@ -348,7 +406,10 @@ std::vector<ast::StmtPtr> tryTransform(const ast::ForStmt& jLoop, const ast::Blo
     kOuter->body.statements.push_back(std::move(innerJ));
 
     std::vector<ast::StmtPtr> out;
-    out.push_back(std::move(initLoop));
+    if (accDecl != nullptr) {  // shape A: initialize the destination before accumulating
+        auto initStore = makeAssign(cloneExprDeep(dest), cloneExprDeep(accDecl->init.get()), jLoop.loc);
+        out.push_back(makeJLoop(jLoop, std::move(initStore)));
+    }
     out.push_back(std::move(kOuter));
     return out;
 }

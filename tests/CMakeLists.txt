@@ -1608,6 +1608,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Loop interchange, pattern B (-O3): direct accumulation `c[..] += a*b` with no scalar
+        # accumulator. Must give the same checksum as the unoptimized build.
+        add_test(NAME codegen_matmul_direct_opt_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=-O3"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/matmul_direct.ldp3"
+            "-DEXPECTED=checksum=1666368"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Type aliases and newtype (spec 24): transparent `typealias` (primitive, function, generic)
         # and distinct `newtype` (cast across the boundary).
         add_test(NAME codegen_type_aliases_runs COMMAND "${CMAKE_COMMAND}"

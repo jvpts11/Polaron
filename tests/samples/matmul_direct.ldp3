@@ -1,0 +1,40 @@
+import System.IO.Console;
+program MatmulDirect;
+
+// Direct-accumulation matmul (c[i*n+j] += a*b in the inner loop, no scalar accumulator). Exercises
+// the loop-interchange pass's pattern B at -O3; the checksum must match the unoptimized build.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int n = 100;
+                double[] a = new double[n * n]();
+                double[] b = new double[n * n]();
+                double[] c = new double[n * n]();
+                for (mutable int i = 0; i < n; i++) {
+                    for (mutable int j = 0; j < n; j++) {
+                        a[i * n + j] = cast<double>((i + j) % 7) * 0.5;
+                        b[i * n + j] = cast<double>((i * j) % 11) * 0.25;
+                    }
+                }
+                for (mutable int i = 0; i < n; i++) {
+                    for (mutable int j = 0; j < n; j++) {
+                        for (mutable int k = 0; k < n; k++) {
+                            c[i * n + j] = c[i * n + j] + a[i * n + k] * b[k * n + j];
+                        }
+                    }
+                }
+                mutable int acc = 0;
+                for (mutable int i = 0; i < n * n; i++) {
+                    acc = (acc + cast<int>(c[i])) % 1000000007;
+                }
+                System.IO.Console.printf("checksum=%d\n", acc);
+                delete a;
+                delete b;
+                delete c;
+                return;
+            }
+        }
+    }
+}
