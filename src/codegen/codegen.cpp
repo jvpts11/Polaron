@@ -1575,7 +1575,9 @@ struct CodeGenerator::Impl {
 
     // A class value (not a pointer/ref, not an array, not a primitive/enum).
     bool isClassValue(const std::string& t) {
-        return !isRefType(t) && !isArrayType(t) && classes.count(t) > 0;
+        // A Java-style enum value is a reference to a shared singleton (spec 12.2), not a value to
+        // be copied -- copying it would break identity (== / !=).
+        return !isRefType(t) && !isArrayType(t) && classes.count(t) > 0 && javaEnums.count(t) == 0;
     }
 
     // Only the default discipline copies; movable/unique transfer the pointer.
@@ -2601,10 +2603,19 @@ struct CodeGenerator::Impl {
             return nullptr;
         }
         // Pointer path: == / != on pointers (incl. null) compares addresses directly,
-        // skipping integer promotion (which would try to cast a pointer to int).
-        auto isPtrish = [](const std::string& t) {
-            return t == "null" || (!t.empty() && (t.back() == '*' || t.back() == '&'));
+        // skipping integer promotion (which would try to cast a pointer to int). A Java-style
+        // enum value is a pointer to its singleton, so identity comparison is its equality.
+        auto isPtrish = [this](const std::string& t) {
+            return t == "null" || (!t.empty() && (t.back() == '*' || t.back() == '&')) ||
+                   javaEnums.count(baseType(t)) > 0;
         };
+        const bool javaEnumCmp = javaEnums.count(baseType(lt)) > 0 || javaEnums.count(baseType(rt)) > 0;
+        if (javaEnumCmp && op != "==" && op != "!=") {
+            error("ordering comparison '" + op + "' is not supported on Java-style enum values; "
+                  "use == / != or compare a field",
+                  bin.loc);
+            return nullptr;
+        }
         if ((op == "==" || op == "!=") && (isPtrish(lt) || isPtrish(rt))) {
             llvm::Value* cmp = (op == "==") ? builder.CreateICmpEQ(l, r)
                                             : builder.CreateICmpNE(l, r);
@@ -2815,6 +2826,8 @@ struct CodeGenerator::Impl {
     // A java-style enum constant: materializes `new EnumName(args)` on the heap.
     // Not yet a true singleton -- each reference rebuilds it; identity is a later
     // refinement (would need a global + eager init).
+    // A Java-style enum constant is a singleton (spec 12.2): the instance is built once into a
+    // private global on first use and reused after, so `==`/`!=` are correct identity comparisons.
     llvm::Value* emitEnumConstant(const ast::EnumDecl& en, const std::string& constName) {
         auto pos = std::find(en.constants.begin(), en.constants.end(), constName);
         if (pos == en.constants.end()) {
@@ -2824,6 +2837,21 @@ struct CodeGenerator::Impl {
         const std::size_t idx = static_cast<std::size_t>(pos - en.constants.begin());
         auto cit = classes.find(en.name);
         if (cit == classes.end()) return nullptr;
+        const std::string gname = en.name + "." + constName + ".__inst";
+        if (staticGlobals.count(gname) == 0) {
+            staticGlobals[gname] = new llvm::GlobalVariable(
+                module, builder.getPtrTy(), /*isConstant=*/false,
+                llvm::GlobalValue::PrivateLinkage,
+                llvm::ConstantPointerNull::get(builder.getPtrTy()), gname);
+        }
+        llvm::GlobalVariable* g = staticGlobals[gname];
+        llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        llvm::Value* cur = builder.CreateLoad(builder.getPtrTy(), g, "enum.cur");
+        llvm::Function* fn = currentFn;
+        auto* initBB = llvm::BasicBlock::Create(context, "enumc.init", fn);
+        auto* doneBB = llvm::BasicBlock::Create(context, "enumc.done", fn);
+        builder.CreateCondBr(builder.CreateICmpEQ(cur, nullp), initBB, doneBB);
+        builder.SetInsertPoint(initBB);
         llvm::Value* objPtr = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, en.name);
         auto fnit = functions.find(en.name + "." + en.name);
         if (fnit != functions.end()) {
@@ -2840,7 +2868,10 @@ struct CodeGenerator::Impl {
             }
             emitMaybeInvoke(fnit->second, args);
         }
-        return objPtr;
+        builder.CreateStore(objPtr, g);
+        builder.CreateBr(doneBB);
+        builder.SetInsertPoint(doneBB);
+        return builder.CreateLoad(builder.getPtrTy(), g, en.name);
     }
 
     // Lowers $"lit {e0} lit {e1} ..." to a printf: builds a format string with a

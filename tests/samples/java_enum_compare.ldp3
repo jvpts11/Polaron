@@ -1,0 +1,25 @@
+import System.IO.Console;
+program JavaEnumCompare;
+
+// Java-style enum constants (with fields/constructor, spec 12.2) are singletons, so a value held
+// in a variable keeps its identity: == / != compare against the same instance, and assignment
+// shares the singleton rather than copying it.
+
+public bundle main {
+    public namespace app {
+        public enum Planet {
+            MERCURY(3), EARTH(5), MARS(4);
+            private int weight;
+            public constructor Planet(int weight) { this.weight = weight; }
+            public method weight() returns int { return this.weight; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Planet p = Planet.MARS;
+                System.IO.Console.printf("%d %d %d\n",
+                    p == Planet.MARS, p == Planet.EARTH, p.weight());  // 1 0 4
+                return;
+            }
+        }
+    }
+}
