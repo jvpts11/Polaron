@@ -126,6 +126,9 @@ private:
     void checkPersistentReleases();                              // spec 18.15 obligation
     // The class in `cls`'s hierarchy that declares persistent field `field` (or "").
     std::string persistentFieldOwner(const std::string& cls, const std::string& field) const;
+    // `cascade release persistent X` (spec 37.1): mark every persistent field reachable from type
+    // `typeName` (through its hierarchy and owned class fields) as released, satisfying spec 18.15.
+    void markCascadeReleased(const std::string& typeName, std::unordered_set<std::string>& seen);
     void processImports(const ast::Program& program);
     void findEntryPoint(const ast::Program& program);
     void analyzeBodies(const ast::Program& program);

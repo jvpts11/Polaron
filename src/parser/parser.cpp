@@ -1423,6 +1423,18 @@ ast::StmtPtr Parser::parseStatement() {
             expect(TokenKind::Semicolon, "';'");
             return del;
         }
+        // `cascade release persistent X` (spec 37.1): release every persistent in X's owned graph.
+        if (check(TokenKind::KwRelease)) {
+            advance();  // 'release'
+            auto cs = std::make_unique<ast::CascadeStmt>();
+            cs->loc = cloc;
+            cs->op = ast::CascadeOpKind::Release;
+            cs->params = std::move(params);
+            match(TokenKind::KwPersistent);  // optional 'persistent' keyword
+            cs->target = parseExpression();
+            expect(TokenKind::Semicolon, "';'");
+            return cs;
+        }
         // `cascade unimport X` (spec 37.1): unimport X and its subclasses and monomorphizations.
         if (check(TokenKind::KwUnimport)) {
             advance();  // 'unimport'

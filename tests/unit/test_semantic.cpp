@@ -1433,3 +1433,22 @@ TEST_CASE("semantic accepts cascade println when describe is defined") {
         " public method describe() returns void { System.IO.Console.println($\"N {this.id}\"); } }",
         "N* a = new N() on heap; cascade Console.println(a); delete a;")));
 }
+
+// `cascade release persistent X` (spec 37.1) satisfies the spec 18.15 release obligation for every
+// persistent reachable from X.
+TEST_CASE("semantic accepts cascade release satisfying the persistent obligation") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public class Session { public persistent mutable int token;"
+        " public constructor Session() { this.token = 0; } }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Session s = new Session() on heap; cascade release persistent s; delete s; return; } } } }"));
+}
+TEST_CASE("semantic rejects a non-eternal persistent with no release at all") {
+    CHECK_FALSE(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public class Session { public persistent mutable int token;"
+        " public constructor Session() { this.token = 0; } }"
+        " public class Main { public static method main(string[] args) returns void {"
+        " Session s = new Session() on heap; delete s; return; } } } }"));
+}

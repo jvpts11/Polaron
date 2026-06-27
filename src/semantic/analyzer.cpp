@@ -1041,6 +1041,24 @@ std::string SemanticAnalyzer::persistentFieldOwner(const std::string& cls,
     return "";
 }
 
+void SemanticAnalyzer::markCascadeReleased(const std::string& typeName,
+                                           std::unordered_set<std::string>& seen) {
+    const std::string base = baseType(typeName);
+    if (base.empty() || !seen.insert(base).second) return;
+    for (std::string cur = base; !cur.empty();) {
+        auto it = classes_.find(cur);
+        if (it == classes_.end()) break;
+        for (const PersistentFieldInfo& pf : persistentFields_)
+            if (pf.cls == cur) releasedPersistents_.insert(cur + "." + pf.name);
+        for (const auto& [fname, fi] : it->second.fields) {  // recurse into owned class fields
+            if (fi.type.find('&') != std::string::npos || isArrayType(fi.type)) continue;
+            if (classes_.find(baseType(fi.type)) != classes_.end())
+                markCascadeReleased(fi.type, seen);
+        }
+        cur = it->second.superclass;
+    }
+}
+
 // Enforces the release obligation (spec 18.15): a non-eternal persistent field
 // with no `release persistent` anywhere in the program is a compile error.
 void SemanticAnalyzer::checkPersistentReleases() {
@@ -1698,6 +1716,19 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 error("cannot unimport '" + cs->typeName +
                           "': it was brought in by 'final import' (spec 37.6)",
                       cs->loc);
+            return;
+        }
+        // `cascade release persistent X` (spec 37.1): satisfy the release obligation for every
+        // persistent reachable from X's owned graph (spec 18.15). Runtime release is a no-op today,
+        // matching plain `release persistent`.
+        if (cs->op == ast::CascadeOpKind::Release) {
+            const std::string t = cs->target != nullptr ? baseType(typeOf(*cs->target)) : "";
+            if (!t.empty() && lookupClass(t) == nullptr)
+                error("'cascade release' expects a class object, got '" + t + "'", cs->loc);
+            else if (!t.empty()) {
+                std::unordered_set<std::string> seen;
+                markCascadeReleased(t, seen);
+            }
             return;
         }
         // `cascade println(X)` / `cascade validate(X)` (spec 37.1). The operand must be a class
