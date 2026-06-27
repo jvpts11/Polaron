@@ -137,6 +137,63 @@ void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
     errors_.push_back(SemaError{std::move(message), loc});
 }
 
+void SemanticAnalyzer::warn(std::string message, SourceLocation loc) {
+    warnings_.push_back(SemaError{std::move(message), loc});
+}
+
+// A statement that can exit or branch out of straight-line flow (so it could break a comefrom loop).
+static bool stmtCanExit(const ast::Stmt* st) {
+    return dynamic_cast<const ast::ReturnStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::BreakStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::ContinueStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::ThrowStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::GotoStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::IfStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::WhileStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::ForStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::ForeachStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::DoWhileStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::SwitchStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::MatchStmt*>(st) != nullptr ||
+           dynamic_cast<const ast::TryStmt*>(st) != nullptr;
+}
+
+// Best-effort warning for an obvious infinite loop via comefrom (spec 7.10 rule 7): a `comefrom X`
+// preceded in the SAME block by `label X` with nothing that can exit between them branches back
+// forever. (The retry pattern -- label at one level, comefrom inside a try/catch -- spans blocks
+// and is not flagged.) Recurses into nested blocks to catch loops contained within them.
+void SemanticAnalyzer::detectComefromLoops(const ast::Block& block) {
+    for (std::size_t i = 0; i < block.statements.size(); ++i) {
+        const ast::Stmt* st = block.statements[i].get();
+        if (const auto* cf = dynamic_cast<const ast::ComefromStmt*>(st)) {
+            for (std::size_t j = i; j-- > 0;) {
+                const auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(block.statements[j].get());
+                if (lm == nullptr || lm->name != cf->name) continue;
+                bool clear = true;
+                for (std::size_t k = j + 1; k < i && clear; ++k)
+                    if (stmtCanExit(block.statements[k].get())) clear = false;
+                if (clear)
+                    warn("comefrom '" + cf->name +
+                             "' loops back with no exit between its label and itself: infinite loop "
+                             "(spec 7.10)",
+                         cf->loc);
+                break;
+            }
+        }
+        auto rec = [&](const ast::Block& b) { detectComefromLoops(b); };
+        if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st)) { rec(iff->thenBlock); if (iff->elseBlock) rec(*iff->elseBlock); }
+        else if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) rec(w->body);
+        else if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) rec(d->body);
+        else if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) rec(f->body);
+        else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) rec(fe->body);
+        else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) { for (auto& c : sw->cases) rec(c.body); if (sw->defaultBody) rec(*sw->defaultBody); }
+        else if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) { for (auto& c : ms->cases) rec(c.body); if (ms->defaultBody) rec(*ms->defaultBody); }
+        else if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) { rec(tr->body); for (auto& c : tr->catches) rec(c.body); if (tr->finallyBlock) rec(*tr->finallyBlock); }
+        else if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) rec(df->body);
+        else if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) rec(us->body);
+    }
+}
+
 const ClassInfo* SemanticAnalyzer::lookupClass(const std::string& name) const {
     auto it = classes_.find(name);
     return it == classes_.end() ? nullptr : &it->second;
@@ -1187,6 +1244,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     methodLabels_.clear();
     comefromTargets_.clear();
     collectMethodLabels(body);  // chaos tetrad targets are validated against these (spec 7.9-7.11)
+    detectComefromLoops(body);  // best-effort infinite-loop warning (spec 7.10 rule 7)
     currentClass_ = thisClass;
     inConstructor_ = inConstructor;
     pushScope();
@@ -1870,8 +1928,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* g = dynamic_cast<const ast::GotoStmt*>(&stmt)) {  // spec 7.9
-        if (methodLabels_.count(g->name) == 0)
-            error("goto references unknown label '" + g->name + "' in this method (spec 7.9)", g->loc);
+        if (g->address != nullptr) {
+            typeOf(*g->address);  // raw-address FFI jump (unchecked): just type-check the operand
+        } else if (methodLabels_.count(g->name) == 0 && externReturns_.count(g->name) == 0) {
+            error("goto references unknown label or extern function '" + g->name +
+                      "' in this method (spec 7.9)",
+                  g->loc);
+        }
         return;
     }
     if (const auto* ab = dynamic_cast<const ast::AbstainfromStmt*>(&stmt)) {  // spec 7.11

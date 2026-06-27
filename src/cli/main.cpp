@@ -1192,7 +1192,12 @@ int checkProgram(const std::string& path) {
     ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     ldp3::SemanticAnalyzer sema;
-    if (!sema.analyze(program)) {
+    const bool semaOk = sema.analyze(program);
+    for (const ldp3::SemaError& w : sema.warnings()) {
+        std::fprintf(stderr, "%s:%d:%d: warning: %s\n", path.c_str(), w.loc.line, w.loc.col,
+                     w.message.c_str());
+    }
+    if (!semaOk) {
         for (const ldp3::SemaError& e : sema.errors()) {
             std::fprintf(stderr, "%s:%d:%d: error: %s\n", path.c_str(), e.loc.line, e.loc.col,
                          e.message.c_str());
@@ -1246,7 +1251,12 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     if (optLevel > 0) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
     ldp3::SemanticAnalyzer sema;
-    if (!sema.analyze(program)) {
+    const bool semaOk = sema.analyze(program);
+    for (const ldp3::SemaError& w : sema.warnings()) {
+        std::fprintf(stderr, "%.*s:%d:%d: warning: %s\n", static_cast<int>(w.loc.file.size()),
+                     w.loc.file.data(), w.loc.line, w.loc.col, w.message.c_str());
+    }
+    if (!semaOk) {
         for (const ldp3::SemaError& e : sema.errors()) {
             std::fprintf(stderr, "%.*s:%d:%d: error: %s\n", static_cast<int>(e.loc.file.size()),
                          e.loc.file.data(), e.loc.line, e.loc.col, e.message.c_str());

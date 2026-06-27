@@ -4370,7 +4370,22 @@ struct CodeGenerator::Impl {
             builder.CreateBr(bb);
             return;
         }
-        if (const auto* g = dynamic_cast<const ast::GotoStmt*>(&stmt)) {  // `goto name;` (spec 7.9)
+        if (const auto* g = dynamic_cast<const ast::GotoStmt*>(&stmt)) {  // spec 7.9
+            llvm::FunctionType* voidFn = llvm::FunctionType::get(builder.getVoidTy(), {}, false);
+            if (g->address != nullptr) {  // `goto 0x1000` -- raw control transfer; does not return
+                llvm::Value* a = emitExpr(*g->address);
+                if (a == nullptr) return;
+                llvm::Value* fp = builder.CreateIntToPtr(fitInt(a, 64), builder.getPtrTy());
+                builder.CreateCall(voidFn, fp, {});
+                builder.CreateUnreachable();
+                return;
+            }
+            if (auto fit = functions.find(g->name); fit != functions.end()) {  // goto externFn (FFI)
+                builder.CreateCall(voidFn, fit->second, {});  // call as void(); does not return
+                builder.CreateUnreachable();
+                return;
+            }
+            // `goto label;` -- branch to the label's block in the same method.
             llvm::BasicBlock*& bb = labelBlocks[g->name];
             if (bb == nullptr) bb = llvm::BasicBlock::Create(context, "label." + g->name, currentFn);
             builder.CreateBr(bb);

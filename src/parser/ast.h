@@ -498,9 +498,12 @@ struct ComefromStmt : Stmt {
     void dump(std::string& out, int /*indent*/) const override { out += "comefrom " + name; }
 };
 
-// `goto name;` -- jump to a label in the same method (spec 7.9).
+// `goto name;` jumps to a label in the same method, or to an `extern` function by name (spec 7.9).
+// `goto <addr>;` (e.g. `goto 0x1000;`) is a raw control transfer to an address. Both function/
+// address forms are unchecked FFI/low-level jumps: control does not return.
 struct GotoStmt : Stmt {
-    std::string name;
+    std::string name;     // a label or an extern function name (empty when `address` is set)
+    ExprPtr address;      // `goto <expr>` raw-address form (null for the name form)
     void dump(std::string& out, int /*indent*/) const override { out += "goto " + name; }
 };
 

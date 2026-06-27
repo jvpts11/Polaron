@@ -104,10 +104,14 @@ public:
 
     bool hasErrors() const { return !errors_.empty(); }
     const std::vector<SemaError>& errors() const { return errors_; }
+    const std::vector<SemaError>& warnings() const { return warnings_; }  // non-fatal diagnostics
     const EntryPoint& entryPoint() const { return entry_; }
 
 private:
     void error(std::string message, SourceLocation loc);
+    void warn(std::string message, SourceLocation loc);  // records a non-fatal diagnostic
+    // Best-effort detection of an obvious infinite loop via comefrom (spec 7.10 rule 7).
+    void detectComefromLoops(const ast::Block& block);
     bool isValidMainSignature(const ast::MethodDecl& method) const;
 
     void registerClasses(const ast::Program& program);
@@ -178,6 +182,7 @@ private:
     void declareLocal(const std::string& name, LocalVar info);
 
     std::vector<SemaError> errors_;
+    std::vector<SemaError> warnings_;
     EntryPoint entry_;
     std::unordered_map<std::string, ClassInfo> classes_;
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants

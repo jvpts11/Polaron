@@ -1269,11 +1269,14 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return c;
     }
-    if (check(TokenKind::KwGoto)) {  // `goto name;` -- same method only (spec 7.9)
+    if (check(TokenKind::KwGoto)) {  // `goto label;` (same method) or `goto <addr>;` (FFI, spec 7.9)
         auto g = std::make_unique<ast::GotoStmt>();
         g->loc = current().loc;
         advance();  // 'goto'
-        parseLabelRef(g->name);
+        if (check(TokenKind::Identifier))
+            parseLabelRef(g->name);          // a label or an extern function name
+        else
+            g->address = parseExpression();  // raw address form, e.g. `goto 0x1000;`
         expect(TokenKind::Semicolon, "';'");
         return g;
     }
