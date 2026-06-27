@@ -1,0 +1,25 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program VolatileRegion;
+
+// `volatile region` (spec 37.5, MMIO): objects placed in a volatile region are accessed volatilely,
+// so their field loads and stores are emitted volatile and never optimized away.
+
+public bundle main {
+    public namespace app {
+        public class Reg {
+            public mutable int ctrl;
+            public constructor Reg() { this.ctrl = 0; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                volatile region mmio = itself.allocate(4 kilobytes);
+                Reg* r = new Reg() in region mmio;
+                r.ctrl = 7;                                   // volatile store
+                System.IO.Console.printf("ctrl=%d\n", r.ctrl);  // volatile load
+                release region mmio;
+                return;
+            }
+        }
+    }
+}

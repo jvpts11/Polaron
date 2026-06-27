@@ -1504,6 +1504,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # volatile region (spec 37.5, MMIO): objects in the region are accessed volatilely. Built at
+        # -O3 to confirm the volatile loads/stores survive optimization.
+        add_test(NAME codegen_volatile_region_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=-O3"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/volatile_region.ldp3"
+            "-DEXPECTED=ctrl=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # lazy thread (spec 37.3): the Thread object is created on first reference, deferring spawn.
         add_test(NAME codegen_lazy_thread_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

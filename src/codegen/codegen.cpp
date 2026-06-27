@@ -585,6 +585,9 @@ struct CodeGenerator::Impl {
             return it != locals.end() && it->second.isVolatile;
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            // An object that lives in a `volatile region` (MMIO): every field access is volatile.
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
+                if (volatileObjects_.count(oid->name) > 0) return true;
             auto cit = classes.find(baseType(typeName(*mem->object)));
             return cit != classes.end() && cit->second.volatileFields.count(mem->member) > 0;
         }
@@ -649,6 +652,10 @@ struct CodeGenerator::Impl {
     std::unordered_set<std::string> lazyRegions_;
     std::unordered_map<std::string, const ast::Expr*> lazyRegionSize_;
     std::unordered_map<std::string, const ast::Expr*> lazyRegionAt_;
+    // `volatile region` (spec 37.5, MMIO): region locals whose objects must be accessed volatilely,
+    // and the object locals bound from `new ... in` such a region (their field accesses are volatile).
+    std::unordered_set<std::string> volatileRegions_;
+    std::unordered_set<std::string> volatileObjects_;
 
     // Emits (or returns the memoized) recursive helper `void(ptr obj, ptr visited, i32 depth)` that
     // applies `op` to one object and propagates through its owned children. The runtime visited-set
@@ -4441,6 +4448,7 @@ struct CodeGenerator::Impl {
                     lazyRegions_.insert(vd->name);
                     lazyRegionSize_[vd->name] = ri->size.get();
                     lazyRegionAt_[vd->name] = ri->atAddress.get();
+                    if (vd->isVolatile) volatileRegions_.insert(vd->name);  // spec 37.5 (MMIO)
                     if (!vd->isEternal) scopeRegions.push_back(RegionLocal{slot, vd->isEternal});
                     return;
                 }
@@ -4468,12 +4476,17 @@ struct CodeGenerator::Impl {
                     !vd->isEternal) {
                     scopeObjects.push_back(ScopeObject{slot, nw->className});
                 }
+                // An object placed in a `volatile region` (MMIO): its field accesses are volatile.
+                if (!nw->region.empty() && volatileRegions_.count(nw->region) > 0)
+                    volatileObjects_.insert(vd->name);
             }
             // RAII for regions (spec 17.7): freed at the end of the lexical block
             // unless eternal. An explicit `release region` nulls the slot first, so
             // the scope-end free is a harmless free(null).
             if (declType == "region" && !vd->isEternal)
                 scopeRegions.push_back(RegionLocal{slot, vd->isEternal});
+            if (declType == "region" && vd->isVolatile)
+                volatileRegions_.insert(vd->name);  // spec 37.5 (MMIO): volatile object accesses
             return;
         }
         if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
@@ -5690,6 +5703,11 @@ struct CodeGenerator::Impl {
         locals.clear();
         scopeObjects.clear();
         scopeRegions.clear();
+        lazyRegions_.clear();  // region/volatile tracking is keyed by local name; reset per function
+        lazyRegionSize_.clear();
+        lazyRegionAt_.clear();
+        volatileRegions_.clear();
+        volatileObjects_.clear();
         deferred.clear();
         labelBlocks.clear();
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
@@ -5865,6 +5883,11 @@ struct CodeGenerator::Impl {
         locals.clear();
         scopeObjects.clear();
         scopeRegions.clear();
+        lazyRegions_.clear();  // region/volatile tracking is keyed by local name; reset per function
+        lazyRegionSize_.clear();
+        lazyRegionAt_.clear();
+        volatileRegions_.clear();
+        volatileObjects_.clear();
         deferred.clear();
         labelBlocks.clear();
         builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", res));
@@ -6036,6 +6059,11 @@ struct CodeGenerator::Impl {
         locals.clear();
         scopeObjects.clear();
         scopeRegions.clear();
+        lazyRegions_.clear();  // region/volatile tracking is keyed by local name; reset per function
+        lazyRegionSize_.clear();
+        lazyRegionAt_.clear();
+        volatileRegions_.clear();
+        volatileObjects_.clear();
         deferred.clear();
         labelBlocks.clear();
         builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", res));
