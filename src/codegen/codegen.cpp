@@ -4912,7 +4912,9 @@ struct CodeGenerator::Impl {
         const std::size_t dfBase = deferred.size();
         const std::size_t regBase = scopeRegions.size();
         for (const auto& stmt : block.statements) {
-            if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
+            // Don't stop at a terminator: a later `label` (the target of a forward goto/comefrom)
+            // must still be placed. emitStatement skips genuinely dead statements but always emits
+            // labels, re-establishing a reachable block for the code that follows.
             emitStatement(*stmt);
         }
         if (newScope) {

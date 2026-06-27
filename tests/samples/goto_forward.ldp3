@@ -1,0 +1,24 @@
+import System.IO.Console;
+program GotoForward;
+
+// `goto` (spec 7.9) jumps forward to a label later in the same method, skipping the code between.
+// This works in any method, not only main (the block emitter keeps placing labels after a branch).
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method check(int x) returns void {
+                if (x < 0) { goto negative; }
+                System.IO.Console.println("non-negative");
+                return;
+                label negative;
+                System.IO.Console.println("negative");
+            }
+            public static method main(string[] args) returns void {
+                Main.check(5);        // non-negative
+                Main.check(0 - 3);    // negative
+                return;
+            }
+        }
+    }
+}
