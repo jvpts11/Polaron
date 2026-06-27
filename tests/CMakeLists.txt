@@ -1625,7 +1625,7 @@ if(LDP3_WITH_LLVM)
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/goto_abstainfrom.ldp3"
-            "-DEXPECTED=after goto running running"
+            "-DEXPECTED=after goto body body"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

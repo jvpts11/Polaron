@@ -491,7 +491,8 @@ struct LabelMarkStmt : Stmt {
     void dump(std::string& out, int /*indent*/) const override { out += "label " + name; }
 };
 
-// `comefrom name;` -- transfers control to `label name;` (spec 7.10, same-method only).
+// `comefrom name;` -- transfers control to `label name;` in the same method (spec 7.10).
+// The chaos tetrad (goto/comefrom/abstainfrom/reinstate) is intra-method only.
 struct ComefromStmt : Stmt {
     std::string name;
     void dump(std::string& out, int /*indent*/) const override { out += "comefrom " + name; }
@@ -503,8 +504,8 @@ struct GotoStmt : Stmt {
     void dump(std::string& out, int /*indent*/) const override { out += "goto " + name; }
 };
 
-// `abstainfrom name;` / `reinstate name;` -- disable/re-enable the code guarded by
-// label `name` at runtime, via reference counting (spec 7.11).
+// `abstainfrom name;` / `reinstate name;` -- disable/re-enable the code guarded by a label in the
+// same method at runtime, via reference counting (spec 7.11).
 struct AbstainfromStmt : Stmt {
     std::string name;
     bool isReinstate = false;  // `reinstate` decrements; `abstainfrom` increments

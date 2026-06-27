@@ -1,16 +1,18 @@
 import System.IO.Console;
 program GotoAbstainfrom;
 
-// `goto` (spec 7.9) jumps to a label; `abstainfrom`/`reinstate` (spec 7.11)
-// disable/re-enable the code guarded by a label at runtime. Here `goto skip`
-// jumps over a line, and abstainfrom silences run()'s body until reinstated.
+// `goto` (spec 7.9) jumps to a label in the same method; `abstainfrom`/`reinstate` (spec 7.11)
+// disable/re-enable the block guarded by a label. The chaos tetrad is intra-method only, so a
+// method abstains/reinstates its own labels (here `run` toggles its own `body` block per call).
 
 public bundle main {
     public namespace app {
         public class Main {
-            public static method run() returns void {
-                label proc;
-                System.IO.Console.printf("running\n");
+            public static method run(int mode) returns void {
+                if (mode == 1) { abstainfrom body; }   // disable body from now on
+                if (mode == 2) { reinstate body; }     // re-enable body
+                label body;
+                System.IO.Console.printf("body\n");
             }
             public static method main(string[] args) returns void {
                 mutable int x = 1;
@@ -18,11 +20,10 @@ public bundle main {
                 System.IO.Console.printf("unreachable\n");
                 label skip;
                 System.IO.Console.printf("after goto\n");
-                Main.run();              // running
-                abstainfrom proc;
-                Main.run();              // disabled -> prints nothing
-                reinstate proc;
-                Main.run();              // running again
+                Main.run(0);   // body
+                Main.run(1);   // abstains body -> silent
+                Main.run(0);   // body abstained -> silent
+                Main.run(2);   // reinstates body -> body
                 return;
             }
         }

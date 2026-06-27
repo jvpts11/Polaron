@@ -269,6 +269,15 @@ ast::CascadeParams Parser::parseCascadeParamsOpt() {
     return p;
 }
 
+void Parser::parseLabelRef(std::string& name) {
+    name = expect(TokenKind::Identifier, "a label name").lexeme;
+    // The chaos tetrad is intra-method only: a method-qualified `method.label` form is an error.
+    if (check(TokenKind::Dot))
+        fail("cross-method goto/comefrom/abstainfrom/reinstate is not allowed; "
+             "these are intra-method only (spec 7.9-7.11)",
+             current().loc);
+}
+
 ast::Bundle Parser::parseBundle() {
     ast::Bundle b;
     b.loc = current().loc;
@@ -1252,19 +1261,19 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return m;
     }
-    if (check(TokenKind::KwComefrom)) {  // `comefrom name;` -- jump to label name (spec 7.10)
+    if (check(TokenKind::KwComefrom)) {  // `comefrom name;` -- same method only (spec 7.10)
         auto c = std::make_unique<ast::ComefromStmt>();
         c->loc = current().loc;
         advance();  // 'comefrom'
-        c->name = expect(TokenKind::Identifier, "a label name after 'comefrom'").lexeme;
+        parseLabelRef(c->name);
         expect(TokenKind::Semicolon, "';'");
         return c;
     }
-    if (check(TokenKind::KwGoto)) {  // `goto name;` -- jump to a label (spec 7.9)
+    if (check(TokenKind::KwGoto)) {  // `goto name;` -- same method only (spec 7.9)
         auto g = std::make_unique<ast::GotoStmt>();
         g->loc = current().loc;
         advance();  // 'goto'
-        g->name = expect(TokenKind::Identifier, "a label name after 'goto'").lexeme;
+        parseLabelRef(g->name);
         expect(TokenKind::Semicolon, "';'");
         return g;
     }
@@ -1285,9 +1294,7 @@ ast::StmtPtr Parser::parseStatement() {
         a->loc = current().loc;
         a->isReinstate = match(TokenKind::KwReinstate);
         if (!a->isReinstate) advance();  // 'abstainfrom'
-        a->name = expect(TokenKind::Identifier, "a label name").lexeme;
-        // Accept (and ignore) a cross-method `method.label` form: take the last component.
-        while (match(TokenKind::Dot)) a->name = expect(TokenKind::Identifier, "a label name").lexeme;
+        parseLabelRef(a->name);  // same method only (spec 7.11)
         expect(TokenKind::Semicolon, "';'");
         return a;
     }

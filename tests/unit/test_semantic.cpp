@@ -1452,3 +1452,19 @@ TEST_CASE("semantic rejects a non-eternal persistent with no release at all") {
         " public class Main { public static method main(string[] args) returns void {"
         " Session s = new Session() on heap; delete s; return; } } } }"));
 }
+
+// The chaos tetrad (goto/comefrom/abstainfrom/reinstate) is intra-method only (spec 7.9-7.11): a
+// method-qualified `method.label` reference is rejected.
+TEST_CASE("semantic rejects cross-method abstainfrom") {
+    CHECK_FALSE(checkSrc(
+        "program P; public bundle b { public namespace n { public class Main {"
+        " public static method run() returns void { label proc; }"
+        " public static method main(string[] args) returns void {"
+        " abstainfrom run.proc; return; } } } }"));
+}
+TEST_CASE("semantic accepts intra-method abstainfrom") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n { public class Main {"
+        " public static method main(string[] args) returns void {"
+        " abstainfrom body; label body; return; } } } }"));
+}

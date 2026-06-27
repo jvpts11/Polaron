@@ -339,8 +339,12 @@ struct CodeGenerator::Impl {
     llvm::StructType* methodStructTy = nullptr;   // reflection Method layout { ptr name, ptr fn }
     std::unordered_map<std::string, llvm::GlobalVariable*> typeGlobals;  // class name -> its Type global
     std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
-    std::unordered_set<std::string> abstainedLabels;  // labels named by some `abstainfrom` (spec 7.11)
-    std::unordered_map<std::string, llvm::GlobalVariable*> abstainCounters;  // label -> runtime counter
+    std::unordered_set<std::string> abstainedLabels;  // qualified labels named by some `abstainfrom`
+    std::unordered_map<std::string, llvm::GlobalVariable*> abstainCounters;  // qualified label -> counter
+    std::string scanClass_;   // (class, method) context while scanning for abstained labels, so the
+    std::string scanMethod_;  // scan can build the same qualified "class.method.label" key as codegen
+    std::string enclosingClass_;   // (class, method) of the function being emitted; set even for a
+    std::string enclosingMethod_;  // static method (currentClass is "" there). For qualified labels.
     std::unordered_map<std::string, llvm::GlobalVariable*> instanceCounters;  // class -> live-instance count
     std::unordered_set<std::string> unimportableClasses;  // classes named by unimport/reimport (spec 30)
     std::unordered_map<std::string, llvm::GlobalVariable*> aliveFlags;  // class -> i32 alive flag (1=alive)
@@ -3975,7 +3979,12 @@ struct CodeGenerator::Impl {
     // the program, so only those labels get a runtime guard (spec 7.11).
     void scanAbstained(const ast::Stmt* st) {
         if (st == nullptr) return;
-        if (const auto* a = dynamic_cast<const ast::AbstainfromStmt*>(st)) { abstainedLabels.insert(a->name); return; }
+        if (const auto* a = dynamic_cast<const ast::AbstainfromStmt*>(st)) {
+            // Intra-method: qualify by the containing method so the key matches the label guard's
+            // "class.method.label" and same-named labels in different methods never collide (7.11).
+            abstainedLabels.insert(scanClass_ + "." + scanMethod_ + "." + a->name);
+            return;
+        }
         if (const auto* u = dynamic_cast<const ast::UnimportStmt*>(st)) { unimportableClasses.insert(baseType(u->target)); return; }
         if (const auto* c = dynamic_cast<const ast::CascadeStmt*>(st)) {  // cascade unimport: X + subtypes
             if (c->op == ast::CascadeOpKind::Unimport)
@@ -4001,12 +4010,19 @@ struct CodeGenerator::Impl {
             for (const ast::Namespace& ns : bundle.namespaces)
                 for (const ast::ClassDecl& cls : ns.classes)
                     for (const ast::MemberPtr& member : cls.members) {
-                        if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get()))
+                        scanClass_ = cls.name;
+                        if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                            scanMethod_ = m->name;  // function name is "class.method"
                             for (const auto& s : m->body.statements) scanAbstained(s.get());
-                        else if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(member.get()))
+                        } else if (const auto* c =
+                                       dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
+                            scanMethod_ = cls.name;  // function name is "class.class"
                             for (const auto& s : c->body.statements) scanAbstained(s.get());
-                        else if (const auto* d = dynamic_cast<const ast::DestructorDecl*>(member.get()))
+                        } else if (const auto* d =
+                                       dynamic_cast<const ast::DestructorDecl*>(member.get())) {
+                            scanMethod_ = "~" + cls.name;  // function name is "class.~class"
                             for (const auto& s : d->body.statements) scanAbstained(s.get());
+                        }
                     }
     }
 
@@ -4328,9 +4344,11 @@ struct CodeGenerator::Impl {
             // `abstainfrom` (spec 7.11): if the label is ever abstained anywhere, guard
             // its block -- while the runtime counter is non-zero, skip the guarded code
             // (to the method's end). Labels never abstained get no guard (unchanged).
-            if (abstainedLabels.count(lm->name) > 0) {
+            const std::string akey =
+                enclosingClass_ + "." + enclosingMethod_ + "." + lm->name;  // class.method.label
+            if (abstainedLabels.count(akey) > 0) {
                 llvm::Value* c =
-                    builder.CreateLoad(builder.getInt32Ty(), abstainCounter(lm->name), "abstain.c");
+                    builder.CreateLoad(builder.getInt32Ty(), abstainCounter(akey), "abstain.c");
                 llvm::BasicBlock* body = llvm::BasicBlock::Create(context, "label.on", currentFn);
                 llvm::BasicBlock* skip = llvm::BasicBlock::Create(context, "label.off", currentFn);
                 builder.CreateCondBr(builder.CreateICmpNE(c, builder.getInt32(0)), skip, body);
@@ -4355,9 +4373,11 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* ab = dynamic_cast<const ast::AbstainfromStmt*>(&stmt)) {  // spec 7.11
-            // Adjust the label's runtime reference counter; the guard at `label name;`
-            // skips the guarded code while the counter is non-zero.
-            llvm::GlobalVariable* ctr = abstainCounter(ab->name);
+            // Adjust the label's runtime reference counter; the guard at `label name;` skips the
+            // guarded code while the counter is non-zero. The key is the current method's
+            // "class.method.label" (intra-method), so same-named labels in other methods are distinct.
+            const std::string akey = enclosingClass_ + "." + enclosingMethod_ + "." + ab->name;
+            llvm::GlobalVariable* ctr = abstainCounter(akey);
             llvm::Value* cur = builder.CreateLoad(builder.getInt32Ty(), ctr, "abstain.c");
             llvm::Value* nv = ab->isReinstate ? builder.CreateSub(cur, builder.getInt32(1))
                                               : builder.CreateAdd(cur, builder.getInt32(1));
@@ -6155,8 +6175,10 @@ struct CodeGenerator::Impl {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ClassDecl& cls : ns.classes) {
                     bool hasCtor = false;
+                    enclosingClass_ = cls.name;
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                            enclosingMethod_ = m->name;
                             if (m == entry.method) {
                                 emitBody(functions["@entry"], m->body, {}, "",
                                          builder.getInt32Ty());
@@ -6172,12 +6194,14 @@ struct CodeGenerator::Impl {
                         } else if (const auto* c =
                                        dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                             hasCtor = true;
+                            enclosingMethod_ = cls.name;  // ctor function is "class.class"
                             emitBody(functions[cls.name + "." + cls.name], c->body, c->params,
                                      cls.name, builder.getVoidTy(), &cls,
                                      &c->requiresClauses, &c->ensuresClauses, &cls.invariants);
                         } else if (const auto* d =
                                        dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                             // Chain to the nearest ancestor's destructor (derived-then-base).
+                            enclosingMethod_ = "~" + cls.name;  // dtor function is "class.~class"
                             emitBody(functions[cls.name + ".~" + cls.name], d->body, {}, cls.name,
                                      builder.getVoidTy(), nullptr, nullptr, nullptr, nullptr, false,
                                      nullptr, nullptr, dtorImpl(cls.superclass), &cls);
@@ -6187,6 +6211,7 @@ struct CodeGenerator::Impl {
                     // field inits). Interfaces get none.
                     if (!hasCtor && !cls.isInterface) {
                         const ast::Block emptyBody;
+                        enclosingMethod_ = cls.name;
                         emitBody(functions[cls.name + "." + cls.name], emptyBody, {}, cls.name,
                                  builder.getVoidTy(), &cls);
                     }

@@ -71,6 +71,9 @@ private:
     // Optional `cascade(...)` parameters (spec 37.1): `(depth: N)`, `(unlimited)`,
     // `(types: {A,B})`, `(except: {A,B})`, or combinations. Returns defaults if no `(`.
     ast::CascadeParams parseCascadeParamsOpt();
+    // Parses a label reference `label` (spec 7.9-7.11). The chaos tetrad is intra-method only, so a
+    // method-qualified `method.label` form is rejected.
+    void parseLabelRef(std::string& name);
     ast::MemberPtr parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
                                  const std::string& name, SourceLocation loc);
     std::unique_ptr<ast::ConstructorDecl> parseConstructor(std::string visibility);
