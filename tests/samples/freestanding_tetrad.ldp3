@@ -1,0 +1,29 @@
+program FreestandingTetrad freestanding;
+
+// The chaos tetrad (goto/comefrom/abstainfrom/reinstate) is available in freestanding: none needs
+// the managed runtime. `goto`/`comefrom` are compile-time branches, and `abstainfrom`/`reinstate`
+// are an atomic global counter -- all bare-metal. Here `tick` abstains/reinstates its own `body`
+// block (the kernel power-management pattern), emitting through an external C function.
+
+public bundle main freestanding {
+    public namespace boot {
+        extern cdecl method putchar(int c) returns int;
+        public class Main {
+            public static method tick(int mode) returns int {
+                if (mode == 1) { abstainfrom body; }   // disable body from now on
+                if (mode == 2) { reinstate body; }     // re-enable body
+                label body;
+                putchar(66);   // 'B'
+                return 0;
+            }
+            public static method main(string[] args) returns int {
+                Main.tick(0);   // B
+                Main.tick(1);   // abstains body -> silent
+                Main.tick(0);   // silent
+                Main.tick(2);   // reinstates body -> B
+                putchar(10);
+                return 0;
+            }
+        }
+    }
+}

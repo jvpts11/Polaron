@@ -4347,8 +4347,12 @@ struct CodeGenerator::Impl {
             const std::string akey =
                 enclosingClass_ + "." + enclosingMethod_ + "." + lm->name;  // class.method.label
             if (abstainedLabels.count(akey) > 0) {
-                llvm::Value* c =
+                // Atomic load pairs with the atomic abstain/reinstate RMW so a concurrent toggle
+                // (e.g. from an ISR) is seen with the right ordering (spec 7.11 memory barrier).
+                llvm::LoadInst* c =
                     builder.CreateLoad(builder.getInt32Ty(), abstainCounter(akey), "abstain.c");
+                c->setAlignment(llvm::Align(4));
+                c->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
                 llvm::BasicBlock* body = llvm::BasicBlock::Create(context, "label.on", currentFn);
                 llvm::BasicBlock* skip = llvm::BasicBlock::Create(context, "label.off", currentFn);
                 builder.CreateCondBr(builder.CreateICmpNE(c, builder.getInt32(0)), skip, body);
@@ -4378,10 +4382,12 @@ struct CodeGenerator::Impl {
             // "class.method.label" (intra-method), so same-named labels in other methods are distinct.
             const std::string akey = enclosingClass_ + "." + enclosingMethod_ + "." + ab->name;
             llvm::GlobalVariable* ctr = abstainCounter(akey);
-            llvm::Value* cur = builder.CreateLoad(builder.getInt32Ty(), ctr, "abstain.c");
-            llvm::Value* nv = ab->isReinstate ? builder.CreateSub(cur, builder.getInt32(1))
-                                              : builder.CreateAdd(cur, builder.getInt32(1));
-            builder.CreateStore(nv, ctr);
+            // Atomic so multiple sources (incl. concurrent ones) stack correctly; compiles to a bare
+            // atomic instruction (no runtime), so this is freestanding-safe (spec 7.11).
+            builder.CreateAtomicRMW(
+                ab->isReinstate ? llvm::AtomicRMWInst::Sub : llvm::AtomicRMWInst::Add, ctr,
+                builder.getInt32(1), llvm::MaybeAlign(4),
+                llvm::AtomicOrdering::SequentiallyConsistent);
             return;
         }
         if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&stmt)) {  // throw expr; (spec 21.1)
