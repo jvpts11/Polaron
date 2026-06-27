@@ -41,6 +41,29 @@ ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
         r.isRef = r.isRef || tgt.isRef;
         r.isNullable = r.isNullable || tgt.isNullable;
     }
+    // A tuple type carries its spelling in `name`, e.g. "(T,int)"; substitute each component so a
+    // generic method returning (T, T) instantiates to (int, int) (spec 15.1).
+    if (r.name.size() >= 2 && r.name.front() == '(' && r.name.back() == ')') {
+        const std::string inner = r.name.substr(1, r.name.size() - 2);
+        std::string rebuilt = "(";
+        std::size_t start = 0;
+        bool first = true;
+        while (start <= inner.size()) {
+            const std::size_t comma = inner.find(',', start);
+            std::string comp =
+                inner.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+            const std::size_t b = comp.find_first_not_of(" \t");
+            const std::size_t e = comp.find_last_not_of(" \t");
+            comp = (b == std::string::npos) ? std::string() : comp.substr(b, e - b + 1);
+            if (auto ci = s.find(comp); ci != s.end()) comp = ci->second;
+            rebuilt += (first ? "" : ",") + comp;
+            first = false;
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
+        r.name = rebuilt + ")";
+        return r;
+    }
     auto it = s.find(r.name);
     if (it != s.end()) r.name = it->second;
     for (std::string& a : r.typeArgs) {
@@ -774,6 +797,7 @@ void collectMethStmt(const ast::Stmt* st, MethInsts& out) {
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) { collectMethExpr(x->value.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::DeleteStmt*>(st)) { collectMethExpr(x->target.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::VarDeclStmt*>(st)) { collectMethExpr(x->init.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::TupleDeclStmt*>(st)) { collectMethExpr(x->init.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::AssignStmt*>(st)) { collectMethExpr(x->target.get(), out); collectMethExpr(x->value.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::IncDecStmt*>(st)) { collectMethExpr(x->target.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::DeferStmt*>(st)) { collectMethBlock(x->body, out); return; }
@@ -842,6 +866,7 @@ void rewriteMethStmt(ast::Stmt* st) {
     if (auto* x = dynamic_cast<ast::ReturnStmt*>(st)) { rewriteMethExpr(x->value.get()); return; }
     if (auto* x = dynamic_cast<ast::DeleteStmt*>(st)) { rewriteMethExpr(x->target.get()); return; }
     if (auto* x = dynamic_cast<ast::VarDeclStmt*>(st)) { rewriteMethExpr(x->init.get()); return; }
+    if (auto* x = dynamic_cast<ast::TupleDeclStmt*>(st)) { rewriteMethExpr(x->init.get()); return; }
     if (auto* x = dynamic_cast<ast::AssignStmt*>(st)) { rewriteMethExpr(x->target.get()); rewriteMethExpr(x->value.get()); return; }
     if (auto* x = dynamic_cast<ast::IncDecStmt*>(st)) { rewriteMethExpr(x->target.get()); return; }
     if (auto* x = dynamic_cast<ast::DeferStmt*>(st)) { rewriteMethBlock(x->body); return; }

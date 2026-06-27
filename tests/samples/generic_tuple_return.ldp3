@@ -1,0 +1,20 @@
+import System.IO.Console;
+program GenericTupleReturn;
+
+// A generic method may return a tuple, and the call can be destructured at the call site
+// (spec 15.1). The type parameter is substituted inside the tuple return type on instantiation.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method swap<T>(T a, T b) returns (T, T) {
+                return (b, a);
+            }
+            public static method main(string[] args) returns void {
+                (int x, int y) = Main.swap<int>(9, 5);
+                System.IO.Console.printf("%d %d\n", x, y);  // 5 9
+                return;
+            }
+        }
+    }
+}
