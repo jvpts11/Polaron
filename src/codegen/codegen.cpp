@@ -656,6 +656,31 @@ struct CodeGenerator::Impl {
     // and the object locals bound from `new ... in` such a region (their field accesses are volatile).
     std::unordered_set<std::string> volatileRegions_;
     std::unordered_set<std::string> volatileObjects_;
+    // `lazy import` (spec 37.3): per-class "already loaded" flags; the class's onClassLoad runs on
+    // the first instance instead of at boot.
+    std::unordered_map<std::string, llvm::GlobalVariable*> lazyLoadFlags_;
+
+    // True if class `cn` was brought in by `lazy import` (anywhere in the program).
+    bool isLazyImport(const std::string& cn) {
+        auto match = [&](const ast::ImportDecl& imp) {
+            return imp.isLazy && !imp.path.empty() && imp.path.back() == cn;
+        };
+        for (const ast::ImportDecl& imp : program.imports)
+            if (match(imp)) return true;
+        for (const ast::Bundle& b : program.bundles)
+            for (const ast::ImportDecl& imp : b.imports)
+                if (match(imp)) return true;
+        return false;
+    }
+    llvm::GlobalVariable* lazyLoadFlag(const std::string& cn) {
+        auto it = lazyLoadFlags_.find(cn);
+        if (it != lazyLoadFlags_.end()) return it->second;
+        auto* g = new llvm::GlobalVariable(module, builder.getInt1Ty(), /*isConstant=*/false,
+                                           llvm::GlobalValue::PrivateLinkage, builder.getInt1(false),
+                                           "loaded." + cn);
+        lazyLoadFlags_[cn] = g;
+        return g;
+    }
 
     // Emits (or returns the memoized) recursive helper `void(ptr obj, ptr visited, i32 depth)` that
     // applies `op` to one object and propagates through its owned children. The runtime visited-set
@@ -2599,6 +2624,20 @@ struct CodeGenerator::Impl {
             return nullptr;
         }
         emitAliveGuard(cn);  // spec 30: instantiating an unimported type throws
+        // `lazy import` (spec 37.3): run the class's onClassLoad on its first instance, once.
+        if (cit->second.decl != nullptr && cit->second.decl->onClassLoad && isLazyImport(cn)) {
+            llvm::GlobalVariable* flag = lazyLoadFlag(cn);
+            llvm::Function* fn = currentFn;
+            auto* loadBB = llvm::BasicBlock::Create(context, "lazyload." + cn, fn);
+            auto* contBB = llvm::BasicBlock::Create(context, "lazyload.cont", fn);
+            llvm::Value* done = builder.CreateLoad(builder.getInt1Ty(), flag, "loaded");
+            builder.CreateCondBr(done, contBB, loadBB);
+            builder.SetInsertPoint(loadBB);
+            builder.CreateCall(functions[cn + ".__onClassLoad"]);
+            builder.CreateStore(builder.getInt1(true), flag);
+            builder.CreateBr(contBB);
+            builder.SetInsertPoint(contBB);
+        }
         llvm::Value* objPtr = nullptr;
         if (!nw.region.empty()) {
             objPtr = emitRegionBumpAlloc(nw.region, cit->second.type, nw.loc);
@@ -5832,7 +5871,8 @@ struct CodeGenerator::Impl {
             for (const ast::Bundle& b : program.bundles)
                 for (const ast::Namespace& n : b.namespaces)
                     for (const ast::ClassDecl& c : n.classes)
-                        if (c.onClassLoad)
+                        // `lazy import` defers a class's load to its first instance (spec 37.3).
+                        if (c.onClassLoad && !isLazyImport(c.name))
                             builder.CreateCall(functions[c.name + ".__onClassLoad"]);
         }
 

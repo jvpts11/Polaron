@@ -776,6 +776,7 @@ struct Namespace {
 struct ImportDecl {
     std::vector<std::string> path;  // e.g. ["System","Memory","Units","kilobytes"]
     bool isFinal = false;           // `final import` (spec 37.6): the symbol cannot be unimported
+    bool isLazy = false;            // `lazy import` (spec 37.3): load on first instance, not at boot
     SourceLocation loc;
 };
 

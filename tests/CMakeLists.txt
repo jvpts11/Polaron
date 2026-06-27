@@ -1504,6 +1504,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # lazy import (spec 37.3): a lazily imported class runs its onClassLoad on the first
+        # instance, not at boot, so "start" prints before "server loaded".
+        add_test(NAME codegen_lazy_import_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lazy_import.ldp3"
+            "-DEXPECTED=start server loaded made server"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # volatile region (spec 37.5, MMIO): objects in the region are accessed volatilely. Built at
         # -O3 to confirm the volatile loads/stores survive optimization.
         add_test(NAME codegen_volatile_region_runs COMMAND "${CMAKE_COMMAND}"

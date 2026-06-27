@@ -200,9 +200,10 @@ ast::Program Parser::parse() {
     ast::Program program;
     try {
         program.loc = current().loc;
-        // File-level imports come before `program` (spec 2.7); `final import` is permitted (37.6).
+        // File-level imports come before `program` (spec 2.7); `final`/`lazy import` are permitted.
         while (check(TokenKind::KwImport) ||
-               (check(TokenKind::KwFinal) && peek(1).kind == TokenKind::KwImport))
+               ((check(TokenKind::KwFinal) || check(TokenKind::KwLazy)) &&
+                peek(1).kind == TokenKind::KwImport))
             program.imports.push_back(parseImportDecl());
         expect(TokenKind::KwProgram, "'program'");
         program.name = expect(TokenKind::Identifier, "the program name").lexeme;
@@ -223,6 +224,7 @@ ast::ImportDecl Parser::parseImportDecl() {
     ast::ImportDecl imp;
     imp.loc = current().loc;
     imp.isFinal = match(TokenKind::KwFinal);  // `final import` (spec 37.6): cannot be unimported
+    imp.isLazy = match(TokenKind::KwLazy);    // `lazy import` (spec 37.3): load on first instance
     expect(TokenKind::KwImport, "'import'");
     imp.path.push_back(expect(TokenKind::Identifier, "an import path").lexeme);
     while (match(TokenKind::Dot))

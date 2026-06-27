@@ -1,0 +1,27 @@
+import System.IO.Console;
+lazy import lib.Server;
+program LazyImport;
+
+// `lazy import` (spec 37.3): a lazily imported class is loaded on its first instance, not at boot.
+// Server's onClassLoad therefore runs when the first Server is created, after "start" is printed
+// (a plain import would run it before main).
+
+public bundle main {
+    public namespace lib {
+        public class Server {
+            onClassLoad { System.IO.Console.println("server loaded"); }
+            public constructor Server() {}
+        }
+    }
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("start");
+                Server* s = new Server() on heap;   // first instance: runs onClassLoad now
+                System.IO.Console.println("made server");
+                delete s;
+                return;
+            }
+        }
+    }
+}
