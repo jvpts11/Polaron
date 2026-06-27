@@ -10,7 +10,7 @@ public bundle main {
         }
         public class Main {
             public static method main(string[] args) returns void {
-                mutable Node* p = null;
+                mutable nullable Node* p = null;
                 if (p == null) { System.IO.Console.printf("null=%d ", 1); }
                 p = new Node() on heap;
                 if (p != null) { System.IO.Console.printf("set=%d\n", 1); }

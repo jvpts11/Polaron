@@ -9,7 +9,7 @@ public bundle main {
     public namespace app {
         public class Node {
             public mutable int id;
-            public mutable Node* next;
+            public mutable nullable Node* next;
             invariant this.id >= 0;
             public constructor Node() {
                 this.id = 0;

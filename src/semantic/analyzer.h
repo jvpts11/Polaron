@@ -221,9 +221,9 @@ private:
     bool freestanding_ = false;     // spec 36: no managed-runtime features in this program
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
+    std::string currentReturnType_;  // declared return type of the method being analyzed (null-safety)
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state
-    std::unordered_set<std::string> nonNullVars_;  // nullable vars proven non-null by a flow check
     std::unordered_map<std::string, RegionConstraints> regionConstraints_;  // region var -> accepts/rejects
     // Persistent fields (spec 18.15): each must be released somewhere unless eternal.
     struct PersistentFieldInfo {

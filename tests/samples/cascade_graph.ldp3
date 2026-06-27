@@ -9,8 +9,8 @@ public bundle main {
     public namespace app {
         public class Node {
             public mutable int id;
-            public mutable Node* next;            // owned pointer -> cascaded
-            public external mutable Node* owner;  // association -> skipped
+            public mutable nullable Node* next;            // owned pointer -> cascaded
+            public external mutable nullable Node* owner;  // association -> skipped
             public constructor Node() {
                 this.id = 0;
                 this.next = null;

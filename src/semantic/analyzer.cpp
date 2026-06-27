@@ -232,9 +232,9 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     // Guard against a cyclic type graph (e.g. `catalog A extends B; B extends A`):
     // bound the recursion so a malformed program errors instead of overflowing.
     if (depth > 256) return false;
-    // null binds to a `nullable T` or a raw pointer/reference, but NOT to a plain (non-null) type
-    // (spec 3.7 -- the core null-safety rule).
-    if (sub == "null") return isNullableType(super) || isRefType(super);
+    // null binds ONLY to a `nullable T` target -- never to a non-nullable type, whatever its kind
+    // (spec 3.7 -- the core null-safety rule: non-null by default; `nullable` opts a type into null).
+    if (sub == "null") return isNullableType(super);
     // Nullability (spec 3.7): a `nullable T` value may not flow into a non-nullable target (you must
     // check it first); a non-null value flows freely into a `nullable T`. Compare the underlying T.
     if (isNullableType(sub) || isNullableType(super)) {
@@ -926,6 +926,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         std::vector<const ast::Expr*> contracts;
                         for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
                         for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
+                        currentReturnType_ = typeRefStr(m->returnType);  // for the return null check
                         analyzeMethodBody(m->body, m->params,
                                           m->isStatic ? std::string() : cls.name, false, contracts);
                     } else if (const auto* c =
@@ -933,10 +934,12 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         std::vector<const ast::Expr*> contracts;
                         for (const auto& e : c->requiresClauses) contracts.push_back(e.get());
                         for (const auto& e : c->ensuresClauses) contracts.push_back(e.get());
+                        currentReturnType_ = "void";
                         analyzeMethodBody(c->body, c->params, cls.name, /*inConstructor=*/true,
                                           contracts);
                     } else if (const auto* d =
                                    dynamic_cast<const ast::DestructorDecl*>(member.get())) {
+                        currentReturnType_ = "void";
                         analyzeMethodBody(d->body, {}, cls.name, false);
                     }
                 }
@@ -1239,7 +1242,6 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<const ast::Expr*>& contracts) {
     scopes_.clear();
     moved_.clear();
-    nonNullVars_.clear();
     regionConstraints_.clear();
     methodLabels_.clear();
     comefromTargets_.clear();
@@ -1629,29 +1631,8 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_, &constDoubles_))
                 error("'comptime if' requires a compile-time constant condition", ifs->loc);
         }
-        // Null-safety flow narrowing (spec 3.7): `if (x != null)` proves x non-null in the then-branch;
-        // `if (x == null)` proves it in the else-branch.
-        std::string nnThen, nnElse;
-        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(ifs->cond.get());
-            bin != nullptr && (bin->op == "!=" || bin->op == "==")) {
-            auto varVsNull = [](const ast::Expr* a, const ast::Expr* b) -> std::string {
-                const auto* id = dynamic_cast<const ast::IdentifierExpr*>(a);
-                if (id != nullptr && dynamic_cast<const ast::NullLiteralExpr*>(b) != nullptr)
-                    return id->name;
-                return "";
-            };
-            std::string v = varVsNull(bin->lhs.get(), bin->rhs.get());
-            if (v.empty()) v = varVsNull(bin->rhs.get(), bin->lhs.get());
-            if (!v.empty()) { if (bin->op == "!=") nnThen = v; else nnElse = v; }
-        }
-        const bool addedThen = !nnThen.empty() && nonNullVars_.insert(nnThen).second;
         analyzeBlock(ifs->thenBlock);
-        if (addedThen) nonNullVars_.erase(nnThen);
-        if (ifs->elseBlock) {
-            const bool addedElse = !nnElse.empty() && nonNullVars_.insert(nnElse).second;
-            analyzeBlock(*ifs->elseBlock);
-            if (addedElse) nonNullVars_.erase(nnElse);
-        }
+        if (ifs->elseBlock) analyzeBlock(*ifs->elseBlock);
         return;
     }
     if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(&stmt)) {
@@ -1729,7 +1710,16 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
-        if (rs->value) typeOf(*rs->value);
+        if (rs->value) {
+            const std::string vt = typeOf(*rs->value);
+            // Null safety (spec 3.7): a null/nullable value may not be returned where the declared
+            // return type is non-nullable.
+            if (!vt.empty() && !currentReturnType_.empty() && !isNullableType(currentReturnType_) &&
+                (vt == "null" || isNullableType(vt)))
+                error("cannot return a " + std::string(vt == "null" ? "null" : "nullable") +
+                          " value from a method returning non-nullable '" + currentReturnType_ + "'",
+                      rs->loc);
+        }
         return;
     }
     if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
@@ -2019,10 +2009,6 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                       "' after it was moved (reassign it before using)",
                   id->loc);
         }
-        // A `nullable` variable proven non-null by a flow check (`if (x != null)`) reads as its
-        // underlying non-null type, so it can be used/assigned without further checks (spec 3.7).
-        if (isNullableType(var->type) && nonNullVars_.count(id->name) > 0)
-            return var->type.substr(0, var->type.size() - 1);
         return var->type;
     }
 
@@ -2603,15 +2589,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     return "";
                 }
             }
-            const std::string objType = typeOf(*mem->object);
+            std::string objType = typeOf(*mem->object);
             if (objType.empty()) return "";
-            // Null safety (spec 3.7): a nullable receiver must be null-checked first (a flow check
-            // `if (x != null)` makes typeOf return the non-null type, so a remaining '?' is unchecked).
-            if (isNullableType(objType)) {
-                error("'" + mem->member + "' called on a nullable value; check it for null first "
-                      "(e.g. `if (x != null) { ... }`)", call->loc);
-                return baseType(objType);  // continue as the underlying type to limit cascade errors
-            }
+            // Null safety (spec 3.7): `nullable` only constrains assignment -- a nullable value may
+            // be dereferenced directly (no flow-check required); if it is null at runtime the deref
+            // traps. So resolve the member against the underlying type.
+            if (isNullableType(objType)) objType = baseType(objType);
             // Enum (catalog) instance method: m.pick() where m is an enum value.
             if (auto emit = enumMethods_.find(baseType(objType)); emit != enumMethods_.end()) {
                 auto mit = emit->second.find(mem->member);
@@ -2751,7 +2734,20 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("class '" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";
             }
-            for (const auto& arg : call->args) typeOf(*arg);
+            for (std::size_t i = 0; i < call->args.size(); ++i) {
+                const std::string at = typeOf(*call->args[i]);
+                // Null safety (spec 3.7): a null/nullable argument may not be passed to a
+                // non-nullable parameter.
+                if (i < m->paramTypes.size()) {
+                    const std::string& pt = m->paramTypes[i];
+                    if (!at.empty() && !pt.empty() && !isNullableType(pt) &&
+                        (at == "null" || isNullableType(at)))
+                        error("argument " + std::to_string(i + 1) + " to '" + mem->member + "' is " +
+                                  std::string(at == "null" ? "null" : "nullable") +
+                                  " but the parameter type '" + pt + "' is non-nullable",
+                              call->args[i]->loc);
+                }
+            }
             if (!m->isProperty && call->args.size() != m->paramCount) {
                 error("method '" + mem->member + "' expects " + std::to_string(m->paramCount) +
                           " argument(s) but got " + std::to_string(call->args.size()),
@@ -2810,14 +2806,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
             }
         }
-        const std::string objType = typeOf(*mem->object);
+        std::string objType = typeOf(*mem->object);
         if (objType.empty()) return "";
-        // Null safety (spec 3.7): reading a field/property through a nullable receiver requires a check.
-        if (isNullableType(objType)) {
-            error("field '" + mem->member + "' read from a nullable value; check it for null first",
-                  mem->loc);
-            return baseType(objType);
-        }
+        // Null safety (spec 3.7): `nullable` only constrains assignment -- a field may be read
+        // through a nullable receiver directly (it traps at runtime if null). Resolve against the
+        // underlying type.
+        if (isNullableType(objType)) objType = baseType(objType);
         if (const FieldInfo* f = findField(objType, mem->member)) return f->type;
         // A computed get-only property is read as obj.name (no parens).
         if (const MethodInfo* pm = findMethod(objType, mem->member); pm != nullptr && pm->isProperty)

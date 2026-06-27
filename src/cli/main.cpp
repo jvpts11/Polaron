@@ -355,14 +355,14 @@ R"LDP3(
         // Singly-linked list node (helper for LinkedList).
         public class LinkedNode<T> {
             public mutable T value;
-            public mutable LinkedNode<T>* next;
+            public mutable nullable LinkedNode<T>* next;
             public constructor LinkedNode(T v) { this.value = v; this.next = null; }
         }
         // Linked list (spec 34.1): O(1) append + O(1) head removal, with self-referential generic
         // pointer nodes (LinkedNode<T> holds a LinkedNode<T>* next).
         public class LinkedList<T> {
-            private mutable LinkedNode<T>* head;
-            private mutable LinkedNode<T>* tail;
+            private mutable nullable LinkedNode<T>* head;
+            private mutable nullable LinkedNode<T>* tail;
             private mutable int count;
             public constructor LinkedList() { this.head = null; this.tail = null; this.count = 0; }
             public method add(T item) returns void {
@@ -372,12 +372,12 @@ R"LDP3(
                 this.count = this.count + 1;
             }
             public method get(int i) returns T {
-                mutable LinkedNode<T>* cur = this.head;
+                mutable nullable LinkedNode<T>* cur = this.head;
                 for (mutable int j = 0; j < i; j++) { cur = cur.next; }
                 return cur.value;
             }
             public method removeFirst() returns T {
-                LinkedNode<T>* node = this.head;
+                nullable LinkedNode<T>* node = this.head;
                 T v = node.value;
                 this.head = node.next;
                 if (this.head == null) { this.tail = null; }
@@ -387,7 +387,7 @@ R"LDP3(
             }
             public method toArray() returns T[] {  // head-to-tail
                 mutable T[] out = new T[this.count]();
-                mutable LinkedNode<T>* cur = this.head;
+                mutable nullable LinkedNode<T>* cur = this.head;
                 for (mutable int i = 0; i < this.count; i++) { out[i] = cur.value; cur = cur.next; }
                 return out;
             }
@@ -539,8 +539,8 @@ R"LDP3(
         public class TreeNode<K, V> {
             public mutable K key;
             public mutable V value;
-            public mutable TreeNode<K, V>* left;
-            public mutable TreeNode<K, V>* right;
+            public mutable nullable TreeNode<K, V>* left;
+            public mutable nullable TreeNode<K, V>* right;
             public constructor TreeNode(K k, V v) {
                 this.key = k; this.value = v; this.left = null; this.right = null;
             }
@@ -548,7 +548,7 @@ R"LDP3(
         // Ordered map backed by an (unbalanced) binary search tree (spec 34.1). Keys are Comparable.
         // get() on an absent key returns a zero/null value; probe with containsKey() first.
         public class TreeMap<K, V> {
-            private mutable TreeNode<K, V>* root;
+            private mutable nullable TreeNode<K, V>* root;
             private mutable int count;
             public constructor TreeMap() { this.root = null; this.count = 0; }
             public method put(K key, V value) returns void {
@@ -557,7 +557,7 @@ R"LDP3(
                     this.count = this.count + 1;
                     return;
                 }
-                mutable TreeNode<K, V>* cur = this.root;
+                mutable nullable TreeNode<K, V>* cur = this.root;
                 while (true) {
                     int c = key.compareTo(cur.key);
                     if (c == 0) { cur.value = value; return; }
@@ -578,8 +578,8 @@ R"LDP3(
                     }
                 }
             }
-            private method find(K key) returns TreeNode<K, V>* {
-                mutable TreeNode<K, V>* cur = this.root;
+            private method find(K key) returns nullable TreeNode<K, V>* {
+                mutable nullable TreeNode<K, V>* cur = this.root;
                 while (cur != null) {
                     int c = key.compareTo(cur.key);
                     if (c == 0) { return cur; }
@@ -588,7 +588,7 @@ R"LDP3(
                 return null;
             }
             public method get(K key) returns V {
-                TreeNode<K, V>* n = this.find(key);
+                nullable TreeNode<K, V>* n = this.find(key);
                 if (n != null) { return n.value; }
                 mutable V[] zero = new V[1]();  // zero/null default for an absent key
                 V z = zero[0];
@@ -596,14 +596,14 @@ R"LDP3(
                 return z;
             }
             public method containsKey(K key) returns boolean { return this.find(key) != null; }
-            private method fillKeys(TreeNode<K, V>* node, K[] out, int idx) returns int {
+            private method fillKeys(nullable TreeNode<K, V>* node, K[] out, int idx) returns int {
                 if (node == null) { return idx; }
                 mutable int i = this.fillKeys(node.left, out, idx);
                 out[i] = node.key;
                 i = i + 1;
                 return this.fillKeys(node.right, out, i);
             }
-            private method fillValues(TreeNode<K, V>* node, V[] out, int idx) returns int {
+            private method fillValues(nullable TreeNode<K, V>* node, V[] out, int idx) returns int {
                 if (node == null) { return idx; }
                 mutable int i = this.fillValues(node.left, out, idx);
                 out[i] = node.value;
@@ -626,13 +626,13 @@ R"LDP3(
         // BST node for TreeSet (self-referential generic).
         public class TreeSetNode<T> {
             public mutable T value;
-            public mutable TreeSetNode<T>* left;
-            public mutable TreeSetNode<T>* right;
+            public mutable nullable TreeSetNode<T>* left;
+            public mutable nullable TreeSetNode<T>* right;
             public constructor TreeSetNode(T v) { this.value = v; this.left = null; this.right = null; }
         }
         // Ordered set backed by an (unbalanced) binary search tree (spec 34.1). Elements Comparable.
         public class TreeSet<T> {
-            private mutable TreeSetNode<T>* root;
+            private mutable nullable TreeSetNode<T>* root;
             private mutable int count;
             public constructor TreeSet() { this.root = null; this.count = 0; }
             public method add(T value) returns void {
@@ -641,7 +641,7 @@ R"LDP3(
                     this.count = this.count + 1;
                     return;
                 }
-                mutable TreeSetNode<T>* cur = this.root;
+                mutable nullable TreeSetNode<T>* cur = this.root;
                 while (true) {
                     int c = value.compareTo(cur.value);
                     if (c == 0) { return; }
@@ -663,7 +663,7 @@ R"LDP3(
                 }
             }
             public method contains(T value) returns boolean {
-                mutable TreeSetNode<T>* cur = this.root;
+                mutable nullable TreeSetNode<T>* cur = this.root;
                 while (cur != null) {
                     int c = value.compareTo(cur.value);
                     if (c == 0) { return true; }
@@ -671,7 +671,7 @@ R"LDP3(
                 }
                 return false;
             }
-            private method fill(TreeSetNode<T>* node, T[] out, int idx) returns int {
+            private method fill(nullable TreeSetNode<T>* node, T[] out, int idx) returns int {
                 if (node == null) { return idx; }
                 mutable int i = this.fill(node.left, out, idx);
                 out[i] = node.value;
@@ -793,9 +793,9 @@ R"LDP3(
             private mutable long num;
             private mutable String str;
             private mutable String memberKey;   // the key, when this node is an object member
-            private mutable Json* firstChild;   // array elements / object members (sibling chain)
-            private mutable Json* lastChild;    // tail, for O(1) append
-            private mutable Json* nextSibling;
+            private mutable nullable Json* firstChild;   // array elements / object members (sibling chain)
+            private mutable nullable Json* lastChild;    // tail, for O(1) append
+            private mutable nullable Json* nextSibling;
             private mutable int childCount;
             public constructor Json(int k) {
                 this.kind = k;
@@ -831,13 +831,13 @@ R"LDP3(
             public method asNum() returns long { return this.num; }
             public method asStr() returns String { return this.str; }
             public method size() returns int { return this.childCount; }
-            public method at(int i) returns Json {
-                mutable Json* cur = this.firstChild;
+            public method at(int i) returns nullable Json {
+                mutable nullable Json* cur = this.firstChild;
                 for (mutable int j = 0; j < i; j++) { cur = cur.nextSibling; }
                 return cur;
             }
-            public method field(String key) returns Json {
-                mutable Json* cur = this.firstChild;
+            public method field(String key) returns nullable Json {
+                mutable nullable Json* cur = this.firstChild;
                 while (cur != null) {
                     if (cur.memberKey.equals(key)) { return cur; }
                     cur = cur.nextSibling;
@@ -866,7 +866,7 @@ R"LDP3(
                 if (this.kind == 3) { this.escapeInto(sb, this.str); return; }
                 if (this.kind == 4) {
                     sb.appendChar('[');
-                    mutable Json* cur = this.firstChild;
+                    mutable nullable Json* cur = this.firstChild;
                     mutable boolean first = true;
                     while (cur != null) {
                         if (!first) { sb.appendChar(','); }
@@ -878,7 +878,7 @@ R"LDP3(
                     return;
                 }
                 sb.appendChar('{');
-                mutable Json* m = this.firstChild;
+                mutable nullable Json* m = this.firstChild;
                 mutable boolean firstM = true;
                 while (m != null) {
                     if (!firstM) { sb.appendChar(','); }

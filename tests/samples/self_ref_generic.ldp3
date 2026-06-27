@@ -9,7 +9,7 @@ public bundle main {
     public namespace app {
         public class Node<T> {
             public mutable T value;
-            public mutable Node<T>* next;
+            public mutable nullable Node<T>* next;
             public constructor Node(T x) { this.value = x; this.next = null; }
         }
         public class Main {

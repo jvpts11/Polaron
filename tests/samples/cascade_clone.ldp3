@@ -10,7 +10,7 @@ public bundle main {
     public namespace app {
         public class Node {
             public mutable int id;
-            public mutable Node* next;
+            public mutable nullable Node* next;
             public constructor Node() {
                 this.id = 0;
                 this.next = null;
@@ -21,7 +21,7 @@ public bundle main {
                 Node* a = new Node() on heap; a.id = 1;
                 Node* b = new Node() on heap; b.id = 2;
                 a.next = b;
-                Node* c = null;
+                nullable Node* c = null;
                 cascade clone a into c;          // c is a deep copy of a's graph
                 c.id = 100; c.next.id = 200;     // mutate the clone only
                 System.IO.Console.println($"{a.id} {a.next.id} {c.id} {c.next.id}");

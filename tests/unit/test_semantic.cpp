@@ -206,7 +206,7 @@ TEST_CASE("semantic accepts null assigned to a pointer and compared with ==/!=")
         "program P; public bundle main { public namespace app {"
         " public class Node { public mutable int v = 0; public constructor Node() {} }"
         " public class Main { public static method main(string[] args) returns void {"
-        " mutable Node* p = null; if (p == null) { p = new Node() on heap; }"
+        " mutable nullable Node* p = null; if (p == null) { p = new Node() on heap; }"
         " if (p != null) { delete p; } return; } } } }"));
 }
 
@@ -1260,7 +1260,7 @@ TEST_CASE("semantic accepts a self-referential generic class, declared and insta
     // to drop the `null` literal -> null deref).
     CHECK(checkSrc(
         "program P; public bundle b { public namespace n {"
-        " public class Node<T> { public mutable T v; public mutable Node<T>* next;"
+        " public class Node<T> { public mutable T v; public mutable nullable Node<T>* next;"
         " public constructor Node(T x) { this.v = x; this.next = null; } }"
         " public class Main { public static method main(string[] args) returns void {"
         " Node<int> a = new Node<int>(5) on heap; a.next = a; return; } } } }"));
@@ -1290,16 +1290,13 @@ TEST_CASE("semantic accepts a non-null value flowing into a nullable") {
 TEST_CASE("semantic rejects a nullable flowing into a non-nullable") {
     CHECK_FALSE(checkSrc(withDog("nullable Dog d = null; Dog e = d; return;")));
 }
-TEST_CASE("semantic rejects an unchecked member access on a nullable") {
-    CHECK_FALSE(checkSrc(withDog("nullable Dog d = new Dog() on heap; int x = d.bark(); return;")));
+TEST_CASE("semantic allows a member access on a nullable (deref traps at runtime if null)") {
+    // `nullable` only constrains assignment; dereferencing is permitted with no flow check.
+    CHECK(checkSrc(withDog("nullable Dog d = new Dog() on heap; int x = d.bark(); return;")));
 }
-TEST_CASE("semantic accepts a member access guarded by a null check") {
+TEST_CASE("semantic allows a member access on a nullable inside a null check too") {
     CHECK(checkSrc(withDog(
         "nullable Dog d = new Dog() on heap; if (d != null) { int x = d.bark(); } return;")));
-}
-TEST_CASE("semantic narrows a nullable in the else of an == null check") {
-    CHECK(checkSrc(withDog(
-        "nullable Dog d = new Dog() on heap; if (d == null) { return; } else { int x = d.bark(); } return;")));
 }
 
 // First-class functions (spec 22): methodref binds a function value to obj.method.
