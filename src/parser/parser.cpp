@@ -1192,9 +1192,10 @@ ast::TypeRef Parser::parseTypeRef() {
             expect(TokenKind::Gt, "'>' to close type arguments");
         }
     }
-    if (match(TokenKind::LBracket)) {
+    while (match(TokenKind::LBracket)) {  // T[], T[][], ... -- multi-dimensional (spec 25)
         expect(TokenKind::RBracket, "']'");
         t.isArray = true;
+        t.arrayDims++;
     }
     // Pointer / reference: share the object instead of copying it.
     if (match(TokenKind::Star)) {

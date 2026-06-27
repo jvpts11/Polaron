@@ -36,6 +36,7 @@ ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
         r.name = tgt.name;
         r.typeArgs.insert(r.typeArgs.begin(), tgt.typeArgs.begin(), tgt.typeArgs.end());
         r.isArray = r.isArray || tgt.isArray;
+        r.arrayDims += tgt.arrayDims;  // e.g. `Matrix[]` where `Matrix = int[][]` -> 3 dims
         r.isPointer = r.isPointer || tgt.isPointer;
         r.isRef = r.isRef || tgt.isRef;
         r.isNullable = r.isNullable || tgt.isNullable;
@@ -982,8 +983,10 @@ void resolveTypeAliases(ast::Program& program) {
                 const ast::TypeRef inner = it->second;
                 const bool arr = tgt.isArray, ptr = tgt.isPointer, ref = tgt.isRef,
                            nul = tgt.isNullable;
+                const int dims = tgt.arrayDims;
                 tgt = inner;
                 tgt.isArray = tgt.isArray || arr;
+                tgt.arrayDims += dims;
                 tgt.isPointer = tgt.isPointer || ptr;
                 tgt.isRef = tgt.isRef || ref;
                 tgt.isNullable = tgt.isNullable || nul;

@@ -28,7 +28,8 @@ inline std::string mangleGeneric(const std::string& base, const std::vector<std:
 // the default value/copy semantics); the distinction is refined later.
 struct TypeRef {
     std::string name;
-    bool isArray = false;
+    bool isArray = false;     // any array (arrayDims >= 1); kept for "is it an array" checks
+    int arrayDims = 0;        // number of `[]` (1 = T[], 2 = T[][], ...) -- 0 when not an array
     bool isPointer = false;  // T*
     bool isRef = false;      // T&
     bool isNullable = false;  // `nullable T` (spec 3.7): may hold null; canonical form is "T?"
@@ -36,11 +37,18 @@ struct TypeRef {
     SourceLocation loc;
 };
 
+// The `[]...[]` suffix for `dims` array dimensions (e.g. 2 -> "[][]").
+inline std::string arrayDimsSuffix(int dims) {
+    std::string s;
+    for (int i = 0; i < dims; ++i) s += "[]";
+    return s;
+}
+
 // Canonical type string of a TypeRef, matching the form sema/codegen key on:
-// generic args mangled into the name, then [] / * / & markers (e.g. "Box$int*").
+// generic args mangled into the name, then [] / * / & markers (e.g. "Box$int*", "int[][]").
 // A tuple type already carries its full spelling in `name` (e.g. "(int,int)").
 inline std::string canonicalType(const TypeRef& t) {
-    return mangleGeneric(t.name, t.typeArgs) + (t.isArray ? "[]" : "") +
+    return mangleGeneric(t.name, t.typeArgs) + arrayDimsSuffix(t.arrayDims) +
            (t.isPointer ? "*" : "") + (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 

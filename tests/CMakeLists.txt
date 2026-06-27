@@ -1629,6 +1629,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # multi-dimensional arrays (spec 25): int[][] type, nested literals, m[i][j], as parameter.
+        add_test(NAME codegen_array_multidim_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/array_multidim.ldp3"
+            "-DEXPECTED=2 3 5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # arr.length(n) resizes a dynamic array (spec 25): preserves elements, zeros the grown part.
         add_test(NAME codegen_array_grow_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

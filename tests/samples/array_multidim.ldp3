@@ -1,0 +1,20 @@
+import System.IO.Console;
+program ArrayMultidim;
+
+// Multi-dimensional arrays (spec 25): the `int[][]` type, nested literals, `m[i][j]` indexing, and
+// passing a multi-dimensional array to a method. A multi-dim array is an array of arrays.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method trace(int[][] m) returns int {
+                return m[0][0] + m[1][1];
+            }
+            public static method main(string[] args) returns void {
+                int[][] m = [[1, 2], [3, 4]];
+                System.IO.Console.printf("%d %d %d\n", m[0][1], m[1][0], Main.trace(m));  // 2 3 5
+                return;
+            }
+        }
+    }
+}

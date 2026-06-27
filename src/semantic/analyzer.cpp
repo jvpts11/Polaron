@@ -32,7 +32,7 @@ std::string baseType(const std::string& t) {
 // True if the type is declared `nullable` (canonical "T?").
 inline bool isNullableType(const std::string& t) { return !t.empty() && t.back() == '?'; }
 std::string typeRefStr(const ast::TypeRef& t) {
-    return ast::mangleGeneric(t.name, t.typeArgs) + (t.isArray ? "[]" : "") +
+    return ast::mangleGeneric(t.name, t.typeArgs) + ast::arrayDimsSuffix(t.arrayDims) +
            (t.isPointer ? "*" : "") + (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 bool isFloatType(const std::string& t) {

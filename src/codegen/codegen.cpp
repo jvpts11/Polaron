@@ -197,7 +197,7 @@ std::string baseType(const std::string& t) {
 // The LDP3 type name of a declaration, including array / pointer / ref markers.
 // Generic arguments are mangled into the name (Box<int> -> "Box$int").
 std::string typeRefName(const ast::TypeRef& t) {
-    return ast::mangleGeneric(t.name, t.typeArgs) + (t.isArray ? "[]" : "") +
+    return ast::mangleGeneric(t.name, t.typeArgs) + ast::arrayDimsSuffix(t.arrayDims) +
            (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
 }
 
@@ -5347,7 +5347,7 @@ struct CodeGenerator::Impl {
                             const std::string base = f->type.typeArgs.empty()
                                 ? f->type.name
                                 : ast::mangleGeneric(f->type.name, f->type.typeArgs);
-                            const std::string ftype = base + (f->type.isArray ? "[]" : "") +
+                            const std::string ftype = base + ast::arrayDimsSuffix(f->type.arrayDims) +
                                                       (f->type.isPointer ? "*" : "") +
                                                       (f->type.isRef ? "&" : "");
                             // Static fields live in a single LLVM global, not in each
