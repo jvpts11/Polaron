@@ -1670,16 +1670,35 @@ struct CodeGenerator::Impl {
         return builder.CreateStructGEP(cit->second.persistBlock, block, fidx, mem.member);
     }
 
-    // Runs a lazy local's deferred initializer the first time it is read (spec 37.3):
-    // `if (!flag) { storage = init; flag = true; }`. A no-op for non-lazy locals.
+    llvm::FunctionCallee lazyLockFn() {
+        return module.getOrInsertFunction("__ldp3_lazy_lock",
+                                          llvm::FunctionType::get(builder.getVoidTy(), {}, false));
+    }
+    llvm::FunctionCallee lazyUnlockFn() {
+        return module.getOrInsertFunction("__ldp3_lazy_unlock",
+                                          llvm::FunctionType::get(builder.getVoidTy(), {}, false));
+    }
+
+    // Runs a lazy local's deferred initializer the first time it is read (spec 37.3). Thread-safe
+    // by default via double-checked locking: the fast path is a plain flag read, and only the first
+    // initialization takes the process-wide lazy lock and rechecks, so concurrent first-accesses
+    // initialize exactly once. A no-op for non-lazy locals.
     void ensureLazy(llvm::Value* flag, const ast::Expr* init, llvm::Value* storage,
                     const std::string& type, const std::string& name) {
         if (flag == nullptr || init == nullptr) return;
         llvm::Function* fn = currentFn;
+        llvm::BasicBlock* lockBB = llvm::BasicBlock::Create(context, name + ".lazy.lock", fn);
         llvm::BasicBlock* initBB = llvm::BasicBlock::Create(context, name + ".lazy.init", fn);
+        llvm::BasicBlock* unlockBB = llvm::BasicBlock::Create(context, name + ".lazy.unlock", fn);
         llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(context, name + ".lazy.done", fn);
+        // Fast path: already initialized -> skip the lock entirely.
         llvm::Value* done = builder.CreateLoad(builder.getInt1Ty(), flag, name + ".lazy.set");
-        builder.CreateCondBr(done, doneBB, initBB);
+        builder.CreateCondBr(done, doneBB, lockBB);
+        // Slow path: take the lock and recheck the flag (another thread may have won the race).
+        builder.SetInsertPoint(lockBB);
+        builder.CreateCall(lazyLockFn(), {});
+        llvm::Value* done2 = builder.CreateLoad(builder.getInt1Ty(), flag, name + ".lazy.set2");
+        builder.CreateCondBr(done2, unlockBB, initBB);
         builder.SetInsertPoint(initBB);
         if (llvm::Value* initV = emitExpr(*init); initV != nullptr) {
             if (isClassValue(type) && isCopyDiscipline(type) && isCopyableLValue(*init))
@@ -1688,6 +1707,9 @@ struct CodeGenerator::Impl {
             builder.CreateStore(initV, storage);
         }
         builder.CreateStore(builder.getInt1(true), flag);
+        builder.CreateBr(unlockBB);
+        builder.SetInsertPoint(unlockBB);
+        builder.CreateCall(lazyUnlockFn(), {});
         builder.CreateBr(doneBB);
         builder.SetInsertPoint(doneBB);
     }

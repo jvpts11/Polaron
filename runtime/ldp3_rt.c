@@ -193,6 +193,24 @@ void __ldp3_lock_release(long long h) {
     if (h != 0) LeaveCriticalSection((CRITICAL_SECTION*)h);
 }
 
+// Process-wide mutex guarding `lazy` initialization (spec 37.3: lazy is thread-safe by default).
+// A double-checked guard in the generated code takes this lock only on the first initialization,
+// so concurrent first-accesses initialize a lazy value exactly once.
+static CRITICAL_SECTION __ldp3_lazy_cs;
+static INIT_ONCE __ldp3_lazy_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK __ldp3_lazy_init_cb(PINIT_ONCE o, PVOID p, PVOID* c) {
+    (void)o;
+    (void)p;
+    (void)c;
+    InitializeCriticalSection(&__ldp3_lazy_cs);
+    return TRUE;
+}
+void __ldp3_lazy_lock(void) {
+    InitOnceExecuteOnce(&__ldp3_lazy_once, __ldp3_lazy_init_cb, NULL, NULL);
+    EnterCriticalSection(&__ldp3_lazy_cs);
+}
+void __ldp3_lazy_unlock(void) { LeaveCriticalSection(&__ldp3_lazy_cs); }
+
 // ---- async/await: tasks + worker pool (spec 20.2) -----------------------------------------
 // A task is the handle to an async computation. `resume`/`state` are the state machine to run;
 // `waiter_*` is the continuation scheduled when this task completes (set by __ldp3_await).
