@@ -642,6 +642,7 @@ struct CodeGenerator::Impl {
     // Memoized per-(callsite, op, type) cascade helper functions, keyed "op|csid|Type". A fresh
     // family per call site lets each site bake in its own depth/types/except filters.
     std::unordered_map<std::string, llvm::Function*> cascadeFns_;
+    std::unordered_map<std::string, llvm::Function*> cloneFns_;  // `cascade clone` helpers, keyed "csid|Type"
     int cascadeCsid_ = 0;  // unique id per cascade call site, so per-site filters never collide
 
     // Emits (or returns the memoized) recursive helper `void(ptr obj, ptr visited, i32 depth)` that
@@ -805,6 +806,117 @@ struct CodeGenerator::Impl {
         }
         currentThis = savedThis;
         currentClass = savedClass;
+    }
+
+    // `cascade clone` (spec 37.1): emits (or returns the memoized) helper `ptr(ptr src, ptr map,
+    // i32 depth)` that deep-clones `src` and its owned graph. The original-to-clone map makes a
+    // shared/cyclic graph clone once and keeps the same sharing. Owned children (value class fields
+    // and non-`external` class pointers) are cloned and repointed; everything else (primitives,
+    // arrays, `external` pointers) is left as the shallow memcpy copied it.
+    llvm::Function* cloneHelper(int csid, const std::string& cn, const ast::CascadeParams& params) {
+        const std::string key = std::to_string(csid) + "|" + cn;
+        if (auto it = cloneFns_.find(key); it != cloneFns_.end()) return it->second;
+
+        llvm::FunctionType* fty = llvm::FunctionType::get(
+            builder.getPtrTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt32Ty()},
+            false);
+        llvm::Function* fn = llvm::Function::Create(
+            fty, llvm::Function::InternalLinkage, "__cascade.clone." + std::to_string(csid) + "." + cn,
+            module);
+        cloneFns_[key] = fn;  // memoize before the body so recursive/cyclic types resolve
+
+        const llvm::IRBuilderBase::InsertPoint savedIP = builder.saveIP();
+        llvm::Function* savedFn = currentFn;
+        currentFn = fn;
+        llvm::Argument* srcArg = fn->getArg(0);
+        llvm::Argument* mapArg = fn->getArg(1);
+        llvm::Argument* depthArg = fn->getArg(2);
+        llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
+
+        llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", fn);
+        llvm::BasicBlock* liveBB = llvm::BasicBlock::Create(context, "live", fn);
+        llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(context, "nullret", fn);
+        builder.SetInsertPoint(entry);
+        builder.CreateCondBr(builder.CreateICmpNE(srcArg, nullp), liveBB, nullBB);
+        builder.SetInsertPoint(nullBB);
+        builder.CreateRet(nullp);  // clone of null is null
+
+        builder.SetInsertPoint(liveBB);
+        llvm::Value* existing = builder.CreateCall(ptrmapGetFn(), {mapArg, srcArg});
+        llvm::BasicBlock* existBB = llvm::BasicBlock::Create(context, "existret", fn);
+        llvm::BasicBlock* freshBB = llvm::BasicBlock::Create(context, "fresh", fn);
+        builder.CreateCondBr(builder.CreateICmpNE(existing, nullp), existBB, freshBB);
+        builder.SetInsertPoint(existBB);
+        builder.CreateRet(existing);  // already cloned (shared / cycle)
+
+        builder.SetInsertPoint(freshBB);
+        auto cit = classes.find(cn);
+        if (cit == classes.end()) {
+            builder.CreateRet(srcArg);  // not a class: share the original
+            currentFn = savedFn;
+            builder.restoreIP(savedIP);
+            return fn;
+        }
+        llvm::Value* size = sizeOf(cit->second.type);
+        llvm::Value* dst = builder.CreateCall(mallocFn(), {size});
+        builder.CreateCall(memcpyFn(), {dst, srcArg, size});       // shallow copy
+        builder.CreateCall(ptrmapPutFn(), {mapArg, srcArg, dst});  // register before recursing
+
+        llvm::BasicBlock* recBB = llvm::BasicBlock::Create(context, "recurse", fn);
+        llvm::BasicBlock* afterBB = llvm::BasicBlock::Create(context, "after", fn);
+        builder.CreateCondBr(builder.CreateICmpNE(depthArg, builder.getInt32(0)), recBB, afterBB);
+        builder.SetInsertPoint(recBB);
+        llvm::Value* unlimited = builder.CreateICmpSLT(depthArg, builder.getInt32(0));
+        llvm::Value* nextDepth = builder.CreateSelect(
+            unlimited, depthArg, builder.CreateSub(depthArg, builder.getInt32(1)));
+        std::unordered_set<std::string> seen;
+        for (std::string cur = cn; !cur.empty();) {
+            auto cc = classes.find(cur);
+            if (cc == classes.end()) break;
+            for (const auto& [fname, ftype] : cc->second.ownFields) {
+                if (!seen.insert(fname).second) continue;
+                if (ftype.find('&') != std::string::npos || isArrayType(ftype)) continue;
+                const bool isPtr = ftype.find('*') != std::string::npos;
+                if (isPtr && cc->second.externalFields.count(fname) > 0) continue;  // association
+                const std::string fcn = baseType(ftype);
+                if (classes.find(fcn) == classes.end()) continue;
+                if (!params.onlyTypes.empty() &&
+                    std::find(params.onlyTypes.begin(), params.onlyTypes.end(), fcn) ==
+                        params.onlyTypes.end())
+                    continue;
+                if (std::find(params.exceptTypes.begin(), params.exceptTypes.end(), fcn) !=
+                    params.exceptTypes.end())
+                    continue;
+                auto idxIt = cit->second.fieldIndex.find(fname);
+                if (idxIt == cit->second.fieldIndex.end()) continue;
+                llvm::Value* childSrc = builder.CreateLoad(
+                    builder.getPtrTy(),
+                    builder.CreateStructGEP(cit->second.type, srcArg, idxIt->second, fname), fname);
+                llvm::Value* childClone =
+                    builder.CreateCall(cloneHelper(csid, fcn, params), {childSrc, mapArg, nextDepth});
+                builder.CreateStore(
+                    childClone,
+                    builder.CreateStructGEP(cit->second.type, dst, idxIt->second, fname));
+            }
+            cur = cc->second.superclass;
+        }
+        builder.CreateBr(afterBB);
+        builder.SetInsertPoint(afterBB);
+        builder.CreateRet(dst);
+
+        currentFn = savedFn;
+        builder.restoreIP(savedIP);
+        return fn;
+    }
+
+    // Top-level `cascade clone X into dest`: clone X's owned graph and store the new root in dest.
+    void emitCascadeClone(llvm::Value* src, const std::string& cn, llvm::Value* destSlot, int csid,
+                          const ast::CascadeParams& params) {
+        llvm::Value* map = builder.CreateCall(ptrmapNewFn(), {});
+        llvm::Value* clone = builder.CreateCall(cloneHelper(csid, cn, params),
+                                                {src, map, builder.getInt32(params.depth)});
+        builder.CreateCall(ptrmapFreeFn(), {map});
+        if (destSlot != nullptr) builder.CreateStore(clone, destSlot);
     }
 
     // `cascade move` (spec 19.8): copy `src` (a `cn` object) into `region` (bump-
@@ -1346,6 +1458,30 @@ struct CodeGenerator::Impl {
             "__ldp3_ptrset_add", llvm::FunctionType::get(builder.getInt32Ty(),
                                                          {builder.getPtrTy(), builder.getPtrTy()},
                                                          false));
+    }
+
+    // Original-to-clone map for `cascade clone` (spec 37.1): new/free/get/put.
+    llvm::FunctionCallee ptrmapNewFn() {
+        return module.getOrInsertFunction(
+            "__ldp3_ptrmap_new", llvm::FunctionType::get(builder.getPtrTy(), {}, false));
+    }
+    llvm::FunctionCallee ptrmapFreeFn() {
+        return module.getOrInsertFunction(
+            "__ldp3_ptrmap_free",
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false));
+    }
+    llvm::FunctionCallee ptrmapGetFn() {  // returns the clone, or null if not yet cloned
+        return module.getOrInsertFunction(
+            "__ldp3_ptrmap_get", llvm::FunctionType::get(builder.getPtrTy(),
+                                                         {builder.getPtrTy(), builder.getPtrTy()},
+                                                         false));
+    }
+    llvm::FunctionCallee ptrmapPutFn() {
+        return module.getOrInsertFunction(
+            "__ldp3_ptrmap_put",
+            llvm::FunctionType::get(
+                builder.getVoidTy(),
+                {builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()}, false));
     }
 
     llvm::FunctionCallee strcmpFn() {
@@ -4395,6 +4531,13 @@ struct CodeGenerator::Impl {
                 const CascadeOp op = cs->op == ast::CascadeOpKind::Println ? CascadeOp::Println
                                                                            : CascadeOp::Validate;
                 emitCascade(op, root, cn, cascadeCsid_++, cs->params);
+            } else if (cs->op == ast::CascadeOpKind::Clone) {
+                // `cascade clone X into Y`: deep-clone X's owned graph and store the root in Y.
+                const std::string cn = baseType(typeName(*cs->target));
+                llvm::Value* src = emitObjectPtr(*cs->target);
+                llvm::Value* destSlot = emitLValue(*cs->dest);
+                if (src == nullptr || destSlot == nullptr) return;
+                emitCascadeClone(src, cn, destSlot, cascadeCsid_++, cs->params);
             }
             return;
         }

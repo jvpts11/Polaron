@@ -1702,6 +1702,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                       cs->loc);
             }
         }
+        if (cs->dest != nullptr) typeOf(*cs->dest);  // type-check `cascade clone X into <dest>`
         return;
     }
     if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {

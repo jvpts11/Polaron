@@ -1504,6 +1504,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # cascade clone X into Y deep-copies the owned graph into a fresh graph; mutating the clone
+        # leaves the original untouched (spec 37.1).
+        add_test(NAME codegen_cascade_clone_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/cascade_clone.ldp3"
+            "-DEXPECTED=1 2 100 200"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # cascade delete also frees objects owned through INHERITED value fields.
         add_test(NAME codegen_cascade_inherited_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

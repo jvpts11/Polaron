@@ -1423,6 +1423,22 @@ ast::StmtPtr Parser::parseStatement() {
             expect(TokenKind::Semicolon, "';'");
             return del;
         }
+        // `cascade clone X into Y` (spec 37.1): deep-clone X's owned graph into Y. `clone`/`into`
+        // are soft keywords here.
+        if (check(TokenKind::Identifier) && current().lexeme == "clone") {
+            advance();  // 'clone'
+            auto cs = std::make_unique<ast::CascadeStmt>();
+            cs->loc = cloc;
+            cs->op = ast::CascadeOpKind::Clone;
+            cs->params = std::move(params);
+            cs->target = parseExpression();
+            if (!(check(TokenKind::Identifier) && current().lexeme == "into"))
+                fail("expected 'into' in cascade clone", current().loc);
+            advance();  // 'into'
+            cs->dest = parseExpression();
+            expect(TokenKind::Semicolon, "';'");
+            return cs;
+        }
         // `cascade validate(X)` and `cascade [System.IO.]Console.println(X)` (spec 37.1):
         // `validate` and `println` are soft keywords recognized only after `cascade`.
         if (check(TokenKind::Identifier) && current().lexeme == "validate") {

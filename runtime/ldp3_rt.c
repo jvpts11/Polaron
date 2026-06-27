@@ -82,6 +82,84 @@ int __ldp3_ptrset_add(ldp3_ptrset* s, void* p) {
     return 1;
 }
 
+// Pointer-to-pointer map for `cascade clone` (spec 37.1): maps each original object to its clone
+// so a shared or cyclic owned graph is cloned once and the clone preserves the same sharing.
+typedef struct ldp3_ptrmap {
+    void** keys;   // hash table; NULL key = empty
+    void** vals;
+    long long cap;
+    long long count;
+} ldp3_ptrmap;
+
+static void __ldp3_ptrmap_grow(ldp3_ptrmap* m) {
+    long long oldCap = m->cap;
+    void** ok = m->keys;
+    void** ov = m->vals;
+    long long newCap = oldCap ? oldCap * 2 : 64;
+    void** nk = (void**)calloc((size_t)newCap, sizeof(void*));
+    void** nv = (void**)calloc((size_t)newCap, sizeof(void*));
+    if (nk == NULL || nv == NULL) __ldp3_panic("out of memory in cascade clone map");
+    long long mask = newCap - 1;
+    for (long long i = 0; i < oldCap; i++) {
+        if (ok[i] != NULL) {
+            unsigned long long h = (unsigned long long)(uintptr_t)ok[i] * 1099511628211ULL;
+            long long idx = (long long)(h & (unsigned long long)mask);
+            while (nk[idx] != NULL) idx = (idx + 1) & mask;
+            nk[idx] = ok[i];
+            nv[idx] = ov[i];
+        }
+    }
+    m->keys = nk;
+    m->vals = nv;
+    m->cap = newCap;
+    free(ok);
+    free(ov);
+}
+
+ldp3_ptrmap* __ldp3_ptrmap_new(void) {
+    ldp3_ptrmap* m = (ldp3_ptrmap*)malloc(sizeof(ldp3_ptrmap));
+    if (m == NULL) __ldp3_panic("out of memory in cascade clone map");
+    m->keys = NULL;
+    m->vals = NULL;
+    m->cap = 0;
+    m->count = 0;
+    return m;
+}
+
+void __ldp3_ptrmap_free(ldp3_ptrmap* m) {
+    if (m == NULL) return;
+    free(m->keys);
+    free(m->vals);
+    free(m);
+}
+
+void* __ldp3_ptrmap_get(ldp3_ptrmap* m, void* key) {
+    if (m == NULL || key == NULL || m->cap == 0) return NULL;
+    unsigned long long h = (unsigned long long)(uintptr_t)key * 1099511628211ULL;
+    long long mask = m->cap - 1;
+    long long idx = (long long)(h & (unsigned long long)mask);
+    while (m->keys[idx] != NULL) {
+        if (m->keys[idx] == key) return m->vals[idx];
+        idx = (idx + 1) & mask;
+    }
+    return NULL;
+}
+
+void __ldp3_ptrmap_put(ldp3_ptrmap* m, void* key, void* val) {
+    if (m == NULL || key == NULL) return;
+    if ((m->count + 1) * 4 >= m->cap * 3) __ldp3_ptrmap_grow(m);
+    unsigned long long h = (unsigned long long)(uintptr_t)key * 1099511628211ULL;
+    long long mask = m->cap - 1;
+    long long idx = (long long)(h & (unsigned long long)mask);
+    while (m->keys[idx] != NULL) {
+        if (m->keys[idx] == key) { m->vals[idx] = val; return; }
+        idx = (idx + 1) & mask;
+    }
+    m->keys[idx] = key;
+    m->vals[idx] = val;
+    m->count++;
+}
+
 // OS threads (spec 20.1 Thread). A function value is a pointer to a closure {code, env};
 // the trampoline loads code/env and calls code(env) (env is the first argument).
 static DWORD WINAPI __ldp3_thread_trampoline(LPVOID closure) {
