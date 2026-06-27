@@ -1458,6 +1458,11 @@ struct CodeGenerator::Impl {
             llvm::FunctionType::get(builder.getPtrTy(), {builder.getInt64Ty()}, false);
         return module.getOrInsertFunction("malloc", ty);
     }
+    llvm::FunctionCallee reallocFn() {  // realloc(ptr, size) -> ptr (for array resize, spec 25)
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getPtrTy(), {builder.getPtrTy(), builder.getInt64Ty()}, false);
+        return module.getOrInsertFunction("realloc", ty);
+    }
 
     llvm::FunctionCallee freeFn() {
         llvm::FunctionType* ty =
@@ -3334,12 +3339,41 @@ struct CodeGenerator::Impl {
             return emitMaybeInvoke(fnit->second, args);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get())) {
-            // array.length(): read the i64 length header and truncate to int.
             if (mem->member == "length" && isArrayType(typeName(*mem->object))) {
-                llvm::Value* block = emitExpr(*mem->object);
-                if (block == nullptr) return nullptr;
-                llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "len");
-                return builder.CreateTrunc(len, builder.getInt32Ty());
+                // array.length(): read the i64 length header and truncate to int.
+                if (call.args.empty()) {
+                    llvm::Value* block = emitExpr(*mem->object);
+                    if (block == nullptr) return nullptr;
+                    llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "len");
+                    return builder.CreateTrunc(len, builder.getInt32Ty());
+                }
+                // array.length(n): resize (spec 25). realloc the block, zero any grown region, and
+                // store the (possibly moved) block back into the array's slot.
+                llvm::Value* slot = emitLValue(*mem->object);
+                if (slot == nullptr) {
+                    error("array resize target must be assignable", call.loc);
+                    return nullptr;
+                }
+                llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "arr.old");
+                llvm::Value* oldLen = builder.CreateLoad(builder.getInt64Ty(), block, "arr.oldlen");
+                llvm::Value* nArg = emitExpr(*call.args[0]);
+                if (nArg == nullptr) return nullptr;
+                llvm::Value* n64 = builder.CreateSExt(nArg, builder.getInt64Ty());
+                const std::uint64_t esz = byteSizeOf(elementOf(typeName(*mem->object)));
+                llvm::Value* total = builder.CreateAdd(
+                    builder.getInt64(8), builder.CreateMul(n64, builder.getInt64(esz)));
+                llvm::Value* nb = builder.CreateCall(reallocFn(), {block, total}, "arr.new");
+                builder.CreateStore(n64, nb);  // new length header
+                // Zero only the grown region [oldLen, n): count is 0 when shrinking.
+                llvm::Value* grew = builder.CreateICmpSGT(n64, oldLen);
+                llvm::Value* cnt = builder.CreateSelect(
+                    grew, builder.CreateMul(builder.CreateSub(n64, oldLen), builder.getInt64(esz)),
+                    builder.getInt64(0));
+                llvm::Value* dst = builder.CreateGEP(builder.getInt8Ty(), arrayData(nb),
+                                                     builder.CreateMul(oldLen, builder.getInt64(esz)));
+                builder.CreateCall(memsetFn(), {dst, builder.getInt32(0), cnt});
+                builder.CreateStore(nb, slot);  // realloc may move the block
+                return nullptr;  // resize is void
             }
             // Channel<T> blocking operations (spec 20.3): send/receive a 64-bit slot via the
             // runtime queue (blocks while full / empty).

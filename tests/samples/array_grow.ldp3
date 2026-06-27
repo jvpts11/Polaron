@@ -1,0 +1,25 @@
+import System.IO.Console;
+program ArrayGrow;
+
+// `arr.length(n)` resizes a dynamic array (spec 25): existing elements are preserved, a grown
+// region is zeroed, and shrinking truncates. The array's storage may move, so the variable is
+// updated in place.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] a = [1, 2];
+                a.length(4);              // grow to 4; new slots zeroed
+                a[2] = 30;
+                a[3] = 40;
+                System.IO.Console.printf("len=%d %d %d %d %d\n",
+                    a.length(), a[0], a[1], a[2], a[3]);  // len=4 1 2 30 40
+                a.length(1);              // shrink to 1
+                System.IO.Console.printf("len=%d %d\n", a.length(), a[0]);  // len=1 1
+                delete a;
+                return;
+            }
+        }
+    }
+}

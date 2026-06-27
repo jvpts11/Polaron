@@ -1629,6 +1629,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # arr.length(n) resizes a dynamic array (spec 25): preserves elements, zeros the grown part.
+        add_test(NAME codegen_array_grow_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/array_grow.ldp3"
+            "-DEXPECTED=len=4 1 2 30 40 len=1 1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # goto (spec 7.9) jumps forward to a later label in a regular method, skipping code between.
         add_test(NAME codegen_goto_forward_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

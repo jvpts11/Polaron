@@ -2626,8 +2626,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
             }
             if (isArrayType(objType)) {
-                if (mem->member == "length" && call->args.empty()) return "int";
-                error("arrays only support .length(); '" + mem->member + "' is not a method",
+                if (mem->member == "length" && call->args.empty()) return "int";  // read length
+                if (mem->member == "length" && call->args.size() == 1) {  // resize (spec 25)
+                    const std::string st = typeOf(*call->args[0]);
+                    if (!st.empty() && st != "int") error("array length must be an int", call->loc);
+                    return "void";
+                }
+                error("arrays support .length() to read and .length(n) to resize; '" + mem->member +
+                          "' is not a method",
                       call->loc);
                 return "";
             }
