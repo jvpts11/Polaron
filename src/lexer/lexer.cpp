@@ -115,6 +115,7 @@ TokenKind keywordKind(std::string_view text) {
         {"volatile", TokenKind::KwVolatile},
         {"cascade", TokenKind::KwCascade},
         {"lazy", TokenKind::KwLazy},
+        {"external", TokenKind::KwExternal},
         // NOTE: get / set / init are soft keywords -- recognized contextually in
         // a property body (parseProperty), not reserved, so `method get()` works.
         {"if", TokenKind::KwIf},

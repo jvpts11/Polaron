@@ -210,6 +210,7 @@ struct ClassLayout {
     std::unordered_map<std::string, std::string> fieldType;  // LDP3 type name per field
     std::unordered_map<std::string, int> bitFieldWidth;  // field -> bit-field width (spec 11.1)
     std::unordered_set<std::string> volatileFields;  // fields whose accesses are volatile (spec 37.5)
+    std::unordered_set<std::string> externalFields;  // `external` fields: associations, not owned (spec 37.1)
     // Lazy class-typed fields (spec 28.4): field name -> deferred initializer. Null in the
     // field means "not yet initialized" (the sentinel), so no extra flag is needed.
     std::unordered_map<std::string, const ast::Expr*> lazyFieldInit;
@@ -634,51 +635,127 @@ struct CodeGenerator::Impl {
         builder.CreateCall(freeFn(), {objPtr});
     }
 
-    // `cascade delete` (spec 37.1): delete `objPtr`, then recursively delete the
-    // objects it owns by composition -- its value-typed (non-pointer, non-reference,
-    // non-array) class fields. Pointers/references are associations and are skipped.
-    // Value composition is acyclic (a cycle would need a pointer), so no runtime
-    // cycle detection is required and this recursion terminates.
-    void emitCascadeDelete(llvm::Value* objPtr, const std::string& cn) {
-        auto cit = classes.find(cn);
-        if (cit == classes.end()) { emitDeleteObject(objPtr, cn); return; }
-        // Read owned child pointers BEFORE freeing this object. Walk the whole
-        // hierarchy so inherited value-typed class fields are cascaded too; the
-        // derived layout's fieldIndex addresses each field (own and inherited).
+    // The `cascade` universal prefix (spec 37.1): an operation propagated through an object's
+    // owned graph. `delete` frees, and (added later) `println`/`validate` describe/check.
+    enum class CascadeOp { Delete };
+
+    // Memoized per-(callsite, op, type) cascade helper functions, keyed "op|csid|Type". A fresh
+    // family per call site lets each site bake in its own depth/types/except filters.
+    std::unordered_map<std::string, llvm::Function*> cascadeFns_;
+    int cascadeCsid_ = 0;  // unique id per cascade call site, so per-site filters never collide
+
+    // Emits (or returns the memoized) recursive helper `void(ptr obj, ptr visited, i32 depth)` that
+    // applies `op` to one object and propagates through its owned children. The runtime visited-set
+    // makes the walk safe on cyclic/shared graphs (spec 37.1 rule 2). Owned children are value-typed
+    // class fields and non-`external` class pointers (rule 1); references, arrays and `external`
+    // pointers are associations and skipped. depth: -1 = unlimited, 0 = stop, else decremented.
+    llvm::Function* cascadeHelper(CascadeOp op, int csid, const std::string& cn,
+                                  const ast::CascadeParams& params) {
+        const std::string key =
+            std::to_string(static_cast<int>(op)) + "|" + std::to_string(csid) + "|" + cn;
+        if (auto it = cascadeFns_.find(key); it != cascadeFns_.end()) return it->second;
+
+        llvm::FunctionType* fty = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt32Ty()},
+            false);
+        llvm::Function* fn = llvm::Function::Create(
+            fty, llvm::Function::InternalLinkage,
+            "__cascade." + std::to_string(static_cast<int>(op)) + "." + std::to_string(csid) + "." +
+                cn,
+            module);
+        cascadeFns_[key] = fn;  // memoize before the body so recursive/cyclic types resolve
+
+        const llvm::IRBuilderBase::InsertPoint savedIP = builder.saveIP();
+        llvm::Function* savedFn = currentFn;
+        currentFn = fn;
+
+        llvm::Argument* objArg = fn->getArg(0);
+        llvm::Argument* setArg = fn->getArg(1);
+        llvm::Argument* depthArg = fn->getArg(2);
+
+        llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", fn);
+        llvm::BasicBlock* liveBB = llvm::BasicBlock::Create(context, "live", fn);
+        llvm::BasicBlock* retBB = llvm::BasicBlock::Create(context, "ret", fn);
+        builder.SetInsertPoint(entry);
+        builder.CreateCondBr(  // null object: nothing to do
+            builder.CreateICmpNE(objArg, llvm::ConstantPointerNull::get(builder.getPtrTy())), liveBB,
+            retBB);
+        builder.SetInsertPoint(liveBB);
+        llvm::Value* fresh = builder.CreateCall(ptrsetAddFn(), {setArg, objArg});
+        llvm::BasicBlock* freshBB = llvm::BasicBlock::Create(context, "fresh", fn);
+        builder.CreateCondBr(  // already visited (cycle / shared): stop
+            builder.CreateICmpNE(fresh, builder.getInt32(0)), freshBB, retBB);
+        builder.SetInsertPoint(freshBB);
+
+        // Read the owned child pointers BEFORE applying the op, since delete frees this node.
+        // Owned = value-typed class field, or a non-`external` class pointer (spec 37.1 rule 1);
+        // references, arrays and `external` pointers are associations and are skipped. The
+        // type filters (`types:`/`except:`) prune which children we follow, by static type.
         std::vector<std::pair<llvm::Value*, std::string>> children;
-        std::unordered_set<std::string> seen;  // a shadowed name resolves to the most-derived
-        for (std::string cur = cn; !cur.empty();) {
-            auto cc = classes.find(cur);
-            if (cc == classes.end()) break;
-            for (const auto& [fname, ftype] : cc->second.ownFields) {
-                if (!seen.insert(fname).second) continue;
-                if (ftype.find('*') != std::string::npos || ftype.find('&') != std::string::npos ||
-                    isArrayType(ftype))
-                    continue;  // an association, not owned by value
-                const std::string fcn = baseType(ftype);
-                if (classes.find(fcn) == classes.end()) continue;  // not a class-typed field
-                auto idxIt = cit->second.fieldIndex.find(fname);
-                if (idxIt == cit->second.fieldIndex.end()) continue;
-                llvm::Value* childPtr = builder.CreateLoad(
-                    builder.getPtrTy(),
-                    builder.CreateStructGEP(cit->second.type, objPtr, idxIt->second, fname), fname);
-                children.emplace_back(childPtr, fcn);
+        auto cit = classes.find(cn);
+        if (cit != classes.end()) {
+            std::unordered_set<std::string> seen;  // a shadowed name resolves to the most-derived
+            for (std::string cur = cn; !cur.empty();) {
+                auto cc = classes.find(cur);
+                if (cc == classes.end()) break;
+                for (const auto& [fname, ftype] : cc->second.ownFields) {
+                    if (!seen.insert(fname).second) continue;
+                    if (ftype.find('&') != std::string::npos || isArrayType(ftype)) continue;
+                    const bool isPtr = ftype.find('*') != std::string::npos;
+                    if (isPtr && cc->second.externalFields.count(fname) > 0) continue;  // assoc
+                    const std::string fcn = baseType(ftype);
+                    if (classes.find(fcn) == classes.end()) continue;  // not a class field
+                    if (!params.onlyTypes.empty() &&
+                        std::find(params.onlyTypes.begin(), params.onlyTypes.end(), fcn) ==
+                            params.onlyTypes.end())
+                        continue;
+                    if (std::find(params.exceptTypes.begin(), params.exceptTypes.end(), fcn) !=
+                        params.exceptTypes.end())
+                        continue;
+                    auto idxIt = cit->second.fieldIndex.find(fname);
+                    if (idxIt == cit->second.fieldIndex.end()) continue;
+                    llvm::Value* childPtr = builder.CreateLoad(
+                        builder.getPtrTy(),
+                        builder.CreateStructGEP(cit->second.type, objArg, idxIt->second, fname),
+                        fname);
+                    children.emplace_back(childPtr, fcn);
+                }
+                cur = cc->second.superclass;
             }
-            cur = cc->second.superclass;
         }
-        emitDeleteObject(objPtr, cn);
-        for (const auto& [childPtr, fcn] : children) {
-            llvm::Function* fn = currentFn;
-            llvm::BasicBlock* doBB = llvm::BasicBlock::Create(context, "cascade.do", fn);
-            llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "cascade.cont", fn);
-            builder.CreateCondBr(
-                builder.CreateICmpNE(childPtr, llvm::ConstantPointerNull::get(builder.getPtrTy())),
-                doBB, contBB);
-            builder.SetInsertPoint(doBB);
-            emitCascadeDelete(childPtr, fcn);
-            builder.CreateBr(contBB);
-            builder.SetInsertPoint(contBB);
-        }
+
+        // Apply the operation to this node, owner before owned (matches destructor order).
+        if (op == CascadeOp::Delete) emitDeleteObject(objArg, cn);
+
+        // Recurse into the owned children when depth allows (0 = stop, -1 = unlimited).
+        llvm::BasicBlock* recBB = llvm::BasicBlock::Create(context, "recurse", fn);
+        llvm::BasicBlock* afterBB = llvm::BasicBlock::Create(context, "after", fn);
+        builder.CreateCondBr(builder.CreateICmpNE(depthArg, builder.getInt32(0)), recBB, afterBB);
+        builder.SetInsertPoint(recBB);
+        llvm::Value* unlimited = builder.CreateICmpSLT(depthArg, builder.getInt32(0));
+        llvm::Value* nextDepth = builder.CreateSelect(
+            unlimited, depthArg, builder.CreateSub(depthArg, builder.getInt32(1)));
+        for (const auto& [childPtr, fcn] : children)
+            builder.CreateCall(cascadeHelper(op, csid, fcn, params), {childPtr, setArg, nextDepth});
+        builder.CreateBr(afterBB);
+        builder.SetInsertPoint(afterBB);
+        builder.CreateBr(retBB);
+        builder.SetInsertPoint(retBB);
+        builder.CreateRetVoid();
+
+        currentFn = savedFn;
+        builder.restoreIP(savedIP);
+        return fn;
+    }
+
+    // Top-level entry for a `cascade` statement: allocate a visited-set, run the walk from `root`,
+    // then free the set. `csid` uniquely identifies this call site so its filters do not collide.
+    void emitCascade(CascadeOp op, llvm::Value* root, const std::string& cn, int csid,
+                     const ast::CascadeParams& params) {
+        llvm::Value* set = builder.CreateCall(ptrsetNewFn(), {});
+        builder.CreateCall(cascadeHelper(op, csid, cn, params),
+                           {root, set, builder.getInt32(params.depth)});
+        builder.CreateCall(ptrsetFreeFn(), {set});
     }
 
     // `cascade move` (spec 19.8): copy `src` (a `cn` object) into `region` (bump-
@@ -1203,6 +1280,23 @@ struct CodeGenerator::Impl {
             builder.getPtrTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty()},
             false);
         return module.getOrInsertFunction("memcpy", ty);
+    }
+
+    // Cascade cycle-detection visited-set (spec 37.1, rule 2): new/add/free over object addresses.
+    llvm::FunctionCallee ptrsetNewFn() {
+        return module.getOrInsertFunction(
+            "__ldp3_ptrset_new", llvm::FunctionType::get(builder.getPtrTy(), {}, false));
+    }
+    llvm::FunctionCallee ptrsetFreeFn() {
+        return module.getOrInsertFunction(
+            "__ldp3_ptrset_free",
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false));
+    }
+    llvm::FunctionCallee ptrsetAddFn() {  // returns 1 if newly added, 0 if already seen
+        return module.getOrInsertFunction(
+            "__ldp3_ptrset_add", llvm::FunctionType::get(builder.getInt32Ty(),
+                                                         {builder.getPtrTy(), builder.getPtrTy()},
+                                                         false));
     }
 
     llvm::FunctionCallee strcmpFn() {
@@ -4265,7 +4359,7 @@ struct CodeGenerator::Impl {
             // `cascade delete` (spec 37.1): delete the object and everything it owns
             // by composition. Heap-only (the spec's intent); no stack early-destruct.
             if (del->isCascade) {
-                emitCascadeDelete(objPtr, cn);
+                emitCascade(CascadeOp::Delete, objPtr, cn, cascadeCsid_++, del->cascade);
                 return;
             }
             // A stack-allocated owned object (tracked for RAII): `delete` is an early
@@ -4816,6 +4910,7 @@ struct CodeGenerator::Impl {
                                 if (f->isPersistent) layout.persistOrder.push_back(f->name);
                                 if (f->bitWidth > 0) layout.bitFieldWidth[f->name] = f->bitWidth;
                                 if (f->isVolatile) layout.volatileFields.insert(f->name);
+                                if (f->isExternal) layout.externalFields.insert(f->name);
                                 if (f->isLazy && f->init) layout.lazyFieldInit[f->name] = f->init.get();
                             }
                         } else if (const auto* m =

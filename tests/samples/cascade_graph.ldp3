@@ -1,0 +1,36 @@
+import System.IO.Console;
+program CascadeGraph;
+
+// `cascade delete` (spec 37.1) follows owned pointers (composition) as well as value fields, and
+// uses a runtime visited-set so a cyclic owned graph is freed exactly once (rules 1-2). A pointer
+// marked `external` is an association and is not followed.
+
+public bundle main {
+    public namespace app {
+        public class Node {
+            public mutable int id;
+            public mutable Node* next;            // owned pointer -> cascaded
+            public external mutable Node* owner;  // association -> skipped
+            public constructor Node() {
+                this.id = 0;
+                this.next = null;
+                this.owner = null;
+            }
+            public destructor ~Node() returns void {
+                System.IO.Console.println($"~Node {this.id}");
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* a = new Node() on heap; a.id = 1;
+                Node* b = new Node() on heap; b.id = 2;
+                Node* c = new Node() on heap; c.id = 3;
+                a.next = b; b.next = c; c.next = a;   // owned cycle a -> b -> c -> a
+                b.owner = a; c.owner = a;             // external back-pointers (skipped)
+                cascade delete a;                     // ~Node 1, ~Node 2, ~Node 3, each once
+                System.IO.Console.println("done");
+                return;
+            }
+        }
+    }
+}

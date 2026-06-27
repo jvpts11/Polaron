@@ -231,9 +231,19 @@ struct ReturnStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// Optional `cascade(...)` parameters (spec 37.1): a propagation-depth limit and type filters.
+// depth == -1 means unlimited. onlyTypes (from `types: {...}`) restricts propagation to the
+// listed types; exceptTypes (from `except: {...}`) skips the listed types.
+struct CascadeParams {
+    int depth = -1;
+    std::vector<std::string> onlyTypes;
+    std::vector<std::string> exceptTypes;
+};
+
 struct DeleteStmt : Stmt {
     ExprPtr target;  // a heap object or array to free
     bool isCascade = false;  // `cascade delete` (spec 37.1): also delete owned member objects
+    CascadeParams cascade;   // propagation limits, when isCascade
     void dump(std::string& out, int indent) const override;
 };
 
@@ -595,6 +605,7 @@ struct FieldDecl : MemberDecl {
     bool isTransient = false;   // excluded from serialization
     bool isVolatile = false;    // spec 37.5: loads/stores are never optimized away
     bool isLazy = false;        // spec 28.4: a class-typed field initialized on first access
+    bool isExternal = false;    // spec 37.1: an association, not owned; cascade does not follow it
     TypeRef type;
     std::string name;
     int bitWidth = 0;  // `field : N` bit-field width (spec 11.1); 0 = not a bit-field

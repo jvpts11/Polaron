@@ -66,7 +66,11 @@ private:
                                                  bool isAsync = false, bool isVolatile = false);
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
                               bool isPersistent, bool isEternal, bool isTransient,
-                              bool isVolatile = false, bool isLazy = false);
+                              bool isVolatile = false, bool isLazy = false,
+                              bool isExternal = false);
+    // Optional `cascade(...)` parameters (spec 37.1): `(depth: N)`, `(unlimited)`,
+    // `(types: {A,B})`, `(except: {A,B})`, or combinations. Returns defaults if no `(`.
+    ast::CascadeParams parseCascadeParamsOpt();
     ast::MemberPtr parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
                                  const std::string& name, SourceLocation loc);
     std::unique_ptr<ast::ConstructorDecl> parseConstructor(std::string visibility);

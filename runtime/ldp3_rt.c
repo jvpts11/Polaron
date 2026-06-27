@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 // Defined-behaviour panic: LDP3 never invokes UB. When a check fails (division by zero,
 // out-of-bounds, etc.) the program terminates deterministically with a message instead of
@@ -18,6 +19,67 @@ void __ldp3_panic(const char* msg) {
     fprintf(stderr, "LDP3 panic: %s\n", msg);
     fflush(stderr);
     exit(70);
+}
+
+// Pointer visited-set for `cascade` cycle detection (spec 37.1, rule 2). A small open-
+// addressing hash set over object addresses: add() returns 1 the first time a pointer is
+// seen and 0 afterwards, so a cascade walk skips objects it already processed (and so never
+// loops on a cyclic object graph).
+typedef struct ldp3_ptrset {
+    void** slots;     // hash table; NULL slot = empty
+    long long cap;    // power of two, or 0 before first insert
+    long long count;
+} ldp3_ptrset;
+
+static void __ldp3_ptrset_grow(ldp3_ptrset* s) {
+    long long oldCap = s->cap;
+    void** old = s->slots;
+    long long newCap = oldCap ? oldCap * 2 : 64;
+    void** ns = (void**)calloc((size_t)newCap, sizeof(void*));
+    if (ns == NULL) __ldp3_panic("out of memory in cascade visited-set");
+    long long mask = newCap - 1;
+    for (long long i = 0; i < oldCap; i++) {
+        if (old[i] != NULL) {
+            unsigned long long h = (unsigned long long)(uintptr_t)old[i] * 1099511628211ULL;
+            long long idx = (long long)(h & (unsigned long long)mask);
+            while (ns[idx] != NULL) idx = (idx + 1) & mask;
+            ns[idx] = old[i];
+        }
+    }
+    s->slots = ns;
+    s->cap = newCap;
+    free(old);
+}
+
+ldp3_ptrset* __ldp3_ptrset_new(void) {
+    ldp3_ptrset* s = (ldp3_ptrset*)malloc(sizeof(ldp3_ptrset));
+    if (s == NULL) __ldp3_panic("out of memory in cascade visited-set");
+    s->slots = NULL;
+    s->cap = 0;
+    s->count = 0;
+    return s;
+}
+
+void __ldp3_ptrset_free(ldp3_ptrset* s) {
+    if (s == NULL) return;
+    free(s->slots);
+    free(s);
+}
+
+// Returns 1 if `p` was newly added, 0 if already present. A NULL set or pointer counts as seen.
+int __ldp3_ptrset_add(ldp3_ptrset* s, void* p) {
+    if (s == NULL || p == NULL) return 0;
+    if ((s->count + 1) * 4 >= s->cap * 3) __ldp3_ptrset_grow(s);
+    unsigned long long h = (unsigned long long)(uintptr_t)p * 1099511628211ULL;
+    long long mask = s->cap - 1;
+    long long idx = (long long)(h & (unsigned long long)mask);
+    while (s->slots[idx] != NULL) {
+        if (s->slots[idx] == p) return 0;  // already visited
+        idx = (idx + 1) & mask;
+    }
+    s->slots[idx] = p;
+    s->count++;
+    return 1;
 }
 
 // OS threads (spec 20.1 Thread). A function value is a pointer to a closure {code, env};

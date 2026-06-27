@@ -556,6 +556,7 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         n->isTransient = x->isTransient;
         n->isVolatile = x->isVolatile;
         n->isLazy = x->isLazy;
+        n->isExternal = x->isExternal;
         n->type = substType(x->type, s);
         n->name = x->name;
         n->bitWidth = x->bitWidth;

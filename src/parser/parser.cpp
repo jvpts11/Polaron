@@ -231,6 +231,42 @@ ast::ImportDecl Parser::parseImportDecl() {
     return imp;
 }
 
+ast::CascadeParams Parser::parseCascadeParamsOpt() {
+    ast::CascadeParams p;
+    if (!match(TokenKind::LParen)) return p;
+    if (!check(TokenKind::RParen)) {
+        do {
+            const Token key = current();
+            if (key.kind != TokenKind::Identifier)
+                fail("expected a cascade parameter (depth, unlimited, types, except)", key.loc);
+            advance();
+            if (key.lexeme == "unlimited") {
+                p.depth = -1;
+            } else if (key.lexeme == "depth") {
+                expect(TokenKind::Colon, "':' after 'depth'");
+                const Token n = expect(TokenKind::IntLiteral, "a depth value");
+                p.depth = static_cast<int>(std::strtol(n.lexeme.c_str(), nullptr, 0));
+            } else if (key.lexeme == "types" || key.lexeme == "except") {
+                std::vector<std::string>& dst = (key.lexeme == "types") ? p.onlyTypes : p.exceptTypes;
+                expect(TokenKind::Colon, "':' after a cascade type filter");
+                expect(TokenKind::LBrace, "'{' to start the type list");
+                if (!check(TokenKind::RBrace)) {
+                    do {
+                        dst.push_back(expect(TokenKind::Identifier, "a type name").lexeme);
+                    } while (match(TokenKind::Comma));
+                }
+                expect(TokenKind::RBrace, "'}' to close the type list");
+            } else {
+                fail("unknown cascade parameter '" + key.lexeme +
+                         "' (use depth, unlimited, types, except)",
+                     key.loc);
+            }
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RParen, "')' to close cascade parameters");
+    return p;
+}
+
 ast::Bundle Parser::parseBundle() {
     ast::Bundle b;
     b.loc = current().loc;
@@ -752,6 +788,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isComptime = false;
     bool isLazy = false;
     bool isAsync = false;
+    bool isExternal = false;
     for (;;) {
         if (!isStatic && check(TokenKind::KwStatic)) {
             advance();
@@ -813,6 +850,11 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isAsync = true;
             continue;
         }
+        if (!isExternal && check(TokenKind::KwExternal)) {
+            advance();
+            isExternal = true;
+            continue;
+        }
         break;
     }
     ast::MemberPtr member;
@@ -828,7 +870,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     } else {
         // Otherwise it is a field:  <type> <name> ;
         member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
-                            isTransient, isVolatile, isLazy);
+                            isTransient, isVolatile, isLazy, isExternal);
     }
     if (!anns.empty()) {  // attach leading annotations to the declaration they precede
         if (auto* m = dynamic_cast<ast::MethodDecl*>(member.get())) m->annotations = std::move(anns);
@@ -920,7 +962,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
 
 ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable,
                                   bool isPersistent, bool isEternal, bool isTransient,
-                                  bool isVolatile, bool isLazy) {
+                                  bool isVolatile, bool isLazy, bool isExternal) {
     const SourceLocation loc = current().loc;
     ast::TypeRef type = parseTypeRef();
     const std::string name = expect(TokenKind::Identifier, "a field name").lexeme;
@@ -938,6 +980,7 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->isTransient = isTransient;
     f->isVolatile = isVolatile;
     f->isLazy = isLazy;
+    f->isExternal = isExternal;
     f->type = std::move(type);
     f->name = name;
     // Bit-field width: `field : N` (spec 11.1). Constrains the stored value to N bits.
@@ -1340,36 +1383,52 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return ret;
     }
-    // `cascade move tree from region A to region B [leaving persistents];` (spec 19.8).
-    if (check(TokenKind::KwCascade) && peek(1).kind == TokenKind::KwMove) {
-        auto cm = std::make_unique<ast::CascadeMoveStmt>();
-        cm->loc = current().loc;
+    // `cascade [(params)] <operation>` (spec 37.1): propagate an operation through the object's
+    // owned graph. Supported operations: delete, move (spec 19.8). Others are added below.
+    if (check(TokenKind::KwCascade)) {
+        const SourceLocation cloc = current().loc;
         advance();  // 'cascade'
-        advance();  // 'move'
-        cm->target = parseExpression();
-        if (!(check(TokenKind::Identifier) && current().lexeme == "from"))
-            fail("expected 'from' in cascade move", current().loc);
-        advance();  // 'from'
-        expect(TokenKind::KwRegion, "'region' after 'from'");
-        cm->fromRegion = expect(TokenKind::Identifier, "the source region name").lexeme;
-        if (!(check(TokenKind::Identifier) && current().lexeme == "to"))
-            fail("expected 'to' in cascade move", current().loc);
-        advance();  // 'to'
-        expect(TokenKind::KwRegion, "'region' after 'to'");
-        cm->toRegion = expect(TokenKind::Identifier, "the destination region name").lexeme;
-        if (check(TokenKind::Identifier) && current().lexeme == "leaving") {
-            advance();  // 'leaving'
-            if (check(TokenKind::Identifier) && current().lexeme == "persistents") advance();
-            cm->leavingPersistents = true;
+        ast::CascadeParams params = parseCascadeParamsOpt();
+        // `cascade move tree from region A to region B [leaving persistents];` (spec 19.8).
+        if (check(TokenKind::KwMove)) {
+            advance();  // 'move'
+            auto cm = std::make_unique<ast::CascadeMoveStmt>();
+            cm->loc = cloc;
+            cm->target = parseExpression();
+            if (!(check(TokenKind::Identifier) && current().lexeme == "from"))
+                fail("expected 'from' in cascade move", current().loc);
+            advance();  // 'from'
+            expect(TokenKind::KwRegion, "'region' after 'from'");
+            cm->fromRegion = expect(TokenKind::Identifier, "the source region name").lexeme;
+            if (!(check(TokenKind::Identifier) && current().lexeme == "to"))
+                fail("expected 'to' in cascade move", current().loc);
+            advance();  // 'to'
+            expect(TokenKind::KwRegion, "'region' after 'to'");
+            cm->toRegion = expect(TokenKind::Identifier, "the destination region name").lexeme;
+            if (check(TokenKind::Identifier) && current().lexeme == "leaving") {
+                advance();  // 'leaving'
+                if (check(TokenKind::Identifier) && current().lexeme == "persistents") advance();
+                cm->leavingPersistents = true;
+            }
+            expect(TokenKind::Semicolon, "';'");
+            return cm;
         }
-        expect(TokenKind::Semicolon, "';'");
-        return cm;
+        if (check(TokenKind::KwDelete)) {
+            advance();  // 'delete'
+            auto del = std::make_unique<ast::DeleteStmt>();
+            del->loc = cloc;
+            del->isCascade = true;  // spec 37.1
+            del->cascade = std::move(params);
+            del->target = parseExpression();
+            expect(TokenKind::Semicolon, "';'");
+            return del;
+        }
+        fail("this operation does not support 'cascade' (spec 37.1)", current().loc);
     }
-    if (check(TokenKind::KwCascade) || check(TokenKind::KwDelete)) {
+    if (check(TokenKind::KwDelete)) {
         auto del = std::make_unique<ast::DeleteStmt>();
         del->loc = current().loc;
-        if (match(TokenKind::KwCascade)) del->isCascade = true;  // spec 37.1
-        expect(TokenKind::KwDelete, "'delete' (cascade applies to delete or move)");
+        expect(TokenKind::KwDelete, "'delete'");
         del->target = parseExpression();
         expect(TokenKind::Semicolon, "';'");
         return del;

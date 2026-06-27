@@ -1484,6 +1484,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # cascade delete follows owned pointers, and a runtime visited-set frees a cyclic owned
+        # graph exactly once (spec 37.1); `external` pointers are associations and are skipped.
+        add_test(NAME codegen_cascade_graph_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/cascade_graph.ldp3"
+            "-DEXPECTED=~Node 1 ~Node 2 ~Node 3 done"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # cascade delete also frees objects owned through INHERITED value fields.
         add_test(NAME codegen_cascade_inherited_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
