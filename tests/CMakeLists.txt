@@ -1494,6 +1494,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # lazy region (spec 37.3): the backing block is allocated on first object insertion; an
+        # unused lazy region is never allocated.
+        add_test(NAME codegen_lazy_region_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lazy_region.ldp3"
+            "-DEXPECTED=v=42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # cascade validate(X) checks invariants and cascade Console.println(X) describes each node
         # in the owned graph (spec 37.1), reusing the cycle-safe walk.
         add_test(NAME codegen_cascade_ops_runs COMMAND "${CMAKE_COMMAND}"

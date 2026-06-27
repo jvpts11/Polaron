@@ -644,6 +644,11 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, llvm::Function*> cascadeFns_;
     std::unordered_map<std::string, llvm::Function*> cloneFns_;  // `cascade clone` helpers, keyed "csid|Type"
     int cascadeCsid_ = 0;  // unique id per cascade call site, so per-site filters never collide
+    // `lazy region` (spec 37.3): the backing block is allocated on first object insertion, not at
+    // the declaration. The slot holds null until then; the size/address expr is replayed on demand.
+    std::unordered_set<std::string> lazyRegions_;
+    std::unordered_map<std::string, const ast::Expr*> lazyRegionSize_;
+    std::unordered_map<std::string, const ast::Expr*> lazyRegionAt_;
 
     // Emits (or returns the memoized) recursive helper `void(ptr obj, ptr visited, i32 depth)` that
     // applies `op` to one object and propagates through its owned children. The runtime visited-set
@@ -2488,6 +2493,21 @@ struct CodeGenerator::Impl {
         if (it == locals.end()) {
             error("unknown region '" + name + "'", loc);
             return nullptr;
+        }
+        // `lazy region` (spec 37.3): allocate the backing block the first time an object enters.
+        if (lazyRegions_.count(name) > 0) {
+            llvm::Value* cur = builder.CreateLoad(builder.getPtrTy(), it->second.storage, "lazyrgn");
+            llvm::Function* fn = currentFn;
+            auto* allocBB = llvm::BasicBlock::Create(context, "lazyrgn.alloc", fn);
+            auto* contBB = llvm::BasicBlock::Create(context, "lazyrgn.cont", fn);
+            builder.CreateCondBr(
+                builder.CreateICmpEQ(cur, llvm::ConstantPointerNull::get(builder.getPtrTy())),
+                allocBB, contBB);
+            builder.SetInsertPoint(allocBB);
+            llvm::Value* blk = emitRegionAllocate(lazyRegionSize_[name], lazyRegionAt_[name]);
+            if (blk != nullptr) builder.CreateStore(blk, it->second.storage);
+            builder.CreateBr(contBB);
+            builder.SetInsertPoint(contBB);
         }
         llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage, "region");
         llvm::Value* used = builder.CreateLoad(builder.getInt64Ty(), block, "used");
@@ -4345,7 +4365,9 @@ struct CodeGenerator::Impl {
             }
             // Lazy local (spec 37.3): allocate storage now (a safe null/zero) plus an
             // "initialized" flag, but defer the initializer until the first read.
-            if (vd->isLazy) {
+            // A lazy region defers its backing allocation, not an identifier read, so it is handled
+            // below (the generic lazy-local read guard does not fire for `new ... in region`).
+            if (vd->isLazy && declType != "region") {
                 llvm::Type* lty = llvmType(declType);
                 llvm::Value* storage = createEntryAlloca(vd->name, lty);
                 builder.CreateStore(llvm::Constant::getNullValue(lty), storage);
@@ -4385,6 +4407,20 @@ struct CodeGenerator::Impl {
                     pendingPersistKey =
                         (currentFn != nullptr ? currentFn->getName().str() : std::string()) +
                         "." + vd->name;
+                }
+            }
+            // `lazy region` (spec 37.3): defer the backing allocation until the first object
+            // enters. Store null now and remember the size/address to replay on first use.
+            if (declType == "region" && vd->isLazy) {
+                if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get())) {
+                    llvm::Value* slot = createEntryAlloca(vd->name, builder.getPtrTy());
+                    builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
+                    locals[vd->name] = LocalSlot{slot, "region"};
+                    lazyRegions_.insert(vd->name);
+                    lazyRegionSize_[vd->name] = ri->size.get();
+                    lazyRegionAt_[vd->name] = ri->atAddress.get();
+                    if (!vd->isEternal) scopeRegions.push_back(RegionLocal{slot, vd->isEternal});
+                    return;
                 }
             }
             llvm::Value* initV = emitExpr(*vd->init);

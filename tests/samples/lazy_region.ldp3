@@ -1,0 +1,27 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program LazyRegion;
+
+// `lazy region` (spec 37.3): the backing memory is allocated on the first object insertion, not at
+// the declaration. A lazy region that never receives an object is never allocated, so its scope-end
+// release is harmless.
+
+public bundle main {
+    public namespace app {
+        public class Cell {
+            public mutable int v;
+            public constructor Cell() { this.v = 0; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                lazy region empty = itself.allocate(8 kilobytes);  // never used -> never allocated
+                lazy region r = itself.allocate(64 kilobytes);
+                Cell* c = new Cell() in region r;                  // first object -> allocate r now
+                c.v = 42;
+                System.IO.Console.println($"v={c.v}");
+                release region r;
+                return;
+            }
+        }
+    }
+}
