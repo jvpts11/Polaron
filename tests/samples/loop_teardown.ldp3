@@ -1,0 +1,28 @@
+import System.IO.Console;
+program LoopTeardown;
+
+// break and continue tear down the loop body's scope before leaving it: destructors (and defers,
+// and region frees) for objects declared inside the loop run, just as they do on early return.
+
+public bundle main {
+    public namespace app {
+        public class Res {
+            public mutable int id;
+            public constructor Res(int id) { this.id = id; }
+            public destructor ~Res() returns void {
+                System.IO.Console.printf("dtor %d\n", this.id);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                for (mutable int i = 0; i < 3; i = i + 1) {
+                    Res r = new Res(i) on stack;
+                    System.IO.Console.printf("iter %d\n", i);
+                    if (i == 1) { break; }   // r's destructor must still run here
+                }
+                System.IO.Console.println("done");
+                return;
+            }
+        }
+    }
+}

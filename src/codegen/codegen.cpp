@@ -331,6 +331,11 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* cont;
         std::string label;
         std::size_t finallyDepth = 0;  // finallyStack size at loop entry (break/continue run the rest)
+        // Scope-teardown bases at loop entry: break/continue run destructors / defers / region
+        // frees for everything declared inside the loop since here, before branching out.
+        std::size_t soBase = 0;
+        std::size_t dfBase = 0;
+        std::size_t regBase = 0;
     };
     std::vector<LoopTargets> loopStack;  // (break, continue, label) per active loop / switch
     std::string pendingLoopLabel;        // label to attach to the next loop (from a LabeledStmt)
@@ -4479,7 +4484,9 @@ struct CodeGenerator::Impl {
         if (const auto* br = dynamic_cast<const ast::BreakStmt*>(&stmt)) {
             if (const LoopTargets* t = findLoop(br->label)) {
                 llvm::BasicBlock* target = t->brk;
+                const std::size_t so = t->soBase, df = t->dfBase, rg = t->regBase;
                 emitPendingFinallys(t->finallyDepth);  // run finallys of try regions left by break
+                emitBlockCleanup(so, df, rg);  // run destructors/defers/region-frees of loop scopes
                 if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(target);
             }
             return;
@@ -4487,7 +4494,9 @@ struct CodeGenerator::Impl {
         if (const auto* co = dynamic_cast<const ast::ContinueStmt*>(&stmt)) {
             if (const LoopTargets* t = findLoop(co->label)) {
                 llvm::BasicBlock* target = t->cont;
+                const std::size_t so = t->soBase, df = t->dfBase, rg = t->regBase;
                 emitPendingFinallys(t->finallyDepth);
+                emitBlockCleanup(so, df, rg);  // tear down this iteration's loop-body scopes
                 if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(target);
             }
             return;
@@ -5277,7 +5286,7 @@ struct CodeGenerator::Impl {
         if (condV == nullptr) return;
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
-        loopStack.push_back({endBB, condBB, pendingLoopLabel, finallyStack.size()});  // break -> end, continue -> cond
+        loopStack.push_back({endBB, condBB, pendingLoopLabel, finallyStack.size(), scopeObjects.size(), deferred.size(), scopeRegions.size()});  // break -> end, continue -> cond
         pendingLoopLabel.clear();
         emitBlock(s.body);
         loopStack.pop_back();
@@ -5293,7 +5302,7 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "do.end", fn);
         builder.CreateBr(bodyBB);
         builder.SetInsertPoint(bodyBB);
-        loopStack.push_back({endBB, condBB, pendingLoopLabel, finallyStack.size()});  // break -> end, continue -> cond
+        loopStack.push_back({endBB, condBB, pendingLoopLabel, finallyStack.size(), scopeObjects.size(), deferred.size(), scopeRegions.size()});  // break -> end, continue -> cond
         pendingLoopLabel.clear();
         emitBlock(s.body);
         loopStack.pop_back();
@@ -5318,7 +5327,7 @@ struct CodeGenerator::Impl {
         if (condV == nullptr) return;
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
-        loopStack.push_back({endBB, updateBB, pendingLoopLabel, finallyStack.size()});  // break -> end, continue -> update
+        loopStack.push_back({endBB, updateBB, pendingLoopLabel, finallyStack.size(), scopeObjects.size(), deferred.size(), scopeRegions.size()});  // break -> end, continue -> update
         pendingLoopLabel.clear();
         emitBlock(s.body);
         loopStack.pop_back();
@@ -5357,7 +5366,7 @@ struct CodeGenerator::Impl {
         llvm::Value* elem =
             builder.CreateLoad(feElemTy, arrayElemPtr(block, i, feElemTy), "fe.el");
         builder.CreateStore(elem, vSlot);
-        loopStack.push_back({endBB, updateBB, pendingLoopLabel, finallyStack.size()});
+        loopStack.push_back({endBB, updateBB, pendingLoopLabel, finallyStack.size(), scopeObjects.size(), deferred.size(), scopeRegions.size()});
         pendingLoopLabel.clear();
         emitBlock(s.body);
         loopStack.pop_back();
@@ -5394,7 +5403,7 @@ struct CodeGenerator::Impl {
         // break exits the switch; continue (if any) targets the enclosing loop.
         const LoopTargets brk = {endBB,
                                  loopStack.empty() ? endBB : loopStack.back().cont,
-                                 pendingLoopLabel, finallyStack.size()};
+                                 pendingLoopLabel, finallyStack.size(), scopeObjects.size(), deferred.size(), scopeRegions.size()};
         pendingLoopLabel.clear();
         for (std::size_t i = 0; i < n; ++i) {
             builder.SetInsertPoint(bodyBBs[i]);
