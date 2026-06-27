@@ -1108,6 +1108,7 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
         } else {
             importedSuffixes_.insert(symbol);  // harmless for non-literals
         }
+        if (imp.isFinal) finalImports_.insert(symbol);  // spec 37.6: not unimportable
     };
     for (const ast::ImportDecl& imp : program.imports) validate(imp);  // file-level (spec 2.7)
     for (const ast::Bundle& bundle : program.bundles)
@@ -1668,6 +1669,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (lookupClass(baseType(um->target)) == nullptr)
             error("cannot " + std::string(um->isReimport ? "reimport" : "unimport") + " '" +
                       um->target + "': not a known class",
+                  um->loc);
+        else if (!um->isReimport && finalImports_.count(baseType(um->target)) > 0)
+            error("cannot unimport '" + um->target + "': it was brought in by 'final import' (spec 37.6)",
                   um->loc);
         return;
     }

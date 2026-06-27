@@ -181,6 +181,8 @@ private:
     std::unordered_map<std::string, std::string> newtypes_;
     // Custom annotation types (spec 14.3): name -> its fields/required set.
     std::unordered_map<std::string, AnnotationInfo> annotations_;
+    // Symbols brought in by `final import` (spec 37.6): they cannot be unimported.
+    std::unordered_set<std::string> finalImports_;
     std::unordered_map<std::string, CatalogInfo> catalogs_;            // name -> catalog contract
     std::unordered_map<std::string, std::vector<std::string>> enumCatalogs_;  // enum -> catalogs it extends
     // enum -> (method name -> info): methods declared on a catalog-implementing enum.

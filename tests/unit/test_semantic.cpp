@@ -1403,3 +1403,19 @@ TEST_CASE("semantic accepts a class invariant") {
         " public constructor C() { this.v = 0; } }"
         " public class Main { public static method main(string[] args) returns void { return; } } } }"));
 }
+
+// `final import` (spec 37.6): the imported symbol cannot be unimported.
+TEST_CASE("semantic rejects unimport of a final-imported symbol") {
+    CHECK_FALSE(checkSrc(
+        "final import lib.Widget; program P; public bundle b {"
+        " public namespace lib { public class Widget { public constructor Widget() {} } }"
+        " public namespace app { public class Main {"
+        " public static method main(string[] args) returns void { unimport Widget; return; } } } }"));
+}
+TEST_CASE("semantic allows unimport of a plainly-imported symbol") {
+    CHECK(checkSrc(
+        "import lib.Widget; program P; public bundle b {"
+        " public namespace lib { public class Widget { public constructor Widget() {} } }"
+        " public namespace app { public class Main {"
+        " public static method main(string[] args) returns void { unimport Widget; return; } } } }"));
+}
