@@ -277,6 +277,19 @@ struct CascadeMoveStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// `cascade <op> ...` for the operations other than delete/move (spec 37.1): an operation
+// propagated through the object's owned graph. Println describes each node, Validate checks each
+// node's invariant, Clone deep-copies the whole graph, Unimport removes a class and its subtypes.
+enum class CascadeOpKind { Println, Validate, Clone, Unimport };
+struct CascadeStmt : Stmt {
+    CascadeOpKind op = CascadeOpKind::Println;
+    ExprPtr target;        // root object (Println/Validate/Clone); null for Unimport
+    ExprPtr dest;          // `clone X into <dest>`
+    std::string typeName;  // `unimport <Name>`
+    CascadeParams params;
+    void dump(std::string& out, int /*indent*/) const override { out += "cascade"; }
+};
+
 struct VarDeclStmt : Stmt {
     bool isMutable = false;
     bool isVar = false;  // `var` type inference; `type` then unused

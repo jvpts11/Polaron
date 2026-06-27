@@ -1419,3 +1419,17 @@ TEST_CASE("semantic allows unimport of a plainly-imported symbol") {
         " public namespace app { public class Main {"
         " public static method main(string[] args) returns void { unimport Widget; return; } } } }"));
 }
+
+// `cascade println` (spec 37.1 rule 4): only supported if the type provides the per-node form,
+// i.e. a describe() method. Without one it is a compile error.
+TEST_CASE("semantic rejects cascade println without a describe method") {
+    CHECK_FALSE(checkSrc(withClass(
+        "public class N { public mutable int id; public constructor N() { this.id = 0; } }",
+        "N* a = new N() on heap; cascade Console.println(a); delete a;")));
+}
+TEST_CASE("semantic accepts cascade println when describe is defined") {
+    CHECK(checkSrc(withClass(
+        "public class N { public mutable int id; public constructor N() { this.id = 0; }"
+        " public method describe() returns void { System.IO.Console.println($\"N {this.id}\"); } }",
+        "N* a = new N() on heap; cascade Console.println(a); delete a;")));
+}

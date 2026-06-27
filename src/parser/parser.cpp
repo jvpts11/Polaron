@@ -1423,6 +1423,39 @@ ast::StmtPtr Parser::parseStatement() {
             expect(TokenKind::Semicolon, "';'");
             return del;
         }
+        // `cascade validate(X)` and `cascade [System.IO.]Console.println(X)` (spec 37.1):
+        // `validate` and `println` are soft keywords recognized only after `cascade`.
+        if (check(TokenKind::Identifier) && current().lexeme == "validate") {
+            advance();  // 'validate'
+            auto cs = std::make_unique<ast::CascadeStmt>();
+            cs->loc = cloc;
+            cs->op = ast::CascadeOpKind::Validate;
+            cs->params = std::move(params);
+            expect(TokenKind::LParen, "'(' after 'validate'");
+            cs->target = parseExpression();
+            expect(TokenKind::RParen, "')' to close 'validate'");
+            expect(TokenKind::Semicolon, "';'");
+            return cs;
+        }
+        if (check(TokenKind::Identifier)) {
+            // A println form: an optional dotted prefix (Console, System.IO.Console, ...) then
+            // `println(X)`. The last name before `(` must be `println`.
+            std::string last = current().lexeme;
+            advance();
+            while (match(TokenKind::Dot))
+                last = expect(TokenKind::Identifier, "a name after '.'").lexeme;
+            if (last != "println")
+                fail("this operation does not support 'cascade' (spec 37.1)", cloc);
+            auto cs = std::make_unique<ast::CascadeStmt>();
+            cs->loc = cloc;
+            cs->op = ast::CascadeOpKind::Println;
+            cs->params = std::move(params);
+            expect(TokenKind::LParen, "'(' after 'println'");
+            cs->target = parseExpression();
+            expect(TokenKind::RParen, "')' to close 'println'");
+            expect(TokenKind::Semicolon, "';'");
+            return cs;
+        }
         fail("this operation does not support 'cascade' (spec 37.1)", current().loc);
     }
     if (check(TokenKind::KwDelete)) {

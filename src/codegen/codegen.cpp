@@ -636,8 +636,8 @@ struct CodeGenerator::Impl {
     }
 
     // The `cascade` universal prefix (spec 37.1): an operation propagated through an object's
-    // owned graph. `delete` frees, and (added later) `println`/`validate` describe/check.
-    enum class CascadeOp { Delete };
+    // owned graph. delete frees, println calls describe() on each node, validate checks invariants.
+    enum class CascadeOp { Delete, Println, Validate };
 
     // Memoized per-(callsite, op, type) cascade helper functions, keyed "op|csid|Type". A fresh
     // family per call site lets each site bake in its own depth/types/except filters.
@@ -726,6 +726,8 @@ struct CodeGenerator::Impl {
 
         // Apply the operation to this node, owner before owned (matches destructor order).
         if (op == CascadeOp::Delete) emitDeleteObject(objArg, cn);
+        else if (op == CascadeOp::Println) emitCascadePrintln(objArg, cn);
+        else if (op == CascadeOp::Validate) emitCascadeValidate(objArg, cn);
 
         // Recurse into the owned children when depth allows (0 = stop, -1 = unlimited).
         llvm::BasicBlock* recBB = llvm::BasicBlock::Create(context, "recurse", fn);
@@ -756,6 +758,53 @@ struct CodeGenerator::Impl {
         builder.CreateCall(cascadeHelper(op, csid, cn, params),
                            {root, set, builder.getInt32(params.depth)});
         builder.CreateCall(ptrsetFreeFn(), {set});
+    }
+
+    // `cascade println` (spec 37.1): call the node's describe() to print it. Virtual when the class
+    // is polymorphic, else a direct call. The analyzer requires a describe() on the root type.
+    void emitCascadePrintln(llvm::Value* objPtr, const std::string& cn) {
+        const ast::MethodDecl* m = findMethodDecl(cn, "describe");
+        if (m == nullptr) return;  // no describe(): the analyzer already reported it
+        llvm::FunctionType* fty = methodFnType(m);
+        auto cit = classes.find(cn);
+        if (cit != classes.end() && cit->second.hasVtable) {
+            const int slot = slotIndex(cn, "describe");
+            if (slot >= 0) {
+                llvm::Value* vtblField =
+                    builder.CreateStructGEP(cit->second.type, objPtr, 0, "vtbl.addr");
+                llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblField, "vtbl");
+                llvm::Type* vtArrTy =
+                    llvm::ArrayType::get(builder.getPtrTy(), cit->second.vtslots.size());
+                llvm::Value* slotPtr = builder.CreateConstGEP2_64(
+                    vtArrTy, vtbl, 0, static_cast<std::uint64_t>(slot), "slot");
+                llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), slotPtr, "fn");
+                builder.CreateCall(fty, fnPtr, {objPtr});
+                return;
+            }
+        }
+        const std::string owner = methodOwner(cn, "describe");
+        if (auto fnit = functions.find(owner + ".describe");
+            !owner.empty() && fnit != functions.end())
+            builder.CreateCall(fnit->second, {objPtr});
+    }
+
+    // `cascade validate` (spec 37.1): check the node's invariants (and inherited ones). The
+    // invariant expressions reference `this`, so point currentThis/currentClass at this node.
+    void emitCascadeValidate(llvm::Value* objPtr, const std::string& cn) {
+        llvm::Value* savedThis = currentThis;
+        const std::string savedClass = currentClass;
+        currentThis = objPtr;
+        currentClass = cn;
+        for (std::string cur = cn; !cur.empty();) {
+            auto cc = classes.find(cur);
+            if (cc == classes.end()) break;
+            if (cc->second.decl != nullptr)
+                for (const ast::ExprPtr& inv : cc->second.decl->invariants)
+                    emitContractCheck(*inv, "invariant");
+            cur = cc->second.superclass;
+        }
+        currentThis = savedThis;
+        currentClass = savedClass;
     }
 
     // `cascade move` (spec 19.8): copy `src` (a `cn` object) into `region` (bump-
@@ -4332,6 +4381,20 @@ struct CodeGenerator::Impl {
                 // then re-enable the class.
                 emitPhysicalReload(cn);
                 builder.CreateStore(builder.getInt32(1), aliveFlag(cn));
+            }
+            return;
+        }
+        if (const auto* cs = dynamic_cast<const ast::CascadeStmt*>(&stmt)) {
+            // `cascade println(X)` / `cascade validate(X)` (spec 37.1): walk the owned graph from X
+            // and describe / invariant-check each node, with cycle detection and the same filters.
+            if (cs->op == ast::CascadeOpKind::Println ||
+                cs->op == ast::CascadeOpKind::Validate) {
+                const std::string cn = baseType(typeName(*cs->target));
+                llvm::Value* root = emitObjectPtr(*cs->target);
+                if (root == nullptr) return;
+                const CascadeOp op = cs->op == ast::CascadeOpKind::Println ? CascadeOp::Println
+                                                                           : CascadeOp::Validate;
+                emitCascade(op, root, cn, cascadeCsid_++, cs->params);
             }
             return;
         }

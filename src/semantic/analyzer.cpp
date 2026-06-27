@@ -1686,6 +1686,24 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         return;
     }
+    if (const auto* cs = dynamic_cast<const ast::CascadeStmt*>(&stmt)) {
+        // `cascade println(X)` / `cascade validate(X)` (spec 37.1). The operand must be a class
+        // object; an operation supports cascade only if its per-node form exists (rule 4):
+        // println needs a describe() on the type, validate uses the type's invariants.
+        if (cs->target != nullptr) {
+            const std::string t = typeOf(*cs->target);
+            const std::string cn = baseType(t);
+            if (!t.empty() && lookupClass(cn) == nullptr) {
+                error("'cascade' expects a class object, got '" + t + "'", cs->loc);
+            } else if (cs->op == ast::CascadeOpKind::Println && !cn.empty() &&
+                       findMethod(cn, "describe") == nullptr) {
+                error("'cascade println' requires a 'describe()' method on '" + cn +
+                          "' (spec 37.1 rule 4)",
+                      cs->loc);
+            }
+        }
+        return;
+    }
     if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {
         analyzeBlock(def->body);
         return;
