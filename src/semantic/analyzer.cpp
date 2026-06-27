@@ -2790,6 +2790,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             // An async method call yields a Task<returnType> (spec 20.2), not the bare value.
             if (m->isAsync) return ast::mangleGeneric("Task", {m->returnType});
+            // Safe navigation obj?.method() (spec 3.7): result is nullable; requires a
+            // reference-typed return.
+            if (mem->safe) {
+                const std::string rb = baseType(m->returnType);
+                if (!isRefType(m->returnType) && !isArrayType(m->returnType) &&
+                    classes_.count(rb) == 0 && rb != "String") {
+                    error("safe navigation '?.' requires a reference-typed result; '" + mem->member +
+                              "' returns '" + m->returnType + "'",
+                          call->loc);
+                    return m->returnType;
+                }
+                return isNullableType(m->returnType) ? m->returnType : m->returnType + "?";
+            }
             return m->returnType;
         }
         error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call->loc);
@@ -2847,12 +2860,28 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // through a nullable receiver directly (it traps at runtime if null). Resolve against the
         // underlying type.
         if (isNullableType(objType)) objType = baseType(objType);
-        if (const FieldInfo* f = findField(objType, mem->member)) return f->type;
-        // A computed get-only property is read as obj.name (no parens).
-        if (const MethodInfo* pm = findMethod(objType, mem->member); pm != nullptr && pm->isProperty)
-            return pm->returnType;
-        error("class '" + objType + "' has no field '" + mem->member + "'", mem->loc);
-        return "";
+        std::string memType;
+        if (const FieldInfo* f = findField(objType, mem->member)) {
+            memType = f->type;
+        } else if (const MethodInfo* pm = findMethod(objType, mem->member);
+                   pm != nullptr && pm->isProperty) {
+            memType = pm->returnType;  // computed get-only property read as obj.name (no parens)
+        } else {
+            error("class '" + objType + "' has no field '" + mem->member + "'", mem->loc);
+            return "";
+        }
+        if (!mem->safe) return memType;
+        // Safe navigation obj?.field (spec 3.7): yields null when obj is null, so the result is
+        // nullable; the member must be reference-typed (a primitive cannot carry null).
+        const std::string mb = baseType(memType);
+        if (!isRefType(memType) && !isArrayType(memType) && classes_.count(mb) == 0 &&
+            mb != "String") {
+            error("safe navigation '?.' requires a reference-typed member; '" + mem->member +
+                      "' is '" + memType + "'",
+                  mem->loc);
+            return memType;
+        }
+        return isNullableType(memType) ? memType : memType + "?";
     }
 
     if (dynamic_cast<const ast::SuperExpr*>(&expr) != nullptr) {

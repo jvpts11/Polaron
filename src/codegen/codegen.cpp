@@ -306,6 +306,9 @@ struct CodeGenerator::Impl {
     llvm::Value* currentThis = nullptr;
     llvm::Function* currentFn = nullptr;
     llvm::Type* currentRetType = nullptr;
+    // While re-emitting a `?.` node as a plain access inside its non-null branch, this points at
+    // that node so its safe-navigation guard is skipped exactly once (nested ?. still guard).
+    const ast::Expr* safeGuardNode_ = nullptr;
     // When emitting an async method's resume function, this is the ldp3_task* (the function's
     // state arg); `return X` completes that task instead of returning X (spec 20.2).
     llvm::Value* currentAsyncState = nullptr;
@@ -2182,6 +2185,9 @@ struct CodeGenerator::Impl {
                                       id->name);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+            if (mem->safe && &expr != safeGuardNode_) {  // obj?.field (spec 3.7)
+                return emitSafeNav(expr, *mem->object);
+            }
             // SIMD vector lane read: v.x / v.y / v.z / v.w -> extractelement. Gate on the lane
             // name first so a class/enum-name receiver isn't type-probed here.
             if (int lane = vecLane(mem->member); lane >= 0) {
@@ -2454,6 +2460,35 @@ struct CodeGenerator::Impl {
     }
 
     // cond ? a : b -- evaluates one branch and merges with a phi (spec 6).
+    // `obj?.member` / `obj?.method(...)` (spec 3.7): when obj is null the whole access yields null,
+    // otherwise the plain access runs. `node` is the member/call expression; `receiver` is obj.
+    // The receiver is re-evaluated in the live branch (harmless for the usual variable/field
+    // receivers; a call-valued receiver would run twice).
+    llvm::Value* emitSafeNav(const ast::Expr& node, const ast::Expr& receiver) {
+        llvm::Value* recv = emitExpr(receiver);
+        if (recv == nullptr) return nullptr;
+        llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        llvm::Function* fn = currentFn;
+        llvm::BasicBlock* entryBB = builder.GetInsertBlock();
+        auto* liveBB = llvm::BasicBlock::Create(context, "safe.live", fn);
+        auto* contBB = llvm::BasicBlock::Create(context, "safe.cont", fn);
+        builder.CreateCondBr(builder.CreateICmpNE(recv, nullp), liveBB, contBB);
+        builder.SetInsertPoint(liveBB);
+        const ast::Expr* prev = safeGuardNode_;
+        safeGuardNode_ = &node;  // suppress this node's guard on the re-emit (nested ?. still guard)
+        llvm::Value* val = emitExpr(node);
+        safeGuardNode_ = prev;
+        if (val == nullptr) return nullptr;
+        if (!val->getType()->isPointerTy()) val = nullp;  // ?. yields a reference value
+        llvm::BasicBlock* liveEnd = builder.GetInsertBlock();
+        builder.CreateBr(contBB);
+        builder.SetInsertPoint(contBB);
+        llvm::PHINode* phi = builder.CreatePHI(builder.getPtrTy(), 2, "safe");
+        phi->addIncoming(nullp, entryBB);
+        phi->addIncoming(val, liveEnd);
+        return phi;
+    }
+
     // `a ?? b` (spec 3.7): yields a when non-null, else b. b is only evaluated when a is null.
     // Operates on reference values (ptr), so the result is a pointer.
     llvm::Value* emitNullCoalesce(const ast::NullCoalesceExpr& nc) {
@@ -2960,6 +2995,10 @@ struct CodeGenerator::Impl {
     }
 
     llvm::Value* emitCall(const ast::CallExpr& call) {
+        if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
+            cm != nullptr && cm->safe && &call != safeGuardNode_) {  // obj?.method(...) (spec 3.7)
+            return emitSafeNav(call, *cm->object);
+        }
         const std::string name = flattenCallee(*call.callee);
         // External C function call (spec 26): a bare call to an `extern` declaration.
         if (auto er = externReturnType.find(name); er != externReturnType.end()) {

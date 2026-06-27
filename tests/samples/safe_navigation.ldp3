@@ -1,0 +1,29 @@
+import System.IO.Console;
+program SafeNavigation;
+
+// `obj?.member` and `obj?.method()` (spec 3.7): when obj is null the whole access yields null
+// instead of trapping, otherwise the plain access runs. The result is nullable, so it chains
+// through possibly-null references. Requires a reference-typed member.
+
+public bundle main {
+    public namespace app {
+        public class Node {
+            public mutable nullable Node* next;
+            public mutable int id;
+            public constructor Node() {
+                this.next = null;
+                this.id = 0;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* b = new Node() on heap; b.id = 8;
+                nullable Node* a = new Node() on heap; a.id = 1; a.next = b;
+                nullable Node* gone = null;
+                nullable Node* r = a?.next;        // a is non-null -> a.next (b)
+                System.IO.Console.printf("%d %d\n", r.id, gone?.next == null);  // 8 1
+                return;
+            }
+        }
+    }
+}
