@@ -54,7 +54,8 @@ private:
     ast::EnumDecl parseEnum();
     ast::CatalogDecl parseCatalog();
     ast::LiteralDecl parseLiteral();
-    ast::ExternDecl parseExtern();
+    void parseExternInto(std::vector<ast::ExternDecl>& out);  // single method or a `library { }` block
+    ast::ExternDecl parseExternMethod(const std::string& convention);
     ast::ConstDecl parseConstDecl();
     ast::TypeAliasDecl parseTypeAlias();
     std::vector<ast::AnnotationUse> parseAnnotationUsesOpt();

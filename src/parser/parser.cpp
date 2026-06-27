@@ -351,7 +351,7 @@ ast::Namespace Parser::parseNamespace() {
             rec.annotations = std::move(anns);
             ns.classes.push_back(std::move(rec));
         } else if (kind == TokenKind::KwExtern) {
-            ns.externs.push_back(parseExtern());
+            parseExternInto(ns.externs);
         } else if (kind == TokenKind::KwTypealias || kind == TokenKind::KwNewtype) {
             ns.typeAliases.push_back(parseTypeAlias());
         } else {
@@ -364,20 +364,52 @@ ast::Namespace Parser::parseNamespace() {
     return ns;
 }
 
-// `[visibility] extern <cdecl|stdcall|fastcall> method name(params) returns T;` (spec 26).
-ast::ExternDecl Parser::parseExtern() {
-    ast::ExternDecl e;
+// `[visibility] extern <cdecl|stdcall|fastcall> method name(params) returns T;` (spec 26), or the
+// grouped form `extern <conv> library NAME { method ...; method ...; }`.
+void Parser::parseExternInto(std::vector<ast::ExternDecl>& out) {
     parseVisibilityOpt();  // optional; an external symbol has no LDP3 visibility
-    e.loc = current().loc;
     expect(TokenKind::KwExtern, "'extern'");
-    if (match(TokenKind::KwCdecl)) e.convention = "cdecl";
-    else if (match(TokenKind::KwStdcall)) e.convention = "stdcall";
-    else if (match(TokenKind::KwFastcall)) e.convention = "fastcall";
+    std::string conv;
+    if (match(TokenKind::KwCdecl)) conv = "cdecl";
+    else if (match(TokenKind::KwStdcall)) conv = "stdcall";
+    else if (match(TokenKind::KwFastcall)) conv = "fastcall";
     else fail("expected a calling convention (cdecl/stdcall/fastcall) after 'extern'", current().loc);
+    if (check(TokenKind::Identifier) && current().lexeme == "library") {
+        advance();  // 'library'
+        expect(TokenKind::Identifier, "the library name");  // linked externally; not used here yet
+        expect(TokenKind::LBrace, "'{' to open the extern library block");
+        while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile))
+            out.push_back(parseExternMethod(conv));
+        expect(TokenKind::RBrace, "'}' to close the extern library block");
+        return;
+    }
+    out.push_back(parseExternMethod(conv));
+}
+
+ast::ExternDecl Parser::parseExternMethod(const std::string& convention) {
+    ast::ExternDecl e;
+    e.convention = convention;
+    e.loc = current().loc;
     expect(TokenKind::KwMethod, "'method' after the calling convention");
     e.name = expect(TokenKind::Identifier, "the external function name").lexeme;
     expect(TokenKind::LParen, "'('");
-    e.params = parseParams();
+    // Like parseParams, but a trailing `...` marks the function variadic (spec 26, e.g. printf).
+    // `...` is lexed as '..' (DotDot) followed by '.'.
+    if (!check(TokenKind::RParen)) {
+        do {
+            if (check(TokenKind::DotDot)) {
+                advance();
+                match(TokenKind::Dot);  // the third '.'
+                e.isVariadic = true;
+                break;
+            }
+            ast::Param p;
+            p.loc = current().loc;
+            p.type = parseTypeRef();
+            p.name = expect(TokenKind::Identifier, "a parameter name").lexeme;
+            e.params.push_back(std::move(p));
+        } while (match(TokenKind::Comma));
+    }
     expect(TokenKind::RParen, "')'");
     expect(TokenKind::KwReturns, "'returns'");
     e.returnType = parseTypeRef();

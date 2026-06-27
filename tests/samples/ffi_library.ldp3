@@ -1,0 +1,19 @@
+import System.IO.Console;
+program FfiLibrary;
+
+// An `extern library` block groups several C functions under one calling convention (spec 26).
+// Each becomes an ordinary external declaration; here libc's abs is called.
+
+public bundle main {
+    public namespace app {
+        extern cdecl library libc {
+            method abs(int x) returns int;
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("%d\n", abs(0 - 5));  // 5
+                return;
+            }
+        }
+    }
+}
