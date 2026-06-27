@@ -645,7 +645,12 @@ ast::ClassDecl Parser::parseClassOrInterface() {
                     while (depth > 0 && !check(TokenKind::EndOfFile)) {
                         if (match(TokenKind::Lt)) ++depth;
                         else if (match(TokenKind::Gt)) --depth;
-                        else advance();
+                        else if (check(TokenKind::Shr)) {
+                            // '>>' is two '>': close two nested bounds, or close this one and leave
+                            // a single '>' (split the token) for the type-parameter list to consume.
+                            if (depth >= 2) { depth -= 2; advance(); }
+                            else { depth -= 1; tokens_[pos_].kind = TokenKind::Gt; }
+                        } else advance();
                     }
                 }
             }

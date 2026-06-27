@@ -1519,3 +1519,16 @@ TEST_CASE("semantic type-checks method-call arguments") {
     CHECK_FALSE(checkSrc(withClass(  // int where a Box* parameter is expected
         kBox, "Box* a = new Box(1) on heap; a.take(5);")));
 }
+
+TEST_CASE("parser accepts a generic bound that ends in '>>' (spec 15.2)") {
+    // The bound's closing '>' collapses with the type-parameter list's '>' into one '>>' token.
+    Lexer lexer(
+        "program P; public bundle b { public namespace n {"
+        " public class Sorted<T implements Comparable<T>> {"
+        "   public mutable int c; public constructor Sorted() { this.c = 0; } }"
+        " public class Main { public static method main(string[] args) returns void { } } } }",
+        "test");
+    Parser parser(lexer.tokenize(), "test");
+    parser.parse();
+    CHECK_FALSE(parser.hasErrors());
+}
