@@ -1498,3 +1498,24 @@ TEST_CASE("semantic accepts goto to an extern function") {
         " public class Main { public static method main(string[] args) returns void {"
         " goto kernelEntry; } } } }"));
 }
+
+namespace {
+const std::string kBox =
+    "public class Box { public mutable int v;"
+    " public constructor Box(int v) { this.v = v; }"
+    " public method take(Box* b) returns void { } }";
+}  // namespace
+
+TEST_CASE("semantic type-checks constructor arguments") {
+    CHECK(checkSrc(withClass(kBox, "Box* a = new Box(7) on heap;")));
+    CHECK_FALSE(checkSrc(withClass(kBox, "Box* a = new Box(true) on heap;")));  // bool -> int
+    CHECK_FALSE(checkSrc(withClass(kBox, "Box* a = new Box(null) on heap;")));  // null -> int
+    CHECK_FALSE(checkSrc(withClass(kBox, "Box* a = new Box(1, 2) on heap;")));  // too many args
+}
+
+TEST_CASE("semantic type-checks method-call arguments") {
+    CHECK(checkSrc(withClass(
+        kBox, "Box* a = new Box(1) on heap; Box* c = new Box(2) on heap; a.take(c);")));
+    CHECK_FALSE(checkSrc(withClass(  // int where a Box* parameter is expected
+        kBox, "Box* a = new Box(1) on heap; a.take(5);")));
+}

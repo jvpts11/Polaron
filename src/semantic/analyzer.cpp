@@ -529,8 +529,12 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                                       m->params.size(), m->isFinal, m->isAsync};
                         for (const ast::Param& p : m->params) mi.paramTypes.push_back(typeRefStr(p.type));
                         info.methods[m->name] = std::move(mi);
-                    } else if (dynamic_cast<const ast::ConstructorDecl*>(member.get()) != nullptr) {
+                    } else if (const auto* c =
+                                   dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                         info.hasConstructor = true;
+                        if (!c->params.empty()) info.ctorHasParams = true;
+                        for (const ast::Param& p : c->params)
+                            info.ctorParamTypes.push_back(typeRefStr(p.type));
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) != nullptr) {
                         info.hasDestructor = true;
                     }
@@ -1936,6 +1940,27 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     }
 }
 
+void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
+                                    const std::vector<std::string>& paramTypes,
+                                    const std::string& desc) {
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string at = typeOf(*args[i]);
+        if (i >= paramTypes.size()) continue;
+        const std::string& pt = paramTypes[i];
+        if (at.empty() || pt.empty()) continue;
+        if (!isNullableType(pt) && (at == "null" || isNullableType(at))) {
+            error("argument " + std::to_string(i + 1) + " to " + desc + " is " +
+                      std::string(at == "null" ? "null" : "nullable") +
+                      " but the parameter type '" + pt + "' is non-nullable",
+                  args[i]->loc);
+        } else if (!isSubtype(at, pt)) {
+            error("argument " + std::to_string(i + 1) + " to " + desc + " has type '" + at +
+                      "' but the parameter type is '" + pt + "'",
+                  args[i]->loc);
+        }
+    }
+}
+
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (dynamic_cast<const ast::IntLiteralExpr*>(&expr) != nullptr) return "int";
     if (dynamic_cast<const ast::FloatLiteralExpr*>(&expr) != nullptr) return "double";
@@ -2270,7 +2295,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 checkRegionAccepts(nw->region, cn, nw->loc);
             }
         }
-        for (const auto& arg : nw->args) typeOf(*arg);
+        // Full construction: arguments align 1:1 with parameters, so type-check them. Fewer
+        // arguments is a partial constructor (spec 18.9) -- omitted params come from persistent
+        // fields and the alignment is not 1:1, so only the too-many case is an error there.
+        if (nw->args.size() == ci->ctorParamTypes.size()) {
+            checkCallArgs(nw->args, ci->ctorParamTypes, "constructor '" + cn + "'");
+        } else {
+            for (const auto& arg : nw->args) typeOf(*arg);
+            if (nw->args.size() > ci->ctorParamTypes.size())
+                error("constructor '" + cn + "' expects at most " +
+                          std::to_string(ci->ctorParamTypes.size()) + " argument(s) but got " +
+                          std::to_string(nw->args.size()),
+                      nw->loc);
+        }
         return cn;
     }
 
@@ -2594,7 +2631,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                                   call->loc);
                             return "";
                         }
-                        for (const auto& arg : call->args) typeOf(*arg);
+                        checkCallArgs(call->args, mit->second.paramTypes, "'" + mem->member + "'");
                         if (call->args.size() != mit->second.paramCount) {
                             error("method '" + mem->member + "' expects " +
                                       std::to_string(mit->second.paramCount) + " argument(s) but got " +
@@ -2769,20 +2806,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("class '" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";
             }
-            for (std::size_t i = 0; i < call->args.size(); ++i) {
-                const std::string at = typeOf(*call->args[i]);
-                // Null safety (spec 3.7): a null/nullable argument may not be passed to a
-                // non-nullable parameter.
-                if (i < m->paramTypes.size()) {
-                    const std::string& pt = m->paramTypes[i];
-                    if (!at.empty() && !pt.empty() && !isNullableType(pt) &&
-                        (at == "null" || isNullableType(at)))
-                        error("argument " + std::to_string(i + 1) + " to '" + mem->member + "' is " +
-                                  std::string(at == "null" ? "null" : "nullable") +
-                                  " but the parameter type '" + pt + "' is non-nullable",
-                              call->args[i]->loc);
-                }
-            }
+            checkCallArgs(call->args, m->paramTypes, "'" + mem->member + "'");
             if (!m->isProperty && call->args.size() != m->paramCount) {
                 error("method '" + mem->member + "' expects " + std::to_string(m->paramCount) +
                           " argument(s) but got " + std::to_string(call->args.size()),

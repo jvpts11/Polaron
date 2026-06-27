@@ -62,6 +62,8 @@ struct ClassInfo {
     bool isPartitionable = false;  // fields movable separately (spec 19.9)
     bool hasConstructor = false;
     bool hasDestructor = false;
+    bool ctorHasParams = false;        // a constructor with at least one parameter was declared
+    std::vector<std::string> ctorParamTypes;  // declared constructor parameter types
     std::vector<std::string> permits;  // sealed permits list
 };
 
@@ -159,6 +161,10 @@ private:
     void checkBitCounted(const std::string& typeName, SourceLocation loc);
     void checkIncDecTarget(const ast::Expr& target, SourceLocation loc);
     std::string typeOf(const ast::Expr& expr);  // "" on error
+    // Type-check call/constructor arguments against declared parameter types (spec 6.4, 3.7):
+    // per-argument subtype compatibility and null-safety. `desc` names the callee for messages.
+    void checkCallArgs(const std::vector<ast::ExprPtr>& args,
+                       const std::vector<std::string>& paramTypes, const std::string& desc);
     std::string flattenCallee(const ast::Expr& expr) const;
     const ClassInfo* lookupClass(const std::string& name) const;
     void validateHierarchy();
