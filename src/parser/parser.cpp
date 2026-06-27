@@ -2363,6 +2363,18 @@ ast::ExprPtr Parser::parsePrimary() {
             advance();
             return e;
         }
+        case TokenKind::LBracket: {  // array literal `[a, b, c]` (spec 25); nested for multi-dim
+            auto e = std::make_unique<ast::ArrayLiteralExpr>();
+            e->loc = tok.loc;
+            advance();  // '['
+            if (!check(TokenKind::RBracket)) {
+                do {
+                    e->elements.push_back(parseExpression());
+                } while (match(TokenKind::Comma));
+            }
+            expect(TokenKind::RBracket, "']' to close the array literal");
+            return e;
+        }
         case TokenKind::KwLambda: {
             auto e = std::make_unique<ast::LambdaExpr>();
             e->loc = tok.loc;

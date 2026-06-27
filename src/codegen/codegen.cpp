@@ -1234,6 +1234,9 @@ struct CodeGenerator::Impl {
         if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
             return na->elementType + "[]";
         }
+        if (const auto* al = dynamic_cast<const ast::ArrayLiteralExpr*>(&expr)) {  // [a,b,c] (spec 25)
+            return (al->elements.empty() ? std::string("int") : typeName(*al->elements[0])) + "[]";
+        }
         if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
             const std::string at = typeName(*ix->array);
             if (vecWidth(at) > 0) return "float";  // v[i] on a SIMD vector
@@ -1654,6 +1657,26 @@ struct CodeGenerator::Impl {
         llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "arr");
         builder.CreateStore(n64, block);  // length header (element count)
         builder.CreateCall(memsetFn(), {arrayData(block), builder.getInt32(0), elemBytes});
+        return block;
+    }
+
+    // `[a, b, c]` (spec 25): allocate an array block of n elements and store each. Same layout as
+    // emitNewArray ([i64 length][elements]); stores bypass the bounds check (indices are known).
+    llvm::Value* emitArrayLiteral(const ast::ArrayLiteralExpr& al) {
+        const std::size_t n = al.elements.size();
+        const std::string elemType = n > 0 ? typeName(*al.elements[0]) : "int";
+        const unsigned esz = byteSizeOf(elemType);
+        llvm::Value* block = builder.CreateCall(
+            mallocFn(), {builder.getInt64(8 + static_cast<std::uint64_t>(n) * esz)}, "arrlit");
+        builder.CreateStore(builder.getInt64(static_cast<std::uint64_t>(n)), block);  // length header
+        llvm::Type* et = llvmType(elemType);
+        llvm::Value* data = arrayData(block);
+        for (std::size_t i = 0; i < n; ++i) {
+            llvm::Value* v = emitExpr(*al.elements[i]);
+            if (v == nullptr) continue;
+            v = coerce(v, typeName(*al.elements[i]), elemType);  // widen/convert to element type
+            builder.CreateStore(v, builder.CreateGEP(et, data, builder.getInt64(i)));
+        }
         return block;
     }
 
@@ -2337,6 +2360,9 @@ struct CodeGenerator::Impl {
         }
         if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
             return emitNewArray(*na);
+        }
+        if (const auto* al = dynamic_cast<const ast::ArrayLiteralExpr*>(&expr)) {
+            return emitArrayLiteral(*al);
         }
         if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
             // operator[] overload (spec 6.5): obj[i] -> obj.operator[](i).

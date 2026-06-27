@@ -197,6 +197,13 @@ struct IndexExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// `[a, b, c]` -- an array literal (spec 25). Elements may themselves be array literals (nested,
+// for a multi-dimensional array). The element type is inferred from the first element.
+struct ArrayLiteralExpr : Expr {
+    std::vector<ExprPtr> elements;
+    void dump(std::string& out, int /*indent*/) const override { out += "[...]"; }
+};
+
 // $"lit0 {expr0} lit1 {expr1} ... litN" -- string interpolation. There are
 // N+1 literal chunks interleaved with N expressions. Release 0.1: valid only
 // as a System.IO.printf/println argument (lowered to a format string + args).

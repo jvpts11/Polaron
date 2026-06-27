@@ -2266,6 +2266,22 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (!st.empty() && st != "int") error("array size must be an int", na->loc);
         return na->elementType + "[]";
     }
+    if (const auto* al = dynamic_cast<const ast::ArrayLiteralExpr*>(&expr)) {  // `[a, b, c]` (spec 25)
+        if (al->elements.empty()) {
+            error("empty array literal '[]' has no inferable element type; use 'new T[0]()'",
+                  al->loc);
+            return "";
+        }
+        const std::string elem = typeOf(*al->elements[0]);
+        for (std::size_t i = 1; i < al->elements.size(); ++i) {
+            const std::string et = typeOf(*al->elements[i]);
+            if (!et.empty() && !elem.empty() && !isSubtype(et, elem) && !isSubtype(elem, et))
+                error("array literal element " + std::to_string(i + 1) + " has type '" + et +
+                          "', incompatible with '" + elem + "'",
+                      al->elements[i]->loc);
+        }
+        return elem + "[]";
+    }
 
     if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
         const std::string at = typeOf(*ix->array);
