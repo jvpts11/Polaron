@@ -1504,6 +1504,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # lazy thread (spec 37.3): the Thread object is created on first reference, deferring spawn.
+        add_test(NAME codegen_lazy_thread_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lazy_thread.ldp3"
+            "-DEXPECTED=before after decl thread ran 7 done"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # cascade validate(X) checks invariants and cascade Console.println(X) describes each node
         # in the owned graph (spec 37.1), reusing the cycle-safe walk.
         add_test(NAME codegen_cascade_ops_runs COMMAND "${CMAKE_COMMAND}"

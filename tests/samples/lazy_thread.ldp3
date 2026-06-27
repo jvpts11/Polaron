@@ -1,0 +1,26 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
+program LazyThread;
+
+// `lazy thread` (spec 37.3): the Thread object is created on first reference, not at the
+// declaration, so its spawn is deferred until the thread is actually used.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int marker = 7;
+                function<void> work = lambda[captures: byvalue marker]() returns void {
+                    System.IO.Console.printf("thread ran %d\n", marker);
+                };
+                System.IO.Console.println("before");
+                lazy Thread t = new Thread(work) on heap;  // not created yet
+                System.IO.Console.println("after decl");
+                t.start();                                 // first reference: create + spawn
+                t.join();
+                System.IO.Console.println("done");
+                return;
+            }
+        }
+    }
+}
