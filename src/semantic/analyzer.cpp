@@ -1687,6 +1687,19 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* cs = dynamic_cast<const ast::CascadeStmt*>(&stmt)) {
+        // `cascade unimport X` (spec 37.1): same rules as plain unimport, applied to X and its
+        // subtypes/monomorphizations (the expansion happens in codegen).
+        if (cs->op == ast::CascadeOpKind::Unimport) {
+            if (freestanding_)
+                error("unimport is not available in freestanding mode (spec 36.3)", cs->loc);
+            if (lookupClass(baseType(cs->typeName)) == nullptr)
+                error("cannot unimport '" + cs->typeName + "': not a known class", cs->loc);
+            else if (finalImports_.count(baseType(cs->typeName)) > 0)
+                error("cannot unimport '" + cs->typeName +
+                          "': it was brought in by 'final import' (spec 37.6)",
+                      cs->loc);
+            return;
+        }
         // `cascade println(X)` / `cascade validate(X)` (spec 37.1). The operand must be a class
         // object; an operation supports cascade only if its per-node form exists (rule 4):
         // println needs a describe() on the type, validate uses the type's invariants.

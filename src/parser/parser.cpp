@@ -1423,6 +1423,17 @@ ast::StmtPtr Parser::parseStatement() {
             expect(TokenKind::Semicolon, "';'");
             return del;
         }
+        // `cascade unimport X` (spec 37.1): unimport X and its subclasses and monomorphizations.
+        if (check(TokenKind::KwUnimport)) {
+            advance();  // 'unimport'
+            auto cs = std::make_unique<ast::CascadeStmt>();
+            cs->loc = cloc;
+            cs->op = ast::CascadeOpKind::Unimport;
+            cs->params = std::move(params);
+            cs->typeName = expect(TokenKind::Identifier, "the class name to unimport").lexeme;
+            expect(TokenKind::Semicolon, "';'");
+            return cs;
+        }
         // `cascade clone X into Y` (spec 37.1): deep-clone X's owned graph into Y. `clone`/`into`
         // are soft keywords here.
         if (check(TokenKind::Identifier) && current().lexeme == "clone") {

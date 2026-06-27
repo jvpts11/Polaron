@@ -3810,6 +3810,31 @@ struct CodeGenerator::Impl {
     void emitPhysicalUnload(const std::string& cn) { emitPhysicalCodeOp(cn, "__ldp3_unload_fn"); }
     void emitPhysicalReload(const std::string& cn) { emitPhysicalCodeOp(cn, "__ldp3_reload_fn"); }
 
+    // Unimport one class (spec 30): run onClassUnload while the code still exists, mark it dead,
+    // then physically rip its code from RAM.
+    void emitUnimportClass(const std::string& cn) {
+        if (auto f = functions.find(cn + ".__onClassUnload"); f != functions.end())
+            builder.CreateCall(f->second);
+        builder.CreateStore(builder.getInt32(0), aliveFlag(cn));
+        emitPhysicalUnload(cn);
+    }
+
+    // `cascade unimport X` (spec 37.1): X plus every subclass and every monomorphization (X$args).
+    std::vector<std::string> cascadeUnimportTargets(const std::string& x) {
+        std::vector<std::string> out;
+        for (const auto& [name, layout] : classes) {
+            bool match = name == x || name.rfind(x + "$", 0) == 0;  // self or monomorphization
+            for (std::string cur = layout.superclass; !match && !cur.empty();) {
+                if (cur == x) { match = true; break; }
+                auto it = classes.find(cur);
+                if (it == classes.end()) break;
+                cur = it->second.superclass;
+            }
+            if (match) out.push_back(name);
+        }
+        return out;
+    }
+
     // Constructs and throws a System.Runtime.UnimportedTypeException (spec 30): used when
     // an unimported type is instantiated or its methods are called. Terminates the block.
     void emitThrowUnimported() {
@@ -3864,6 +3889,12 @@ struct CodeGenerator::Impl {
         if (st == nullptr) return;
         if (const auto* a = dynamic_cast<const ast::AbstainfromStmt*>(st)) { abstainedLabels.insert(a->name); return; }
         if (const auto* u = dynamic_cast<const ast::UnimportStmt*>(st)) { unimportableClasses.insert(baseType(u->target)); return; }
+        if (const auto* c = dynamic_cast<const ast::CascadeStmt*>(st)) {  // cascade unimport: X + subtypes
+            if (c->op == ast::CascadeOpKind::Unimport)
+                for (const std::string& t : cascadeUnimportTargets(c->typeName))
+                    unimportableClasses.insert(t);
+            return;
+        }
         auto blk = [&](const ast::Block& b) { for (const auto& s : b.statements) scanAbstained(s.get()); };
         if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) { blk(i->thenBlock); if (i->elseBlock) blk(*i->elseBlock); return; }
         if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
@@ -4506,12 +4537,7 @@ struct CodeGenerator::Impl {
         if (const auto* um = dynamic_cast<const ast::UnimportStmt*>(&stmt)) {
             const std::string cn = baseType(um->target);
             if (!um->isReimport) {
-                // onClassUnload runs first (spec 32.5), while the code still exists, then the
-                // class is marked dead and its code is physically ripped from RAM (spec 30).
-                if (auto f = functions.find(cn + ".__onClassUnload"); f != functions.end())
-                    builder.CreateCall(f->second);
-                builder.CreateStore(builder.getInt32(0), aliveFlag(cn));
-                emitPhysicalUnload(cn);
+                emitUnimportClass(cn);
             } else {
                 // reimport (spec 30.3): restore the ripped-out code from the .exe on disk,
                 // then re-enable the class.
@@ -4538,6 +4564,10 @@ struct CodeGenerator::Impl {
                 llvm::Value* destSlot = emitLValue(*cs->dest);
                 if (src == nullptr || destSlot == nullptr) return;
                 emitCascadeClone(src, cn, destSlot, cascadeCsid_++, cs->params);
+            } else if (cs->op == ast::CascadeOpKind::Unimport) {
+                // `cascade unimport X`: unimport X and every subclass and monomorphization.
+                for (const std::string& t : cascadeUnimportTargets(baseType(cs->typeName)))
+                    emitUnimportClass(t);
             }
             return;
         }
