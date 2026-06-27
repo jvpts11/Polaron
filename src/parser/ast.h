@@ -97,7 +97,16 @@ struct NullLiteralExpr : Expr {  // the `null` pointer literal
 struct MemberExpr : Expr {
     ExprPtr object;
     std::string member;
+    bool safe = false;  // `obj?.member` (spec 3.7): yields null when obj is null instead of trapping
     void dump(std::string& out, int indent) const override;
+};
+
+// `a ?? b` (spec 3.7): null-coalescing -- evaluates to `a` if non-null, else `b`. `b` is only
+// evaluated when `a` is null. The result is non-null when `b` is non-null.
+struct NullCoalesceExpr : Expr {
+    ExprPtr lhs;
+    ExprPtr rhs;
+    void dump(std::string& out, int /*indent*/) const override { out += "??"; }
 };
 
 // `old(expr)` inside an `ensures` contract clause (spec 29): the value of `expr` captured at method

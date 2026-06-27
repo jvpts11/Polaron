@@ -1,0 +1,26 @@
+import System.IO.Console;
+program NullCoalesce;
+
+// `a ?? b` (spec 3.7): evaluates to `a` when non-null, otherwise `b`. The fallback `b` is only
+// evaluated when `a` is null, and the result is non-null when `b` is, so it flows into a
+// non-nullable target.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int id;
+            public constructor Dog() { this.id = 0; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog* fallback = new Dog() on heap; fallback.id = 99;
+                nullable Dog* maybe = null;
+                Dog* a = maybe ?? fallback;            // maybe is null -> fallback
+                nullable Dog* present = new Dog() on heap; present.id = 7;
+                Dog* b = present ?? fallback;           // present non-null -> present
+                System.IO.Console.printf("%d %d\n", a.id, b.id);  // 99 7
+                return;
+            }
+        }
+    }
+}

@@ -1204,6 +1204,12 @@ struct CodeGenerator::Impl {
         if (const auto* tern = dynamic_cast<const ast::TernaryExpr*>(&expr)) {
             return typeName(*tern->thenExpr);
         }
+        if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(&expr)) {  // a ?? b
+            auto nullable = [](const std::string& s) { return !s.empty() && s.back() == '?'; };
+            const std::string lt = typeName(*nc->lhs);
+            const std::string base = nullable(lt) ? lt.substr(0, lt.size() - 1) : lt;
+            return nullable(typeName(*nc->rhs)) ? base + "?" : base;
+        }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
             const std::string& op = bin->op;
             // Operator overloading: result type is the operator method's return type.
@@ -2318,6 +2324,9 @@ struct CodeGenerator::Impl {
         if (const auto* tern = dynamic_cast<const ast::TernaryExpr*>(&expr)) {
             return emitTernary(*tern);
         }
+        if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(&expr)) {
+            return emitNullCoalesce(*nc);
+        }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
             return emitBinary(*bin);
         }
@@ -2445,6 +2454,29 @@ struct CodeGenerator::Impl {
     }
 
     // cond ? a : b -- evaluates one branch and merges with a phi (spec 6).
+    // `a ?? b` (spec 3.7): yields a when non-null, else b. b is only evaluated when a is null.
+    // Operates on reference values (ptr), so the result is a pointer.
+    llvm::Value* emitNullCoalesce(const ast::NullCoalesceExpr& nc) {
+        llvm::Value* a = emitExpr(*nc.lhs);
+        if (a == nullptr) return nullptr;
+        llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        llvm::Function* fn = currentFn;
+        llvm::BasicBlock* aBB = builder.GetInsertBlock();
+        auto* elseBB = llvm::BasicBlock::Create(context, "coalesce.else", fn);
+        auto* contBB = llvm::BasicBlock::Create(context, "coalesce.cont", fn);
+        builder.CreateCondBr(builder.CreateICmpNE(a, nullp), contBB, elseBB);
+        builder.SetInsertPoint(elseBB);
+        llvm::Value* b = emitExpr(*nc.rhs);
+        if (b == nullptr) b = nullp;
+        llvm::BasicBlock* bBB = builder.GetInsertBlock();
+        builder.CreateBr(contBB);
+        builder.SetInsertPoint(contBB);
+        llvm::PHINode* phi = builder.CreatePHI(builder.getPtrTy(), 2, "coalesce");
+        phi->addIncoming(a, aBB);
+        phi->addIncoming(b, bBB);
+        return phi;
+    }
+
     llvm::Value* emitTernary(const ast::TernaryExpr& t) {
         llvm::Value* c = emitExpr(*t.cond);
         if (c == nullptr) return nullptr;

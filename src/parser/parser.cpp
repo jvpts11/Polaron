@@ -2054,6 +2054,14 @@ ast::ExprPtr Parser::parseExpression() { return parseTernary(); }
 
 ast::ExprPtr Parser::parseTernary() {
     ast::ExprPtr cond = parseBinary(1);
+    while (check(TokenKind::QuestionQuestion)) {  // `a ?? b` null-coalescing (spec 3.7)
+        auto nc = std::make_unique<ast::NullCoalesceExpr>();
+        nc->loc = current().loc;
+        advance();  // '??'
+        nc->rhs = parseBinary(1);
+        nc->lhs = std::move(cond);
+        cond = std::move(nc);
+    }
     if (!check(TokenKind::Question)) return cond;
     auto t = std::make_unique<ast::TernaryExpr>();
     t->loc = current().loc;
@@ -2194,10 +2202,11 @@ ast::ExprPtr Parser::parseUnary() {
 ast::ExprPtr Parser::parsePostfix() {
     ast::ExprPtr expr = parsePrimary();
     for (;;) {
-        if (check(TokenKind::Dot)) {
+        if (check(TokenKind::Dot) || check(TokenKind::QuestionDot)) {
             auto m = std::make_unique<ast::MemberExpr>();
             m->loc = current().loc;
-            advance();  // '.'
+            m->safe = check(TokenKind::QuestionDot);  // `obj?.member` safe navigation (spec 3.7)
+            advance();  // '.' or '?.'
             // `method` is a keyword but also the reflection accessor t.method("x").
             if (check(TokenKind::KwMethod)) {
                 m->member = "method";

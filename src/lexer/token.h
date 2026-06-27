@@ -85,6 +85,7 @@ enum class TokenKind : std::uint8_t {
     Semicolon, Comma,     // ; ,
     Dot, DotDot, DotDotEq,  // . .. ..=
     Colon, Question,      // : ?
+    QuestionQuestion, QuestionDot,  // ?? (null-coalescing) ?. (safe navigation)
 
     // Operators -- arithmetic
     Plus, Minus, Star, Slash, Percent,

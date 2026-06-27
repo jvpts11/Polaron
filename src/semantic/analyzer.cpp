@@ -2170,6 +2170,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         typeOf(*tern->elseExpr);
         return tt;
     }
+    if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(&expr)) {  // a ?? b (spec 3.7)
+        const std::string lt = typeOf(*nc->lhs);
+        const std::string rt = typeOf(*nc->rhs);
+        const std::string base = isNullableType(lt) ? lt.substr(0, lt.size() - 1) : lt;
+        // The fallback's base must be compatible with the left's base.
+        if (!base.empty() && !rt.empty()) {
+            const std::string rbase = isNullableType(rt) ? rt.substr(0, rt.size() - 1) : rt;
+            if (rbase != "null" && !isSubtype(rbase, base) && !isSubtype(base, rbase))
+                error("'??' fallback of type '" + rt + "' is incompatible with '" + lt + "'", nc->loc);
+        }
+        // Result is the left's non-null base, but stays nullable if the fallback can be null.
+        return isNullableType(rt) ? base + "?" : base;
+    }
     if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
         const std::string lt = typeOf(*bin->lhs);
         const std::string rt = typeOf(*bin->rhs);

@@ -373,7 +373,10 @@ Token Lexer::scanToken() {
         case ']': return make(TokenKind::RBracket, "]", loc);
         case ';': return make(TokenKind::Semicolon, ";", loc);
         case ',': return make(TokenKind::Comma, ",", loc);
-        case '?': return make(TokenKind::Question, "?", loc);
+        case '?':
+            if (match('?')) return make(TokenKind::QuestionQuestion, "??", loc);  // null-coalescing
+            if (match('.')) return make(TokenKind::QuestionDot, "?.", loc);        // safe navigation
+            return make(TokenKind::Question, "?", loc);
         case ':': return make(TokenKind::Colon, ":", loc);
         case '~': return make(TokenKind::Tilde, "~", loc);
         case '.':
