@@ -250,6 +250,7 @@ struct LocalSlot {
 struct ScopeObject {
     llvm::Value* slot = nullptr;  // the variable's slot (holds a pointer to the struct)
     std::string className;
+    std::string region;  // owning region variable name; "" for a plain stack object
 };
 
 }  // namespace
@@ -298,7 +299,7 @@ struct CodeGenerator::Impl {
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
     // Region locals (spec 17.7): freed at the end of their lexical block unless
     // `eternal` or already released. Mirrors scopeObjects.
-    struct RegionLocal { llvm::Value* slot; bool isEternal; };
+    struct RegionLocal { llvm::Value* slot; bool isEternal; std::string name; };
     std::vector<RegionLocal> scopeRegions;
     std::vector<const ast::Block*> deferred;  // defer blocks, run at scope end (LIFO)
     std::string currentClass;        // "" inside a static method / the entry point
@@ -4003,6 +4004,7 @@ struct CodeGenerator::Impl {
             emitBlock(**it);
         }
         for (auto it = scopeObjects.rbegin(); it != scopeObjects.rend(); ++it) {
+            if (!it->region.empty()) continue;  // region objects are destructed when the region frees
             auto fnit = functions.find(it->className + ".~" + it->className);
             if (fnit == functions.end()) continue;
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), it->slot);
@@ -4700,7 +4702,7 @@ struct CodeGenerator::Impl {
                     lazyRegionSize_[vd->name] = ri->size.get();
                     lazyRegionAt_[vd->name] = ri->atAddress.get();
                     if (vd->isVolatile) volatileRegions_.insert(vd->name);  // spec 37.5 (MMIO)
-                    if (!vd->isEternal) scopeRegions.push_back(RegionLocal{slot, vd->isEternal});
+                    if (!vd->isEternal) scopeRegions.push_back(RegionLocal{slot, vd->isEternal, vd->name});
                     return;
                 }
             }
@@ -4723,9 +4725,13 @@ struct CodeGenerator::Impl {
             // program, no cleanup).
             if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
                 auto cit = classes.find(nw->className);
-                if (nw->location == "stack" && cit != classes.end() && cit->second.hasDestructor &&
-                    !vd->isEternal) {
-                    scopeObjects.push_back(ScopeObject{slot, nw->className});
+                if (cit != classes.end() && cit->second.hasDestructor && !vd->isEternal) {
+                    // A region object's destructor runs when the region is released/freed (spec
+                    // 17.7); a plain stack object's runs at scope exit. A heap object is manual.
+                    if (!nw->region.empty())
+                        scopeObjects.push_back(ScopeObject{slot, nw->className, nw->region});
+                    else if (nw->location == "stack")
+                        scopeObjects.push_back(ScopeObject{slot, nw->className, ""});
                 }
                 // An object placed in a `volatile region` (MMIO): its field accesses are volatile.
                 if (!nw->region.empty() && volatileRegions_.count(nw->region) > 0)
@@ -4735,7 +4741,7 @@ struct CodeGenerator::Impl {
             // unless eternal. An explicit `release region` nulls the slot first, so
             // the scope-end free is a harmless free(null).
             if (declType == "region" && !vd->isEternal)
-                scopeRegions.push_back(RegionLocal{slot, vd->isEternal});
+                scopeRegions.push_back(RegionLocal{slot, vd->isEternal, vd->name});
             if (declType == "region" && vd->isVolatile)
                 volatileRegions_.insert(vd->name);  // spec 37.5 (MMIO): volatile object accesses
             return;
@@ -4947,11 +4953,12 @@ struct CodeGenerator::Impl {
                 // the backing storage on release is a later runtime refinement.
                 return;
             }
-            // Free the whole region block. (Per-object destructors on release are
-            // a later refinement; the region is a bump allocator.) Null the slot so
-            // the scope-end region RAII (spec 17.7) does not free it again.
+            // Destruct every object in the region, then free the whole block (spec 17.7). Null the
+            // slot so the scope-end region RAII frees null (no double free), and the objects are
+            // cleared so they are not destructed again on the freed block.
             auto it = locals.find(rel->region);
             if (it != locals.end()) {
+                runRegionObjectDtors(rel->region);
                 llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage);
                 builder.CreateCall(freeFn(), {block});
                 builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()),
@@ -5064,8 +5071,26 @@ struct CodeGenerator::Impl {
     // lexical block on its normal exit. Stops if a terminator appears.
     // Frees every region in scopeRegions at index >= base (load the block and free;
     // a released region's slot is null, so free(null) is a harmless no-op).
+    // Run (and clear) the destructors of every tracked object allocated in region `name`, in
+    // reverse declaration order. Cleared (className emptied) so a later region free or scope
+    // cleanup never runs them again on freed memory.
+    void runRegionObjectDtors(const std::string& name) {
+        if (name.empty()) return;
+        for (std::size_t i = scopeObjects.size(); i > 0; --i) {
+            ScopeObject& so = scopeObjects[i - 1];
+            if (so.region != name || so.className.empty()) continue;
+            if (auto fnit = functions.find(so.className + ".~" + so.className);
+                fnit != functions.end()) {
+                llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
+                builder.CreateCall(fnit->second, {objPtr});
+            }
+            so.className.clear();  // mark done
+        }
+    }
+
     void freeRegionsFrom(std::size_t base) {
         for (std::size_t i = scopeRegions.size(); i > base; --i) {
+            runRegionObjectDtors(scopeRegions[i - 1].name);  // destruct objects before freeing (17.7)
             llvm::Value* block =
                 builder.CreateLoad(builder.getPtrTy(), scopeRegions[i - 1].slot, "region");
             builder.CreateCall(freeFn(), {block});
@@ -5079,6 +5104,7 @@ struct CodeGenerator::Impl {
         }
         for (std::size_t i = scopeObjects.size(); i > soBase; --i) {
             const ScopeObject& so = scopeObjects[i - 1];
+            if (!so.region.empty()) continue;  // region objects are destructed when the region frees
             auto fnit = functions.find(so.className + ".~" + so.className);
             if (fnit == functions.end()) continue;
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
