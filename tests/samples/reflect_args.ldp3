@@ -1,0 +1,26 @@
+import System.IO.Console;
+program ReflectArgs;
+
+// Reflection forwards arguments through to the constructor (instantiate) and to a method (invoke),
+// not just no-argument calls (spec 31). Here a Dog is built with a constructor argument and then
+// mutated through a reflected method call that takes an argument.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int age;
+            public constructor Dog(int a) { this.age = a; }
+            public method setAge(int a) returns void { this.age = a; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Type t = reflect.typeOf<Dog>();
+                Dog d = cast<Dog>(t.instantiate(7));          // constructor argument
+                System.IO.Console.printf("age=%d\n", d.age);  // 7
+                t.method("setAge").invoke(d, 99);             // method argument
+                System.IO.Console.printf("age=%d\n", d.age);  // 99
+                return;
+            }
+        }
+    }
+}

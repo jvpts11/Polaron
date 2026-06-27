@@ -3794,9 +3794,19 @@ struct CodeGenerator::Impl {
                     llvm::Value* ctorFn = builder.CreateLoad(
                         builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 7), "ctor");
                     llvm::Value* obj = builder.CreateCall(mallocFn(), {size}, "inst");
+                    // Forward the call's arguments to the constructor (spec 31), building the
+                    // function type from the argument values so a ctor with parameters runs.
+                    std::vector<llvm::Type*> pts = {builder.getPtrTy()};
+                    std::vector<llvm::Value*> cargs = {obj};
+                    for (const auto& a : call.args) {
+                        llvm::Value* av = emitExpr(*a);
+                        if (av == nullptr) return nullptr;
+                        pts.push_back(av->getType());
+                        cargs.push_back(av);
+                    }
                     llvm::FunctionType* ft =
-                        llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
-                    builder.CreateCall(ft, ctorFn, {obj});  // no-arg constructor
+                        llvm::FunctionType::get(builder.getVoidTy(), pts, false);
+                    builder.CreateCall(ft, ctorFn, cargs);
                     return obj;
                 }
                 // Type.methods()/fields() (spec 31): build an ArrayList<String> of the
@@ -3860,9 +3870,19 @@ struct CodeGenerator::Impl {
                         builder.getPtrTy(), builder.CreateStructGEP(methodTokenType(), m, 1), "m.fn");
                     llvm::Value* recv = emitExpr(*call.args[0]);  // first arg is the receiver
                     if (recv == nullptr) return nullptr;
-                    llvm::FunctionType* ft = llvm::FunctionType::get(
-                        builder.getVoidTy(), {builder.getPtrTy()}, false);
-                    builder.CreateCall(ft, fnPtr, {recv});  // no-arg void method
+                    // Forward the remaining arguments to the method (spec 31). The result type is
+                    // not carried by the Method token, so invoke is typed void for now.
+                    std::vector<llvm::Type*> pts = {builder.getPtrTy()};
+                    std::vector<llvm::Value*> cargs = {recv};
+                    for (std::size_t i = 1; i < call.args.size(); ++i) {
+                        llvm::Value* av = emitExpr(*call.args[i]);
+                        if (av == nullptr) return nullptr;
+                        pts.push_back(av->getType());
+                        cargs.push_back(av);
+                    }
+                    llvm::FunctionType* ft =
+                        llvm::FunctionType::get(builder.getVoidTy(), pts, false);
+                    builder.CreateCall(ft, fnPtr, cargs);
                     return nullptr;
                 }
             }
