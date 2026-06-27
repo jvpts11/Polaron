@@ -129,6 +129,9 @@ private:
     // `cascade release persistent X` (spec 37.1): mark every persistent field reachable from type
     // `typeName` (through its hierarchy and owned class fields) as released, satisfying spec 18.15.
     void markCascadeReleased(const std::string& typeName, std::unordered_set<std::string>& seen);
+    // Collects the names of `label name;` markers in a method body (recursing into nested blocks,
+    // but not into lambda bodies, which have their own scope) for chaos-tetrad validation (7.9-7.11).
+    void collectMethodLabels(const ast::Block& block);
     void processImports(const ast::Program& program);
     void findEntryPoint(const ast::Program& program);
     void analyzeBodies(const ast::Program& program);
@@ -186,6 +189,10 @@ private:
     std::unordered_map<std::string, AnnotationInfo> annotations_;
     // Symbols brought in by `final import` (spec 37.6): they cannot be unimported.
     std::unordered_set<std::string> finalImports_;
+    // Chaos tetrad (spec 7.9-7.11): the labels declared in the method being analyzed, and the
+    // labels already targeted by a `comefrom` (only one comefrom per label is allowed).
+    std::unordered_set<std::string> methodLabels_;
+    std::unordered_set<std::string> comefromTargets_;
     std::unordered_map<std::string, CatalogInfo> catalogs_;            // name -> catalog contract
     std::unordered_map<std::string, std::vector<std::string>> enumCatalogs_;  // enum -> catalogs it extends
     // enum -> (method name -> info): methods declared on a catalog-implementing enum.

@@ -1468,3 +1468,23 @@ TEST_CASE("semantic accepts intra-method abstainfrom") {
         " public static method main(string[] args) returns void {"
         " abstainfrom body; label body; return; } } } }"));
 }
+
+// A goto/comefrom/abstainfrom target must be a label declared in the same method (spec 7.9-7.11).
+TEST_CASE("semantic rejects goto to an unknown label") {
+    CHECK_FALSE(checkSrc(
+        "program P; public bundle b { public namespace n { public class Main {"
+        " public static method main(string[] args) returns void { goto nope; return; } } } }"));
+}
+TEST_CASE("semantic accepts goto to a forward label in the same method") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n { public class Main {"
+        " public static method main(string[] args) returns void {"
+        " goto done; label done; return; } } } }"));
+}
+// At most one comefrom may target a given label (spec 7.10 rule 2).
+TEST_CASE("semantic rejects two comefroms to the same label") {
+    CHECK_FALSE(checkSrc(
+        "program P; public bundle b { public namespace n { public class Main {"
+        " public static method main(string[] args) returns void {"
+        " label x; comefrom x; comefrom x; return; } } } }"));
+}

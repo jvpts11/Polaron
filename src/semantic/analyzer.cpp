@@ -1151,6 +1151,31 @@ void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
     }
 }
 
+// Recursively collects `label name;` markers from a statement (into nested control-flow blocks,
+// but not into lambda bodies -- expressions are not traversed here). Used for tetrad validation.
+static void collectLabelsInStmt(const ast::Stmt* st, std::unordered_set<std::string>& out) {
+    if (st == nullptr) return;
+    if (const auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(st)) { out.insert(lm->name); return; }
+    auto blk = [&](const ast::Block& b) {
+        for (const auto& s : b.statements) collectLabelsInStmt(s.get(), out);
+    };
+    if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) { blk(i->thenBlock); if (i->elseBlock) blk(*i->elseBlock); return; }
+    if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
+    if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) { blk(d->body); return; }
+    if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) { blk(f->body); return; }
+    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) { blk(fe->body); return; }
+    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) { for (auto& c : sw->cases) blk(c.body); if (sw->defaultBody) blk(*sw->defaultBody); return; }
+    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) { for (auto& c : ms->cases) blk(c.body); if (ms->defaultBody) blk(*ms->defaultBody); return; }
+    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) { blk(tr->body); for (auto& c : tr->catches) blk(c.body); if (tr->finallyBlock) blk(*tr->finallyBlock); return; }
+    if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) { blk(df->body); return; }
+    if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) { blk(us->body); return; }
+    if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) { collectLabelsInStmt(lb->stmt.get(), out); return; }
+}
+
+void SemanticAnalyzer::collectMethodLabels(const ast::Block& block) {
+    for (const auto& s : block.statements) collectLabelsInStmt(s.get(), methodLabels_);
+}
+
 void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<ast::Param>& params,
                                          const std::string& thisClass, bool inConstructor,
@@ -1159,6 +1184,9 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     moved_.clear();
     nonNullVars_.clear();
     regionConstraints_.clear();
+    methodLabels_.clear();
+    comefromTargets_.clear();
+    collectMethodLabels(body);  // chaos tetrad targets are validated against these (spec 7.9-7.11)
     currentClass_ = thisClass;
     inConstructor_ = inConstructor;
     pushScope();
@@ -1828,10 +1856,31 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     }
     // `label`/`comefrom` (spec 7.10) are accepted but not analyzed beyond this (out of
     // current type-checking scope); handled explicitly so they are not silently ignored.
-    if (dynamic_cast<const ast::LabelMarkStmt*>(&stmt) != nullptr) return;
-    if (dynamic_cast<const ast::ComefromStmt*>(&stmt) != nullptr) return;
-    if (dynamic_cast<const ast::GotoStmt*>(&stmt) != nullptr) return;          // label jump (spec 7.9)
-    if (dynamic_cast<const ast::AbstainfromStmt*>(&stmt) != nullptr) return;   // spec 7.11
+    // Chaos tetrad (spec 7.9-7.11), intra-method only: goto/comefrom/abstainfrom/reinstate must
+    // target a `label name;` declared in the same method, and a label may have at most one comefrom.
+    if (dynamic_cast<const ast::LabelMarkStmt*>(&stmt) != nullptr) return;  // a declaration
+    if (const auto* cf = dynamic_cast<const ast::ComefromStmt*>(&stmt)) {
+        if (methodLabels_.count(cf->name) == 0)
+            error("comefrom references unknown label '" + cf->name + "' in this method (spec 7.10)",
+                  cf->loc);
+        else if (!comefromTargets_.insert(cf->name).second)
+            error("label '" + cf->name +
+                      "' already has a comefrom; at most one comefrom per label (spec 7.10)",
+                  cf->loc);
+        return;
+    }
+    if (const auto* g = dynamic_cast<const ast::GotoStmt*>(&stmt)) {  // spec 7.9
+        if (methodLabels_.count(g->name) == 0)
+            error("goto references unknown label '" + g->name + "' in this method (spec 7.9)", g->loc);
+        return;
+    }
+    if (const auto* ab = dynamic_cast<const ast::AbstainfromStmt*>(&stmt)) {  // spec 7.11
+        if (methodLabels_.count(ab->name) == 0)
+            error(std::string(ab->isReinstate ? "reinstate" : "abstainfrom") +
+                      " references unknown label '" + ab->name + "' in this method (spec 7.11)",
+                  ab->loc);
+        return;
+    }
 }
 
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
