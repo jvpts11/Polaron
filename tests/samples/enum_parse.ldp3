@@ -1,0 +1,27 @@
+import System.IO.Console;
+program EnumParse;
+
+// Built-in enum parse() (spec 12.5): EnumType.parse(s) returns Option<EnumType> -- Some when the
+// string matches a constant name, None otherwise.
+
+public bundle main {
+    public namespace app {
+        public enum Color { RED, GREEN, BLUE }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Option<Color> a = Color.parse("GREEN");
+                int r1 = match (a) {
+                    case Some(Color c) -> cast<int>(c);
+                    case None() -> -1;
+                };
+                Option<Color> b = Color.parse("PURPLE");
+                int r2 = match (b) {
+                    case Some(Color c) -> cast<int>(c);
+                    case None() -> -1;
+                };
+                System.IO.Console.printf("r1=%d r2=%d\n", r1, r2);   // 1, -1
+                return;
+            }
+        }
+    }
+}

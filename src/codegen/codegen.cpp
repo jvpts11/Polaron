@@ -1415,6 +1415,8 @@ struct CodeGenerator::Impl {
                     if (enums.count(oid->name) > 0) {
                         if (mem->member == "count") return "int";
                         if (mem->member == "values") return oid->name + "[]";
+                        if (mem->member == "random") return oid->name;
+                        if (mem->member == "parse") return "Option$" + oid->name;
                     }
                 }
                 // Enum (catalog) instance method: m.pick() -> the method's return type. A
@@ -2115,6 +2117,21 @@ struct CodeGenerator::Impl {
                 if (baseType(c) == catalog && functions.count(enumName + "." + method) > 0)
                     return enumName;
         return "";
+    }
+
+    // Constructs Some<Enum>(ordinal) or None<Enum>() for EnumName.parse() (spec 12.5), reusing
+    // emitNew so the object's vtable + constructor run (so the result is matchable). ordinal < 0 = None.
+    llvm::Value* emitOptionVariant(const std::string& variant, const std::string& en, int ordinal) {
+        ast::NewExpr nw;
+        nw.className = variant;  // "Some" / "None"
+        nw.typeArgs = {en};
+        nw.location = "heap";
+        if (ordinal >= 0) {
+            auto lit = std::make_unique<ast::IntLiteralExpr>();
+            lit->text = std::to_string(ordinal);
+            nw.args.push_back(std::move(lit));
+        }
+        return emitNew(nw);
     }
 
     llvm::Value* emitExpr(const ast::Expr& expr) {
@@ -4160,6 +4177,32 @@ struct CodeGenerator::Impl {
                                 builder.getInt32(i),
                                 arrayElemPtr(block, builder.getInt32(i), builder.getInt32Ty()));
                         return block;
+                    }
+                    // EnumName.parse(s) -> Option<Enum> (spec 12.5): match s against each constant
+                    // name; Some(ordinal) on a hit, None otherwise.
+                    if (mem->member == "parse" && call.args.size() == 1) {
+                        llvm::Value* s = emitExpr(*call.args[0]);
+                        if (s == nullptr) return nullptr;
+                        llvm::Value* sData = stringData(s);
+                        llvm::Value* slot = createEntryAlloca("parse.opt", builder.getPtrTy());
+                        llvm::Function* pf = currentFn;
+                        llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(context, "parse.done", pf);
+                        for (int i = 0; i < n; ++i) {
+                            llvm::Value* nm = stringData(emitStringObject(eit->second[i]));
+                            llvm::Value* cmp = builder.CreateCall(strcmpFn(), {sData, nm}, "parse.cmp");
+                            llvm::Value* eq = builder.CreateICmpEQ(cmp, builder.getInt32(0));
+                            auto* mb = llvm::BasicBlock::Create(context, "parse.some", pf);
+                            auto* nb = llvm::BasicBlock::Create(context, "parse.next", pf);
+                            builder.CreateCondBr(eq, mb, nb);
+                            builder.SetInsertPoint(mb);
+                            builder.CreateStore(emitOptionVariant("Some", eid->name, i), slot);
+                            builder.CreateBr(doneBB);
+                            builder.SetInsertPoint(nb);
+                        }
+                        builder.CreateStore(emitOptionVariant("None", eid->name, -1), slot);
+                        builder.CreateBr(doneBB);
+                        builder.SetInsertPoint(doneBB);
+                        return builder.CreateLoad(builder.getPtrTy(), slot, "parse.result");
                     }
                 }
             }

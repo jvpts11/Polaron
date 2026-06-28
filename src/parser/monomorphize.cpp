@@ -18,6 +18,7 @@ using InstMap = std::map<std::string, std::pair<std::string, std::vector<std::st
 // must survive to the analyzer. Populated by resolveTypeAliases and consulted by substType, so the
 // rest of the pipeline only ever sees concrete types.
 std::map<std::string, ast::TypeRef> g_aliases;
+std::set<std::string> g_enumNames;  // enum names in the program (for EnumName.parse() force-mono)
 
 // Resolve a bare type-name string (a typeArg, superclass, interface, or cast target) through the
 // alias map, returning the canonical form of its target (or the name unchanged if not an alias).
@@ -672,6 +673,15 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
             if (m->member == "methods") out["ArrayList$Method"] = {"ArrayList", {"Method"}};
             else if (m->member == "fields") out["ArrayList$Field"] = {"ArrayList", {"Field"}};
         }
+        // EnumName.parse(s) returns Option<Enum> (spec 12.5); force Some/None/Option for the enum.
+        if (const auto* m = dynamic_cast<const ast::MemberExpr*>(x->callee.get());
+            m != nullptr && m->member == "parse" && g.count("Option") > 0)
+            if (const auto* eid = dynamic_cast<const ast::IdentifierExpr*>(m->object.get());
+                eid != nullptr && g_enumNames.count(eid->name) > 0) {
+                out["Option$" + eid->name] = {"Option", {eid->name}};
+                out["Some$" + eid->name] = {"Some", {eid->name}};
+                out["None$" + eid->name] = {"None", {eid->name}};
+            }
         collectExpr(x->callee.get(), g, out);
         for (const auto& a : x->args) collectExpr(a.get(), g, out);
         return;
@@ -1168,6 +1178,11 @@ void qualifyNamespaces(ast::Program& program) {
 }
 
 bool monomorphize(ast::Program& program) {
+    // Record enum names so EnumName.parse() can force-monomorphize its Option<Enum> result.
+    g_enumNames.clear();
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& en : ns.enums) g_enumNames.insert(en.name);
     // Index generic templates by name.
     std::map<std::string, const ast::ClassDecl*> templates;
     std::set<std::string> generics;
