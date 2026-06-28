@@ -153,7 +153,7 @@ private:
     std::string analyzeExpectingBlock(const ast::Block* block);
     void analyzeStatement(const ast::Stmt& stmt);
     void checkAssignTarget(const ast::Expr& target, const std::string& valueType,
-                           SourceLocation loc);
+                           SourceLocation loc, const ast::Expr* valueExpr = nullptr);
     // Enforces move discipline when a class value is bound from `rhs`.
     void checkOwnershipAssign(const std::string& targetType, const ast::Expr& rhs,
                               SourceLocation loc);

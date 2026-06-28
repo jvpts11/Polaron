@@ -1,0 +1,24 @@
+import System.IO.Console;
+program NumericWiden;
+
+// Compile-time integer-literal coercion and numeric widening: a literal that fits a narrower type
+// initializes it without a cast, and a narrower integer widens to a wider one. printf promotes the
+// narrow integers to int for %d (C varargs default promotions).
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable byte b = 5;  // literal fits a byte
+                short s = 300;       // literal fits a short
+                int i = b;           // widen byte -> int
+                long l = i;          // widen int -> long (compiles)
+                int total = i + s;   // mixed-width arithmetic
+                b = 9;               // assignment of a fitting literal
+                System.IO.Console.printf("b=%d s=%d i=%d\n", b, s, i);
+                System.IO.Console.printf("total=%d eq=%d\n", total, l == 5);   // 305, 1
+                return;
+            }
+        }
+    }
+}

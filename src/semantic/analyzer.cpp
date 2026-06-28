@@ -57,6 +57,44 @@ unsigned intBits(const std::string& t) {
 }
 bool isNumeric(const std::string& t) { return isIntName(t) || isFloatType(t); }
 
+// True if `init` is an integer literal (optionally negated) whose value fits the integer type
+// `target`. A compile-time literal coerces to a narrower type when it fits, so `byte b = 5;` and
+// `short s = 300;` are accepted without an explicit cast (the value is known at compile time).
+bool intLiteralFits(const ast::Expr& init, const std::string& target) {
+    if (!isIntName(target)) return false;
+    const ast::Expr* e = &init;
+    bool neg = false;
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e); u != nullptr && u->op == "-") {
+        neg = true;
+        e = u->operand.get();
+    }
+    const auto* lit = dynamic_cast<const ast::IntLiteralExpr*>(e);
+    if (lit == nullptr) return false;
+    std::string s;
+    for (char c : lit->text) if (c != '_') s += c;
+    long long v = 0;
+    try {
+        if (s.size() > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B'))
+            v = std::stoll(s.substr(2), nullptr, 2);
+        else
+            v = std::stoll(s, nullptr, 0);  // 0x / 0 (octal) / decimal
+    } catch (...) {
+        return true;  // unparseable here -> don't block; codegen handles the value
+    }
+    if (neg) v = -v;
+    const unsigned bits = intBits(target);
+    const bool uns = !target.empty() && target[0] == 'u';
+    if (uns) {
+        if (v < 0) return false;
+        if (bits >= 64) return true;
+        return static_cast<unsigned long long>(v) < (1ull << bits);
+    }
+    if (bits >= 64) return true;
+    const long long lo = -(1ll << (bits - 1));
+    const long long hi = (1ll << (bits - 1)) - 1;
+    return v >= lo && v <= hi;
+}
+
 // Bit-counted type names exist only in freestanding mode (the normal names are byte/short/int/long,
 // ubyte/ushort/uint/ulong, smallfloat/float/double/quadruple). Used to reject them in normal mode.
 bool isBitCountedName(const std::string& t) {
@@ -874,7 +912,7 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
         if (f == nullptr || !f->init) continue;
         const std::string initType = typeOf(*f->init);
         const std::string ft = typeRefStr(f->type);
-        if (!initType.empty() && !isSubtype(initType, ft)) {
+        if (!initType.empty() && !isSubtype(initType, ft) && !intLiteralFits(*f->init, ft)) {
             error("cannot initialize field '" + f->name + "' of type '" + ft +
                       "' with a value of type '" + initType + "'",
                   f->loc);
@@ -1305,7 +1343,11 @@ std::string SemanticAnalyzer::analyzeExpectingBlock(const ast::Block* block) {
 }
 
 void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::string& valueType,
-                                         SourceLocation loc) {
+                                         SourceLocation loc, const ast::Expr* valueExpr) {
+    // A compile-time integer literal coerces to a narrower target type when it fits (spec).
+    auto fits = [&](const std::string& targetType) {
+        return valueExpr != nullptr && intLiteralFits(*valueExpr, targetType);
+    };
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&target)) {
         const LocalVar* var = lookupLocal(id->name);
         if (var == nullptr) {
@@ -1316,7 +1358,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             error("cannot assign to immutable variable '" + id->name + "' (declare it 'mutable')",
                   loc);
         }
-        if (!valueType.empty() && !isSubtype(valueType, var->type)) {
+        if (!valueType.empty() && !isSubtype(valueType, var->type) && !fits(var->type)) {
             error("cannot assign a value of type '" + valueType + "' to variable '" + id->name +
                       "' of type '" + var->type + "'",
                   loc);
@@ -1339,7 +1381,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
                               "' (declare it 'mutable')",
                           loc);
                 }
-                if (!valueType.empty() && !isSubtype(valueType, f->type)) {
+                if (!valueType.empty() && !isSubtype(valueType, f->type) && !fits(f->type)) {
                     error("cannot assign a value of type '" + valueType + "' to static field '" +
                               mem->member + "' of type '" + f->type + "'",
                           loc);
@@ -1361,7 +1403,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             error("cannot assign to immutable field '" + mem->member + "' (declare it 'mutable')",
                   loc);
         }
-        if (!valueType.empty() && !isSubtype(valueType, f->type)) {
+        if (!valueType.empty() && !isSubtype(valueType, f->type) && !fits(f->type)) {
             error("cannot assign a value of type '" + valueType + "' to field '" + mem->member +
                       "' of type '" + f->type + "'",
                   loc);
@@ -1598,7 +1640,8 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const std::string initType = typeOf(*vd->init);
         const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);
         if (!vd->isVar) checkTypeAccessible(declType, vd->loc);
-        if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType)) {
+        if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType) &&
+            !intLiteralFits(*vd->init, declType)) {
             error("cannot initialize variable '" + vd->name + "' of type '" + declType +
                       "' with a value of type '" + initType + "'",
                   vd->loc);
@@ -1644,7 +1687,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             return;
         }
         const std::string vt = typeOf(*assign->value);
-        checkAssignTarget(*assign->target, vt, assign->loc);
+        checkAssignTarget(*assign->target, vt, assign->loc, assign->value.get());
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get())) {
             moved_.erase(id->name);  // reassignment reactivates the variable
             const LocalVar* var = lookupLocal(id->name);
@@ -2318,7 +2361,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             const bool nullPtr =
                 (lt == "null" && (isRefType(rt) || isNullableType(rt))) ||
                 (rt == "null" && (isRefType(lt) || isNullableType(lt)));
-            if (!lt.empty() && !rt.empty() && lt != rt && !nullPtr) {
+            // Numeric (and char) operands compare after widening to a common type, so differing
+            // integer/float widths are fine (e.g. a long compared with an int literal).
+            const bool bothNumeric = numOk(lt) && numOk(rt);
+            if (!lt.empty() && !rt.empty() && lt != rt && !nullPtr && !bothNumeric) {
                 error("operator '" + op + "' requires operands of the same type", bin->loc);
             }
             return "boolean";

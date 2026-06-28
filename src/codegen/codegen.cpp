@@ -1963,7 +1963,15 @@ struct CodeGenerator::Impl {
     // returns the value unchanged.
     llvm::Value* asCStr(const ast::Expr& e, llvm::Value* v) {
         const std::string t = typeName(e);
-        return (t == "String" || t == "string") ? stringData(v) : v;
+        if (t == "String" || t == "string") return stringData(v);
+        // C varargs default argument promotions: an integer narrower than int is promoted to int,
+        // and a float to double, so printf reads each argument at the width its conversion expects.
+        if (v->getType()->isIntegerTy() && v->getType()->getIntegerBitWidth() < 32)
+            v = isUnsigned(t) ? builder.CreateZExt(v, builder.getInt32Ty())
+                              : builder.CreateSExt(v, builder.getInt32Ty());
+        else if (v->getType()->isFloatTy())
+            v = builder.CreateFPExt(v, builder.getDoubleTy());
+        return v;
     }
 
     // The reflection Type token layout (spec 31): { ptr name, i64 methodCount,
