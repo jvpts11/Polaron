@@ -675,6 +675,8 @@ struct MethodDecl : MemberDecl {
     bool isComptime = false;  // spec 28.3/37.4: may be evaluated at compile time
     bool isAsync = false;     // spec 20.2: returns a Task<T>; body becomes a state machine
     bool isVolatile = false;  // spec 37.5: always executed; never inlined or optimized away
+    bool isExtern = false;    // spec 26: an external C function (no LDP3 body); links to a C symbol
+    std::string externConvention;  // "cdecl"/"stdcall"/"fastcall" when isExtern
     std::string name;
     std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
     std::vector<Param> params;

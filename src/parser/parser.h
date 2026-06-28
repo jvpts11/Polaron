@@ -66,7 +66,9 @@ private:
     std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic,
                                                  bool isAbstract, bool isOverride, bool isFinal,
                                                  bool inInterface, bool isComptime = false,
-                                                 bool isAsync = false, bool isVolatile = false);
+                                                 bool isAsync = false, bool isVolatile = false,
+                                                 bool isExtern = false,
+                                                 std::string externConvention = "");
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
                               bool isPersistent, bool isEternal, bool isTransient,
                               bool isVolatile = false, bool isLazy = false,

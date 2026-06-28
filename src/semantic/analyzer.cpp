@@ -1022,7 +1022,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                 }
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                        if (m->isAbstract) continue;  // no body to analyze
+                        if (m->isAbstract || m->isExtern) continue;  // no LDP3 body to analyze
                         if (m->isAsync && freestanding_)
                             error("async methods are not available in freestanding mode (spec 36.3)",
                                   m->loc);

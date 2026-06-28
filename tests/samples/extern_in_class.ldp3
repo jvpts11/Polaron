@@ -1,0 +1,22 @@
+import System.IO.Console;
+program ExternInClass;
+
+// An `extern` C function is declared as a static method of a class (spec 26), called through the
+// owner as LibC.abs(...); the C symbol is the method's simple name. Keeps FFI inside the OOP model.
+
+public bundle main {
+    public namespace app {
+        public class LibC {
+            public extern cdecl static method abs(int x) returns int;
+            public extern cdecl static method labs(long x) returns long;
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = LibC.abs(0 - 42);
+                long b = LibC.labs(cast<long>(0 - 1000000));
+                System.IO.Console.printf("abs=%d labs=%d\n", a, cast<int>(b));
+                return;
+            }
+        }
+    }
+}

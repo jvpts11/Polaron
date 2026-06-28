@@ -927,6 +927,8 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isExternal = false;
     bool isMovableField = false;
     bool isUniqueField = false;
+    bool isExtern = false;          // spec 26: extern C method member
+    std::string externConvention;
     for (;;) {
         if (!isStatic && check(TokenKind::KwStatic)) {
             advance();
@@ -1003,12 +1005,23 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isUniqueField = true;
             continue;
         }
+        if (!isExtern && check(TokenKind::KwExtern)) {  // spec 26: extern <conv> [static] method ...
+            advance();
+            if (match(TokenKind::KwCdecl)) externConvention = "cdecl";
+            else if (match(TokenKind::KwStdcall)) externConvention = "stdcall";
+            else if (match(TokenKind::KwFastcall)) externConvention = "fastcall";
+            else fail("expected a calling convention (cdecl/stdcall/fastcall) after 'extern'",
+                      current().loc);
+            isExtern = true;
+            continue;
+        }
         break;
     }
     ast::MemberPtr member;
     if (check(TokenKind::KwMethod)) {
         member = parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
-                             inInterface, isComptime, isAsync, isVolatile);
+                             inInterface, isComptime, isAsync, isVolatile, isExtern,
+                             std::move(externConvention));
     } else if (check(TokenKind::KwConstructor)) {
         member = parseConstructor(std::move(visibility));
     } else if (check(TokenKind::KwDestructor)) {
@@ -1078,11 +1091,14 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
 std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, bool isStatic,
                                                      bool isAbstract, bool isOverride, bool isFinal,
                                                      bool inInterface, bool isComptime,
-                                                     bool isAsync, bool isVolatile) {
+                                                     bool isAsync, bool isVolatile, bool isExtern,
+                                                     std::string externConvention) {
     auto m = std::make_unique<ast::MethodDecl>();
     m->loc = current().loc;
     m->visibility = std::move(visibility);
     m->isStatic = isStatic;
+    m->isExtern = isExtern;
+    m->externConvention = std::move(externConvention);
     // An interface method is abstract unless it provides a default body (spec 9); decided below.
     m->isAbstract = isAbstract;
     m->isOverride = isOverride;
@@ -1135,6 +1151,8 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
         }
     } else if (m->isAbstract) {
         expect(TokenKind::Semicolon, "';' (an abstract method has no body)");
+    } else if (m->isExtern) {
+        expect(TokenKind::Semicolon, "';' (an extern method has no body; it links to a C symbol)");
     } else {
         m->body = parseBlock();
     }

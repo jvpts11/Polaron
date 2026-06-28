@@ -6078,7 +6078,35 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(endBB);
     }
 
-    // ---- Top-level generation ----
+    // The C-ABI signature of an extern declaration (spec 26): a small (1/2/4/8-byte) value struct is
+    // passed/returned in a register; a larger one is an error. Shared by namespace-level externs and
+    // class extern static methods.
+    llvm::FunctionType* externFnType(const std::vector<ast::Param>& params,
+                                     const ast::TypeRef& retType, bool variadic, SourceLocation loc) {
+        std::vector<llvm::Type*> pts;
+        for (const auto& p : params) {
+            const std::string pt = typeRefName(p.type);
+            if (llvm::Type* reg = ffiStructRegType(pt)) {
+                pts.push_back(reg);
+            } else {
+                if (isFfiByValueStruct(pt))
+                    error("FFI by-value struct '" + baseType(pt) +
+                              "' must be 1, 2, 4 or 8 bytes; pass larger structs by pointer (spec 26)",
+                          loc);
+                pts.push_back(llvmType(pt));
+            }
+        }
+        const std::string rt = typeRefName(retType);
+        llvm::Type* retTy = ffiStructRegType(rt);
+        if (retTy == nullptr) {
+            if (isFfiByValueStruct(rt))
+                error("FFI by-value struct return '" + baseType(rt) +
+                          "' must be 1, 2, 4 or 8 bytes (spec 26)",
+                      loc);
+            retTy = llvmType(rt);
+        }
+        return llvm::FunctionType::get(retTy, pts, variadic);
+    }
 
     void declareClasses() {
         // Pass 0: register enums (int-style lowers to i32 ordinals; java-style
@@ -6431,29 +6459,8 @@ struct CodeGenerator::Impl {
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ExternDecl& ex : ns.externs) {  // external C functions (spec 26)
-                    std::vector<llvm::Type*> pts;
-                    for (const auto& p : ex.params) {
-                        const std::string pt = typeRefName(p.type);
-                        if (llvm::Type* reg = ffiStructRegType(pt)) pts.push_back(reg);  // by-value struct
-                        else {
-                            if (isFfiByValueStruct(pt))
-                                error("FFI by-value struct '" + baseType(pt) +
-                                          "' must be 1, 2, 4 or 8 bytes; pass larger structs by "
-                                          "pointer (spec 26)",
-                                      ex.loc);
-                            pts.push_back(llvmType(pt));
-                        }
-                    }
-                    const std::string rt = typeRefName(ex.returnType);
-                    llvm::Type* retTy = ffiStructRegType(rt);
-                    if (retTy == nullptr) {
-                        if (isFfiByValueStruct(rt))
-                            error("FFI by-value struct return '" + baseType(rt) +
-                                      "' must be 1, 2, 4 or 8 bytes (spec 26)",
-                                  ex.loc);
-                        retTy = llvmType(rt);
-                    }
-                    llvm::FunctionType* ty = llvm::FunctionType::get(retTy, pts, ex.isVariadic);
+                    llvm::FunctionType* ty =
+                        externFnType(ex.params, ex.returnType, ex.isVariadic, ex.loc);
                     functions[ex.name] =
                         llvm::Function::Create(ty, llvm::Function::ExternalLinkage, ex.name, module);
                     externReturnType[ex.name] = typeRefName(ex.returnType);
@@ -6470,6 +6477,18 @@ struct CodeGenerator::Impl {
                                 continue;
                             }
                             if (m->isAbstract) continue;  // no body to declare
+                            if (m->isExtern) {  // spec 26: links to a C symbol (the simple name)
+                                llvm::FunctionType* ety =
+                                    externFnType(m->params, m->returnType, false, m->loc);
+                                llvm::Function* f = module.getFunction(m->name);
+                                if (f == nullptr)
+                                    f = llvm::Function::Create(ety, llvm::Function::ExternalLinkage,
+                                                               m->name, module);
+                                functions[cls.name + "." + m->name] = f;
+                                externReturnType[cls.name + "." + m->name] =
+                                    typeRefName(m->returnType);
+                                continue;
+                            }
                             std::vector<llvm::Type*> ptypes;
                             if (!m->isStatic) ptypes.push_back(builder.getPtrTy());
                             for (const auto& p : m->params)
@@ -7104,7 +7123,7 @@ struct CodeGenerator::Impl {
                                          builder.getInt32Ty());
                             } else if (m->isAsync && !m->isAbstract) {
                                 emitAsyncMethod(cls, *m);
-                            } else if (!m->isAbstract) {
+                            } else if (!m->isAbstract && !m->isExtern) {  // extern: no LDP3 body
                                 emitBody(functions[cls.name + "." + m->name], m->body, m->params,
                                          m->isStatic ? std::string() : cls.name,
                                          llvmType(typeRefName(m->returnType)), nullptr,
