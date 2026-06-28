@@ -84,6 +84,7 @@ struct LiteralInfo {
     std::string returnType;
     bool isComptime = false;
     SourceLocation loc;
+    std::string ownerClass;  // the class/struct that owns this suffix; "" for namespace-level (legacy)
 };
 
 // Type constraints attached to a region by accepts/rejects (spec 17.3).

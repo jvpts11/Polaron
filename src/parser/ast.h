@@ -790,17 +790,16 @@ struct CatalogDecl {
 };
 
 // A `comptime literal` suffix function at namespace level (spec 17.10):
-// `comptime literal name(T param) returns R { body }`, used as `64 kilobytes`.
-// This is the one namespace-level function form (OOP is mandatory otherwise).
-struct LiteralDecl {
+// `comptime literal name(T param) returns R { body }`, a member of the class/struct of its result
+// type, used as `64 kilobytes` (the suffix) or `Type.name(N)`. Implicitly static (no `this`).
+struct LiteralDecl : MemberDecl {
     std::string visibility;
     bool isComptime = false;  // spec requires `comptime`; semantics enforces it
     std::string name;
     Param param;              // exactly one parameter
     TypeRef returnType;
     Block body;
-    SourceLocation loc;
-    void dump(std::string& out, int indent) const;
+    void dump(std::string& out, int indent) const override;
 };
 
 // A namespace-level compile-time constant (spec 28.1): `const T NAME = expr;`,

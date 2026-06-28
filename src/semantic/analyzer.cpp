@@ -1120,28 +1120,33 @@ bool SemanticAnalyzer::analyze(const ast::Program& program) {
 // its shape (spec 17.10): must be comptime, exactly one numeric parameter, and a
 // known return type. The body is type-checked later, in analyzeLiteralBodies.
 void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
+    auto reg = [&](const ast::LiteralDecl& lit, const std::string& owner, const std::string& nsName) {
+        const std::string paramType = typeRefStr(lit.param.type);
+        const std::string returnType = typeRefStr(lit.returnType);
+        if (!lit.isComptime)
+            error("literal suffix '" + lit.name + "' must be 'comptime literal'", lit.loc);
+        if (!isNumeric(paramType))
+            error("literal suffix '" + lit.name +
+                      "' must take a numeric parameter (int or float family)",
+                  lit.loc);
+        // Overloading by parameter type (spec 17.10 rule 6): seconds(int) and seconds(double)
+        // may coexist; only a same-name, same-parameter-type redefinition is an error.
+        for (const LiteralInfo& ov : literals_[lit.name])
+            if (ov.paramType == paramType)
+                error("literal suffix '" + lit.name + "(" + paramType + ")' is already defined",
+                      lit.loc);
+        literals_[lit.name].push_back(
+            LiteralInfo{paramType, returnType, lit.isComptime, lit.loc, owner});
+        typeNamespace_[lit.name] = nsName;  // for import-prefix validation
+    };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
-            for (const ast::LiteralDecl& lit : ns.literals) {
-                const std::string paramType = typeRefStr(lit.param.type);
-                const std::string returnType = typeRefStr(lit.returnType);
-                if (!lit.isComptime) {
-                    error("literal suffix '" + lit.name + "' must be 'comptime literal'", lit.loc);
-                }
-                if (!isNumeric(paramType)) {
-                    error("literal suffix '" + lit.name +
-                              "' must take a numeric parameter (int or float family)",
-                          lit.loc);
-                }
-                // Overloading by parameter type (spec 17.10 rule 6): seconds(int) and seconds(double)
-                // may coexist; only a same-name, same-parameter-type redefinition is an error.
-                for (const LiteralInfo& ov : literals_[lit.name])
-                    if (ov.paramType == paramType)
-                        error("literal suffix '" + lit.name + "(" + paramType + ")' is already defined",
-                              lit.loc);
-                literals_[lit.name].push_back(LiteralInfo{paramType, returnType, lit.isComptime, lit.loc});
-                typeNamespace_[lit.name] = ns.name;  // for import-prefix validation
-            }
+            for (const ast::LiteralDecl& lit : ns.literals) reg(lit, "", ns.name);
+            // A literal suffix declared inside a class/struct is owned by that type (spec 17.10).
+            for (const ast::ClassDecl& cls : ns.classes)
+                for (const ast::MemberPtr& m : cls.members)
+                    if (const auto* lit = dynamic_cast<const ast::LiteralDecl*>(m.get()))
+                        reg(*lit, cls.name, ns.name);
         }
     }
 }
@@ -1318,6 +1323,12 @@ void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
             for (const ast::LiteralDecl& lit : ns.literals) {
                 analyzeMethodBody(lit.body, {lit.param}, /*thisClass=*/"", /*inConstructor=*/false);
             }
+            // Class/struct-owned literal suffix bodies (spec 17.10): static, so no `this`.
+            for (const ast::ClassDecl& cls : ns.classes)
+                for (const ast::MemberPtr& m : cls.members)
+                    if (const auto* lit = dynamic_cast<const ast::LiteralDecl*>(m.get()))
+                        analyzeMethodBody(lit->body, {lit->param}, /*thisClass=*/"",
+                                          /*inConstructor=*/false);
         }
     }
 }
@@ -2942,6 +2953,26 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 if (objId->name != "this" && lookupLocal(objId->name) == nullptr) {
                     if (const ClassInfo* sc = lookupClass(objId->name)) {
+                        // Qualified literal suffix: Type.kib(64) (spec 17.10). A literal suffix is not
+                        // in the method table, so resolve it before the method lookup.
+                        if (auto lit = literals_.find(mem->member); lit != literals_.end()) {
+                            const LiteralInfo* chosen = nullptr;
+                            const std::string at = call->args.size() == 1 ? typeOf(*call->args[0]) : "";
+                            for (const LiteralInfo& ov : lit->second)
+                                if (ov.ownerClass == objId->name) {
+                                    if (chosen == nullptr || ov.paramType == at) chosen = &ov;
+                                    if (ov.paramType == at) break;
+                                }
+                            if (chosen != nullptr) {
+                                if (call->args.size() != 1)
+                                    error("literal suffix '" + mem->member +
+                                              "' takes exactly one argument", call->loc);
+                                else if (!isCompileTimeConstant(*call->args[0]))
+                                    error("literal suffix '" + objId->name + "." + mem->member +
+                                              "' applies only to a compile-time constant", call->loc);
+                                return chosen->returnType;
+                            }
+                        }
                         auto mit = sc->methods.find(mem->member);
                         if (mit == sc->methods.end()) {
                             error("class '" + objId->name + "' has no method '" + mem->member + "'",

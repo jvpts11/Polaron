@@ -1444,6 +1444,12 @@ struct CodeGenerator::Impl {
                     if (md != nullptr && md->isAsync) return ast::mangleGeneric("Task", {rt});
                     return rt;
                 }
+                // Qualified literal suffix: Type.kib(64) (spec 17.10).
+                if (literalSuffixParams.count(mem->member) > 0 && call->args.size() == 1) {
+                    const std::string key = chooseLiteralKey(mem->member, typeName(*call->args[0]));
+                    if (auto rit = literalReturnType.find(key); rit != literalReturnType.end())
+                        return rit->second;
+                }
             }
             // Namespace-level literal suffix function: name(arg), overloaded by argument type.
             const std::string sname = flattenCallee(*call->callee);
@@ -4225,6 +4231,17 @@ struct CodeGenerator::Impl {
                     classes.count(objId->name) > 0) {
                     auto fnit = functions.find(objId->name + "." + mem->member);
                     if (fnit == functions.end()) {
+                        // Qualified literal suffix: Type.kib(64) (spec 17.10).
+                        if (literalSuffixParams.count(mem->member) > 0 && call.args.size() == 1) {
+                            const std::string key =
+                                chooseLiteralKey(mem->member, typeName(*call.args[0]));
+                            if (auto lf = functions.find(key); lf != functions.end()) {
+                                llvm::Value* v = emitExpr(*call.args[0]);
+                                if (v == nullptr) return nullptr;
+                                v = coerceToType(v, lf->second->getArg(0)->getType());
+                                return emitMaybeInvoke(lf->second, {v});
+                            }
+                        }
                         error("unknown static method '" + mem->member + "'", call.loc);
                         return nullptr;
                     }
@@ -6493,8 +6510,9 @@ struct CodeGenerator::Impl {
                     declHook(cls.onLastInstanceDestroyed, ".__onLastInstanceDestroyed");
                     declHook(cls.onClassUnload, ".__onClassUnload");
                 }
-                // Namespace-level `comptime literal` suffix functions (spec 17.10).
-                for (const ast::LiteralDecl& lit : ns.literals) {
+                // `comptime literal` suffix functions (spec 17.10): namespace-level (legacy) and the
+                // class/struct-owned form. Both lower to a function keyed by name and parameter type.
+                auto declLiteral = [&](const ast::LiteralDecl& lit) {
                     const std::string pt = typeRefName(lit.param.type);
                     const std::string key = lit.name + "$" + pt;  // overload by parameter type (17.10)
                     llvm::FunctionType* ty = llvm::FunctionType::get(
@@ -6503,7 +6521,12 @@ struct CodeGenerator::Impl {
                         ty, llvm::Function::ExternalLinkage, "literal." + lit.name + "." + pt, module);
                     literalReturnType[key] = typeRefName(lit.returnType);
                     literalSuffixParams[lit.name].push_back(pt);
-                }
+                };
+                for (const ast::LiteralDecl& lit : ns.literals) declLiteral(lit);
+                for (const ast::ClassDecl& cls : ns.classes)
+                    for (const ast::MemberPtr& m : cls.members)
+                        if (const auto* lit = dynamic_cast<const ast::LiteralDecl*>(m.get()))
+                            declLiteral(*lit);
                 // Catalog-implementing enum methods (spec 12.4). An instance method
                 // receives the enum value (its i32 ordinal) as `this`.
                 for (const ast::EnumDecl& en : ns.enums) {
@@ -7094,11 +7117,17 @@ struct CodeGenerator::Impl {
                     emitHook(cls.onLastInstanceDestroyed, ".__onLastInstanceDestroyed");
                     emitHook(cls.onClassUnload, ".__onClassUnload");
                 }
-                // Literal suffix bodies: emitted as static functions (no `this`).
-                for (const ast::LiteralDecl& lit : ns.literals) {
+                // Literal suffix bodies: emitted as static functions (no `this`), namespace-level
+                // (legacy) and class/struct-owned.
+                auto emitLiteralBody = [&](const ast::LiteralDecl& lit) {
                     emitBody(functions[lit.name + "$" + typeRefName(lit.param.type)], lit.body,
                              {lit.param}, /*thisClass=*/"", llvmType(typeRefName(lit.returnType)));
-                }
+                };
+                for (const ast::LiteralDecl& lit : ns.literals) emitLiteralBody(lit);
+                for (const ast::ClassDecl& cls : ns.classes)
+                    for (const ast::MemberPtr& m : cls.members)
+                        if (const auto* lit = dynamic_cast<const ast::LiteralDecl*>(m.get()))
+                            emitLiteralBody(*lit);
                 // Catalog-implementing enum method bodies (spec 12.4). For an instance
                 // method, `this` is the enum value (an i32 ordinal), so thisClass is the
                 // enum name (binds currentThis to arg 0) but there is no vtable/field init.

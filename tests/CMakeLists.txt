@@ -505,6 +505,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # comptime literal as a class member (spec 17.10): qualified call Units.kib(N) + overload.
+        add_test(NAME codegen_literal_in_class_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/literal_in_class.ldp3"
+            "-DEXPECTED=a=65536 b=2048 c=1536"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # literal-suffix overloading by parameter type (spec 17.10 rule 6): scaled(int)/scaled(double).
         add_test(NAME codegen_literal_overload_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

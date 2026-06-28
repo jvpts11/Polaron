@@ -1,0 +1,24 @@
+import System.IO.Console;
+program LiteralInClass;
+
+// A `comptime literal` suffix is a member of a class/struct (spec 17.10), called either through the
+// owner (Units.kib(64)) or, with the owner imported, as the suffix sugar `64 kib`. Overloading by
+// the literal's parameter type still applies.
+
+public bundle main {
+    public namespace app {
+        public class Units {
+            public comptime literal kib(int x) returns long { return cast<long>(x) * 1024L; }
+            public comptime literal kib(double x) returns long { return cast<long>(x * 1024.0); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                long a = Units.kib(64);     // qualified, int overload
+                long b = Units.kib(2);      // qualified, int overload
+                long c = Units.kib(1.5);    // qualified, double overload
+                System.IO.Console.printf("a=%d b=%d c=%d\n", cast<int>(a), cast<int>(b), cast<int>(c));
+                return;
+            }
+        }
+    }
+}

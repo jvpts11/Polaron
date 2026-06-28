@@ -54,6 +54,7 @@ private:
     ast::EnumDecl parseEnum();
     ast::CatalogDecl parseCatalog();
     ast::LiteralDecl parseLiteral();
+    std::unique_ptr<ast::LiteralDecl> parseLiteralMember(std::string visibility, bool isComptime);
     void parseExternInto(std::vector<ast::ExternDecl>& out);  // single method or a `library { }` block
     ast::ExternDecl parseExternMethod(const std::string& convention);
     ast::ConstDecl parseConstDecl();

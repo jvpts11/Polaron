@@ -486,24 +486,32 @@ ast::ExternDecl Parser::parseExternMethod(const std::string& convention) {
     return e;
 }
 
-ast::LiteralDecl Parser::parseLiteral() {
-    ast::LiteralDecl l;
-    l.loc = current().loc;
-    l.visibility = parseVisibilityOpt();
-    if (match(TokenKind::KwComptime)) l.isComptime = true;
+// Parses a `[comptime] literal name(T param) returns R { body }` member from the `literal` keyword
+// onward; the visibility and `comptime` modifier are parsed by the caller.
+std::unique_ptr<ast::LiteralDecl> Parser::parseLiteralMember(std::string visibility, bool isComptime) {
+    auto l = std::make_unique<ast::LiteralDecl>();
+    l->loc = current().loc;
+    l->visibility = std::move(visibility);
+    l->isComptime = isComptime;
     expect(TokenKind::KwLiteral, "'literal'");
-    l.name = expect(TokenKind::Identifier, "the literal suffix name").lexeme;
+    l->name = expect(TokenKind::Identifier, "the literal suffix name").lexeme;
     expect(TokenKind::LParen, "'('");
     std::vector<ast::Param> params = parseParams();
     expect(TokenKind::RParen, "')'");
     if (params.size() != 1) {
-        fail("a literal suffix must take exactly one parameter", l.loc);
+        fail("a literal suffix must take exactly one parameter", l->loc);
     }
-    l.param = std::move(params[0]);
+    l->param = std::move(params[0]);
     expect(TokenKind::KwReturns, "'returns'");
-    l.returnType = parseTypeRef();
-    l.body = parseBlock();
+    l->returnType = parseTypeRef();
+    l->body = parseBlock();
     return l;
+}
+
+ast::LiteralDecl Parser::parseLiteral() {
+    std::string visibility = parseVisibilityOpt();
+    bool isComptime = match(TokenKind::KwComptime);
+    return std::move(*parseLiteralMember(std::move(visibility), isComptime));
 }
 
 // Parses zero or more applied annotations `[Name(arg: val, ...)]` (spec 14.3) that precede a
@@ -1000,6 +1008,8 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         member = parseDestructor(std::move(visibility));
     } else if (check(TokenKind::KwOperator)) {
         member = parseOperator(std::move(visibility));
+    } else if (check(TokenKind::KwLiteral)) {  // a literal suffix is a member of its result type's class
+        member = parseLiteralMember(std::move(visibility), isComptime);
     } else {
         // Otherwise it is a field:  <type> <name> ;
         member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
