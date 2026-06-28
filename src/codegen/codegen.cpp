@@ -230,6 +230,8 @@ struct ClassLayout {
     bool isUnique = false;
     bool hasVtable = false;
     bool hasDestructor = false;
+    bool imported = false;  // from a depended-on .ldb: allocate/destroy via the bundle's exported
+                            // Class.__new / Class.__delete (the layout here is the public API only)
     std::vector<std::string> vtslots;          // virtual method names, in slot order
     llvm::GlobalVariable* vtable = nullptr;     // emitted vtable global (concrete classes)
     // Persistent instance fields (spec 18): they live in a per-variable disk-backed block,
@@ -3036,6 +3038,27 @@ struct CodeGenerator::Impl {
             error("unknown class '" + cn + "'", nw.loc);
             return nullptr;
         }
+        // Opaque cross-bundle creation: an imported class's full layout is not known here, so the
+        // bundle's exported __new mallocs the real size and runs the constructor (spec: F9 opaque).
+        if (cit->second.imported) {
+            llvm::Function* nf = functions.count(cn + ".__new") ? functions[cn + ".__new"] : nullptr;
+            if (nf == nullptr) {
+                error("cannot construct imported class '" + cn + "' (no exported constructor)", nw.loc);
+                return nullptr;
+            }
+            if (nw.location == "stack") {
+                error("an imported class is heap-only across a bundle boundary; use 'on heap'", nw.loc);
+                return nullptr;
+            }
+            std::vector<llvm::Value*> args;
+            for (std::size_t i = 0; i < nw.args.size(); ++i) {
+                llvm::Value* v = emitExpr(*nw.args[i]);
+                if (v == nullptr) return nullptr;
+                if (i < nf->arg_size()) v = coerceToType(v, nf->getArg(i)->getType());
+                args.push_back(v);
+            }
+            return builder.CreateCall(nf, args, cn + ".new");
+        }
         emitAliveGuard(cn);  // spec 30: instantiating an unimported type throws
         // `lazy import` (spec 37.3): run the class's onClassLoad on its first instance, once.
         if (cit->second.decl != nullptr && cit->second.decl->onClassLoad && isLazyImport(cn)) {
@@ -5563,6 +5586,12 @@ struct CodeGenerator::Impl {
                     }
                 }
             }
+            // An imported class is destroyed opaquely through the bundle's exported __delete (which
+            // runs the destructor and frees the real layout).
+            if (cit != classes.end() && cit->second.imported) {
+                builder.CreateCall(functions[cn + ".__delete"], {objPtr});
+                return;
+            }
             // Polymorphic delete dispatches the destructor through the vtable; a plain
             // class calls its destructor directly. Both then free (see emitDeleteObject).
             emitDeleteObject(objPtr, cn);
@@ -6251,6 +6280,7 @@ struct CodeGenerator::Impl {
                 for (const ast::ClassDecl& cls : ns.classes) {
                     ClassLayout layout;
                     layout.decl = &cls;
+                    layout.imported = bundle.isImported;  // bodies + full layout live in the .ldb
                     layout.type = llvm::StructType::create(context, "class." + cls.name);
                     layout.superclass = cls.superclass;
                     layout.interfaces = cls.interfaces;
@@ -6695,6 +6725,26 @@ struct CodeGenerator::Impl {
                     declHook(cls.onFirstInstance, ".__onFirstInstance");
                     declHook(cls.onLastInstanceDestroyed, ".__onLastInstanceDestroyed");
                     declHook(cls.onClassUnload, ".__onClassUnload");
+                    // F9 opaque bundles: a public class exports an allocating constructor (__new) and
+                    // a destroying one (__delete). A consumer that imports the class cannot see its
+                    // full layout, so it creates/destroys instances through these. Defined in library
+                    // mode (its own classes); declared external for imported classes (call the .ldb).
+                    if (!cls.isInterface && !cls.isAbstract && cls.visibility == "public" &&
+                        (bundle.isImported || libraryMode)) {
+                        std::vector<llvm::Type*> np;  // __new params = the constructor's params
+                        for (const ast::MemberPtr& m : cls.members)
+                            if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(m.get())) {
+                                for (const auto& p : c->params)
+                                    np.push_back(llvmType(typeRefName(p.type)));
+                                break;
+                            }
+                        functions[cls.name + ".__new"] = llvm::Function::Create(
+                            llvm::FunctionType::get(builder.getPtrTy(), np, false),
+                            llvm::Function::ExternalLinkage, cls.name + ".__new", module);
+                        functions[cls.name + ".__delete"] = llvm::Function::Create(
+                            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false),
+                            llvm::Function::ExternalLinkage, cls.name + ".__delete", module);
+                    }
                 }
                 // `comptime literal` suffix functions (spec 17.10): namespace-level (legacy) and the
                 // class/struct-owned form. Both lower to a function keyed by name and parameter type.
@@ -7310,6 +7360,27 @@ struct CodeGenerator::Impl {
                     emitHook(cls.onFirstInstance, ".__onFirstInstance");
                     emitHook(cls.onLastInstanceDestroyed, ".__onLastInstanceDestroyed");
                     emitHook(cls.onClassUnload, ".__onClassUnload");
+                    // F9 opaque bundles: bodies of the exported __new (malloc the real layout, run the
+                    // constructor) and __delete (destruct + free). Library mode only; a consumer just
+                    // calls these to create/destroy an instance it cannot lay out itself.
+                    if (libraryMode && !cls.isInterface && !cls.isAbstract &&
+                        cls.visibility == "public") {
+                        llvm::Function* nf = functions[cls.name + ".__new"];
+                        currentFn = nf;
+                        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", nf));
+                        llvm::Value* obj = builder.CreateCall(
+                            mallocFn(), {sizeOf(classes[cls.name].type)}, cls.name + ".obj");
+                        std::vector<llvm::Value*> cargs{obj};
+                        for (auto& a : nf->args()) cargs.push_back(&a);
+                        builder.CreateCall(functions[cls.name + "." + cls.name], cargs);
+                        builder.CreateRet(obj);
+
+                        llvm::Function* df = functions[cls.name + ".__delete"];
+                        currentFn = df;
+                        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", df));
+                        emitDeleteObject(df->getArg(0), cls.name);
+                        builder.CreateRetVoid();
+                    }
                 }
                 // Literal suffix bodies: emitted as static functions (no `this`), namespace-level
                 // (legacy) and class/struct-owned.

@@ -1,0 +1,20 @@
+import System.IO.Console;
+import count.Counter;
+program CounterApp;
+
+// Creates, uses, and destroys an instance of a class from a separately-compiled bundle. The
+// allocation and destruction go through the bundle's exported __new/__delete (opaque layout).
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter* c = new Counter(10) on heap;
+                c.increment();
+                c.increment();
+                System.IO.Console.printf("value = %d\n", c.value());
+                delete c;
+                return;
+            }
+        }
+    }
+}

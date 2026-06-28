@@ -1,0 +1,24 @@
+program CounterLib;
+
+// A library exposing an instantiable class. Compiled with `ldp3c --lib`, it exports an allocating
+// constructor (Counter.__new) and a destroyer (Counter.__delete) so a consumer can create and
+// destroy a Counter opaquely -- without knowing its (private) layout.
+public bundle counters {
+    public namespace count {
+        public class Counter {
+            private mutable int count;
+
+            public constructor Counter(int start) {
+                this.count = start;
+            }
+
+            public method increment() returns void {
+                this.count = this.count + 1;
+            }
+
+            public method value() returns int {
+                return this.count;
+            }
+        }
+    }
+}

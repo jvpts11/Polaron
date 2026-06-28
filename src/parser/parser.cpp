@@ -1314,6 +1314,10 @@ std::unique_ptr<ast::ConstructorDecl> Parser::parseConstructor(std::string visib
         (isReq ? c->requiresClauses : c->ensuresClauses).push_back(parseExpression());
         parsingEnsures_ = false;
     }
+    if (headerMode_ && check(TokenKind::Semicolon)) {
+        advance();  // a .ldh constructor signature: no body (the .ldb defines it)
+        return c;
+    }
     c->body = parseBlock();
     return c;
 }
