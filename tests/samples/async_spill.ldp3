@@ -1,0 +1,31 @@
+import System.IO.Console;
+program AsyncSpill;
+
+// Multiple awaits in one expression (spec 20.2): a value computed before an `await` must survive
+// the suspend/resume split that the await introduces. The compiler spills such temporaries into
+// the async state object and reloads them in the resume block.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static async method val(int n) returns int {
+                return n;
+            }
+            public static method twice(int n) returns int {
+                return n * 2;
+            }
+            public static async method combine() returns int {
+                // await result of the first val must survive the second and third awaits.
+                int s = await Main.val(10) + await Main.val(20) + await Main.val(30);  // 60
+                // a plain (non-await) value computed before an await must survive it too.
+                int t = Main.twice(5) + await Main.val(7);  // 17
+                return s + t;  // 77
+            }
+            public static method main(string[] args) returns void {
+                Task<int> r = Main.combine();
+                System.IO.Console.printf("result=%d\n", await r);  // 77
+                return;
+            }
+        }
+    }
+}

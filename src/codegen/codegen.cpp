@@ -323,6 +323,12 @@ struct CodeGenerator::Impl {
     int asyncSMAwaitIdx = 0;                   // next await's index / state number
     llvm::BasicBlock* asyncSMSuspend = nullptr;
     std::vector<std::pair<int, llvm::BasicBlock*>> asyncSMCases;  // (state index -> resume block)
+    // Scratch slots in the state object for spilling expression temporaries across an await: a
+    // value computed before a suspend would otherwise not dominate its use in the resume block.
+    unsigned asyncSMScratchBase = 0;           // field index of the first scratch slot
+    int asyncSpillTop_ = 0;                     // next free scratch slot (used LIFO)
+    static constexpr int kAsyncScratchSlots = 64;
+    struct SpillToken { bool active = false; unsigned slot = 0; llvm::Type* ty = nullptr; };
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
     const std::vector<ast::ExprPtr>* currentInvariants = nullptr;  // contracts: class invariants
     // contracts: each old(e) in an ensures clause -> an entry-captured slot (spec 29).
@@ -2559,7 +2565,10 @@ struct CodeGenerator::Impl {
                                       : functions.find(owner + ".operator" + bin.op);
             if (fnit != functions.end()) {
                 llvm::Value* recv = emitExpr(*bin.lhs);
+                SpillToken rtk;
+                if (asyncSM && containsAwait(*bin.rhs)) rtk = spillAcrossAwait(recv);
                 llvm::Value* arg = emitExpr(*bin.rhs);
+                recv = reloadSpill(rtk, recv);
                 if (recv == nullptr || arg == nullptr) return nullptr;
                 if (fnit->second->arg_size() >= 2) {
                     arg = coerceToType(arg, fnit->second->getArg(1)->getType());
@@ -2569,7 +2578,10 @@ struct CodeGenerator::Impl {
         }
         const std::string rt = typeName(*bin.rhs);
         llvm::Value* l = emitExpr(*bin.lhs);
+        SpillToken ltk;
+        if (asyncSM && containsAwait(*bin.rhs)) ltk = spillAcrossAwait(l);
         llvm::Value* r = emitExpr(*bin.rhs);
+        l = reloadSpill(ltk, l);
         if (l == nullptr || r == nullptr) return nullptr;
         const std::string& op = bin.op;
         // SIMD vector path: element-wise + - * / on vecN; a scalar operand is broadcast.
@@ -3915,13 +3927,17 @@ struct CodeGenerator::Impl {
                         return nullptr;
                     }
                     std::vector<llvm::Value*> args;
+                    std::vector<SpillToken> atk(call.args.size());
                     for (std::size_t i = 0; i < call.args.size(); ++i) {
                         llvm::Value* v = emitExpr(*call.args[i]);
                         if (v == nullptr) return nullptr;
                         if (i < fnit->second->arg_size())  // static: no implicit `this`
                             v = coerceToType(v, fnit->second->getArg(i)->getType());
                         args.push_back(v);
+                        if (asyncSM && laterArgAwaits(call.args, i)) atk[i] = spillAcrossAwait(v);
                     }
+                    for (std::size_t i = call.args.size(); i-- > 0;)
+                        if (atk[i].active) args[i] = reloadSpill(atk[i], args[i]);
                     return emitMaybeInvoke(fnit->second, args);
                 }
             }
@@ -3973,12 +3989,19 @@ struct CodeGenerator::Impl {
                     llvm::FunctionType* fty = methodFnType(mdecl);
                     std::vector<llvm::Value*> vargs;
                     vargs.push_back(recv);
+                    SpillToken recvTk;
+                    if (asyncSM && anyArgAwaits(call.args)) recvTk = spillAcrossAwait(recv);
+                    std::vector<SpillToken> atk(call.args.size());
                     for (std::size_t i = 0; i < call.args.size(); ++i) {
                         llvm::Value* v = emitExpr(*call.args[i]);
                         if (v == nullptr) return nullptr;
                         if (i + 1 < fty->getNumParams()) v = coerceToType(v, fty->getParamType(i + 1));
                         vargs.push_back(v);
+                        if (asyncSM && laterArgAwaits(call.args, i)) atk[i] = spillAcrossAwait(v);
                     }
+                    for (std::size_t i = call.args.size(); i-- > 0;)
+                        if (atk[i].active) vargs[1 + i] = reloadSpill(atk[i], vargs[1 + i]);
+                    if (recvTk.active) vargs[0] = reloadSpill(recvTk, vargs[0]);
                     return emitMaybeInvoke(fty, fnPtr, vargs);
                 }
             }
@@ -3995,13 +4018,20 @@ struct CodeGenerator::Impl {
             }
             std::vector<llvm::Value*> args;
             args.push_back(objPtr);
+            SpillToken recvTk;
+            if (asyncSM && anyArgAwaits(call.args)) recvTk = spillAcrossAwait(objPtr);
+            std::vector<SpillToken> atk(call.args.size());
             for (std::size_t i = 0; i < call.args.size(); ++i) {
                 llvm::Value* v = emitExpr(*call.args[i]);
                 if (v == nullptr) return nullptr;
                 if (i + 1 < fnit->second->arg_size())
                     v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
                 args.push_back(v);
+                if (asyncSM && laterArgAwaits(call.args, i)) atk[i] = spillAcrossAwait(v);
             }
+            for (std::size_t i = call.args.size(); i-- > 0;)
+                if (atk[i].active) args[1 + i] = reloadSpill(atk[i], args[1 + i]);
+            if (recvTk.active) args[0] = reloadSpill(recvTk, args[0]);
             return emitMaybeInvoke(fnit->second, args);
         }
         error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call.loc);
@@ -6326,6 +6356,37 @@ struct CodeGenerator::Impl {
         for (const auto& sp : b.statements) n += countAsyncAwaitsS(sp.get());
         return n;
     }
+    bool containsAwait(const ast::Expr& e) { return countAwaitsE(&e) > 0; }
+    bool laterArgAwaits(const std::vector<ast::ExprPtr>& a, std::size_t i) {
+        for (std::size_t j = i + 1; j < a.size(); ++j)
+            if (containsAwait(*a[j])) return true;
+        return false;
+    }
+    bool anyArgAwaits(const std::vector<ast::ExprPtr>& a) {
+        for (const auto& x : a)
+            if (containsAwait(*x)) return true;
+        return false;
+    }
+    // Saves a value into the async state object so it survives a later await's suspend/resume
+    // split (otherwise it would not dominate its use in the resume block). reloadSpill reads it
+    // back after the await. Spills/reloads nest LIFO within an expression.
+    SpillToken spillAcrossAwait(llvm::Value* v) {
+        SpillToken t;
+        if (!asyncSM || v == nullptr || asyncSpillTop_ >= kAsyncScratchSlots) return t;
+        t.active = true;
+        t.slot = asyncSMScratchBase + static_cast<unsigned>(asyncSpillTop_++);
+        t.ty = v->getType();
+        builder.CreateStore(
+            v, builder.CreateStructGEP(asyncSMState, asyncSMStatePtr, t.slot, "spill"));
+        return t;
+    }
+    llvm::Value* reloadSpill(const SpillToken& t, llvm::Value* orig) {
+        if (!t.active) return orig;
+        --asyncSpillTop_;
+        return builder.CreateLoad(
+            t.ty, builder.CreateStructGEP(asyncSMState, asyncSMStatePtr, t.slot, "reload"),
+            "spilled");
+    }
 
     // Emits an async method whose body awaits (spec 20.2) as a state machine, via coroutine
     // lowering: every local lives in the heap state object, the body is emitted with its natural
@@ -6346,6 +6407,8 @@ struct CodeGenerator::Impl {
         for (const auto& l : tlocals) fields.push_back(llvmType(l.second));
         const unsigned awaitBase = static_cast<unsigned>(fields.size());
         for (int k = 0; k < awaitCount; ++k) fields.push_back(builder.getInt64Ty());
+        const unsigned scratchBase = static_cast<unsigned>(fields.size());
+        for (int k = 0; k < kAsyncScratchSlots; ++k) fields.push_back(builder.getInt64Ty());
         llvm::StructType* stateTy = llvm::StructType::create(context, fields, mangled + "$state");
 
         llvm::Function* res = functions[mangled + "$resume"];
@@ -6392,6 +6455,8 @@ struct CodeGenerator::Impl {
         asyncSMResume = res;
         asyncSMAwaitBase = awaitBase;
         asyncSMAwaitIdx = 0;
+        asyncSMScratchBase = scratchBase;
+        asyncSpillTop_ = 0;
         asyncSMSuspend = suspendBlk;
         asyncSMCases.clear();
 
