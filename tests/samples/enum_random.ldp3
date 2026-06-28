@@ -1,0 +1,21 @@
+import System.IO.Console;
+program EnumRandom;
+
+// Built-in enum methods (spec 12.5): count() and random() (a random value in declaration range).
+
+public bundle main {
+    public namespace app {
+        public enum Dir {
+            NORTH, EAST, SOUTH, WEST
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                int c = Dir.count();           // 4
+                Dir r = Dir.random();          // one of the 4 declared values
+                boolean valid = r == Dir.NORTH || r == Dir.EAST || r == Dir.SOUTH || r == Dir.WEST;
+                System.IO.Console.printf("count=%d valid=%d\n", c, valid);
+                return;
+            }
+        }
+    }
+}

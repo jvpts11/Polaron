@@ -2894,6 +2894,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (lookupLocal(oid->name) == nullptr && enums_.count(oid->name) > 0) {
                     if (mem->member == "count" && call->args.empty()) return "int";
                     if (mem->member == "values" && call->args.empty()) return oid->name + "[]";
+                    if (mem->member == "random" && call->args.empty()) return oid->name;
                     error("enum '" + oid->name + "' has no built-in '" + mem->member + "'",
                           call->loc);
                     return "";

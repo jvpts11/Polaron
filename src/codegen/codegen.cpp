@@ -4114,6 +4114,12 @@ struct CodeGenerator::Impl {
                 if (eit != enums.end()) {
                     const int n = static_cast<int>(eit->second.size());
                     if (mem->member == "count") return builder.getInt32(n);
+                    if (mem->member == "random" && n > 0) {  // a random ordinal in [0, n)
+                        llvm::FunctionType* rt = llvm::FunctionType::get(builder.getInt32Ty(), false);
+                        llvm::Value* r =
+                            builder.CreateCall(module.getOrInsertFunction("rand", rt), {}, "rand");
+                        return builder.CreateSRem(r, builder.getInt32(n), "enum.random");
+                    }
                     if (mem->member == "values") {
                         // Build an int[] of ordinals [0 .. n-1].
                         llvm::Value* total = builder.getInt64(8 + static_cast<long long>(n) * 4);
