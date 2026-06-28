@@ -1,0 +1,28 @@
+import System.IO.Console;
+import ext.Drawable;
+import ext.Renderer;
+program PluginApp;
+
+// Implements an imported interface locally and hands the object to the bundle's Renderer, which calls
+// describe() back across the boundary. Validates that the consumer lays out its vtable on the imported
+// interface's slots so the bundle's dispatch reaches the consumer's method.
+public bundle main {
+    public namespace app {
+
+        public class Widget implements Drawable {
+            public override method describe() returns int {
+                return 42;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Widget* w = new Widget() on heap;
+                int r = Renderer.render(w);
+                System.IO.Console.printf("rendered = %d\n", r);
+                delete w;
+                return;
+            }
+        }
+    }
+}

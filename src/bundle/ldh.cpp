@@ -75,8 +75,10 @@ struct Emitter {
 };
 
 void emitMethod(Emitter& e, const MethodDecl& m) {
-    if (!exposed(m.visibility)) return;
-    std::string s = m.visibility + " ";
+    // Interface methods have implicit (empty) visibility and are always public API; class members
+    // with an explicit private/internal visibility are not exposed.
+    if (!m.visibility.empty() && !exposed(m.visibility)) return;
+    std::string s = m.visibility.empty() ? "" : m.visibility + " ";
     if (m.isStatic) s += "static ";
     if (m.isAbstract) s += "abstract ";
     if (m.isOverride) s += "override ";

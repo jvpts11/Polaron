@@ -1,0 +1,19 @@
+program PluginLib;
+
+// A library that defines an interface and a function which calls back through it. A consumer
+// implements the interface locally and passes its object in -- the bundle dispatches describe() on
+// the consumer's type across the boundary (the plugin-callback pattern).
+public bundle plugin {
+    public namespace ext {
+
+        public interface Drawable {
+            method describe() returns int;
+        }
+
+        public class Renderer {
+            public static method render(Drawable d) returns int {
+                return d.describe();
+            }
+        }
+    }
+}
