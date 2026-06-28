@@ -2143,6 +2143,38 @@ struct CodeGenerator::Impl {
         return name + "$" + it->second[0];
     }
 
+    // Emits a capture-free lambda as a C-callable function (spec 26): no environment parameter, so
+    // its signature is exactly R(Args) and its address is a raw C function pointer. A capturing
+    // lambda is rejected (a C callback has nowhere to carry the environment).
+    llvm::Function* emitCallbackFn(const ast::LambdaExpr& lam) {
+        if (!lam.captures.empty()) {
+            error("a capturing lambda cannot be passed as a C callback; use a capture-free lambda "
+                  "(spec 26)",
+                  lam.loc);
+            return nullptr;
+        }
+        std::vector<llvm::Type*> pts;
+        for (const auto& p : lam.params) pts.push_back(llvmType(typeRefName(p.type)));
+        llvm::Type* rt = llvmType(typeRefName(lam.returnType));
+        llvm::Function* fn = llvm::Function::Create(
+            llvm::FunctionType::get(rt, pts, false), llvm::Function::InternalLinkage,
+            "__ldp3_cb_" + std::to_string(lambdaCounter++), module);
+        // emitBody clobbers function-local state -- save and restore it (mirrors the lambda path).
+        auto sFn = currentFn; auto sCls = currentClass; auto sRet = currentRetType;
+        auto sEns = currentEnsures; auto sInv = currentInvariants; auto sThis = currentThis;
+        auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
+        auto sRegions = scopeRegions; auto sDtorChain = currentDtorChain; auto sOld = oldValues_;
+        auto sIP = builder.saveIP();
+        emitBody(fn, lam.body, lam.params, "", rt, nullptr, nullptr, nullptr, nullptr,
+                 /*hasEnv=*/false);
+        currentFn = sFn; currentClass = sCls; currentRetType = sRet;
+        currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
+        currentDtorChain = sDtorChain; oldValues_ = sOld;
+        locals = sLoc; scopeObjects = sScope; deferred = sDef; scopeRegions = sRegions;
+        builder.restoreIP(sIP);
+        return fn;
+    }
+
     // Constructs Some<Enum>(ordinal) or None<Enum>() for EnumName.parse() (spec 12.5), reusing
     // emitNew so the object's vtable + constructor run (so the result is matchable). ordinal < 0 = None.
     llvm::Value* emitOptionVariant(const std::string& variant, const std::string& en, int ordinal) {
@@ -3303,6 +3335,13 @@ struct CodeGenerator::Impl {
             llvm::Function* fn = functions[name];
             std::vector<llvm::Value*> args;
             for (std::size_t i = 0; i < call.args.size(); ++i) {
+                // A lambda argument to a C function is a callback: pass a raw C function pointer.
+                if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(call.args[i].get())) {
+                    llvm::Function* cb = emitCallbackFn(*lam);
+                    if (cb == nullptr) return nullptr;
+                    args.push_back(cb);
+                    continue;
+                }
                 const std::string at = typeName(*call.args[i]);
                 // A by-value struct argument travels in a register: load its bytes as the ABI int.
                 if (llvm::Type* reg = ffiStructRegType(at)) {
@@ -4253,9 +4292,20 @@ struct CodeGenerator::Impl {
                         error("unknown static method '" + mem->member + "'", call.loc);
                         return nullptr;
                     }
+                    const bool isExternCall =
+                        externReturnType.count(objId->name + "." + mem->member) > 0;
                     std::vector<llvm::Value*> args;
                     std::vector<SpillToken> atk(call.args.size());
                     for (std::size_t i = 0; i < call.args.size(); ++i) {
+                        // A lambda argument to a C function is a callback: pass a raw C function ptr.
+                        if (isExternCall)
+                            if (const auto* lam =
+                                    dynamic_cast<const ast::LambdaExpr*>(call.args[i].get())) {
+                                llvm::Function* cb = emitCallbackFn(*lam);
+                                if (cb == nullptr) return nullptr;
+                                args.push_back(cb);
+                                continue;
+                            }
                         llvm::Value* v = emitExpr(*call.args[i]);
                         if (v == nullptr) return nullptr;
                         if (i < fnit->second->arg_size())  // static: no implicit `this`

@@ -614,3 +614,6 @@ struct Ldp3Point ldp3_point_scale(struct Ldp3Point p, int k) {
     r.y = p.y * k;
     return r;
 }
+
+// FFI callback test helper (spec 26): a C function that takes a raw function pointer and calls it.
+int ldp3_apply_cb(int (*f)(int), int x) { return f(x); }
