@@ -999,6 +999,7 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
 
 void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
+        if (bundle.isImported) continue;  // bodies live in the .ldb; only its public API is visible
         // Imports are written before `program` (file level, spec 2.7); the in-bundle form is still
         // accepted during migration. Collect the imported symbol names from both.
         currentImports_.clear();

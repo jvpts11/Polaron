@@ -29,6 +29,11 @@ class Parser {
 public:
     Parser(std::vector<Token> tokens, std::string_view file);
 
+    // Header mode: parsing a .ldh (a bundle's public API). Methods and constructors may be signatures
+    // with no body (`...;`), like an interface; their implementations live in the .ldb. Call before
+    // parse().
+    void setHeaderMode(bool headerMode) { headerMode_ = headerMode; }
+
     ast::Program parse();
 
     bool hasErrors() const { return !errors_.empty(); }
@@ -131,6 +136,7 @@ private:
     bool looksLikeQualifiedVarDecl() const;  // `app.Box b` / `app.Box* p`
     bool sawQualifiedType_ = false;         // a `ns.Type` reference was parsed (spec 15)
     bool parsingEnsures_ = false;           // inside an `ensures` clause -> `old(...)` is allowed (spec 29)
+    bool headerMode_ = false;               // parsing a .ldh: method/constructor bodies may be absent
 };
 
 }  // namespace ldp3

@@ -1121,14 +1121,15 @@ void appendPrelude(ldp3::ast::Program& prog) {
 
 int printUsage(const char* prog) {
     std::fprintf(stderr,
-                 "usage: %s <input.ldp3> [-o <output.ll>]\n"
+                 "usage: %s <input.ldp3> [-o <output.ll>] [--use <dep.ldb> ...]\n"
                  "       %s --lib <input.ldp3> -o <output.ldb>   (compile a bundle; emits .ldb + .ldh)\n"
+                 "       %s --extract-code <input.ldb> -o <output.bc>\n"
                  "       %s --dump-ldb <input.ldb>\n"
                  "       %s --dump-tokens <input.ldp3>\n"
                  "       %s --dump-ast <input.ldp3>\n"
                  "       %s --check <input.ldp3>\n"
                  "       %s --version\n",
-                 prog, prog, prog, prog, prog, prog, prog);
+                 prog, prog, prog, prog, prog, prog, prog, prog);
     return 2;
 }
 
@@ -1252,6 +1253,39 @@ int dumpLdb(const std::string& path) {
 #endif
 }
 
+// Writes a .ldb's CODE section (LLVM bitcode) to `outPath`, for the linker to consume (clang accepts
+// .bc directly). Used to link a depended-on bundle's implementation into the final executable.
+int extractCode(const std::string& ldbPath, const std::string& outPath) {
+#ifdef LDP3_WITH_LLVM
+    if (outPath.empty()) {
+        std::fprintf(stderr, "error: --extract-code requires -o <output.bc>\n");
+        return 1;
+    }
+    auto bytes = readFile(ldbPath);
+    if (!bytes) {
+        std::fprintf(stderr, "error: cannot open '%s'\n", ldbPath.c_str());
+        return 1;
+    }
+    ldp3::LdbBundle b;
+    if (!ldp3::readLdb(*bytes, b)) {
+        std::fprintf(stderr, "error: '%s' is not a valid .ldb bundle\n", ldbPath.c_str());
+        return 1;
+    }
+    std::ofstream out(outPath, std::ios::binary);
+    if (!out) {
+        std::fprintf(stderr, "error: cannot write '%s'\n", outPath.c_str());
+        return 1;
+    }
+    out << b.code;
+    return 0;
+#else
+    (void)ldbPath;
+    (void)outPath;
+    std::fprintf(stderr, "error: this ldp3c was built without the LLVM backend\n");
+    return 1;
+#endif
+}
+
 // Derives the .ldh path that sits next to a .ldb output (foo.ldb -> foo.ldh; otherwise append .ldh).
 std::string ldhPathFor(const std::string& ldbPath) {
     if (ldbPath.size() >= 4 && ldbPath.compare(ldbPath.size() - 4, 4, ".ldb") == 0)
@@ -1260,7 +1294,8 @@ std::string ldhPathFor(const std::string& ldbPath) {
 }
 
 int compile(const std::vector<std::string>& inputs, const std::string& outPath,
-            const std::string& target = "", int optLevel = 0, bool libraryMode = false) {
+            const std::string& target = "", int optLevel = 0, bool libraryMode = false,
+            const std::vector<std::string>& deps = {}) {
     ldp3::ast::Program program;
     std::string programName;
     // Keep each file's source alive only within its iteration: the AST copies
@@ -1292,7 +1327,53 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         if (prog.isFreestanding) program.isFreestanding = true;
     }
 
+#ifdef LDP3_WITH_LLVM
+    // Depended-on bundles (--use foo.ldb): parse each .ldh as the bundle's public API and merge it as
+    // an imported bundle (types visible; bodies stay in the .ldb, linked separately). The .ldb's
+    // fingerprint must match its own header, catching a corrupt or tampered bundle.
+    for (const std::string& depPath : deps) {
+        auto depBytes = readFile(depPath);
+        if (!depBytes) {
+            std::fprintf(stderr, "error: cannot open bundle '%s'\n", depPath.c_str());
+            return 1;
+        }
+        ldp3::LdbBundle dep;
+        if (!ldp3::readLdb(*depBytes, dep)) {
+            std::fprintf(stderr, "error: '%s' is not a valid .ldb bundle\n", depPath.c_str());
+            return 1;
+        }
+        if (ldp3::ldbFingerprint(dep.ldh) != dep.fingerprint) {
+            std::fprintf(stderr, "error: bundle '%s' fingerprint does not match its header (corrupt)\n",
+                         depPath.c_str());
+            return 1;
+        }
+        ldp3::Lexer dlex(dep.ldh, depPath);
+        ldp3::Parser dparser(dlex.tokenize(), depPath);
+        dparser.setHeaderMode(true);
+        ldp3::ast::Program dprog = dparser.parse();
+        if (dparser.hasErrors()) {
+            std::fprintf(stderr, "error: failed to parse the header of bundle '%s'\n", depPath.c_str());
+            return 1;
+        }
+        for (auto& b : dprog.bundles) {
+            b.isImported = true;
+            program.bundles.push_back(std::move(b));
+        }
+    }
+#else
+    if (!deps.empty()) {
+        std::fprintf(stderr, "error: --use needs the LLVM backend\n");
+        return 1;
+    }
+#endif
+
     appendPrelude(program);
+    // A library doesn't define the prelude: the final executable does (the prelude is appended to
+    // every program). Importing it keeps the .ldb free of prelude definitions, so linking a bundle
+    // into a program doesn't collide on the shared prelude symbols.
+    if (libraryMode)
+        for (auto& b : program.bundles)
+            if (b.isPrelude) b.isImported = true;
     ldp3::resolveTypeAliases(program);           // expand `typealias` to its target everywhere (spec 24)
     ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
@@ -1407,9 +1488,11 @@ int main(int argc, char** argv) {
         return dumpLdb(std::string(args[1]));
     }
 
-    // Compile mode: <input...> [-o <output>] [--lib]. A program may span several files.
+    // Compile mode: <input...> [-o <output>] [--lib] [--use <dep.ldb> ...]. May span several files.
     std::vector<std::string> inputs;
+    std::vector<std::string> deps;  // --use <dep.ldb>: depended-on bundles to type-check/link against
     std::string output;
+    std::string extractFrom;  // --extract-code <dep.ldb>: dump the bundle's CODE bitcode to -o
     std::string target;  // --target=<triple>, e.g. x86_64-unknown-none for freestanding/bare metal
     int optLevel = 0;    // -O0..-O3: run ldp3c's own optimization pipeline before emitting IR
     bool libraryMode = false;  // --lib: compile a bundle to a .ldb (+ .ldh), no entry point required
@@ -1423,6 +1506,20 @@ int main(int argc, char** argv) {
             ++i;
         } else if (args[i] == "--lib") {
             libraryMode = true;
+        } else if (args[i] == "--use") {
+            if (i + 1 >= args.size()) {
+                std::fprintf(stderr, "error: --use requires a .ldb file\n");
+                return printUsage(argv[0]);
+            }
+            deps.emplace_back(args[i + 1]);
+            ++i;
+        } else if (args[i] == "--extract-code") {
+            if (i + 1 >= args.size()) {
+                std::fprintf(stderr, "error: --extract-code requires a .ldb file\n");
+                return printUsage(argv[0]);
+            }
+            extractFrom = std::string(args[i + 1]);
+            ++i;
         } else if (args[i].rfind("--target=", 0) == 0) {
             target = std::string(args[i].substr(9));
         } else if (args[i] == "-O" || args[i] == "-O2") {
@@ -1437,9 +1534,10 @@ int main(int argc, char** argv) {
             inputs.emplace_back(args[i]);
         }
     }
+    if (!extractFrom.empty()) return extractCode(extractFrom, output);  // no compile: just dump CODE
     if (inputs.empty()) {
         std::fprintf(stderr, "error: no input files\n");
         return printUsage(argv[0]);
     }
-    return compile(inputs, output, target, optLevel, libraryMode);
+    return compile(inputs, output, target, optLevel, libraryMode, deps);
 }

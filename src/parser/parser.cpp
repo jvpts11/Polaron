@@ -1141,7 +1141,11 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
         (isReq ? m->requiresClauses : m->ensuresClauses).push_back(parseExpression());
         parsingEnsures_ = false;
     }
-    if (inInterface) {
+    if (headerMode_ && check(TokenKind::Semicolon)) {
+        // A .ldh signature: no body (the implementation is in the .ldb). Not abstract -- the bundle
+        // defines it; codegen for the importing program emits an external declaration.
+        advance();
+    } else if (inInterface) {
         // `;` => an abstract signature; `{ ... }` => a default method with a body (spec 9).
         if (check(TokenKind::Semicolon)) {
             m->isAbstract = true;

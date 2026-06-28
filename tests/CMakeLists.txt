@@ -141,6 +141,17 @@ if(LDP3_WITH_LLVM)
     # Full pipeline: compile to .exe with clang and check it prints correctly.
     find_program(LDP3_CLANG clang HINTS "C:/Program Files/LLVM/bin")
     if(LDP3_CLANG)
+        # F9 phase 2: a consumer imports a separately-compiled bundle via --use, links its .ldb CODE,
+        # and calls a static method across the bundle boundary -> Calc.square(7) = 49.
+        add_test(NAME bundle_static_call_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_lib.ldp3"
+            "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_app.ldp3"
+            "-DEXPECTED=square = 49"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_link_test.cmake")
+
         add_test(NAME codegen_hello_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"

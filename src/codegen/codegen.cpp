@@ -7255,6 +7255,7 @@ struct CodeGenerator::Impl {
 
     void emitFunctions() {
         for (const ast::Bundle& bundle : program.bundles) {
+            if (bundle.isImported) continue;  // bodies live in the depended-on .ldb (declared external)
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ClassDecl& cls : ns.classes) {
                     bool hasCtor = false;
