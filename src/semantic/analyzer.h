@@ -153,6 +153,7 @@ private:
     // `return` produces (the validation value's type). The block's return is its own value, so the
     // enclosing method's return type does not apply.
     std::string analyzeExpectingBlock(const ast::Block* block);
+    std::string analyzeYieldBlock(const ast::Block& body);  // match-expr block arm (spec 16.2)
     void analyzeStatement(const ast::Stmt& stmt);
     void checkAssignTarget(const ast::Expr& target, const std::string& valueType,
                            SourceLocation loc, const ast::Expr* valueExpr = nullptr);

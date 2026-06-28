@@ -335,6 +335,11 @@ struct CodeGenerator::Impl {
     // to expectingEnd_ (the block is an expression, not a method return).
     llvm::Value* expectingSlot_ = nullptr;
     llvm::BasicBlock* expectingEnd_ = nullptr;
+    // Inside a match-expression block arm (spec 16.2): `yield expr;` stores into this slot and
+    // branches to yieldEnd_ (the arm's continuation).
+    llvm::Value* yieldSlot_ = nullptr;
+    llvm::BasicBlock* yieldEnd_ = nullptr;
+    std::string yieldType_;
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
     const std::vector<const ast::Expr*>* currentInvariants = nullptr;  // contracts: class + inherited invariants
     // contracts: each old(e) in an ensures clause -> an entry-captured slot (spec 29).
@@ -5451,6 +5456,15 @@ struct CodeGenerator::Impl {
             emitExpr(*es->expr);
             return;
         }
+        if (const auto* ys = dynamic_cast<const ast::YieldStmt*>(&stmt)) {
+            // `yield expr;` in a match-expression block arm (spec 16.2): store the value and jump to
+            // the arm's continuation.
+            llvm::Value* v = ys->value != nullptr ? emitExpr(*ys->value) : nullptr;
+            if (v != nullptr && yieldSlot_ != nullptr)
+                builder.CreateStore(coerce(v, typeName(*ys->value), yieldType_), yieldSlot_);
+            if (yieldEnd_ != nullptr) builder.CreateBr(yieldEnd_);
+            return;
+        }
         if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
             // Inside an `expecting { ... }` block (spec 30.18), `return X` is the block's value:
             // store it and jump to the block's end, rather than returning from the method.
@@ -5662,6 +5676,27 @@ struct CodeGenerator::Impl {
     // Expression form (spec 16.2): each arm yields a value; a phi at the join merges
     // them. Mirrors emitMatch's vtable dispatch + positional binding, but produces a
     // value. Sema guarantees exhaustiveness, so the no-match tail is unreachable.
+    // Emits a match-expression block arm (spec 16.2): runs the block, where `yield expr;` stores the
+    // arm's value into a slot; returns that value at the arm's continuation.
+    llvm::Value* emitYieldBlock(const ast::Block& body, llvm::Type* rty, const std::string& rtype) {
+        llvm::Value* slot = createEntryAlloca("matchx.arm", rty);
+        builder.CreateStore(llvm::Constant::getNullValue(rty), slot);
+        llvm::BasicBlock* armEnd = llvm::BasicBlock::Create(context, "matchx.arm.end", currentFn);
+        llvm::Value* sSlot = yieldSlot_;
+        llvm::BasicBlock* sEnd = yieldEnd_;
+        std::string sTy = yieldType_;
+        yieldSlot_ = slot;
+        yieldEnd_ = armEnd;
+        yieldType_ = rtype;
+        emitBlock(body, /*newScope=*/true);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(armEnd);
+        yieldSlot_ = sSlot;
+        yieldEnd_ = sEnd;
+        yieldType_ = sTy;
+        builder.SetInsertPoint(armEnd);
+        return builder.CreateLoad(rty, slot, "matchx.arm.val");
+    }
+
     llvm::Value* emitMatchExpr(const ast::MatchExpr& s) {
         llvm::Value* subj = emitExpr(*s.subject);
         if (subj == nullptr) return nullptr;
@@ -5705,8 +5740,13 @@ struct CodeGenerator::Impl {
                 locals[c.bindings[i].name] = LocalSlot{slot, ftype};
                 added.push_back(c.bindings[i].name);
             }
-            llvm::Value* v = c.result ? emitExpr(*c.result) : nullptr;
-            if (v != nullptr) v = coerce(v, typeName(*c.result), rtype);  // typeName needs bindings
+            llvm::Value* v;
+            if (c.result) {
+                v = emitExpr(*c.result);
+                if (v != nullptr) v = coerce(v, typeName(*c.result), rtype);  // typeName needs bindings
+            } else {
+                v = emitYieldBlock(c.body, rty, rtype);  // `-> { ... yield ...; }` block arm
+            }
             for (const std::string& n : added) locals.erase(n);  // bindings are arm-scoped
             for (const auto& [n, s] : prior) locals[n] = s;       // restore shadowed outer locals
             if (v == nullptr) v = llvm::Constant::getNullValue(rty);  // error recovery
@@ -5718,6 +5758,10 @@ struct CodeGenerator::Impl {
             llvm::Value* v = emitExpr(*s.defaultResult);
             v = (v == nullptr) ? llvm::Constant::getNullValue(rty)
                                : coerce(v, typeName(*s.defaultResult), rtype);
+            incoming.push_back({v, builder.GetInsertBlock()});
+            builder.CreateBr(endBB);
+        } else if (s.defaultBody) {
+            llvm::Value* v = emitYieldBlock(*s.defaultBody, rty, rtype);  // `default -> { yield }`
             incoming.push_back({v, builder.GetInsertBlock()});
             builder.CreateBr(endBB);
         } else {

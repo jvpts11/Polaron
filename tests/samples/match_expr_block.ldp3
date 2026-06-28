@@ -1,0 +1,49 @@
+import System.IO.Console;
+program MatchExprBlock;
+
+// match expression with multi-line block arms (spec 16.2): an arm written as `-> { ... }` supplies
+// its value with `yield expr;`, alongside the single-expression `-> expr` form.
+
+public bundle main {
+    public namespace app {
+        public sealed abstract class Shape permits Circle, Square {
+            public abstract method tag() returns int;
+        }
+        public class Circle extends Shape {
+            public mutable int r;
+            public constructor Circle(int r) { this.r = r; }
+            public override method tag() returns int { return 1; }
+        }
+        public class Square extends Shape {
+            public mutable int side;
+            public constructor Square(int side) { this.side = side; }
+            public override method tag() returns int { return 2; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shape* s = new Circle(3) on heap;
+                int a = match (s) {
+                    case Circle(int r) -> {
+                        int p = r * r;       // multi-statement block arm
+                        yield p * 3;         // Circle(3): 9 * 3 = 27
+                    };
+                    case Square(int side) -> side * side;
+                };
+                System.IO.Console.printf("a=%d\n", a);
+                delete s;
+
+                Shape* t = new Square(5) on heap;
+                int b = match (t) {
+                    case Circle(int r) -> r;
+                    case Square(int side) -> {
+                        int q = side + 1;
+                        yield q * q;         // Square(5): (5+1)^2 = 36
+                    };
+                };
+                System.IO.Console.printf("b=%d\n", b);
+                delete t;
+                return;
+            }
+        }
+    }
+}

@@ -1393,6 +1393,21 @@ void SemanticAnalyzer::analyzeBlock(const ast::Block& block) {
     popScope();
 }
 
+std::string SemanticAnalyzer::analyzeYieldBlock(const ast::Block& body) {
+    // Analyzes a match-expression block arm (spec 16.2) in its own scope (the case bindings are
+    // already declared by the caller) and returns the type `yield` produces.
+    pushScope();
+    std::string yieldType;
+    for (const auto& stmt : body.statements) {
+        analyzeStatement(*stmt);
+        if (const auto* ys = dynamic_cast<const ast::YieldStmt*>(stmt.get());
+            ys != nullptr && ys->value != nullptr)
+            yieldType = typeOf(*ys->value);
+    }
+    popScope();
+    return yieldType;
+}
+
 std::string SemanticAnalyzer::analyzeExpectingBlock(const ast::Block* block) {
     if (block == nullptr) return "";
     const std::string savedRet = currentReturnType_;
@@ -1871,6 +1886,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         return;
     }
+    if (const auto* ys = dynamic_cast<const ast::YieldStmt*>(&stmt)) {
+        if (ys->value) typeOf(*ys->value);  // `yield expr;` (spec 16.2): type-check the value
+        return;
+    }
     if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
         const std::string t = typeOf(*del->target);
         // `delete p` where p is a class, or a pointer/reference to one (see through T*/T&).
@@ -2298,16 +2317,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             } else if (!subjType.empty() && !isSubtype(caseType, subjBase)) {
                 error("'" + c.typeName + "' is not a subtype of '" + subjType + "'", c.loc);
             }
-            // Bindings introduce the case type's fields as locals in the arm expression.
+            // Bindings introduce the case type's fields as locals in the arm body.
             pushScope();
             for (const ast::Param& b : c.bindings)
                 declareLocal(b.name, LocalVar{typeRefStr(b.type), false});
-            const std::string at = c.result ? typeOf(*c.result) : std::string();
+            const std::string at = c.result ? typeOf(*c.result) : analyzeYieldBlock(c.body);
             popScope();
             if (resultType.empty()) resultType = at;
         }
         if (me->defaultResult) {
             const std::string dt = typeOf(*me->defaultResult);
+            if (resultType.empty()) resultType = dt;
+        } else if (me->defaultBody) {
+            const std::string dt = analyzeYieldBlock(*me->defaultBody);
             if (resultType.empty()) resultType = dt;
         }
         // Exhaustiveness (spec 16.1): a sealed subject must cover every permit with no
@@ -2318,12 +2340,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 bool covered = false;
                 for (const ast::MatchCase& c : me->cases)
                     if (c.typeName == p) covered = true;
-                if (!covered && !me->defaultResult)
+                if (!covered && !me->defaultResult && !me->defaultBody)
                     error("match on sealed '" + subjBase +
                               "' is not exhaustive: missing case '" + p + "'",
                           me->loc);
             }
-        } else if (!me->defaultResult) {
+        } else if (!me->defaultResult && !me->defaultBody) {
             error("match expression requires a 'default' arm (the subject is not sealed)",
                   me->loc);
         }

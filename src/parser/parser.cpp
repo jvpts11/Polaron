@@ -1643,6 +1643,14 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return ret;
     }
+    if (check(TokenKind::KwYield)) {  // `yield expr;` -- value of a match-expression block arm (16.2)
+        auto y = std::make_unique<ast::YieldStmt>();
+        y->loc = current().loc;
+        advance();
+        y->value = parseExpression();
+        expect(TokenKind::Semicolon, "';'");
+        return y;
+    }
     // `cascade [(params)] <operation>` (spec 37.1): propagate an operation through the object's
     // owned graph. Supported operations: delete, move (spec 19.8). Others are added below.
     if (check(TokenKind::KwCascade)) {
@@ -2139,8 +2147,13 @@ ast::ExprPtr Parser::parseMatchExpr() {
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
         if (match(TokenKind::KwDefault)) {
             expect(TokenKind::Arrow, "'->' after 'default'");
-            m->defaultResult = parseExpression();
-            expect(TokenKind::Semicolon, "';'");
+            if (check(TokenKind::LBrace)) {  // block arm: yields via `yield expr;` (spec 16.2)
+                m->defaultBody = std::make_unique<ast::Block>(parseBlock());
+                match(TokenKind::Semicolon);  // optional trailing ';'
+            } else {
+                m->defaultResult = parseExpression();
+                expect(TokenKind::Semicolon, "';'");
+            }
             continue;
         }
         expect(TokenKind::KwCase, "'case' or 'default'");
@@ -2151,8 +2164,13 @@ ast::ExprPtr Parser::parseMatchExpr() {
         c.bindings = parseParams();  // (type name, ...) -- may be empty
         expect(TokenKind::RParen, "')'");
         expect(TokenKind::Arrow, "'->' (a match-expression arm yields a value)");
-        c.result = parseExpression();
-        expect(TokenKind::Semicolon, "';'");
+        if (check(TokenKind::LBrace)) {  // block arm: yields via `yield expr;` (spec 16.2)
+            c.body = parseBlock();
+            match(TokenKind::Semicolon);  // optional trailing ';'
+        } else {
+            c.result = parseExpression();
+            expect(TokenKind::Semicolon, "';'");
+        }
         m->cases.push_back(std::move(c));
     }
     expect(TokenKind::RBrace, "'}'");

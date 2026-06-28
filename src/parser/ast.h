@@ -279,6 +279,12 @@ struct ReturnStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// `yield expr;` (spec 16.2): inside a match-expression block arm, supplies the arm's value.
+struct YieldStmt : Stmt {
+    ExprPtr value;
+    void dump(std::string& out, int /*indent*/) const override { out += "yield"; }
+};
+
 // Optional `cascade(...)` parameters (spec 37.1): a propagation-depth limit and type filters.
 // depth == -1 means unlimited. onlyTypes (from `types: {...}`) restricts propagation to the
 // listed types; exceptTypes (from `except: {...}`) skips the listed types.
@@ -521,8 +527,9 @@ struct SwitchStmt : Stmt {
 // every arm yields one value via `->`; the whole match evaluates to that value.
 struct MatchExpr : Expr {
     ExprPtr subject;
-    std::vector<MatchCase> cases;     // each arm uses `result`; `body` stays empty
+    std::vector<MatchCase> cases;     // arm uses `result` (`-> expr`) or `body` (`-> { yield }`)
     ExprPtr defaultResult;            // `default -> expr;`; null when absent
+    std::unique_ptr<Block> defaultBody;  // `default -> { ... yield ...; }`; null when absent
     mutable std::string resultType;   // value type; computed by sema, read by codegen
     void dump(std::string& out, int indent) const override;
 };
