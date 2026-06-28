@@ -5561,6 +5561,22 @@ struct CodeGenerator::Impl {
                 if (v != nullptr && currentRetType->isDoubleTy() && v->getType()->isIntegerTy()) {
                     v = builder.CreateSIToFP(v, currentRetType);  // int -> double return
                 }
+                // A value struct returned by value is represented by a pointer; if that pointer
+                // aimed at a local (a stack alloca), it would dangle once the frame is popped and a
+                // later call would clobber it. Copy the struct to the heap so each returned value is
+                // independent. (This currently leaks the block; a caller-allocated result slot / sret
+                // would remove the copy and the leak -- see ldp3-struct-return-aliasing-bug.)
+                if (v != nullptr) {
+                    const std::string rvt = typeName(*rs->value);
+                    auto cit = classes.find(baseType(rvt));
+                    if (cit != classes.end() && cit->second.isStruct &&
+                        rvt.find('*') == std::string::npos) {
+                        llvm::Value* sz = sizeOf(cit->second.type);
+                        llvm::Value* heap = builder.CreateCall(mallocFn(), {sz}, "structret");
+                        builder.CreateMemCpy(heap, llvm::MaybeAlign(8), v, llvm::MaybeAlign(8), sz);
+                        v = heap;
+                    }
+                }
                 emitPendingFinallys(0);  // run every enclosing try's finally before leaving
                 emitScopeCleanup();
                 if (v != nullptr) builder.CreateRet(v);

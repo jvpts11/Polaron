@@ -1,0 +1,23 @@
+import System.IO.Console;
+program StructReturn;
+
+// A value struct returned by value from a method must give each caller an independent value: two
+// calls to Box.make must not alias (spec 11 value semantics). Each returned struct is its own copy.
+
+public bundle main {
+    public namespace app {
+        public struct Box {
+            public final long v;
+            public constructor Box(long v) { this.v = v; }
+            public static method make(long n) returns Box { return new Box(n); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box a = Box.make(100L);
+                Box b = Box.make(200L);
+                System.IO.Console.printf("a=%d b=%d\n", cast<int>(a.v), cast<int>(b.v));  // 100 200
+                return;
+            }
+        }
+    }
+}
