@@ -293,6 +293,11 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, std::string> literalReturnType;  // mangled suffix (name$param) -> return type
     std::unordered_map<std::string, std::vector<std::string>> literalSuffixParams;  // suffix name -> param types
     std::unordered_map<std::string, std::string> externReturnType;   // extern C fn -> return type
+    // Methods that return a value struct by value use an sret parameter: the caller passes the result
+    // slot as the trailing argument and the callee constructs into it (no dangling/leaking copy).
+    std::unordered_set<llvm::Function*> sretFns_;
+    std::unordered_map<llvm::Function*, llvm::Type*> sretStructType_;  // fn -> its result struct type
+    llvm::Value* currentSretSlot_ = nullptr;  // the active function's sret slot (null if not sret)
     // Namespace-level compile-time constants (spec 28.1), folded once up front.
     std::unordered_map<std::string, std::string> namespaceConstTypes;  // const name -> LDP3 type
     std::unordered_map<std::string, long long> constIntVals;           // int/bool/char value
@@ -1204,12 +1209,25 @@ struct CodeGenerator::Impl {
         return it == methodSlots.end() ? -1 : it->second;
     }
 
-    // Signature of an instance method as called through a vtable: (this, params) -> ret.
+    // True when `rt` names a value struct (not a pointer): such a return uses the sret convention.
+    bool returnsValueStruct(const std::string& rt) {
+        if (rt.find('*') != std::string::npos) return false;  // a pointer is not a value struct
+        auto it = classes.find(baseType(rt));
+        return it != classes.end() && it->second.isStruct;
+    }
+
+    // Signature of an instance method as called through a vtable: (this, params) -> ret. A value
+    // struct return becomes a trailing sret pointer with a void return (spec 11 value semantics).
     llvm::FunctionType* methodFnType(const ast::MethodDecl* m) {
         std::vector<llvm::Type*> ptypes;
         ptypes.push_back(builder.getPtrTy());  // this
         for (const auto& p : m->params) ptypes.push_back(llvmType(typeRefName(p.type)));
-        return llvm::FunctionType::get(llvmType(typeRefName(m->returnType)), ptypes, false);
+        const std::string rt = typeRefName(m->returnType);
+        if (returnsValueStruct(rt)) {
+            ptypes.push_back(builder.getPtrTy());  // sret result slot (trailing)
+            return llvm::FunctionType::get(builder.getVoidTy(), ptypes, false);
+        }
+        return llvm::FunctionType::get(llvmType(rt), ptypes, false);
     }
 
     // Type name of an expression. Assumes a valid AST (semantic analysis ran).
@@ -4401,6 +4419,14 @@ struct CodeGenerator::Impl {
                     for (std::size_t i = call.args.size(); i-- > 0;)
                         if (atk[i].active) vargs[1 + i] = reloadSpill(atk[i], vargs[1 + i]);
                     if (recvTk.active) vargs[0] = reloadSpill(recvTk, vargs[0]);
+                    // A value-struct return through the vtable is sret too: pass the result slot.
+                    if (const std::string vrt = typeRefName(mdecl->returnType);
+                        returnsValueStruct(vrt)) {
+                        llvm::Value* slot = createEntryAlloca("sret", classes[baseType(vrt)].type);
+                        vargs.push_back(slot);
+                        emitMaybeInvoke(fty, fnPtr, vargs);
+                        return slot;
+                    }
                     return emitMaybeInvoke(fty, fnPtr, vargs);
                 }
             }
@@ -4886,6 +4912,16 @@ struct CodeGenerator::Impl {
     }
     llvm::Value* emitMaybeInvoke(llvm::FunctionCallee callee, llvm::ArrayRef<llvm::Value*> args,
                                  const std::string& name = "") {
+        // A value-struct-returning callee uses sret: allocate the result slot, pass it as the
+        // trailing argument, and yield the slot (the call itself returns void).
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee());
+            f != nullptr && sretFns_.count(f) > 0) {
+            llvm::Value* slot = createEntryAlloca("sret", sretStructType_[f]);
+            std::vector<llvm::Value*> a(args.begin(), args.end());
+            a.push_back(slot);
+            emitMaybeInvoke(callee.getFunctionType(), callee.getCallee(), a, "");
+            return slot;
+        }
         return emitMaybeInvoke(callee.getFunctionType(), callee.getCallee(), args, name);
     }
 
@@ -5639,21 +5675,19 @@ struct CodeGenerator::Impl {
                 if (v != nullptr && currentRetType->isDoubleTy() && v->getType()->isIntegerTy()) {
                     v = builder.CreateSIToFP(v, currentRetType);  // int -> double return
                 }
-                // A value struct returned by value is represented by a pointer; if that pointer
-                // aimed at a local (a stack alloca), it would dangle once the frame is popped and a
-                // later call would clobber it. Copy the struct to the heap so each returned value is
-                // independent. (This currently leaks the block; a caller-allocated result slot / sret
-                // would remove the copy and the leak -- see ldp3-struct-return-aliasing-bug.)
-                if (v != nullptr) {
-                    const std::string rvt = typeName(*rs->value);
-                    auto cit = classes.find(baseType(rvt));
-                    if (cit != classes.end() && cit->second.isStruct &&
-                        rvt.find('*') == std::string::npos) {
-                        llvm::Value* sz = sizeOf(cit->second.type);
-                        llvm::Value* heap = builder.CreateCall(mallocFn(), {sz}, "structret");
-                        builder.CreateMemCpy(heap, llvm::MaybeAlign(8), v, llvm::MaybeAlign(8), sz);
-                        v = heap;
+                // A value struct returned by value uses sret: copy it into the caller-provided
+                // result slot (the trailing argument) and return void. Each caller owns its result,
+                // with no dangling stack pointer and no leaked copy (spec 11 value semantics).
+                if (currentSretSlot_ != nullptr && v != nullptr) {
+                    auto cit = classes.find(baseType(typeName(*rs->value)));
+                    if (cit != classes.end()) {
+                        builder.CreateMemCpy(currentSretSlot_, llvm::MaybeAlign(8), v,
+                                             llvm::MaybeAlign(8), sizeOf(cit->second.type));
                     }
+                    emitPendingFinallys(0);
+                    emitScopeCleanup();
+                    builder.CreateRetVoid();
+                    return;
                 }
                 emitPendingFinallys(0);  // run every enclosing try's finally before leaving
                 emitScopeCleanup();
@@ -6578,10 +6612,22 @@ struct CodeGenerator::Impl {
                                     rty, llvm::Function::ExternalLinkage, mangled + "$resume", module);
                                 continue;
                             }
-                            llvm::FunctionType* ty = llvm::FunctionType::get(
-                                llvmType(typeRefName(m->returnType)), ptypes, false);
+                            const std::string mrt = typeRefName(m->returnType);
+                            const bool mSret = returnsValueStruct(mrt);
+                            llvm::FunctionType* ty;
+                            if (mSret) {  // value struct return -> trailing sret slot, void return
+                                std::vector<llvm::Type*> sp = ptypes;
+                                sp.push_back(builder.getPtrTy());
+                                ty = llvm::FunctionType::get(builder.getVoidTy(), sp, false);
+                            } else {
+                                ty = llvm::FunctionType::get(llvmType(mrt), ptypes, false);
+                            }
                             llvm::Function* fn = llvm::Function::Create(
                                 ty, llvm::Function::ExternalLinkage, mangled, module);
+                            if (mSret) {
+                                sretFns_.insert(fn);
+                                sretStructType_[fn] = classes[baseType(mrt)].type;
+                            }
                             if (m->isVolatile) {  // spec 37.5: never inlined or optimized away
                                 fn->addFnAttr(llvm::Attribute::NoInline);
                                 fn->addFnAttr(llvm::Attribute::OptimizeNone);
@@ -6727,6 +6773,13 @@ struct CodeGenerator::Impl {
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
+        // A value-struct return uses sret: the result slot is the trailing argument and the function
+        // itself returns void, so `return X` copies X into the slot rather than returning a value.
+        currentSretSlot_ = nullptr;
+        if (sretFns_.count(fn) > 0) {
+            currentSretSlot_ = fn->getArg(fn->arg_size() - 1);
+            currentRetType = builder.getVoidTy();
+        }
         currentEnsures = ensuresClauses;
         currentInvariants = invariants;
         currentDtorChain = dtorChainBase;  // a destructor calls its base destructor at each exit
