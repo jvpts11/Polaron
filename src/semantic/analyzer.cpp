@@ -1171,7 +1171,14 @@ void SemanticAnalyzer::registerConsts(const ast::Program& program) {
     };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
-            for (const ast::ConstDecl& c : ns.consts) reg(c, "");
+            // A namespace-level const is a free declaration outside a class; LDP3 is OOP-mandatory,
+            // so a const must be a static class/struct member (spec 28.1). Still registered so its
+            // references resolve and do not cascade into spurious errors.
+            for (const ast::ConstDecl& c : ns.consts) {
+                error("a 'const' must be a static class or struct member; declare it inside a class",
+                      c.loc);
+                reg(c, "");
+            }
             // A const declared inside a class/struct is a static member, keyed Owner.NAME.
             for (const ast::ClassDecl& cls : ns.classes)
                 for (const ast::MemberPtr& m : cls.members)

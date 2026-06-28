@@ -12,14 +12,15 @@ public bundle main {
                 if (n < 2) { return n; }
                 return Math.fib(n - 1) + Math.fib(n - 2);
             }
+
+            public static const int N = 10;
+            public static const int LIMIT = 1 << 16;   // 65536
         }
-        public const int N = 10;
-        public const int LIMIT = 1 << 16;   // 65536
 
         public class Main {
             public static method main(string[] args) returns void {
-                static_assert(Math.fib(N) == 55, "fib(10) must be 55");
-                static_assert(N * N < LIMIT, "N squared must fit");
+                static_assert(Math.fib(Math.N) == 55, "fib(10) must be 55");
+                static_assert(Math.N * Math.N < Math.LIMIT, "N squared must fit");
                 System.IO.Console.printf("static asserts passed\n");
                 return;
             }

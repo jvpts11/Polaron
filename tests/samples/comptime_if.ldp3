@@ -7,17 +7,19 @@ program ComptimeIf;
 
 public bundle main {
     public namespace app {
-        public const boolean DEBUG = false;
-        public const int LEVEL = 2;
+        public class Cfg {
+            public static const boolean DEBUG = false;
+            public static const int LEVEL = 2;
+        }
 
         public class Main {
             public static method main(string[] args) returns void {
-                comptime if (DEBUG) {
+                comptime if (Cfg.DEBUG) {
                     System.IO.Console.printf("debug on\n");
                 } else {
                     System.IO.Console.printf("debug off\n");
                 }
-                comptime if (LEVEL >= 2) {
+                comptime if (Cfg.LEVEL >= 2) {
                     System.IO.Console.printf("level high\n");
                 } else {
                     System.IO.Console.printf("level low\n");

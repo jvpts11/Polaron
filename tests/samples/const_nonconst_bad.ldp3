@@ -6,12 +6,14 @@ program ConstNonConstBad;
 
 public bundle main {
     public namespace app {
-        public const int OK = 10;
-        public const int BAD = OK + mystery;   // 'mystery' is not a constant
+        public class Cfg {
+            public static const int OK = 10;
+            public static const int BAD = Cfg.OK + mystery;   // 'mystery' is not a constant
+        }
 
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.Console.printf("%d\n", BAD);
+                System.IO.Console.printf("%d\n", Cfg.BAD);
                 return;
             }
         }

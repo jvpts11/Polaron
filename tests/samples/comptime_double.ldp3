@@ -16,15 +16,15 @@ public bundle main {
                 return acc;
             }
             public static comptime method half(int x) returns double { return x * 0.5; }
-        }
 
-        public const double TOTAL = Math.scale(3, 1.5);   // 4.5
-        public const double H = Math.half(7);             // 3.5
+            public static const double TOTAL = Math.scale(3, 1.5);   // 4.5
+            public static const double H = Math.half(7);             // 3.5
+        }
 
         public class Main {
             public static method main(string[] args) returns void {
                 System.IO.Console.printf("total=%d half=%d\n",
-                                 cast<int>(TOTAL * 100.0), cast<int>(H * 100.0));
+                                 cast<int>(Math.TOTAL * 100.0), cast<int>(Math.H * 100.0));
                 return;
             }
         }

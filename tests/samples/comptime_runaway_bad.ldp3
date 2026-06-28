@@ -10,12 +10,12 @@ public bundle main {
             public static comptime method spin(int n) returns int {
                 return M.spin(n) + 1;   // unbounded recursion
             }
+            public static const int BAD = M.spin(1);
         }
-        public const int BAD = M.spin(1);
 
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.Console.printf("%d\n", BAD);
+                System.IO.Console.printf("%d\n", M.BAD);
                 return;
             }
         }
