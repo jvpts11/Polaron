@@ -2756,18 +2756,36 @@ struct CodeGenerator::Impl {
         return nullptr;
     }
 
+    // The storage slot (address holding the region block pointer) for a region named either by a
+    // local or by a `this.field` reference (spec 17: region as a field). Null if unresolved.
+    llvm::Value* regionStorageSlot(const std::string& name) {
+        const auto dot = name.find('.');
+        if (dot == std::string::npos) {
+            auto it = locals.find(name);
+            return it == locals.end() ? nullptr : it->second.storage;
+        }
+        // `this.field`: GEP to the region field on the current receiver.
+        if (currentThis == nullptr || currentClass.empty()) return nullptr;
+        auto cit = classes.find(currentClass);
+        if (cit == classes.end()) return nullptr;
+        auto fi = cit->second.fieldIndex.find(name.substr(dot + 1));
+        if (fi == cit->second.fieldIndex.end()) return nullptr;
+        return builder.CreateStructGEP(cit->second.type, currentThis, fi->second, "rgn.field");
+    }
+
     // A region block is [ i64 used | i64 capacity | data... ]. Bump-allocates
     // `objType` bytes (8-aligned) from region variable `name` and returns the slot.
     llvm::Value* emitRegionBumpAlloc(const std::string& name, llvm::StructType* objType,
                                      SourceLocation loc) {
-        auto it = locals.find(name);
-        if (it == locals.end()) {
+        llvm::Value* slot = regionStorageSlot(name);
+        if (slot == nullptr) {
             error("unknown region '" + name + "'", loc);
             return nullptr;
         }
         // `lazy region` (spec 37.3): allocate the backing block the first time an object enters.
-        if (lazyRegions_.count(name) > 0) {
-            llvm::Value* cur = builder.CreateLoad(builder.getPtrTy(), it->second.storage, "lazyrgn");
+        // (Lazy applies to local regions; a field region is allocated in the constructor.)
+        if (name.find('.') == std::string::npos && lazyRegions_.count(name) > 0) {
+            llvm::Value* cur = builder.CreateLoad(builder.getPtrTy(), slot, "lazyrgn");
             llvm::Function* fn = currentFn;
             auto* allocBB = llvm::BasicBlock::Create(context, "lazyrgn.alloc", fn);
             auto* contBB = llvm::BasicBlock::Create(context, "lazyrgn.cont", fn);
@@ -2776,11 +2794,11 @@ struct CodeGenerator::Impl {
                 allocBB, contBB);
             builder.SetInsertPoint(allocBB);
             llvm::Value* blk = emitRegionAllocate(lazyRegionSize_[name], lazyRegionAt_[name]);
-            if (blk != nullptr) builder.CreateStore(blk, it->second.storage);
+            if (blk != nullptr) builder.CreateStore(blk, slot);
             builder.CreateBr(contBB);
             builder.SetInsertPoint(contBB);
         }
-        llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage, "region");
+        llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
         llvm::Value* used = builder.CreateLoad(builder.getInt64Ty(), block, "used");
         llvm::Value* dataBase = builder.CreateLoad(
             builder.getPtrTy(), builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 16, "rgn.dbase"),

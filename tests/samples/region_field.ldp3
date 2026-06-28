@@ -1,0 +1,34 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionField;
+
+// A region can be a class field (spec 17): the object owns an arena allocated in its constructor,
+// and `new X in region this.arena` bump-allocates into that field's region.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int id;
+            public constructor Dog(int id) { this.id = id; }
+        }
+        public class Pool {
+            public region arena;
+            public constructor Pool() {
+                this.arena = itself.allocate(1 kilobytes);
+            }
+            public method makeDog(int n) returns Dog* {
+                Dog* d = new Dog(n) in region this.arena;
+                return d;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Pool p = new Pool() on heap;
+                Dog* a = p.makeDog(11);
+                Dog* b = p.makeDog(22);
+                System.IO.Console.printf("a=%d b=%d\n", a.id, b.id);   // 11, 22
+                return;
+            }
+        }
+    }
+}

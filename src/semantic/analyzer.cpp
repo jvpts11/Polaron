@@ -2501,13 +2501,25 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             error("'new' location must be 'stack' or 'heap', got '" + nw->location + "'", nw->loc);
         }
         if (!nw->region.empty()) {
-            const LocalVar* r = lookupLocal(nw->region);
-            if (r == nullptr) {
-                error("unknown region '" + nw->region + "'", nw->loc);
-            } else if (r->type != "region") {
-                error("'" + nw->region + "' is not a region", nw->loc);
+            const auto dot = nw->region.find('.');
+            if (dot != std::string::npos) {
+                // `new X in region this.field` (spec 17: region as a field): validate the field.
+                const std::string fieldName = nw->region.substr(dot + 1);
+                const FieldInfo* f =
+                    currentClass_.empty() ? nullptr : findField(currentClass_, fieldName);
+                if (f == nullptr)
+                    error("unknown region field '" + nw->region + "'", nw->loc);
+                else if (f->type != "region")
+                    error("'" + nw->region + "' is not a region", nw->loc);
             } else {
-                checkRegionAccepts(nw->region, cn, nw->loc);
+                const LocalVar* r = lookupLocal(nw->region);
+                if (r == nullptr) {
+                    error("unknown region '" + nw->region + "'", nw->loc);
+                } else if (r->type != "region") {
+                    error("'" + nw->region + "' is not a region", nw->loc);
+                } else {
+                    checkRegionAccepts(nw->region, cn, nw->loc);
+                }
             }
         }
         // Full construction: arguments align 1:1 with parameters, so type-check them. Fewer

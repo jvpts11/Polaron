@@ -478,6 +478,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # region as a class field (spec 17): allocate into `this.arena`, an arena owned by the object.
+        add_test(NAME codegen_region_field_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_field.ldp3"
+            "-DEXPECTED=a=11 b=22"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # partitionable partial field move (spec 19.9): a movable field is moved out individually,
         # the parent stays valid for its other fields, and the moved field is reassignable.
         add_test(NAME codegen_partitionable_move_runs COMMAND "${CMAKE_COMMAND}"

@@ -2828,10 +2828,15 @@ ast::ExprPtr Parser::parseNew() {
     } else {
         e->location = "stack";
     }
-    // `in region R`: allocate inside a region (spec 17.5). Takes precedence.
+    // `in region R`: allocate inside a region (spec 17.5). The region may be a local or a field
+    // accessed through `this` (spec 17: region as a field). Takes precedence.
     if (match(TokenKind::KwIn)) {
         expect(TokenKind::KwRegion, "'region' after 'in'");
-        e->region = expect(TokenKind::Identifier, "the region name").lexeme;
+        std::string r;
+        if (match(TokenKind::KwThis)) r = "this";
+        else r = expect(TokenKind::Identifier, "the region name").lexeme;
+        while (match(TokenKind::Dot)) r += "." + expect(TokenKind::Identifier, "a field name").lexeme;
+        e->region = r;
     }
     return e;
 }
