@@ -478,6 +478,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # in-scope persistent reattach (spec 18.2): a deleted variable redeclared with the same name
+        # reattaches its persistent, so the new object sees the prior value.
+        add_test(NAME codegen_reattach_in_scope_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/reattach_in_scope.ldp3"
+            "-DEXPECTED=re=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # region as a class field (spec 17): allocate into `this.arena`, an arena owned by the object.
         add_test(NAME codegen_region_field_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

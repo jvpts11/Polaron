@@ -1342,6 +1342,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<const ast::Expr*>& contracts) {
     scopes_.clear();
     moved_.clear();
+    deleted_.clear();
     catchStack_.clear();
     regionConstraints_.clear();
     methodLabels_.clear();
@@ -1707,9 +1708,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                       "' with a value of type '" + initType + "'",
                   vd->loc);
         }
-        if (lookupLocal(vd->name) != nullptr) {
+        if (lookupLocal(vd->name) != nullptr && deleted_.count(vd->name) == 0) {
             error("redeclaration or shadowing of variable '" + vd->name + "'", vd->loc);
         } else {
+            deleted_.erase(vd->name);  // reborn after delete: persistents reattach (spec 18.2)
             // A class value bound to a `new ... on stack` (the default for objects) is a
             // stack object: RAII frees it, and it is not throwable (its carrier would
             // dangle after unwind).
@@ -1868,6 +1870,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             error("'delete' expects a heap object or array; got a value of type '" + t + "'",
                   del->loc);
         }
+        // A deleted variable may be redeclared with the same name, reattaching its persistents
+        // (spec 18.2). Record it so the redeclaration is allowed.
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(del->target.get()))
+            deleted_.insert(id->name);
         return;
     }
     if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {

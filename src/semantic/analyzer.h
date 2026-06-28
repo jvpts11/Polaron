@@ -233,6 +233,7 @@ private:
     bool freestanding_ = false;     // spec 36: no managed-runtime features in this program
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
+    std::unordered_set<std::string> deleted_;  // locals deleted in this scope (spec 18.2 reattach)
     std::vector<std::string> currentThrows_;  // base names in the method's `throws` clause (spec 21.1)
     std::vector<std::vector<std::string>> catchStack_;  // enclosing try's caught types (base names)
     std::string currentReturnType_;  // declared return type of the method being analyzed (null-safety)

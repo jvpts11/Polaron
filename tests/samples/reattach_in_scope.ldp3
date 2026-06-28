@@ -1,0 +1,25 @@
+import System.IO.Console;
+program ReattachInScope;
+
+// In-scope reattach (spec 18.2): a deleted variable may be redeclared with the same name, and its
+// persistents reattach -- the new object sees the value that was live before the delete.
+
+public bundle main {
+    public namespace app {
+        public class Car {
+            public eternal persistent mutable int chassi = 0;
+            public constructor Car() {}
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Car c = new Car() on heap;
+                c.chassi = 7;
+                delete c;
+                Car c = new Car() on heap;   // same name -> reattaches the persistent chassi
+                System.IO.Console.printf("re=%d\n", c.chassi);   // 7
+                delete c;
+                return;
+            }
+        }
+    }
+}
