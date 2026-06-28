@@ -1842,8 +1842,23 @@ ast::StmtPtr Parser::parseForStatement() {
     const SourceLocation loc = current().loc;
     expect(TokenKind::KwFor, "'for'");
     expect(TokenKind::LParen, "'('");
-    // foreach over an array: `for (T name in iterable) { ... }` (spec 7). Ranges
-    // (`0..10`) and the `index i, T v` form are later refinements.
+    // foreach with an index: `for (index i, T v in iterable) { ... }` (spec 7.6).
+    if (check(TokenKind::KwIndex)) {
+        auto fe = std::make_unique<ast::ForeachStmt>();
+        fe->loc = loc;
+        advance();  // 'index'
+        fe->indexName = expect(TokenKind::Identifier, "an index variable name").lexeme;
+        expect(TokenKind::Comma, "',' after the index variable");
+        if (match(TokenKind::KwVar)) fe->isVar = true;
+        else fe->elemType = parseTypeRef();
+        fe->varName = expect(TokenKind::Identifier, "a loop variable name").lexeme;
+        expect(TokenKind::KwIn, "'in'");
+        fe->iterable = parseExpression();
+        expect(TokenKind::RParen, "')'");
+        fe->body = parseBlock();
+        return fe;
+    }
+    // foreach over an array: `for (T name in iterable) { ... }` (spec 7).
     if ((check(TokenKind::KwVar) || isTypeKeyword(current().kind) ||
          check(TokenKind::Identifier)) &&
         peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::KwIn) {

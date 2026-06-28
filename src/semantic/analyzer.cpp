@@ -1540,6 +1540,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             if (rng->step) typeOf(*rng->step);
             const std::string et = fe->isVar ? (st.empty() ? "int" : st) : typeRefStr(fe->elemType);
             pushScope();
+            if (!fe->indexName.empty()) declareLocal(fe->indexName, LocalVar{"int", false});
             declareLocal(fe->varName, LocalVar{et, false});
             analyzeBlock(fe->body);
             popScope();
@@ -1550,6 +1551,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             error("foreach requires an array or a range, got '" + it + "'", fe->loc);
         const std::string et = fe->isVar ? elementOf(it) : typeRefStr(fe->elemType);
         pushScope();
+        if (!fe->indexName.empty()) declareLocal(fe->indexName, LocalVar{"int", false});
         declareLocal(fe->varName, LocalVar{et, false});
         analyzeBlock(fe->body);
         popScope();

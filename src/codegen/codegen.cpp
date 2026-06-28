@@ -5561,6 +5561,8 @@ struct CodeGenerator::Impl {
         llvm::Value* i = builder.CreateLoad(builder.getInt32Ty(), iSlot, "fe.iv");
         builder.CreateCondBr(builder.CreateICmpSLT(i, len), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
+        // The `index i` form (spec 7.6): expose the loop counter as an int local.
+        if (!s.indexName.empty()) locals[s.indexName] = LocalSlot{iSlot, "int"};
         llvm::Type* feElemTy = llvmType(et);
         llvm::Value* elem =
             builder.CreateLoad(feElemTy, arrayElemPtr(block, i, feElemTy), "fe.el");
@@ -5576,6 +5578,7 @@ struct CodeGenerator::Impl {
         builder.CreateBr(condBB);
         builder.SetInsertPoint(endBB);
         locals.erase(s.varName);
+        if (!s.indexName.empty()) locals.erase(s.indexName);
     }
 
     // `for (int i in start..end [step k])` (spec 7.5): a counting loop over an integer range. `..` is
@@ -5592,6 +5595,13 @@ struct CodeGenerator::Impl {
         llvm::Value* vSlot = createEntryAlloca(s.varName, ty);
         builder.CreateStore(start, vSlot);
         locals[s.varName] = LocalSlot{vSlot, et};
+        // The `index i` form (spec 7.6): a 0-based counter alongside the range value.
+        llvm::Value* idxSlot = nullptr;
+        if (!s.indexName.empty()) {
+            idxSlot = createEntryAlloca(s.indexName, builder.getInt32Ty());
+            builder.CreateStore(builder.getInt32(0), idxSlot);
+            locals[s.indexName] = LocalSlot{idxSlot, "int"};
+        }
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "fr.cond", fn);
         llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "fr.body", fn);
@@ -5613,9 +5623,14 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(updateBB);
         llvm::Value* iv = builder.CreateLoad(ty, vSlot);
         builder.CreateStore(builder.CreateAdd(iv, step), vSlot);
+        if (idxSlot != nullptr) {
+            llvm::Value* c = builder.CreateLoad(builder.getInt32Ty(), idxSlot);
+            builder.CreateStore(builder.CreateAdd(c, builder.getInt32(1)), idxSlot);
+        }
         builder.CreateBr(condBB);
         builder.SetInsertPoint(endBB);
         locals.erase(s.varName);
+        if (!s.indexName.empty()) locals.erase(s.indexName);
     }
 
     // switch (x) { case C { ... } ... default { ... } } with C-style fall-through (spec 7.3).

@@ -1,0 +1,32 @@
+import System.IO.Console;
+program ForeachIndex;
+
+// foreach with an index variable (spec 7.6): `for (index i, T v in iterable)` exposes the 0-based
+// position alongside each element, over both arrays and ranges.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int[] xs = new int[4]();
+                xs[0] = 10;
+                xs[1] = 20;
+                xs[2] = 30;
+                xs[3] = 40;
+                mutable int dot = 0;
+                for (index i, int v in xs) {     // sum of i*v = 0 + 20 + 60 + 120 = 200
+                    dot = dot + i * v;
+                }
+                System.IO.Console.printf("dot=%d\n", dot);
+
+                mutable int last = 0;
+                for (index k, int n in 5..=8) {  // last index seen = 3 (values 5,6,7,8)
+                    last = k;
+                }
+                System.IO.Console.printf("last=%d\n", last);
+                delete xs;
+                return;
+            }
+        }
+    }
+}

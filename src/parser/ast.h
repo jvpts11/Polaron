@@ -607,6 +607,7 @@ struct ForeachStmt : Stmt {
     TypeRef elemType;        // ignored when isVar -- inferred from the array element type
     bool isVar = false;      // `for (var x in ...)`
     std::string varName;
+    std::string indexName;   // `for (index i, T v in ...)` (spec 7.6); empty when absent
     ExprPtr iterable;
     Block body;
     void dump(std::string& out, int indent) const override;
