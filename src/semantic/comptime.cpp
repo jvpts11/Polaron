@@ -93,6 +93,21 @@ bool callMethod(const ast::MethodDecl& m, const std::vector<Num>& args, Num& out
     return true;
 }
 
+// Resolves a class-level const read as Type.NAME (spec 28.1) against the const maps. Kept out of
+// `eval` so it does not enlarge eval's frame on the recursive comptime hot path.
+bool evalMemberConst(const ast::MemberExpr& mem, Num& out, Context& ctx) {
+    const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem.object.get());
+    if (oid == nullptr) return false;
+    const std::string key = oid->name + "." + mem.member;
+    if (ctx.dconsts != nullptr) {
+        if (auto it = ctx.dconsts->find(key); it != ctx.dconsts->end()) { out = Num::D(it->second); return true; }
+    }
+    if (ctx.consts != nullptr) {
+        if (auto it = ctx.consts->find(key); it != ctx.consts->end()) { out = Num::I(it->second); return true; }
+    }
+    return false;
+}
+
 bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
     if (++ctx.steps > ctx.stepLimit) return false;
 
@@ -121,6 +136,11 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
         }
         return false;
     }
+
+    // A class-level const read as Type.NAME (spec 28.1): keyed by "Owner.NAME". Handled in a separate
+    // function so `eval`'s stack frame stays small -- this is on the recursive comptime hot path, and
+    // a larger frame would overflow the native stack before the depth budget caught deep recursion.
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&e)) return evalMemberConst(*mem, out, ctx);
 
     if (const auto* cast = dynamic_cast<const ast::CastExpr*>(&e)) {
         Num v;
