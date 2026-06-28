@@ -1608,6 +1608,20 @@ ast::StmtPtr Parser::parseStatement() {
         del->loc = current().loc;
         expect(TokenKind::KwDelete, "'delete'");
         del->target = parseExpression();
+        // Optional placement suffix (spec 17.7 / 12.x): `from heap` is explicit; `from region R`
+        // runs the destructor but leaves the memory for the region to reclaim on release. `from`
+        // and `heap` are soft keywords (identifiers); only `region` is reserved.
+        if (check(TokenKind::Identifier) && current().lexeme == "from") {
+            advance();  // 'from'
+            if (match(TokenKind::KwRegion))
+                del->fromRegion = expect(TokenKind::Identifier, "the region name").lexeme;
+            else if (check(TokenKind::Identifier) && current().lexeme == "heap") {
+                advance();  // 'heap'
+                del->fromHeap = true;
+            } else {
+                fail("expected 'heap' or 'region <name>' after 'from'", current().loc);
+            }
+        }
         expect(TokenKind::Semicolon, "';'");
         return del;
     }

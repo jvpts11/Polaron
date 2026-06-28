@@ -5127,6 +5127,18 @@ struct CodeGenerator::Impl {
             if (objPtr == nullptr) return;
             const std::string cn = baseType(t);  // see through T*
             auto cit = classes.find(cn);
+            // `delete X from region R` (spec 17.7): the region owns the memory and reclaims it on
+            // release, so run the destructor now and drop the object from RAII tracking (so the
+            // region release does not run it again), but never free() into the bump allocator.
+            if (!del->fromRegion.empty()) {
+                if (cit != classes.end() && cit->second.hasDestructor)
+                    builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+                if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(del->target.get()))
+                    if (auto lit = locals.find(tid->name); lit != locals.end())
+                        for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so)
+                            if (so->slot == lit->second.storage) { scopeObjects.erase(so); break; }
+                return;
+            }
             // `cascade delete` (spec 37.1): delete the object and everything it owns
             // by composition. Heap-only (the spec's intent); no stack early-destruct.
             if (del->isCascade) {

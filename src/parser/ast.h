@@ -291,6 +291,8 @@ struct DeleteStmt : Stmt {
     ExprPtr target;  // a heap object or array to free
     bool isCascade = false;  // `cascade delete` (spec 37.1): also delete owned member objects
     CascadeParams cascade;   // propagation limits, when isCascade
+    std::string fromRegion;  // `delete X from region R` (spec 17.7): run the dtor; region owns memory
+    bool fromHeap = false;   // `delete X from heap` (spec 12.x): explicit heap free (same as delete)
     void dump(std::string& out, int indent) const override;
 };
 

@@ -1,0 +1,32 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program DeleteFromRegion;
+
+// `delete X from region R` (spec 17.7): runs the object's destructor immediately and drops it from
+// the region's teardown, while the region keeps owning the arena memory (reclaimed on release). So
+// the explicitly deleted object is not destroyed a second time when the region is released.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int id;
+            public constructor Dog(int id) { this.id = id; }
+            public destructor ~Dog() returns void {
+                System.IO.Console.printf("~Dog %d\n", this.id);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                region pen = itself.allocate(1 kilobytes);
+                Dog* a = new Dog(1) in region pen;
+                Dog* b = new Dog(2) in region pen;
+                System.IO.Console.println("before");
+                delete a from region pen;     // ~Dog 1 now
+                System.IO.Console.println("mid");
+                release region pen;           // only ~Dog 2 (a already deleted)
+                System.IO.Console.println("after");
+                return;
+            }
+        }
+    }
+}

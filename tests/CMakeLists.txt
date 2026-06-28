@@ -478,6 +478,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `delete X from region R` (spec 17.7): runs the destructor now and removes the object from
+        # the region teardown, so it is not destroyed again on release.
+        add_test(NAME codegen_delete_from_region_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/delete_from_region.ldp3"
+            "-DEXPECTED=before ~Dog 1 mid ~Dog 2 after"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # numeric widening + compile-time literal coercion: a fitting literal initializes a narrower
         # type, narrow integers widen, and mixed-width values compare after widening.
         add_test(NAME codegen_numeric_widen_runs COMMAND "${CMAKE_COMMAND}"
