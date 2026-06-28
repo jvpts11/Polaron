@@ -1589,6 +1589,17 @@ TEST_CASE("parser accepts unimport/reimport validation with expecting + onFailur
     CHECK_FALSE(parser.hasErrors());
 }
 
+TEST_CASE("move x as T transfers and reinterprets (spec 19.3)") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public movable class Conn { public mutable int id;"
+        "   public constructor Conn(int id) { this.id = id; } }"
+        " public class Main { public static method main(string[] args) returns void {"
+        "   Conn c = new Conn(7) on stack;"
+        "   Conn u = move c as Conn;"
+        "   return; } } } }"));
+}
+
 TEST_CASE("awaiting while holding a mutex is rejected (spec 22)") {
     // Identical programs except for the body of the synchronized block: the only difference is the
     // await, so accepting one and rejecting the other isolates the mutex-across-await check.

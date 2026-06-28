@@ -2333,12 +2333,14 @@ ast::ExprPtr Parser::parseUnary() {
         expect(TokenKind::RParen, "')'");
         return c;
     }
-    // `move x` transfers ownership (the source becomes invalid).
+    // `move x` transfers ownership (the source becomes invalid); `move x as T` also reinterprets the
+    // moved value (spec 19.3, e.g. upgrading a movable to a unique).
     if (check(TokenKind::KwMove)) {
         auto mv = std::make_unique<ast::MoveExpr>();
         mv->loc = current().loc;
         advance();
         mv->operand = parseUnary();
+        if (match(TokenKind::KwAs)) mv->castType = parseTypeRef().name;
         return mv;
     }
     // Prefix '&' is address-of (share the object); '-' negation; '!' logical not; '~' bitwise not.

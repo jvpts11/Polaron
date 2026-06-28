@@ -2313,7 +2313,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mv->operand.get())) {
             moved_.insert(id->name);  // the source variable becomes invalid
         }
-        return t;
+        return mv->castType.empty() ? t : mv->castType;  // `move x as T` reinterprets to T (spec 19.3)
     }
     if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
         // try? Result<T,E>/Option<T> yields T (the first type arg of the operand's instantiation).

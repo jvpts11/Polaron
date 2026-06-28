@@ -187,6 +187,7 @@ struct NewExpr : Expr {
 // `move x` -- transfers ownership; the source variable becomes invalid.
 struct MoveExpr : Expr {
     ExprPtr operand;
+    std::string castType;  // `move x as T` (spec 19.3): transfer + reinterpret (e.g. movable->unique)
     void dump(std::string& out, int indent) const override;
 };
 

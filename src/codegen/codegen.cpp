@@ -1449,7 +1449,8 @@ struct CodeGenerator::Impl {
             return "int";
         }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) return cst->targetType;
-        if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) return typeName(*mv->operand);
+        if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr))
+            return mv->castType.empty() ? typeName(*mv->operand) : mv->castType;
         if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
             const std::string ot = baseType(typeName(*tx->operand));  // Result$T$E / Option$T
             const auto p = ot.find('$');
