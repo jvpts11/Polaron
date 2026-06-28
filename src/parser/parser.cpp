@@ -25,6 +25,75 @@ std::unique_ptr<ast::MemberExpr> makeMember(ast::ExprPtr obj, const std::string&
     return e;
 }
 
+// Numeric field types that contribute to a record's auto-generated hashCode.
+bool isRecordNumericField(const std::string& t) {
+    return t == "int" || t == "byte" || t == "short" || t == "long" || t == "char" ||
+           t == "boolean" || t == "float" || t == "double" || t == "int8" || t == "int16" ||
+           t == "int32" || t == "int64" || t == "uint8" || t == "uint16" || t == "uint32" ||
+           t == "uint64" || t == "ubyte" || t == "ushort" || t == "uint" || t == "ulong" ||
+           t == "float32" || t == "float64";
+}
+bool isRecordFloatField(const std::string& t) {
+    return t == "float" || t == "double" || t == "float32" || t == "float64";
+}
+
+// Builds `public method hashCode() returns int { mutable int h = 17; h = h*31 + this.f; ...;
+// return h; }` (spec 10: auto-generated hashCode). Combines the numeric fields; equal records have
+// equal numeric fields, so they hash equal (object/String fields are skipped -- collisions allowed).
+ast::MemberPtr buildRecordHashCode(const std::string& typeName,
+                                   const std::vector<ast::Param>& fields, SourceLocation loc) {
+    (void)typeName;
+    auto m = std::make_unique<ast::MethodDecl>();
+    m->loc = loc;
+    m->visibility = "public";
+    m->name = "hashCode";
+    m->returnType.name = "int";
+    auto makeInt = [&](const char* text) {
+        auto lit = std::make_unique<ast::IntLiteralExpr>();
+        lit->loc = loc;
+        lit->text = text;
+        return lit;
+    };
+    auto vd = std::make_unique<ast::VarDeclStmt>();
+    vd->loc = loc;
+    vd->name = "h";
+    vd->isMutable = true;
+    vd->type.name = "int";
+    vd->init = makeInt("17");
+    m->body.statements.push_back(std::move(vd));
+    for (const ast::Param& f : fields) {
+        if (!isRecordNumericField(f.type.name)) continue;  // object/String fields are not hashed
+        ast::ExprPtr fieldVal = makeMember(makeIdent("this", loc), f.name, loc);
+        if (isRecordFloatField(f.type.name)) {  // fold a float field to int for the mix
+            auto cast = std::make_unique<ast::CastExpr>();
+            cast->loc = loc;
+            cast->targetType = "int";
+            cast->operand = std::move(fieldVal);
+            fieldVal = std::move(cast);
+        }
+        auto mul = std::make_unique<ast::BinaryExpr>();
+        mul->loc = loc;
+        mul->op = "*";
+        mul->lhs = makeIdent("h", loc);
+        mul->rhs = makeInt("31");
+        auto add = std::make_unique<ast::BinaryExpr>();
+        add->loc = loc;
+        add->op = "+";
+        add->lhs = std::move(mul);
+        add->rhs = std::move(fieldVal);
+        auto as = std::make_unique<ast::AssignStmt>();
+        as->loc = loc;
+        as->target = makeIdent("h", loc);
+        as->value = std::move(add);
+        m->body.statements.push_back(std::move(as));
+    }
+    auto ret = std::make_unique<ast::ReturnStmt>();
+    ret->loc = loc;
+    ret->value = makeIdent("h", loc);
+    m->body.statements.push_back(std::move(ret));
+    return m;
+}
+
 // Builds `public method equals(Name other) returns boolean { return this.f0 ==
 // other.f0 && ...; }` for a record's fields (spec 10: auto-generated equals).
 ast::MemberPtr buildRecordEquals(const std::string& typeName,
@@ -810,6 +879,7 @@ ast::ClassDecl Parser::parseRecord() {
         c.members.push_back(std::move(ctor));
     }
     c.members.push_back(buildRecordEquals(c.name, fields, c.loc));
+    c.members.push_back(buildRecordHashCode(c.name, fields, c.loc));
 
     // Body: methods and constants only -- no extra fields (spec 10).
     expect(TokenKind::LBrace, "'{'");

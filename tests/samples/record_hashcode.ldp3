@@ -1,0 +1,21 @@
+import System.IO.Console;
+program RecordHashCode;
+
+// Auto-generated record hashCode (spec 10): equal records hash equal; the hash combines the
+// numeric fields, so records that differ produce a different hash.
+
+public bundle main {
+    public namespace app {
+        public record Point(int x, int y) { }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Point a = new Point(3, 4);
+                Point b = new Point(3, 4);
+                Point c = new Point(5, 6);
+                System.IO.Console.printf("eq=%d same=%d diff=%d\n",
+                    a.equals(b), a.hashCode() == b.hashCode(), a.hashCode() == c.hashCode());
+                return;
+            }
+        }
+    }
+}
