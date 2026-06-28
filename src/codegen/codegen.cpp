@@ -223,6 +223,7 @@ struct ClassLayout {
     bool isAbstract = false;
     bool isInterface = false;
     bool isUnion = false;  // fields overlap one storage (C-style union)
+    bool isStruct = false;  // a value-type struct (spec 11): passed by value across FFI
     bool isMovable = false;
     bool isUnique = false;
     bool hasVtable = false;
@@ -1550,6 +1551,30 @@ struct CodeGenerator::Impl {
         llvm::Value* gep = builder.CreateConstGEP1_64(
             type, llvm::ConstantPointerNull::get(builder.getPtrTy()), 1);
         return builder.CreatePtrToInt(gep, builder.getInt64Ty());
+    }
+
+    // A value-type struct passed/returned across FFI by value (spec 26). True unless `t` is a
+    // pointer/reference to the struct (those pass as a plain pointer).
+    bool isFfiByValueStruct(const std::string& t) {
+        if (!t.empty() && (t.back() == '*' || t.back() == '&')) return false;
+        auto cit = classes.find(baseType(t));
+        return cit != classes.end() && cit->second.isStruct;
+    }
+    // FFI ABI (Win64): a by-value struct of 1/2/4/8 bytes travels in a register as an integer of
+    // that size. Returns that integer type, or nullptr if `t` is not a register-sized by-value
+    // struct (the type then passes as-is, e.g. a pointer).
+    llvm::Type* ffiStructRegType(const std::string& t) {
+        if (!isFfiByValueStruct(t)) return nullptr;
+        auto cit = classes.find(baseType(t));
+        if (cit->second.type == nullptr) return nullptr;
+        const uint64_t sz = module.getDataLayout().getTypeAllocSize(cit->second.type);
+        switch (sz) {
+            case 1: return builder.getInt8Ty();
+            case 2: return builder.getInt16Ty();
+            case 4: return builder.getInt32Ty();
+            case 8: return builder.getInt64Ty();
+            default: return nullptr;  // 3/5/6/7/>8: not register-passable here
+        }
     }
 
     llvm::FunctionCallee memsetFn() {
@@ -3158,6 +3183,14 @@ struct CodeGenerator::Impl {
             llvm::Function* fn = functions[name];
             std::vector<llvm::Value*> args;
             for (std::size_t i = 0; i < call.args.size(); ++i) {
+                const std::string at = typeName(*call.args[i]);
+                // A by-value struct argument travels in a register: load its bytes as the ABI int.
+                if (llvm::Type* reg = ffiStructRegType(at)) {
+                    llvm::Value* ptr = emitExpr(*call.args[i]);
+                    if (ptr == nullptr) return nullptr;
+                    args.push_back(builder.CreateLoad(reg, ptr, "ffi.byval"));
+                    continue;
+                }
                 llvm::Value* v = emitExpr(*call.args[i]);
                 if (v == nullptr) return nullptr;
                 if (i < fn->getFunctionType()->getNumParams())
@@ -3165,6 +3198,14 @@ struct CodeGenerator::Impl {
                 args.push_back(v);
             }
             llvm::Value* r = builder.CreateCall(fn, args);
+            // A by-value struct return arrives in a register: store it into a fresh struct object.
+            if (llvm::Type* rreg = ffiStructRegType(er->second)) {
+                auto cit = classes.find(baseType(er->second));
+                llvm::Value* obj = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "ffi.ret");
+                builder.CreateStore(r, obj);
+                (void)rreg;
+                return obj;
+            }
             return fn->getReturnType()->isVoidTy() ? nullptr : r;
         }
         // Channel.select()....run() (spec 20.4): a compile-time-static fluent chain, lowered to a
@@ -5825,6 +5866,7 @@ struct CodeGenerator::Impl {
                     layout.isAbstract = cls.isAbstract;
                     layout.isInterface = cls.isInterface;
                     layout.isUnion = cls.isUnion;
+                    layout.isStruct = cls.isStruct;
                     layout.isMovable = cls.isMovable;
                     layout.isUnique = cls.isUnique;
                     for (const ast::MemberPtr& member : cls.members) {
@@ -6145,9 +6187,28 @@ struct CodeGenerator::Impl {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ExternDecl& ex : ns.externs) {  // external C functions (spec 26)
                     std::vector<llvm::Type*> pts;
-                    for (const auto& p : ex.params) pts.push_back(llvmType(typeRefName(p.type)));
-                    llvm::FunctionType* ty = llvm::FunctionType::get(
-                        llvmType(typeRefName(ex.returnType)), pts, ex.isVariadic);
+                    for (const auto& p : ex.params) {
+                        const std::string pt = typeRefName(p.type);
+                        if (llvm::Type* reg = ffiStructRegType(pt)) pts.push_back(reg);  // by-value struct
+                        else {
+                            if (isFfiByValueStruct(pt))
+                                error("FFI by-value struct '" + baseType(pt) +
+                                          "' must be 1, 2, 4 or 8 bytes; pass larger structs by "
+                                          "pointer (spec 26)",
+                                      ex.loc);
+                            pts.push_back(llvmType(pt));
+                        }
+                    }
+                    const std::string rt = typeRefName(ex.returnType);
+                    llvm::Type* retTy = ffiStructRegType(rt);
+                    if (retTy == nullptr) {
+                        if (isFfiByValueStruct(rt))
+                            error("FFI by-value struct return '" + baseType(rt) +
+                                      "' must be 1, 2, 4 or 8 bytes (spec 26)",
+                                  ex.loc);
+                        retTy = llvmType(rt);
+                    }
+                    llvm::FunctionType* ty = llvm::FunctionType::get(retTy, pts, ex.isVariadic);
                     functions[ex.name] =
                         llvm::Function::Create(ty, llvm::Function::ExternalLinkage, ex.name, module);
                     externReturnType[ex.name] = typeRefName(ex.returnType);

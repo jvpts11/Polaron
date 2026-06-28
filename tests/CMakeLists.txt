@@ -478,6 +478,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # FFI struct by value (spec 26): a small struct is passed to and returned from a C function
+        # by value (the runtime provides the matching C helpers).
+        add_test(NAME codegen_ffi_struct_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ffi_struct.ldp3"
+            "-DEXPECTED=s=7 qx=30 qy=40"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # auto-generated record hashCode (spec 10): equal records hash equal, different ones differ.
         add_test(NAME codegen_record_hashcode_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

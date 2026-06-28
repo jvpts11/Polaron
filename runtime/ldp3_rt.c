@@ -603,3 +603,14 @@ void __ldp3_reload_fn(void* fn, void** table, long long count) {
     }
     free(buf);
 }
+
+// FFI by-value struct test helpers (spec 26): a small POD struct passed and returned by value,
+// matching the layout of an LDP3 `struct Point { int x; int y; }`.
+struct Ldp3Point { int x; int y; };
+int ldp3_point_sum(struct Ldp3Point p) { return p.x + p.y; }
+struct Ldp3Point ldp3_point_scale(struct Ldp3Point p, int k) {
+    struct Ldp3Point r;
+    r.x = p.x * k;
+    r.y = p.y * k;
+    return r;
+}
