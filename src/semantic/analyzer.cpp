@@ -610,8 +610,10 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                           cls.loc);
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
-                        info.fields[f->name] = FieldInfo{typeRefStr(f->type), f->isMutable,
-                                                         f->isStatic};
+                        // A movable/unique field is reassignable (it is moved out and reassigned).
+                        info.fields[f->name] =
+                            FieldInfo{typeRefStr(f->type), f->isMutable || f->isMovable || f->isUnique,
+                                      f->isStatic, f->isMovable, f->isUnique};
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         MethodInfo mi{typeRefStr(m->returnType), m->isStatic,
                                       m->isAbstract, m->isProperty,
@@ -1465,6 +1467,8 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
                       "' of type '" + f->type + "'",
                   loc);
         }
+        // Reassigning a partially-moved field reactivates it (spec 19.9).
+        if (objId != nullptr) moved_.erase(objId->name + "." + mem->member);
         return;
     }
     if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&target)) {
@@ -2312,6 +2316,23 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string t = typeOf(*mv->operand);
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mv->operand.get())) {
             moved_.insert(id->name);  // the source variable becomes invalid
+        } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(mv->operand.get())) {
+            // Partial field move (spec 19.9): only a movable/unique field of a partitionable class.
+            const std::string oc = baseType(typeOf(*mem->object));
+            const ClassInfo* ci = lookupClass(oc);
+            const FieldInfo* fi = ci != nullptr ? findField(oc, mem->member) : nullptr;
+            if (ci != nullptr && fi != nullptr) {
+                if (!ci->isPartitionable)
+                    error("cannot move field '" + mem->member + "' of non-partitionable class '" +
+                              oc + "'; mark the class 'partitionable' (spec 19.9)",
+                          mv->loc);
+                else if (!fi->isMovable && !fi->isUnique)
+                    error("cannot move field '" + mem->member +
+                              "': only a 'movable' or 'unique' field can be moved separately (spec 19.9)",
+                          mv->loc);
+                else if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
+                    moved_.insert(oid->name + "." + mem->member);  // track the field as moved
+            }
         }
         return mv->castType.empty() ? t : mv->castType;  // `move x as T` reinterprets to T (spec 19.3)
     }
@@ -3081,6 +3102,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         std::string memType;
         if (const FieldInfo* f = findField(objType, mem->member)) {
             memType = f->type;
+            // Partial move (spec 19.9): a field moved out of its parent is inaccessible until reassign.
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                oid != nullptr && moved_.count(oid->name + "." + mem->member) > 0)
+                error("use of field '" + mem->member +
+                          "' after it was moved out (reassign it before using) (spec 19.9)",
+                      mem->loc);
         } else if (const MethodInfo* pm = findMethod(objType, mem->member);
                    pm != nullptr && pm->isProperty) {
             memType = pm->returnType;  // computed get-only property read as obj.name (no parens)

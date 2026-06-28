@@ -35,6 +35,8 @@ struct FieldInfo {
     std::string type;
     bool isMutable = false;
     bool isStatic = false;
+    bool isMovable = false;  // spec 19.9: field can be moved separately (partitionable class)
+    bool isUnique = false;
 };
 struct MethodInfo {
     std::string returnType;

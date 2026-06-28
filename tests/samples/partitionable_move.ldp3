@@ -1,0 +1,35 @@
+import System.IO.Console;
+program PartitionableMove;
+
+// Partial field move on a partitionable class (spec 19.9): a movable field can be moved out
+// individually; the parent stays valid for its other fields, and the moved field is reassignable.
+
+public bundle main {
+    public namespace app {
+        public class Socket {
+            public mutable int id;
+            public constructor Socket(int id) { this.id = id; }
+        }
+        public partitionable class Connection {
+            public movable Socket socket;
+            public mutable int config;
+            public constructor Connection() {
+                this.socket = new Socket(0) on heap;
+                this.config = 9;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Connection c = new Connection() on heap;
+                c.socket = new Socket(7) on heap;
+                Socket* s = move c.socket;          // partial move out of c
+                System.IO.Console.printf("s=%d cfg=%d\n", s.id, c.config);  // 7, 9 (config still valid)
+                c.socket = new Socket(42) on heap;  // reactivate the moved field
+                System.IO.Console.printf("re=%d\n", c.socket.id);          // 42
+                delete s;
+                delete c;
+                return;
+            }
+        }
+    }
+}

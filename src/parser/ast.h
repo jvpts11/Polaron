@@ -689,6 +689,8 @@ struct FieldDecl : MemberDecl {
     bool isVolatile = false;    // spec 37.5: loads/stores are never optimized away
     bool isLazy = false;        // spec 28.4: a class-typed field initialized on first access
     bool isExternal = false;    // spec 37.1: an association, not owned; cascade does not follow it
+    bool isMovable = false;     // spec 19.9: `movable` field -- movable separately (partitionable class)
+    bool isUnique = false;      // spec 19.9: `unique` field -- single live reference, movable separately
     TypeRef type;
     std::string name;
     int bitWidth = 0;  // `field : N` bit-field width (spec 11.1); 0 = not a bit-field

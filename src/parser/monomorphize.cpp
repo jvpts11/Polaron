@@ -581,9 +581,12 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         n->isVolatile = x->isVolatile;
         n->isLazy = x->isLazy;
         n->isExternal = x->isExternal;
+        n->isMovable = x->isMovable;
+        n->isUnique = x->isUnique;
         n->type = substType(x->type, s);
         n->name = x->name;
         n->bitWidth = x->bitWidth;
+        n->propertySetter = x->propertySetter;
         n->init = cloneExpr(x->init.get(), s);
         n->annotations = cloneAnnotations(x->annotations, s);
         return n;

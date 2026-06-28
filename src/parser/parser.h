@@ -68,7 +68,8 @@ private:
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
                               bool isPersistent, bool isEternal, bool isTransient,
                               bool isVolatile = false, bool isLazy = false,
-                              bool isExternal = false);
+                              bool isExternal = false, bool isMovable = false,
+                              bool isUnique = false);
     // Optional `cascade(...)` parameters (spec 37.1): `(depth: N)`, `(unlimited)`,
     // `(types: {A,B})`, `(except: {A,B})`, or combinations. Returns defaults if no `(`.
     ast::CascadeParams parseCascadeParamsOpt();

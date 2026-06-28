@@ -1589,6 +1589,33 @@ TEST_CASE("parser accepts unimport/reimport validation with expecting + onFailur
     CHECK_FALSE(parser.hasErrors());
 }
 
+TEST_CASE("partial field move requires a partitionable class and a movable field (spec 19.9)") {
+    const std::string sock =
+        " public class Socket { public mutable int id;"
+        "   public constructor Socket(int i) { this.id = i; } }";
+    const std::string head = "program P; public bundle b { public namespace n {" + sock;
+    const std::string tail =
+        " public class Main { public static method main(string[] args) returns void { } } } }";
+    // partitionable + movable field: a partial move is allowed.
+    CHECK(checkSrc(head +
+        " public partitionable class Conn { public movable Socket s;"
+        "   public constructor Conn() { this.s = new Socket(1) on heap; }"
+        "   public method take() returns void { Socket* x = move this.s; this.s = new Socket(2) on heap; } }" +
+        tail));
+    // non-partitionable class: moving a field is rejected.
+    CHECK_FALSE(checkSrc(head +
+        " public class Conn { public movable Socket s;"
+        "   public constructor Conn() { this.s = new Socket(1) on heap; }"
+        "   public method take() returns void { Socket* x = move this.s; } }" +
+        tail));
+    // using a field after it is moved out is rejected.
+    CHECK_FALSE(checkSrc(head +
+        " public partitionable class Conn { public movable Socket s;"
+        "   public constructor Conn() { this.s = new Socket(1) on heap; }"
+        "   public method take() returns void { Socket* x = move this.s; Socket* y = this.s; } }" +
+        tail));
+}
+
 TEST_CASE("move x as T transfers and reinterprets (spec 19.3)") {
     CHECK(checkSrc(
         "program P; public bundle b { public namespace n {"

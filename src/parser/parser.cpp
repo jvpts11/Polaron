@@ -840,6 +840,8 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isLazy = false;
     bool isAsync = false;
     bool isExternal = false;
+    bool isMovableField = false;
+    bool isUniqueField = false;
     for (;;) {
         if (!isStatic && check(TokenKind::KwStatic)) {
             advance();
@@ -906,6 +908,16 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isExternal = true;
             continue;
         }
+        if (!isMovableField && check(TokenKind::KwMovable)) {  // spec 19.9: field-level ownership
+            advance();
+            isMovableField = true;
+            continue;
+        }
+        if (!isUniqueField && check(TokenKind::KwUnique)) {
+            advance();
+            isUniqueField = true;
+            continue;
+        }
         break;
     }
     ast::MemberPtr member;
@@ -921,7 +933,8 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     } else {
         // Otherwise it is a field:  <type> <name> ;
         member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
-                            isTransient, isVolatile, isLazy, isExternal);
+                            isTransient, isVolatile, isLazy, isExternal, isMovableField,
+                            isUniqueField);
     }
     if (!anns.empty()) {  // attach leading annotations to the declaration they precede
         if (auto* m = dynamic_cast<ast::MethodDecl*>(member.get())) m->annotations = std::move(anns);
@@ -1041,7 +1054,8 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
 
 ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable,
                                   bool isPersistent, bool isEternal, bool isTransient,
-                                  bool isVolatile, bool isLazy, bool isExternal) {
+                                  bool isVolatile, bool isLazy, bool isExternal, bool isMovable,
+                                  bool isUnique) {
     const SourceLocation loc = current().loc;
     ast::TypeRef type = parseTypeRef();
     const std::string name = expect(TokenKind::Identifier, "a field name").lexeme;
@@ -1060,6 +1074,8 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->isVolatile = isVolatile;
     f->isLazy = isLazy;
     f->isExternal = isExternal;
+    f->isMovable = isMovable;
+    f->isUnique = isUnique;
     f->type = std::move(type);
     f->name = name;
     // Bit-field width: `field : N` (spec 11.1). Constrains the stored value to N bits.
