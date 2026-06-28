@@ -65,20 +65,20 @@ const std::string kCounter =
     " public method get() returns int { return this.count; } }";
 }  // namespace
 
-// A program with a namespace-level `comptime literal twice(int)` and `body` inside Main.
+// A program with a `comptime literal twice(int)` member of class Sc and `body` inside Main.
 static std::string withLiteral(const std::string& body) {
     return std::string(kIoHead) + kIoStub +
            "public namespace n { "
-           "public comptime literal twice(int x) returns int { return x * 2; } "
+           "public class Sc { public comptime literal twice(int x) returns int { return x * 2; } } "
            "public class Main { public static method main(string[] args) returns void { " +
            body + " } } } }";
 }
 
 TEST_CASE("semantic keeps comptime literal from being a free function") {
-    CHECK(checkSrc(withLiteral("int a = twice(5);")));            // literal argument: allowed
-    CHECK(checkSrc(withLiteral("int a = twice(3 + 4);")));        // constant arithmetic: allowed
+    CHECK(checkSrc(withLiteral("int a = Sc.twice(5);")));         // literal argument: allowed
+    CHECK(checkSrc(withLiteral("int a = Sc.twice(3 + 4);")));     // constant arithmetic: allowed
     CHECK_FALSE(checkSrc(withLiteral(                             // runtime argument: rejected
-        "mutable int v = 3; int a = twice(v);")));
+        "mutable int v = 3; int a = Sc.twice(v);")));
 }
 
 TEST_CASE("semantic accepts a valid entry point") {
@@ -705,29 +705,29 @@ TEST_CASE("semantic rejects a class that extends a struct") {
 
 TEST_CASE("semantic accepts a comptime literal suffix function") {
     CHECK(checkSrc(withClass(
-        "public comptime literal kib(int x) returns long { return cast<long>(x) * 1024; }",
-        "long s = kib(64);")));
+        "public class K { public comptime literal kib(int x) returns long { return cast<long>(x) * 1024; } }",
+        "long s = K.kib(64);")));
 }
 
 TEST_CASE("semantic rejects a literal suffix that is not comptime") {
     CHECK_FALSE(checkSrc(withClass(
-        "public literal kib(int x) returns long { return cast<long>(x); }",
-        "long s = kib(1);")));
+        "public class K { public literal kib(int x) returns long { return cast<long>(x); } }",
+        "long s = K.kib(1);")));
 }
 
 TEST_CASE("parser rejects a literal suffix with more than one parameter") {
     CHECK_FALSE(checkSrc(withClass(
-        "public comptime literal bad(int x, int y) returns long { return cast<long>(x); }",
+        "public class K { public comptime literal bad(int x, int y) returns long { return cast<long>(x); } }",
         "int n = 0;")));
 }
 
 namespace {
-// A program with a literal suffix `kib` in namespace `n` and a Main in `m`.
+// A program with a literal suffix `kib` owned by class `K` in namespace `n` and a Main in `m`.
 // `importLine` goes before `program` (spec 2.7).
 std::string withSuffix(const std::string& importLine, const std::string& mainBody) {
     return importLine + " program P; public bundle b {"
-           " public namespace n { public comptime literal kib(int x) returns long {"
-           " return cast<long>(x) * 1024; } }"
+           " public namespace n { public class K { public comptime literal kib(int x) returns long {"
+           " return cast<long>(x) * 1024; } } }"
            " public namespace m { public class Main {"
            " public static method main(string[] args) returns void { " +
            mainBody + " } } } }";
@@ -742,8 +742,10 @@ TEST_CASE("semantic rejects the N-suffix form without an import") {
     CHECK_FALSE(checkSrc(withSuffix("", "long s = 64 kib;")));
 }
 
-TEST_CASE("semantic still allows an explicit literal call without an import") {
-    CHECK(checkSrc(withSuffix("", "long s = kib(64);")));
+TEST_CASE("semantic allows the qualified literal call without an import") {
+    CHECK(checkSrc(withClass(
+        "public class K { public comptime literal kib(int x) returns long { return cast<long>(x) * 1024; } }",
+        "long s = K.kib(64);")));
 }
 
 TEST_CASE("semantic rejects an import of an unknown symbol") {

@@ -6,12 +6,14 @@ program LiteralOverload;
 
 public bundle main {
     public namespace app {
-        public comptime literal scaled(int x) returns int { return x * 2; }
-        public comptime literal scaled(double x) returns int { return cast<int>(x * 10.0); }
+        public class Scale {
+            public comptime literal scaled(int x) returns int { return x * 2; }
+            public comptime literal scaled(double x) returns int { return cast<int>(x * 10.0); }
+        }
         public class Main {
             public static method main(string[] args) returns void {
-                int a = scaled(5);       // int overload: 10
-                int b = scaled(1.5);     // double overload: 15
+                int a = Scale.scaled(5);     // int overload: 10
+                int b = Scale.scaled(1.5);   // double overload: 15
                 System.IO.Console.printf("a=%d b=%d\n", a, b);
                 return;
             }

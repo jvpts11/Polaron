@@ -1142,7 +1142,15 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
     };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
-            for (const ast::LiteralDecl& lit : ns.literals) reg(lit, "", ns.name);
+            // A namespace-level literal suffix is a free declaration outside a class; a suffix must
+            // be a member of the class/struct it produces (spec 17.10). Still registered so its uses
+            // resolve and do not cascade.
+            for (const ast::LiteralDecl& lit : ns.literals) {
+                error("a 'comptime literal' suffix must be a member of a class or struct (declare it "
+                      "inside the type it returns)",
+                      lit.loc);
+                reg(lit, "", ns.name);
+            }
             // A literal suffix declared inside a class/struct is owned by that type (spec 17.10).
             for (const ast::ClassDecl& cls : ns.classes)
                 for (const ast::MemberPtr& m : cls.members)
@@ -2759,9 +2767,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (name == "sizeof" && call->args.size() == 1) return "int";
         // Namespace-level literal suffix function called by name: kilobytes(64).
         if (auto lit = literals_.find(name); lit != literals_.end() && !lit->second.empty()) {
-            // The `N suffix` form (spec 17.10) requires the suffix to be imported;
-            // an explicit call name(arg) does not.
-            if (call->fromSuffix && importedSuffixes_.count(name) == 0) {
+            // The bare call form `name(arg)` is gone (spec 17.10): a suffix is used as the `N name`
+            // sugar (which needs the suffix imported) or qualified by its owner as `Type.name(N)`.
+            if (!call->fromSuffix) {
+                error("call a literal suffix as 'N " + name + "' (imported) or '<Type>." + name +
+                          "(N)'; the bare '" + name + "(N)' form is not allowed",
+                      call->loc);
+            } else if (importedSuffixes_.count(name) == 0) {
                 error("literal suffix '" + name +
                           "' is not in scope; import it to use the 'N " + name + "' form",
                       call->loc);

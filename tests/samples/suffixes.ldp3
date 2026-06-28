@@ -6,8 +6,10 @@ public bundle main {
 
 
     public namespace app.units {
-        public comptime literal kib(int x) returns long {
-            return cast<long>(x) * 1024;
+        public class Units {
+            public comptime literal kib(int x) returns long {
+                return cast<long>(x) * 1024;
+            }
         }
     }
 
