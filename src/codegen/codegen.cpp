@@ -1248,6 +1248,16 @@ struct CodeGenerator::Impl {
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
             if (un->op == "&") return typeName(*un->operand) + "*";  // address-of
+            // Unary operator overload (spec 6.5): the operator method's return type.
+            if (un->op != "!") {
+                const std::string owner =
+                    methodOwner(baseType(typeName(*un->operand)), "operator" + un->op);
+                if (!owner.empty())
+                    if (auto rit = classes.find(owner);
+                        rit != classes.end() &&
+                        rit->second.methodReturnType.count("operator" + un->op) > 0)
+                        return rit->second.methodReturnType.at("operator" + un->op);
+            }
             if (un->op == "~") return typeName(*un->operand);  // bitwise not keeps the width
             return un->op == "!" ? "boolean" : "int";
         }
@@ -2445,6 +2455,21 @@ struct CodeGenerator::Impl {
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
             if (un->op == "&") return emitObjectPtr(*un->operand);  // address-of: the object pointer
+            // Unary operator overload (spec 6.5): a.operator<op>() when a's class defines a no-arg
+            // one. A unary overload takes only `this` (arg_size 1), which distinguishes it from the
+            // binary form of the same symbol.
+            {
+                const std::string owner =
+                    methodOwner(baseType(typeName(*un->operand)), "operator" + un->op);
+                if (!owner.empty()) {
+                    auto fnit = functions.find(owner + ".operator" + un->op);
+                    if (fnit != functions.end() && fnit->second->arg_size() == 1) {
+                        llvm::Value* recv = emitExpr(*un->operand);
+                        if (recv == nullptr) return nullptr;
+                        return builder.CreateCall(fnit->second, {recv});
+                    }
+                }
+            }
             llvm::Value* v = emitExpr(*un->operand);
             if (v == nullptr) return nullptr;
             if (un->op == "-")

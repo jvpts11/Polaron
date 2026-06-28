@@ -1,0 +1,26 @@
+import System.IO.Console;
+program UnaryOperator;
+
+// Unary operator overload (spec 6.5): a class with a no-arg operator <op> is invoked by the
+// prefix operator. Here -v negates a vector.
+
+public bundle main {
+    public namespace app {
+        public class Vec2 {
+            public mutable int x;
+            public mutable int y;
+            public constructor Vec2(int x, int y) { this.x = x; this.y = y; }
+            public operator - () returns Vec2 {
+                return new Vec2(0 - this.x, 0 - this.y) on heap;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Vec2 a = new Vec2(3, 4) on heap;
+                Vec2 b = -a;
+                System.IO.Console.printf("bx=%d by=%d\n", b.x, b.y);   // -3, -4
+                return;
+            }
+        }
+    }
+}

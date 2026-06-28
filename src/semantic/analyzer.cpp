@@ -2262,6 +2262,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (un->op == "&") {
             return t.empty() ? std::string() : t + "*";  // address-of: T -> T*
         }
+        // Unary operator overload (spec 6.5): a class operand whose class defines a no-arg
+        // operator<op> dispatches to it (paramCount 0 distinguishes it from the binary form).
+        if (const MethodInfo* opm = findMethod(baseType(t), "operator" + un->op);
+            opm != nullptr && opm->paramCount == 0)
+            return opm->returnType;
         if (un->op == "!") {
             if (!t.empty() && t != "boolean") error("unary '!' requires a boolean operand", un->loc);
             return "boolean";
