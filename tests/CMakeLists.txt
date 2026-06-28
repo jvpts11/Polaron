@@ -138,6 +138,17 @@ if(LDP3_WITH_LLVM)
         "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_test.cmake")
 
+    # F9 phase 2: two bundles whose vtable layouts collide cannot be linked together; depending on
+    # both is rejected rather than silently dispatching through the wrong slot. (No clang needed.)
+    add_test(NAME bundle_vtable_conflict_rejected COMMAND "${CMAKE_COMMAND}"
+        "-DLDP3C=$<TARGET_FILE:ldp3c>"
+        "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_shape_lib.ldp3"
+        "-DLIB2=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_plugin_lib.ldp3"
+        "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_shape_app.ldp3"
+        "-DCONTAINS=incompatible with another depended-on bundle"
+        "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_conflict_test.cmake")
+
     # Full pipeline: compile to .exe with clang and check it prints correctly.
     find_program(LDP3_CLANG clang HINTS "C:/Program Files/LLVM/bin")
     if(LDP3_CLANG)
@@ -228,6 +239,18 @@ if(LDP3_WITH_LLVM)
             "-DCONTAINS=calc not available"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_absent_test.cmake")
+
+        # F9 phase 3 (ABI check, spec 2.5): a different bundle is present at runtime; its fingerprint
+        # does not match what the program compiled against, caught as BundleAbiMismatchException.
+        add_test(NAME bundle_abi_mismatch_caught COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_lib.ldp3"
+            "-DLIB2=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_counter_lib.ldp3"
+            "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_abi_app.ldp3"
+            "-DCONTAINS=calc ABI mismatch"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_abi_test.cmake")
 
         add_test(NAME codegen_hello_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

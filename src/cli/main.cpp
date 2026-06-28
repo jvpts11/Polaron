@@ -1345,6 +1345,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     }
 
     std::vector<std::string> seedSlots;  // vtable slot layout adopted from imported bundles
+    std::vector<std::pair<std::string, std::vector<std::string>>> depSlotMaps;  // (path, slots) per dep
     // Dynamic bundles to register with codegen: (AST bundle name, .ldb path, ABI fingerprint).
     std::vector<std::tuple<std::string, std::string, std::array<std::uint8_t, 32>>> dynBundleInfo;
 #ifdef LDP3_WITH_LLVM
@@ -1380,6 +1381,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             program.bundles.push_back(std::move(b));
         }
         // Adopt the bundle's vtable slot layout so virtual calls on its types hit the right slots.
+        if (!dep.vtableSlots.empty()) depSlotMaps.emplace_back(depPath, dep.vtableSlots);
         for (const std::string& s : dep.vtableSlots)
             if (std::find(seedSlots.begin(), seedSlots.end(), s) == seedSlots.end())
                 seedSlots.push_back(s);
@@ -1417,10 +1419,24 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             dynBundleInfo.emplace_back(b.name, depPath, dep.fingerprint);
             program.bundles.push_back(std::move(b));
         }
+        if (!dep.vtableSlots.empty()) depSlotMaps.emplace_back(depPath, dep.vtableSlots);
         for (const std::string& s : dep.vtableSlots)
             if (std::find(seedSlots.begin(), seedSlots.end(), s) == seedSlots.end())
                 seedSlots.push_back(s);
     }
+    // Each bundle baked its vtable with its own 0-based slot numbering. They can be linked together
+    // only if those numberings agree on a shared prefix (so the merged numbering preserves each
+    // bundle's slots). Two bundles that each define their own virtual methods at the same slot cannot
+    // coexist -- reject rather than silently dispatch through the wrong slot.
+    for (const auto& [path, map] : depSlotMaps)
+        for (std::size_t i = 0; i < map.size(); ++i)
+            if (i >= seedSlots.size() || seedSlots[i] != map[i]) {
+                std::fprintf(stderr,
+                             "error: bundle '%s' has a vtable layout incompatible with another "
+                             "depended-on bundle; they cannot be linked together\n",
+                             path.c_str());
+                return 1;
+            }
 #else
     if (!deps.empty() || !dynDeps.empty()) {
         std::fprintf(stderr, "error: --use/--use-dynamic needs the LLVM backend\n");

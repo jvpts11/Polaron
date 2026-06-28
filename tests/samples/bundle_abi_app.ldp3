@@ -1,0 +1,23 @@
+import System.IO.Console;
+import math.Calc;
+import System.Runtime.BundleAbiMismatchException;
+program CalcAppAbi;
+
+// The calc bundle is loaded dynamically. If the bundle present at runtime does not match the public
+// API this program compiled against (spec 2.5), loading it raises BundleAbiMismatchException, caught
+// here so the program degrades gracefully instead of calling into an incompatible bundle.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                try {
+                    int r = Calc.square(7);
+                    System.IO.Console.printf("square = %d\n", r);
+                } catch (BundleAbiMismatchException e) {
+                    System.IO.Console.printf("calc ABI mismatch\n");
+                }
+                return;
+            }
+        }
+    }
+}
