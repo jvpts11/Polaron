@@ -1157,6 +1157,14 @@ ast::TypeRef Parser::parseTypeRef() {
     ast::TypeRef t;
     const Token& tok = current();
     t.loc = tok.loc;
+    // `move T` (spec 19.6): an ownership-transfer annotation on a parameter or return type. It is
+    // the same type, just transferred instead of copied, so it is transparent to type checking.
+    if (tok.kind == TokenKind::KwMove) {
+        advance();
+        ast::TypeRef inner = parseTypeRef();
+        inner.isMove = true;
+        return inner;
+    }
     // `nullable T` (spec 3.7): a type modifier; parse the underlying type and mark it nullable.
     if (tok.kind == TokenKind::KwNullable) {
         advance();

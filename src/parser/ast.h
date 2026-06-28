@@ -33,6 +33,8 @@ struct TypeRef {
     bool isPointer = false;  // T*
     bool isRef = false;      // T&
     bool isNullable = false;  // `nullable T` (spec 3.7): may hold null; canonical form is "T?"
+    bool isMove = false;      // `move T` (spec 19.6): ownership-transfer param/return; transparent
+                              // to the canonical type (same type, transferred rather than copied)
     std::vector<std::string> typeArgs;  // generic arguments, e.g. Box<int> -> ["int"]
     SourceLocation loc;
 };

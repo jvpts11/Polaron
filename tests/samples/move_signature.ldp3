@@ -1,0 +1,24 @@
+import System.IO.Console;
+program MoveSignature;
+
+// `move T` on a parameter (and on a return type) marks an ownership transfer (spec 19.6): the
+// value is moved into the function rather than copied. Here a movable Conn is moved into consume.
+
+public bundle main {
+    public namespace app {
+        public movable class Conn {
+            public mutable int id;
+            public constructor Conn(int id) { this.id = id; }
+        }
+        public class Main {
+            public static method consume(move Conn c) returns void {
+                System.IO.Console.printf("consumed %d\n", c.id);
+            }
+            public static method main(string[] args) returns void {
+                Conn c = new Conn(42) on stack;
+                Main.consume(move c);
+                return;
+            }
+        }
+    }
+}

@@ -1520,6 +1520,20 @@ TEST_CASE("semantic type-checks method-call arguments") {
         kBox, "Box* a = new Box(1) on heap; a.take(5);")));
 }
 
+TEST_CASE("parser accepts move on parameter and return types (spec 19.6)") {
+    Lexer lexer(
+        "program P; public bundle b { public namespace n {"
+        " public movable class Conn { public mutable int id;"
+        "   public constructor Conn(int id) { this.id = id; } }"
+        " public class Main {"
+        "   public static method pass(move Conn c) returns move Conn { return c; }"
+        "   public static method main(string[] args) returns void { } } } }",
+        "test");
+    Parser parser(lexer.tokenize(), "test");
+    parser.parse();
+    CHECK_FALSE(parser.hasErrors());
+}
+
 TEST_CASE("parser accepts a variadic extern and a library block (spec 26)") {
     Lexer lexer(
         "program P; public bundle b { public namespace n {"
