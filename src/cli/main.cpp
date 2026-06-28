@@ -198,6 +198,13 @@ public bundle std {
         }
     }
     public namespace System.Runtime {
+        // The root of the class hierarchy (spec 3.4): every class implicitly extends Object. equals
+        // defaults to identity and hashCode to the object's address; both are virtual so subclasses
+        // (e.g. records) override them. toString() returns String and is added with the String type.
+        public class Object {
+            public method equals(Object other) returns boolean { return this == other; }
+            public method hashCode() returns int { return 0; }
+        }
         // Base for runtime exceptions (polymorphic, so it can be caught). UnimportedType
         // Exception is thrown when an unimported type is used (spec 30).
         public abstract class Exception {

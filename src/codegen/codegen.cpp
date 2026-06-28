@@ -2897,8 +2897,10 @@ struct CodeGenerator::Impl {
         // skipping integer promotion (which would try to cast a pointer to int). A Java-style
         // enum value is a pointer to its singleton, so identity comparison is its equality.
         auto isPtrish = [this](const std::string& t) {
+            // A class instance is a pointer in codegen, so == / != on class references is identity
+            // comparison (the basis of Object.equals). Pointers, refs, null and java-enums too.
             return t == "null" || (!t.empty() && (t.back() == '*' || t.back() == '&')) ||
-                   javaEnums.count(baseType(t)) > 0;
+                   javaEnums.count(baseType(t)) > 0 || classes.count(baseType(t)) > 0;
         };
         const bool javaEnumCmp = javaEnums.count(baseType(lt)) > 0 || javaEnums.count(baseType(rt)) > 0;
         if (javaEnumCmp && op != "==" && op != "!=") {
