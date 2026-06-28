@@ -42,6 +42,14 @@ TEST_CASE("ldb fingerprint is stable and content-sensitive") {
     CHECK(ldbFingerprint("public class A {}") != ldbFingerprint("public class B {}"));
 }
 
+TEST_CASE("ldb fingerprint matches the SHA-256 known-answer vector") {
+    // SHA-256("abc") = ba7816bf 8f01cfea 414140de 5dae2223 b00361a3 96177a9c b410ff61 f20015ad.
+    const std::array<std::uint8_t, 32> expected = {
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+        0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
+    CHECK(ldbFingerprint("abc") == expected);
+}
+
 TEST_CASE("readLdb rejects a non-ldb buffer") {
     LdbBundle r;
     CHECK_FALSE(readLdb("not an ldb file", r));
