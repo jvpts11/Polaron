@@ -1581,6 +1581,14 @@ ast::StmtPtr Parser::parseStatement() {
         advance();  // consume 'comptime'
         return parseIfStatement(/*isComptime=*/true);
     }
+    // `comptime <type> name = <constexpr>;` (spec 28.3): a local computed at compile time.
+    if (check(TokenKind::KwComptime)) {
+        advance();  // consume 'comptime'
+        auto vd = parseVarDeclCore();
+        vd->isComptime = true;
+        expect(TokenKind::Semicolon, "';'");
+        return vd;
+    }
     if (check(TokenKind::KwWhile)) {
         return parseWhileStatement();
     }

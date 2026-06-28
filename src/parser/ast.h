@@ -362,6 +362,7 @@ struct VarDeclStmt : Stmt {
     bool isEternal = false;     // eternal persistent
     bool isVolatile = false;    // spec 37.5: loads/stores are never optimized away
     bool isLazy = false;        // spec 37.3: initializer runs on first access, not here
+    bool isComptime = false;    // spec 28.3: `comptime` local -- value computed at compile time
     TypeRef type;        // used when !isVar
     std::string name;
     ExprPtr init;        // M2: an initializer is required

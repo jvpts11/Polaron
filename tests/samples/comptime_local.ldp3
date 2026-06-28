@@ -1,0 +1,18 @@
+import System.IO.Console;
+program ComptimeLocal;
+
+// `comptime` local (spec 28.3): the value is computed at compile time.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                comptime int x = 2 + 3 * 4;     // 14
+                int[] buf = new int[x]();        // comptime value usable as a size
+                System.IO.Console.printf("x=%d len=%d\n", x, buf.length());
+                delete buf;
+                return;
+            }
+        }
+    }
+}
