@@ -95,6 +95,57 @@ bool intLiteralFits(const ast::Expr& init, const std::string& target) {
     return v >= lo && v <= hi;
 }
 
+// Whether an `await` (spec 20.2) appears anywhere in an expression / statement / block. Used to
+// reject awaiting while holding a mutex (spec 22), which would risk a deadlock.
+bool exprHasAwait(const ast::Expr* e);
+bool stmtHasAwait(const ast::Stmt* s);
+bool blockHasAwait(const ast::Block& b) {
+    for (const auto& s : b.statements) if (stmtHasAwait(s.get())) return true;
+    return false;
+}
+bool exprHasAwait(const ast::Expr* e) {
+    if (e == nullptr) return false;
+    if (dynamic_cast<const ast::AwaitExpr*>(e)) return true;
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e))
+        return exprHasAwait(b->lhs.get()) || exprHasAwait(b->rhs.get());
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e)) return exprHasAwait(u->operand.get());
+    if (const auto* c = dynamic_cast<const ast::CallExpr*>(e)) {
+        if (exprHasAwait(c->callee.get())) return true;
+        for (const auto& a : c->args) if (exprHasAwait(a.get())) return true;
+        return false;
+    }
+    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) return exprHasAwait(m->object.get());
+    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e))
+        return exprHasAwait(ix->array.get()) || exprHasAwait(ix->index.get());
+    if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(e))
+        return exprHasAwait(nc->lhs.get()) || exprHasAwait(nc->rhs.get());
+    if (const auto* ca = dynamic_cast<const ast::CastExpr*>(e)) return exprHasAwait(ca->operand.get());
+    return false;
+}
+bool stmtHasAwait(const ast::Stmt* s) {
+    if (s == nullptr) return false;
+    if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) return exprHasAwait(vd->init.get());
+    if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s)) return exprHasAwait(es->expr.get());
+    if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(s)) return exprHasAwait(rs->value.get());
+    if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) return exprHasAwait(as->value.get());
+    if (const auto* i = dynamic_cast<const ast::IfStmt*>(s))
+        return exprHasAwait(i->cond.get()) || blockHasAwait(i->thenBlock) ||
+               (i->elseBlock && blockHasAwait(*i->elseBlock));
+    if (const auto* w = dynamic_cast<const ast::WhileStmt*>(s))
+        return exprHasAwait(w->cond.get()) || blockHasAwait(w->body);
+    if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(s))
+        return blockHasAwait(d->body) || exprHasAwait(d->cond.get());
+    if (const auto* f = dynamic_cast<const ast::ForStmt*>(s)) return blockHasAwait(f->body);
+    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(s)) return blockHasAwait(fe->body);
+    if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(s)) return blockHasAwait(sy->body);
+    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(s)) {
+        if (blockHasAwait(tr->body)) return true;
+        for (const auto& c : tr->catches) if (blockHasAwait(c.body)) return true;
+        return tr->finallyBlock && blockHasAwait(*tr->finallyBlock);
+    }
+    return false;
+}
+
 // Bit-counted type names exist only in freestanding mode (the normal names are byte/short/int/long,
 // ubyte/ushort/uint/ulong, smallfloat/float/double/quadruple). Used to reject them in normal mode.
 bool isBitCountedName(const std::string& t) {
@@ -1942,6 +1993,11 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             error("synchronized requires a Mutex value, got '" + mt + "'", sy->loc);
         if (!sy->bindType.isRef)
             error("synchronized binding must be a reference (e.g. T& name)", sy->loc);
+        // Awaiting while holding the lock would suspend the task with the mutex held -- a deadlock
+        // risk (spec 22). Reject it; release the lock before awaiting (or await outside the block).
+        if (blockHasAwait(sy->body))
+            error("cannot 'await' while holding a mutex in a 'synchronized' block (spec 22); "
+                  "await outside the locked region", sy->loc);
         pushScope();
         // Bind name to a mutable reference to the Mutex's protected value.
         declareLocal(sy->bindName, LocalVar{sy->bindType.name, true});

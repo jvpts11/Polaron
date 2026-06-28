@@ -1589,6 +1589,24 @@ TEST_CASE("parser accepts unimport/reimport validation with expecting + onFailur
     CHECK_FALSE(parser.hasErrors());
 }
 
+TEST_CASE("awaiting while holding a mutex is rejected (spec 22)") {
+    // Identical programs except for the body of the synchronized block: the only difference is the
+    // await, so accepting one and rejecting the other isolates the mutex-across-await check.
+    const std::string pre =
+        "program P; public bundle b { public namespace n {"
+        " public class Mutex { public mutable int v; public constructor Mutex() { this.v = 0; } }"
+        " public class Main {"
+        "   public static async method val() returns int { return 1; }"
+        "   public static method run() returns void {"
+        "     Mutex m = new Mutex() on heap;"
+        "     synchronized (m) using int& c { ";
+    const std::string post =
+        " } }"
+        "   public static method main(string[] args) returns void { } } } }";
+    CHECK(checkSrc(pre + "c = c + 1;" + post));            // no await -> valid
+    CHECK_FALSE(checkSrc(pre + "c = await Main.val();" + post));  // await held -> rejected
+}
+
 TEST_CASE("an undeclared, uncaught throw warns (spec 21.1)") {
     const char* head =
         "program P; public bundle b { public namespace n {"
