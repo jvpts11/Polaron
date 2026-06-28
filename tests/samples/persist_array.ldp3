@@ -1,0 +1,27 @@
+import System.IO.Console;
+program PersistArray;
+
+// Persistent-bearing objects stored in an array (spec 18.5): an object created without a name
+// binding (here an array element) still gets a usable persistent block, so its persistent fields
+// can be written and read rather than dereferencing a wild pointer. (Index-keyed reattach across a
+// delete is a separate refinement.)
+
+public bundle main {
+    public namespace app {
+        public class Car {
+            public eternal persistent mutable int chassi = 0;
+            public constructor Car() {}
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Car[] cars = new Car[3]();
+                cars[0] = new Car() on heap;
+                cars[1] = new Car() on heap;
+                cars[0].chassi = 11;
+                cars[1].chassi = 22;
+                System.IO.Console.printf("c0=%d c1=%d\n", cars[0].chassi, cars[1].chassi);
+                return;
+            }
+        }
+    }
+}

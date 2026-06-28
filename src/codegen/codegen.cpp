@@ -2937,8 +2937,18 @@ struct CodeGenerator::Impl {
         // Wire up the persistent block (if any) BEFORE the constructor, so the ctor can read
         // and write this.<persistent field>. Keyed by the binding variable's identity.
         llvm::Value* persistBlockRef = nullptr;
-        if (cit->second.persistPtrIdx != 0 && !pendingPersistKey.empty()) {
-            persistBlockRef = getPersistBlock(pendingPersistKey, cit->second.persistBlock);
+        if (cit->second.persistPtrIdx != 0) {
+            if (!pendingPersistKey.empty()) {
+                persistBlockRef = getPersistBlock(pendingPersistKey, cit->second.persistBlock);
+            } else {
+                // No name binding (e.g. an array element or temporary): give the object its own
+                // zeroed persistent block so its persistent fields are usable instead of leaving the
+                // __persist pointer wild (a segfault on first access). Index-keyed reattach across a
+                // delete (spec 18.5) is a follow-up; this at least makes it sound within the run.
+                llvm::Value* sz = sizeOf(cit->second.persistBlock);
+                persistBlockRef = builder.CreateCall(mallocFn(), {sz}, "__persist.anon");
+                builder.CreateCall(memsetFn(), {persistBlockRef, builder.getInt32(0), sz});
+            }
             llvm::Value* slot = builder.CreateStructGEP(cit->second.type, objPtr,
                                                         cit->second.persistPtrIdx, "__persist");
             builder.CreateStore(persistBlockRef, slot);
