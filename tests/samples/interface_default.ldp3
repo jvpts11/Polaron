@@ -1,0 +1,43 @@
+import System.IO.Console;
+program InterfaceDefault;
+
+// Default methods on an interface (spec 9): an interface method may carry a body. A class that
+// implements the interface inherits the default unless it overrides it. The default may call other
+// (abstract) interface methods on `this`, dispatched virtually.
+
+public bundle main {
+    public namespace app {
+        public interface Greeter {
+            method name() returns int;
+            method greet() returns int {
+                // default implementation: derived from the abstract name()
+                return this.name() + 100;
+            }
+        }
+        public class Alice implements Greeter {
+            public override method name() returns int {
+                return 1;
+            }
+            // inherits the default greet()
+        }
+        public class Bob implements Greeter {
+            public override method name() returns int {
+                return 2;
+            }
+            public override method greet() returns int {
+                return 999;   // overrides the default
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Greeter* a = new Alice() on heap;
+                Greeter* b = new Bob() on heap;
+                System.IO.Console.printf("alice=%d\n", a.greet());   // 101 (default)
+                System.IO.Console.printf("bob=%d\n", b.greet());     // 999 (override)
+                delete a;
+                delete b;
+                return;
+            }
+        }
+    }
+}

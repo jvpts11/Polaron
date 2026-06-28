@@ -1575,6 +1575,17 @@ TEST_CASE("parser accepts unimport/reimport validation with expecting + onFailur
     CHECK_FALSE(parser.hasErrors());
 }
 
+TEST_CASE("a class need not override an interface default method (spec 9)") {
+    CHECK(checkSrc(
+        "program P; public bundle b { public namespace n {"
+        " public interface Greeter {"
+        "   method name() returns int;"
+        "   method greet() returns int { return this.name() + 1; } }"
+        " public class Alice implements Greeter {"
+        "   public override method name() returns int { return 1; } }"
+        " public class Main { public static method main(string[] args) returns void { } } } }"));
+}
+
 TEST_CASE("parser rejects a validated reimport without onFailure (spec 30.18 rule 5)") {
     Lexer lexer(
         "program P; public bundle b { public namespace n {"

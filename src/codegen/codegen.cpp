@@ -1130,6 +1130,27 @@ struct CodeGenerator::Impl {
             }
             c = it->second.superclass;
         }
+        // No class in the chain provides it: fall back to an interface default method (spec 9).
+        return interfaceDefaultImpl(className, method);
+    }
+
+    // Mangled name of a non-abstract default method `method` reachable through the interfaces of
+    // `className` or its ancestors (spec 9), searched transitively. "" if none provides a default.
+    std::string interfaceDefaultImpl(const std::string& className, const std::string& method) {
+        for (std::string c = className; !c.empty();) {
+            auto it = classes.find(c);
+            if (it == classes.end()) break;
+            for (const std::string& iface : it->second.interfaces) {
+                auto iit = classes.find(iface);
+                if (iit == classes.end()) continue;
+                auto mit = iit->second.ownMethods.find(method);
+                if (mit != iit->second.ownMethods.end() && !mit->second->isAbstract)
+                    return iface + "." + method;
+                std::string deeper = interfaceDefaultImpl(iface, method);  // interface extends interface
+                if (!deeper.empty()) return deeper;
+            }
+            c = it->second.superclass;
+        }
         return "";
     }
 

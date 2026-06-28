@@ -478,6 +478,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # interface default methods (spec 9): an interface method body is inherited unless overridden;
+        # the default dispatches other interface methods on `this` virtually.
+        add_test(NAME codegen_interface_default_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interface_default.ldp3"
+            "-DEXPECTED=alice=101 bob=999"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # inherited class invariants (spec 29): a base invariant is checked on a subclass method's
         # exit too; here every step keeps it satisfied, so the program completes.
         add_test(NAME codegen_inherited_invariant_runs COMMAND "${CMAKE_COMMAND}"

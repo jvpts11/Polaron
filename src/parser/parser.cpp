@@ -959,7 +959,8 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     m->loc = current().loc;
     m->visibility = std::move(visibility);
     m->isStatic = isStatic;
-    m->isAbstract = isAbstract || inInterface;  // interface methods are abstract
+    // An interface method is abstract unless it provides a default body (spec 9); decided below.
+    m->isAbstract = isAbstract;
     m->isOverride = isOverride;
     m->isFinal = isFinal;
     m->isComptime = isComptime;  // `comptime` prefix (spec 37.4); suffix handled below
@@ -1000,7 +1001,15 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
         (isReq ? m->requiresClauses : m->ensuresClauses).push_back(parseExpression());
         parsingEnsures_ = false;
     }
-    if (m->isAbstract) {
+    if (inInterface) {
+        // `;` => an abstract signature; `{ ... }` => a default method with a body (spec 9).
+        if (check(TokenKind::Semicolon)) {
+            m->isAbstract = true;
+            advance();
+        } else {
+            m->body = parseBlock();
+        }
+    } else if (m->isAbstract) {
         expect(TokenKind::Semicolon, "';' (an abstract method has no body)");
     } else {
         m->body = parseBlock();
