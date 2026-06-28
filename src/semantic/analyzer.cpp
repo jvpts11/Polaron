@@ -1138,6 +1138,7 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
         literals_[lit.name].push_back(
             LiteralInfo{paramType, returnType, lit.isComptime, lit.loc, owner});
         typeNamespace_[lit.name] = nsName;  // for import-prefix validation
+        if (!owner.empty()) classSuffixes_[owner].push_back(lit.name);  // import owner -> suffixes
     };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
@@ -1301,6 +1302,9 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
                   imp.loc);
         } else {
             importedSuffixes_.insert(symbol);  // harmless for non-literals
+            // Importing the owner class brings its literal suffixes into scope (spec 17.10).
+            if (auto cs = classSuffixes_.find(symbol); cs != classSuffixes_.end())
+                for (const std::string& s : cs->second) importedSuffixes_.insert(s);
         }
         if (imp.isFinal) finalImports_.insert(symbol);  // spec 37.6: not unimportable
     };

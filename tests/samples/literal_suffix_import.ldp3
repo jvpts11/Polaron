@@ -1,0 +1,23 @@
+import System.IO.Console;
+import app.Units;
+program LiteralSuffixImport;
+
+// Importing the class that owns a `comptime literal` brings its suffixes into scope, so the
+// `N suffix` sugar resolves (spec 17.10). Here `64 kib` becomes Units.kib(64).
+
+public bundle main {
+    public namespace app {
+        public class Units {
+            public comptime literal kib(int x) returns long { return cast<long>(x) * 1024L; }
+            public comptime literal mib(int x) returns long { return cast<long>(x) * 1024L * 1024L; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                long a = 64 kib;        // suffix sugar -> Units.kib(64)
+                long b = 2 mib;         // suffix sugar -> Units.mib(2)
+                System.IO.Console.printf("a=%d b=%d\n", cast<int>(a), cast<int>(b));  // 65536 2097152
+                return;
+            }
+        }
+    }
+}

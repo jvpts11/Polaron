@@ -228,6 +228,7 @@ private:
     // `comptime` methods (spec 28.3), by name, for compile-time call evaluation.
     std::unordered_map<std::string, const ast::MethodDecl*> comptimeMethods_;
     std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
+    std::unordered_map<std::string, std::vector<std::string>> classSuffixes_;  // class -> its suffix names
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace
     std::unordered_map<std::string, std::string> externReturns_;    // extern fn name -> return type
     std::unordered_map<std::string, std::size_t> externParamCount_;  // extern fn name -> param count
