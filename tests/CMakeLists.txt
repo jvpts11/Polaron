@@ -468,6 +468,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # spec 30.18: reimport validation via challenge-response -- unimport produces a value, the
+        # matching reimport reproduces it (success) or not (onFailure runs).
+        add_test(NAME codegen_reimport_expecting_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/reimport_expecting.ldp3"
+            "-DEXPECTED=proof=1007 validated rejected done"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # comefrom (spec 7.10): jump to a label, forward (skip ahead) or backward (retry).
         add_test(NAME codegen_comefrom_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

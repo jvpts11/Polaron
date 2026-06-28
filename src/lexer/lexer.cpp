@@ -103,6 +103,8 @@ TokenKind keywordKind(std::string_view text) {
         {"reinstate", TokenKind::KwReinstate},
         {"unimport", TokenKind::KwUnimport},
         {"reimport", TokenKind::KwReimport},
+        {"expecting", TokenKind::KwExpecting},
+        {"onFailure", TokenKind::KwOnFailure},
         {"try", TokenKind::KwTry},
         {"catch", TokenKind::KwCatch},
         {"finally", TokenKind::KwFinally},

@@ -329,6 +329,10 @@ struct CodeGenerator::Impl {
     int asyncSpillTop_ = 0;                     // next free scratch slot (used LIFO)
     static constexpr int kAsyncScratchSlots = 64;
     struct SpillToken { bool active = false; unsigned slot = 0; llvm::Type* ty = nullptr; };
+    // Inside an `expecting { ... }` block (spec 30.18): a `return` stores into this slot and branches
+    // to expectingEnd_ (the block is an expression, not a method return).
+    llvm::Value* expectingSlot_ = nullptr;
+    llvm::BasicBlock* expectingEnd_ = nullptr;
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
     const std::vector<ast::ExprPtr>* currentInvariants = nullptr;  // contracts: class invariants
     // contracts: each old(e) in an ensures clause -> an entry-captured slot (spec 29).
@@ -1208,6 +1212,15 @@ struct CodeGenerator::Impl {
         if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
             const std::string t = baseType(typeName(*aw->operand));  // Task$X -> X
             return t.rfind("Task$", 0) == 0 ? t.substr(5) : t;
+        }
+        if (const auto* ue = dynamic_cast<const ast::UnimportExpr*>(&expr)) {
+            // spec 30.18: the validation value's type is what the expecting block returns.
+            if (ue->expecting != nullptr)
+                for (const auto& s : ue->expecting->statements)
+                    if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(s.get());
+                        rs != nullptr && rs->value != nullptr)
+                        return typeName(*rs->value);
+            return "int";
         }
         if (const auto* me = dynamic_cast<const ast::MatchExpr*>(&expr)) {
             // Value type is the arms' common type, computed by sema (bindings in scope).
@@ -2325,6 +2338,13 @@ struct CodeGenerator::Impl {
             llvm::Value* r = builder.CreateCall(
                 module.getOrInsertFunction("__ldp3_task_wait", wtTy), {h}, "await");
             return castTaskResult(r, elem);
+        }
+        if (const auto* ue = dynamic_cast<const ast::UnimportExpr*>(&expr)) {
+            // spec 30.18: run the expecting block in the old code (its return is the validation
+            // value), then unimport the class. The expression evaluates to that value.
+            llvm::Value* v = emitExpectingValue(ue->expecting.get());
+            emitUnimportClass(baseType(ue->target));
+            return v;
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
             if (un->op == "&") return emitObjectPtr(*un->operand);  // address-of: the object pointer
@@ -4146,6 +4166,48 @@ struct CodeGenerator::Impl {
         return out;
     }
 
+    // Emits an `expecting { ... }` block (spec 30.18) inline as an expression: the value its
+    // `return` produces is captured into a slot, and the block's end becomes the continuation.
+    llvm::Value* emitExpectingValue(const ast::Block* block) {
+        if (block == nullptr) return builder.getInt32(0);
+        std::string vt = "int";
+        for (const auto& s : block->statements)
+            if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(s.get());
+                rs != nullptr && rs->value != nullptr)
+                vt = typeName(*rs->value);
+        llvm::Type* ty = llvmType(vt);
+        llvm::Value* slot = builder.CreateAlloca(ty, nullptr, "expecting.val");
+        builder.CreateStore(llvm::Constant::getNullValue(ty), slot);
+        llvm::BasicBlock* end = llvm::BasicBlock::Create(context, "expecting.end", currentFn);
+        llvm::Value* savedSlot = expectingSlot_;
+        llvm::BasicBlock* savedEnd = expectingEnd_;
+        expectingSlot_ = slot;
+        expectingEnd_ = end;
+        emitBlock(*block, /*newScope=*/true);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(end);
+        expectingSlot_ = savedSlot;
+        expectingEnd_ = savedEnd;
+        builder.SetInsertPoint(end);
+        return builder.CreateLoad(ty, slot, "expecting.result");
+    }
+
+    // Bit-for-bit comparison of two validation values (spec 30.18 rule 4): compares the raw memory
+    // representation rather than an operator== overload, to defeat a spoofed equals(). Scalars only;
+    // struct/object validation values are a follow-up.
+    llvm::Value* emitBitEqual(llvm::Value* a, llvm::Value* b) {
+        if (a == nullptr || b == nullptr) return builder.getInt1(true);
+        llvm::Type* ta = a->getType();
+        if (ta->isFloatingPointTy()) {
+            llvm::Type* it = builder.getIntNTy(ta->getPrimitiveSizeInBits());
+            return builder.CreateICmpEQ(builder.CreateBitCast(a, it), builder.CreateBitCast(b, it));
+        }
+        if (ta->isPointerTy())
+            return builder.CreateICmpEQ(builder.CreatePtrToInt(a, builder.getInt64Ty()),
+                                        builder.CreatePtrToInt(b, builder.getInt64Ty()));
+        if (ta->isIntegerTy()) return builder.CreateICmpEQ(a, b);
+        return builder.getInt1(true);
+    }
+
     // Constructs and throws a System.Runtime.UnimportedTypeException (spec 30): used when
     // an unimported type is instantiated or its methods are called. Terminates the block.
     void emitThrowUnimported() {
@@ -4205,12 +4267,24 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* u = dynamic_cast<const ast::UnimportStmt*>(st)) { unimportableClasses.insert(baseType(u->target)); return; }
+        if (const auto* rv = dynamic_cast<const ast::ReimportValidateStmt*>(st)) {  // spec 30.18
+            unimportableClasses.insert(baseType(rv->target));
+            if (rv->expecting) for (const auto& s : rv->expecting->statements) scanAbstained(s.get());
+            if (rv->onFailure) for (const auto& s : rv->onFailure->statements) scanAbstained(s.get());
+            return;
+        }
         if (const auto* c = dynamic_cast<const ast::CascadeStmt*>(st)) {  // cascade unimport: X + subtypes
             if (c->op == ast::CascadeOpKind::Unimport)
                 for (const std::string& t : cascadeUnimportTargets(c->typeName))
                     unimportableClasses.insert(t);
             return;
         }
+        // `unimport X expecting { ... }` (spec 30.18) appears in expression position (e.g. a var
+        // initializer); scan the expression-bearing leaf statements for it.
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st)) { scanExprForUnimport(vd->init.get()); return; }
+        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(st)) { scanExprForUnimport(es->expr.get()); return; }
+        if (const auto* as = dynamic_cast<const ast::AssignStmt*>(st)) { scanExprForUnimport(as->value.get()); return; }
+        if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(st)) { scanExprForUnimport(rs->value.get()); return; }
         auto blk = [&](const ast::Block& b) { for (const auto& s : b.statements) scanAbstained(s.get()); };
         if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) { blk(i->thenBlock); if (i->elseBlock) blk(*i->elseBlock); return; }
         if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
@@ -4223,6 +4297,24 @@ struct CodeGenerator::Impl {
         if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) { blk(df->body); return; }
         if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) { blk(us->body); return; }
         if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) { scanAbstained(lb->stmt.get()); return; }
+    }
+    // Registers any `unimport X expecting { ... }` validation expression (spec 30.18) reachable in
+    // an expression as making X unimportable, so the alive guard is emitted for it.
+    void scanExprForUnimport(const ast::Expr* e) {
+        if (e == nullptr) return;
+        if (const auto* ue = dynamic_cast<const ast::UnimportExpr*>(e)) {
+            unimportableClasses.insert(baseType(ue->target));
+            if (ue->expecting)
+                for (const auto& s : ue->expecting->statements) scanAbstained(s.get());
+            return;
+        }
+        if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e)) {
+            scanExprForUnimport(b->lhs.get());
+            scanExprForUnimport(b->rhs.get());
+            return;
+        }
+        if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e))
+            scanExprForUnimport(u->operand.get());
     }
     void collectAbstainedLabels() {
         for (const ast::Bundle& bundle : program.bundles)
@@ -4924,6 +5016,25 @@ struct CodeGenerator::Impl {
             }
             return;
         }
+        if (const auto* rv = dynamic_cast<const ast::ReimportValidateStmt*>(&stmt)) {
+            // spec 30.18: reimport (reload the code from the on-disk .exe) and re-enable the class,
+            // then run the expecting block in the new code and compare its value bit-for-bit with the
+            // value the matching unimport produced; on mismatch run onFailure.
+            const std::string cn = baseType(rv->target);
+            emitPhysicalReload(cn);
+            builder.CreateStore(builder.getInt32(1), aliveFlag(cn));
+            llvm::Value* expected = rv->expected != nullptr ? emitExpr(*rv->expected) : nullptr;
+            llvm::Value* produced = emitExpectingValue(rv->expecting.get());
+            llvm::Value* eq = emitBitEqual(expected, produced);
+            llvm::BasicBlock* failBB = llvm::BasicBlock::Create(context, "reimport.fail", currentFn);
+            llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "reimport.ok", currentFn);
+            builder.CreateCondBr(eq, okBB, failBB);
+            builder.SetInsertPoint(failBB);
+            if (rv->onFailure != nullptr) emitBlock(*rv->onFailure, /*newScope=*/true);
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(okBB);
+            builder.SetInsertPoint(okBB);
+            return;
+        }
         if (const auto* cs = dynamic_cast<const ast::CascadeStmt*>(&stmt)) {
             // `cascade println(X)` / `cascade validate(X)` (spec 37.1): walk the owned graph from X
             // and describe / invariant-check each node, with cycle detection and the same filters.
@@ -5081,6 +5192,14 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
+            // Inside an `expecting { ... }` block (spec 30.18), `return X` is the block's value:
+            // store it and jump to the block's end, rather than returning from the method.
+            if (expectingSlot_ != nullptr) {
+                llvm::Value* v = rs->value != nullptr ? emitExpr(*rs->value) : nullptr;
+                if (v != nullptr) builder.CreateStore(v, expectingSlot_);
+                builder.CreateBr(expectingEnd_);
+                return;
+            }
             // Inside an async resume, `return X` completes the task with X (spec 20.2).
             if (currentAsyncState != nullptr) {
                 llvm::Value* v = rs->value != nullptr ? emitExpr(*rs->value) : nullptr;

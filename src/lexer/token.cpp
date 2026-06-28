@@ -91,6 +91,8 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwReinstate:     return "KwReinstate";
         case TokenKind::KwUnimport:      return "KwUnimport";
         case TokenKind::KwReimport:      return "KwReimport";
+        case TokenKind::KwExpecting:     return "KwExpecting";
+        case TokenKind::KwOnFailure:     return "KwOnFailure";
 
         case TokenKind::KwIf:       return "KwIf";
         case TokenKind::KwElse:     return "KwElse";

@@ -147,6 +147,10 @@ private:
                            const std::string& thisClass, bool inConstructor,
                            const std::vector<const ast::Expr*>& contracts = {});
     void analyzeBlock(const ast::Block& block);
+    // Analyzes an `expecting { ... }` block (spec 30.18) in its own scope and returns the type its
+    // `return` produces (the validation value's type). The block's return is its own value, so the
+    // enclosing method's return type does not apply.
+    std::string analyzeExpectingBlock(const ast::Block* block);
     void analyzeStatement(const ast::Stmt& stmt);
     void checkAssignTarget(const ast::Expr& target, const std::string& valueType,
                            SourceLocation loc);

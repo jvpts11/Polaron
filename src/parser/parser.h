@@ -81,6 +81,9 @@ private:
     std::unique_ptr<ast::DestructorDecl> parseDestructor(std::string visibility);
     std::unique_ptr<ast::MethodDecl> parseOperator(std::string visibility);
     ast::ExprPtr parseNew();
+    ast::ExprPtr parseUnimportExpr();  // `unimport X expecting [using ...] { ... }` (spec 30.18)
+    // Parses `[using a, b] { ... }` after `expecting`; fills usingVars and returns the block.
+    std::unique_ptr<ast::Block> parseExpectingTail(std::vector<std::string>& usingVars);
     std::vector<ast::Param> parseParams();
     ast::TypeRef parseTypeRef();
     ast::Block parseBlock();

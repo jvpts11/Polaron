@@ -1559,3 +1559,33 @@ TEST_CASE("parser accepts a generic bound that ends in '>>' (spec 15.2)") {
     parser.parse();
     CHECK_FALSE(parser.hasErrors());
 }
+
+TEST_CASE("parser accepts unimport/reimport validation with expecting + onFailure (spec 30.18)") {
+    Lexer lexer(
+        "program P; public bundle b { public namespace n {"
+        " public class Plugin { public mutable int v; public constructor Plugin() { this.v = 0; }"
+        "   public static method fp() returns int { return 1; } }"
+        " public class Main { public static method main(string[] args) returns void {"
+        "   var a = unimport Plugin expecting { return Plugin.fp(); };"
+        "   reimport Plugin expecting a { return Plugin.fp(); } onFailure { return; };"
+        "   return; } } } }",
+        "test");
+    Parser parser(lexer.tokenize(), "test");
+    parser.parse();
+    CHECK_FALSE(parser.hasErrors());
+}
+
+TEST_CASE("parser rejects a validated reimport without onFailure (spec 30.18 rule 5)") {
+    Lexer lexer(
+        "program P; public bundle b { public namespace n {"
+        " public class Plugin { public mutable int v; public constructor Plugin() { this.v = 0; }"
+        "   public static method fp() returns int { return 1; } }"
+        " public class Main { public static method main(string[] args) returns void {"
+        "   var a = unimport Plugin expecting { return Plugin.fp(); };"
+        "   reimport Plugin expecting a { return Plugin.fp(); };"
+        "   return; } } } }",
+        "test");
+    Parser parser(lexer.tokenize(), "test");
+    parser.parse();
+    CHECK(parser.hasErrors());
+}

@@ -55,6 +55,7 @@ inline std::string canonicalType(const TypeRef& t) {
 }
 
 // ---- Expressions ----
+struct Block;  // defined below; referenced by block-bearing expressions (spec 30.18)
 struct Expr {
     SourceLocation loc;
     virtual ~Expr() = default;
@@ -152,6 +153,16 @@ struct UnaryExpr : Expr {
 struct AwaitExpr : Expr {
     ExprPtr operand;
     void dump(std::string& out, int indent) const override;
+};
+
+// `unimport X expecting [using a, b] { ... return v; }` (spec 30.18): runs the expecting block in
+// the old code (before the class is unloaded) to produce a validation value, then unimports X. The
+// expression evaluates to that value, which a later reimport compares against bit-for-bit.
+struct UnimportExpr : Expr {
+    std::string target;
+    std::vector<std::string> usingVars;
+    std::unique_ptr<Block> expecting;
+    void dump(std::string& out, int /*indent*/) const override { out += "unimport " + target; }
 };
 
 struct NewExpr : Expr {
@@ -290,6 +301,21 @@ struct UnimportStmt : Stmt {
     bool isReimport = false;     // `reimport` re-enables; `unimport` removes
     void dump(std::string& out, int /*indent*/) const override {
         out += (isReimport ? "reimport " : "unimport ") + target;
+    }
+};
+
+// `import X expecting a [using ...] { ... return v; } onFailure { ... };` (spec 30.18): reimport X,
+// run the expecting block in the new code, compare its value bit-for-bit with `expected` (the value
+// a prior `unimport expecting` produced); on mismatch run the onFailure block. There is no default
+// failure behaviour, so onFailure is mandatory.
+struct ReimportValidateStmt : Stmt {
+    std::string target;
+    ExprPtr expected;                       // the validation value from the unimport side
+    std::vector<std::string> usingVars;
+    std::unique_ptr<Block> expecting;
+    std::unique_ptr<Block> onFailure;
+    void dump(std::string& out, int /*indent*/) const override {
+        out += "import " + target + " expecting";
     }
 };
 

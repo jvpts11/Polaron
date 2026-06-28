@@ -1326,7 +1326,46 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return g;
     }
-    if (check(TokenKind::KwUnimport) || check(TokenKind::KwReimport)) {  // spec 30
+    if (check(TokenKind::KwUnimport) || check(TokenKind::KwReimport) ||
+        check(TokenKind::KwImport)) {  // spec 30, 30.18
+        // Look past the (dotted) target name for the `expecting` keyword, which selects the
+        // challenge-response validation forms (spec 30.18).
+        int k = 1;
+        if (peek(k).kind == TokenKind::Identifier) {
+            ++k;
+            while (peek(k).kind == TokenKind::Dot && peek(k + 1).kind == TokenKind::Identifier) k += 2;
+        }
+        const bool validated = peek(k).kind == TokenKind::KwExpecting;
+
+        // `unimport X expecting { ... }` as a bare statement: an expression statement.
+        if (check(TokenKind::KwUnimport) && validated) {
+            auto es = std::make_unique<ast::ExprStmt>();
+            es->loc = current().loc;
+            es->expr = parseUnimportExpr();
+            expect(TokenKind::Semicolon, "';'");
+            return es;
+        }
+        // `import/reimport X expecting a [using ...] { ... } onFailure { ... };` (spec 30.18).
+        if ((check(TokenKind::KwReimport) || check(TokenKind::KwImport)) && validated) {
+            auto r = std::make_unique<ast::ReimportValidateStmt>();
+            r->loc = current().loc;
+            advance();  // 'import' / 'reimport'
+            r->target = expect(TokenKind::Identifier, "a type name").lexeme;
+            while (match(TokenKind::Dot))
+                r->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
+            expect(TokenKind::KwExpecting, "'expecting'");
+            r->expected = parseExpression();  // the value produced by the matching unimport
+            r->expecting = parseExpectingTail(r->usingVars);
+            expect(TokenKind::KwOnFailure, "'onFailure' (mandatory for a validated reimport)");
+            r->onFailure = std::make_unique<ast::Block>(parseBlock());
+            expect(TokenKind::Semicolon, "';'");
+            return r;
+        }
+        if (check(TokenKind::KwImport)) {
+            fail("'import' here must be a validated reimport: "
+                 "import X expecting a { ... } onFailure { ... };", current().loc);
+        }
+
         auto u = std::make_unique<ast::UnimportStmt>();
         u->loc = current().loc;
         u->isReimport = match(TokenKind::KwReimport);
@@ -2560,12 +2599,39 @@ ast::ExprPtr Parser::parsePrimary() {
         }
         case TokenKind::KwNew:
             return parseNew();
+        case TokenKind::KwUnimport:
+            // unimport X expecting { ... } as a validation expression (spec 30.18).
+            return parseUnimportExpr();
         case TokenKind::KwMatch:
             // match (...) { case T(..) -> expr; ... } in expression position (spec 16.2).
             return parseMatchExpr();
         default:
             fail("expected an expression but found '" + tok.lexeme + "'", tok.loc);
     }
+}
+
+// `[using a, b] { ... }` after the `expecting` keyword (spec 30.18). The `using` variables are
+// context already visible in the surrounding scope, so they need no special binding here.
+std::unique_ptr<ast::Block> Parser::parseExpectingTail(std::vector<std::string>& usingVars) {
+    if (match(TokenKind::KwUsing)) {
+        usingVars.push_back(expect(TokenKind::Identifier, "a context variable name").lexeme);
+        while (match(TokenKind::Comma))
+            usingVars.push_back(expect(TokenKind::Identifier, "a context variable name").lexeme);
+    }
+    return std::make_unique<ast::Block>(parseBlock());
+}
+
+// `unimport X expecting [using ...] { ... return v; }` (spec 30.18): a validation expression that
+// produces the value the matching reimport compares against.
+ast::ExprPtr Parser::parseUnimportExpr() {
+    auto e = std::make_unique<ast::UnimportExpr>();
+    e->loc = current().loc;
+    expect(TokenKind::KwUnimport, "'unimport'");
+    e->target = expect(TokenKind::Identifier, "a type name").lexeme;
+    while (match(TokenKind::Dot)) e->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
+    expect(TokenKind::KwExpecting, "'expecting'");
+    e->expecting = parseExpectingTail(e->usingVars);
+    return e;
 }
 
 ast::ExprPtr Parser::parseNew() {

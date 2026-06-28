@@ -1,0 +1,48 @@
+import System.IO.Console;
+program ReimportExpecting;
+
+// Reimport validation via challenge-response (spec 30.18): `unimport X expecting { ... }` runs in
+// the old code to produce a validation value; the matching `reimport X expecting a { ... } onFailure
+// { ... }` runs in the new code and compares its value bit-for-bit with `a`. On a match the program
+// continues; on a mismatch the onFailure block runs. Here the on-disk code is unchanged, so the
+// values match and the success path is taken.
+
+public bundle main {
+    public namespace app {
+        public class Plugin {
+            public mutable int value;
+            public constructor Plugin() {
+                this.value = 0;
+            }
+            public static method fingerprint(int salt) returns int {
+                return 1000 + salt;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                int salt = 7;
+                var proof = unimport Plugin expecting using salt {
+                    return Plugin.fingerprint(salt);
+                };
+                System.IO.Console.printf("proof=%d\n", proof);   // 1007
+
+                // Matching value: the new code reproduces the proof, so the success path runs.
+                reimport Plugin expecting proof using salt {
+                    return Plugin.fingerprint(salt);
+                } onFailure {
+                    System.IO.Console.printf("rejected\n");
+                };
+                System.IO.Console.printf("validated\n");
+
+                // Mismatching value: the new code produces a different value, so onFailure runs.
+                reimport Plugin expecting proof using salt {
+                    return Plugin.fingerprint(salt) + 1;
+                } onFailure {
+                    System.IO.Console.printf("rejected\n");
+                };
+                System.IO.Console.printf("done\n");
+                return;
+            }
+        }
+    }
+}

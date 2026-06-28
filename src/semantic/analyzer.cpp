@@ -1287,6 +1287,23 @@ void SemanticAnalyzer::analyzeBlock(const ast::Block& block) {
     popScope();
 }
 
+std::string SemanticAnalyzer::analyzeExpectingBlock(const ast::Block* block) {
+    if (block == nullptr) return "";
+    const std::string savedRet = currentReturnType_;
+    currentReturnType_.clear();  // the block's return is its own value, not the method's
+    pushScope();
+    std::string valueType;
+    for (const auto& stmt : block->statements) {
+        analyzeStatement(*stmt);
+        if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(stmt.get());
+            rs != nullptr && rs->value != nullptr)
+            valueType = typeOf(*rs->value);
+    }
+    popScope();
+    currentReturnType_ = savedRet;
+    return valueType;
+}
+
 void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::string& valueType,
                                          SourceLocation loc) {
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&target)) {
@@ -1773,6 +1790,22 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                   um->loc);
         return;
     }
+    if (const auto* rv = dynamic_cast<const ast::ReimportValidateStmt*>(&stmt)) {
+        if (freestanding_)
+            error("unimport/reimport is not available in freestanding mode (spec 36.3)", rv->loc);
+        if (lookupClass(baseType(rv->target)) == nullptr)
+            error("cannot reimport '" + rv->target + "': not a known class", rv->loc);
+        const std::string expectedType = rv->expected ? typeOf(*rv->expected) : "";
+        const std::string producedType = analyzeExpectingBlock(rv->expecting.get());
+        // The two validation values must be the same type so they can be compared bit-for-bit.
+        if (!expectedType.empty() && !producedType.empty() &&
+            baseType(expectedType) != baseType(producedType))
+            error("reimport validation type mismatch: the matching unimport produced '" +
+                      expectedType + "' but this expecting block returns '" + producedType + "'",
+                  rv->loc);
+        if (rv->onFailure) analyzeBlock(*rv->onFailure);
+        return;
+    }
     if (const auto* cm = dynamic_cast<const ast::CascadeMoveStmt*>(&stmt)) {
         const std::string t = typeOf(*cm->target);  // type-check the moved object
         if (!t.empty() && lookupClass(baseType(t)) == nullptr)
@@ -2047,6 +2080,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return "";
         }
         return t.empty() ? std::string() : t.substr(5);  // strip "Task$"
+    }
+    if (const auto* ue = dynamic_cast<const ast::UnimportExpr*>(&expr)) {
+        if (freestanding_)
+            error("unimport/reimport is not available in freestanding mode (spec 36.3)", ue->loc);
+        if (lookupClass(baseType(ue->target)) == nullptr)
+            error("cannot unimport '" + ue->target + "': not a known class", ue->loc);
+        else if (finalImports_.count(baseType(ue->target)) > 0)
+            error("cannot unimport '" + ue->target +
+                      "': it was brought in by 'final import' (spec 37.6)",
+                  ue->loc);
+        return analyzeExpectingBlock(ue->expecting.get());  // value type = expecting block's return
     }
     if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
         const std::string t = typeOf(*un->operand);
