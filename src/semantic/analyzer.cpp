@@ -1533,9 +1533,21 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;  // loop-context validation (break/continue only inside a loop) is a later refinement
     }
     if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&stmt)) {
+        // A range `0..10` (spec 7.5) iterates integers; otherwise the iterable is an array.
+        if (const auto* rng = dynamic_cast<const ast::RangeExpr*>(fe->iterable.get())) {
+            const std::string st = typeOf(*rng->start);
+            typeOf(*rng->end);
+            if (rng->step) typeOf(*rng->step);
+            const std::string et = fe->isVar ? (st.empty() ? "int" : st) : typeRefStr(fe->elemType);
+            pushScope();
+            declareLocal(fe->varName, LocalVar{et, false});
+            analyzeBlock(fe->body);
+            popScope();
+            return;
+        }
         const std::string it = typeOf(*fe->iterable);
         if (!it.empty() && !isArrayType(it))
-            error("foreach requires an array, got '" + it + "'", fe->loc);
+            error("foreach requires an array or a range, got '" + it + "'", fe->loc);
         const std::string et = fe->isVar ? elementOf(it) : typeRefStr(fe->elemType);
         pushScope();
         declareLocal(fe->varName, LocalVar{et, false});
@@ -2091,6 +2103,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                       "': it was brought in by 'final import' (spec 37.6)",
                   ue->loc);
         return analyzeExpectingBlock(ue->expecting.get());  // value type = expecting block's return
+    }
+    if (const auto* rng = dynamic_cast<const ast::RangeExpr*>(&expr)) {
+        const std::string st = typeOf(*rng->start);  // a range over int (spec 7.5)
+        typeOf(*rng->end);
+        if (rng->step) typeOf(*rng->step);
+        return st.empty() ? std::string("int") : st;
     }
     if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
         const std::string t = typeOf(*un->operand);

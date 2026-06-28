@@ -165,6 +165,16 @@ struct UnimportExpr : Expr {
     void dump(std::string& out, int /*indent*/) const override { out += "unimport " + target; }
 };
 
+// `start..end`, `start..=end`, optionally `step k` (spec 7.5): an integer range, used to drive a
+// `for (int i in 0..10)` loop. `inclusive` selects `..=` (end included).
+struct RangeExpr : Expr {
+    ExprPtr start;
+    ExprPtr end;
+    ExprPtr step;          // null when no `step`
+    bool inclusive = false;
+    void dump(std::string& out, int /*indent*/) const override { out += "range"; }
+};
+
 struct NewExpr : Expr {
     std::string className;
     std::vector<std::string> typeArgs;  // generic arguments: new Box<int>(...)

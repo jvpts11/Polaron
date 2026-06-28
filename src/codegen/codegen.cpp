@@ -5536,6 +5536,10 @@ struct CodeGenerator::Impl {
     // for (T v in array) { ... } -- iterate an array's elements (spec 7). Elements
     // are i32 (int/char/boolean) in the current array model.
     void emitForeach(const ast::ForeachStmt& s) {
+        if (const auto* rng = dynamic_cast<const ast::RangeExpr*>(s.iterable.get())) {
+            emitForeachRange(s, *rng);
+            return;
+        }
         llvm::Value* block = emitExpr(*s.iterable);
         if (block == nullptr) return;
         llvm::Value* len64 = builder.CreateLoad(builder.getInt64Ty(), block, "fe.len");
@@ -5569,6 +5573,46 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(updateBB);
         llvm::Value* iv = builder.CreateLoad(builder.getInt32Ty(), iSlot);
         builder.CreateStore(builder.CreateAdd(iv, builder.getInt32(1)), iSlot);
+        builder.CreateBr(condBB);
+        builder.SetInsertPoint(endBB);
+        locals.erase(s.varName);
+    }
+
+    // `for (int i in start..end [step k])` (spec 7.5): a counting loop over an integer range. `..` is
+    // exclusive of end, `..=` inclusive; the step defaults to 1. Ascending ranges.
+    void emitForeachRange(const ast::ForeachStmt& s, const ast::RangeExpr& rng) {
+        const std::string et = s.isVar ? typeName(*rng.start) : typeRefName(s.elemType);
+        llvm::Type* ty = llvmType(et);
+        if (!ty->isIntegerTy()) ty = builder.getInt32Ty();
+        llvm::Value* start = coerceToType(emitExpr(*rng.start), ty);
+        llvm::Value* end = coerceToType(emitExpr(*rng.end), ty);
+        llvm::Value* step =
+            rng.step ? coerceToType(emitExpr(*rng.step), ty) : llvm::ConstantInt::get(ty, 1);
+        if (start == nullptr || end == nullptr || step == nullptr) return;
+        llvm::Value* vSlot = createEntryAlloca(s.varName, ty);
+        builder.CreateStore(start, vSlot);
+        locals[s.varName] = LocalSlot{vSlot, et};
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "fr.cond", fn);
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "fr.body", fn);
+        llvm::BasicBlock* updateBB = llvm::BasicBlock::Create(context, "fr.update", fn);
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "fr.end", fn);
+        builder.CreateBr(condBB);
+        builder.SetInsertPoint(condBB);
+        llvm::Value* i = builder.CreateLoad(ty, vSlot, "fr.iv");
+        llvm::Value* cont =
+            rng.inclusive ? builder.CreateICmpSLE(i, end) : builder.CreateICmpSLT(i, end);
+        builder.CreateCondBr(cont, bodyBB, endBB);
+        builder.SetInsertPoint(bodyBB);
+        loopStack.push_back({endBB, updateBB, pendingLoopLabel, finallyStack.size(),
+                             scopeObjects.size(), deferred.size(), scopeRegions.size()});
+        pendingLoopLabel.clear();
+        emitBlock(s.body);
+        loopStack.pop_back();
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(updateBB);
+        builder.SetInsertPoint(updateBB);
+        llvm::Value* iv = builder.CreateLoad(ty, vSlot);
+        builder.CreateStore(builder.CreateAdd(iv, step), vSlot);
         builder.CreateBr(condBB);
         builder.SetInsertPoint(endBB);
         locals.erase(s.varName);

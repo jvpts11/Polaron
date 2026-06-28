@@ -2134,7 +2134,21 @@ ast::StmtPtr Parser::parseExprStatement() {
     return s;
 }
 
-ast::ExprPtr Parser::parseExpression() { return parseTernary(); }
+ast::ExprPtr Parser::parseExpression() {
+    ast::ExprPtr e = parseTernary();
+    // Range expression `start..end` / `start..=end` [`step k`] (spec 7.5).
+    if (check(TokenKind::DotDot) || check(TokenKind::DotDotEq)) {
+        auto r = std::make_unique<ast::RangeExpr>();
+        r->loc = current().loc;
+        r->inclusive = check(TokenKind::DotDotEq);
+        advance();  // '..' or '..='
+        r->start = std::move(e);
+        r->end = parseTernary();
+        if (match(TokenKind::KwStep)) r->step = parseTernary();
+        return r;
+    }
+    return e;
+}
 
 ast::ExprPtr Parser::parseTernary() {
     ast::ExprPtr cond = parseBinary(1);
