@@ -282,6 +282,7 @@ struct CodeGenerator::Impl {
     // class implementing several interfaces dispatches each one correctly.
     std::unordered_map<std::string, int> methodSlots;  // virtual method name -> global slot
     std::vector<std::string> methodSlotNames;          // global slot -> method name
+    std::vector<std::string> seededSlots;              // slot layout adopted from imported bundles
     std::unordered_map<std::string, std::vector<std::string>> enums;  // name -> constants (ordinals)
     std::unordered_map<std::string, const ast::EnumDecl*> javaEnums;  // java-style enum decls
     // Catalog-implementing enums kept as enums (int-style ordinals) but carrying
@@ -6337,6 +6338,15 @@ struct CodeGenerator::Impl {
             l.hasVtable = !l.superclass.empty() || !l.interfaces.empty() || l.isAbstract ||
                           l.isInterface || bases.count(name) > 0;
         }
+        // Adopt the slot layout of imported bundles first, so a virtual call on an imported object
+        // hits the slot its baked-in vtable (in the .ldb) uses (spec 2.5 ABI). Fresh local methods
+        // then take the slots after these.
+        for (const std::string& name : seededSlots) {
+            if (methodSlots.count(name) == 0) {
+                methodSlots[name] = static_cast<int>(methodSlotNames.size());
+                methodSlotNames.push_back(name);
+            }
+        }
         // Assign a stable global slot to every distinct virtual method name, walking
         // the AST in declaration order (deterministic, unlike the classes map). A
         // single global numbering shared by all classes/interfaces is what makes a
@@ -6587,6 +6597,7 @@ struct CodeGenerator::Impl {
     void emitVtables() {
         for (auto& [name, l] : classes) {
             if (!l.hasVtable || l.isAbstract || l.isInterface) continue;  // concrete only
+            if (l.imported) continue;  // the bundle baked its own vtable; we dispatch via the object
             std::vector<llvm::Constant*> entries;
             for (const std::string& slot : l.vtslots) {
                 const std::string impl = vtableImpl(name, slot);
@@ -7423,6 +7434,14 @@ void CodeGenerator::setTargetTriple(const std::string& triple) {
 }
 
 void CodeGenerator::setLibrary(bool library) { impl_->libraryMode = library; }
+
+void CodeGenerator::seedVtableSlots(const std::vector<std::string>& slotNames) {
+    impl_->seededSlots = slotNames;
+}
+
+const std::vector<std::string>& CodeGenerator::vtableSlotNames() const {
+    return impl_->methodSlotNames;
+}
 
 bool CodeGenerator::generate() {
     if (impl_->entry.method == nullptr && !impl_->libraryMode) {

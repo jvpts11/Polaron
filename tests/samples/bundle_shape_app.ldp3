@@ -1,0 +1,19 @@
+import System.IO.Console;
+import geo.Shape;
+import geo.Square;
+program ShapeApp;
+
+// Creates an imported Square, holds it through a Shape pointer, and calls area() virtually across the
+// bundle boundary -- the dispatch must reach Square.area (25), proving the vtable slot layout matches.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shape* s = new Square(5) on heap;
+                System.IO.Console.printf("area = %d\n", s.area());
+                delete s;
+                return;
+            }
+        }
+    }
+}

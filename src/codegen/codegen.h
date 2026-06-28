@@ -34,6 +34,14 @@ public:
     // emitted. Call before generate().
     void setLibrary(bool library);
 
+    // Seeds the global vtable slot numbering from depended-on bundles (their vtableSlotNames), so a
+    // virtual call on an imported object hits the slot its baked-in vtable uses. Call before generate().
+    void seedVtableSlots(const std::vector<std::string>& slotNames);
+
+    // The global vtable slot layout after generate(): slotNames[i] is the method at slot i. Stored in
+    // the .ldb so consumers can seed from it.
+    const std::vector<std::string>& vtableSlotNames() const;
+
     // Builds the module. Returns true on success (no errors, module verified).
     bool generate();
 

@@ -30,6 +30,10 @@ struct LdbBundle {
     std::string code;                      // compiled code (LLVM bitcode)
     std::vector<LdbDep> deps;              // required bundles
     std::vector<std::string> capabilities; // required capabilities
+    // The bundle's global vtable slot layout: vtableSlots[i] is the virtual method name at slot i.
+    // A consumer seeds its own slot numbering from this so cross-bundle virtual dispatch hits the
+    // same slots the bundle's baked-in vtables use (spec 2.5 ABI).
+    std::vector<std::string> vtableSlots;
 
     static constexpr std::uint16_t kFreestanding = 1u << 0;
 };

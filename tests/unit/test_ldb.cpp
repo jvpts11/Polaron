@@ -14,6 +14,7 @@ TEST_CASE("ldb container round-trips its fields") {
     b.fingerprint = ldbFingerprint(b.ldh);
     b.deps.push_back(LdbDep{"codec", ">=2.0.0", ldbFingerprint("codec-api")});
     b.capabilities = {"audio.output", "files.read"};
+    b.vtableSlots = {"mix", "reset"};
 
     const std::string bytes = writeLdb(b);
     LdbBundle r;
@@ -31,6 +32,9 @@ TEST_CASE("ldb container round-trips its fields") {
     REQUIRE(r.capabilities.size() == 2);
     CHECK(r.capabilities[0] == "audio.output");
     CHECK(r.capabilities[1] == "files.read");
+    REQUIRE(r.vtableSlots.size() == 2);
+    CHECK(r.vtableSlots[0] == "mix");
+    CHECK(r.vtableSlots[1] == "reset");
 }
 
 TEST_CASE("ldb fingerprint is stable and content-sensitive") {

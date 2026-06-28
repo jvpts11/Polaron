@@ -7,6 +7,7 @@
 //   ldp3c --check <in.ldp3>         lex + parse + semantic, report entry point
 //   ldp3c --version
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <optional>
@@ -1327,6 +1328,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         if (prog.isFreestanding) program.isFreestanding = true;
     }
 
+    std::vector<std::string> seedSlots;  // vtable slot layout adopted from imported bundles
 #ifdef LDP3_WITH_LLVM
     // Depended-on bundles (--use foo.ldb): parse each .ldh as the bundle's public API and merge it as
     // an imported bundle (types visible; bodies stay in the .ldb, linked separately). The .ldb's
@@ -1359,6 +1361,10 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             b.isImported = true;
             program.bundles.push_back(std::move(b));
         }
+        // Adopt the bundle's vtable slot layout so virtual calls on its types hit the right slots.
+        for (const std::string& s : dep.vtableSlots)
+            if (std::find(seedSlots.begin(), seedSlots.end(), s) == seedSlots.end())
+                seedSlots.push_back(s);
     }
 #else
     if (!deps.empty()) {
@@ -1396,6 +1402,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     ldp3::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
     if (!target.empty()) codegen.setTargetTriple(target);  // e.g. --target=x86_64-unknown-none
     codegen.setLibrary(libraryMode);  // a .ldb has no entry point / `main`
+    codegen.seedVtableSlots(seedSlots);  // adopt imported bundles' vtable slot layout
     if (!codegen.generate()) {
         for (const ldp3::CodegenError& e : codegen.errors()) {
             std::fprintf(stderr, "%.*s:%d:%d: codegen error: %s\n",
@@ -1417,6 +1424,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         bundle.ldh = ldp3::generateLdh(program);
         bundle.fingerprint = ldp3::ldbFingerprint(bundle.ldh);
         bundle.code = codegen.toBitcode();
+        bundle.vtableSlots = codegen.vtableSlotNames();  // so consumers seed the same slot layout
         const std::string ldbPath = outPath.empty() ? program.name + ".ldb" : outPath;
         const std::string ldhPath = ldhPathFor(ldbPath);
         std::ofstream ldb(ldbPath, std::ios::binary);

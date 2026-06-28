@@ -79,6 +79,8 @@ std::string writeLdb(const LdbBundle& bundle) {
     }
     putU16(out, static_cast<std::uint16_t>(bundle.capabilities.size()));
     for (const std::string& c : bundle.capabilities) putStr16(out, c);
+    putU16(out, static_cast<std::uint16_t>(bundle.vtableSlots.size()));
+    for (const std::string& s : bundle.vtableSlots) putStr16(out, s);
     return out;
 }
 
@@ -106,6 +108,8 @@ bool readLdb(std::string_view bytes, LdbBundle& out) {
     }
     const std::uint16_t capCount = r.u16();
     for (std::uint16_t i = 0; i < capCount && r.ok; ++i) out.capabilities.push_back(r.str(r.u16()));
+    const std::uint16_t vtCount = r.u16();
+    for (std::uint16_t i = 0; i < vtCount && r.ok; ++i) out.vtableSlots.push_back(r.str(r.u16()));
     return r.ok;
 }
 
