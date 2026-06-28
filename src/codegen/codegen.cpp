@@ -4664,6 +4664,20 @@ struct CodeGenerator::Impl {
             builder.CreateCall(f->second, {exc});  // sets the vtable, so catch can match the type
         emitThrowObject(exc);
     }
+    // Constructs and throws a named exception class (it must extend the catchable Exception base, so
+    // its constructor installs a vtable that a catch clause can type-match). Used by dynamic-bundle
+    // thunks to raise BundleNotLoadedException / BundleAbiMismatchException.
+    void emitThrowNamed(const std::string& cn) {
+        auto cit = classes.find(cn);
+        if (cit == classes.end()) {
+            builder.CreateUnreachable();
+            return;
+        }
+        llvm::Value* exc = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "exc");
+        if (auto f = functions.find(cn + "." + cn); f != functions.end())
+            builder.CreateCall(f->second, {exc});
+        emitThrowObject(exc);
+    }
     // If `cn` is unimportable, throws UnimportedTypeException when its alive flag is 0,
     // continuing on a fresh block for the live path (spec 30).
     void emitAliveGuard(const std::string& cn) {
@@ -6614,13 +6628,13 @@ struct CodeGenerator::Impl {
     // forwards the call. A missing bundle / unresolved symbol aborts via ldp3_bundle_fail (spec 2.4).
     void emitDynamicThunks() {
         if (dynamicBundles.empty()) return;
+        ehPadStack.clear();    // thunks are standalone: no enclosing try / RAII scope
+        scopeObjects.clear();
         llvm::PointerType* ptrTy = builder.getPtrTy();
         llvm::FunctionCallee loadFn = module.getOrInsertFunction(
             "ldp3_bundle_load", llvm::FunctionType::get(ptrTy, {ptrTy, ptrTy, ptrTy}, false));
         llvm::FunctionCallee symFn = module.getOrInsertFunction(
             "ldp3_bundle_sym", llvm::FunctionType::get(ptrTy, {ptrTy, ptrTy}, false));
-        llvm::FunctionCallee failFn = module.getOrInsertFunction(
-            "ldp3_bundle_fail", llvm::FunctionType::get(builder.getVoidTy(), {ptrTy}, false));
         llvm::Constant* nullp = llvm::ConstantPointerNull::get(ptrTy);
 
         for (auto& [cn, cl] : classes) {
@@ -6644,6 +6658,8 @@ struct CodeGenerator::Impl {
                 llvm::Function* f = fit->second;
                 currentFn = f;
                 builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", f));
+                llvm::Value* statusSlot = createEntryAlloca("status", builder.getInt32Ty());
+                builder.CreateStore(builder.getInt32(0), statusSlot);  // 0 = ok (overwritten on load)
 
                 llvm::GlobalVariable*& hg = dynBundleHandle[cl.bundleName];
                 if (hg == nullptr)
@@ -6661,7 +6677,7 @@ struct CodeGenerator::Impl {
                     llvm::ConstantDataArray::get(context, llvm::ArrayRef<std::uint8_t>(fp.data(), 32));
                 auto* fpG = new llvm::GlobalVariable(module, fpArr->getType(), true,
                                                      llvm::GlobalValue::PrivateLinkage, fpArr, ".dynfp");
-                llvm::Value* nh = builder.CreateCall(loadFn, {pathS, fpG, nullp}, "loaded");
+                llvm::Value* nh = builder.CreateCall(loadFn, {pathS, fpG, statusSlot}, "loaded");
                 builder.CreateStore(nh, hg);
                 builder.CreateBr(contBB);
 
@@ -6673,9 +6689,17 @@ struct CodeGenerator::Impl {
                 llvm::BasicBlock* callBB = llvm::BasicBlock::Create(context, "dyn.call", f);
                 builder.CreateCondBr(builder.CreateICmpEQ(sym, nullp), failBB, callBB);
 
+                // On failure raise a catchable exception: an ABI mismatch (status 2) vs the bundle
+                // being absent/unresolved. A program can wrap the use in try/catch (spec 2.4).
                 builder.SetInsertPoint(failBB);
-                builder.CreateCall(failFn, {nameS});
-                builder.CreateUnreachable();
+                llvm::Value* st = builder.CreateLoad(builder.getInt32Ty(), statusSlot, "status");
+                llvm::BasicBlock* abiBB = llvm::BasicBlock::Create(context, "dyn.abi", f);
+                llvm::BasicBlock* nlBB = llvm::BasicBlock::Create(context, "dyn.notloaded", f);
+                builder.CreateCondBr(builder.CreateICmpEQ(st, builder.getInt32(2)), abiBB, nlBB);
+                builder.SetInsertPoint(abiBB);
+                emitThrowNamed("BundleAbiMismatchException");
+                builder.SetInsertPoint(nlBB);
+                emitThrowNamed("BundleNotLoadedException");
 
                 builder.SetInsertPoint(callBB);
                 std::vector<llvm::Value*> args;

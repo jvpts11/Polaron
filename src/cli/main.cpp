@@ -207,6 +207,18 @@ public bundle std {
             public constructor UnimportedTypeException() {}
             public override method message() returns String { return "type was unimported"; }
         }
+        // Thrown on first use of a dynamically-loaded bundle (--use-dynamic) that is absent at runtime
+        // (spec 2.4): wrap the use in try/catch to run without it.
+        public class BundleNotLoadedException extends Exception {
+            public constructor BundleNotLoadedException() {}
+            public override method message() returns String { return "bundle not loaded"; }
+        }
+        // Thrown when a loaded bundle's ABI fingerprint does not match what the program compiled
+        // against (spec 2.5).
+        public class BundleAbiMismatchException extends Exception {
+            public constructor BundleAbiMismatchException() {}
+            public override method message() returns String { return "bundle ABI mismatch"; }
+        }
     }
 )LDP3"
 // (split 0: keep each literal under MSVC's ~16KB cap.)

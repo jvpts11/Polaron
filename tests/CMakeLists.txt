@@ -207,6 +207,28 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_dynamic_test.cmake")
 
+        # F9 phase 3 (dynamic virtual): a virtual call on an instance from a runtime-loaded bundle,
+        # dispatched through the bundle's vtable -> Square.area = 25.
+        add_test(NAME bundle_dynamic_virtual_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_shape_lib.ldp3"
+            "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_shape_app.ldp3"
+            "-DEXPECTED=area = 25"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_dynamic_test.cmake")
+
+        # F9 phase 3 (partial compilation, spec 2.4): the bundle is absent at runtime; the program
+        # wraps the use in try/catch and catches BundleNotLoadedException instead of crashing.
+        add_test(NAME bundle_absent_caught COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_lib.ldp3"
+            "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_optional_app.ldp3"
+            "-DCONTAINS=calc not available"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_absent_test.cmake")
+
         add_test(NAME codegen_hello_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"

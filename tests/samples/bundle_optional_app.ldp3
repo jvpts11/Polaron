@@ -1,0 +1,23 @@
+import System.IO.Console;
+import math.Calc;
+import System.Runtime.BundleNotLoadedException;
+program CalcAppOptional;
+
+// Partial compilation (spec 2.4): the calc bundle is loaded dynamically and may be absent at runtime.
+// The use is wrapped in try/catch, so the program runs either way -- it prints the result if the
+// bundle is present, or a fallback message if loading it raises BundleNotLoadedException.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                try {
+                    int r = Calc.square(7);
+                    System.IO.Console.printf("square = %d\n", r);
+                } catch (BundleNotLoadedException e) {
+                    System.IO.Console.printf("calc not available\n");
+                }
+                return;
+            }
+        }
+    }
+}
