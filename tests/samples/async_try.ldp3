@@ -1,0 +1,45 @@
+import System.IO.Console;
+program AsyncTry;
+
+// async/await combined with structured exceptions (spec 20.2 + 21.1): a value computed before an
+// await stays live across the suspend even when the await sits inside a try (whose invoke edges
+// would otherwise expose the dominance failure). Exercises await in the try, a throw caught by the
+// catch, an await inside the catch, and a finally that always runs.
+
+public bundle main {
+    public namespace app {
+        public interface Throwable { }
+        public class MyError implements Throwable {
+            public mutable int code;
+            public constructor MyError() { this.code = 1; }
+        }
+        public class Main {
+            public static async method val(int n) returns int {
+                return n;
+            }
+            public static async method work(boolean fail) returns int {
+                int base = await Main.val(10);   // live across the whole try
+                mutable int out = 0;
+                try {
+                    int a = await Main.val(20);
+                    if (fail) {
+                        throw new MyError() on heap;
+                    }
+                    out = base + a;              // 30
+                } catch (MyError e) {
+                    out = base + await Main.val(5);  // 15 (base survives; await in catch)
+                } finally {
+                    out = out + 100;             // always runs
+                }
+                return out;
+            }
+            public static method main(string[] args) returns void {
+                Task<int> ok = Main.work(false);
+                System.IO.Console.printf("ok=%d\n", await ok);    // 130
+                Task<int> bad = Main.work(true);
+                System.IO.Console.printf("bad=%d\n", await bad);  // 115
+                return;
+            }
+        }
+    }
+}
