@@ -68,7 +68,9 @@ void* ldp3_bundle_load(const char* ldbPath, const unsigned char* expectedFp, int
         std::ofstream out(bc, std::ios::binary);
         out.write(b.code.data(), static_cast<std::streamsize>(b.code.size()));
         out.close();
-        const std::string cmd = "clang -shared -Wno-override-module \"" + bc + "\" -o \"" + dll +
+        // -O1 dead-strips the weak prelude functions the bundle does not use, so the DLL only keeps
+        // what it references (e.g. Object) and stays self-contained.
+        const std::string cmd = "clang -shared -O1 -Wno-override-module \"" + bc + "\" -o \"" + dll +
                                 "\" -llegacy_stdio_definitions";
         if (std::system(cmd.c_str()) != 0) return fail(LDP3_BUNDLE_MISSING, "could not be compiled");
     }

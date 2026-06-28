@@ -10,7 +10,10 @@ program RegionAtAddress;
 
 public bundle main {
     public namespace app {
-        public class Cell {
+        // A memory-mapped type is a struct: a value type with a predictable layout and no vtable, so
+        // its fields sit at fixed offsets over the hardware address (a class would carry an Object
+        // vtable pointer at offset 0).
+        public struct Cell {
             public mutable int v;
             public constructor Cell() { this.v = 0; }
         }

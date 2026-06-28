@@ -2134,14 +2134,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             const std::string bt = baseType(t);
             if (lookupClass(bt) == nullptr) {
                 error("'throw' expects an object value; got '" + t + "'", th->loc);
-            } else if (!isPolymorphic(bt)) {
-                // A non-polymorphic class has no vtable, so a catch can't match it by
-                // dynamic type (it would become a catch-all). Require a hierarchy.
-                error("thrown type '" + bt +
-                          "' must participate in a class hierarchy (extend a base or implement an "
-                          "interface) so it can be matched by 'catch'",
-                      th->loc);
             }
+            // Any polymorphic object can be thrown/caught (not only Exception subtypes). Since every
+            // class is now an Object, this is always satisfied -- the meaningful guard is "is a class".
             // The carrier must outlive unwinding: a stack object's pointer would dangle.
             bool stackThrow = false;
             if (const auto* nw = dynamic_cast<const ast::NewExpr*>(th->value.get()))
@@ -2186,12 +2181,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             checkTypeAccessible(typeRefStr(cc.type), cc.loc);
             if (lookupClass(ct) == nullptr) {
                 error("catch type '" + ct + "' is not a class", cc.loc);
-            } else if (!isPolymorphic(ct)) {
-                error("catch type '" + ct +
-                          "' must participate in a class hierarchy (a standalone class cannot be "
-                          "matched by dynamic type)",
-                      cc.loc);
             }
+            // A catch type must be a class; every class is polymorphic (an Object) so it can be
+            // matched by dynamic type.
             pushScope();
             declareLocal(cc.name, LocalVar{typeRefStr(cc.type), false});
             for (const auto& st : cc.body.statements) analyzeStatement(*st);

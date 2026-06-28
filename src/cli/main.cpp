@@ -1142,6 +1142,22 @@ void appendPrelude(ldp3::ast::Program& prog) {
     }
 }
 
+// Object is the root of the class hierarchy (spec 3.4): a regular class with no `extends` implicitly
+// extends Object. Run after the prelude is merged so Object exists. Making a class extend Object makes
+// it polymorphic (a vtable on every object), so Object's equals/hashCode dispatch on it. Excluded:
+// interfaces, value types (struct/record/union), Object itself, and freestanding code -- freestanding
+// needs a predictable layout with no hidden vtable (spec 36).
+void assignObjectRoot(ldp3::ast::Program& program) {
+    for (auto& bundle : program.bundles) {
+        if (program.isFreestanding || bundle.isFreestanding) continue;
+        for (auto& ns : bundle.namespaces)
+            for (auto& cls : ns.classes)
+                if (cls.superclass.empty() && cls.name != "Object" && !cls.isInterface &&
+                    !cls.isStruct && !cls.isRecord && !cls.isUnion)
+                    cls.superclass = "Object";
+    }
+}
+
 int printUsage(const char* prog) {
     std::fprintf(stderr,
                  "usage: %s <input.ldp3> [-o <output.ll>] [--use <dep.ldb>] [--use-dynamic <dep.ldb>]\n"
@@ -1222,6 +1238,7 @@ int checkProgram(const std::string& path) {
     appendPrelude(program);
     ldp3::resolveTypeAliases(program);           // expand `typealias` to its target everywhere (spec 24)
     ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
+    assignObjectRoot(program);                   // a class with no `extends` implicitly extends Object
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     ldp3::SemanticAnalyzer sema;
     const bool semaOk = sema.analyze(program);
@@ -1452,14 +1469,13 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
 #endif
 
     appendPrelude(program);
-    // A library doesn't define the prelude: the final executable does (the prelude is appended to
-    // every program). Importing it keeps the .ldb free of prelude definitions, so linking a bundle
-    // into a program doesn't collide on the shared prelude symbols.
-    if (libraryMode)
-        for (auto& b : program.bundles)
-            if (b.isPrelude) b.isImported = true;
+    // In a library the prelude is emitted into the .ldb with weak (linkonce_odr) linkage (handled in
+    // codegen): static linking deduplicates it against the program's own prelude, and a dynamically
+    // built DLL is self-contained (every class extends the prelude's Object). This matters now that
+    // Object is the universal root, so even a trivial bundle references the prelude.
     ldp3::resolveTypeAliases(program);           // expand `typealias` to its target everywhere (spec 24)
     ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
+    assignObjectRoot(program);                   // a class with no `extends` implicitly extends Object
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     if (optLevel > 0) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
     ldp3::SemanticAnalyzer sema;

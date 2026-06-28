@@ -13,8 +13,8 @@ public bundle main {
         }
         public class Main {
             public static method main(string[] args) returns void {
-                int n = sizeof(Pair);          // 8 (two ints)
-                int n2 = Pair.sizeof();        // 8 (the member form)
+                int n = sizeof(Pair);          // 16 (vtable pointer + two ints; every class is an Object)
+                int n2 = Pair.sizeof();        // 16 (the member form)
                 Pair p = new Pair() on stack;
                 int m = sizeof(p);             // size of p's type (pointer to Pair)
                 System.IO.Console.printf("n=%d n2=%d mpos=%d\n", n, n2, m > 0);

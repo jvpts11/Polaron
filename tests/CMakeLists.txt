@@ -47,11 +47,8 @@ add_test(NAME sema_rejects_throw_int
 set_tests_properties(sema_rejects_throw_int PROPERTIES
     PASS_REGULAR_EXPRESSION "'throw' expects an object")
 
-# catch of a non-polymorphic class must be rejected (was a silent catch-all).
-add_test(NAME sema_rejects_catch_nonpoly
-    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/catch_nonpoly_bad.ldp3")
-set_tests_properties(sema_rejects_catch_nonpoly PROPERTIES
-    PASS_REGULAR_EXPRESSION "must participate in a class hierarchy")
+# (Removed: "catch of a non-polymorphic class" -- with Object as the universal root every class is
+# polymorphic and therefore catchable, so that error scenario no longer exists.)
 
 # a `const` initializer that is not a compile-time constant must be rejected (spec 28.1).
 add_test(NAME sema_rejects_nonconst_const
@@ -747,7 +744,7 @@ if(LDP3_WITH_LLVM)
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sizeof_type.ldp3"
-            "-DEXPECTED=n=8 n2=8 mpos=1"
+            "-DEXPECTED=n=16 n2=16 mpos=1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

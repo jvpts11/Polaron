@@ -289,6 +289,7 @@ struct CodeGenerator::Impl {
     // fingerprint the program compiled against. Their functions become runtime-resolving thunks.
     std::unordered_map<std::string, std::pair<std::string, std::array<std::uint8_t, 32>>> dynamicBundles;
     std::unordered_map<std::string, llvm::GlobalVariable*> dynBundleHandle;  // per-bundle cached handle
+    std::unordered_set<std::string> preludeClasses;  // classes from the embedded prelude (weak in .ldb)
     std::unordered_map<std::string, std::vector<std::string>> enums;  // name -> constants (ordinals)
     std::unordered_map<std::string, const ast::EnumDecl*> javaEnums;  // java-style enum decls
     // Catalog-implementing enums kept as enums (int-style ordinals) but carrying
@@ -6306,6 +6307,7 @@ struct CodeGenerator::Impl {
                     layout.imported = bundle.isImported;  // bodies + full layout live in the .ldb
                     layout.dynamic = bundle.isDynamic;    // functions resolved at runtime via thunks
                     layout.bundleName = bundle.name;
+                    if (bundle.isPrelude) preludeClasses.insert(cls.name);
                     layout.type = llvm::StructType::create(context, "class." + cls.name);
                     layout.superclass = cls.superclass;
                     layout.interfaces = cls.interfaces;
@@ -6616,13 +6618,24 @@ struct CodeGenerator::Impl {
         }
     }
 
-    // Marks the bundle's own defined functions dll-exported. When the .ldb's bitcode is built into a
-    // DLL for dynamic loading, the runtime resolves these by name (GetProcAddress). Imported/prelude
-    // functions are declarations (no body) and stay unexported. Harmless for static linking.
+    // Prepares the .ldb's symbols for both linking modes. The bundle's own functions are dll-exported
+    // so a dynamic consumer resolves them by name (GetProcAddress). Prelude functions are made weak
+    // (linkonce_odr): static linking deduplicates them against the program's own prelude, and a
+    // dynamically built DLL is self-contained (every class extends the prelude's Object) -- unused
+    // prelude functions are then dead-stripped when the DLL is built.
     void exportBundleSymbols() {
-        for (llvm::Function& f : module.functions())
-            if (!f.isDeclaration())
+        for (llvm::Function& f : module.functions()) {
+            if (f.isDeclaration()) continue;
+            const llvm::StringRef name = f.getName();
+            const std::size_t dot = name.find('.');
+            const bool prelude =
+                name.starts_with("literal.") ||
+                (dot != llvm::StringRef::npos && preludeClasses.count(name.substr(0, dot).str()) > 0);
+            if (prelude)
+                f.setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
+            else
                 f.setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+        }
     }
 
     // Emits a runtime-resolving thunk for each function of a dynamically-loaded bundle (--use-dynamic).
