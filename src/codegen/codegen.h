@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -37,6 +39,11 @@ public:
     // Seeds the global vtable slot numbering from depended-on bundles (their vtableSlotNames), so a
     // virtual call on an imported object hits the slot its baked-in vtable uses. Call before generate().
     void seedVtableSlots(const std::vector<std::string>& slotNames);
+
+    // Registers a dynamically-loaded bundle (--use-dynamic): its AST name, the .ldb path to load at
+    // runtime, and the ABI fingerprint to verify. Its functions become runtime-resolving thunks.
+    void addDynamicBundle(const std::string& bundleName, const std::string& ldbPath,
+                          const std::array<std::uint8_t, 32>& fingerprint);
 
     // The global vtable slot layout after generate(): slotNames[i] is the method at slot i. Stored in
     // the .ldb so consumers can seed from it.

@@ -232,6 +232,8 @@ struct ClassLayout {
     bool hasDestructor = false;
     bool imported = false;  // from a depended-on .ldb: allocate/destroy via the bundle's exported
                             // Class.__new / Class.__delete (the layout here is the public API only)
+    bool dynamic = false;   // imported via --use-dynamic: its functions are runtime-resolved thunks
+    std::string bundleName; // owning bundle (for dynamic classes: which .ldb to load)
     std::vector<std::string> vtslots;          // virtual method names, in slot order
     llvm::GlobalVariable* vtable = nullptr;     // emitted vtable global (concrete classes)
     // Persistent instance fields (spec 18): they live in a per-variable disk-backed block,
@@ -283,6 +285,10 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, int> methodSlots;  // virtual method name -> global slot
     std::vector<std::string> methodSlotNames;          // global slot -> method name
     std::vector<std::string> seededSlots;              // slot layout adopted from imported bundles
+    // Dynamic bundles (--use-dynamic), keyed by AST bundle name: the .ldb path and the ABI
+    // fingerprint the program compiled against. Their functions become runtime-resolving thunks.
+    std::unordered_map<std::string, std::pair<std::string, std::array<std::uint8_t, 32>>> dynamicBundles;
+    std::unordered_map<std::string, llvm::GlobalVariable*> dynBundleHandle;  // per-bundle cached handle
     std::unordered_map<std::string, std::vector<std::string>> enums;  // name -> constants (ordinals)
     std::unordered_map<std::string, const ast::EnumDecl*> javaEnums;  // java-style enum decls
     // Catalog-implementing enums kept as enums (int-style ordinals) but carrying
@@ -6282,6 +6288,8 @@ struct CodeGenerator::Impl {
                     ClassLayout layout;
                     layout.decl = &cls;
                     layout.imported = bundle.isImported;  // bodies + full layout live in the .ldb
+                    layout.dynamic = bundle.isDynamic;    // functions resolved at runtime via thunks
+                    layout.bundleName = bundle.name;
                     layout.type = llvm::StructType::create(context, "class." + cls.name);
                     layout.superclass = cls.superclass;
                     layout.interfaces = cls.interfaces;
@@ -6588,6 +6596,95 @@ struct CodeGenerator::Impl {
                                                      llvm::GlobalValue::PrivateLinkage, init, key);
                     }
                 }
+            }
+        }
+    }
+
+    // Marks the bundle's own defined functions dll-exported. When the .ldb's bitcode is built into a
+    // DLL for dynamic loading, the runtime resolves these by name (GetProcAddress). Imported/prelude
+    // functions are declarations (no body) and stay unexported. Harmless for static linking.
+    void exportBundleSymbols() {
+        for (llvm::Function& f : module.functions())
+            if (!f.isDeclaration())
+                f.setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+    }
+
+    // Emits a runtime-resolving thunk for each function of a dynamically-loaded bundle (--use-dynamic).
+    // The thunk lazily loads the .ldb (cached in a per-bundle handle global), resolves the symbol, and
+    // forwards the call. A missing bundle / unresolved symbol aborts via ldp3_bundle_fail (spec 2.4).
+    void emitDynamicThunks() {
+        if (dynamicBundles.empty()) return;
+        llvm::PointerType* ptrTy = builder.getPtrTy();
+        llvm::FunctionCallee loadFn = module.getOrInsertFunction(
+            "ldp3_bundle_load", llvm::FunctionType::get(ptrTy, {ptrTy, ptrTy, ptrTy}, false));
+        llvm::FunctionCallee symFn = module.getOrInsertFunction(
+            "ldp3_bundle_sym", llvm::FunctionType::get(ptrTy, {ptrTy, ptrTy}, false));
+        llvm::FunctionCallee failFn = module.getOrInsertFunction(
+            "ldp3_bundle_fail", llvm::FunctionType::get(builder.getVoidTy(), {ptrTy}, false));
+        llvm::Constant* nullp = llvm::ConstantPointerNull::get(ptrTy);
+
+        for (auto& [cn, cl] : classes) {
+            if (!cl.dynamic) continue;
+            auto dbit = dynamicBundles.find(cl.bundleName);
+            if (dbit == dynamicBundles.end()) continue;
+            const std::string& ldbPath = dbit->second.first;
+            const auto& fp = dbit->second.second;
+
+            std::vector<std::string> names;  // symbols to thunk: methods + __new + __delete
+            if (cl.decl != nullptr)
+                for (const ast::MemberPtr& m : cl.decl->members)
+                    if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()))
+                        if (!md->isAbstract) names.push_back(cn + "." + md->name);
+            if (functions.count(cn + ".__new") != 0) names.push_back(cn + ".__new");
+            if (functions.count(cn + ".__delete") != 0) names.push_back(cn + ".__delete");
+
+            for (const std::string& name : names) {
+                auto fit = functions.find(name);
+                if (fit == functions.end() || !fit->second->isDeclaration()) continue;
+                llvm::Function* f = fit->second;
+                currentFn = f;
+                builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", f));
+
+                llvm::GlobalVariable*& hg = dynBundleHandle[cl.bundleName];
+                if (hg == nullptr)
+                    hg = new llvm::GlobalVariable(module, ptrTy, false,
+                                                  llvm::GlobalValue::InternalLinkage, nullp,
+                                                  "__dynh_" + cl.bundleName);
+                llvm::Value* cur = builder.CreateLoad(ptrTy, hg, "h");
+                llvm::BasicBlock* loadBB = llvm::BasicBlock::Create(context, "dyn.load", f);
+                llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "dyn.cont", f);
+                builder.CreateCondBr(builder.CreateICmpEQ(cur, nullp), loadBB, contBB);
+
+                builder.SetInsertPoint(loadBB);
+                llvm::Value* pathS = builder.CreateGlobalStringPtr(ldbPath, ".dynpath");
+                llvm::Constant* fpArr =
+                    llvm::ConstantDataArray::get(context, llvm::ArrayRef<std::uint8_t>(fp.data(), 32));
+                auto* fpG = new llvm::GlobalVariable(module, fpArr->getType(), true,
+                                                     llvm::GlobalValue::PrivateLinkage, fpArr, ".dynfp");
+                llvm::Value* nh = builder.CreateCall(loadFn, {pathS, fpG, nullp}, "loaded");
+                builder.CreateStore(nh, hg);
+                builder.CreateBr(contBB);
+
+                builder.SetInsertPoint(contBB);
+                llvm::Value* h = builder.CreateLoad(ptrTy, hg, "bundle");
+                llvm::Value* nameS = builder.CreateGlobalStringPtr(name, ".dynsym");
+                llvm::Value* sym = builder.CreateCall(symFn, {h, nameS}, "sym");
+                llvm::BasicBlock* failBB = llvm::BasicBlock::Create(context, "dyn.fail", f);
+                llvm::BasicBlock* callBB = llvm::BasicBlock::Create(context, "dyn.call", f);
+                builder.CreateCondBr(builder.CreateICmpEQ(sym, nullp), failBB, callBB);
+
+                builder.SetInsertPoint(failBB);
+                builder.CreateCall(failFn, {nameS});
+                builder.CreateUnreachable();
+
+                builder.SetInsertPoint(callBB);
+                std::vector<llvm::Value*> args;
+                for (auto& a : f->args()) args.push_back(&a);
+                llvm::Value* r = builder.CreateCall(f->getFunctionType(), sym, args);
+                if (f->getReturnType()->isVoidTy())
+                    builder.CreateRetVoid();
+                else
+                    builder.CreateRet(r);
             }
         }
     }
@@ -7439,6 +7536,11 @@ void CodeGenerator::seedVtableSlots(const std::vector<std::string>& slotNames) {
     impl_->seededSlots = slotNames;
 }
 
+void CodeGenerator::addDynamicBundle(const std::string& bundleName, const std::string& ldbPath,
+                                     const std::array<std::uint8_t, 32>& fingerprint) {
+    impl_->dynamicBundles[bundleName] = {ldbPath, fingerprint};
+}
+
 const std::vector<std::string>& CodeGenerator::vtableSlotNames() const {
     return impl_->methodSlotNames;
 }
@@ -7456,6 +7558,8 @@ bool CodeGenerator::generate() {
     impl_->buildFunctionTable();  // address table for physical unimport (spec 30)
     impl_->emitVtables();
     impl_->emitFunctions();
+    impl_->emitDynamicThunks();  // runtime-resolving thunks for --use-dynamic bundles
+    if (impl_->libraryMode) impl_->exportBundleSymbols();  // make the .ldb's functions DLL-loadable
     if (!errors_.empty()) return false;
 
     std::string verifyMsg;

@@ -185,6 +185,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_link_test.cmake")
 
+        # F9 phase 3 (dynamic load): the consumer loads the bundle at runtime (--use-dynamic). The
+        # loader AOT-compiles the .ldb's bitcode to a DLL with clang and resolves the call -> 49.
+        add_test(NAME bundle_dynamic_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_lib.ldp3"
+            "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_app.ldp3"
+            "-DEXPECTED=square = 49"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_dynamic_test.cmake")
+
         add_test(NAME codegen_hello_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"

@@ -12,6 +12,12 @@
 #include <string.h>
 #include <stdint.h>
 
+// The IR calls these by their plain C names. Keep C linkage even when this file is compiled as part
+// of a C++ link (e.g. alongside the dynamic-bundle loader), so the names are not mangled.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Defined-behaviour panic: LDP3 never invokes UB. When a check fails (division by zero,
 // out-of-bounds, etc.) the program terminates deterministically with a message instead of
 // continuing into undefined territory.
@@ -617,3 +623,7 @@ struct Ldp3Point ldp3_point_scale(struct Ldp3Point p, int k) {
 
 // FFI callback test helper (spec 26): a C function that takes a raw function pointer and calls it.
 int ldp3_apply_cb(int (*f)(int), int x) { return f(x); }
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif

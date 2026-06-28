@@ -875,6 +875,8 @@ struct Bundle {
     bool isPrelude = false;       // from the embedded prelude, not user source; excluded from the .ldh
     bool isImported = false;      // from a depended-on .ldb (parsed from its .ldh): types are visible,
                                   // but bodies live in the .ldb -- sema skips them, codegen externs them
+    bool isDynamic = false;       // imported via --use-dynamic: loaded at runtime; codegen emits thunks
+                                  // that load the .ldb and resolve the symbol instead of linking it
     std::vector<ImportDecl> imports;
     std::vector<Namespace> namespaces;
     SourceLocation loc;
