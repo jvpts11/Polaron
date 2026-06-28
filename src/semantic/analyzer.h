@@ -105,7 +105,9 @@ struct AnnotationInfo {
 // resolving locals, `this`, fields, methods and `new`.
 class SemanticAnalyzer {
 public:
-    bool analyze(const ast::Program& program);
+    // Analyzes a program. In library mode (compiling a bundle to a .ldb) a missing `main` is allowed:
+    // a library has no entry point.
+    bool analyze(const ast::Program& program, bool libraryMode = false);
 
     bool hasErrors() const { return !errors_.empty(); }
     const std::vector<SemaError>& errors() const { return errors_; }
@@ -236,6 +238,7 @@ private:
     std::unordered_set<std::string> qualifiedTypes_;  // namespace-disambiguated names: import-exempt
     std::string currentNamespace_;  // namespace being analyzed (visibility checks)
     bool freestanding_ = false;     // spec 36: no managed-runtime features in this program
+    bool libraryMode_ = false;      // compiling a bundle to a .ldb: a missing `main` is allowed
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     std::unordered_set<std::string> deleted_;  // locals deleted in this scope (spec 18.2 reattach)

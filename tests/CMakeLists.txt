@@ -129,6 +129,15 @@ if(LDP3_WITH_LLVM)
     set_tests_properties(codegen_region_raii_frees PROPERTIES
         PASS_REGULAR_EXPRESSION "call void @free")
 
+    # F9: `--lib` compiles a bundle to a .ldb (+ .ldh). The round-trip (--lib then --dump-ldb) must
+    # show the bundle name and the public method signature in the generated .ldh.
+    add_test(NAME bundle_lib_roundtrip COMMAND "${CMAKE_COMMAND}"
+        "-DLDP3C=$<TARGET_FILE:ldp3c>"
+        "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_lib.ldp3"
+        "-DCONTAINS=public method gain(int delta) returns int"
+        "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_test.cmake")
+
     # Full pipeline: compile to .exe with clang and check it prints correctly.
     find_program(LDP3_CLANG clang HINTS "C:/Program Files/LLVM/bin")
     if(LDP3_CLANG)

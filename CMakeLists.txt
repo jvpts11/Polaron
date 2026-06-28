@@ -22,6 +22,7 @@ set(LDP3_CORE_SOURCES
     src/parser/loopopt.cpp
     src/semantic/analyzer.cpp
     src/semantic/comptime.cpp
+    src/bundle/ldh.cpp  # public-API header (.ldh) generation; AST-only, no LLVM
 )
 
 # The codegen backend needs the LLVM dev SDK (vcpkg: llvm:x64-windows).
@@ -44,7 +45,7 @@ if(LDP3_WITH_LLVM)
     # core: IRBuilder/module. passes: our in-process optimization pipeline (PassBuilder) -- ldp3c
     # runs its own middle-end passes (the transforms clang's default pipeline omits) before handing
     # the IR to clang for backend + link.
-    llvm_map_components_to_libnames(LDP3_LLVM_LIBS core passes)
+    llvm_map_components_to_libnames(LDP3_LLVM_LIBS core passes bitwriter)
     target_link_libraries(ldp3_core PUBLIC ${LDP3_LLVM_LIBS})
 endif()
 

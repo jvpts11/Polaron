@@ -872,6 +872,7 @@ struct Bundle {
     std::string visibility;
     std::string name;
     bool isFreestanding = false;  // `bundle X freestanding { ... }` (spec 36)
+    bool isPrelude = false;       // from the embedded prelude, not user source; excluded from the .ldh
     std::vector<ImportDecl> imports;
     std::vector<Namespace> namespaces;
     SourceLocation loc;

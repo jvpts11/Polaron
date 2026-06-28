@@ -24,7 +24,10 @@
 #include "parser/parser.h"
 #include "semantic/analyzer.h"
 
+#include "bundle/ldh.h"
+
 #ifdef LDP3_WITH_LLVM
+#include "bundle/ldb.h"
 #include "codegen/codegen.h"
 #endif
 
@@ -1110,17 +1113,22 @@ void appendPrelude(ldp3::ast::Program& prog) {
         std::fprintf(stderr, "internal error: the embedded prelude failed to parse\n");
         return;
     }
-    for (auto& bundle : prelude.bundles) prog.bundles.push_back(std::move(bundle));
+    for (auto& bundle : prelude.bundles) {
+        bundle.isPrelude = true;  // not user source; kept out of the .ldh
+        prog.bundles.push_back(std::move(bundle));
+    }
 }
 
 int printUsage(const char* prog) {
     std::fprintf(stderr,
                  "usage: %s <input.ldp3> [-o <output.ll>]\n"
+                 "       %s --lib <input.ldp3> -o <output.ldb>   (compile a bundle; emits .ldb + .ldh)\n"
+                 "       %s --dump-ldb <input.ldb>\n"
                  "       %s --dump-tokens <input.ldp3>\n"
                  "       %s --dump-ast <input.ldp3>\n"
                  "       %s --check <input.ldp3>\n"
                  "       %s --version\n",
-                 prog, prog, prog, prog, prog);
+                 prog, prog, prog, prog, prog, prog, prog);
     return 2;
 }
 
@@ -1212,8 +1220,47 @@ int checkProgram(const std::string& path) {
 // file declares `program <Name>;` (all must agree); their bundles are merged
 // (the semantic catalog is flat, so concatenation is enough). `inputs` outlives
 // this call, so token SourceLocations (string_views into the paths) stay valid.
+// Prints a .ldb's header (name, version, flags, fingerprint, code size) and its embedded .ldh.
+int dumpLdb(const std::string& path) {
+#ifdef LDP3_WITH_LLVM
+    auto bytes = readFile(path);
+    if (!bytes) {
+        std::fprintf(stderr, "error: cannot open '%s'\n", path.c_str());
+        return 1;
+    }
+    ldp3::LdbBundle b;
+    if (!ldp3::readLdb(*bytes, b)) {
+        std::fprintf(stderr, "error: '%s' is not a valid .ldb bundle\n", path.c_str());
+        return 1;
+    }
+    std::printf("bundle: %s\n", b.name.c_str());
+    std::printf("version: %s\n", b.version.c_str());
+    std::printf("flags: 0x%04x%s\n", static_cast<unsigned>(b.flags),
+                (b.flags & ldp3::LdbBundle::kFreestanding) ? " (freestanding)" : "");
+    std::printf("fingerprint: ");
+    for (unsigned char c : b.fingerprint) std::printf("%02x", c);
+    std::printf("\ncode: %llu bytes of bitcode\n", static_cast<unsigned long long>(b.code.size()));
+    for (const ldp3::LdbDep& d : b.deps)
+        std::printf("dep: %s %s\n", d.name.c_str(), d.versionConstraint.c_str());
+    for (const std::string& c : b.capabilities) std::printf("capability: %s\n", c.c_str());
+    std::printf("--- .ldh ---\n%s", b.ldh.c_str());
+    return 0;
+#else
+    (void)path;
+    std::fprintf(stderr, "error: this ldp3c was built without the LLVM backend\n");
+    return 1;
+#endif
+}
+
+// Derives the .ldh path that sits next to a .ldb output (foo.ldb -> foo.ldh; otherwise append .ldh).
+std::string ldhPathFor(const std::string& ldbPath) {
+    if (ldbPath.size() >= 4 && ldbPath.compare(ldbPath.size() - 4, 4, ".ldb") == 0)
+        return ldbPath.substr(0, ldbPath.size() - 4) + ".ldh";
+    return ldbPath + ".ldh";
+}
+
 int compile(const std::vector<std::string>& inputs, const std::string& outPath,
-            const std::string& target = "", int optLevel = 0) {
+            const std::string& target = "", int optLevel = 0, bool libraryMode = false) {
     ldp3::ast::Program program;
     std::string programName;
     // Keep each file's source alive only within its iteration: the AST copies
@@ -1251,7 +1298,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     if (optLevel > 0) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
     ldp3::SemanticAnalyzer sema;
-    const bool semaOk = sema.analyze(program);
+    const bool semaOk = sema.analyze(program, libraryMode);
     for (const ldp3::SemaError& w : sema.warnings()) {
         std::fprintf(stderr, "%.*s:%d:%d: warning: %s\n", static_cast<int>(w.loc.file.size()),
                      w.loc.file.data(), w.loc.line, w.loc.col, w.message.c_str());
@@ -1267,6 +1314,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
 #ifdef LDP3_WITH_LLVM
     ldp3::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
     if (!target.empty()) codegen.setTargetTriple(target);  // e.g. --target=x86_64-unknown-none
+    codegen.setLibrary(libraryMode);  // a .ldb has no entry point / `main`
     if (!codegen.generate()) {
         for (const ldp3::CodegenError& e : codegen.errors()) {
             std::fprintf(stderr, "%.*s:%d:%d: codegen error: %s\n",
@@ -1276,6 +1324,37 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         return 1;
     }
     codegen.optimize(optLevel);  // ldp3c's own optimization pipeline (no-op at -O0)
+
+    if (libraryMode) {
+        // Emit a self-describing .ldb bundle plus a standalone .ldh header. The bundle name is the
+        // program name; versioning arrives with the manifest (F10 toolchain). CODE is bitcode so a
+        // consumer can LTO it (static) or JIT it (dynamic).
+        ldp3::LdbBundle bundle;
+        bundle.name = program.name;
+        bundle.version = "0.0.0";
+        if (program.isFreestanding) bundle.flags |= ldp3::LdbBundle::kFreestanding;
+        bundle.ldh = ldp3::generateLdh(program);
+        bundle.fingerprint = ldp3::ldbFingerprint(bundle.ldh);
+        bundle.code = codegen.toBitcode();
+        const std::string ldbPath = outPath.empty() ? program.name + ".ldb" : outPath;
+        const std::string ldhPath = ldhPathFor(ldbPath);
+        std::ofstream ldb(ldbPath, std::ios::binary);
+        if (!ldb) {
+            std::fprintf(stderr, "error: cannot write bundle file '%s'\n", ldbPath.c_str());
+            return 1;
+        }
+        ldb << ldp3::writeLdb(bundle);
+        std::ofstream ldh(ldhPath, std::ios::binary);
+        if (!ldh) {
+            std::fprintf(stderr, "error: cannot write header file '%s'\n", ldhPath.c_str());
+            return 1;
+        }
+        ldh << bundle.ldh;
+        std::printf("OK: bundle '%s' -> %s, %s\n", program.name.c_str(), ldbPath.c_str(),
+                    ldhPath.c_str());
+        return 0;
+    }
+
     const std::string ir = codegen.toIR();
     if (outPath.empty()) {
         std::fputs(ir.c_str(), stdout);
@@ -1320,11 +1399,20 @@ int main(int argc, char** argv) {
         return checkProgram(path);
     }
 
-    // Compile mode: <input...> [-o <output>]. A program may span several files.
+    if (args[0] == "--dump-ldb") {  // inspect a .ldb: print its header + embedded .ldh
+        if (args.size() < 2) {
+            std::fprintf(stderr, "error: --dump-ldb requires a .ldb file\n");
+            return printUsage(argv[0]);
+        }
+        return dumpLdb(std::string(args[1]));
+    }
+
+    // Compile mode: <input...> [-o <output>] [--lib]. A program may span several files.
     std::vector<std::string> inputs;
     std::string output;
     std::string target;  // --target=<triple>, e.g. x86_64-unknown-none for freestanding/bare metal
     int optLevel = 0;    // -O0..-O3: run ldp3c's own optimization pipeline before emitting IR
+    bool libraryMode = false;  // --lib: compile a bundle to a .ldb (+ .ldh), no entry point required
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "-o") {
             if (i + 1 >= args.size()) {
@@ -1333,6 +1421,8 @@ int main(int argc, char** argv) {
             }
             output = std::string(args[i + 1]);
             ++i;
+        } else if (args[i] == "--lib") {
+            libraryMode = true;
         } else if (args[i].rfind("--target=", 0) == 0) {
             target = std::string(args[i].substr(9));
         } else if (args[i] == "-O" || args[i] == "-O2") {
@@ -1351,5 +1441,5 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: no input files\n");
         return printUsage(argv[0]);
     }
-    return compile(inputs, output, target, optLevel);
+    return compile(inputs, output, target, optLevel, libraryMode);
 }

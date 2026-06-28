@@ -1,0 +1,241 @@
+#include "bundle/ldh.h"
+
+namespace ldp3 {
+namespace {
+
+using namespace ast;
+
+// A type spelled for the header: generic mangling ("Box$int") shown as source ("Box<int>"), then the
+// array / pointer / reference / nullable markers. One level of generics is demangled; deeper nesting
+// keeps the mangled args (refined when the header is re-parsed for type-checking, phase 2).
+std::string spellType(const TypeRef& t) {
+    std::string out;
+    const std::size_t sep = t.name.find('$');
+    if (sep == std::string::npos) {
+        out = t.name;
+        if (!t.typeArgs.empty()) {
+            out += "<";
+            for (std::size_t i = 0; i < t.typeArgs.size(); ++i) {
+                if (i) out += ", ";
+                out += t.typeArgs[i];
+            }
+            out += ">";
+        }
+    } else {
+        out = t.name.substr(0, sep) + "<";
+        std::size_t start = sep + 1;
+        bool first = true;
+        while (start <= t.name.size()) {
+            const std::size_t next = t.name.find('$', start);
+            if (!first) out += ", ";
+            out += t.name.substr(start, next == std::string::npos ? std::string::npos : next - start);
+            first = false;
+            if (next == std::string::npos) break;
+            start = next + 1;
+        }
+        out += ">";
+    }
+    out += arrayDimsSuffix(t.arrayDims);
+    if (t.isPointer) out += "*";
+    if (t.isRef) out += "&";
+    if (t.isNullable) out += "?";
+    return out;
+}
+
+std::string spellParams(const std::vector<Param>& params) {
+    std::string out;
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        if (i) out += ", ";
+        out += spellType(params[i].type) + " " + params[i].name;
+    }
+    return out;
+}
+
+std::string spellTypeParams(const std::vector<std::string>& tps) {
+    if (tps.empty()) return "";
+    std::string out = "<";
+    for (std::size_t i = 0; i < tps.size(); ++i) {
+        if (i) out += ", ";
+        out += tps[i];
+    }
+    return out + ">";
+}
+
+// Members visible across a bundle boundary: public (callers) and protected (subclassers).
+bool exposed(const std::string& vis) { return vis == "public" || vis == "protected"; }
+
+struct Emitter {
+    std::string out;
+    int indent = 0;
+    void line(const std::string& s) {
+        out.append(static_cast<std::size_t>(indent) * 4, ' ');
+        out += s;
+        out += '\n';
+    }
+};
+
+void emitMethod(Emitter& e, const MethodDecl& m) {
+    if (!exposed(m.visibility)) return;
+    std::string s = m.visibility + " ";
+    if (m.isStatic) s += "static ";
+    if (m.isAbstract) s += "abstract ";
+    if (m.isOverride) s += "override ";
+    if (m.isFinal) s += "final ";
+    if (m.isAsync) s += "async ";
+    if (m.isComptime) s += "comptime ";
+    if (m.isVolatile) s += "volatile ";
+    if (m.isExtern) s += "extern " + (m.externConvention.empty() ? "" : m.externConvention + " ");
+    s += "method " + m.name + spellTypeParams(m.typeParams) + "(" + spellParams(m.params) + ")";
+    s += " returns " + spellType(m.returnType);
+    if (!m.throwsTypes.empty()) {
+        s += " throws(";
+        for (std::size_t i = 0; i < m.throwsTypes.size(); ++i) {
+            if (i) s += ", ";
+            s += spellType(m.throwsTypes[i]);
+        }
+        s += ")";
+    }
+    e.line(s + ";");
+}
+
+void emitField(Emitter& e, const FieldDecl& f) {
+    if (!exposed(f.visibility)) return;
+    std::string s = f.visibility + " ";
+    if (f.isStatic) s += "static ";
+    if (f.isMutable) s += "mutable ";
+    if (f.isPersistent) s += f.isEternal ? "eternal persistent " : "persistent ";
+    if (f.isTransient) s += "transient ";
+    if (f.isVolatile) s += "volatile ";
+    if (f.isLazy) s += "lazy ";
+    if (f.isExternal) s += "external ";
+    if (f.isMovable) s += "movable ";
+    if (f.isUnique) s += "unique ";
+    s += spellType(f.type) + " " + f.name;
+    if (f.bitWidth > 0) s += " : " + std::to_string(f.bitWidth);
+    e.line(s + ";");
+}
+
+void emitClass(Emitter& e, const ClassDecl& c) {
+    if (c.visibility != "public") return;
+    std::string kind = "class";
+    if (c.isInterface) kind = "interface";
+    else if (c.isStruct) kind = "struct";
+    else if (c.isRecord) kind = "record";
+    else if (c.isUnion) kind = "union";
+
+    std::string head = "public ";
+    if (c.isAbstract && !c.isInterface) head += "abstract ";
+    if (c.isFinal) head += "final ";
+    if (c.isSealed) head += "sealed ";
+    if (c.isMovable) head += "movable ";
+    if (c.isUnique) head += "unique ";
+    if (c.isPartitionable) head += "partitionable ";
+    head += kind + " " + c.name + spellTypeParams(c.typeParams);
+    if (!c.superclass.empty()) head += " extends " + c.superclass;
+    if (!c.interfaces.empty()) {
+        head += " implements ";
+        for (std::size_t i = 0; i < c.interfaces.size(); ++i) {
+            if (i) head += ", ";
+            head += c.interfaces[i];
+        }
+    }
+    if (!c.permits.empty()) {
+        head += " permits ";
+        for (std::size_t i = 0; i < c.permits.size(); ++i) {
+            if (i) head += ", ";
+            head += c.permits[i];
+        }
+    }
+    e.line(head + " {");
+    ++e.indent;
+    for (const MemberPtr& m : c.members) {
+        if (const auto* method = dynamic_cast<const MethodDecl*>(m.get())) emitMethod(e, *method);
+        else if (const auto* field = dynamic_cast<const FieldDecl*>(m.get())) emitField(e, *field);
+        else if (const auto* ctor = dynamic_cast<const ConstructorDecl*>(m.get())) {
+            if (exposed(ctor->visibility))
+                e.line(ctor->visibility + " constructor " + c.name + "(" + spellParams(ctor->params) + ");");
+        } else if (const auto* lit = dynamic_cast<const LiteralDecl*>(m.get())) {
+            if (exposed(lit->visibility))
+                e.line(lit->visibility + " comptime literal " + lit->name + "(" +
+                       spellType(lit->param.type) + " " + lit->param.name + ") returns " +
+                       spellType(lit->returnType) + ";");
+        } else if (const auto* cst = dynamic_cast<const ConstDecl*>(m.get())) {
+            if (exposed(cst->visibility))
+                e.line(cst->visibility + " const " + spellType(cst->type) + " " + cst->name + ";");
+        }
+    }
+    --e.indent;
+    e.line("}");
+}
+
+void emitEnum(Emitter& e, const EnumDecl& en) {
+    if (en.visibility != "public") return;
+    std::string s = "public enum " + en.name + " { ";
+    for (std::size_t i = 0; i < en.constants.size(); ++i) {
+        if (i) s += ", ";
+        s += en.constants[i];
+    }
+    s += " }";
+    if (!en.isJavaStyle) {
+        e.line(s);
+        return;
+    }
+    // Java-style: keep the constant list, then expose the public method signatures.
+    e.line("public enum " + en.name + " {");
+    ++e.indent;
+    std::string consts;
+    for (std::size_t i = 0; i < en.constants.size(); ++i) {
+        if (i) consts += ", ";
+        consts += en.constants[i];
+    }
+    e.line(consts + ";");
+    for (const MemberPtr& m : en.members)
+        if (const auto* method = dynamic_cast<const MethodDecl*>(m.get())) emitMethod(e, *method);
+    --e.indent;
+    e.line("}");
+}
+
+void emitCatalog(Emitter& e, const CatalogDecl& cat) {
+    if (cat.visibility != "public") return;
+    e.line("public catalog " + cat.name + " {");
+    ++e.indent;
+    for (const std::string& v : cat.requiredValues) e.line(v + ";");
+    for (const MemberPtr& m : cat.methods)
+        if (const auto* method = dynamic_cast<const MethodDecl*>(m.get())) emitMethod(e, *method);
+    --e.indent;
+    e.line("}");
+}
+
+void emitNamespace(Emitter& e, const Namespace& ns) {
+    if (ns.visibility != "public") return;
+    e.line("public namespace " + ns.name + " {");
+    ++e.indent;
+    for (const TypeAliasDecl& a : ns.typeAliases)
+        if (a.visibility == "public")
+            e.line("public " + std::string(a.isNewtype ? "newtype " : "typealias ") + a.name +
+                   " = " + spellType(a.target) + ";");
+    for (const ClassDecl& c : ns.classes) emitClass(e, c);
+    for (const EnumDecl& en : ns.enums) emitEnum(e, en);
+    for (const CatalogDecl& cat : ns.catalogs) emitCatalog(e, cat);
+    --e.indent;
+    e.line("}");
+}
+
+}  // namespace
+
+std::string generateLdh(const Program& program) {
+    Emitter e;
+    e.line("program " + program.name + ";");
+    e.line("");
+    for (const Bundle& b : program.bundles) {
+        if (b.isPrelude || b.visibility != "public") continue;  // the .ldh describes user source only
+        e.line("public bundle " + b.name + (b.isFreestanding ? " freestanding" : "") + " {");
+        ++e.indent;
+        for (const Namespace& ns : b.namespaces) emitNamespace(e, ns);
+        --e.indent;
+        e.line("}");
+    }
+    return e.out;
+}
+
+}  // namespace ldp3

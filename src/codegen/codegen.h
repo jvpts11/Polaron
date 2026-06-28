@@ -30,6 +30,10 @@ public:
     // Call before generate(). Default: none (the host applies its triple).
     void setTargetTriple(const std::string& triple);
 
+    // Library mode: compiling a bundle to a .ldb. No entry point is required and no `main` wrapper is
+    // emitted. Call before generate().
+    void setLibrary(bool library);
+
     // Builds the module. Returns true on success (no errors, module verified).
     bool generate();
 
@@ -43,6 +47,10 @@ public:
 
     // The textual LLVM IR (.ll); valid after a successful generate().
     std::string toIR() const;
+
+    // The compiled module as LLVM bitcode -- the .ldb "CODE" section. Bitcode keeps cross-bundle
+    // optimization possible (static LTO / dynamic JIT). Valid after a successful generate().
+    std::string toBitcode() const;
 
 private:
     struct Impl;

@@ -1,0 +1,25 @@
+program AudioLib;
+
+// A library bundle: no `main`. Compiled with `ldp3c --lib` to a .ldb (+ .ldh). Its public API --
+// the Mixer class and its public methods -- is what a consumer type-checks against.
+public bundle audio {
+    public namespace mix {
+
+        public class Mixer {
+            private mutable int level;
+
+            public constructor Mixer(int start) {
+                this.level = start;
+            }
+
+            public method gain(int delta) returns int {
+                this.level = this.level + delta;
+                return this.level;
+            }
+
+            public method level() returns int {
+                return this.level;
+            }
+        }
+    }
+}

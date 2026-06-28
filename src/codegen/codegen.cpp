@@ -1,6 +1,7 @@
 #include "llvm/IR/MDBuilder.h"
 #include "codegen/codegen.h"
 
+#include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -261,6 +262,7 @@ struct ScopeObject {
 struct CodeGenerator::Impl {
     const ast::Program& program;
     const EntryPoint& entry;
+    bool libraryMode = false;  // compiling a bundle to a .ldb: no entry point / `main` wrapper
     std::vector<CodegenError>& errors;
     llvm::LLVMContext context;
     llvm::Module module;
@@ -7348,8 +7350,10 @@ void CodeGenerator::setTargetTriple(const std::string& triple) {
     impl_->module.setTargetTriple(triple);
 }
 
+void CodeGenerator::setLibrary(bool library) { impl_->libraryMode = library; }
+
 bool CodeGenerator::generate() {
-    if (impl_->entry.method == nullptr) {
+    if (impl_->entry.method == nullptr && !impl_->libraryMode) {
         errors_.push_back(CodegenError{"no entry point to generate", {}});
         return false;
     }
@@ -7462,6 +7466,14 @@ std::string CodeGenerator::toIR() const {
     std::string out;
     llvm::raw_string_ostream os(out);
     impl_->module.print(os, nullptr);
+    return out;
+}
+
+std::string CodeGenerator::toBitcode() const {
+    std::string out;
+    llvm::raw_string_ostream os(out);
+    llvm::WriteBitcodeToFile(impl_->module, os);
+    os.flush();
     return out;
 }
 
