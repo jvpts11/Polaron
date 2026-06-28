@@ -209,6 +209,7 @@ struct ClassLayout {
     std::unordered_map<std::string, unsigned> fieldIndex;  // includes inherited fields
     std::unordered_map<std::string, std::string> fieldType;  // LDP3 type name per field
     std::unordered_map<std::string, int> bitFieldWidth;  // field -> bit-field width (spec 11.1)
+    std::unordered_map<std::string, std::string> propertySetters;  // field -> setter method (spec 8.4)
     std::unordered_set<std::string> volatileFields;  // fields whose accesses are volatile (spec 37.5)
     std::unordered_set<std::string> externalFields;  // `external` fields: associations, not owned (spec 37.1)
     // Lazy class-typed fields (spec 28.4): field name -> deferred initializer. Null in the
@@ -4972,6 +4973,31 @@ struct CodeGenerator::Impl {
                     return;
                 }
             }
+            // Property with a custom setter (spec 8.4): `obj.prop = v` routes through the setter
+            // method, except inside the setter itself (which writes the backing field directly).
+            if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
+                const std::string oc = baseType(typeName(*mt->object));
+                if (auto cit = classes.find(oc); cit != classes.end()) {
+                    auto sit = cit->second.propertySetters.find(mt->member);
+                    if (sit != cit->second.propertySetters.end()) {
+                        const std::string owner = methodOwner(oc, sit->second);
+                        const std::string setterFn = owner + "." + sit->second;
+                        const bool inOwnSetter =
+                            currentFn != nullptr && currentFn->getName().str() == setterFn;
+                        if (!inOwnSetter) {
+                            if (auto fnit = functions.find(setterFn); fnit != functions.end()) {
+                                llvm::Value* recv = emitObjectPtr(*mt->object);
+                                llvm::Value* val = emitExpr(*assign->value);
+                                if (recv == nullptr || val == nullptr) return;
+                                if (fnit->second->arg_size() >= 2)
+                                    val = coerceToType(val, fnit->second->getArg(1)->getType());
+                                builder.CreateCall(fnit->second, {recv, val});
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
             const std::string targetType = typeName(*assign->target);
             // atomic<T> assignment (spec 20.6): `counter = counter +/- n` -> atomicrmw add/sub;
             // any other `counter = v` -> atomic store.
@@ -5800,6 +5826,8 @@ struct CodeGenerator::Impl {
                                 layout.ownFields.emplace_back(f->name, ftype);
                                 if (f->isPersistent) layout.persistOrder.push_back(f->name);
                                 if (f->bitWidth > 0) layout.bitFieldWidth[f->name] = f->bitWidth;
+                                if (!f->propertySetter.empty())
+                                    layout.propertySetters[f->name] = f->propertySetter;
                                 if (f->isVolatile) layout.volatileFields.insert(f->name);
                                 if (f->isExternal) layout.externalFields.insert(f->name);
                                 if (f->isLazy && f->init) layout.lazyFieldInit[f->name] = f->init.get();

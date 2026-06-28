@@ -750,6 +750,9 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             continue;
         }
         c.members.push_back(parseMember(c.isInterface));
+        // A property with a custom setter synthesizes extra members (the setter method); collect them.
+        for (auto& em : extraMembers_) c.members.push_back(std::move(em));
+        extraMembers_.clear();
     }
     expect(TokenKind::RBrace, "'}'");
     // Union fields are written/read freely (manual memory); make them mutable.
@@ -1080,7 +1083,9 @@ ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast:
     expect(TokenKind::LBrace, "'{'");
     bool hasSet = false;
     bool getHasBody = false;
+    bool setHasBody = false;
     ast::Block getBody;
+    ast::Block setBody;
     // get / set / init are soft keywords here (plain identifiers).
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
         if (!check(TokenKind::Identifier)) {
@@ -1095,11 +1100,13 @@ ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast:
                 expect(TokenKind::Semicolon, "';' (auto-property) or a '{ ... }' get body");
             }
         } else if (accessor == "set") {
-            if (check(TokenKind::LBrace)) {
-                fail("set bodies are not supported yet; use an auto-property `set;`", loc);
-            }
             hasSet = true;
-            expect(TokenKind::Semicolon, "';'");
+            if (check(TokenKind::LBrace)) {
+                setBody = parseBlock();
+                setHasBody = true;
+            } else {
+                expect(TokenKind::Semicolon, "';'");
+            }
         } else if (accessor == "init") {
             expect(TokenKind::Semicolon, "';'");  // init-only -> immutable
         } else {
@@ -1107,6 +1114,40 @@ ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast:
         }
     }
     expect(TokenKind::RBrace, "'}'");
+
+    // A custom set body (spec 8.4): the field is the backing store; `obj.name` reads it directly and
+    // `obj.name = v` runs the setter, which sees `value` and writes `this.name`. A custom get *and* a
+    // custom set together would need a distinct backing field; that combination is not yet supported.
+    if (setHasBody) {
+        if (getHasBody) {
+            fail("a property with both a custom 'get' body and a custom 'set' body is not yet "
+                 "supported; use an auto 'get;' with the custom 'set { }'", loc);
+        }
+        auto setter = std::make_unique<ast::MethodDecl>();
+        setter->loc = loc;
+        setter->visibility = visibility;
+        setter->isStatic = isStatic;
+        setter->name = name + "$set";
+        ast::Param p;
+        p.loc = loc;
+        p.type = type;       // `value` has the property's type
+        p.name = "value";
+        setter->params.push_back(std::move(p));
+        setter->returnType = ast::TypeRef{};
+        setter->returnType.name = "void";
+        setter->body = std::move(setBody);
+        extraMembers_.push_back(std::move(setter));
+
+        auto f = std::make_unique<ast::FieldDecl>();
+        f->loc = loc;
+        f->visibility = std::move(visibility);
+        f->isStatic = isStatic;
+        f->isMutable = true;            // the setter writes it
+        f->type = std::move(type);
+        f->name = name;
+        f->propertySetter = name + "$set";  // assignment to the property routes through this setter
+        return f;
+    }
 
     if (getHasBody) {  // computed get-only property -> a getter method
         auto m = std::make_unique<ast::MethodDecl>();

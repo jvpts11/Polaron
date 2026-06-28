@@ -1,0 +1,35 @@
+import System.IO.Console;
+program PropertySetter;
+
+// Property with a custom set body (spec 8.4): the field backs the property, `obj.balance` reads it
+// directly, and `obj.balance = v` runs the setter (which sees `value` and clamps negatives to 0).
+
+public bundle main {
+    public namespace app {
+        public class Account {
+            public int balance {
+                get;
+                set {
+                    if (value < 0) {
+                        this.balance = 0;
+                    } else {
+                        this.balance = value;
+                    }
+                }
+            }
+            public constructor Account() {
+                this.balance = 0;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Account a = new Account() on stack;
+                a.balance = 50;
+                System.IO.Console.printf("b=%d\n", a.balance);   // 50
+                a.balance = -10;                                 // clamped by the setter
+                System.IO.Console.printf("b=%d\n", a.balance);   // 0
+                return;
+            }
+        }
+    }
+}

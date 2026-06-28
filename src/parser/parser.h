@@ -77,6 +77,7 @@ private:
     void parseLabelRef(std::string& name);
     ast::MemberPtr parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
                                  const std::string& name, SourceLocation loc);
+    std::vector<ast::MemberPtr> extraMembers_;  // members synthesized by parseProperty (setters)
     std::unique_ptr<ast::ConstructorDecl> parseConstructor(std::string visibility);
     std::unique_ptr<ast::DestructorDecl> parseDestructor(std::string visibility);
     std::unique_ptr<ast::MethodDecl> parseOperator(std::string visibility);
