@@ -478,6 +478,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # catalog-typed dispatch (spec 12.4): a catalog with a single implementing enum dispatches a
+        # method called on a catalog-typed value to that enum's implementation.
+        add_test(NAME codegen_catalog_dispatch_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_dispatch.ldp3"
+            "-DEXPECTED=w=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # FFI struct by value (spec 26): a small struct is passed to and returned from a C function
         # by value (the runtime provides the matching C helpers).
         add_test(NAME codegen_ffi_struct_runs COMMAND "${CMAKE_COMMAND}"

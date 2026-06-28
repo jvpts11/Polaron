@@ -316,6 +316,14 @@ const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
     return nullptr;
 }
 
+// The enums that implement `catalog` (directly or through a catalog it extends), spec 12.4.
+std::vector<std::string> SemanticAnalyzer::catalogImplementers(const std::string& catalog) const {
+    std::vector<std::string> out;
+    for (const auto& [name, _] : enums_)
+        if (isSubtype(name, catalog)) out.push_back(name);
+    return out;
+}
+
 bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& super, int depth) const {
     if (sub == super) return true;
     // Guard against a cyclic type graph (e.g. `catalog A extends B; B extends A`):
@@ -3029,14 +3037,29 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
                 return inner;
             }
-            // Calling a catalog method through a catalog-TYPED receiver would need
-            // cross-enum dynamic dispatch, which an i32 ordinal can't carry (no type
-            // tag). Give a clear message rather than "class has no method".
+            // Calling a catalog method through a catalog-TYPED receiver (spec 12.4): if exactly one
+            // enum implements the catalog, the value is necessarily one of its ordinals, so dispatch
+            // statically to that enum's method. Several implementers would need a runtime type tag an
+            // i32 ordinal cannot carry, so that remains unsupported.
             if (catalogs_.count(baseType(objType)) > 0) {
+                std::vector<std::string> impls = catalogImplementers(baseType(objType));
+                if (impls.size() == 1) {
+                    for (const auto& arg : call->args) typeOf(*arg);
+                    auto emit = enumMethods_.find(impls[0]);
+                    if (emit != enumMethods_.end()) {
+                        auto mit = emit->second.find(mem->member);
+                        if (mit != emit->second.end()) return mit->second.returnType;
+                    }
+                    error("enum '" + impls[0] + "' implementing catalog '" + baseType(objType) +
+                              "' has no method '" + mem->member + "'",
+                          call->loc);
+                    return "";
+                }
                 error("cannot call catalog method '" + mem->member + "' through a catalog-typed "
-                          "value of type '" + baseType(objType) +
-                          "'; call it on the concrete enum (dispatch through a catalog type is "
-                          "not supported)",
+                          "value of type '" + baseType(objType) + "': " +
+                          (impls.empty() ? "no enum implements it"
+                                         : "several enums implement it, so dispatch needs a runtime "
+                                           "type tag (call it on the concrete enum instead)"),
                       call->loc);
                 return "";
             }

@@ -1402,9 +1402,13 @@ struct CodeGenerator::Impl {
                         if (mem->member == "values") return oid->name + "[]";
                     }
                 }
-                // Enum (catalog) instance method: m.pick() -> the method's return type.
-                if (auto eit = enumMethodDecls.find(baseType(typeName(*mem->object)));
-                    eit != enumMethodDecls.end()) {
+                // Enum (catalog) instance method: m.pick() -> the method's return type. A
+                // catalog-typed receiver resolves to its single implementing enum (spec 12.4).
+                std::string enumRecv = baseType(typeName(*mem->object));
+                if (enumMethodDecls.find(enumRecv) == enumMethodDecls.end())
+                    if (std::string impl = catalogImplementerEnum(enumRecv, mem->member); !impl.empty())
+                        enumRecv = impl;
+                if (auto eit = enumMethodDecls.find(enumRecv); eit != enumMethodDecls.end()) {
                     for (const ast::MemberPtr& member : eit->second->members) {
                         const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
                         if (m != nullptr && m->name == mem->member) return typeRefName(m->returnType);
@@ -2086,6 +2090,16 @@ struct CodeGenerator::Impl {
                                            llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
         typeGlobals[className] = g;
         return g;
+    }
+
+    // The enum that implements `catalog` and provides `method` (spec 12.4), or "" if none. The
+    // analyzer guarantees a single implementer reaches here, so the first match is unambiguous.
+    std::string catalogImplementerEnum(const std::string& catalog, const std::string& method) {
+        for (const auto& [enumName, decl] : enumMethodDecls)
+            for (const std::string& c : decl->extendsCatalogs)
+                if (baseType(c) == catalog && functions.count(enumName + "." + method) > 0)
+                    return enumName;
+        return "";
     }
 
     llvm::Value* emitExpr(const ast::Expr& expr) {
@@ -4118,13 +4132,15 @@ struct CodeGenerator::Impl {
                 }
             }
             // Enum (catalog) instance method: the receiver is an enum value. Dispatch
-            // statically by the enum type, passing the ordinal as `this` (an i32).
-            // Dispatch through a catalog-typed receiver (cross-enum polymorphism) is
-            // not supported: an i32 ordinal carries no type tag.
+            // statically by the enum type, passing the ordinal as `this` (an i32). For a
+            // catalog-typed receiver with a single implementing enum, dispatch to that enum
+            // (the value is one of its ordinals); the analyzer rejects the multi-implementer case.
             {
                 const std::string est = baseType(typeName(*mem->object));
-                if (enums.count(est) > 0) {
-                    auto fnit = functions.find(est + "." + mem->member);
+                std::string implEnum =
+                    enums.count(est) > 0 ? est : catalogImplementerEnum(est, mem->member);
+                if (!implEnum.empty()) {
+                    auto fnit = functions.find(implEnum + "." + mem->member);
                     if (fnit != functions.end()) {
                         llvm::Value* recv = emitExpr(*mem->object);  // the ordinal (i32)
                         if (recv == nullptr) return nullptr;

@@ -1,0 +1,27 @@
+import System.IO.Console;
+program CatalogDispatch;
+
+// Dispatch through a catalog-typed receiver (spec 12.4): when a single enum implements the catalog,
+// a value typed as the catalog is necessarily one of that enum's ordinals, so the call resolves to
+// that enum's method implementation.
+
+public bundle main {
+    public namespace app {
+        public catalog Tier {
+            low
+            method weight() returns int;
+        }
+        public enum AppLevel extends Tier {
+            a, b
+            byCatalog { low }
+            public method weight() returns int { return 7; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Tier t = AppLevel.a;            // catalog-typed receiver
+                System.IO.Console.printf("w=%d\n", t.weight());   // dispatched to AppLevel.weight
+                return;
+            }
+        }
+    }
+}
