@@ -969,6 +969,9 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
                         for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
                         currentReturnType_ = typeRefStr(m->returnType);  // for the return null check
+                        currentThrows_.clear();
+                        for (const auto& t : m->throwsTypes)
+                            currentThrows_.push_back(baseType(typeRefStr(t)));
                         analyzeMethodBody(m->body, m->params,
                                           m->isStatic ? std::string() : cls.name, false, contracts);
                     } else if (const auto* c =
@@ -977,11 +980,13 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         for (const auto& e : c->requiresClauses) contracts.push_back(e.get());
                         for (const auto& e : c->ensuresClauses) contracts.push_back(e.get());
                         currentReturnType_ = "void";
+                        currentThrows_.clear();
                         analyzeMethodBody(c->body, c->params, cls.name, /*inConstructor=*/true,
                                           contracts);
                     } else if (const auto* d =
                                    dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                         currentReturnType_ = "void";
+                        currentThrows_.clear();
                         analyzeMethodBody(d->body, {}, cls.name, false);
                     }
                 }
@@ -1284,6 +1289,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<const ast::Expr*>& contracts) {
     scopes_.clear();
     moved_.clear();
+    catchStack_.clear();
     regionConstraints_.clear();
     methodLabels_.clear();
     comefromTargets_.clear();
@@ -1969,6 +1975,23 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             if (stackThrow) {
                 error("a thrown object must be heap-allocated; use 'new ... on heap'", th->loc);
             }
+            // Checked exceptions (spec 21.1): a throw that is neither caught by an enclosing try nor
+            // listed in the method's `throws` clause escapes undeclared -- warn.
+            if (lookupClass(bt) != nullptr) {
+                bool covered = false;
+                for (auto frame = catchStack_.rbegin(); !covered && frame != catchStack_.rend(); ++frame)
+                    for (const std::string& ct : *frame)
+                        if (bt == ct || isSubtype(bt, ct)) { covered = true; break; }
+                if (!covered)
+                    for (const std::string& dt : currentThrows_)
+                        if (bt == dt || isSubtype(bt, dt)) { covered = true; break; }
+                if (!covered) {
+                    std::string disp = bt;  // show the simple name, not the namespace-mangled one
+                    if (auto p = disp.rfind("__"); p != std::string::npos) disp = disp.substr(p + 2);
+                    warn("exception '" + disp + "' is neither caught nor declared in the method's "
+                         "'throws' clause", th->loc);
+                }
+            }
         }
         return;
     }
@@ -1976,7 +1999,12 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (freestanding_)
             error("exceptions are not available in freestanding mode; use Result/Option (spec 36.3)",
                   tr->loc);
+        // A throw inside the try body is covered if one of these catch types matches it (spec 21.1).
+        std::vector<std::string> caught;
+        for (const ast::CatchClause& cc : tr->catches) caught.push_back(baseType(typeRefStr(cc.type)));
+        catchStack_.push_back(std::move(caught));
         analyzeBlock(tr->body);
+        catchStack_.pop_back();
         for (const ast::CatchClause& cc : tr->catches) {
             const std::string ct = baseType(typeRefStr(cc.type));
             checkTypeAccessible(typeRefStr(cc.type), cc.loc);

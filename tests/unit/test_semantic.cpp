@@ -25,6 +25,20 @@ bool checkSrc(const std::string& src, std::string* entryOut = nullptr) {
     return ok;
 }
 
+// Runs the pipeline and returns how many non-fatal warnings sema produced (-1 on a parse error).
+int warningCount(const std::string& src) {
+    Lexer lexer(src, "test");
+    Parser parser(lexer.tokenize(), "test");
+    ast::Program prog = parser.parse();
+    if (parser.hasErrors()) return -1;
+    resolveTypeAliases(prog);
+    qualifyNamespaces(prog);
+    if (!monomorphize(prog)) return -1;
+    SemanticAnalyzer sema;
+    sema.analyze(prog);
+    return static_cast<int>(sema.warnings().size());
+}
+
 // Wraps a class member in a minimal program with a public class Main. Imports go before `program`
 // (spec 2.7). Tests run sema without the prelude, so a minimal System.IO.Console stub namespace is
 // included so the import resolves; the I/O calls themselves are compiler builtins.
@@ -1573,6 +1587,26 @@ TEST_CASE("parser accepts unimport/reimport validation with expecting + onFailur
     Parser parser(lexer.tokenize(), "test");
     parser.parse();
     CHECK_FALSE(parser.hasErrors());
+}
+
+TEST_CASE("an undeclared, uncaught throw warns (spec 21.1)") {
+    const char* head =
+        "program P; public bundle b { public namespace n {"
+        " public interface Throwable { }"
+        " public class Err implements Throwable {"
+        "   public mutable int c; public constructor Err() { this.c = 1; } }"
+        " public class Main {";
+    const char* tail = "   public static method main(string[] args) returns void { } } } }";
+    // Uncaught and not in a throws clause -> one warning.
+    CHECK(warningCount(std::string(head) +
+        " public static method m() returns void { throw new Err() on heap; }" + tail) == 1);
+    // Declared in throws -> no warning.
+    CHECK(warningCount(std::string(head) +
+        " public static method m() throws(Err) returns void { throw new Err() on heap; }" + tail) == 0);
+    // Caught by an enclosing try -> no warning.
+    CHECK(warningCount(std::string(head) +
+        " public static method m() returns void {"
+        "   try { throw new Err() on heap; } catch (Err e) { return; } }" + tail) == 0);
 }
 
 TEST_CASE("a class need not override an interface default method (spec 9)") {
