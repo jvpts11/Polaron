@@ -1525,6 +1525,7 @@ TEST_CASE("semantic type-checks constructor arguments") {
     CHECK_FALSE(checkSrc(withClass(kBox, "Box* a = new Box(true) on heap;")));  // bool -> int
     CHECK_FALSE(checkSrc(withClass(kBox, "Box* a = new Box(null) on heap;")));  // null -> int
     CHECK_FALSE(checkSrc(withClass(kBox, "Box* a = new Box(1, 2) on heap;")));  // too many args
+    CHECK_FALSE(checkSrc(withClass(kBox, "Box* a = new Box() on heap;")));      // too few (no persistents)
 }
 
 TEST_CASE("semantic type-checks method-call arguments") {

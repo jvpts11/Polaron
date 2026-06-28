@@ -2550,11 +2550,28 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             checkCallArgs(nw->args, ci->ctorParamTypes, "constructor '" + cn + "'");
         } else {
             for (const auto& arg : nw->args) typeOf(*arg);
-            if (nw->args.size() > ci->ctorParamTypes.size())
+            if (nw->args.size() > ci->ctorParamTypes.size()) {
                 error("constructor '" + cn + "' expects at most " +
                           std::to_string(ci->ctorParamTypes.size()) + " argument(s) but got " +
                           std::to_string(nw->args.size()),
                       nw->loc);
+            } else {
+                // Fewer arguments is a partial constructor (spec 18.9), valid only when the class has
+                // persistent fields to supply the omitted parameters; otherwise it is a missing
+                // argument (calling the constructor with too few would be undefined).
+                bool hasPersist = false;
+                for (std::string c = baseType(cn); !c.empty() && !hasPersist;) {
+                    for (const PersistentFieldInfo& pf : persistentFields_)
+                        if (pf.cls == c) { hasPersist = true; break; }
+                    const ClassInfo* ic = lookupClass(c);
+                    c = ic != nullptr ? ic->superclass : std::string();
+                }
+                if (!hasPersist)
+                    error("constructor '" + cn + "' expects " +
+                              std::to_string(ci->ctorParamTypes.size()) + " argument(s) but got " +
+                              std::to_string(nw->args.size()),
+                          nw->loc);
+            }
         }
         return cn;
     }

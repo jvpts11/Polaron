@@ -1,0 +1,21 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
+program ChannelSelectTimeout;
+
+// Channel.select with a timeout (spec 20.4): when no channel is ready within the timeout, the
+// timeout handler fires. Channel a stays empty, so select waits ~20ms and runs the timeout handler.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Channel<int> a = new Channel<int>(4) on heap;
+                Channel.select()
+                    .receive(a, lambda(int x) returns void { System.IO.Console.printf("a=%d\n", x); })
+                    .timeout(20, lambda() returns void { System.IO.Console.println("timeout"); })
+                    .run();
+                return;
+            }
+        }
+    }
+}
