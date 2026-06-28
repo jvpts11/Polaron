@@ -2653,6 +2653,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return "void";
         }
         const std::string name = flattenCallee(*call->callee);
+        // sizeof(Type) / sizeof(expr) (spec, issue #7): byte size as an int. The argument may name a
+        // type, so it is not type-checked as an ordinary value here.
+        if (name == "sizeof" && call->args.size() == 1) return "int";
         // Namespace-level literal suffix function called by name: kilobytes(64).
         if (auto lit = literals_.find(name); lit != literals_.end()) {
             // The `N suffix` form (spec 17.10) requires the suffix to be imported;

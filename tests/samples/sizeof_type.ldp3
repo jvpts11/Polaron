@@ -1,0 +1,23 @@
+import System.IO.Console;
+program SizeofType;
+
+// sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or an expression's type.
+
+public bundle main {
+    public namespace app {
+        public class Pair {
+            public mutable int a;
+            public mutable int b;
+            public constructor Pair() { this.a = 0; this.b = 0; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                int n = sizeof(Pair);          // 8 (two ints)
+                Pair p = new Pair() on stack;
+                int m = sizeof(p);             // size of p's type (pointer to Pair)
+                System.IO.Console.printf("n=%d mpos=%d\n", n, m > 0);
+                return;
+            }
+        }
+    }
+}

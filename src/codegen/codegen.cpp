@@ -3212,6 +3212,16 @@ struct CodeGenerator::Impl {
             return emitSafeNav(call, *cm->object);
         }
         const std::string name = flattenCallee(*call.callee);
+        // sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or an expression's
+        // type, as an int. A bare class name is a type; otherwise the argument is an expression.
+        if (name == "sizeof" && call.args.size() == 1) {
+            const std::string bare = flattenCallee(*call.args[0]);
+            const std::string tn =
+                classes.count(baseType(bare)) > 0 ? bare : typeName(*call.args[0]);
+            auto cit = classes.find(baseType(tn));
+            llvm::Value* sz = cit != classes.end() ? sizeOf(cit->second.type) : sizeOf(llvmType(tn));
+            return builder.CreateTrunc(sz, builder.getInt32Ty());
+        }
         // External C function call (spec 26): a bare call to an `extern` declaration.
         if (auto er = externReturnType.find(name); er != externReturnType.end()) {
             llvm::Function* fn = functions[name];

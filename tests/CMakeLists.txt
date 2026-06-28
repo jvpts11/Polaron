@@ -478,6 +478,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or expression.
+        add_test(NAME codegen_sizeof_type_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sizeof_type.ldp3"
+            "-DEXPECTED=n=8 mpos=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # persistent-bearing objects in an array (spec 18.5): an object without a name binding still
         # gets a usable persistent block, so its persistent fields work instead of crashing.
         add_test(NAME codegen_persist_array_runs COMMAND "${CMAKE_COMMAND}"
