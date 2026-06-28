@@ -196,6 +196,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_dynamic_test.cmake")
 
+        # F9 phase 3 (dynamic instance): a class instance from a runtime-loaded bundle, created and
+        # used through __new/__delete and method thunks -> Counter(10)+1+1 = 12.
+        add_test(NAME bundle_dynamic_instance_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_counter_lib.ldp3"
+            "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_counter_app.ldp3"
+            "-DEXPECTED=value = 12"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_dynamic_test.cmake")
+
         add_test(NAME codegen_hello_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
