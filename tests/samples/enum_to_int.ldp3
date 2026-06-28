@@ -1,0 +1,19 @@
+import System.IO.Console;
+program EnumToInt;
+
+// An int-style enum is an ordinal (spec 12.1), so it casts to int.
+
+public bundle main {
+    public namespace app {
+        public enum Color { RED, GREEN, BLUE }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Color c = Color.BLUE;
+                int i = cast<int>(c);          // 2 (ordinal)
+                boolean ord = cast<int>(Color.GREEN) < cast<int>(Color.BLUE);
+                System.IO.Console.printf("i=%d ord=%d\n", i, ord);
+                return;
+            }
+        }
+    }
+}

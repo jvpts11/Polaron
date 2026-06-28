@@ -2403,8 +2403,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         auto numLike = [](const std::string& t) { return isNumeric(t) || t == "char"; };
         const std::string dstU = under(dst);  // a newtype's underlying decides how the cast lowers
         if (numLike(dstU)) {
-            // numeric <- numeric/char, or a pointer/address reinterpreted as an integer (spec 17.8).
-            if (!src.empty() && !numLike(src) && !srcRef)
+            // numeric <- numeric/char, a pointer/address reinterpreted as an integer (spec 17.8), or
+            // an int-style enum reinterpreted as its ordinal (spec 12.1).
+            const bool srcIntEnum = enums_.count(baseType(src)) > 0;
+            if (!src.empty() && !numLike(src) && !srcRef && !srcIntEnum)
                 error("cannot cast '" + srcRaw + "' to '" + dst + "'", cst->loc);
         } else if (dstPtr) {
             // Reference downcast (spec 31), or int/address -> an explicit pointer T* (spec 17.8).
