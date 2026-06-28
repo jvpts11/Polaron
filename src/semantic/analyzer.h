@@ -218,7 +218,7 @@ private:
     std::unordered_map<std::string, std::unordered_map<std::string, MethodInfo>> enumMethods_;
     // enum -> (method name -> declared parameter count), for arg-count checking.
     std::unordered_map<std::string, std::unordered_map<std::string, std::size_t>> enumMethodParams_;
-    std::unordered_map<std::string, LiteralInfo> literals_;  // suffix name -> info
+    std::unordered_map<std::string, std::vector<LiteralInfo>> literals_;  // suffix name -> overloads
     // Namespace-level compile-time constants (spec 28.1).
     std::unordered_map<std::string, std::string> constTypes_;     // const name -> type
     std::unordered_map<std::string, long long> constInts_;        // int/bool/char value

@@ -1,0 +1,20 @@
+import System.IO.Console;
+program LiteralOverload;
+
+// Literal-suffix overloading by parameter type (spec 17.10 rule 6): scaled(int) and scaled(double)
+// coexist, and the compiler picks the overload from the argument's type.
+
+public bundle main {
+    public namespace app {
+        public comptime literal scaled(int x) returns int { return x * 2; }
+        public comptime literal scaled(double x) returns int { return cast<int>(x * 10.0); }
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = scaled(5);       // int overload: 10
+                int b = scaled(1.5);     // double overload: 15
+                System.IO.Console.printf("a=%d b=%d\n", a, b);
+                return;
+            }
+        }
+    }
+}

@@ -290,7 +290,8 @@ struct CodeGenerator::Impl {
     // set by a var-decl just before emitNew so the new object can wire up its persistent block
     std::string pendingPersistKey;
     int lambdaCounter = 0;  // unique names for lowered lambda functions
-    std::unordered_map<std::string, std::string> literalReturnType;  // suffix -> return type
+    std::unordered_map<std::string, std::string> literalReturnType;  // mangled suffix (name$param) -> return type
+    std::unordered_map<std::string, std::vector<std::string>> literalSuffixParams;  // suffix name -> param types
     std::unordered_map<std::string, std::string> externReturnType;   // extern C fn -> return type
     // Namespace-level compile-time constants (spec 28.1), folded once up front.
     std::unordered_map<std::string, std::string> namespaceConstTypes;  // const name -> LDP3 type
@@ -1444,9 +1445,13 @@ struct CodeGenerator::Impl {
                     return rt;
                 }
             }
-            // Namespace-level literal suffix function: name(arg).
-            auto lit = literalReturnType.find(flattenCallee(*call->callee));
-            if (lit != literalReturnType.end()) return lit->second;
+            // Namespace-level literal suffix function: name(arg), overloaded by argument type.
+            const std::string sname = flattenCallee(*call->callee);
+            if (literalSuffixParams.count(sname) > 0 && call->args.size() == 1) {
+                const std::string key = chooseLiteralKey(sname, typeName(*call->args[0]));
+                if (auto rit = literalReturnType.find(key); rit != literalReturnType.end())
+                    return rit->second;
+            }
             return "int";
         }
         if (dynamic_cast<const ast::RegionInitExpr*>(&expr) != nullptr) return "region";
@@ -2117,6 +2122,16 @@ struct CodeGenerator::Impl {
                 if (baseType(c) == catalog && functions.count(enumName + "." + method) > 0)
                     return enumName;
         return "";
+    }
+
+    // Resolves an overloaded literal suffix (spec 17.10 rule 6) to its mangled function key
+    // (name$paramType): an exact parameter-type match wins, otherwise the first overload.
+    std::string chooseLiteralKey(const std::string& name, const std::string& argType) {
+        auto it = literalSuffixParams.find(name);
+        if (it == literalSuffixParams.end() || it->second.empty()) return "";
+        for (const std::string& p : it->second)
+            if (p == argType) return name + "$" + p;
+        return name + "$" + it->second[0];
     }
 
     // Constructs Some<Enum>(ordinal) or None<Enum>() for EnumName.parse() (spec 12.5), reusing
@@ -3681,18 +3696,16 @@ struct CodeGenerator::Impl {
         if (name == "reflect.typeOf" && !call.typeArgs.empty()) {
             return typeTokenFor(ast::mangleGeneric(call.typeArgs[0], {}));
         }
-        // Namespace-level literal suffix function: name(arg). (comptime in the
-        // spec; for now it runs at runtime with the same result -- see Fase C.)
-        if (auto fnit = functions.find(name);
-            fnit != functions.end() && literalReturnType.count(name) > 0) {
-            std::vector<llvm::Value*> args;
-            for (const auto& arg : call.args) {
-                llvm::Value* v = emitExpr(*arg);
+        // Namespace-level literal suffix function: name(arg). Overloaded by the argument's type
+        // (spec 17.10 rule 6). (comptime in the spec; for now it runs at runtime -- see Fase C.)
+        if (literalSuffixParams.count(name) > 0 && call.args.size() == 1) {
+            const std::string key = chooseLiteralKey(name, typeName(*call.args[0]));
+            if (auto fnit = functions.find(key); fnit != functions.end()) {
+                llvm::Value* v = emitExpr(*call.args[0]);
                 if (v == nullptr) return nullptr;
-                args.push_back(v);
+                v = coerceToType(v, fnit->second->getArg(0)->getType());
+                return emitMaybeInvoke(fnit->second, {v});
             }
-            if (!args.empty()) args[0] = coerceToType(args[0], fnit->second->getArg(0)->getType());
-            return emitMaybeInvoke(fnit->second, args);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get())) {
             if (mem->member == "length" && isArrayType(typeName(*mem->object))) {
@@ -6482,12 +6495,14 @@ struct CodeGenerator::Impl {
                 }
                 // Namespace-level `comptime literal` suffix functions (spec 17.10).
                 for (const ast::LiteralDecl& lit : ns.literals) {
+                    const std::string pt = typeRefName(lit.param.type);
+                    const std::string key = lit.name + "$" + pt;  // overload by parameter type (17.10)
                     llvm::FunctionType* ty = llvm::FunctionType::get(
-                        llvmType(typeRefName(lit.returnType)),
-                        {llvmType(typeRefName(lit.param.type))}, false);
-                    functions[lit.name] = llvm::Function::Create(
-                        ty, llvm::Function::ExternalLinkage, "literal." + lit.name, module);
-                    literalReturnType[lit.name] = typeRefName(lit.returnType);
+                        llvmType(typeRefName(lit.returnType)), {llvmType(pt)}, false);
+                    functions[key] = llvm::Function::Create(
+                        ty, llvm::Function::ExternalLinkage, "literal." + lit.name + "." + pt, module);
+                    literalReturnType[key] = typeRefName(lit.returnType);
+                    literalSuffixParams[lit.name].push_back(pt);
                 }
                 // Catalog-implementing enum methods (spec 12.4). An instance method
                 // receives the enum value (its i32 ordinal) as `this`.
@@ -7081,8 +7096,8 @@ struct CodeGenerator::Impl {
                 }
                 // Literal suffix bodies: emitted as static functions (no `this`).
                 for (const ast::LiteralDecl& lit : ns.literals) {
-                    emitBody(functions[lit.name], lit.body, {lit.param}, /*thisClass=*/"",
-                             llvmType(typeRefName(lit.returnType)));
+                    emitBody(functions[lit.name + "$" + typeRefName(lit.param.type)], lit.body,
+                             {lit.param}, /*thisClass=*/"", llvmType(typeRefName(lit.returnType)));
                 }
                 // Catalog-implementing enum method bodies (spec 12.4). For an instance
                 // method, `this` is the enum value (an i32 ordinal), so thisClass is the

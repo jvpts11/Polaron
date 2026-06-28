@@ -1133,10 +1133,13 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
                               "' must take a numeric parameter (int or float family)",
                           lit.loc);
                 }
-                if (literals_.count(lit.name) > 0) {
-                    error("literal suffix '" + lit.name + "' is already defined", lit.loc);
-                }
-                literals_[lit.name] = LiteralInfo{paramType, returnType, lit.isComptime, lit.loc};
+                // Overloading by parameter type (spec 17.10 rule 6): seconds(int) and seconds(double)
+                // may coexist; only a same-name, same-parameter-type redefinition is an error.
+                for (const LiteralInfo& ov : literals_[lit.name])
+                    if (ov.paramType == paramType)
+                        error("literal suffix '" + lit.name + "(" + paramType + ")' is already defined",
+                              lit.loc);
+                literals_[lit.name].push_back(LiteralInfo{paramType, returnType, lit.isComptime, lit.loc});
                 typeNamespace_[lit.name] = ns.name;  // for import-prefix validation
             }
         }
@@ -2703,7 +2706,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // type, so it is not type-checked as an ordinary value here.
         if (name == "sizeof" && call->args.size() == 1) return "int";
         // Namespace-level literal suffix function called by name: kilobytes(64).
-        if (auto lit = literals_.find(name); lit != literals_.end()) {
+        if (auto lit = literals_.find(name); lit != literals_.end() && !lit->second.empty()) {
             // The `N suffix` form (spec 17.10) requires the suffix to be imported;
             // an explicit call name(arg) does not.
             if (call->fromSuffix && importedSuffixes_.count(name) == 0) {
@@ -2711,17 +2714,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                           "' is not in scope; import it to use the 'N " + name + "' form",
                       call->loc);
             }
+            const std::vector<LiteralInfo>& ovs = lit->second;
             if (call->args.size() != 1) {
                 error("literal suffix '" + name + "' takes exactly one argument", call->loc);
-            } else {
-                const std::string at = typeOf(*call->args[0]);
-                if (!at.empty() && !isSubtype(at, lit->second.paramType)) {
-                    error("literal suffix '" + name + "' expects " + lit->second.paramType +
-                              ", got '" + at + "'",
-                          call->loc);
-                }
+                return ovs[0].returnType;
             }
-            return lit->second.returnType;
+            // Overload resolution by the literal's type (spec 17.10 rule 6): an exact parameter-type
+            // match wins; otherwise the first overload is used and the argument is coerced.
+            const std::string at = typeOf(*call->args[0]);
+            const LiteralInfo* chosen = &ovs[0];
+            for (const LiteralInfo& ov : ovs)
+                if (ov.paramType == at) { chosen = &ov; break; }
+            return chosen->returnType;
         }
         // Low-level thread builtins used by the System.Concurrency.Thread prelude class.
         if (name == "System.Concurrency.__threadStart") {
