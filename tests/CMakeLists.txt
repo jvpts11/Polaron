@@ -478,6 +478,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # conversion operator (spec 6.6): cast<T>(obj) invokes a user-defined `operator cast<T>`.
+        add_test(NAME codegen_conversion_operator_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/conversion_operator.ldp3"
+            "-DEXPECTED=f=212"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # `delete X from region R` (spec 17.7): runs the destructor now and removes the object from
         # the region teardown, so it is not destroyed again on release.
         add_test(NAME codegen_delete_from_region_runs COMMAND "${CMAKE_COMMAND}"

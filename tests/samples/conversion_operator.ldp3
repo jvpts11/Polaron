@@ -1,0 +1,30 @@
+import System.IO.Console;
+program ConversionOperator;
+
+// User-defined conversion operator (spec 6.6): `operator explicit cast<T>()` defines how a value
+// of one class converts to another; `cast<T>(obj)` invokes it instead of a primitive cast.
+
+public bundle main {
+    public namespace app {
+        public class Fahrenheit {
+            public mutable int deg;
+            public constructor Fahrenheit(int d) { this.deg = d; }
+        }
+        public class Celsius {
+            public mutable int temp;
+            public constructor Celsius(int t) { this.temp = t; }
+            public operator explicit cast<Fahrenheit>() returns Fahrenheit {
+                return new Fahrenheit(this.temp * 9 / 5 + 32) on heap;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Celsius c = new Celsius(100) on stack;
+                Fahrenheit* f = cast<Fahrenheit>(c);   // 100C -> 212F
+                System.IO.Console.printf("f=%d\n", f.deg);
+                delete f;
+                return;
+            }
+        }
+    }
+}

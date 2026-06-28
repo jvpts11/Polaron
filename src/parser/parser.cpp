@@ -934,6 +934,25 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
     m->loc = current().loc;
     m->visibility = std::move(visibility);
     expect(TokenKind::KwOperator, "'operator'");
+    // Conversion operator (spec 6.6): `operator [explicit|implicit] cast<T>() returns T`. Modeled as
+    // a method named "operator cast$T", dispatched by cast<T>(obj).
+    if ((check(TokenKind::Identifier) &&
+         (current().lexeme == "explicit" || current().lexeme == "implicit")) ||
+        check(TokenKind::KwCast)) {
+        if (check(TokenKind::Identifier)) advance();  // explicit / implicit (both behave as cast<T>)
+        expect(TokenKind::KwCast, "'cast' in a conversion operator");
+        expect(TokenKind::Lt, "'<' after 'cast'");
+        const ast::TypeRef target = parseTypeRef();
+        expect(TokenKind::Gt, "'>' to close the conversion target");
+        m->name = "operator cast$" + target.name;  // target.name is the raw (unqualified) type name
+        expect(TokenKind::LParen, "'(' after the conversion target");
+        expect(TokenKind::RParen, "')' (a conversion operator takes no parameters)");
+        expect(TokenKind::KwReturns, "'returns'");
+        m->returnType = parseTypeRef();
+        currentMethodReturnType_ = m->returnType;
+        m->body = parseBlock();
+        return m;
+    }
     const Token op = advance();  // the operator symbol token (+, -, ==, <, [, ...)
     std::string sym = op.lexeme;
     if (op.kind == TokenKind::LBracket) {  // operator [] (read) / operator []= (write)

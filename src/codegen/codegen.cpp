@@ -2456,6 +2456,24 @@ struct CodeGenerator::Impl {
             return emitRegionAllocate(ri->size.get(), ri->atAddress.get());
         }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
+            // User-defined conversion operator (spec 6.6): cast<T>(obj) where obj's class declares
+            // `operator cast<T>` calls it instead of a primitive cast.
+            const std::string srcCls = baseType(typeName(*cst->operand));
+            if (classes.count(srcCls) > 0) {
+                auto simple = [](const std::string& s) {
+                    auto p = s.rfind("__");
+                    return p == std::string::npos ? s : s.substr(p + 2);
+                };
+                const std::string opName = "operator cast$" + simple(baseType(cst->targetType));
+                const std::string owner = methodOwner(srcCls, opName);
+                if (!owner.empty()) {
+                    if (auto fnit = functions.find(owner + "." + opName); fnit != functions.end()) {
+                        llvm::Value* recv = emitObjectPtr(*cst->operand);
+                        if (recv == nullptr) return nullptr;
+                        return builder.CreateCall(fnit->second, {recv});
+                    }
+                }
+            }
             return emitCast(emitExpr(*cst->operand), typeName(*cst->operand), cst->targetType);
         }
         if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
