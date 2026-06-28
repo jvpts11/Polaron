@@ -248,6 +248,51 @@ Token Lexer::scanIdentifierOrKeyword() {
     while (!atEnd() && isIdentCont(peek())) advance();
     std::string text(source_.substr(start, pos_ - start));
     TokenKind kind = keywordKind(text);
+    // Inline assembly (spec issue 1): `asm("arch") { raw }` -- only when `(` follows, so `asm` stays
+    // usable as an ordinary identifier elsewhere. The raw body is captured verbatim (the LDP3 lexer
+    // does not tokenize it); the token's lexeme is arch + '\x1f' + body.
+    if (text == "asm") {
+        auto skipWs = [&]() {
+            while (!atEnd() && (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r'))
+                advance();
+        };
+        std::size_t save = pos_;
+        skipWs();
+        if (peek() == '(') {
+            advance();  // '('
+            skipWs();
+            if (peek() != '"') {
+                error("expected a target string in asm(\"...\")", loc);
+                pos_ = save;
+                return make(kind, std::move(text), loc);
+            }
+            advance();  // opening '"'
+            std::size_t as = pos_;
+            while (!atEnd() && peek() != '"') advance();
+            std::string arch(source_.substr(as, pos_ - as));
+            if (peek() == '"') advance();  // closing '"'
+            skipWs();
+            if (peek() == ')') advance();
+            else error("expected ')' after the asm target", loc);
+            skipWs();
+            if (peek() != '{') {
+                error("expected '{' to open the asm block", loc);
+                return make(kind, std::move(text), loc);
+            }
+            advance();  // '{'
+            std::size_t bs = pos_;
+            int depth = 1;
+            while (!atEnd() && depth > 0) {
+                if (peek() == '{') depth++;
+                else if (peek() == '}' && --depth == 0) break;
+                advance();
+            }
+            std::string body(source_.substr(bs, pos_ - bs));
+            if (peek() == '}') advance();  // closing '}'
+            return make(TokenKind::AsmBlock, arch + '\x1f' + body, loc);
+        }
+        pos_ = save;  // not an asm block -- `asm` is a plain identifier here
+    }
     return make(kind, std::move(text), loc);
 }
 

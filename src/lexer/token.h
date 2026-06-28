@@ -60,6 +60,7 @@ enum class TokenKind : std::uint8_t {
     KwTypealias, KwNewtype, KwAnnotation,
     KwLabel, KwComefrom, KwGoto, KwAbstainfrom, KwReinstate, KwUnimport, KwReimport,
     KwExpecting, KwOnFailure, KwYield,
+    AsmBlock,  // inline assembly (spec issue 1): lexeme is arch + '\x1f' + raw body
     KwTry, KwCatch, KwFinally, KwThrow, KwThrows,
 
     // Keywords -- compile-time / literal suffixes (0.2 Fase C)

@@ -1,0 +1,21 @@
+import System.IO.Console;
+program InlineAsm;
+
+// Inline assembly (spec issue 1): `asm("arch") { raw }` emits the verbatim block as side-effecting
+// inline assembly. The body is captured raw (not tokenized by the LDP3 lexer). Here a `nop` runs
+// between two statements; the program continues normally.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int x = 41;
+                asm("x86_64") {
+                    nop
+                }
+                System.IO.Console.printf("x=%d ok\n", x + 1);   // 42
+                return;
+            }
+        }
+    }
+}

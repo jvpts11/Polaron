@@ -1688,6 +1688,16 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return y;
     }
+    if (check(TokenKind::AsmBlock)) {  // `asm("arch") { raw }` inline assembly (spec issue 1)
+        auto a = std::make_unique<ast::AsmStmt>();
+        a->loc = current().loc;
+        const std::string& lex = current().lexeme;  // arch + '\x1f' + body
+        const std::size_t sep = lex.find('\x1f');
+        a->arch = sep == std::string::npos ? std::string() : lex.substr(0, sep);
+        a->body = sep == std::string::npos ? lex : lex.substr(sep + 1);
+        advance();
+        return a;
+    }
     // `cascade [(params)] <operation>` (spec 37.1): propagate an operation through the object's
     // owned graph. Supported operations: delete, move (spec 19.8). Others are added below.
     if (check(TokenKind::KwCascade)) {

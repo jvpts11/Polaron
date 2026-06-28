@@ -285,6 +285,13 @@ struct YieldStmt : Stmt {
     void dump(std::string& out, int /*indent*/) const override { out += "yield"; }
 };
 
+// `asm("arch") { raw }` (spec issue 1): inline assembly. `body` is the verbatim text between braces.
+struct AsmStmt : Stmt {
+    std::string arch;
+    std::string body;
+    void dump(std::string& out, int /*indent*/) const override { out += "asm"; }
+};
+
 // Optional `cascade(...)` parameters (spec 37.1): a propagation-depth limit and type filters.
 // depth == -1 means unlimited. onlyTypes (from `types: {...}`) restricts propagation to the
 // listed types; exceptTypes (from `except: {...}`) skips the listed types.

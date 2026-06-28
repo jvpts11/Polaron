@@ -7,6 +7,7 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/InlineAsm.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -5657,6 +5658,16 @@ struct CodeGenerator::Impl {
             if (v != nullptr && yieldSlot_ != nullptr)
                 builder.CreateStore(coerce(v, typeName(*ys->value), yieldType_), yieldSlot_);
             if (yieldEnd_ != nullptr) builder.CreateBr(yieldEnd_);
+            return;
+        }
+        if (const auto* as = dynamic_cast<const ast::AsmStmt*>(&stmt)) {
+            // Inline assembly (spec issue 1): emit the raw body as a side-effecting LLVM inline asm
+            // that clobbers memory (so it is not reordered/elided). The target arch comes from the
+            // module triple; `as->arch` is a documentation/intent tag.
+            llvm::FunctionType* aty = llvm::FunctionType::get(builder.getVoidTy(), false);
+            llvm::InlineAsm* ia = llvm::InlineAsm::get(aty, as->body, /*constraints=*/"~{memory}",
+                                                       /*hasSideEffects=*/true);
+            builder.CreateCall(ia, {});
             return;
         }
         if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {

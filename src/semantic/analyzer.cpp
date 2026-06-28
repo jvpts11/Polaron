@@ -1967,6 +1967,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (ys->value) typeOf(*ys->value);  // `yield expr;` (spec 16.2): type-check the value
         return;
     }
+    if (dynamic_cast<const ast::AsmStmt*>(&stmt) != nullptr) {
+        return;  // inline assembly (spec issue 1): a raw body, nothing to type-check
+    }
     if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
         const std::string t = typeOf(*del->target);
         // `delete p` where p is a class, or a pointer/reference to one (see through T*/T&).

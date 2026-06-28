@@ -94,6 +94,7 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwExpecting:     return "KwExpecting";
         case TokenKind::KwOnFailure:     return "KwOnFailure";
         case TokenKind::KwYield:         return "KwYield";
+        case TokenKind::AsmBlock:        return "AsmBlock";
 
         case TokenKind::KwIf:       return "KwIf";
         case TokenKind::KwElse:     return "KwElse";
