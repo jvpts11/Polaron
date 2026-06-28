@@ -154,6 +154,7 @@ private:
     // enclosing method's return type does not apply.
     std::string analyzeExpectingBlock(const ast::Block* block);
     std::string analyzeYieldBlock(const ast::Block& body);  // match-expr block arm (spec 16.2)
+    bool isCompileTimeConstant(const ast::Expr& e) const;   // a literal/const expression (spec 17.10)
     void analyzeStatement(const ast::Stmt& stmt);
     void checkAssignTarget(const ast::Expr& target, const std::string& valueType,
                            SourceLocation loc, const ast::Expr* valueExpr = nullptr);

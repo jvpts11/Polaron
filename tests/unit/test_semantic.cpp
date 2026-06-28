@@ -65,6 +65,22 @@ const std::string kCounter =
     " public method get() returns int { return this.count; } }";
 }  // namespace
 
+// A program with a namespace-level `comptime literal twice(int)` and `body` inside Main.
+static std::string withLiteral(const std::string& body) {
+    return std::string(kIoHead) + kIoStub +
+           "public namespace n { "
+           "public comptime literal twice(int x) returns int { return x * 2; } "
+           "public class Main { public static method main(string[] args) returns void { " +
+           body + " } } } }";
+}
+
+TEST_CASE("semantic keeps comptime literal from being a free function") {
+    CHECK(checkSrc(withLiteral("int a = twice(5);")));            // literal argument: allowed
+    CHECK(checkSrc(withLiteral("int a = twice(3 + 4);")));        // constant arithmetic: allowed
+    CHECK_FALSE(checkSrc(withLiteral(                             // runtime argument: rejected
+        "mutable int v = 3; int a = twice(v);")));
+}
+
 TEST_CASE("semantic accepts a valid entry point") {
     std::string entry;
     CHECK(checkSrc(wrapMain("public static method main(string[] args) returns void { }"), &entry));

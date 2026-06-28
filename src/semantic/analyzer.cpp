@@ -1396,6 +1396,26 @@ void SemanticAnalyzer::analyzeBlock(const ast::Block& block) {
     popScope();
 }
 
+bool SemanticAnalyzer::isCompileTimeConstant(const ast::Expr& e) const {
+    // A literal suffix applies to a compile-time-known value (spec 17.10): a numeric/char/boolean
+    // literal, a namespace `const`, or arithmetic/casts over those. This is what stops a
+    // `comptime literal` from being abused as a runtime free function -- it can only transform
+    // constants, never run on a runtime argument.
+    if (dynamic_cast<const ast::IntLiteralExpr*>(&e) != nullptr) return true;
+    if (dynamic_cast<const ast::FloatLiteralExpr*>(&e) != nullptr) return true;
+    if (dynamic_cast<const ast::CharLiteralExpr*>(&e) != nullptr) return true;
+    if (dynamic_cast<const ast::BoolLiteralExpr*>(&e) != nullptr) return true;
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e))
+        return constTypes_.count(id->name) > 0;  // a folded namespace const
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e))
+        return isCompileTimeConstant(*u->operand);
+    if (const auto* c = dynamic_cast<const ast::CastExpr*>(&e))
+        return isCompileTimeConstant(*c->operand);
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e))
+        return isCompileTimeConstant(*b->lhs) && isCompileTimeConstant(*b->rhs);
+    return false;
+}
+
 std::string SemanticAnalyzer::analyzeYieldBlock(const ast::Block& body) {
     // Analyzes a match-expression block arm (spec 16.2) in its own scope (the case bindings are
     // already declared by the caller) and returns the type `yield` produces.
@@ -2719,6 +2739,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("literal suffix '" + name + "' takes exactly one argument", call->loc);
                 return ovs[0].returnType;
             }
+            // A literal suffix may only be applied to a compile-time constant (spec 17.10): this is
+            // what keeps `comptime literal` from becoming a runtime free function. Both `N suffix`
+            // and the explicit `name(arg)` form require a literal/const argument.
+            if (!isCompileTimeConstant(*call->args[0]))
+                error("literal suffix '" + name +
+                          "' applies only to a compile-time constant; calling it with a runtime "
+                          "value is not allowed (a literal suffix is not a free function)",
+                      call->loc);
             // Overload resolution by the literal's type (spec 17.10 rule 6): an exact parameter-type
             // match wins; otherwise the first overload is used and the argument is coerced.
             const std::string at = typeOf(*call->args[0]);
