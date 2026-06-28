@@ -1,0 +1,23 @@
+import System.IO.Console;
+program ConstInClass;
+
+// A `const` may be a static class member (spec 28.1), read through the owner as Type.NAME and folded
+// at compile time, alongside the namespace-level form.
+
+public bundle main {
+    public namespace app {
+        public class Limits {
+            public static const int MAX = 100;
+            public static const int DOUBLED = 200;
+            public static const double RATIO = 1.5;
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = Limits.MAX;
+                var b = Limits.DOUBLED;
+                System.IO.Console.printf("a=%d b=%d r=%d\n", a, b, cast<int>(Limits.RATIO * 10.0));
+                return;
+            }
+        }
+    }
+}

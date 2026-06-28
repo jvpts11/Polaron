@@ -805,13 +805,12 @@ struct LiteralDecl : MemberDecl {
 // A namespace-level compile-time constant (spec 28.1): `const T NAME = expr;`,
 // where `expr` is a constant expression (literals, arithmetic, and references to
 // previously-declared consts). Folded at compile time; no runtime storage.
-struct ConstDecl {
+struct ConstDecl : MemberDecl {
     std::string visibility;
     TypeRef type;
     std::string name;
     ExprPtr init;
-    SourceLocation loc;
-    void dump(std::string& out, int indent) const;
+    void dump(std::string& out, int indent) const override;
 };
 
 // An external C function (spec 26): `extern cdecl method name(params) returns T;`. No body; it

@@ -588,17 +588,24 @@ ast::TypeAliasDecl Parser::parseTypeAlias() {
 
 // `[visibility] const T NAME = expr;` -- a namespace-level compile-time constant
 // (spec 28.1). The initializer is a constant expression validated by the analyzer.
-ast::ConstDecl Parser::parseConstDecl() {
-    ast::ConstDecl c;
-    c.loc = current().loc;
-    c.visibility = parseVisibilityOpt();
+// Parses `const T NAME = expr;` from the `const` keyword onward; the visibility is parsed by the
+// caller. Used both at namespace level and as a class/struct member (a static compile-time constant).
+std::unique_ptr<ast::ConstDecl> Parser::parseConstMember(std::string visibility) {
+    auto c = std::make_unique<ast::ConstDecl>();
+    c->loc = current().loc;
+    c->visibility = std::move(visibility);
     expect(TokenKind::KwConst, "'const'");
-    c.type = parseTypeRef();
-    c.name = expect(TokenKind::Identifier, "the constant name").lexeme;
+    c->type = parseTypeRef();
+    c->name = expect(TokenKind::Identifier, "the constant name").lexeme;
     expect(TokenKind::Assign, "'='");
-    c.init = parseExpression();
+    c->init = parseExpression();
     expect(TokenKind::Semicolon, "';'");
     return c;
+}
+
+ast::ConstDecl Parser::parseConstDecl() {
+    std::string visibility = parseVisibilityOpt();
+    return std::move(*parseConstMember(std::move(visibility)));
 }
 
 ast::EnumDecl Parser::parseEnum() {
@@ -1010,6 +1017,8 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         member = parseOperator(std::move(visibility));
     } else if (check(TokenKind::KwLiteral)) {  // a literal suffix is a member of its result type's class
         member = parseLiteralMember(std::move(visibility), isComptime);
+    } else if (check(TokenKind::KwConst)) {  // a compile-time constant as a static class member
+        member = parseConstMember(std::move(visibility));
     } else {
         // Otherwise it is a field:  <type> <name> ;
         member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,

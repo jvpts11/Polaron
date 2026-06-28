@@ -1471,6 +1471,9 @@ struct CodeGenerator::Impl {
                 if (locals.find(objId->name) == locals.end() && enums.count(objId->name) > 0) {
                     return objId->name;  // EnumName.CONSTANT -> the enum type
                 }
+                if (auto ct = namespaceConstTypes.find(objId->name + "." + mem->member);
+                    ct != namespaceConstTypes.end())
+                    return ct->second;  // Type.NAME class const
             }
             const std::string ot = baseType(typeName(*mem->object));
             auto cit = classes.find(ot);
@@ -2378,6 +2381,11 @@ struct CodeGenerator::Impl {
                 return builder.CreateLoad(llvmType(staticFieldType[key]), staticGlobals[key],
                                           mem->member);
             }
+            // A class-level const, read as Type.NAME (spec 28.1, OOP form): folded constant.
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
+                if (const std::string ck = oid->name + "." + mem->member;
+                    namespaceConstTypes.count(ck) > 0)
+                    return constLiteral(ck);
             if (llvm::Value* pp = persistentFieldPtr(*mem)) {
                 return builder.CreateLoad(llvmType(typeName(*mem)), pp, mem->member);
             }
@@ -6269,20 +6277,26 @@ struct CodeGenerator::Impl {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
                             m != nullptr && m->isComptime && !m->isAbstract)
                             comptimeMethods.emplace(m->name, m);
+        auto fold = [&](const ast::ConstDecl& c, const std::string& owner) {
+            const std::string key = owner.empty() ? c.name : owner + "." + c.name;
+            const std::string type = typeRefName(c.type);
+            namespaceConstTypes[key] = type;
+            if (c.init == nullptr) return;
+            if (isFloatType(type)) {
+                double d;
+                if (foldConstDouble(*c.init, d)) constDblVals[key] = d;
+            } else {
+                long long v;
+                if (foldConstInt(*c.init, v)) constIntVals[key] = v;
+            }
+        };
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
-                for (const ast::ConstDecl& c : ns.consts) {
-                    const std::string type = typeRefName(c.type);
-                    namespaceConstTypes[c.name] = type;
-                    if (c.init == nullptr) continue;
-                    if (isFloatType(type)) {
-                        double d;
-                        if (foldConstDouble(*c.init, d)) constDblVals[c.name] = d;
-                    } else {
-                        long long v;
-                        if (foldConstInt(*c.init, v)) constIntVals[c.name] = v;
-                    }
-                }
+                for (const ast::ConstDecl& c : ns.consts) fold(c, "");
+                for (const ast::ClassDecl& cls : ns.classes)
+                    for (const ast::MemberPtr& m : cls.members)
+                        if (const auto* c = dynamic_cast<const ast::ConstDecl*>(m.get()))
+                            fold(*c, cls.name);
             }
         }
     }

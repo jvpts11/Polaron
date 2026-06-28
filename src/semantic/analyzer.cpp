@@ -1156,21 +1156,27 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
 // references resolve. Only primitive numeric / boolean / char consts are supported
 // for now (no sizeof, no comptime functions -- those are later tiers).
 void SemanticAnalyzer::registerConsts(const ast::Program& program) {
+    auto reg = [&](const ast::ConstDecl& c, const std::string& owner) {
+        const std::string type = typeRefStr(c.type);
+        if (!isNumeric(type) && type != "boolean" && type != "char") {
+            error("a 'const' must have a numeric, boolean, or char type, got '" + type + "'", c.loc);
+            return;
+        }
+        const std::string key = owner.empty() ? c.name : owner + "." + c.name;
+        if (constTypes_.count(key) > 0) {
+            error("const '" + key + "' is already defined", c.loc);
+            return;
+        }
+        constTypes_[key] = type;
+    };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
-            for (const ast::ConstDecl& c : ns.consts) {
-                const std::string type = typeRefStr(c.type);
-                if (!isNumeric(type) && type != "boolean" && type != "char") {
-                    error("a 'const' must have a numeric, boolean, or char type, got '" + type + "'",
-                          c.loc);
-                    continue;
-                }
-                if (constTypes_.count(c.name) > 0) {
-                    error("const '" + c.name + "' is already defined", c.loc);
-                    continue;
-                }
-                constTypes_[c.name] = type;
-            }
+            for (const ast::ConstDecl& c : ns.consts) reg(c, "");
+            // A const declared inside a class/struct is a static member, keyed Owner.NAME.
+            for (const ast::ClassDecl& cls : ns.classes)
+                for (const ast::MemberPtr& m : cls.members)
+                    if (const auto* c = dynamic_cast<const ast::ConstDecl*>(m.get()))
+                        reg(*c, cls.name);
         }
     }
 }
@@ -1252,31 +1258,35 @@ void SemanticAnalyzer::checkPersistentReleases() {
 // Pass 2: fold each const initializer (in declaration order, so a const may refer
 // to earlier ones) and validate it is a compile-time constant of the right kind.
 void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
+    auto fold = [&](const ast::ConstDecl& c, const std::string& owner) {
+        const std::string key = owner.empty() ? c.name : owner + "." + c.name;
+        if (constTypes_.count(key) == 0) return;  // rejected in pass 1
+        const std::string type = constTypes_[key];
+        if (c.init == nullptr) {
+            error("const '" + key + "' must have an initializer", c.loc);
+            return;
+        }
+        if (isFloatType(type)) {
+            double d;
+            if (!evalConstDouble(*c.init, d, &constDoubles_, &constInts_, &comptimeMethods_))
+                error("const '" + key + "' initializer must be a compile-time constant", c.loc);
+            else
+                constDoubles_[key] = d;
+        } else {
+            long long v;
+            if (!evalConstInt(*c.init, v, &constInts_, &comptimeMethods_, &constDoubles_))
+                error("const '" + key + "' initializer must be a compile-time constant", c.loc);
+            else
+                constInts_[key] = v;
+        }
+    };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
-            for (const ast::ConstDecl& c : ns.consts) {
-                if (constTypes_.count(c.name) == 0) continue;  // rejected in pass 1
-                const std::string type = constTypes_[c.name];
-                if (c.init == nullptr) {
-                    error("const '" + c.name + "' must have an initializer", c.loc);
-                    continue;
-                }
-                if (isFloatType(type)) {
-                    double d;
-                    if (!evalConstDouble(*c.init, d, &constDoubles_, &constInts_, &comptimeMethods_))
-                        error("const '" + c.name + "' initializer must be a compile-time constant",
-                              c.loc);
-                    else
-                        constDoubles_[c.name] = d;
-                } else {
-                    long long v;
-                    if (!evalConstInt(*c.init, v, &constInts_, &comptimeMethods_, &constDoubles_))
-                        error("const '" + c.name + "' initializer must be a compile-time constant",
-                              c.loc);
-                    else
-                        constInts_[c.name] = v;
-                }
-            }
+            for (const ast::ConstDecl& c : ns.consts) fold(c, "");
+            for (const ast::ClassDecl& cls : ns.classes)
+                for (const ast::MemberPtr& m : cls.members)
+                    if (const auto* c = dynamic_cast<const ast::ConstDecl*>(m.get()))
+                        fold(*c, cls.name);
         }
     }
 }
@@ -3245,6 +3255,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
                 // Static field access: ClassName.field (when the receiver names a class).
                 if (const ClassInfo* sc = lookupClass(objId->name)) {
+                    // A class-level const, read as Type.NAME (spec 28.1, OOP form).
+                    if (auto ct = constTypes_.find(objId->name + "." + mem->member);
+                        ct != constTypes_.end())
+                        return ct->second;
                     const FieldInfo* f = findField(objId->name, mem->member);
                     if (f == nullptr) {
                         error("class '" + objId->name + "' has no static field '" + mem->member + "'",
