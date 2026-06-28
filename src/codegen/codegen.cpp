@@ -334,7 +334,7 @@ struct CodeGenerator::Impl {
     llvm::Value* expectingSlot_ = nullptr;
     llvm::BasicBlock* expectingEnd_ = nullptr;
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
-    const std::vector<ast::ExprPtr>* currentInvariants = nullptr;  // contracts: class invariants
+    const std::vector<const ast::Expr*>* currentInvariants = nullptr;  // contracts: class + inherited invariants
     // contracts: each old(e) in an ensures clause -> an entry-captured slot (spec 29).
     std::unordered_map<const ast::OldExpr*, llvm::Value*> oldValues_;
     struct LoopTargets {
@@ -847,6 +847,23 @@ struct CodeGenerator::Impl {
         if (auto fnit = functions.find(owner + ".describe");
             !owner.empty() && fnit != functions.end())
             builder.CreateCall(fnit->second, {objPtr});
+    }
+
+    std::unordered_map<std::string, std::vector<const ast::Expr*>> mergedInvariants_;
+    // Invariants a class must satisfy: its own plus every ancestor's (spec 29). A subclass is bound
+    // by the contracts of its base classes, so method/constructor exits check the full chain.
+    const std::vector<const ast::Expr*>& classInvariants(const std::string& clsName) {
+        auto it = mergedInvariants_.find(clsName);
+        if (it != mergedInvariants_.end()) return it->second;
+        std::vector<const ast::Expr*> merged;
+        for (std::string cur = clsName; !cur.empty();) {
+            auto cc = classes.find(cur);
+            if (cc == classes.end()) break;
+            if (cc->second.decl != nullptr)
+                for (const ast::ExprPtr& inv : cc->second.decl->invariants) merged.push_back(inv.get());
+            cur = cc->second.superclass;
+        }
+        return mergedInvariants_[clsName] = std::move(merged);
     }
 
     // `cascade validate` (spec 37.1): check the node's invariants (and inherited ones). The
@@ -4067,7 +4084,7 @@ struct CodeGenerator::Impl {
         if (currentEnsures != nullptr)
             for (const ast::ExprPtr& e : *currentEnsures) emitContractCheck(*e, "ensures");
         if (currentInvariants != nullptr)
-            for (const ast::ExprPtr& inv : *currentInvariants) emitContractCheck(*inv, "invariant");
+            for (const ast::Expr* inv : *currentInvariants) emitContractCheck(*inv, "invariant");
         // Deferred blocks run first, in reverse (LIFO) order.
         for (auto it = deferred.rbegin(); it != deferred.rend(); ++it) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
@@ -6192,7 +6209,7 @@ struct CodeGenerator::Impl {
                   llvm::Type* retType, const ast::ClassDecl* ctorOf = nullptr,
                   const std::vector<ast::ExprPtr>* requiresClauses = nullptr,
                   const std::vector<ast::ExprPtr>* ensuresClauses = nullptr,
-                  const std::vector<ast::ExprPtr>* invariants = nullptr,
+                  const std::vector<const ast::Expr*>* invariants = nullptr,
                   bool hasEnv = false, const std::vector<ast::Capture>* caps = nullptr,
                   const std::vector<std::string>* capTypes = nullptr,
                   const std::string& dtorChainBase = "", const ast::ClassDecl* dtorOf = nullptr,
@@ -6672,7 +6689,7 @@ struct CodeGenerator::Impl {
                                          m->isStatic ? std::string() : cls.name,
                                          llvmType(typeRefName(m->returnType)), nullptr,
                                          &m->requiresClauses, &m->ensuresClauses,
-                                         m->isStatic ? nullptr : &cls.invariants);
+                                         m->isStatic ? nullptr : &classInvariants(cls.name));
                             }
                         } else if (const auto* c =
                                        dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
@@ -6680,7 +6697,8 @@ struct CodeGenerator::Impl {
                             enclosingMethod_ = cls.name;  // ctor function is "class.class"
                             emitBody(functions[cls.name + "." + cls.name], c->body, c->params,
                                      cls.name, builder.getVoidTy(), &cls,
-                                     &c->requiresClauses, &c->ensuresClauses, &cls.invariants);
+                                     &c->requiresClauses, &c->ensuresClauses,
+                                     &classInvariants(cls.name));
                         } else if (const auto* d =
                                        dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                             // Chain to the nearest ancestor's destructor (derived-then-base).

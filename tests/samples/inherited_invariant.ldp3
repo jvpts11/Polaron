@@ -1,0 +1,42 @@
+import System.IO.Console;
+program InheritedInvariant;
+
+// A subclass is bound by its base class's invariants (spec 29): the invariant declared on Counter is
+// checked on exit of Stepper's own methods too. Here every step keeps count >= 0, so the inherited
+// invariant holds and the program runs to completion.
+
+public bundle main {
+    public namespace app {
+        public class Counter {
+            protected mutable int count;
+            invariant this.count >= 0;
+            public constructor Counter() {
+                this.count = 0;
+            }
+            public method get() returns int {
+                return this.count;
+            }
+        }
+        public class Stepper extends Counter {
+            public constructor Stepper() {
+                this.count = 0;
+            }
+            public method up(int n) returns void {
+                this.count = this.count + n;
+            }
+            public method down(int n) returns void {
+                this.count = this.count - n;   // checked against the inherited invariant on exit
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Stepper s = new Stepper() on stack;
+                s.up(5);
+                s.down(5);          // back to 0 -- still satisfies count >= 0
+                s.up(3);
+                System.IO.Console.printf("count=%d\n", s.get());   // 3
+                return;
+            }
+        }
+    }
+}
