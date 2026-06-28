@@ -32,6 +32,7 @@ if(LDP3_WITH_LLVM)
     message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} (${LLVM_DIR})")
     add_definitions(${LLVM_DEFINITIONS})
     list(APPEND LDP3_CORE_SOURCES src/codegen/codegen.cpp)
+    list(APPEND LDP3_CORE_SOURCES src/bundle/ldb.cpp)  # .ldb bundle container (uses llvm::SHA256)
 endif()
 
 add_library(ldp3_core ${LDP3_CORE_SOURCES})

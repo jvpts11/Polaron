@@ -2609,6 +2609,7 @@ add_executable(ldp3_unit_tests
     unit/test_lexer.cpp
     unit/test_parser.cpp
     unit/test_semantic.cpp
+    $<$<BOOL:${LDP3_WITH_LLVM}>:unit/test_ldb.cpp>  # .ldb container (needs llvm::SHA256)
 )
 target_link_libraries(ldp3_unit_tests PRIVATE ldp3_core doctest::doctest)
 add_test(NAME unit_tests COMMAND ldp3_unit_tests)
