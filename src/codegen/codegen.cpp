@@ -3338,6 +3338,13 @@ struct CodeGenerator::Impl {
             return emitSafeNav(call, *cm->object);
         }
         const std::string name = flattenCallee(*call.callee);
+        // Type.sizeof() (spec issue #7): the member form, equivalent to sizeof(Type) for a class type.
+        if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
+            sm != nullptr && sm->member == "sizeof" && call.args.empty()) {
+            const std::string tn = flattenCallee(*sm->object);
+            if (auto cit = classes.find(baseType(tn)); cit != classes.end())
+                return builder.CreateTrunc(sizeOf(cit->second.type), builder.getInt32Ty());
+        }
         // sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or an expression's
         // type, as an int. A bare class name is a type; otherwise the argument is an expression.
         if (name == "sizeof" && call.args.size() == 1) {

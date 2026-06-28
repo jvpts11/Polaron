@@ -2779,6 +2779,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // sizeof(Type) / sizeof(expr) (spec, issue #7): byte size as an int. The argument may name a
         // type, so it is not type-checked as an ordinary value here.
         if (name == "sizeof" && call->args.size() == 1) return "int";
+        // Type.sizeof() (spec issue #7): the member form on a class type.
+        if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+            sm != nullptr && sm->member == "sizeof" && call->args.empty() &&
+            lookupClass(baseType(flattenCallee(*sm->object))) != nullptr)
+            return "int";
         // Namespace-level literal suffix function called by name: kilobytes(64).
         if (auto lit = literals_.find(name); lit != literals_.end() && !lit->second.empty()) {
             // The bare call form `name(arg)` is gone (spec 17.10): a suffix is used as the `N name`
