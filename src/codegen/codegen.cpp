@@ -358,6 +358,7 @@ struct CodeGenerator::Impl {
     llvm::StructType* stringStructTy = nullptr;  // String layout: { i64 length, ptr data } (spec 4)
     llvm::StructType* typeStructTy = nullptr;     // reflection Type layout (spec 31)
     llvm::StructType* methodStructTy = nullptr;   // reflection Method layout { ptr name, ptr fn }
+    llvm::StructType* fieldStructTy = nullptr;    // reflection Field layout { ptr name }
     std::unordered_map<std::string, llvm::GlobalVariable*> typeGlobals;  // class name -> its Type global
     std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
     std::unordered_set<std::string> abstainedLabels;  // qualified labels named by some `abstainfrom`
@@ -431,7 +432,8 @@ struct CodeGenerator::Impl {
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
         if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
         if (t == "String" || t == "string") return builder.getPtrTy();  // ptr to {i64 len, ptr data}
-        if (t == "Type" || t == "Method") return builder.getPtrTy();  // reflection tokens (spec 31)
+        if (t == "Type" || t == "Method" || t == "Field")
+            return builder.getPtrTy();  // reflection tokens (spec 31)
         if (t == "Object") return builder.getPtrTy();  // root reference type (spec 3.4)
         if (classes.count(t) > 0) return builder.getPtrTy();
         if (auto it = newtypes_.find(t); it != newtypes_.end()) return llvmType(it->second);
@@ -1385,8 +1387,10 @@ struct CodeGenerator::Impl {
                     if (mem->member == "methodCount" || mem->member == "fieldCount") return "int";
                     if (mem->member == "method") return "Method";
                     if (mem->member == "instantiate") return "Object";
-                    if (mem->member == "methods" || mem->member == "fields") return "ArrayList$String";
+                    if (mem->member == "methods") return "ArrayList$Method";
+                    if (mem->member == "fields") return "ArrayList$Field";
                 }
+                if (typeName(*mem->object) == "Field" && mem->member == "name") return "String";
                 if (typeName(*mem->object) == "Method") {
                     if (mem->member == "name") return "String";
                     if (mem->member == "invoke") return "void";
@@ -2020,6 +2024,12 @@ struct CodeGenerator::Impl {
             methodStructTy = llvm::StructType::create(
                 context, {builder.getPtrTy(), builder.getPtrTy()}, "ReflectMethod");
         return methodStructTy;
+    }
+    // The reflection Field token layout: { ptr name }. Lazily created.
+    llvm::StructType* fieldTokenType() {
+        if (fieldStructTy == nullptr)
+            fieldStructTy = llvm::StructType::create(context, {builder.getPtrTy()}, "ReflectField");
+        return fieldStructTy;
     }
     // Builds a global array of String pointers from a list of names; returns {count, arrayPtr}.
     std::pair<llvm::Constant*, llvm::Constant*> nameArray(const std::vector<std::string>& names,
@@ -3966,27 +3976,34 @@ struct CodeGenerator::Impl {
                     builder.CreateCall(ft, ctorFn, cargs);
                     return obj;
                 }
-                // Type.methods()/fields() (spec 31): build an ArrayList<String> of the
-                // member names (forced-monomorphized as ArrayList$String).
+                // Type.methods()/fields() (spec 31): build an ArrayList<Method>/ArrayList<Field> of
+                // the member tokens. A Method token is {name, fn}; a Field token is {name}.
                 if (mem->member == "methods" || mem->member == "fields") {
                     const bool isMethods = (mem->member == "methods");
-                    auto clsIt = classes.find("ArrayList$String");
-                    auto ctorIt = functions.find("ArrayList$String.ArrayList$String");
-                    auto addIt = functions.find("ArrayList$String.add");
+                    const std::string listCls = isMethods ? "ArrayList$Method" : "ArrayList$Field";
+                    auto clsIt = classes.find(listCls);
+                    auto ctorIt = functions.find(listCls + "." + listCls);
+                    auto addIt = functions.find(listCls + ".add");
                     if (clsIt == classes.end() || ctorIt == functions.end() ||
                         addIt == functions.end()) {
-                        error("internal: ArrayList<String> not available for reflection", mem->loc);
+                        error("internal: " + listCls + " not available for reflection", mem->loc);
                         return nullptr;
                     }
+                    llvm::StructType* tokTy = isMethods ? methodTokenType() : fieldTokenType();
                     llvm::Value* list =
                         builder.CreateCall(mallocFn(), {sizeOf(clsIt->second.type)}, "list");
                     builder.CreateCall(ctorIt->second, {list});
                     llvm::Value* count = builder.CreateLoad(
                         builder.getInt64Ty(),
                         builder.CreateStructGEP(typeTokenType(), t, isMethods ? 1 : 4), "n");
-                    llvm::Value* arr = builder.CreateLoad(
+                    llvm::Value* names = builder.CreateLoad(
                         builder.getPtrTy(),
                         builder.CreateStructGEP(typeTokenType(), t, isMethods ? 2 : 5), "names");
+                    llvm::Value* fns =
+                        isMethods ? builder.CreateLoad(builder.getPtrTy(),
+                                                       builder.CreateStructGEP(typeTokenType(), t, 3),
+                                                       "fns")
+                                  : nullptr;
                     llvm::Function* curFn = currentFn;
                     llvm::Value* iSlot = createEntryAlloca("li", builder.getInt64Ty());
                     builder.CreateStore(builder.getInt64(0), iSlot);
@@ -3999,13 +4016,27 @@ struct CodeGenerator::Impl {
                     builder.CreateCondBr(builder.CreateICmpSLT(i, count), body, done);
                     builder.SetInsertPoint(body);
                     llvm::Value* nm = builder.CreateLoad(
-                        builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), arr, i), "nm");
-                    builder.CreateCall(addIt->second, {list, nm});
+                        builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), names, i), "nm");
+                    llvm::Value* tok = builder.CreateCall(mallocFn(), {sizeOf(tokTy)}, "tok");
+                    builder.CreateStore(nm, builder.CreateStructGEP(tokTy, tok, 0));
+                    if (isMethods) {
+                        llvm::Value* fn = builder.CreateLoad(
+                            builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), fns, i), "fn");
+                        builder.CreateStore(fn, builder.CreateStructGEP(tokTy, tok, 1));
+                    }
+                    builder.CreateCall(addIt->second, {list, tok});
                     builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
                     builder.CreateBr(hdr);
                     builder.SetInsertPoint(done);
                     return list;
                 }
+            }
+            // Field reflection (spec 31): name() reads the field token's name.
+            if (typeName(*mem->object) == "Field" && mem->member == "name") {
+                llvm::Value* f = emitExpr(*mem->object);
+                if (f == nullptr) return nullptr;
+                return builder.CreateLoad(builder.getPtrTy(),
+                                          builder.CreateStructGEP(fieldTokenType(), f, 0), "f.name");
             }
             // Method reflection (spec 31): name() and invoke(receiver) for no-arg methods.
             if (typeName(*mem->object) == "Method") {

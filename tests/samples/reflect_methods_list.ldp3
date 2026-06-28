@@ -1,8 +1,8 @@
 import System.IO.Console;
 program ReflectMethodsList;
 
-// Reflection collections (spec 31): Type.methods() / Type.fields() return an
-// ArrayList of the member names (forced-monomorphized as ArrayList<String>).
+// Reflection collections (spec 31): Type.methods() returns ArrayList<Method> and Type.fields()
+// returns ArrayList<Field>; each token exposes name() (a Method also supports invoke()).
 
 public bundle main {
     public namespace app {
@@ -15,15 +15,17 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Type t = reflect.typeOf<Dog>();
-                ArrayList<String> ms = t.methods();
+                ArrayList<Method> ms = t.methods();
                 System.IO.Console.printf("methods size=%d\n", ms.size());
                 for (mutable int i = 0; i < ms.size(); i++) {
-                    System.IO.Console.println(ms.get(i));
+                    Method m = ms.get(i);
+                    System.IO.Console.println(m.name());
                 }
-                ArrayList<String> fs = t.fields();
+                ArrayList<Field> fs = t.fields();
                 System.IO.Console.printf("fields size=%d\n", fs.size());
                 for (mutable int i = 0; i < fs.size(); i++) {
-                    System.IO.Console.println(fs.get(i));
+                    Field f = fs.get(i);
+                    System.IO.Console.println(f.name());
                 }
                 return;
             }

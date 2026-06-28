@@ -2998,8 +2998,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     return "String";
                 if (mem->member == "method" && call->args.size() == 1) return "Method";
                 if (mem->member == "instantiate") return "Object";  // construct an instance
-                if ((mem->member == "methods" || mem->member == "fields") && call->args.empty())
-                    return "ArrayList$String";  // member names as a list
+                if (mem->member == "methods" && call->args.empty()) return "ArrayList$Method";
+                if (mem->member == "fields" && call->args.empty()) return "ArrayList$Field";
                 error("Type has no method '" + mem->member + "'", call->loc);
                 return "";
             }
@@ -3009,6 +3009,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "firstByte" && call->args.empty()) return "int";
                 if (mem->member == "invoke") return "void";  // invoke(receiver [, args])
                 error("Method has no method '" + mem->member + "'", call->loc);
+                return "";
+            }
+            if (objType == "Field") {  // reflection (spec 31)
+                for (const auto& arg : call->args) typeOf(*arg);
+                if (mem->member == "name" && call->args.empty()) return "String";
+                error("Field has no method '" + mem->member + "'", call->loc);
                 return "";
             }
             // A field of function<...> type is a function value: obj.f(args) calls it.
