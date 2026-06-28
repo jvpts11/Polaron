@@ -745,9 +745,23 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ExternDecl& ex : ns.externs) {  // external C functions (spec 26)
+                // A namespace-level extern is a free declaration outside a class; an extern must be a
+                // static class member (`public extern <conv> static method ...`). Still registered so
+                // its uses resolve and do not cascade.
+                error("an 'extern' declaration must be a static class member; declare it inside a "
+                      "class",
+                      ex.loc);
                 externReturns_[ex.name] = typeRefStr(ex.returnType);
                 externParamCount_[ex.name] = ex.params.size();
             }
+            // A class extern method is reachable by its bare C symbol for `goto` (spec 7.9).
+            for (const ast::ClassDecl& cls : ns.classes)
+                for (const ast::MemberPtr& m : cls.members)
+                    if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
+                        md != nullptr && md->isExtern) {
+                        externReturns_[md->name] = typeRefStr(md->returnType);
+                        externParamCount_[md->name] = md->params.size();
+                    }
             for (const ast::EnumDecl& en : ns.enums) {
                 // A java-style enum is desugared into a class of the same name, so
                 // its matching class entry is expected; only flag other clashes.

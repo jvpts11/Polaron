@@ -1526,7 +1526,7 @@ TEST_CASE("semantic accepts goto to a raw address") {
 TEST_CASE("semantic accepts goto to an extern function") {
     CHECK(checkSrc(
         "program P; public bundle b { public namespace n {"
-        " extern cdecl method kernelEntry() returns void;"
+        " public class Sys { public extern cdecl static method kernelEntry() returns void; }"
         " public class Main { public static method main(string[] args) returns void {"
         " goto kernelEntry; } } } }"));
 }

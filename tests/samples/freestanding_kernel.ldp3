@@ -9,7 +9,9 @@ program FreestandingKernel freestanding;
 
 public bundle main freestanding {
     public namespace boot {
-        extern cdecl method putchar(int c) returns int;
+        public class Sys {
+            public extern cdecl static method putchar(int c) returns int;
+        }
         public class Main {
             public static method main(string[] args) returns int {
                 address buf = Memory.alloc(8);
@@ -18,7 +20,7 @@ public bundle main freestanding {
                 msg[1] = 75;   // 'K'
                 msg[2] = 10;   // newline
                 for (mutable int i = 0; i < 3; i++) {
-                    putchar(msg[i]);
+                    Sys.putchar(msg[i]);
                 }
                 Memory.free(buf);
                 return 0;

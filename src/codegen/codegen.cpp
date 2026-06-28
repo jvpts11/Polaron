@@ -4297,8 +4297,8 @@ struct CodeGenerator::Impl {
                     std::vector<llvm::Value*> args;
                     std::vector<SpillToken> atk(call.args.size());
                     for (std::size_t i = 0; i < call.args.size(); ++i) {
-                        // A lambda argument to a C function is a callback: pass a raw C function ptr.
-                        if (isExternCall)
+                        if (isExternCall) {
+                            // A lambda argument to a C function is a callback: pass a raw C fn ptr.
                             if (const auto* lam =
                                     dynamic_cast<const ast::LambdaExpr*>(call.args[i].get())) {
                                 llvm::Function* cb = emitCallbackFn(*lam);
@@ -4306,6 +4306,14 @@ struct CodeGenerator::Impl {
                                 args.push_back(cb);
                                 continue;
                             }
+                            // A by-value struct travels in a register: load its bytes as the ABI int.
+                            if (llvm::Type* reg = ffiStructRegType(typeName(*call.args[i]))) {
+                                llvm::Value* ptr = emitExpr(*call.args[i]);
+                                if (ptr == nullptr) return nullptr;
+                                args.push_back(builder.CreateLoad(reg, ptr, "ffi.byval"));
+                                continue;
+                            }
+                        }
                         llvm::Value* v = emitExpr(*call.args[i]);
                         if (v == nullptr) return nullptr;
                         if (i < fnit->second->arg_size())  // static: no implicit `this`
@@ -4315,7 +4323,19 @@ struct CodeGenerator::Impl {
                     }
                     for (std::size_t i = call.args.size(); i-- > 0;)
                         if (atk[i].active) args[i] = reloadSpill(atk[i], args[i]);
-                    return emitMaybeInvoke(fnit->second, args);
+                    llvm::Value* r = emitMaybeInvoke(fnit->second, args);
+                    // A by-value struct return arrives in a register: store it into a fresh object.
+                    if (isExternCall) {
+                        const std::string rt = externReturnType[objId->name + "." + mem->member];
+                        if (ffiStructRegType(rt) != nullptr) {
+                            auto cit = classes.find(baseType(rt));
+                            llvm::Value* obj = builder.CreateCall(
+                                mallocFn(), {sizeOf(cit->second.type)}, "ffi.ret");
+                            builder.CreateStore(r, obj);
+                            return obj;
+                        }
+                    }
+                    return r;
                 }
             }
             // Enum (catalog) instance method: the receiver is an enum value. Dispatch
@@ -6535,6 +6555,7 @@ struct CodeGenerator::Impl {
                                     f = llvm::Function::Create(ety, llvm::Function::ExternalLinkage,
                                                                m->name, module);
                                 functions[cls.name + "." + m->name] = f;
+                                functions[m->name] = f;  // also by bare C symbol, for goto (spec 7.9)
                                 externReturnType[cls.name + "." + m->name] =
                                     typeRefName(m->returnType);
                                 continue;

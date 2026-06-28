@@ -16,13 +16,15 @@ public bundle main {
                 this.y = y;
             }
         }
-        extern cdecl method ldp3_point_sum(Point p) returns int;
-        extern cdecl method ldp3_point_scale(Point p, int k) returns Point;
+        public class PointApi {
+            public extern cdecl static method ldp3_point_sum(Point p) returns int;
+            public extern cdecl static method ldp3_point_scale(Point p, int k) returns Point;
+        }
         public class Main {
             public static method main(string[] args) returns void {
                 Point p = new Point(3, 4);
-                int s = ldp3_point_sum(p);              // 7
-                Point q = ldp3_point_scale(p, 10);      // {30, 40}
+                int s = PointApi.ldp3_point_sum(p);              // 7
+                Point q = PointApi.ldp3_point_scale(p, 10);      // {30, 40}
                 System.IO.Console.printf("s=%d qx=%d qy=%d\n", s, q.x, q.y);
                 return;
             }

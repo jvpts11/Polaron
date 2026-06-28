@@ -7,13 +7,15 @@ program FreestandingTetrad freestanding;
 
 public bundle main freestanding {
     public namespace boot {
-        extern cdecl method putchar(int c) returns int;
+        public class Sys {
+            public extern cdecl static method putchar(int c) returns int;
+        }
         public class Main {
             public static method tick(int mode) returns int {
                 if (mode == 1) { abstainfrom body; }   // disable body from now on
                 if (mode == 2) { reinstate body; }     // re-enable body
                 label body;
-                putchar(66);   // 'B'
+                Sys.putchar(66);   // 'B'
                 return 0;
             }
             public static method main(string[] args) returns int {
@@ -21,7 +23,7 @@ public bundle main freestanding {
                 Main.tick(1);   // abstains body -> silent
                 Main.tick(0);   // silent
                 Main.tick(2);   // reinstates body -> B
-                putchar(10);
+                Sys.putchar(10);
                 return 0;
             }
         }
