@@ -296,6 +296,17 @@ R"LDP3(
             public method isEmpty() returns boolean {
                 return this.count == 0;
             }
+            // Functional pipeline (spec 34): run over, and select from, the elements with a lambda.
+            public method forEach(function<void, T> action) returns void {
+                for (mutable int i = 0; i < this.count; i++) { action(this.data[i]); }
+            }
+            public method filter(function<boolean, T> keep) returns ArrayList<T> {
+                mutable ArrayList<T> out = new ArrayList<T>();
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (keep(this.data[i])) { out.add(this.data[i]); }
+                }
+                return out;
+            }
         }
         // LIFO stack backed by a doubling array (spec 34.1).
         public class Stack<T> {

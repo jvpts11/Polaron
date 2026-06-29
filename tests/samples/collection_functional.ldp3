@@ -1,0 +1,26 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program CollectionFunctional;
+
+// Functional pipeline on a collection (spec 34): forEach runs a lambda over each element, filter keeps
+// the ones a predicate selects (returning a new list). Prints: 1 2 3 4 5 / evens=2 e0=2 e1=4.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> nums = new ArrayList<int>();
+                nums.add(1);
+                nums.add(2);
+                nums.add(3);
+                nums.add(4);
+                nums.add(5);
+                nums.forEach(lambda(int x) returns void { System.IO.Console.printf("%d ", x); });
+                System.IO.Console.println("");
+                ArrayList<int> evens = nums.filter(lambda(int x) returns boolean { return x % 2 == 0; });
+                System.IO.Console.printf("evens=%d e0=%d e1=%d\n",
+                    evens.size(), evens.get(0), evens.get(1));
+                return;
+            }
+        }
+    }
+}
