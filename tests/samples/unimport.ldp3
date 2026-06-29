@@ -1,5 +1,6 @@
 import System.Runtime.UnimportedTypeException;
 import System.IO.Console;
+import reflect;
 program Unimport;
 
 // Unimport (spec 30, "unloading agressivo"): `unimport Dog` both marks the class dead

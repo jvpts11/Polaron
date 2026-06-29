@@ -1,4 +1,5 @@
 import System.IO.Console;
+import reflect;
 program ReflectTypeof;
 
 // Reflection (spec 31): `reflect.typeOf<T>()` returns a Type token for class T, and

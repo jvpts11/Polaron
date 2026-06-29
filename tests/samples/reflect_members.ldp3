@@ -1,4 +1,5 @@
 import System.IO.Console;
+import reflect;
 program ReflectMembers;
 
 // Reflection member introspection (spec 31): a Type token exposes the declared

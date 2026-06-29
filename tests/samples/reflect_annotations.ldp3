@@ -1,5 +1,6 @@
 import System.IO.Console;
 import System.Collections.ArrayList;
+import reflect;
 program ReflectAnnotations;
 
 // Reflection over annotations (spec 14.3, 31): Type.annotations() returns the annotations applied to a

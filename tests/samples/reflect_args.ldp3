@@ -1,4 +1,5 @@
 import System.IO.Console;
+import reflect;
 program ReflectArgs;
 
 // Reflection forwards arguments through to the constructor (instantiate) and to a method (invoke),

@@ -1112,6 +1112,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode) {
     typeNamespace_["Time"] = "System.Time";
     // Net (spec 34): TCP builtins lowering to runtime winsock calls; register for the import.
     typeNamespace_["Net"] = "System.Net";
+    // reflect (spec 31) is a builtin namespace, not a prelude class; register it so `import reflect;`
+    // resolves. Reflection use is gated on this import at the reflect.typeOf call site.
+    typeNamespace_["reflect"] = "reflect";
     // Generic templates (stdlib collections and user generics alike) are erased by monomorphization,
     // which rewrites each use to an instance (ArrayList$int) in the user's namespace. The base name ->
     // namespace map captured before monomorphization pins each generic to its real home, so a stdlib
@@ -3019,8 +3022,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (!call->args.empty()) error("Channel.select takes no arguments", call->loc);
             return "Select";
         }
-        // reflect.typeOf<T>() (spec 31): the Type token for class T.
+        // reflect.typeOf<T>() (spec 31): the Type token for class T. It is the only entry to
+        // reflection, so requiring its import here gates the whole reflect.* surface.
         if (name == "reflect.typeOf") {
+            if (currentImports_.count("reflect") == 0)
+                error("reflection requires 'import reflect;'", call->loc);
             if (freestanding_)
                 error("reflection is not available in freestanding mode (spec 36.3)", call->loc);
             if (call->typeArgs.size() != 1) {

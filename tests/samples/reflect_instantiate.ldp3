@@ -1,4 +1,5 @@
 import System.IO.Console;
+import reflect;
 program ReflectInstantiate;
 
 // Reflection construction (spec 31): Type.instantiate() allocates an instance and runs

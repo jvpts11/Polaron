@@ -1,4 +1,5 @@
 import System.IO.Console;
+import reflect;
 program ReflectInvoke;
 
 // Reflection invoke (spec 31): Type.method(name) looks up a method by name at runtime
