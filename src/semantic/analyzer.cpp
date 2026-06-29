@@ -3112,6 +3112,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "charAt" && call->args.size() == 1) return "char";
                 if (mem->member == "equals" && call->args.size() == 1) return "boolean";
                 if (mem->member == "concat" && call->args.size() == 1) return "String";
+                // append mutates the receiver, so it is only on the mutable `string` (spec 4).
+                if (mem->member == "append" && call->args.size() == 1) {
+                    if (objType != "string")
+                        error("'append' mutates the string; it is not available on the immutable "
+                              "String (use + to build a new String)",
+                              mem->loc);
+                    return "string";
+                }
                 if (mem->member == "substring" && call->args.size() == 2) return "String";
                 // Search / predicates (spec 34.5).
                 if (mem->member == "indexOf" && call->args.size() == 1) return "int";

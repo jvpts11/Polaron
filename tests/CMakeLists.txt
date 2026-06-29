@@ -740,6 +740,15 @@ if(LDP3_WITH_LLVM)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or expression.
+        # Mutable string (spec 4): append grows in place; assignment copies (value semantics).
+        add_test(NAME codegen_mutable_string_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/mutable_string.ldp3"
+            "-DCONTAINS=hi! there a=x b=xy"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Interpolation as a value (spec 4.1): $"..." builds a String, interpolating ints, strings
         # and expressions.
         add_test(NAME codegen_interp_string_runs COMMAND "${CMAKE_COMMAND}"

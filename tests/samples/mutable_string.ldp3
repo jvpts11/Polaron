@@ -1,0 +1,25 @@
+import System.IO.Console;
+program MutableString;
+
+// The mutable `string` (spec 4): append grows it in place, and assignment copies it (value
+// semantics), so mutating one does not affect the other. Prints: hi! there / a=x / b=xy.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                string m = "hi";
+                m.append("!");
+                m.append(" there");
+                System.IO.Console.println(m);
+                string a = "x";
+                string b = a;
+                b.append("y");
+                System.IO.Console.print("a=");
+                System.IO.Console.println(a);
+                System.IO.Console.print("b=");
+                System.IO.Console.println(b);
+                return;
+            }
+        }
+    }
+}

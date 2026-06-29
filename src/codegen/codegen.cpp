@@ -473,6 +473,10 @@ struct CodeGenerator::Impl {
         const std::string from = repType(fromRaw), to = repType(toRaw);  // newtype -> underlying
         // A primitive flowing to Object is boxed (spec 3.4): every value is an Object.
         if (to == "Object" && isBoxablePrimitive(from)) return emitBox(v, from);
+        // A mutable `string` owns its struct: copy it on assignment so a later append does not alias
+        // the source (value semantics; spec 4). The data pointer is shared until an append replaces it.
+        if (to == "string" && (from == "string" || from == "String"))
+            return emitStringFromParts(stringLen(v), stringData(v));
         if (isFloatType(to)) {
             llvm::Type* fty = llvmType(to);
             if (v->getType()->isIntegerTy()) {
@@ -4058,6 +4062,17 @@ struct CodeGenerator::Impl {
                     llvm::Value* o = emitExpr(*call.args[0]);
                     if (o == nullptr) return nullptr;
                     return emitStringConcat(s, o);
+                }
+                // string.append(x): mutate the receiver in place by replacing its {length, data} with
+                // the concatenation. The receiver must be a mutable `string` (its struct is on the
+                // heap; see the value-copy in coerce). Returns the receiver for chaining (spec 4).
+                if (mem->member == "append") {
+                    llvm::Value* o = emitExpr(*call.args[0]);
+                    if (o == nullptr) return nullptr;
+                    llvm::Value* cat = emitStringConcat(s, o);
+                    builder.CreateStore(stringLen(cat), builder.CreateStructGEP(stringType(), s, 0));
+                    builder.CreateStore(stringData(cat), builder.CreateStructGEP(stringType(), s, 1));
+                    return s;
                 }
                 if (mem->member == "substring") {
                     llvm::Value* start = fitInt(emitExpr(*call.args[0]), 64);
