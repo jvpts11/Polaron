@@ -317,6 +317,25 @@ R"LDP3(
                 for (mutable int i = 0; i < this.count; i++) { acc = combine(acc, this.data[i]); }
                 return acc;
             }
+            public method any(function<boolean, T> pred) returns boolean {
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (pred(this.data[i])) { return true; }
+                }
+                return false;
+            }
+            public method all(function<boolean, T> pred) returns boolean {
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (!pred(this.data[i])) { return false; }
+                }
+                return true;
+            }
+            public method count(function<boolean, T> pred) returns int {
+                mutable int hits = 0;
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (pred(this.data[i])) { hits = hits + 1; }
+                }
+                return hits;
+            }
         }
         // LIFO stack backed by a doubling array (spec 34.1).
         public class Stack<T> {

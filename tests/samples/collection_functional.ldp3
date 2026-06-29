@@ -3,8 +3,9 @@ import System.Collections.ArrayList;
 program CollectionFunctional;
 
 // Functional pipeline on a collection (spec 34): forEach runs a lambda over each element, filter keeps
-// the ones a predicate selects, map transforms each into a new list, reduce folds them to one value.
-// Prints: 1 2 3 4 5 / evens=2 e0=2 e1=4 d0=2 d4=10 sum=15.
+// the ones a predicate selects, map transforms each into a new list, reduce folds them to one value,
+// and any/all/count test a predicate across the elements.
+// Prints: 1 2 3 4 5 / evens=2 e0=2 e1=4 d0=2 d4=10 sum=15 / anyOdd=1 allEven=0 big=2.
 public bundle main {
     public namespace app {
         public class Main {
@@ -22,6 +23,10 @@ public bundle main {
                 int sum = nums.reduce<int>(0, lambda(int a, int x) returns int { return a + x; });
                 System.IO.Console.printf("evens=%d e0=%d e1=%d d0=%d d4=%d sum=%d\n",
                     evens.size(), evens.get(0), evens.get(1), doubled.get(0), doubled.get(4), sum);
+                boolean anyOdd = nums.any(lambda(int x) returns boolean { return x % 2 == 1; });
+                boolean allEven = nums.all(lambda(int x) returns boolean { return x % 2 == 0; });
+                int big = nums.count(lambda(int x) returns boolean { return x > 3; });
+                System.IO.Console.printf("anyOdd=%d allEven=%d big=%d\n", anyOdd, allEven, big);
                 return;
             }
         }
