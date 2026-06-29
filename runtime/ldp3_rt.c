@@ -621,6 +621,22 @@ struct Ldp3Point ldp3_point_scale(struct Ldp3Point p, int k) {
     return r;
 }
 
+// Reads one line from stdin into a freshly allocated, null-terminated buffer (the trailing newline is
+// stripped). The byte length is returned through out_len. The general Console.read() input primitive:
+// it returns a String, which the program parses (e.g. toInt) for other types.
+char* ldp3_read_line(int64_t* out_len) {
+    size_t cap = 128, len = 0;
+    char* buf = (char*)malloc(cap);
+    int c;
+    while ((c = getchar()) != EOF && c != '\n') {
+        if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+        buf[len++] = (char)c;
+    }
+    buf[len] = '\0';
+    if (out_len) *out_len = (int64_t)len;
+    return buf;
+}
+
 // FFI callback test helper (spec 26): a C function that takes a raw function pointer and calls it.
 int ldp3_apply_cb(int (*f)(int), int x) { return f(x); }
 

@@ -1,15 +1,15 @@
 import System.IO.Console;
 program ReadEcho;
 
-// M6: System.IO.Console.read() reads an int from stdin (libc scanf). Combined with
-// interpolation. Run with input "3 4" -> a=3 b=4 soma=7
+// System.IO.Console.read() reads a line as a String; toInt() parses it. read() is the one input
+// primitive (numbers come from parsing). Run with input "3\n4" -> a=3 b=4 soma=7.
 
 public bundle main {
     public namespace examples {
         public class Main {
             public static method main(string[] args) returns void {
-                int a = System.IO.Console.read();
-                int b = System.IO.Console.read();
+                int a = System.IO.Console.read().toInt();
+                int b = System.IO.Console.read().toInt();
                 System.IO.Console.println($"a={a} b={b} soma={a + b}");
                 return;
             }

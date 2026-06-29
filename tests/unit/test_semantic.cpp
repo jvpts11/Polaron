@@ -422,14 +422,15 @@ TEST_CASE("semantic rejects calling a non-length method on an array") {
 
 // ---- Input + interpolation (M6 / M5+) ----
 
-TEST_CASE("semantic accepts readInt into an int") {
+TEST_CASE("semantic reads a line as a String and parses it with toInt") {
     CHECK(checkSrc(wrapMain(
-        "public static method main(string[] args) returns void { int x = System.IO.Console.read(); }")));
+        "public static method main(string[] args) returns void { "
+        "String s = System.IO.Console.read(); int x = s.toInt(); }")));
 }
 
-TEST_CASE("semantic rejects readInt with arguments") {
+TEST_CASE("semantic rejects read with arguments") {
     CHECK_FALSE(checkSrc(wrapMain(
-        "public static method main(string[] args) returns void { int x = System.IO.Console.read(5); }")));
+        "public static method main(string[] args) returns void { String s = System.IO.Console.read(5); }")));
 }
 
 TEST_CASE("semantic accepts interpolation in println") {

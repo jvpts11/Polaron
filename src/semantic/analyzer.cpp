@@ -2869,7 +2869,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 checkTypeAccessible("Console", call->loc);  // require the import
                 if (isRead) {
                     if (!call->args.empty()) error("Console.read takes no arguments", call->loc);
-                    return "int";
+                    return "String";  // read() returns a line; parse it (e.g. toInt) for other types
                 }
                 if (isPrintf && call->args.empty())
                     error("printf requires a format string", call->loc);
@@ -3110,6 +3110,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "length" && call->args.empty()) return "int";
                 if (mem->member == "isEmpty" && call->args.empty()) return "boolean";
                 if (mem->member == "charAt" && call->args.size() == 1) return "char";
+                if (mem->member == "toInt" && call->args.empty()) return "int";  // parse (spec 4)
                 if (mem->member == "equals" && call->args.size() == 1) return "boolean";
                 if (mem->member == "concat" && call->args.size() == 1) return "String";
                 // append mutates the receiver, so it is only on the mutable `string` (spec 4).

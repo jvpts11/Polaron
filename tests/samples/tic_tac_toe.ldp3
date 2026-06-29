@@ -113,7 +113,7 @@ public bundle main {
                     board.show();
                     System.IO.Console.println($"Vez do jogador {current}. Posicao (1-9):");
 
-                    int pos = System.IO.Console.read();
+                    int pos = System.IO.Console.read().toInt();
                     boolean ok = board.place(pos - 1, current);
 
                     if (!ok) {

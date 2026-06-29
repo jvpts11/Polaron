@@ -1436,6 +1436,7 @@ struct CodeGenerator::Impl {
             if (int w = vecWidth(flattenCallee(*call->callee)); w > 0)
                 return flattenCallee(*call->callee);  // vec2/3/4 construction
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
+            if (flattenCallee(*call->callee) == "System.IO.Console.read") return "String";  // reads a line
             if (flattenCallee(*call->callee) == "Memory.readString") return "String";  // StringBuilder
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("Time.", 0) == 0) {
                 if (fc == "Time.millis" || fc == "Time.nanos" || fc == "Time.unixMillis")
@@ -3873,9 +3874,14 @@ struct CodeGenerator::Impl {
             const bool isPrintln = name == "System.IO.Console.println";
             const bool isPrint = name == "System.IO.Console.print";
             if (isRead) {
-                llvm::Value* tmp = createEntryAlloca("readtmp", builder.getInt32Ty());
-                builder.CreateCall(scanf(), {builder.CreateGlobalStringPtr("%d", ".scanfmt"), tmp});
-                return builder.CreateLoad(builder.getInt32Ty(), tmp, "read");
+                // read() reads a line from stdin and returns it as a String -- the one input
+                // primitive (spec 4). Parse it (e.g. toInt) for other types.
+                llvm::Value* lenSlot = createEntryAlloca("rlen", builder.getInt64Ty());
+                llvm::FunctionType* ft =
+                    llvm::FunctionType::get(builder.getPtrTy(), {builder.getPtrTy()}, false);
+                llvm::Value* buf = builder.CreateCall(
+                    module.getOrInsertFunction("ldp3_read_line", ft), {lenSlot}, "line");
+                return emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot), buf);
             }
             if (isPrintf || isPrintln || isPrint) {
                 const bool nl = isPrintln;
@@ -4062,6 +4068,12 @@ struct CodeGenerator::Impl {
                     llvm::Value* o = emitExpr(*call.args[0]);
                     if (o == nullptr) return nullptr;
                     return emitStringConcat(s, o);
+                }
+                // toInt(): parse the string as a base-10 integer (spec 4) -- the typical use of read().
+                if (mem->member == "toInt") {
+                    llvm::FunctionType* ft =
+                        llvm::FunctionType::get(builder.getInt32Ty(), {builder.getPtrTy()}, false);
+                    return builder.CreateCall(module.getOrInsertFunction("atoi", ft), {stringData(s)});
                 }
                 // string.append(x): mutate the receiver in place by replacing its {length, data} with
                 // the concatenation. The receiver must be a mutable `string` (its struct is on the

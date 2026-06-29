@@ -1131,7 +1131,7 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # M6: System.IO.readInt() via scanf; stdin "3 4" -> a=3 b=4 soma=7.
+        # Console.read() reads a line as a String; toInt() parses it. stdin "3\n4" -> a=3 b=4 soma=7.
         add_test(NAME codegen_readint_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
