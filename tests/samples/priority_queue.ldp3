@@ -1,0 +1,26 @@
+import System.IO.Console;
+program PriorityQueueTest;
+
+// PriorityQueue<T> (spec 34.1): a binary min-heap. peek/poll always return the smallest element by
+// compareTo, so polling everything yields ascending order. Prints: size=5 peek=1 / 12345.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                PriorityQueue<int> pq = new PriorityQueue<int>();
+                pq.add(5);
+                pq.add(1);
+                pq.add(3);
+                pq.add(2);
+                pq.add(4);
+                System.IO.Console.printf("size=%d peek=%d\n", pq.size(), pq.peek());
+                mutable string order = "";
+                while (!pq.isEmpty()) {
+                    order.append($"{pq.poll()}");
+                }
+                System.IO.Console.println(order);
+                return;
+            }
+        }
+    }
+}

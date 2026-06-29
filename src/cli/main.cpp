@@ -775,6 +775,61 @@ R"LDP3(
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
         }
+)LDP3"
+// (split 1b: keep the collections literal under MSVC's ~16KB cap.)
+R"LDP3(
+        // Binary min-heap priority queue (spec 34.1): the smallest element (by compareTo) is served
+        // first. Backed by a doubling array; add and poll are O(log n).
+        public class PriorityQueue<T> {
+            private mutable T[] heap;
+            private mutable int count;
+            public constructor PriorityQueue() { this.heap = new T[8](); this.count = 0; }
+            public method add(T item) returns void {
+                if (this.count >= this.heap.length()) {
+                    mutable T[] bigger = new T[this.heap.length() * 2]();
+                    for (mutable int j = 0; j < this.count; j++) { bigger[j] = this.heap[j]; }
+                    delete this.heap;
+                    this.heap = bigger;
+                }
+                this.heap[this.count] = item;
+                mutable int i = this.count;
+                this.count = this.count + 1;
+                while (i > 0) {  // sift up
+                    int parent = (i - 1) / 2;
+                    if (this.heap[i].compareTo(this.heap[parent]) >= 0) { break; }
+                    T tmp = this.heap[i];
+                    this.heap[i] = this.heap[parent];
+                    this.heap[parent] = tmp;
+                    i = parent;
+                }
+            }
+            public method peek() returns T { return this.heap[0]; }
+            public method poll() returns T {
+                T top = this.heap[0];
+                this.count = this.count - 1;
+                this.heap[0] = this.heap[this.count];
+                mutable int i = 0;
+                while (true) {  // sift down
+                    int l = 2 * i + 1;
+                    int r = 2 * i + 2;
+                    mutable int smallest = i;
+                    if (l < this.count && this.heap[l].compareTo(this.heap[smallest]) < 0) {
+                        smallest = l;
+                    }
+                    if (r < this.count && this.heap[r].compareTo(this.heap[smallest]) < 0) {
+                        smallest = r;
+                    }
+                    if (smallest == i) { break; }
+                    T tmp = this.heap[i];
+                    this.heap[i] = this.heap[smallest];
+                    this.heap[smallest] = tmp;
+                    i = smallest;
+                }
+                return top;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
     }
 )LDP3"
 // (split 2: another ~16KB literal boundary.)
