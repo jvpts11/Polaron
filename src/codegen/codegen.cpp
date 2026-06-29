@@ -6247,15 +6247,33 @@ struct CodeGenerator::Impl {
             emitForeachRange(s, *rng);
             return;
         }
-        llvm::Value* block = emitExpr(*s.iterable);
-        if (block == nullptr) return;
+        const std::string at = typeName(*s.iterable);
+        const std::string cbase = baseType(at);
+        // foreach over a collection iterates a snapshot from its toArray() (spec 34): any class with a
+        // toArray method is iterable. Arrays are iterated directly.
+        const bool isCollection =
+            classes.count(cbase) > 0 && functions.count(cbase + ".toArray") > 0;
+        llvm::Value* block;
+        std::string et;
+        if (isCollection) {
+            llvm::Value* recv = emitExpr(*s.iterable);
+            if (recv == nullptr) return;
+            block = builder.CreateCall(functions[cbase + ".toArray"], {recv}, "fe.arr");
+            const std::string ret = classes[cbase].methodReturnType.count("toArray") > 0
+                                        ? classes[cbase].methodReturnType.at("toArray")
+                                        : "";
+            et = s.isVar ? (isArrayType(ret) ? ret.substr(0, ret.size() - 2) : ret)
+                         : typeRefName(s.elemType);
+        } else {
+            block = emitExpr(*s.iterable);
+            if (block == nullptr) return;
+            et = s.isVar ? (isArrayType(at) ? at.substr(0, at.size() - 2) : at)
+                         : typeRefName(s.elemType);
+        }
         llvm::Value* len64 = builder.CreateLoad(builder.getInt64Ty(), block, "fe.len");
         llvm::Value* len = builder.CreateTrunc(len64, builder.getInt32Ty(), "fe.len32");
         llvm::Value* iSlot = createEntryAlloca("fe.i", builder.getInt32Ty());
         builder.CreateStore(builder.getInt32(0), iSlot);
-        const std::string at = typeName(*s.iterable);
-        const std::string et = s.isVar ? (isArrayType(at) ? at.substr(0, at.size() - 2) : at)
-                                       : typeRefName(s.elemType);
         llvm::Value* vSlot = createEntryAlloca(s.varName, llvmType(et));
         locals[s.varName] = LocalSlot{vSlot, et};
         llvm::Function* fn = builder.GetInsertBlock()->getParent();

@@ -1,0 +1,34 @@
+import System.IO.Console;
+program ForeachCollection;
+
+// for-in iterates a collection directly (spec 34), without spelling out toArray(): the loop takes a
+// snapshot of the collection. Works for an explicit element type and for var.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<int> nums = new ArrayList<int>();
+                nums.add(10);
+                nums.add(20);
+                nums.add(30);
+                mutable int sum = 0;
+                for (int x in nums) {
+                    sum = sum + x;
+                }
+                System.IO.Console.printf("sum=%d\n", sum);
+
+                HashSet<int> set = new HashSet<int>();
+                set.add(1);
+                set.add(2);
+                set.add(2);
+                set.add(3);
+                mutable int total = 0;
+                for (var v in set) {
+                    total = total + v;
+                }
+                System.IO.Console.printf("total=%d\n", total);
+                return;
+            }
+        }
+    }
+}

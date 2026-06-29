@@ -1760,9 +1760,24 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             return;
         }
         const std::string it = typeOf(*fe->iterable);
-        if (!it.empty() && !isArrayType(it))
-            error("foreach requires an array or a range, got '" + it + "'", fe->loc);
-        const std::string et = fe->isVar ? elementOf(it) : typeRefStr(fe->elemType);
+        // A collection is iterable too (spec 34): a generic/monomorphized class snapshot via toArray().
+        const bool isColl =
+            !it.empty() && !isArrayType(it) &&
+            (it.find('<') != std::string::npos || it.find('$') != std::string::npos);
+        if (!it.empty() && !isArrayType(it) && !isColl)
+            error("foreach requires an array, a collection or a range, got '" + it + "'", fe->loc);
+        std::string et;
+        if (!fe->isVar) {
+            et = typeRefStr(fe->elemType);
+        } else if (isColl) {  // var x: take the single type argument (ArrayList<int> -> int)
+            const std::size_t lt = it.find('<');
+            const std::string args = lt != std::string::npos
+                                         ? it.substr(lt + 1, it.size() - lt - 2)
+                                         : it.substr(it.find('$') + 1);
+            et = args.find(',') == std::string::npos && args.find('$') == std::string::npos ? args : "";
+        } else {
+            et = elementOf(it);
+        }
         pushScope();
         if (!fe->indexName.empty()) declareLocal(fe->indexName, LocalVar{"int", false});
         declareLocal(fe->varName, LocalVar{et, false});
