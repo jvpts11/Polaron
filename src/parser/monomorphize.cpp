@@ -65,6 +65,33 @@ ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
         r.name = rebuilt + ")";
         return r;
     }
+    // A function type carries its spelling in `name`, e.g. "function<void,T>"; substitute each type
+    // argument so a generic method/field taking a `function<void, T>` instantiates to
+    // `function<void, int>` (spec 15.1). Splits on top-level commas and recurses for nested generics.
+    if (r.name.rfind("function<", 0) == 0 && r.name.back() == '>') {
+        const std::string inner = r.name.substr(9, r.name.size() - 10);
+        std::string rebuilt = "function<";
+        int depth = 0;
+        std::size_t start = 0;
+        bool first = true;
+        for (std::size_t i = 0; i <= inner.size(); ++i) {
+            if (i < inner.size() && inner[i] == '<') ++depth;
+            else if (i < inner.size() && inner[i] == '>') --depth;
+            if (i == inner.size() || (inner[i] == ',' && depth == 0)) {
+                std::string comp = inner.substr(start, i - start);
+                const std::size_t b = comp.find_first_not_of(" \t");
+                const std::size_t e = comp.find_last_not_of(" \t");
+                comp = (b == std::string::npos) ? std::string() : comp.substr(b, e - b + 1);
+                ast::TypeRef ct;
+                ct.name = comp;
+                rebuilt += (first ? "" : ",") + substType(ct, s).name;  // recurse (nested + params)
+                first = false;
+                start = i + 1;
+            }
+        }
+        r.name = rebuilt + ">";
+        return r;
+    }
     auto it = s.find(r.name);
     if (it != s.end()) r.name = it->second;
     for (std::string& a : r.typeArgs) {
