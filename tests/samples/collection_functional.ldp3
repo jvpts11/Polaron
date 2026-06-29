@@ -3,7 +3,8 @@ import System.Collections.ArrayList;
 program CollectionFunctional;
 
 // Functional pipeline on a collection (spec 34): forEach runs a lambda over each element, filter keeps
-// the ones a predicate selects (returning a new list). Prints: 1 2 3 4 5 / evens=2 e0=2 e1=4.
+// the ones a predicate selects, map transforms each into a new list, reduce folds them to one value.
+// Prints: 1 2 3 4 5 / evens=2 e0=2 e1=4 d0=2 d4=10 sum=15.
 public bundle main {
     public namespace app {
         public class Main {
@@ -17,8 +18,10 @@ public bundle main {
                 nums.forEach(lambda(int x) returns void { System.IO.Console.printf("%d ", x); });
                 System.IO.Console.println("");
                 ArrayList<int> evens = nums.filter(lambda(int x) returns boolean { return x % 2 == 0; });
-                System.IO.Console.printf("evens=%d e0=%d e1=%d\n",
-                    evens.size(), evens.get(0), evens.get(1));
+                ArrayList<int> doubled = nums.map<int>(lambda(int x) returns int { return x * 2; });
+                int sum = nums.reduce<int>(0, lambda(int a, int x) returns int { return a + x; });
+                System.IO.Console.printf("evens=%d e0=%d e1=%d d0=%d d4=%d sum=%d\n",
+                    evens.size(), evens.get(0), evens.get(1), doubled.get(0), doubled.get(4), sum);
                 return;
             }
         }

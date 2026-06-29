@@ -301,11 +301,21 @@ R"LDP3(
                 for (mutable int i = 0; i < this.count; i++) { action(this.data[i]); }
             }
             public method filter(function<boolean, T> keep) returns ArrayList<T> {
-                mutable ArrayList<T> out = new ArrayList<T>();
+                mutable ArrayList<T> out = new ArrayList<T>() on heap;
                 for (mutable int i = 0; i < this.count; i++) {
                     if (keep(this.data[i])) { out.add(this.data[i]); }
                 }
                 return out;
+            }
+            public method map<R>(function<R, T> transform) returns ArrayList<R> {
+                mutable ArrayList<R> out = new ArrayList<R>() on heap;
+                for (mutable int i = 0; i < this.count; i++) { out.add(transform(this.data[i])); }
+                return out;
+            }
+            public method reduce<R>(R seed, function<R, R, T> combine) returns R {
+                mutable R acc = seed;
+                for (mutable int i = 0; i < this.count; i++) { acc = combine(acc, this.data[i]); }
+                return acc;
             }
         }
         // LIFO stack backed by a doubling array (spec 34.1).

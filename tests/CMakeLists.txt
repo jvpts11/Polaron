@@ -785,12 +785,12 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # Functional pipeline on a collection (spec 34): ArrayList forEach + filter taking lambdas.
+        # Functional pipeline on a collection (spec 34): ArrayList forEach/filter/map/reduce with lambdas.
         add_test(NAME codegen_collection_functional_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/collection_functional.ldp3"
-            "-DCONTAINS=1 2 3 4 5 evens=2 e0=2 e1=4"
+            "-DCONTAINS=1 2 3 4 5 evens=2 e0=2 e1=4 d0=2 d4=10 sum=15"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
