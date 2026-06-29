@@ -1,0 +1,33 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.Iterable;
+import System.Collections.Iterator;
+program CollectionIterator;
+
+// Iterable/Iterator (spec 34): an ArrayList hands out a cursor through the Iterable interface, so code can
+// walk it (or any future Iterable) without knowing the concrete collection. Prints: total=66 count=3.
+public bundle main {
+    public namespace app {
+        public class Main {
+            // Walks any Iterable, summing and counting through the interface alone.
+            public static method drain(Iterable<int> seq) returns int {
+                mutable Iterator<int> it = seq.iterator();
+                mutable int total = 0;
+                while (it.hasNext()) {
+                    total = total + it.next();
+                }
+                return total;
+            }
+
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> nums = new ArrayList<int>();
+                nums.add(11);
+                nums.add(22);
+                nums.add(33);
+                int total = Main.drain(nums);
+                System.IO.Console.printf("total=%d count=%d\n", total, nums.size());
+                return;
+            }
+        }
+    }
+}

@@ -234,9 +234,19 @@ public bundle std {
 // (split 0: keep each literal under MSVC's ~16KB cap.)
 R"LDP3(
     public namespace System.Collections {
+        // A cursor over a sequence: hasNext reports whether another element remains, next yields the
+        // current one and advances (spec 34). Iterable is anything that can hand out a fresh Iterator
+        // over its elements, so a generic algorithm can walk any collection through these two interfaces.
+        public interface Iterator<T> {
+            method hasNext() returns boolean;
+            method next() returns T;
+        }
+        public interface Iterable<T> {
+            method iterator() returns Iterator<T>;
+        }
         // A growable list backed by a dynamic array that doubles on overflow (spec 31 uses
         // ArrayList<Method>/ArrayList<Field>; also a general-purpose collection).
-        public class ArrayList<T> {
+        public class ArrayList<T> implements Iterable<T> {
             private mutable T[] data;
             private mutable int count;
             public constructor ArrayList() {
@@ -335,6 +345,26 @@ R"LDP3(
                     if (pred(this.data[i])) { hits = hits + 1; }
                 }
                 return hits;
+            }
+            public override method iterator() returns Iterator<T> {
+                return new ArrayListIterator<T>(this) on heap;
+            }
+        }
+        // The cursor an ArrayList hands out: walks indices 0..size over the list it was given.
+        public class ArrayListIterator<T> implements Iterator<T> {
+            private mutable ArrayList<T> list;
+            private mutable int pos;
+            public constructor ArrayListIterator(ArrayList<T> list) {
+                this.list = list;
+                this.pos = 0;
+            }
+            public override method hasNext() returns boolean {
+                return this.pos < this.list.size();
+            }
+            public override method next() returns T {
+                mutable T value = this.list.get(this.pos);
+                this.pos = this.pos + 1;
+                return value;
             }
         }
         // A non-owning window over a [start, start+len) range of an array (spec 34): no copy, just a

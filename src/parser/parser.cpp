@@ -777,10 +777,12 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         if (c.isStruct) fail("a struct cannot extend another type (structs have no inheritance)",
                              c.loc);
         c.superclass = expect(TokenKind::Identifier, "a superclass name").lexeme;
-        if (match(TokenKind::Lt)) {  // generic base: extends Base<T>
+        if (match(TokenKind::Lt)) {  // generic base: extends Base<T>, or a concrete arg like Base<int>
             do {
-                c.superclassTypeArgs.push_back(
-                    expect(TokenKind::Identifier, "a type argument").lexeme);
+                if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier)
+                    fail("expected a type argument but found '" + current().lexeme + "'", current().loc);
+                c.superclassTypeArgs.push_back(current().lexeme);
+                advance();
             } while (match(TokenKind::Comma));
             expect(TokenKind::Gt, "'>' to close type arguments");
         }
@@ -791,7 +793,10 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             std::vector<std::string> args;  // generic interface args: implements Producer<Dog>
             if (match(TokenKind::Lt)) {
                 do {
-                    args.push_back(expect(TokenKind::Identifier, "a type argument").lexeme);
+                    if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier)
+                        fail("expected a type argument but found '" + current().lexeme + "'", current().loc);
+                    args.push_back(current().lexeme);
+                    advance();
                 } while (match(TokenKind::Comma));
                 expect(TokenKind::Gt, "'>' to close type arguments");
             }
