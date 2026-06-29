@@ -1,4 +1,5 @@
 import System.IO.Console;
+import System.Concurrency.atomic;
 program AtomicOps;
 
 // atomic<T> operators (spec 20.6): ++, --, += and -= on an atomic cell lower to lock-free

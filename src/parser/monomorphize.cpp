@@ -1192,6 +1192,10 @@ bool monomorphize(ast::Program& program) {
                 if (!c.typeParams.empty()) {
                     templates[c.name] = &c;
                     generics.insert(c.name);
+                    // Record the template's namespace before it is dropped, so the analyzer can enforce
+                    // imports on a generic by its base name (a stdlib collection requires an import; a
+                    // user generic in the current namespace does not).
+                    program.genericNamespaces[c.name] = ns.name;
                     // Record variance (spec 15.3) before the template is dropped, so the
                     // analyzer can apply variance subtyping to the concrete instantiations.
                     if (!c.typeParamVariance.empty())

@@ -1,5 +1,6 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
+import System.Concurrency.Mutex;
 program MutexSynchronized;
 
 // Mutex<T> + synchronized (spec 20.5): two OS threads each increment a shared counter 100000

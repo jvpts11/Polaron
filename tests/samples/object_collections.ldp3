@@ -1,4 +1,6 @@
 import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.HashMap;
 program ObjectCollections;
 
 // Collections of class-typed elements (spec 34.1): ArrayList of a self-containing class and a

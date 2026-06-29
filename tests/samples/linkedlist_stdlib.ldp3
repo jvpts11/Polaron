@@ -1,4 +1,5 @@
 import System.IO.Console;
+import System.Collections.LinkedList;
 program LinkedListStdlib;
 
 // LinkedList<T> (spec 34.1): O(1) append + O(1) head removal, with self-referential generic

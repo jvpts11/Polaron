@@ -1,4 +1,5 @@
 import System.IO.Console;
+import System.Errors.Result;
 program ResultTry;
 
 // try? (spec 21.2): on a Result/Option, yields the inner value when Ok/Some, and early-returns the

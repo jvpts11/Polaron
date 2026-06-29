@@ -1,4 +1,7 @@
 import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.HashMap;
+import System.Collections.TreeSet;
 program CollectionsIterStdlib;
 
 // Collection iteration (spec 34.1): every collection exposes toArray() (sets/lists) so it can be

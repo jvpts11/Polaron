@@ -1,4 +1,7 @@
 import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.HashMap;
+import System.Collections.HashSet;
 program CollectionOps;
 
 // Mutating collection operations (spec 34.1): ArrayList set/removeAt/indexOf/contains/remove/clear,

@@ -1,9 +1,11 @@
 import System.IO.Console;
+import System.Collections.Stack;
+import System.Collections.Queue;
+import System.Collections.Deque;
 program CollectionsBasic;
 
 // Array-backed collections (spec 34.1): Stack (LIFO), Queue (FIFO ring buffer), Deque (both ends).
-// Pure-LDP3 generic classes in System.Collections, like ArrayList. (Generic stdlib types are used
-// without an explicit import for now -- importing a generic by base name is a separate fix.)
+// Pure-LDP3 generic classes in System.Collections, each imported by name like any other stdlib type.
 
 public bundle main {
     public namespace app {

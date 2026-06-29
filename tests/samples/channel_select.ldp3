@@ -1,5 +1,6 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
+import System.Concurrency.Channel;
 program ChannelSelect;
 
 // Channel.select (spec 20.4): a fluent builder that waits on several channels at once. The chain

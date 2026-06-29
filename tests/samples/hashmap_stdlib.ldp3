@@ -1,4 +1,6 @@
 import System.IO.Console;
+import System.Collections.HashMap;
+import System.Collections.HashSet;
 program HashMapStdlib;
 
 // HashMap<K,V> + HashSet<T> (spec 34.1): open addressing (linear probing), load factor 0.75.

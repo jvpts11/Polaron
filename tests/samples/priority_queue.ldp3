@@ -1,4 +1,5 @@
 import System.IO.Console;
+import System.Collections.PriorityQueue;
 program PriorityQueueTest;
 
 // PriorityQueue<T> (spec 34.1): a binary min-heap. peek/poll always return the smallest element by

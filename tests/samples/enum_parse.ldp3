@@ -1,4 +1,5 @@
 import System.IO.Console;
+import System.Errors.Option;
 program EnumParse;
 
 // Built-in enum parse() (spec 12.5): EnumType.parse(s) returns Option<EnumType> -- Some when the

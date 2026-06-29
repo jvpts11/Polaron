@@ -1,4 +1,5 @@
 import System.IO.Console;
+import System.Collections.ArrayList;
 program ReflectMethodsList;
 
 // Reflection collections (spec 31): Type.methods() returns ArrayList<Method> and Type.fields()

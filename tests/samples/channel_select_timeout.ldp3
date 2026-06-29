@@ -1,5 +1,6 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
+import System.Concurrency.Channel;
 program ChannelSelectTimeout;
 
 // Channel.select with a timeout (spec 20.4): when no channel is ready within the timeout, the

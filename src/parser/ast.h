@@ -896,6 +896,9 @@ struct Program {
     // Internal names produced by namespace disambiguation (e.g. app__Box). These are
     // already explicitly scoped, so they bypass the import/visibility requirement.
     std::set<std::string> qualifiedTypes;
+    // Base name -> namespace for each generic class, captured before monomorphization erases the
+    // templates. Lets the type checker enforce imports on a collection (ArrayList) by its base name.
+    std::map<std::string, std::string> genericNamespaces;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

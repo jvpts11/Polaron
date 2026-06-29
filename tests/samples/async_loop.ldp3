@@ -1,4 +1,5 @@
 import System.IO.Console;
+import System.Concurrency.Task;
 program AsyncLoop;
 
 // async/await with control flow (spec 20.2), slice C: awaiting INSIDE a loop. The state machine

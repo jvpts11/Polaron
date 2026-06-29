@@ -1,5 +1,6 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
+import System.Concurrency.Channel;
 program Channel;
 
 // Channel<T> (spec 20.3): a bounded blocking queue for passing values between threads. A producer

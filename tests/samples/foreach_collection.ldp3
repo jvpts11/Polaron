@@ -1,4 +1,6 @@
 import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.HashSet;
 program ForeachCollection;
 
 // for-in iterates a collection directly (spec 34), without spelling out toArray(): the loop takes a

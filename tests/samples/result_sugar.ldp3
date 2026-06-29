@@ -1,4 +1,6 @@
 import System.IO.Console;
+import System.Errors.Result;
+import System.Errors.Option;
 program ResultSugar;
 
 // Construction sugar (spec 21.2-3): Ok(x)/Err(x)/Some(x)/None() instead of new Ok<T,E>(x). The

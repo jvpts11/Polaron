@@ -1,4 +1,5 @@
 import System.IO.Console;
+import System.Collections.ArrayList;
 program ArrayListTest;
 
 // ArrayList<T> (F10 stdlib, System.Collections): a growable list backed by a doubling

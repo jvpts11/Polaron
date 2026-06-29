@@ -1112,6 +1112,12 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode) {
     typeNamespace_["Time"] = "System.Time";
     // Net (spec 34): TCP builtins lowering to runtime winsock calls; register for the import.
     typeNamespace_["Net"] = "System.Net";
+    // Generic templates (stdlib collections and user generics alike) are erased by monomorphization,
+    // which rewrites each use to an instance (ArrayList$int) in the user's namespace. The base name ->
+    // namespace map captured before monomorphization pins each generic to its real home, so a stdlib
+    // collection requires an import while a user generic in the current namespace does not. Enforcement
+    // strips the $arg suffix and checks the base name (see checkTypeAccessible).
+    for (const auto& [base, ns] : program.genericNamespaces) typeNamespace_[base] = ns;
     genericVariance_ = program.genericVariance;  // variance of generic type params (spec 15.3)
     qualifiedTypes_.insert(program.qualifiedTypes.begin(), program.qualifiedTypes.end());
     registerClasses(program);
@@ -1619,7 +1625,12 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     // Inside a compiler-generated monomorphized class, type references were already validated at the
     // template and the instantiation site (and may reach stdlib types like Json from ArrayList<Json>).
     if (currentClass_.find('$') != std::string::npos) return;
-    if (n.find('$') != std::string::npos) return;  // monomorphized generic -> always visible
+    // A monomorphized generic (ArrayList$int) is enforced on its generic base name (ArrayList): user
+    // code must import the collection. The type-argument part is internal to the instantiation.
+    if (const std::size_t d = n.find('$'); d != std::string::npos) n = n.substr(0, d);
+    // Ok/Err/Some/None are the value-constructor sugar of Result/Option (spec 21), not types declared
+    // by name; they come with the type, so importing Result/Option is enough.
+    if (n == "Ok" || n == "Err" || n == "Some" || n == "None") return;
     if (qualifiedTypes_.count(n) > 0) return;      // explicitly namespace-qualified -> visible
     auto it = typeNamespace_.find(n);
     if (it == typeNamespace_.end()) return;        // primitive / unknown (other checks catch it)

@@ -1,5 +1,6 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
+import System.Concurrency.atomic;
 program AtomicCounter;
 
 // atomic<T> (spec 20.6): a lock-free atomic cell. get/set/add/increment/compareAndSet lower to

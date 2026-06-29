@@ -1,4 +1,6 @@
 import System.IO.Console;
+import System.Collections.TreeMap;
+import System.Collections.TreeSet;
 program TreeMapStdlib;
 
 // TreeMap<K,V> + TreeSet<T> (spec 34.1): ordered, backed by a binary search tree with

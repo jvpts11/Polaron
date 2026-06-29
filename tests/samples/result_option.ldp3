@@ -1,4 +1,6 @@
 import System.IO.Console;
+import System.Errors.Result;
+import System.Errors.Option;
 program ResultOption;
 
 // Result<T,E> and Option<T> (spec 21.2-21.3) as built-in sealed sum types in the prelude, matched
