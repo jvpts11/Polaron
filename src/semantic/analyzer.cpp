@@ -2555,6 +2555,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("operator '" + op + "' is not defined on vectors", bin->loc);
             return "vec" + std::to_string(vw);
         }
+        // String concatenation (spec 4): String/string + String/string -> String.
+        auto isStr = [](const std::string& t) { return t == "String" || t == "string"; };
+        if (op == "+" && isStr(lt) && isStr(rt)) return "String";
         // `char` is an integer (i32) for arithmetic/comparison/bitwise (e.g. c - '0', c >= '0').
         auto numOk = [](const std::string& t) { return isNumeric(t) || t == "char"; };
         if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {

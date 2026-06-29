@@ -1,0 +1,24 @@
+import System.IO.Console;
+program Strings;
+
+// The String type (spec 4): immutable, built from a literal, with length/charAt/substring/equals and
+// concatenation via the + operator. Prints: Hello, world! / len=13 / c=w / sub=world / eq=1 ne=0.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String hello = "Hello, ";
+                String who = "world";
+                String msg = hello + who + "!";
+                System.IO.Console.println(msg);
+                System.IO.Console.printf("len=%d\n", msg.length());
+                System.IO.Console.printf("c=%c\n", msg.charAt(7));
+                String sub = msg.substring(7, 12);
+                System.IO.Console.print("sub=");
+                System.IO.Console.println(sub);
+                System.IO.Console.printf("eq=%d ne=%d\n", sub.equals(who), sub.equals(hello));
+                return;
+            }
+        }
+    }
+}

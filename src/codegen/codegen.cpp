@@ -1395,6 +1395,8 @@ struct CodeGenerator::Impl {
             }
             const std::string lt = typeName(*bin->lhs);
             const std::string rt = typeName(*bin->rhs);
+            if (op == "+" && (lt == "String" || lt == "string") && (rt == "String" || rt == "string"))
+                return "String";  // string concatenation (spec 4)
             if (int vw = std::max(vecWidth(lt), vecWidth(rt)); vw > 0) return "vec" + std::to_string(vw);
             if (isFloatType(lt) || isFloatType(rt)) {  // f32 only if both are f32
                 const bool f64 = (isFloatType(lt) && !isF32(lt)) || (isFloatType(rt) && !isF32(rt));
@@ -2112,6 +2114,21 @@ struct CodeGenerator::Impl {
     llvm::Value* stringData(llvm::Value* strObj) {
         return builder.CreateLoad(builder.getPtrTy(),
                                   builder.CreateStructGEP(stringType(), strObj, 1, "str.data"), "data");
+    }
+    // Concatenates two String/string values into a fresh String: the basis of the + operator and the
+    // concat method (spec 4).
+    llvm::Value* emitStringConcat(llvm::Value* a, llvm::Value* b) {
+        llvm::Value* la = stringLen(a);
+        llvm::Value* lb = stringLen(b);
+        llvm::Value* total = builder.CreateAdd(la, lb);
+        llvm::Value* buf = builder.CreateCall(
+            mallocFn(), {builder.CreateAdd(total, builder.getInt64(1))}, "cat.buf");
+        builder.CreateCall(memcpyFn(), {buf, stringData(a), la});
+        builder.CreateCall(memcpyFn(),
+                           {builder.CreateGEP(builder.getInt8Ty(), buf, la), stringData(b), lb});
+        builder.CreateStore(builder.getInt8(0),
+                            builder.CreateGEP(builder.getInt8Ty(), buf, total));  // NUL terminator
+        return emitStringFromParts(total, buf);
     }
     // If `e` is a String/string value, lowers it to its libc byte pointer (for %s); else
     // returns the value unchanged.
@@ -2915,6 +2932,9 @@ struct CodeGenerator::Impl {
         l = reloadSpill(ltk, l);
         if (l == nullptr || r == nullptr) return nullptr;
         const std::string& op = bin.op;
+        // String concatenation: + on String/string operands builds a fresh String (spec 4).
+        if (op == "+" && (lt == "String" || lt == "string") && (rt == "String" || rt == "string"))
+            return emitStringConcat(l, r);
         // SIMD vector path: element-wise + - * / on vecN; a scalar operand is broadcast.
         if (int vw = std::max(vecWidth(lt), vecWidth(rt)); vw > 0) {
             auto toVec = [&](llvm::Value* x, const std::string& xt) -> llvm::Value* {
@@ -4015,17 +4035,7 @@ struct CodeGenerator::Impl {
                 if (mem->member == "concat") {
                     llvm::Value* o = emitExpr(*call.args[0]);
                     if (o == nullptr) return nullptr;
-                    llvm::Value* la = stringLen(s);
-                    llvm::Value* lb = stringLen(o);
-                    llvm::Value* total = builder.CreateAdd(la, lb);
-                    llvm::Value* buf = builder.CreateCall(
-                        mallocFn(), {builder.CreateAdd(total, builder.getInt64(1))}, "cat.buf");
-                    builder.CreateCall(memcpyFn(), {buf, stringData(s), la});
-                    builder.CreateCall(memcpyFn(),
-                                       {builder.CreateGEP(builder.getInt8Ty(), buf, la), stringData(o), lb});
-                    builder.CreateStore(builder.getInt8(0),
-                                        builder.CreateGEP(builder.getInt8Ty(), buf, total));  // NUL
-                    return emitStringFromParts(total, buf);
+                    return emitStringConcat(s, o);
                 }
                 if (mem->member == "substring") {
                     llvm::Value* start = fitInt(emitExpr(*call.args[0]), 64);
