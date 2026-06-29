@@ -1,0 +1,27 @@
+import System.IO.Console;
+import System.Collections.Slice;
+program CollectionSlice;
+
+// A Slice is a non-owning window over a range of an array (spec 34): get/set go straight through to the
+// backing array (no copy), sub narrows the window, toArray copies the window out.
+// Prints: len=4 s0=20 s3=50 / a1=999 mid_len=2 mid0=30 copy1=40.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] a = new int[6]();
+                for (mutable int i = 0; i < 6; i++) {
+                    a[i] = (i + 1) * 10;
+                }
+                Slice<int> s = new Slice<int>(a, 1, 4) on heap;
+                System.IO.Console.printf("len=%d s0=%d s3=%d\n", s.length(), s.get(0), s.get(3));
+                s.set(0, 999);
+                Slice<int> mid = s.sub(1, 3);
+                int[] copy = mid.toArray();
+                System.IO.Console.printf("a1=%d mid_len=%d mid0=%d copy1=%d\n",
+                    a[1], mid.length(), mid.get(0), copy[1]);
+                return;
+            }
+        }
+    }
+}

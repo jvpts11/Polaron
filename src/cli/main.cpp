@@ -337,6 +337,36 @@ R"LDP3(
                 return hits;
             }
         }
+        // A non-owning window over a [start, start+len) range of an array (spec 34): no copy, just a
+        // backing array and an offset. Reads go through the array's own bounds check, so there is no UB;
+        // sub returns a narrower window, toArray copies the window out into a fresh array.
+        public class Slice<T> {
+            private mutable T[] backing;
+            private mutable int start;
+            private mutable int len;
+            public constructor Slice(T[] array, int start, int len) {
+                this.backing = array;
+                this.start = start;
+                this.len = len;
+            }
+            public method length() returns int {
+                return this.len;
+            }
+            public method get(int i) returns T {
+                return this.backing[this.start + i];
+            }
+            public method set(int i, T value) returns void {
+                this.backing[this.start + i] = value;
+            }
+            public method sub(int from, int to) returns Slice<T> {
+                return new Slice<T>(this.backing, this.start + from, to - from) on heap;
+            }
+            public method toArray() returns T[] {
+                mutable T[] out = new T[this.len]();
+                for (mutable int i = 0; i < this.len; i++) { out[i] = this.backing[this.start + i]; }
+                return out;
+            }
+        }
         // LIFO stack backed by a doubling array (spec 34.1).
         public class Stack<T> {
             private mutable T[] data;

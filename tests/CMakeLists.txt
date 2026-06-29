@@ -794,6 +794,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Slice (spec 34): a non-owning window over an array range; get/set through, sub narrows, toArray copies.
+        add_test(NAME codegen_collection_slice_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/collection_slice.ldp3"
+            "-DCONTAINS=len=4 s0=20 s3=50 a1=999 mid_len=2 mid0=30 copy1=40"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Mutating collection ops (spec 34.1): ArrayList set/removeAt/remove/clear, HashMap/HashSet remove.
         add_test(NAME codegen_collection_ops_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
