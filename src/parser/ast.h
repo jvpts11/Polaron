@@ -75,6 +75,7 @@ struct IntLiteralExpr : Expr {
 
 struct FloatLiteralExpr : Expr {
     std::string text;  // raw lexeme, e.g. "3.14" or "2.0f"
+    bool isDecimal = false;  // an `m`-suffixed literal: the fixed-point Decimal primitive (spec 34)
     void dump(std::string& out, int indent) const override;
 };
 

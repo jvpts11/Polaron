@@ -23,12 +23,27 @@ if(NOT rc EQUAL 0)
     message(FATAL_ERROR "ldp3c failed (exit ${rc})")
 endif()
 
+# The compiler-rt builtins library (next to clang) provides 128-bit integer division (__divti3 etc.)
+# that the Decimal primitive needs; lld-link does not pull it in automatically. Harmless for programs
+# that do not use it.
+get_filename_component(_clangdir "${CLANG}" DIRECTORY)
+get_filename_component(_llvmroot "${_clangdir}" DIRECTORY)
+# The vcpkg clang ships no compiler-rt, so also look in a standalone LLVM install. The .lib is static,
+# so it links with any clang.
+file(GLOB _builtins
+    "${_llvmroot}/lib/clang/*/lib/windows/clang_rt.builtins-x86_64.lib"
+    "$ENV{ProgramFiles}/LLVM/lib/clang/*/lib/windows/clang_rt.builtins-x86_64.lib")
+set(_builtinslib "")
+if(_builtins)
+    list(GET _builtins 0 _builtinslib)
+endif()
+
 # legacy_stdio_definitions.lib resolves the bare printf/scanf symbols (UCRT
 # defines them inline in the headers, which our emitted IR doesn't use). The minimal runtime is
 # linked in too: the prelude's System.Concurrency.Thread always emits calls to __ldp3_thread_*.
 execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}"
     "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.c" -o "${exe}"
-    -llegacy_stdio_definitions RESULT_VARIABLE rc)
+    -llegacy_stdio_definitions ${_builtinslib} RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})")
 endif()

@@ -99,6 +99,37 @@ bool isFloatType(const std::string& t) {
            t == "smallfloat" || t == "quadruple";
 }
 bool isF32(const std::string& t) { return t == "float" || t == "float32"; }
+// The number of fractional digits the Decimal primitive keeps: its value is the integer mantissa
+// times 10^-DECIMAL_SCALE (spec 34). 10^18 fits the fraction in an i64, easing formatting.
+constexpr int DECIMAL_SCALE = 18;
+// Scales a decimal lexeme (e.g. "1.50") to its integer mantissa as a base-10 digit string
+// ("1500000000000000000"), padding or truncating the fraction to DECIMAL_SCALE digits.
+std::string decimalScaledString(const std::string& text) {
+    std::string s;
+    for (char c : text) {
+        if (c != '_') s += c;
+    }
+    bool neg = false;
+    std::size_t i = 0;
+    if (!s.empty() && (s[0] == '-' || s[0] == '+')) {
+        neg = (s[0] == '-');
+        i = 1;
+    }
+    std::string intPart, fracPart;
+    bool inFrac = false;
+    for (; i < s.size(); ++i) {
+        if (s[i] == '.') {
+            inFrac = true;
+        } else {
+            (inFrac ? fracPart : intPart) += s[i];
+        }
+    }
+    if (intPart.empty()) intPart = "0";
+    if (fracPart.size() > static_cast<std::size_t>(DECIMAL_SCALE))
+        fracPart = fracPart.substr(0, DECIMAL_SCALE);
+    while (fracPart.size() < static_cast<std::size_t>(DECIMAL_SCALE)) fracPart += '0';
+    return (neg ? "-" : "") + intPart + fracPart;
+}
 // Bit width of a float type: smallfloat=16, float=32, double=64, quadruple=128.
 unsigned floatBits(const std::string& t) {
     if (t == "smallfloat") return 16;
@@ -461,6 +492,7 @@ struct CodeGenerator::Impl {
         if (t == "Type" || t == "Method" || t == "Field" || t == "Annotation")
             return builder.getPtrTy();  // reflection tokens (spec 31)
         if (t == "Object") return builder.getPtrTy();  // root reference type (spec 3.4)
+        if (t == "Decimal") return builder.getInt128Ty();  // fixed-point, scale 10^18 (spec 34)
         if (classes.count(t) > 0) return builder.getPtrTy();
         if (auto it = newtypes_.find(t); it != newtypes_.end()) return llvmType(it->second);
         return builder.getIntNTy(intBits(t));
@@ -506,6 +538,7 @@ struct CodeGenerator::Impl {
     // A primitive value type that boxes into an Object: it lowers to an integer or float (a class or
     // pointer lowers to a pointer instead).
     bool isBoxablePrimitive(const std::string& t) {
+        if (t == "Decimal") return false;  // 128-bit; the box value field is only 64 bits
         if (isFloatType(t)) return true;
         llvm::Type* lt = llvmType(repType(t));
         return lt != nullptr && lt->isIntegerTy();
@@ -618,6 +651,28 @@ struct CodeGenerator::Impl {
         // pointer<->int reinterpret below, which would otherwise treat the box pointer as an address.
         if (from == "Object" && isBoxablePrimitive(to) && v->getType()->isPointerTy())
             return emitUnbox(v, to);
+        // Decimal conversions (spec 34): scale by 10^18 on the way in, descale on the way out. The
+        // double paths are lossy (double keeps ~15-16 digits); int<->Decimal is exact.
+        if (to == "Decimal" && from != "Decimal") {
+            if (isFloatType(from)) {
+                llvm::Value* d = v->getType()->isDoubleTy()
+                                     ? v
+                                     : builder.CreateFPExt(v, builder.getDoubleTy());
+                llvm::Value* scaled =
+                    builder.CreateFMul(d, llvm::ConstantFP::get(builder.getDoubleTy(), 1e18));
+                return builder.CreateFPToSI(scaled, builder.getInt128Ty());
+            }
+            return builder.CreateMul(builder.CreateSExt(v, builder.getInt128Ty()), decimalScale());
+        }
+        if (from == "Decimal" && to != "Decimal") {
+            if (isFloatType(to)) {
+                llvm::Value* d = builder.CreateFDiv(
+                    builder.CreateSIToFP(v, builder.getDoubleTy()),
+                    llvm::ConstantFP::get(builder.getDoubleTy(), 1e18));
+                return isF32(to) ? builder.CreateFPTrunc(d, builder.getFloatTy()) : d;
+            }
+            return builder.CreateTrunc(builder.CreateSDiv(v, decimalScale()), llvmType(to));
+        }
         // Reference cast (class/Object/reflection token): a pointer reinterpret -- a no-op
         // with opaque pointers. No runtime type check yet (spec 31 downcasts).
         if (llvmType(to)->isPointerTy() && v->getType()->isPointerTy()) return v;
@@ -1333,7 +1388,8 @@ struct CodeGenerator::Impl {
                 s += (i ? "," : "") + typeName(*tup->elements[i]);
             return s + ")";
         }
-        if (dynamic_cast<const ast::FloatLiteralExpr*>(&expr) != nullptr) return "double";
+        if (const auto* fl = dynamic_cast<const ast::FloatLiteralExpr*>(&expr))
+            return fl->isDecimal ? "Decimal" : "double";
         if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
         if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
         if (dynamic_cast<const ast::InterpStringExpr*>(&expr) != nullptr) return "String";  // $"..."
@@ -1403,6 +1459,9 @@ struct CodeGenerator::Impl {
             const std::string rt = typeName(*bin->rhs);
             if (op == "+" && (lt == "String" || lt == "string") && (rt == "String" || rt == "string"))
                 return "String";  // string concatenation (spec 4)
+            if (lt == "Decimal" && rt == "Decimal" &&
+                (op == "+" || op == "-" || op == "*" || op == "/"))
+                return "Decimal";  // fixed-point arithmetic (spec 34)
             if (int vw = std::max(vecWidth(lt), vecWidth(rt)); vw > 0) return "vec" + std::to_string(vw);
             if (isFloatType(lt) || isFloatType(rt)) {  // f32 only if both are f32
                 const bool f64 = (isFloatType(lt) && !isF32(lt)) || (isFloatType(rt) && !isF32(rt));
@@ -1797,6 +1856,36 @@ struct CodeGenerator::Impl {
         builder.CreateStore(len, builder.CreateStructGEP(stringType(), obj, 0));
         builder.CreateStore(data, builder.CreateStructGEP(stringType(), obj, 1));
         return obj;
+    }
+    // The Decimal scale (10^18) as an i128 constant.
+    llvm::Value* decimalScale() {
+        return llvm::ConstantInt::get(context,
+                                      llvm::APInt(128, "1" + std::string(DECIMAL_SCALE, '0'), 10));
+    }
+    // Formats a Decimal (i128 mantissa, scale 10^18) as a String: sign, integer part, '.', then the
+    // 18 fraction digits (spec 34). The fraction fits an i64, so it prints with %018llu.
+    llvm::Value* emitDecimalToString(llvm::Value* v) {
+        llvm::Value* neg = builder.CreateICmpSLT(v, llvm::ConstantInt::get(builder.getInt128Ty(), 0));
+        llvm::Value* absV = builder.CreateSelect(neg, builder.CreateNeg(v), v);
+        llvm::Value* intPart =
+            builder.CreateTrunc(builder.CreateSDiv(absV, decimalScale()), builder.getInt64Ty());
+        llvm::Value* frac =
+            builder.CreateTrunc(builder.CreateSRem(absV, decimalScale()), builder.getInt64Ty());
+        llvm::Value* sign = builder.CreateSelect(neg, builder.CreateGlobalStringPtr("-", ".neg"),
+                                                 builder.CreateGlobalStringPtr("", ".pos"));
+        llvm::Value* fmt = builder.CreateGlobalStringPtr("%s%lld.%018llu", ".decfmt");
+        llvm::FunctionType* snTy = llvm::FunctionType::get(
+            builder.getInt32Ty(), {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy()},
+            /*isVarArg=*/true);
+        llvm::FunctionCallee sn = module.getOrInsertFunction("snprintf", snTy);
+        llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        llvm::Value* len = builder.CreateSExt(
+            builder.CreateCall(sn, {nullp, builder.getInt64(0), fmt, sign, intPart, frac}, "dlen"),
+            builder.getInt64Ty());
+        llvm::Value* cap = builder.CreateAdd(len, builder.getInt64(1));
+        llvm::Value* buf = builder.CreateCall(mallocFn(), {cap}, "dbuf");
+        builder.CreateCall(sn, {buf, cap, fmt, sign, intPart, frac});
+        return emitStringFromParts(len, buf);
     }
     // Loads the i64 length field of a String object.
     llvm::Value* stringLen(llvm::Value* strObj) {
@@ -2523,6 +2612,9 @@ struct CodeGenerator::Impl {
             return builder.getInt64(static_cast<std::uint64_t>(v));  // literal needs 64 bits
         }
         if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(&expr)) {
+            if (f->isDecimal)  // i128 mantissa scaled by 10^18 (spec 34)
+                return llvm::ConstantInt::get(context,
+                                              llvm::APInt(128, decimalScaledString(f->text), 10));
             std::string s;
             for (char c : f->text) {
                 if (c != '_' && c != 'f' && c != 'F') s += c;
@@ -3012,6 +3104,33 @@ struct CodeGenerator::Impl {
         // String concatenation: + on String/string operands builds a fresh String (spec 4).
         if (op == "+" && (lt == "String" || lt == "string") && (rt == "String" || rt == "string"))
             return emitStringConcat(l, r);
+        // Decimal fixed-point arithmetic (spec 34): i128 mantissa, scale 10^18. Multiply and divide
+        // rescale through a 256-bit intermediate so the product does not overflow.
+        if (lt == "Decimal" && rt == "Decimal") {
+            if (op == "+") return builder.CreateAdd(l, r);
+            if (op == "-") return builder.CreateSub(l, r);
+            llvm::Type* i256 = builder.getIntNTy(256);
+            llvm::Constant* scale256 = llvm::ConstantInt::get(
+                context, llvm::APInt(256, "1" + std::string(DECIMAL_SCALE, '0'), 10));
+            if (op == "*") {
+                llvm::Value* p =
+                    builder.CreateMul(builder.CreateSExt(l, i256), builder.CreateSExt(r, i256));
+                return builder.CreateTrunc(builder.CreateSDiv(p, scale256), builder.getInt128Ty());
+            }
+            if (op == "/") {
+                llvm::Value* num = builder.CreateMul(builder.CreateSExt(l, i256), scale256);
+                return builder.CreateTrunc(builder.CreateSDiv(num, builder.CreateSExt(r, i256)),
+                                           builder.getInt128Ty());
+            }
+            llvm::Value* c = nullptr;
+            if (op == "==") c = builder.CreateICmpEQ(l, r);
+            else if (op == "!=") c = builder.CreateICmpNE(l, r);
+            else if (op == "<") c = builder.CreateICmpSLT(l, r);
+            else if (op == ">") c = builder.CreateICmpSGT(l, r);
+            else if (op == "<=") c = builder.CreateICmpSLE(l, r);
+            else if (op == ">=") c = builder.CreateICmpSGE(l, r);
+            if (c != nullptr) return builder.CreateZExt(c, builder.getInt32Ty());
+        }
         // SIMD vector path: element-wise + - * / on vecN; a scalar operand is broadcast.
         if (int vw = std::max(vecWidth(lt), vecWidth(rt)); vw > 0) {
             auto toVec = [&](llvm::Value* x, const std::string& xt) -> llvm::Value* {
@@ -3389,6 +3508,9 @@ struct CodeGenerator::Impl {
             } else if (et == "String" || et == "string") {
                 fmt += "%s";
                 v = stringData(v);  // interpolate the bytes, not the object pointer
+            } else if (et == "Decimal") {
+                fmt += "%s";
+                v = stringData(emitDecimalToString(v));  // formatted fixed-point text
             } else if (isUnsigned(et)) {
                 if (intBits(et) == 64) {
                     fmt += "%llu";

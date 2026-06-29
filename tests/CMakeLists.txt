@@ -740,6 +740,15 @@ if(LDP3_WITH_LLVM)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or expression.
+        # Decimal primitive (spec 34): exact fixed-point arithmetic, comparison and conversions.
+        add_test(NAME codegen_decimal_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/decimal.ldp3"
+            "-DCONTAINS=total=59.970000000000000000 tax=4.797600000000000000 expensive=1 whole=59 half=2.500000000000000000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection field get/set (spec 31): Field.get/set read and write a field through Object.
         add_test(NAME codegen_reflect_field_getset_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

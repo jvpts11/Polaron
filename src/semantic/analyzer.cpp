@@ -2284,7 +2284,8 @@ void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
 
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (dynamic_cast<const ast::IntLiteralExpr*>(&expr) != nullptr) return "int";
-    if (dynamic_cast<const ast::FloatLiteralExpr*>(&expr) != nullptr) return "double";
+    if (const auto* fl = dynamic_cast<const ast::FloatLiteralExpr*>(&expr))
+        return fl->isDecimal ? "Decimal" : "double";
     if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
     if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "String";
     if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
@@ -2531,8 +2532,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const bool srcRef = src.empty() || src == "Object" || src == "Type" || src == "Method" ||
                             lookupClass(baseType(src)) != nullptr || isRefType(src);
         const bool dstPtr = isRefType(dst) || dstRef;  // pointer/reference target (T*, T&, class)
-        // `char` is an integer (i32) for casting purposes -- it converts to/from the int family.
-        auto numLike = [](const std::string& t) { return isNumeric(t) || t == "char"; };
+        // `char` is an integer for casting purposes; Decimal converts to/from the numeric family too
+        // (scaled fixed-point, spec 34).
+        auto numLike = [](const std::string& t) {
+            return isNumeric(t) || t == "char" || t == "Decimal";
+        };
         const std::string dstU = under(dst);  // a newtype's underlying decides how the cast lowers
         if (numLike(dstU)) {
             // numeric <- numeric/char, a pointer/address reinterpreted as an integer (spec 17.8), or
@@ -2590,6 +2594,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // String concatenation (spec 4): String/string + String/string -> String.
         auto isStr = [](const std::string& t) { return t == "String" || t == "string"; };
         if (op == "+" && isStr(lt) && isStr(rt)) return "String";
+        // Decimal fixed-point (spec 34): arithmetic yields a Decimal, comparison a boolean. A mixed
+        // Decimal/other operand needs an explicit cast.
+        if (lt == "Decimal" && rt == "Decimal") {
+            if (op == "+" || op == "-" || op == "*" || op == "/") return "Decimal";
+            if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=")
+                return "boolean";
+        }
         // `char` is an integer (i32) for arithmetic/comparison/bitwise (e.g. c - '0', c >= '0').
         auto numOk = [](const std::string& t) { return isNumeric(t) || t == "char"; };
         if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
@@ -2759,10 +2770,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             const std::string t = typeOf(*e);
             const bool printable = t.empty() || isIntName(t) || isFloatType(t) || t == "char" ||
                                    t == "boolean" || t == "String" || t == "string" ||
-                                   enums_.count(t) > 0 || catalogs_.count(t) > 0;
+                                   t == "Decimal" || enums_.count(t) > 0 || catalogs_.count(t) > 0;
             if (!printable) {
-                error("string interpolation can only print numeric, char, boolean, String or enum "
-                      "values, got '" + t + "'",
+                error("string interpolation can only print numeric, char, boolean, String, Decimal or "
+                      "enum values, got '" + t + "'",
                       e->loc);
             }
         }

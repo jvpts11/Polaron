@@ -26,6 +26,7 @@ enum class TokenKind : std::uint8_t {
     Identifier,
     IntLiteral,
     FloatLiteral,
+    DecimalLiteral,  // numeric with an `m` suffix (1.50m) -> the Decimal primitive (spec 34)
     CharLiteral,
     StringLiteral,
     InterpString,  // $"...{expr}..." -- raw content kept; split by the parser

@@ -322,15 +322,23 @@ Token Lexer::scanNumber() {
     }
 
     char suffix = peek();
+    bool isDecimal = false;
     if (suffix == 'f' || suffix == 'F') {
         isFloat = true;
         advance();
     } else if (suffix == 'L' || suffix == 'l') {
         advance();
+    } else if (suffix == 'm' || suffix == 'M') {  // Decimal literal (spec 34): 1.50m
+        isDecimal = true;
+        advance();
     }
 
     std::string text(source_.substr(start, pos_ - start));
-    return make(isFloat ? TokenKind::FloatLiteral : TokenKind::IntLiteral, std::move(text), loc);
+    if (isDecimal) text.pop_back();  // drop the 'm'; keep just the numeric text
+    return make(isDecimal  ? TokenKind::DecimalLiteral
+                : isFloat  ? TokenKind::FloatLiteral
+                           : TokenKind::IntLiteral,
+                std::move(text), loc);
 }
 
 Token Lexer::scanChar() {

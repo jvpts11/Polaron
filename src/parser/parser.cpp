@@ -2733,6 +2733,14 @@ ast::ExprPtr Parser::parsePrimary() {
             advance();
             return maybeLiteralSuffix(std::move(e));
         }
+        case TokenKind::DecimalLiteral: {  // 1.50m -> the Decimal primitive (spec 34)
+            auto e = std::make_unique<ast::FloatLiteralExpr>();
+            e->loc = tok.loc;
+            e->text = tok.lexeme;
+            e->isDecimal = true;
+            advance();
+            return std::move(e);
+        }
         case TokenKind::KwNull: {
             auto e = std::make_unique<ast::NullLiteralExpr>();
             e->loc = tok.loc;

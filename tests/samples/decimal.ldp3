@@ -1,0 +1,25 @@
+import System.IO.Console;
+program DecimalDemo;
+
+// The Decimal primitive (spec 34): exact fixed-point with 18 fraction digits, backed by a 128-bit
+// mantissa scaled by 10^18. Literals carry an `m` suffix. Arithmetic is exact (no binary rounding),
+// and a Decimal converts to/from the numeric types. Prints:
+// total=59.970000000000000000 / tax=4.797600000000000000 / expensive=1 whole=59 / half=2.500000000000000000
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Decimal price = 19.99m;
+                Decimal qty = 3m;
+                Decimal total = price * qty;
+                System.IO.Console.println($"total={total}");
+                Decimal tax = total * 0.08m;
+                System.IO.Console.println($"tax={tax}");
+                System.IO.Console.printf("expensive=%d whole=%d\n", total > 50m, cast<int>(total));
+                Decimal half = cast<Decimal>(5) / cast<Decimal>(2);
+                System.IO.Console.println($"half={half}");
+                return;
+            }
+        }
+    }
+}
