@@ -740,6 +740,15 @@ if(LDP3_WITH_LLVM)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or expression.
+        # Reflection field get/set (spec 31): Field.get/set read and write a field through Object.
+        add_test(NAME codegen_reflect_field_getset_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/reflect_field_getset.ldp3"
+            "-DEXPECTED=before=10 after=99 direct=99"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

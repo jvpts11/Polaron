@@ -1,0 +1,30 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import reflect;
+program ReflectFieldGetSet;
+
+// Reflection field access (spec 31): Field.get(obj) returns the field value boxed as an Object, and
+// Field.set(obj, value) writes it back. The value crosses as an Object (a boxed primitive or a
+// reference). Prints: before=10 after=99 direct=99.
+public bundle main {
+    public namespace app {
+        public class Point {
+            public mutable int x;
+            public constructor Point() { this.x = 10; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Point p = new Point() on heap;
+                Type t = reflect.typeOf<Point>();
+                ArrayList<Field> fs = t.fields();
+                Field f = fs.get(0);
+                int before = cast<int>(f.get(p));
+                f.set(p, 99);
+                int after = cast<int>(f.get(p));
+                System.IO.Console.printf("before=%d after=%d direct=%d\n", before, after, p.x);
+                delete p;
+                return;
+            }
+        }
+    }
+}

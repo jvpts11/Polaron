@@ -1504,7 +1504,10 @@ struct CodeGenerator::Impl {
                     if (mem->member == "fields") return "ArrayList$Field";
                     if (mem->member == "annotations") return "ArrayList$Annotation";
                 }
-                if (typeName(*mem->object) == "Field" && mem->member == "name") return "String";
+                if (typeName(*mem->object) == "Field") {
+                    if (mem->member == "name") return "String";
+                    if (mem->member == "get") return "Object";  // boxed field value (spec 31)
+                }
                 if (typeName(*mem->object) == "Annotation" && mem->member == "name") return "String";
                 if (typeName(*mem->object) == "Method") {
                     if (mem->member == "name") return "String";
@@ -2164,8 +2167,8 @@ struct CodeGenerator::Impl {
                 context,
                 {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(),
                  builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
-                 builder.getInt64Ty(), builder.getPtrTy()},
-                "ReflectType");  // ..., i64 size, ptr ctorFn, i64 annCount, ptr annNames (spec 31)
+                 builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()},
+                "ReflectType");  // ..., i64 annCount, ptr annNames, ptr fieldGetters, ptr fieldSetters
         return typeStructTy;
     }
     // The reflection Annotation token layout: { ptr name }. Lazily created.
@@ -2182,10 +2185,12 @@ struct CodeGenerator::Impl {
                 context, {builder.getPtrTy(), builder.getPtrTy()}, "ReflectMethod");
         return methodStructTy;
     }
-    // The reflection Field token layout: { ptr name }. Lazily created.
+    // The reflection Field token layout: { ptr name, ptr getFn, ptr setFn }. The accessors box/unbox
+    // the field value, so get/set work through Object (spec 31). Lazily created.
     llvm::StructType* fieldTokenType() {
         if (fieldStructTy == nullptr)
-            fieldStructTy = llvm::StructType::create(context, {builder.getPtrTy()}, "ReflectField");
+            fieldStructTy = llvm::StructType::create(
+                context, {builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()}, "ReflectField");
         return fieldStructTy;
     }
     // Builds a global array of String pointers from a list of names; returns {count, arrayPtr}.
@@ -2199,6 +2204,45 @@ struct CodeGenerator::Impl {
                                               llvm::ConstantArray::get(arrTy, ptrs), tag);
         return {builder.getInt64(names.size()), arrG};
     }
+    // Generates a per-field accessor for reflection get/set (spec 31). The field type is known here,
+    // so the getter boxes a primitive (or returns a reference) and the setter unboxes (or stores the
+    // reference) with no runtime type dispatch. Returns a function pointer for the Field token.
+    llvm::Constant* emitFieldAccessor(const std::string& className, const std::string& fieldName,
+                                      bool setter) {
+        auto cit = classes.find(className);
+        llvm::Constant* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        if (cit == classes.end()) return nullp;
+        auto idxIt = cit->second.fieldIndex.find(fieldName);
+        auto tyIt = cit->second.fieldType.find(fieldName);
+        if (idxIt == cit->second.fieldIndex.end() || tyIt == cit->second.fieldType.end()) return nullp;
+        const unsigned idx = idxIt->second;
+        const std::string ft = tyIt->second;
+        const bool prim = isBoxablePrimitive(ft);
+        llvm::FunctionType* fnTy =
+            setter ? llvm::FunctionType::get(builder.getVoidTy(),
+                                             {builder.getPtrTy(), builder.getPtrTy()}, false)
+                   : llvm::FunctionType::get(builder.getPtrTy(), {builder.getPtrTy()}, false);
+        llvm::Function* f = llvm::Function::Create(
+            fnTy, llvm::GlobalValue::PrivateLinkage,
+            (setter ? "__fset." : "__fget.") + className + "." + fieldName, module);
+        llvm::BasicBlock* saved = builder.GetInsertBlock();
+        llvm::Function* savedFn = currentFn;
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", f));
+        currentFn = f;
+        llvm::Value* addr = builder.CreateStructGEP(cit->second.type, f->getArg(0), idx, "f.addr");
+        if (setter) {
+            llvm::Value* v = f->getArg(1);  // a boxed Object (or a plain reference)
+            builder.CreateStore(prim ? emitUnbox(v, ft) : v, addr);
+            builder.CreateRetVoid();
+        } else {
+            llvm::Value* v = builder.CreateLoad(llvmType(ft), addr, "f.val");
+            builder.CreateRet(prim ? emitBox(v, ft) : v);
+        }
+        currentFn = savedFn;
+        if (saved != nullptr) builder.SetInsertPoint(saved);
+        return f;
+    }
+
     // The Type token for a class (spec 31), one shared global per class, holding its name
     // and its declared method and field names (in declaration order).
     llvm::Value* typeTokenFor(const std::string& className) {
@@ -2232,6 +2276,20 @@ struct CodeGenerator::Impl {
                                               llvm::GlobalValue::PrivateLinkage,
                                               llvm::ConstantArray::get(fnArrTy, fns),
                                               "methodfns." + className);
+        // Parallel arrays of per-field get/set accessors (for Field.get/set, spec 31).
+        std::vector<llvm::Constant*> getFns, setFns;
+        for (const std::string& fn : fieldNames) {
+            getFns.push_back(emitFieldAccessor(className, fn, /*setter=*/false));
+            setFns.push_back(emitFieldAccessor(className, fn, /*setter=*/true));
+        }
+        auto fnArray = [&](std::vector<llvm::Constant*>& v, const std::string& tag) -> llvm::Constant* {
+            llvm::ArrayType* at = llvm::ArrayType::get(builder.getPtrTy(), v.size());
+            return new llvm::GlobalVariable(module, at, /*isConstant=*/true,
+                                            llvm::GlobalValue::PrivateLinkage,
+                                            llvm::ConstantArray::get(at, v), tag);
+        };
+        llvm::Constant* fGetG = fnArray(getFns, "fieldget." + className);
+        llvm::Constant* fSetG = fnArray(setFns, "fieldset." + className);
         // size of an instance + the (no-arg) constructor, for Type.instantiate().
         llvm::Constant* size = llvm::ConstantInt::get(builder.getInt64Ty(), 8);
         if (auto cit = classes.find(className); cit != classes.end())
@@ -2241,8 +2299,8 @@ struct CodeGenerator::Impl {
                                      ? llvm::cast<llvm::Constant>(ctorIt->second)
                                      : llvm::ConstantPointerNull::get(builder.getPtrTy());
         llvm::Constant* obj = llvm::ConstantStruct::get(
-            typeTokenType(),
-            {nameStr, mcount, mnames, fnsG, fcount, fnames, size, ctorFn, acount, anames});
+            typeTokenType(), {nameStr, mcount, mnames, fnsG, fcount, fnames, size, ctorFn, acount,
+                              anames, fGetG, fSetG});
         auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
                                            llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
         typeGlobals[className] = g;
@@ -4359,11 +4417,22 @@ struct CodeGenerator::Impl {
                     llvm::Value* names = builder.CreateLoad(
                         builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, namesSlot),
                         "names");
+                    const bool isFields = !isMethods && !isAnnotations;
                     llvm::Value* fns =
                         isMethods ? builder.CreateLoad(builder.getPtrTy(),
                                                        builder.CreateStructGEP(typeTokenType(), t, 3),
                                                        "fns")
                                   : nullptr;
+                    llvm::Value* fGet = isFields
+                                            ? builder.CreateLoad(
+                                                  builder.getPtrTy(),
+                                                  builder.CreateStructGEP(typeTokenType(), t, 10), "fg")
+                                            : nullptr;
+                    llvm::Value* fSet = isFields
+                                            ? builder.CreateLoad(
+                                                  builder.getPtrTy(),
+                                                  builder.CreateStructGEP(typeTokenType(), t, 11), "fs")
+                                            : nullptr;
                     llvm::Function* curFn = currentFn;
                     llvm::Value* iSlot = createEntryAlloca("li", builder.getInt64Ty());
                     builder.CreateStore(builder.getInt64(0), iSlot);
@@ -4383,6 +4452,15 @@ struct CodeGenerator::Impl {
                         llvm::Value* fn = builder.CreateLoad(
                             builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), fns, i), "fn");
                         builder.CreateStore(fn, builder.CreateStructGEP(tokTy, tok, 1));
+                    } else if (isFields) {  // the field's get/set accessors (Field token slots 1, 2)
+                        builder.CreateStore(
+                            builder.CreateLoad(builder.getPtrTy(),
+                                               builder.CreateGEP(builder.getPtrTy(), fGet, i), "g"),
+                            builder.CreateStructGEP(tokTy, tok, 1));
+                        builder.CreateStore(
+                            builder.CreateLoad(builder.getPtrTy(),
+                                               builder.CreateGEP(builder.getPtrTy(), fSet, i), "s"),
+                            builder.CreateStructGEP(tokTy, tok, 2));
                     }
                     builder.CreateCall(addIt->second, {list, tok});
                     builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
@@ -4397,6 +4475,31 @@ struct CodeGenerator::Impl {
                 if (f == nullptr) return nullptr;
                 return builder.CreateLoad(builder.getPtrTy(),
                                           builder.CreateStructGEP(fieldTokenType(), f, 0), "f.name");
+            }
+            // Field.get(obj) / set(obj, value) (spec 31): call the field's boxing accessor stored in the
+            // token. get returns the boxed field as an Object; set takes an Object (boxed primitive or
+            // reference) and writes it back.
+            if (typeName(*mem->object) == "Field" &&
+                (mem->member == "get" || mem->member == "set")) {
+                llvm::Value* f = emitExpr(*mem->object);
+                if (f == nullptr) return nullptr;
+                llvm::Value* obj = emitExpr(*call.args[0]);
+                if (obj == nullptr) return nullptr;
+                if (mem->member == "get") {
+                    llvm::Value* getFn = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(fieldTokenType(), f, 1), "f.get");
+                    llvm::FunctionType* gt =
+                        llvm::FunctionType::get(builder.getPtrTy(), {builder.getPtrTy()}, false);
+                    return builder.CreateCall(gt, getFn, {obj});
+                }
+                llvm::Value* v = coerce(emitExpr(*call.args[1]), typeName(*call.args[1]), "Object");
+                if (v == nullptr) return nullptr;
+                llvm::Value* setFn = builder.CreateLoad(
+                    builder.getPtrTy(), builder.CreateStructGEP(fieldTokenType(), f, 2), "f.set");
+                llvm::FunctionType* st = llvm::FunctionType::get(
+                    builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy()}, false);
+                builder.CreateCall(st, setFn, {obj, v});
+                return nullptr;
             }
             // Annotation reflection (spec 14.3, 31): name() reads the annotation token's name.
             if (typeName(*mem->object) == "Annotation" && mem->member == "name") {

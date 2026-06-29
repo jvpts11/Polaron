@@ -3243,6 +3243,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (objType == "Field") {  // reflection (spec 31)
                 for (const auto& arg : call->args) typeOf(*arg);
                 if (mem->member == "name" && call->args.empty()) return "String";
+                if (mem->member == "get" && call->args.size() == 1) return "Object";  // boxed value
+                if (mem->member == "set" && call->args.size() == 2) return "void";  // (obj, Object)
                 if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";  // identity
                 if (mem->member == "hash" && call->args.empty()) return "long";
                 error("Field has no method '" + mem->member + "'", call->loc);
