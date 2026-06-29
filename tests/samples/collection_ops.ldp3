@@ -1,0 +1,43 @@
+import System.IO.Console;
+program CollectionOps;
+
+// Mutating collection operations (spec 34.1): ArrayList set/removeAt/indexOf/contains/remove/clear,
+// and HashMap/HashSet remove (backward-shift deletion keeps the other entries reachable).
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<int> l = new ArrayList<int>();
+                l.add(10);
+                l.add(20);
+                l.add(30);
+                l.add(40);
+                l.set(1, 99);
+                l.removeAt(0);
+                System.IO.Console.printf("size=%d head=%d idx30=%d has99=%d\n",
+                    l.size(), l.get(0), l.indexOf(30), l.contains(99));
+                boolean r = l.remove(30);
+                System.IO.Console.printf("removed=%d size=%d\n", r, l.size());
+                l.clear();
+                System.IO.Console.printf("cleared=%d\n", l.size());
+
+                HashMap<int, int> m = new HashMap<int, int>();
+                m.put(1, 100);
+                m.put(2, 200);
+                m.put(3, 300);
+                boolean mr = m.remove(2);
+                System.IO.Console.printf("map removed=%d size=%d has2=%d v3=%d\n",
+                    mr, m.size(), m.containsKey(2), m.get(3));
+
+                HashSet<int> s = new HashSet<int>();
+                s.add(5);
+                s.add(6);
+                s.add(7);
+                s.remove(6);
+                System.IO.Console.printf("set size=%d has6=%d has7=%d\n",
+                    s.size(), s.contains(6), s.contains(7));
+                return;
+            }
+        }
+    }
+}

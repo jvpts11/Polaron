@@ -4205,6 +4205,19 @@ struct CodeGenerator::Impl {
                         builder.CreateSelect(gt, builder.getInt32(1), builder.getInt32(0)));
                 }
             }
+            // Reflection tokens (Method/Field) satisfy Hashable by identity, so they can live in a
+            // collection: equalsKey is pointer equality and hash is the pointer value.
+            if (const std::string ot = typeName(*mem->object);
+                (ot == "Method" || ot == "Field") &&
+                (mem->member == "equalsKey" || mem->member == "hash")) {
+                llvm::Value* a = emitExpr(*mem->object);
+                if (a == nullptr) return nullptr;
+                if (mem->member == "hash")
+                    return builder.CreatePtrToInt(a, builder.getInt64Ty());
+                llvm::Value* b = emitExpr(*call.args[0]);
+                if (b == nullptr) return nullptr;
+                return builder.CreateZExt(builder.CreateICmpEQ(a, b), builder.getInt32Ty());
+            }
             // Type reflection (spec 31): name(), method/field enumeration.
             if (typeName(*mem->object) == "Type") {
                 llvm::Value* t = emitExpr(*mem->object);

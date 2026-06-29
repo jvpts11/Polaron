@@ -204,6 +204,9 @@ public bundle std {
         public class Object {
             public method equals(Object other) returns boolean { return this == other; }
             public method hashCode() returns int { return 0; }
+            // Identity-based key equality: every object is usable as a collection element/key, with
+            // reference identity by default. A class overrides this (and hashCode) for value equality.
+            public method equalsKey(Object other) returns boolean { return this == other; }
         }
         // Base for runtime exceptions (polymorphic, so it can be caught). UnimportedType
         // Exception is thrown when an unimported type is used (spec 30).
@@ -254,6 +257,33 @@ R"LDP3(
             }
             public method get(int i) returns T {
                 return this.data[i];
+            }
+            public method set(int i, T item) returns void {
+                this.data[i] = item;
+            }
+            public method indexOf(T item) returns int {  // -1 if absent (uses equalsKey)
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (this.data[i].equalsKey(item)) { return i; }
+                }
+                return -1;
+            }
+            public method contains(T item) returns boolean {
+                return this.indexOf(item) >= 0;
+            }
+            public method removeAt(int i) returns void {  // shift the tail left
+                for (mutable int j = i; j < this.count - 1; j++) {
+                    this.data[j] = this.data[j + 1];
+                }
+                this.count = this.count - 1;
+            }
+            public method remove(T item) returns boolean {  // remove first equal element
+                int i = this.indexOf(item);
+                if (i < 0) { return false; }
+                this.removeAt(i);
+                return true;
+            }
+            public method clear() returns void {
+                this.count = 0;
             }
             public method toArray() returns T[] {
                 mutable T[] out = new T[this.count]();
@@ -488,6 +518,23 @@ R"LDP3(
             public method containsKey(K key) returns boolean {
                 return this.used[this.slotFor(key)];
             }
+            public method remove(K key) returns boolean {  // backward-shift: reinsert the cluster after i
+                int i = this.slotFor(key);
+                if (!this.used[i]) { return false; }
+                int mask = this.cap - 1;
+                this.used[i] = false;
+                this.count = this.count - 1;
+                mutable int j = (i + 1) & mask;
+                while (this.used[j]) {
+                    mutable K rk = this.keys[j];
+                    mutable V rv = this.values[j];
+                    this.used[j] = false;
+                    this.count = this.count - 1;
+                    this.put(rk, rv);
+                    j = (j + 1) & mask;
+                }
+                return true;
+            }
             public method keyArray() returns K[] {  // keys (arbitrary order); field is named `keys`
                 mutable K[] out = new K[this.count]();
                 mutable int j = 0;
@@ -549,6 +596,22 @@ R"LDP3(
             }
             public method contains(T value) returns boolean {
                 return this.used[this.slotFor(value)];
+            }
+            public method remove(T value) returns boolean {  // backward-shift deletion
+                int i = this.slotFor(value);
+                if (!this.used[i]) { return false; }
+                int mask = this.cap - 1;
+                this.used[i] = false;
+                this.count = this.count - 1;
+                mutable int j = (i + 1) & mask;
+                while (this.used[j]) {
+                    mutable T re = this.elems[j];
+                    this.used[j] = false;
+                    this.count = this.count - 1;
+                    this.add(re);
+                    j = (j + 1) & mask;
+                }
+                return true;
             }
             public method toArray() returns T[] {  // elements (arbitrary order)
                 mutable T[] out = new T[this.count]();

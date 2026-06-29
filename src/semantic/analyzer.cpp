@@ -3202,12 +3202,16 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "name" && call->args.empty()) return "String";
                 if (mem->member == "firstByte" && call->args.empty()) return "int";
                 if (mem->member == "invoke") return "void";  // invoke(receiver [, args])
+                if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";  // identity
+                if (mem->member == "hash" && call->args.empty()) return "long";
                 error("Method has no method '" + mem->member + "'", call->loc);
                 return "";
             }
             if (objType == "Field") {  // reflection (spec 31)
                 for (const auto& arg : call->args) typeOf(*arg);
                 if (mem->member == "name" && call->args.empty()) return "String";
+                if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";  // identity
+                if (mem->member == "hash" && call->args.empty()) return "long";
                 error("Field has no method '" + mem->member + "'", call->loc);
                 return "";
             }
