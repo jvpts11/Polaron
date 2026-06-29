@@ -1,0 +1,19 @@
+import System.IO.Console;
+import System.Runtime.Object;
+program Boxing;
+
+// Boxing (spec 3.4): every value is an Object, so a primitive flows into an Object by being boxed on
+// the heap, and cast<T>(obj) unboxes it back to the primitive.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Object n = 42;
+                Object flag = true;
+                int back = cast<int>(n);
+                System.IO.Console.printf("n=%d flag=%d\n", back, cast<int>(flag));
+                return;
+            }
+        }
+    }
+}

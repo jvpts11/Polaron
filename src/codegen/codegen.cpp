@@ -380,6 +380,7 @@ struct CodeGenerator::Impl {
     // (return / break / continue / try?) emits the pending finallys before branching.
     std::vector<const ast::Block*> finallyStack;
     llvm::StructType* stringStructTy = nullptr;  // String layout: { i64 length, ptr data } (spec 4)
+    llvm::StructType* boxStructTy_ = nullptr;    // boxed primitive: { ptr vtable, i64 value }
     llvm::StructType* typeStructTy = nullptr;     // reflection Type layout (spec 31)
     llvm::StructType* methodStructTy = nullptr;   // reflection Method layout { ptr name, ptr fn }
     llvm::StructType* fieldStructTy = nullptr;    // reflection Field layout { ptr name }
@@ -470,6 +471,8 @@ struct CodeGenerator::Impl {
     llvm::Value* coerce(llvm::Value* v, const std::string& fromRaw, const std::string& toRaw) {
         if (v == nullptr) return v;
         const std::string from = repType(fromRaw), to = repType(toRaw);  // newtype -> underlying
+        // A primitive flowing to Object is boxed (spec 3.4): every value is an Object.
+        if (to == "Object" && isBoxablePrimitive(from)) return emitBox(v, from);
         if (isFloatType(to)) {
             llvm::Type* fty = llvmType(to);
             if (v->getType()->isIntegerTy()) {
@@ -493,6 +496,56 @@ struct CodeGenerator::Impl {
             if (want < have) return builder.CreateTrunc(v, llvmType(to));
         }
         return v;
+    }
+
+    // A primitive value type that boxes into an Object: it lowers to an integer or float (a class or
+    // pointer lowers to a pointer instead).
+    bool isBoxablePrimitive(const std::string& t) {
+        if (isFloatType(t)) return true;
+        llvm::Type* lt = llvmType(repType(t));
+        return lt != nullptr && lt->isIntegerTy();
+    }
+    llvm::StructType* boxStructTy() {
+        if (boxStructTy_ == nullptr)
+            boxStructTy_ = llvm::StructType::create(
+                context, {builder.getPtrTy(), builder.getInt64Ty()}, "__box");
+        return boxStructTy_;
+    }
+    // Boxes a primitive into a heap Object: { Object vtable, the value widened to i64 }. The vtable
+    // makes it a valid Object (equals/hashCode dispatch); the value round-trips through unboxing.
+    llvm::Value* emitBox(llvm::Value* v, const std::string& from) {
+        llvm::StructType* bt = boxStructTy();
+        llvm::Value* box = builder.CreateCall(mallocFn(), {sizeOf(bt)}, "box");
+        llvm::Value* vt = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        if (auto it = classes.find("Object"); it != classes.end() && it->second.vtable != nullptr)
+            vt = it->second.vtable;
+        builder.CreateStore(vt, builder.CreateStructGEP(bt, box, 0));
+        llvm::Value* val64;
+        if (v->getType()->isDoubleTy()) {
+            val64 = builder.CreateBitCast(v, builder.getInt64Ty());
+        } else if (v->getType()->isFloatingPointTy()) {  // float32
+            val64 = builder.CreateZExt(builder.CreateBitCast(v, builder.getInt32Ty()),
+                                       builder.getInt64Ty());
+        } else {
+            val64 = isUnsigned(from) ? builder.CreateZExt(v, builder.getInt64Ty())
+                                     : builder.CreateSExt(v, builder.getInt64Ty());
+        }
+        builder.CreateStore(val64, builder.CreateStructGEP(bt, box, 1));
+        return box;
+    }
+    // Unboxes an Object back to a primitive: reads the stored value and converts it to `to`.
+    llvm::Value* emitUnbox(llvm::Value* box, const std::string& to) {
+        llvm::StructType* bt = boxStructTy();
+        llvm::Value* val64 = builder.CreateLoad(
+            builder.getInt64Ty(), builder.CreateStructGEP(bt, box, 1), "unbox");
+        if (isFloatType(to)) {
+            if (isF32(to))
+                return builder.CreateBitCast(builder.CreateTrunc(val64, builder.getInt32Ty()),
+                                             builder.getFloatTy());
+            return builder.CreateBitCast(val64, builder.getDoubleTy());
+        }
+        const unsigned w = llvmType(to)->getIntegerBitWidth();
+        return w < 64 ? builder.CreateTrunc(val64, builder.getIntNTy(w)) : val64;
     }
 
     // Sign-extends or truncates an integer value to `bits`.
@@ -556,6 +609,10 @@ struct CodeGenerator::Impl {
         // A newtype shares its underlying's representation: cast by the underlying type (spec 24).
         const std::string from = repType(fromRaw);
         const std::string to = repType(toRaw);
+        // Unbox: cast<primitive>(Object) reads the boxed value (spec 3.4). Must precede the
+        // pointer<->int reinterpret below, which would otherwise treat the box pointer as an address.
+        if (from == "Object" && isBoxablePrimitive(to) && v->getType()->isPointerTy())
+            return emitUnbox(v, to);
         // Reference cast (class/Object/reflection token): a pointer reinterpret -- a no-op
         // with opaque pointers. No runtime type check yet (spec 31 downcasts).
         if (llvmType(to)->isPointerTy() && v->getType()->isPointerTy()) return v;

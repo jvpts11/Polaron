@@ -341,6 +341,9 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
         };
         return isSubtype(strip(sub), strip(super), depth + 1);
     }
+    // Every value is an Object (spec 3.4): a primitive becomes one by boxing, a class by inheritance
+    // (every class now extends Object, handled by the hierarchy walk below).
+    if (super == "Object" && (isNumeric(sub) || sub == "boolean" || sub == "char")) return true;
     // int and float both widen to a float type (no implicit narrowing).
     if (isFloatType(super) && isNumeric(sub)) return true;
     // Integers widen to a wider integer (no implicit narrowing).
