@@ -341,6 +341,9 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
         };
         return isSubtype(strip(sub), strip(super), depth + 1);
     }
+    // String (immutable) and string (mutable) share a representation; they interconvert freely until
+    // the immutability discipline is enforced (spec 4).
+    if ((sub == "String" || sub == "string") && (super == "String" || super == "string")) return true;
     // Every value is an Object (spec 3.4): a primitive becomes one by boxing, a class by inheritance
     // (every class now extends Object, handled by the hierarchy walk below).
     if (super == "Object" && (isNumeric(sub) || sub == "boolean" || sub == "char")) return true;
@@ -2726,9 +2729,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         for (const auto& e : is->exprs) {
             const std::string t = typeOf(*e);
             const bool printable = t.empty() || isIntName(t) || isFloatType(t) || t == "char" ||
-                                   t == "boolean" || enums_.count(t) > 0 || catalogs_.count(t) > 0;
+                                   t == "boolean" || t == "String" || t == "string" ||
+                                   enums_.count(t) > 0 || catalogs_.count(t) > 0;
             if (!printable) {
-                error("string interpolation can only print numeric, char, boolean or enum "
+                error("string interpolation can only print numeric, char, boolean, String or enum "
                       "values, got '" + t + "'",
                       e->loc);
             }

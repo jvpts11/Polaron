@@ -1331,6 +1331,7 @@ struct CodeGenerator::Impl {
         if (dynamic_cast<const ast::FloatLiteralExpr*>(&expr) != nullptr) return "double";
         if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
         if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
+        if (dynamic_cast<const ast::InterpStringExpr*>(&expr) != nullptr) return "String";  // $"..."
         if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
             if (id->name == "this") return currentClass;
@@ -2780,10 +2781,8 @@ struct CodeGenerator::Impl {
             const std::string et = isRefType(at) ? baseType(at) : elementOf(at);  // T* -> T
             return builder.CreateLoad(llvmType(et), elemPtr, "elem");
         }
-        if (dynamic_cast<const ast::InterpStringExpr*>(&expr) != nullptr) {
-            error("string interpolation is only supported as a printf/println argument for now",
-                  expr.loc);
-            return nullptr;
+        if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(&expr)) {
+            return emitInterp(*is, /*addNewline=*/false, /*asString=*/true);  // $"..." -> String (4.1)
         }
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
             // super(args) was already emitted in the constructor prologue.
@@ -3296,7 +3295,7 @@ struct CodeGenerator::Impl {
 
     // Lowers $"lit {e0} lit {e1} ..." to a printf: builds a format string with a
     // specifier per expression (%c for char, %d otherwise) and passes the values.
-    llvm::Value* emitInterp(const ast::InterpStringExpr& is, bool addNewline) {
+    llvm::Value* emitInterp(const ast::InterpStringExpr& is, bool addNewline, bool asString = false) {
         std::string fmt;
         std::vector<llvm::Value*> values;
         for (std::size_t i = 0; i < is.exprs.size(); ++i) {
@@ -3309,6 +3308,9 @@ struct CodeGenerator::Impl {
                 v = coerce(v, et, "double");  // f64 for the %g vararg
             } else if (et == "char") {
                 fmt += "%c";
+            } else if (et == "String" || et == "string") {
+                fmt += "%s";
+                v = stringData(v);  // interpolate the bytes, not the object pointer
             } else if (isUnsigned(et)) {
                 if (intBits(et) == 64) {
                     fmt += "%llu";
@@ -3329,6 +3331,26 @@ struct CodeGenerator::Impl {
             values.push_back(v);
         }
         fmt += resolveEscapes(is.literals.back());
+        // As a String value (spec 4.1): snprintf measures the length, then formats into a fresh
+        // buffer, producing a String object instead of printing.
+        if (asString) {
+            llvm::Value* fmtG = builder.CreateGlobalStringPtr(fmt, ".ifmt");
+            llvm::FunctionType* snTy = llvm::FunctionType::get(
+                builder.getInt32Ty(), {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy()},
+                /*isVarArg=*/true);
+            llvm::FunctionCallee sn = module.getOrInsertFunction("snprintf", snTy);
+            std::vector<llvm::Value*> measure = {
+                llvm::ConstantPointerNull::get(builder.getPtrTy()), builder.getInt64(0), fmtG};
+            for (llvm::Value* v : values) measure.push_back(v);
+            llvm::Value* len = builder.CreateSExt(builder.CreateCall(sn, measure, "ilen"),
+                                                  builder.getInt64Ty());
+            llvm::Value* cap = builder.CreateAdd(len, builder.getInt64(1));
+            llvm::Value* buf = builder.CreateCall(mallocFn(), {cap}, "ibuf");
+            std::vector<llvm::Value*> format = {buf, cap, fmtG};
+            for (llvm::Value* v : values) format.push_back(v);
+            builder.CreateCall(sn, format);
+            return emitStringFromParts(len, buf);
+        }
         if (addNewline) fmt += "\n";
         std::vector<llvm::Value*> args;
         args.push_back(builder.CreateGlobalStringPtr(fmt, ".str"));

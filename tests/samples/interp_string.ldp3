@@ -1,0 +1,21 @@
+import System.IO.Console;
+program InterpString;
+
+// Interpolation produces a String value (spec 4.1): $"..." builds a String object, interpolating
+// numbers, nested expressions and other strings. Prints: n=7, hello world! / len=17 / 7 doubled is 14.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int n = 7;
+                String who = "world";
+                String s = $"n={n}, hello {who}!";
+                System.IO.Console.println(s);
+                System.IO.Console.printf("len=%d\n", s.length());
+                String t = $"{n} doubled is {n + n}";
+                System.IO.Console.println(t);
+                return;
+            }
+        }
+    }
+}

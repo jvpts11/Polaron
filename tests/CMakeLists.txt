@@ -740,6 +740,16 @@ if(LDP3_WITH_LLVM)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or expression.
+        # Interpolation as a value (spec 4.1): $"..." builds a String, interpolating ints, strings
+        # and expressions.
+        add_test(NAME codegen_interp_string_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interp_string.ldp3"
+            "-DCONTAINS=n=7, hello world! len=17 7 doubled is 14"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # String (spec 4): literal, length, charAt, substring, equals and + concatenation.
         add_test(NAME codegen_strings_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
