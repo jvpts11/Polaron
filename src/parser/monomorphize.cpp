@@ -1237,6 +1237,15 @@ bool monomorphize(ast::Program& program) {
     std::set<std::string> typeParamNames;
     for (const auto& [tname, tpl] : templates)
         for (const auto& tp : tpl->typeParams) typeParamNames.insert(tp);
+    // Method type parameters too (e.g. R in `map<R>`): a `new Generic<R>` in a generic method's body
+    // refers to the method's own parameter, not a concrete instantiation, until the method is
+    // instantiated with a real R. Without this, collecting `ArrayList$R` produced a bogus class.
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes)
+                for (const auto& mem : c.members)
+                    if (const auto* md = dynamic_cast<const ast::MethodDecl*>(mem.get()))
+                        for (const auto& tp : md->typeParams) typeParamNames.insert(tp);
 
     // No generic classes: still expand any generic methods, then done.
     if (templates.empty()) {
