@@ -1,0 +1,33 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program ReflectAnnotations;
+
+// Reflection over annotations (spec 14.3, 31): Type.annotations() returns the annotations applied to a
+// class as an ArrayList<Annotation>; each Annotation exposes name(). Prints: count=2 / Marker / Audited.
+public bundle main {
+    public namespace app {
+
+        public annotation Marker { }
+
+        public annotation Audited { }
+
+        [Marker]
+        [Audited]
+        public class Widget {
+            private int id;
+            public constructor Widget() { this.id = 0; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Type t = reflect.typeOf<Widget>();
+                ArrayList<Annotation> anns = t.annotations();
+                System.IO.Console.printf("count=%d\n", anns.size());
+                for (Annotation a in anns) {
+                    System.IO.Console.println(a.name());
+                }
+                return;
+            }
+        }
+    }
+}

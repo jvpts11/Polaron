@@ -740,6 +740,15 @@ if(LDP3_WITH_LLVM)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or expression.
+        # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
+        add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/reflect_annotations.ldp3"
+            "-DCONTAINS=count=2 Marker Audited"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # PriorityQueue<T> (spec 34.1): a min-heap; polling yields ascending order -> 12345.
         add_test(NAME codegen_priority_queue_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

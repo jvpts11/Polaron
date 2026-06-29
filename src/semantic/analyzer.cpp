@@ -3220,6 +3220,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "instantiate") return "Object";  // construct an instance
                 if (mem->member == "methods" && call->args.empty()) return "ArrayList$Method";
                 if (mem->member == "fields" && call->args.empty()) return "ArrayList$Field";
+                if (mem->member == "annotations" && call->args.empty()) return "ArrayList$Annotation";
                 error("Type has no method '" + mem->member + "'", call->loc);
                 return "";
             }
@@ -3239,6 +3240,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";  // identity
                 if (mem->member == "hash" && call->args.empty()) return "long";
                 error("Field has no method '" + mem->member + "'", call->loc);
+                return "";
+            }
+            if (objType == "Annotation") {  // reflection (spec 14.3, 31)
+                for (const auto& arg : call->args) typeOf(*arg);
+                if (mem->member == "name" && call->args.empty()) return "String";
+                if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";  // identity
+                if (mem->member == "hash" && call->args.empty()) return "long";
+                error("Annotation has no method '" + mem->member + "'", call->loc);
                 return "";
             }
             // A field of function<...> type is a function value: obj.f(args) calls it.

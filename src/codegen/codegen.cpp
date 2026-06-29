@@ -384,6 +384,7 @@ struct CodeGenerator::Impl {
     llvm::StructType* typeStructTy = nullptr;     // reflection Type layout (spec 31)
     llvm::StructType* methodStructTy = nullptr;   // reflection Method layout { ptr name, ptr fn }
     llvm::StructType* fieldStructTy = nullptr;    // reflection Field layout { ptr name }
+    llvm::StructType* annotationStructTy = nullptr;  // reflection Annotation layout { ptr name }
     std::unordered_map<std::string, llvm::GlobalVariable*> typeGlobals;  // class name -> its Type global
     std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
     std::unordered_set<std::string> abstainedLabels;  // qualified labels named by some `abstainfrom`
@@ -457,7 +458,7 @@ struct CodeGenerator::Impl {
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
         if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
         if (t == "String" || t == "string") return builder.getPtrTy();  // ptr to {i64 len, ptr data}
-        if (t == "Type" || t == "Method" || t == "Field")
+        if (t == "Type" || t == "Method" || t == "Field" || t == "Annotation")
             return builder.getPtrTy();  // reflection tokens (spec 31)
         if (t == "Object") return builder.getPtrTy();  // root reference type (spec 3.4)
         if (classes.count(t) > 0) return builder.getPtrTy();
@@ -1501,8 +1502,10 @@ struct CodeGenerator::Impl {
                     if (mem->member == "instantiate") return "Object";
                     if (mem->member == "methods") return "ArrayList$Method";
                     if (mem->member == "fields") return "ArrayList$Field";
+                    if (mem->member == "annotations") return "ArrayList$Annotation";
                 }
                 if (typeName(*mem->object) == "Field" && mem->member == "name") return "String";
+                if (typeName(*mem->object) == "Annotation" && mem->member == "name") return "String";
                 if (typeName(*mem->object) == "Method") {
                     if (mem->member == "name") return "String";
                     if (mem->member == "invoke") return "void";
@@ -2160,9 +2163,17 @@ struct CodeGenerator::Impl {
             typeStructTy = llvm::StructType::create(
                 context,
                 {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(),
-                 builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy()},
-                "ReflectType");  // ..., i64 size, ptr ctorFn  (for instantiate, spec 31)
+                 builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
+                 builder.getInt64Ty(), builder.getPtrTy()},
+                "ReflectType");  // ..., i64 size, ptr ctorFn, i64 annCount, ptr annNames (spec 31)
         return typeStructTy;
+    }
+    // The reflection Annotation token layout: { ptr name }. Lazily created.
+    llvm::StructType* annotationTokenType() {
+        if (annotationStructTy == nullptr)
+            annotationStructTy =
+                llvm::StructType::create(context, {builder.getPtrTy()}, "ReflectAnnotation");
+        return annotationStructTy;
     }
     // The reflection Method token layout: { ptr name, ptr fn }. Lazily created.
     llvm::StructType* methodTokenType() {
@@ -2193,7 +2204,7 @@ struct CodeGenerator::Impl {
     llvm::Value* typeTokenFor(const std::string& className) {
         auto it = typeGlobals.find(className);
         if (it != typeGlobals.end()) return it->second;
-        std::vector<std::string> methodNames, fieldNames;
+        std::vector<std::string> methodNames, fieldNames, annotationNames;
         if (auto cit = classes.find(className); cit != classes.end() && cit->second.decl != nullptr) {
             for (const ast::MemberPtr& m : cit->second.decl->members) {
                 if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()))
@@ -2201,10 +2212,13 @@ struct CodeGenerator::Impl {
                 else if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()))
                     fieldNames.push_back(fd->name);
             }
+            for (const ast::AnnotationUse& a : cit->second.decl->annotations)
+                annotationNames.push_back(a.name);  // applied [Name(...)] annotations (spec 14.3, 31)
         }
         auto* nameStr = llvm::cast<llvm::Constant>(emitStringObject(className));
         auto [mcount, mnames] = nameArray(methodNames, "methods." + className);
         auto [fcount, fnames] = nameArray(fieldNames, "fields." + className);
+        auto [acount, anames] = nameArray(annotationNames, "annotations." + className);
         // Parallel array of method function pointers (null where there is no body).
         std::vector<llvm::Constant*> fns;
         for (const std::string& mn : methodNames) {
@@ -2227,7 +2241,8 @@ struct CodeGenerator::Impl {
                                      ? llvm::cast<llvm::Constant>(ctorIt->second)
                                      : llvm::ConstantPointerNull::get(builder.getPtrTy());
         llvm::Constant* obj = llvm::ConstantStruct::get(
-            typeTokenType(), {nameStr, mcount, mnames, fnsG, fcount, fnames, size, ctorFn});
+            typeTokenType(),
+            {nameStr, mcount, mnames, fnsG, fcount, fnames, size, ctorFn, acount, anames});
         auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
                                            llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
         typeGlobals[className] = g;
@@ -4205,10 +4220,10 @@ struct CodeGenerator::Impl {
                         builder.CreateSelect(gt, builder.getInt32(1), builder.getInt32(0)));
                 }
             }
-            // Reflection tokens (Method/Field) satisfy Hashable by identity, so they can live in a
-            // collection: equalsKey is pointer equality and hash is the pointer value.
+            // Reflection tokens (Method/Field/Annotation) satisfy Hashable by identity, so they can
+            // live in a collection: equalsKey is pointer equality and hash is the pointer value.
             if (const std::string ot = typeName(*mem->object);
-                (ot == "Method" || ot == "Field") &&
+                (ot == "Method" || ot == "Field" || ot == "Annotation") &&
                 (mem->member == "equalsKey" || mem->member == "hash")) {
                 llvm::Value* a = emitExpr(*mem->object);
                 if (a == nullptr) return nullptr;
@@ -4313,11 +4328,15 @@ struct CodeGenerator::Impl {
                     builder.CreateCall(ft, ctorFn, cargs);
                     return obj;
                 }
-                // Type.methods()/fields() (spec 31): build an ArrayList<Method>/ArrayList<Field> of
-                // the member tokens. A Method token is {name, fn}; a Field token is {name}.
-                if (mem->member == "methods" || mem->member == "fields") {
+                // Type.methods()/fields()/annotations() (spec 31): build an ArrayList of the member
+                // tokens. A Method token is {name, fn}; a Field/Annotation token is {name}.
+                if (mem->member == "methods" || mem->member == "fields" ||
+                    mem->member == "annotations") {
                     const bool isMethods = (mem->member == "methods");
-                    const std::string listCls = isMethods ? "ArrayList$Method" : "ArrayList$Field";
+                    const bool isAnnotations = (mem->member == "annotations");
+                    const std::string listCls = isMethods      ? "ArrayList$Method"
+                                                : isAnnotations ? "ArrayList$Annotation"
+                                                                : "ArrayList$Field";
                     auto clsIt = classes.find(listCls);
                     auto ctorIt = functions.find(listCls + "." + listCls);
                     auto addIt = functions.find(listCls + ".add");
@@ -4326,16 +4345,20 @@ struct CodeGenerator::Impl {
                         error("internal: " + listCls + " not available for reflection", mem->loc);
                         return nullptr;
                     }
-                    llvm::StructType* tokTy = isMethods ? methodTokenType() : fieldTokenType();
+                    llvm::StructType* tokTy = isMethods        ? methodTokenType()
+                                              : isAnnotations  ? annotationTokenType()
+                                                               : fieldTokenType();
+                    const unsigned countSlot = isMethods ? 1 : isAnnotations ? 8 : 4;
+                    const unsigned namesSlot = isMethods ? 2 : isAnnotations ? 9 : 5;
                     llvm::Value* list =
                         builder.CreateCall(mallocFn(), {sizeOf(clsIt->second.type)}, "list");
                     builder.CreateCall(ctorIt->second, {list});
                     llvm::Value* count = builder.CreateLoad(
-                        builder.getInt64Ty(),
-                        builder.CreateStructGEP(typeTokenType(), t, isMethods ? 1 : 4), "n");
+                        builder.getInt64Ty(), builder.CreateStructGEP(typeTokenType(), t, countSlot),
+                        "n");
                     llvm::Value* names = builder.CreateLoad(
-                        builder.getPtrTy(),
-                        builder.CreateStructGEP(typeTokenType(), t, isMethods ? 2 : 5), "names");
+                        builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, namesSlot),
+                        "names");
                     llvm::Value* fns =
                         isMethods ? builder.CreateLoad(builder.getPtrTy(),
                                                        builder.CreateStructGEP(typeTokenType(), t, 3),
@@ -4374,6 +4397,13 @@ struct CodeGenerator::Impl {
                 if (f == nullptr) return nullptr;
                 return builder.CreateLoad(builder.getPtrTy(),
                                           builder.CreateStructGEP(fieldTokenType(), f, 0), "f.name");
+            }
+            // Annotation reflection (spec 14.3, 31): name() reads the annotation token's name.
+            if (typeName(*mem->object) == "Annotation" && mem->member == "name") {
+                llvm::Value* a = emitExpr(*mem->object);
+                if (a == nullptr) return nullptr;
+                return builder.CreateLoad(builder.getPtrTy(),
+                                          builder.CreateStructGEP(annotationTokenType(), a, 0), "a.name");
             }
             // Method reflection (spec 31): name() and invoke(receiver) for no-arg methods.
             if (typeName(*mem->object) == "Method") {

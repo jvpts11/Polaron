@@ -672,6 +672,8 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
             g.count("ArrayList") > 0) {
             if (m->member == "methods") out["ArrayList$Method"] = {"ArrayList", {"Method"}};
             else if (m->member == "fields") out["ArrayList$Field"] = {"ArrayList", {"Field"}};
+            else if (m->member == "annotations")
+                out["ArrayList$Annotation"] = {"ArrayList", {"Annotation"}};
         }
         // EnumName.parse(s) returns Option<Enum> (spec 12.5); force Some/None/Option for the enum.
         if (const auto* m = dynamic_cast<const ast::MemberExpr*>(x->callee.get());
