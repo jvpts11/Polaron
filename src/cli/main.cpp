@@ -363,6 +363,31 @@ R"LDP3(
                 }
                 return out;
             }
+            // Search terminals (spec 34): find returns the first element a predicate accepts, min/max the
+            // smallest/largest by a comparator. Each returns Option<T> -- Some on a hit, None when the list
+            // is empty or nothing matches -- so the empty case is in the type, not a sentinel.
+            public method find(function<boolean, T> pred) returns Option<T> {
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (pred(this.data[i])) { return Some(this.data[i]); }
+                }
+                return None();
+            }
+            public method min(function<int, T, T> compare) returns Option<T> {
+                if (this.count == 0) { return None(); }
+                mutable T best = this.data[0];
+                for (mutable int i = 1; i < this.count; i++) {
+                    if (compare(this.data[i], best) < 0) { best = this.data[i]; }
+                }
+                return Some(best);
+            }
+            public method max(function<int, T, T> compare) returns Option<T> {
+                if (this.count == 0) { return None(); }
+                mutable T best = this.data[0];
+                for (mutable int i = 1; i < this.count; i++) {
+                    if (compare(this.data[i], best) > 0) { best = this.data[i]; }
+                }
+                return Some(best);
+            }
             public override method iterator() returns Iterator<T> {
                 return new ArrayListIterator<T>(this) on heap;
             }
@@ -414,6 +439,10 @@ R"LDP3(
                 return out;
             }
         }
+)LDP3"
+// Split here only to stay under the MSVC per-string-literal size limit; the two raw chunks concatenate
+// into one continuous System.Collections namespace.
+R"LDP3(
         // LIFO stack backed by a doubling array (spec 34.1).
         public class Stack<T> {
             private mutable T[] data;

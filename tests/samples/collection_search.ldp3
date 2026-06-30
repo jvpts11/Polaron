@@ -1,0 +1,36 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Errors.Option;
+program CollectionSearch;
+
+// Search terminals (spec 34): find returns the first match, min/max the extreme by a comparator, each as
+// Option<T> so the empty/no-match case is in the type. Prints: find=30 min=10 max=50 none=-1.
+public bundle main {
+    public namespace app {
+        public class Main {
+            // Unwraps an Option<int>, using -1 to stand for None in the printed output.
+            public static method show(Option<int> o) returns int {
+                match (o) {
+                    case Some(int v) { return v; }
+                    case None() { return -1; }
+                }
+            }
+
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> nums = new ArrayList<int>();
+                nums.add(30);
+                nums.add(10);
+                nums.add(50);
+                nums.add(20);
+                Option<int> firstBig = nums.find(lambda(int x) returns boolean { return x > 25; });
+                Option<int> lo = nums.min(lambda(int a, int b) returns int { return a - b; });
+                Option<int> hi = nums.max(lambda(int a, int b) returns int { return a - b; });
+                mutable ArrayList<int> empty = new ArrayList<int>();
+                Option<int> none = empty.find(lambda(int x) returns boolean { return true; });
+                System.IO.Console.printf("find=%d min=%d max=%d none=%d\n",
+                    Main.show(firstBig), Main.show(lo), Main.show(hi), Main.show(none));
+                return;
+            }
+        }
+    }
+}
