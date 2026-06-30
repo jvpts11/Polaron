@@ -794,6 +794,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Scanner (spec 4): tokenize text into ints/words/lines with a stateful cursor.
+        add_test(NAME codegen_scanner_tokens_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/scanner_tokens.ldp3"
+            "-DCONTAINS=n=42 a=hello b=world more=0 l1=first l2=second l3=third"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # UTF-8 decoding (spec 4): Utf8.length/codepointAt/widthAt/codepoints over byte-level strings.
         add_test(NAME codegen_utf8_decode_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

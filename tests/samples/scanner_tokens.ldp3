@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Text.Scanner;
+program ScannerTokens;
+
+// Scanner tokenizes text (spec 4): nextInt/nextWord read whitespace-separated tokens, nextLine reads to a
+// newline, hasNext reports whether more remains. Prints: n=42 a=hello b=world more=0 / l1=first l2=second
+// l3=third.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Scanner sc = new Scanner("  42 hello   world ") on heap;
+                int n = sc.nextInt();
+                System.IO.Console.printf("n=%d a=%s b=%s more=%d\n",
+                    n, sc.nextWord(), sc.nextWord(), sc.hasNext());
+                mutable Scanner lines = new Scanner("first\nsecond\nthird") on heap;
+                System.IO.Console.printf("l1=%s l2=%s l3=%s\n",
+                    lines.nextLine(), lines.nextLine(), lines.nextLine());
+                return;
+            }
+        }
+    }
+}

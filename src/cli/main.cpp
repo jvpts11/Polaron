@@ -1332,6 +1332,53 @@ R"LDP3(
                 return out;
             }
         }
+        // A cursor over text that hands out tokens (spec 4): nextWord reads up to the next whitespace,
+        // nextInt parses that token, and nextLine reads to the newline. hasNext/hasNextLine report whether
+        // more remains. It walks a String, so it parses file contents or any in-memory text.
+        public class Scanner {
+            private mutable String src;
+            private mutable int pos;
+            public constructor Scanner(String text) {
+                this.src = text;
+                this.pos = 0;
+            }
+            private static method isSpace(char c) returns boolean {
+                return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+            }
+            private method skipSpaces() returns void {
+                while (this.pos < this.src.length() && Scanner.isSpace(this.src.charAt(this.pos))) {
+                    this.pos = this.pos + 1;
+                }
+                return;
+            }
+            public method hasNext() returns boolean {
+                this.skipSpaces();
+                return this.pos < this.src.length();
+            }
+            public method nextWord() returns String {
+                this.skipSpaces();
+                mutable int start = this.pos;
+                while (this.pos < this.src.length() && !Scanner.isSpace(this.src.charAt(this.pos))) {
+                    this.pos = this.pos + 1;
+                }
+                return this.src.substring(start, this.pos);
+            }
+            public method nextInt() returns int {
+                return this.nextWord().toInt();
+            }
+            public method hasNextLine() returns boolean {
+                return this.pos < this.src.length();
+            }
+            public method nextLine() returns String {
+                mutable int start = this.pos;
+                while (this.pos < this.src.length() && this.src.charAt(this.pos) != '\n') {
+                    this.pos = this.pos + 1;
+                }
+                mutable String line = this.src.substring(start, this.pos);
+                if (this.pos < this.src.length()) { this.pos = this.pos + 1; }
+                return line;
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
