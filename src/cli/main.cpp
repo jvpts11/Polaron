@@ -162,6 +162,32 @@ public bundle std {
         // usual namespace-visibility rules require importing it before use.
         public class Console {
         }
+        // Line-oriented file helpers (spec 34.4): the File builtin reads and writes whole contents, and
+        // Files layers lines on top of it through Strings, so a program reads a file into a list of lines
+        // and writes a list back without handling the newline joins itself.
+        public class Files {
+            // Each line is terminated with a newline, and a trailing empty piece from the final newline is
+            // dropped on read, so writeLines then readLines round-trips and appendLine adds a clean line.
+            public static method readLines(String path) returns ArrayList<String> {
+                mutable ArrayList<String> lines = Strings.split(File.readAll(path), "\n");
+                if (lines.size() > 0 && lines.get(lines.size() - 1).length() == 0) {
+                    lines.removeAt(lines.size() - 1);
+                }
+                return lines;
+            }
+            public static method writeLines(String path, ArrayList<String> lines) returns void {
+                mutable String content = "";
+                for (mutable int i = 0; i < lines.size(); i++) {
+                    content = content.concat(lines.get(i)).concat("\n");
+                }
+                File.writeAll(path, content);
+                return;
+            }
+            public static method appendLine(String path, String line) returns void {
+                File.appendAll(path, line.concat("\n"));
+                return;
+            }
+        }
     }
     public namespace System.Math {
         // Math (spec 34.6) is a compiler builtin (its functions lower to LLVM intrinsics), not a

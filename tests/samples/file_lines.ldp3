@@ -1,0 +1,28 @@
+import System.IO.Console;
+import System.IO.File;
+import System.IO.Files;
+import System.Collections.ArrayList;
+program FileLines;
+
+// Line-oriented file I/O (spec 34.4): write a list of lines, append one more, read them all back. Each
+// line is newline-terminated and the trailing empty piece is dropped, so it round-trips.
+// Prints: n=4 first=alpha last=delta.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<String> out = new ArrayList<String>();
+                out.add("alpha");
+                out.add("beta");
+                out.add("gamma");
+                Files.writeLines("file_lines_sample.txt", out);
+                Files.appendLine("file_lines_sample.txt", "delta");
+                ArrayList<String> back = Files.readLines("file_lines_sample.txt");
+                System.IO.Console.printf("n=%d first=%s last=%s\n",
+                    back.size(), back.get(0), back.get(3));
+                File.remove("file_lines_sample.txt");
+                return;
+            }
+        }
+    }
+}
