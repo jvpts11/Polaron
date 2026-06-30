@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Text.Strings;
+program StringUtils;
+
+// Strings utility (spec 4): split a string on a separator, join the pieces back, replace every match,
+// and pad to a width. Built from the String primitives, so each returns a fresh owned String.
+// Prints: n=3 p1=bb / join=a-bb-ccc / repl=hi world hi / padL=[00042] padR=[42...].
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<String> parts = Strings.split("a,bb,ccc", ",");
+                System.IO.Console.printf("n=%d p1=%s\n", parts.size(), parts.get(1));
+                System.IO.Console.printf("join=%s\n", Strings.join(parts, "-"));
+                System.IO.Console.printf("repl=%s\n", Strings.replace("hello world hello", "hello", "hi"));
+                System.IO.Console.printf("padL=[%s] padR=[%s]\n",
+                    Strings.padLeft("42", 5, "0"), Strings.padRight("42", 5, "."));
+                return;
+            }
+        }
+    }
+}

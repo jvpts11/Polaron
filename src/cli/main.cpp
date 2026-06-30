@@ -1027,6 +1027,61 @@ R"LDP3(
                 return Memory.readString(this.buf, this.count);
             }
         }
+        // String utilities that the built-in String type does not carry as methods (spec 4): splitting,
+        // joining, replacing, and padding. Each is a static helper built from the String primitives
+        // (indexOf/substring/concat/repeat), so they allocate fresh owned Strings and never mutate input.
+        public class Strings {
+            public static method split(String text, String separator) returns ArrayList<String> {
+                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                mutable String rest = text;
+                mutable boolean more = true;
+                while (more) {
+                    int at = rest.indexOf(separator);
+                    if (at < 0) {
+                        out.add(rest);
+                        more = false;
+                    } else {
+                        out.add(rest.substring(0, at));
+                        rest = rest.substring(at + separator.length(), rest.length());
+                    }
+                }
+                return out;
+            }
+            public static method join(ArrayList<String> parts, String separator) returns String {
+                mutable String result = "";
+                for (mutable int i = 0; i < parts.size(); i++) {
+                    if (i > 0) { result = result.concat(separator); }
+                    result = result.concat(parts.get(i));
+                }
+                return result;
+            }
+            public static method replace(String text, String target, String replacement) returns String {
+                if (target.length() == 0) { return text; }
+                mutable String result = "";
+                mutable String rest = text;
+                mutable boolean more = true;
+                while (more) {
+                    int at = rest.indexOf(target);
+                    if (at < 0) {
+                        result = result.concat(rest);
+                        more = false;
+                    } else {
+                        result = result.concat(rest.substring(0, at));
+                        result = result.concat(replacement);
+                        rest = rest.substring(at + target.length(), rest.length());
+                    }
+                }
+                return result;
+            }
+            public static method padLeft(String text, int width, String pad) returns String {
+                if (text.length() >= width) { return text; }
+                return pad.repeat(width - text.length()).concat(text);
+            }
+            public static method padRight(String text, int width, String pad) returns String {
+                if (text.length() >= width) { return text; }
+                return text.concat(pad.repeat(width - text.length()));
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
