@@ -2582,6 +2582,19 @@ R"LDP3(
                 for (mutable int i = 0; i < r; i++) { result = result * (n - i); }
                 return result;
             }
+            // Modular exponentiation base^exp mod m by repeated squaring (spec 34.6), using 64-bit
+            // intermediates so the products do not overflow for moduli up to ~2^31.
+            public static method modpow(int base, int exp, int mod) returns int {
+                mutable long result = cast<long>(1);
+                mutable long b = cast<long>(base % mod);
+                mutable int e = exp;
+                while (e > 0) {
+                    if (e % 2 == 1) { result = (result * b) % cast<long>(mod); }
+                    b = (b * b) % cast<long>(mod);
+                    e = e / 2;
+                }
+                return cast<int>(result);
+            }
         }
         // An exact fraction kept in lowest terms with a positive denominator (spec 34.6). The constructor
         // divides out the gcd and normalizes the sign; arithmetic returns new reduced Rationals.
@@ -2835,6 +2848,30 @@ R"LDP3(
                     if (!this.composite[i]) { c = c + 1; }
                 }
                 return c;
+            }
+        }
+        // A fast deterministic pseudo-random generator (xorshift32, spec 34.6): the same seed always yields
+        // the same sequence, unlike the wall-clock-seeded Random. next returns the raw 32 bits; nextInRange
+        // maps to [0, n).
+        public class Xorshift {
+            private mutable uint state;
+            public constructor Xorshift(int seed) {
+                this.state = cast<uint>(seed);
+                if (this.state == cast<uint>(0)) { this.state = cast<uint>(1); }
+            }
+            public method next() returns int {
+                mutable uint x = this.state;
+                x = x ^ (x << 13);
+                x = x ^ (x >> 17);
+                x = x ^ (x << 5);
+                this.state = x;
+                return cast<int>(x);
+            }
+            public method nextInRange(int n) returns int {
+                int v = this.next();
+                int r = v % n;
+                if (r < 0) { return r + n; }
+                return r;
             }
         }
     }

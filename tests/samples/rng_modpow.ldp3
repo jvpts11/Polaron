@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Math.Xorshift;
+import System.Math.IntMath;
+program RngModpow;
+
+// Deterministic PRNG and modular exponentiation (spec 34.6): the same seed reproduces the same value, and
+// modpow computes base^exp mod m. 2^10 mod 1000 = 24, 3^4 mod 5 = 1.
+// Prints: r1=270369 det=1 range=1 mp=24 mp2=1.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Xorshift rng = new Xorshift(1) on heap;
+                int r1 = rng.next();
+                mutable Xorshift rng2 = new Xorshift(1) on heap;
+                int r1b = rng2.next();
+                System.IO.Console.printf("r1=%d det=%d range=%d mp=%d mp2=%d\n",
+                    r1, r1 == r1b, rng.nextInRange(6) >= 0, IntMath.modpow(2, 10, 1000), IntMath.modpow(3, 4, 5));
+                return;
+            }
+        }
+    }
+}

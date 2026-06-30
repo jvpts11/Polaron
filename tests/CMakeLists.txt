@@ -803,6 +803,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Deterministic PRNG + modpow (spec 34.6): reproducible Xorshift sequence, modular exponentiation.
+        add_test(NAME codegen_rng_modpow_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/rng_modpow.ldp3"
+            "-DCONTAINS=r1=270369 det=1 range=1 mp=24 mp2=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Sieve + Bloom filter + deque (spec 34): primes up to 30, membership test, double-ended queue.
         add_test(NAME codegen_sieve_bloom_deque_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
