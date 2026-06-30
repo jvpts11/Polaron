@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Text.Strings;
+program StringFormat;
+
+// More Strings utilities (spec 4): format fills {} placeholders from a list in order, count tallies
+// non-overlapping occurrences, reverse flips the characters, capitalize upper-cases the first.
+// Prints: fmt=Ann is 42 years old / count=2 rev=olleh cap=World.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<String> fields = new ArrayList<String>();
+                fields.add("Ann");
+                fields.add("42");
+                System.IO.Console.printf("fmt=%s\n", Strings.format("{} is {} years old", fields));
+                System.IO.Console.printf("count=%d rev=%s cap=%s\n",
+                    Strings.count("abababa", "aba"), Strings.reverse("hello"), Strings.capitalize("world"));
+                return;
+            }
+        }
+    }
+}

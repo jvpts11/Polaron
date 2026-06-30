@@ -1081,6 +1081,60 @@ R"LDP3(
                 if (text.length() >= width) { return text; }
                 return text.concat(pad.repeat(width - text.length()));
             }
+            // Fills each {} placeholder in the template with the next argument, in order (spec 4). Extra
+            // arguments are ignored; a {} with no argument left is dropped. Arguments are already strings,
+            // so callers stringify with toString() first.
+            public static method format(String template, ArrayList<String> args) returns String {
+                mutable String result = "";
+                mutable String rest = template;
+                mutable int next = 0;
+                mutable boolean more = true;
+                while (more) {
+                    int at = rest.indexOf("{}");
+                    if (at < 0) {
+                        result = result.concat(rest);
+                        more = false;
+                    } else {
+                        result = result.concat(rest.substring(0, at));
+                        if (next < args.size()) {
+                            result = result.concat(args.get(next));
+                            next = next + 1;
+                        }
+                        rest = rest.substring(at + 2, rest.length());
+                    }
+                }
+                return result;
+            }
+            // Counts the non-overlapping occurrences of a substring (spec 4).
+            public static method count(String text, String sub) returns int {
+                if (sub.length() == 0) { return 0; }
+                mutable int hits = 0;
+                mutable String rest = text;
+                mutable boolean more = true;
+                while (more) {
+                    int at = rest.indexOf(sub);
+                    if (at < 0) {
+                        more = false;
+                    } else {
+                        hits = hits + 1;
+                        rest = rest.substring(at + sub.length(), rest.length());
+                    }
+                }
+                return hits;
+            }
+            // Reverses the characters of a string (spec 4); substring(i, i+1) yields each one-char piece.
+            public static method reverse(String text) returns String {
+                mutable String result = "";
+                for (mutable int i = text.length() - 1; i >= 0; i--) {
+                    result = result.concat(text.substring(i, i + 1));
+                }
+                return result;
+            }
+            // Upper-cases the first character and leaves the rest unchanged (spec 4).
+            public static method capitalize(String text) returns String {
+                if (text.length() == 0) { return text; }
+                return text.substring(0, 1).toUpper().concat(text.substring(1, text.length()));
+            }
         }
     }
     public namespace System.Time {
