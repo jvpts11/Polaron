@@ -119,6 +119,9 @@ void emitField(Emitter& e, const FieldDecl& f) {
 
 void emitClass(Emitter& e, const ClassDecl& c) {
     if (c.visibility != "public") return;
+    // Skip monomorphized instances (Box$int): they are an implementation detail the consumer regenerates
+    // from the generic template and its own uses, and their spelled form is not valid header syntax.
+    if (c.name.find('$') != std::string::npos) return;
     std::string kind = "class";
     if (c.isInterface) kind = "interface";
     else if (c.isStruct) kind = "struct";

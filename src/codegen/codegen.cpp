@@ -7030,10 +7030,15 @@ struct CodeGenerator::Impl {
             if (f.isDeclaration()) continue;
             const llvm::StringRef name = f.getName();
             const std::size_t dot = name.find('.');
-            const bool prelude =
-                name.starts_with("literal.") ||
-                (dot != llvm::StringRef::npos && preludeClasses.count(name.substr(0, dot).str()) > 0);
-            if (prelude)
+            const std::string owner =
+                dot != llvm::StringRef::npos ? name.substr(0, dot).str() : std::string();
+            // Prelude functions and monomorphized generic instances (Box$int) are made weak. The latter
+            // are ODR -- a library and its consumer both instantiate ArrayList<String> from the same
+            // template, so identical definitions must dedupe at link time instead of colliding (LNK2005).
+            const bool weak =
+                name.starts_with("literal.") || preludeClasses.count(owner) > 0 ||
+                owner.find('$') != std::string::npos;
+            if (weak)
                 f.setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
             else
                 f.setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
