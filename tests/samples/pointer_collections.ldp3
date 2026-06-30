@@ -1,0 +1,37 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.HashMap;
+program PointerCollections;
+
+// Pointers stored in generic collections (spec 17.8 / 15.1): ArrayList<Node*> and HashMap<int,Node*> hold
+// shared references, so mutating through one alias is visible through the collection.
+// Prints: a=10 b=20 mapB=20 shared=99 size=2.
+public bundle main {
+    public namespace app {
+        public class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+            public method get() returns int { return this.v; }
+            public method set(int x) returns void { this.v = x; return; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Node a = new Node(10) on heap;
+                mutable Node b = new Node(20) on heap;
+                mutable ArrayList<Node*> list = new ArrayList<Node*>() on heap;
+                list.add(&a);
+                list.add(&b);
+                mutable HashMap<int, Node*> byId = new HashMap<int, Node*>() on heap;
+                byId.put(1, &a);
+                byId.put(2, &b);
+                Node* pa = list.get(0);
+                Node* pb = byId.get(2);
+                pa.set(99);                       // mutate through the list alias
+                Node* again = byId.get(1);        // same Node a, via the map
+                System.IO.Console.printf("a=%d b=%d mapB=%d shared=%d size=%d\n",
+                    list.get(0).get(), list.get(1).get(), pb.get(), again.get(), list.size());
+                return;
+            }
+        }
+    }
+}

@@ -290,7 +290,10 @@ const ClassInfo* SemanticAnalyzer::lookupClass(const std::string& name) const {
 
 const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
                                              const std::string& field) const {
-    const ClassInfo* c = lookupClass(baseType(className));  // see through T* / T&
+    // Try the exact name first: a generic instance can have a trailing '*' that belongs to a type
+    // argument (e.g. HashMap$int$Node* is HashMap<int,Node*>), which baseType would wrongly strip.
+    const ClassInfo* c = lookupClass(className);
+    if (c == nullptr) c = lookupClass(baseType(className));  // else see through outer T* / T&
     while (c != nullptr) {
         auto it = c->fields.find(field);
         if (it != c->fields.end()) return &it->second;
@@ -302,7 +305,10 @@ const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
 
 const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
                                                const std::string& method) const {
-    const ClassInfo* c = lookupClass(baseType(className));  // see through T* / T&
+    // Exact name first (a generic instance's trailing '*' may belong to a type argument, e.g.
+    // HashMap$int$Node*); only then strip an outer pointer/reference marker.
+    const ClassInfo* c = lookupClass(className);
+    if (c == nullptr) c = lookupClass(baseType(className));  // see through T* / T&
     while (c != nullptr) {
         auto it = c->methods.find(method);
         if (it != c->methods.end()) return &it->second;

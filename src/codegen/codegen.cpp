@@ -727,13 +727,21 @@ struct CodeGenerator::Impl {
         return v;
     }
 
+    // The class-table key for a type name. A generic instance can end in '*' as part of a type
+    // argument (e.g. HashMap$int$Node* is HashMap<int,Node*>), so try the exact name first; only if it
+    // is not a registered class do we strip an outer pointer/reference marker (Dog* -> Dog).
+    std::string clsKey(const std::string& t) const {
+        if (classes.count(t) > 0) return t;
+        return baseType(t);
+    }
+
     // Masks a value to a member's bit-field width (spec 11.1): only the low N bits
     // are kept, so `f : 4 = 20` stores 4. No-op for a non-bit-field member. (Value
     // masking; physical bit-packing of the struct layout is a later refinement.)
     llvm::Value* maskBitField(llvm::Value* v, const std::string& className,
                               const std::string& field) {
         if (v == nullptr || !v->getType()->isIntegerTy()) return v;
-        auto cit = classes.find(baseType(className));
+        auto cit = classes.find(clsKey(className));
         if (cit == classes.end()) return v;
         auto bit = cit->second.bitFieldWidth.find(field);
         if (bit == cit->second.bitFieldWidth.end()) return v;
@@ -756,7 +764,7 @@ struct CodeGenerator::Impl {
             // An object that lives in a `volatile region` (MMIO): every field access is volatile.
             if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
                 if (volatileObjects_.count(oid->name) > 0) return true;
-            auto cit = classes.find(baseType(typeName(*mem->object)));
+            auto cit = classes.find(clsKey(typeName(*mem->object)));
             return cit != classes.end() && cit->second.volatileFields.count(mem->member) > 0;
         }
         return false;
@@ -765,7 +773,7 @@ struct CodeGenerator::Impl {
     // The deferred initializer of lazy field `field` declared in `className` or one of
     // its superclasses (spec 28.4), or null if `field` is not a lazy field.
     const ast::Expr* lazyFieldInitOf(const std::string& className, const std::string& field) {
-        for (std::string cur = baseType(className); !cur.empty();) {
+        for (std::string cur = clsKey(className); !cur.empty();) {
             auto cit = classes.find(cur);
             if (cit == classes.end()) break;
             auto it = cit->second.lazyFieldInit.find(field);
@@ -1209,7 +1217,7 @@ struct CodeGenerator::Impl {
 
     // The class that defines `method`, searching up the superclass chain ("" if none).
     std::string methodOwner(const std::string& className, const std::string& method) {
-        std::string cn = baseType(className);  // see through T* / T&
+        std::string cn = clsKey(className);  // exact generic instance first, else see through T* / T&
         while (!cn.empty()) {
             auto it = classes.find(cn);
             if (it == classes.end()) break;
@@ -1342,7 +1350,7 @@ struct CodeGenerator::Impl {
     // True when `rt` names a value struct (not a pointer): such a return uses the sret convention.
     bool returnsValueStruct(const std::string& rt) {
         if (rt.find('*') != std::string::npos) return false;  // a pointer is not a value struct
-        auto it = classes.find(baseType(rt));
+        auto it = classes.find(clsKey(rt));
         return it != classes.end() && it->second.isStruct;
     }
 
@@ -1636,7 +1644,7 @@ struct CodeGenerator::Impl {
                     ct != namespaceConstTypes.end())
                     return ct->second;  // Type.NAME class const
             }
-            const std::string ot = baseType(typeName(*mem->object));
+            const std::string ot = clsKey(typeName(*mem->object));
             auto cit = classes.find(ot);
             if (cit != classes.end()) {
                 auto ft = cit->second.fieldType.find(mem->member);
@@ -1757,7 +1765,7 @@ struct CodeGenerator::Impl {
     // pointer/reference to the struct (those pass as a plain pointer).
     bool isFfiByValueStruct(const std::string& t) {
         if (!t.empty() && (t.back() == '*' || t.back() == '&')) return false;
-        auto cit = classes.find(baseType(t));
+        auto cit = classes.find(clsKey(t));
         return cit != classes.end() && cit->second.isStruct;
     }
     // FFI ABI (Win64): a by-value struct of 1/2/4/8 bytes travels in a register as an integer of
@@ -1765,7 +1773,7 @@ struct CodeGenerator::Impl {
     // struct (the type then passes as-is, e.g. a pointer).
     llvm::Type* ffiStructRegType(const std::string& t) {
         if (!isFfiByValueStruct(t)) return nullptr;
-        auto cit = classes.find(baseType(t));
+        auto cit = classes.find(clsKey(t));
         if (cit->second.type == nullptr) return nullptr;
         const uint64_t sz = module.getDataLayout().getTypeAllocSize(cit->second.type);
         switch (sz) {
@@ -1902,7 +1910,7 @@ struct CodeGenerator::Impl {
 
     // Only the default discipline copies; movable/unique transfer the pointer.
     bool isCopyDiscipline(const std::string& t) {
-        auto it = classes.find(baseType(t));
+        auto it = classes.find(clsKey(t));
         return it != classes.end() && !it->second.isMovable && !it->second.isUnique;
     }
 
@@ -2159,7 +2167,7 @@ struct CodeGenerator::Impl {
             }
             llvm::Value* objPtr = emitObjectPtr(*mem->object);
             if (objPtr == nullptr) return nullptr;
-            auto cit = classes.find(baseType(typeName(*mem->object)));  // see through T* / T&
+            auto cit = classes.find(clsKey(typeName(*mem->object)));  // see through T* / T&
             if (cit == classes.end()) {
                 error("no such field '" + mem->member + "'", mem->loc);
                 return nullptr;
@@ -3677,7 +3685,7 @@ struct CodeGenerator::Impl {
         if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
             sm != nullptr && sm->member == "sizeof" && call.args.empty()) {
             const std::string tn = flattenCallee(*sm->object);
-            if (auto cit = classes.find(baseType(tn)); cit != classes.end())
+            if (auto cit = classes.find(clsKey(tn)); cit != classes.end())
                 return builder.CreateTrunc(sizeOf(cit->second.type), builder.getInt32Ty());
         }
         // sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or an expression's
@@ -3686,7 +3694,7 @@ struct CodeGenerator::Impl {
             const std::string bare = flattenCallee(*call.args[0]);
             const std::string tn =
                 classes.count(baseType(bare)) > 0 ? bare : typeName(*call.args[0]);
-            auto cit = classes.find(baseType(tn));
+            auto cit = classes.find(clsKey(tn));
             llvm::Value* sz = cit != classes.end() ? sizeOf(cit->second.type) : sizeOf(llvmType(tn));
             return builder.CreateTrunc(sz, builder.getInt32Ty());
         }
@@ -3719,7 +3727,7 @@ struct CodeGenerator::Impl {
             llvm::Value* r = builder.CreateCall(fn, args);
             // A by-value struct return arrives in a register: store it into a fresh struct object.
             if (llvm::Type* rreg = ffiStructRegType(er->second)) {
-                auto cit = classes.find(baseType(er->second));
+                auto cit = classes.find(clsKey(er->second));
                 llvm::Value* obj = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "ffi.ret");
                 builder.CreateStore(r, obj);
                 (void)rreg;
@@ -4773,7 +4781,7 @@ struct CodeGenerator::Impl {
                     if (isExternCall) {
                         const std::string rt = externReturnType[objId->name + "." + mem->member];
                         if (ffiStructRegType(rt) != nullptr) {
-                            auto cit = classes.find(baseType(rt));
+                            auto cit = classes.find(clsKey(rt));
                             llvm::Value* obj = builder.CreateCall(
                                 mallocFn(), {sizeOf(cit->second.type)}, "ffi.ret");
                             builder.CreateStore(r, obj);
@@ -5794,7 +5802,7 @@ struct CodeGenerator::Impl {
             if (baseType(targetType).rfind("atomic$", 0) == 0) {
                 llvm::Value* obj = emitObjectPtr(*assign->target);
                 if (obj == nullptr) return;
-                auto cit = classes.find(baseType(targetType));
+                auto cit = classes.find(clsKey(targetType));
                 llvm::Value* vp = builder.CreateStructGEP(
                     cit->second.type, obj, cit->second.fieldIndex["value"], "atomic.value");
                 llvm::Type* et = llvmType(baseType(targetType).substr(7));
@@ -6060,7 +6068,7 @@ struct CodeGenerator::Impl {
         if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(&stmt)) {
             llvm::Value* mptr = emitObjectPtr(*sy->mutex);  // the Mutex instance
             if (mptr == nullptr) return;
-            auto cit = classes.find(baseType(typeName(*sy->mutex)));
+            auto cit = classes.find(clsKey(typeName(*sy->mutex)));
             if (cit == classes.end()) return;
             const ClassLayout& cl = cit->second;
             auto lockIt = cl.fieldIndex.find("lock");
@@ -6136,7 +6144,7 @@ struct CodeGenerator::Impl {
                 // result slot (the trailing argument) and return void. Each caller owns its result,
                 // with no dangling stack pointer and no leaked copy (spec 11 value semantics).
                 if (currentSretSlot_ != nullptr && v != nullptr) {
-                    auto cit = classes.find(baseType(typeName(*rs->value)));
+                    auto cit = classes.find(clsKey(typeName(*rs->value)));
                     if (cit != classes.end()) {
                         builder.CreateMemCpy(currentSretSlot_, llvm::MaybeAlign(8), v,
                                              llvm::MaybeAlign(8), sizeOf(cit->second.type));
@@ -6282,7 +6290,7 @@ struct CodeGenerator::Impl {
     void emitMatch(const ast::MatchStmt& s) {
         llvm::Value* subj = emitExpr(*s.subject);
         if (subj == nullptr) return;
-        auto sit = classes.find(baseType(typeName(*s.subject)));
+        auto sit = classes.find(clsKey(typeName(*s.subject)));
         if (sit == classes.end() || !sit->second.hasVtable) {
             error("match subject must be a polymorphic class", s.loc);
             return;
@@ -6358,7 +6366,7 @@ struct CodeGenerator::Impl {
     llvm::Value* emitMatchExpr(const ast::MatchExpr& s) {
         llvm::Value* subj = emitExpr(*s.subject);
         if (subj == nullptr) return nullptr;
-        auto sit = classes.find(baseType(typeName(*s.subject)));
+        auto sit = classes.find(clsKey(typeName(*s.subject)));
         if (sit == classes.end() || !sit->second.hasVtable) {
             error("match subject must be a polymorphic class", s.loc);
             return nullptr;
