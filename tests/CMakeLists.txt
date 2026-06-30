@@ -803,6 +803,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Polynomials + integer vectors (spec 34.6): Horner eval/derivative, dot product, squared norm.
+        add_test(NAME codegen_poly_vector_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/poly_vector.ldp3"
+            "-DCONTAINS=eval=17 deg=2 dval=14 dot=32 norm=14"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Autodiff + matrices (spec 34.6): Dual forward-mode derivatives, Matrix multiply/transpose.
         add_test(NAME codegen_autodiff_matrix_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

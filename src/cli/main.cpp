@@ -2461,6 +2461,52 @@ R"LDP3(
                 return m;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Math namespace.
+R"LDP3(
+        // A polynomial with integer coefficients in ascending order, coeff i multiplying x^i (spec 34.6).
+        // evaluate uses Horner's method; derivative returns the differentiated polynomial.
+        public class Polynomial {
+            private mutable int[] c;
+            public constructor Polynomial(int[] coeffs) { this.c = coeffs; }
+            public method degree() returns int { return this.c.length() - 1; }
+            public method coeff(int i) returns int {
+                if (i < 0 || i >= this.c.length()) { return 0; }
+                return this.c[i];
+            }
+            public method evaluate(int x) returns int {
+                mutable int r = 0;
+                for (mutable int i = this.c.length() - 1; i >= 0; i--) { r = r * x + this.c[i]; }
+                return r;
+            }
+            public method derivative() returns Polynomial {
+                if (this.c.length() <= 1) {
+                    mutable int[] z = new int[1]();
+                    return new Polynomial(z) on heap;
+                }
+                mutable int[] d = new int[this.c.length() - 1]();
+                for (mutable int i = 1; i < this.c.length(); i++) { d[i - 1] = this.c[i] * i; }
+                return new Polynomial(d) on heap;
+            }
+        }
+        // A fixed-length vector of integers (spec 34.6): dot product and squared length. For the floating
+        // SIMD vectors see the built-in vec2/vec3/vec4 types.
+        public class IntVector {
+            private mutable int[] e;
+            public constructor IntVector(int[] elems) { this.e = elems; }
+            public method get(int i) returns int { return this.e[i]; }
+            public method size() returns int { return this.e.length(); }
+            public method dot(IntVector o) returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < this.e.length(); i++) { s = s + this.e[i] * o.get(i); }
+                return s;
+            }
+            public method normSquared() returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < this.e.length(); i++) { s = s + this.e[i] * this.e[i]; }
+                return s;
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)

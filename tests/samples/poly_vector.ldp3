@@ -1,0 +1,35 @@
+import System.IO.Console;
+import System.Math.Polynomial;
+import System.Math.IntVector;
+program PolyVector;
+
+// Polynomials and integer vectors (spec 34.6): Horner evaluation and differentiation of 1 + 2x + 3x^2,
+// plus dot product and squared length of integer vectors.
+// Prints: eval=17 deg=2 dval=14 dot=32 norm=14.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] pc = new int[3]();
+                pc[0] = 1;
+                pc[1] = 2;
+                pc[2] = 3;
+                Polynomial p = new Polynomial(pc) on heap;
+                Polynomial dp = p.derivative();
+                mutable int[] va = new int[3]();
+                va[0] = 1;
+                va[1] = 2;
+                va[2] = 3;
+                mutable int[] vb = new int[3]();
+                vb[0] = 4;
+                vb[1] = 5;
+                vb[2] = 6;
+                IntVector u = new IntVector(va) on heap;
+                IntVector w = new IntVector(vb) on heap;
+                System.IO.Console.printf("eval=%d deg=%d dval=%d dot=%d norm=%d\n",
+                    p.evaluate(2), p.degree(), dp.evaluate(2), u.dot(w), u.normSquared());
+                return;
+            }
+        }
+    }
+}
