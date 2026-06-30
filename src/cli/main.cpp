@@ -2006,6 +2006,23 @@ R"LDP3(
                 while ((r + 1) * (r + 1) <= n) { r = r + 1; }
                 return r;
             }
+            // Binomial coefficient n-choose-r, multiplying and dividing as it goes so the running value
+            // stays an exact integer and does not overflow as fast as n! would.
+            public static method nCr(int n, int r) returns int {
+                if (r < 0 || r > n) { return 0; }
+                mutable int k = r;
+                if (k > n - k) { k = n - k; }
+                mutable int result = 1;
+                for (mutable int i = 1; i <= k; i++) { result = result * (n - k + i) / i; }
+                return result;
+            }
+            // Number of ordered arrangements of r items from n: n * (n-1) * ... * (n-r+1).
+            public static method nPr(int n, int r) returns int {
+                if (r < 0 || r > n) { return 0; }
+                mutable int result = 1;
+                for (mutable int i = 0; i < r; i++) { result = result * (n - i); }
+                return result;
+            }
         }
         // An exact fraction kept in lowest terms with a positive denominator (spec 34.6). The constructor
         // divides out the gcd and normalizes the sign; arithmetic returns new reduced Rationals.
@@ -2081,6 +2098,38 @@ R"LDP3(
                 mutable int m = xs[0];
                 for (mutable int i = 1; i < xs.length(); i++) { if (xs[i] > m) { m = xs[i]; } }
                 return m;
+            }
+            // Population variance about the integer mean (spec 34.6): the mean of the squared deviations.
+            public static method variance(int[] xs) returns int {
+                if (xs.length() == 0) { return 0; }
+                int mean = Stats.mean(xs);
+                mutable int acc = 0;
+                for (mutable int i = 0; i < xs.length(); i++) {
+                    int d = xs[i] - mean;
+                    acc = acc + d * d;
+                }
+                return acc / xs.length();
+            }
+            // Population standard deviation, the integer square root of the variance.
+            public static method stddev(int[] xs) returns int {
+                return IntMath.isqrt(Stats.variance(xs));
+            }
+            // The middle value of a sorted copy (spec 34.6); for an even count this is the upper-middle.
+            public static method median(int[] xs) returns int {
+                int n = xs.length();
+                if (n == 0) { return 0; }
+                mutable int[] c = new int[n]();
+                for (mutable int i = 0; i < n; i++) { c[i] = xs[i]; }
+                for (mutable int i = 1; i < n; i++) {
+                    int key = c[i];
+                    mutable int j = i - 1;
+                    while (j >= 0 && c[j] > key) {
+                        c[j + 1] = c[j];
+                        j = j - 1;
+                    }
+                    c[j + 1] = key;
+                }
+                return c[n / 2];
             }
         }
     }

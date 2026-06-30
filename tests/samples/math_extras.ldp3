@@ -1,0 +1,25 @@
+import System.IO.Console;
+import System.Math.IntMath;
+import System.Math.Stats;
+program MathExtras;
+
+// More math (spec 34.6): combinatorics on IntMath (nCr/nPr) and descriptive Stats (variance/stddev/median).
+// Prints: c52=10 c104=210 p53=60 var=2 std=1 med=3.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] xs = new int[5]();
+                xs[0] = 5;
+                xs[1] = 1;
+                xs[2] = 3;
+                xs[3] = 2;
+                xs[4] = 4;
+                System.IO.Console.printf("c52=%d c104=%d p53=%d var=%d std=%d med=%d\n",
+                    IntMath.nCr(5, 2), IntMath.nCr(10, 4), IntMath.nPr(5, 3),
+                    Stats.variance(xs), Stats.stddev(xs), Stats.median(xs));
+                return;
+            }
+        }
+    }
+}
