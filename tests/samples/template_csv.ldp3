@@ -1,0 +1,25 @@
+import System.IO.Console;
+import System.Text.Template;
+import System.Text.Csv;
+import System.Collections.HashMap;
+import System.Collections.ArrayList;
+program TemplateCsv;
+
+// Named placeholder templating and CSV parsing (spec 34): {name}/{n} are substituted while an unknown
+// {miss} is left intact, and a quoted CSV field keeps its embedded comma.
+// Prints: tpl=Hi Ada, n=42, {miss} nf=3 f1=b,c.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable HashMap<String, String> m = new HashMap<String, String>() on heap;
+                m.put("name", "Ada");
+                m.put("n", "42");
+                String r = Template.render("Hi {name}, n={n}, {miss}", m);
+                ArrayList<String> f = Csv.parse("a,\"b,c\",d");
+                System.IO.Console.printf("tpl=%s nf=%d f1=%s\n", r, f.size(), f.get(1));
+                return;
+            }
+        }
+    }
+}

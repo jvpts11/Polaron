@@ -803,6 +803,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Templating + CSV (spec 34): named placeholder substitution and quoted-field CSV parsing.
+        add_test(NAME codegen_template_csv_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/template_csv.ldp3"
+            "-DCONTAINS=tpl=Hi Ada, n=42, {miss} nf=3 f1=b,c"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Deterministic PRNG + modpow (spec 34.6): reproducible Xorshift sequence, modular exponentiation.
         add_test(NAME codegen_rng_modpow_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

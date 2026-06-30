@@ -2113,6 +2113,67 @@ R"LDP3(
                 return this.expr();
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // Fills {name} placeholders in a template from a map (spec 34): an unknown key is left as-is, so the
+        // braces survive when there is no matching value.
+        public class Template {
+            public static method render(String tpl, HashMap<String, String> vars) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < tpl.length()) {
+                    char c = tpl.charAt(i);
+                    if (c == '{') {
+                        mutable int j = i + 1;
+                        mutable StringBuilder key = new StringBuilder() on heap;
+                        while (j < tpl.length() && tpl.charAt(j) != '}') {
+                            key.appendChar(tpl.charAt(j));
+                            j = j + 1;
+                        }
+                        String k = key.toString();
+                        if (vars.containsKey(k)) {
+                            sb.append(vars.get(k));
+                        } else {
+                            sb.appendChar('{');
+                            sb.append(k);
+                            sb.appendChar('}');
+                        }
+                        i = j + 1;
+                    } else {
+                        sb.appendChar(c);
+                        i = i + 1;
+                    }
+                }
+                return sb.toString();
+            }
+        }
+        // Parses one line of comma-separated values into fields (spec 34), honoring double-quoted fields so a
+        // comma inside quotes does not split. Quote characters are consumed, not kept.
+        public class Csv {
+            public static method parse(String line) returns ArrayList<String> {
+                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                mutable StringBuilder cur = new StringBuilder() on heap;
+                mutable boolean inQuotes = false;
+                mutable int i = 0;
+                while (i < line.length()) {
+                    char c = line.charAt(i);
+                    if (c == '"') {
+                        inQuotes = !inQuotes;
+                    } else {
+                        if (c == ',' && !inQuotes) {
+                            out.add(cur.toString());
+                            cur = new StringBuilder() on heap;
+                        } else {
+                            cur.appendChar(c);
+                        }
+                    }
+                    i = i + 1;
+                }
+                out.add(cur.toString());
+                return out;
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
