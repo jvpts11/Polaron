@@ -830,6 +830,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Checksums + dates (spec 4/34): CRC-32 and FNV-1a, Date leap/epoch/dayOfWeek/addDays.
+        add_test(NAME codegen_digest_date_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/digest_date.ldp3"
+            "-DCONTAINS=crc=891568578 fnv=440920331 leap=1 feb=29 epoch=10957 dow=6 add=2000-2-1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Hex/Base64 encoding (spec 4): encode bytes to text and decode back, round-tripping.
         add_test(NAME codegen_encoding_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

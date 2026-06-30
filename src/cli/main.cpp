@@ -1783,6 +1783,35 @@ R"LDP3(
                 return sb.toString();
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // Non-cryptographic checksums and hashes over a string's bytes (spec 4): CRC-32 (reflected, the
+        // zip/png polynomial) and 32-bit FNV-1a. Uses unsigned 32-bit arithmetic, which wraps and shifts
+        // logically. Returned as int (the same 32 bits reinterpreted).
+        public class Digest {
+            public static method crc32(String data) returns int {
+                mutable uint crc = cast<uint>(4294967295);
+                uint poly = cast<uint>(3988292384);
+                for (mutable int i = 0; i < data.length(); i++) {
+                    crc = crc ^ cast<uint>(cast<int>(data.charAt(i)));
+                    for (mutable int b = 0; b < 8; b++) {
+                        if ((crc & cast<uint>(1)) != cast<uint>(0)) { crc = (crc >> 1) ^ poly; }
+                        else { crc = crc >> 1; }
+                    }
+                }
+                crc = crc ^ cast<uint>(4294967295);
+                return cast<int>(crc);
+            }
+            public static method fnv1a(String data) returns int {
+                mutable uint h = cast<uint>(2166136261);
+                uint prime = cast<uint>(16777619);
+                for (mutable int i = 0; i < data.length(); i++) {
+                    h = (h ^ cast<uint>(cast<int>(data.charAt(i)))) * prime;
+                }
+                return cast<int>(h);
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
@@ -1824,6 +1853,65 @@ R"LDP3(
             }
             public method since(Instant earlier) returns Duration {
                 return new Duration(this.epochMs - earlier.toEpochMillis()) on heap;
+            }
+        }
+        // A calendar date as year/month/day (spec 34): leap-year and month-length rules, conversion to and
+        // from a day number counted from 1970-01-01, day of week (0=Sunday), and date arithmetic via
+        // addDays. The civil<->days conversions are the standard proleptic-Gregorian algorithm.
+        public class Date {
+            private mutable int y;
+            private mutable int mo;
+            private mutable int d;
+            public constructor Date(int year, int month, int day) {
+                this.y = year;
+                this.mo = month;
+                this.d = day;
+            }
+            public method year() returns int { return this.y; }
+            public method month() returns int { return this.mo; }
+            public method day() returns int { return this.d; }
+            public static method isLeap(int year) returns boolean {
+                return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+            }
+            public static method daysInMonth(int year, int month) returns int {
+                if (month == 2) {
+                    if (Date.isLeap(year)) { return 29; }
+                    return 28;
+                }
+                if (month == 4 || month == 6 || month == 9 || month == 11) { return 30; }
+                return 31;
+            }
+            public method toEpochDay() returns int {
+                mutable int yy = this.y;
+                if (this.mo <= 2) { yy = yy - 1; }
+                int era = yy / 400;
+                int yoe = yy - era * 400;
+                mutable int mp = this.mo;
+                if (mp > 2) { mp = mp - 3; } else { mp = mp + 9; }
+                int doy = (153 * mp + 2) / 5 + this.d - 1;
+                int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+                return era * 146097 + doe - 719468;
+            }
+            public method dayOfWeek() returns int {
+                int e = this.toEpochDay();
+                return (e + 4) % 7;
+            }
+            public static method fromEpochDay(int z0) returns Date {
+                int z = z0 + 719468;
+                int era = z / 146097;
+                int doe = z - era * 146097;
+                int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+                mutable int y = yoe + era * 400;
+                int doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+                int mp = (5 * doy + 2) / 153;
+                int d = doy - (153 * mp + 2) / 5 + 1;
+                mutable int m = mp;
+                if (mp < 10) { m = mp + 3; } else { m = mp - 9; }
+                if (m <= 2) { y = y + 1; }
+                return new Date(y, m, d) on heap;
+            }
+            public method addDays(int n) returns Date {
+                return Date.fromEpochDay(this.toEpochDay() + n);
             }
         }
     }
