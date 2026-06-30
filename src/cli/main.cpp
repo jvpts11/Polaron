@@ -1994,6 +1994,30 @@ R"LDP3(
                 return cast<int>((b << 16) | a);
             }
         }
+        // A Bloom filter: a probabilistic set that never misses a member but may report a false positive
+        // (spec 34.1). Two independent hashes (FNV-1a and CRC-32 from Digest) set and test bits in a fixed
+        // bit array. mightContain returning false is definitive; true means probably present.
+        public class BloomFilter {
+            private mutable boolean[] bits;
+            private mutable int m;
+            public constructor BloomFilter(int size) {
+                this.m = size;
+                this.bits = new boolean[size]();
+            }
+            private method idx(int h) returns int {
+                int r = h % this.m;
+                if (r < 0) { return r + this.m; }
+                return r;
+            }
+            public method add(String key) returns void {
+                this.bits[this.idx(Digest.fnv1a(key))] = true;
+                this.bits[this.idx(Digest.crc32(key))] = true;
+                return;
+            }
+            public method mightContain(String key) returns boolean {
+                return this.bits[this.idx(Digest.fnv1a(key))] && this.bits[this.idx(Digest.crc32(key))];
+            }
+        }
         // Run-length encoding of a string (spec 34): each run of a repeated character becomes that character
         // followed by its decimal count, e.g. "aaabbbbc" -> "a3b4c1". decode reverses it, reading a
         // character and the digits that follow as a repeat count.
@@ -2782,6 +2806,35 @@ R"LDP3(
                 mutable int s = 0;
                 for (mutable int i = 0; i < this.e.length(); i++) { s = s + this.e[i] * this.e[i]; }
                 return s;
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Math namespace.
+R"LDP3(
+        // The sieve of Eratosthenes up to a limit (spec 34.6): the constructor marks composites once, then
+        // isPrime answers in constant time and count totals the primes found.
+        public class Sieve {
+            private mutable boolean[] composite;
+            private mutable int limit;
+            public constructor Sieve(int limit) {
+                this.limit = limit;
+                this.composite = new boolean[limit + 1]();
+                for (mutable int i = 2; i * i <= limit; i++) {
+                    if (!this.composite[i]) {
+                        for (mutable int j = i * i; j <= limit; j = j + i) { this.composite[j] = true; }
+                    }
+                }
+            }
+            public method isPrime(int n) returns boolean {
+                if (n < 2) { return false; }
+                return !this.composite[n];
+            }
+            public method count() returns int {
+                mutable int c = 0;
+                for (mutable int i = 2; i <= this.limit; i++) {
+                    if (!this.composite[i]) { c = c + 1; }
+                }
+                return c;
             }
         }
     }

@@ -803,6 +803,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Sieve + Bloom filter + deque (spec 34): primes up to 30, membership test, double-ended queue.
+        add_test(NAME codegen_sieve_bloom_deque_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sieve_bloom_deque.ldp3"
+            "-DCONTAINS=p2=1 p15=0 cnt=10 cat=1 fish=0 pf=0 pb=2 front=1 sz=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Arena + heap + union-find (spec 17/34.1): stale-handle rejection, min-heap order, disjoint sets.
         add_test(NAME codegen_arena_heap_uf_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
