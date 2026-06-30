@@ -1,0 +1,25 @@
+import System.IO.Console;
+import System.Text.Regex;
+program RegexMatch;
+
+// Backtracking regex (spec 4): literals, . any, [class]/[a-z]/[^..], quantifiers * + ?, anchors ^ $.
+// search reports whether the pattern occurs; ^...$ requires a full match.
+// Prints: star=1 full=1 nofull=0 dot=1 digits=1 lower=1 mixed=0 opt=1.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("star=%d full=%d nofull=%d dot=%d digits=%d lower=%d mixed=%d opt=%d\n",
+                    Regex.search("a*b", "aaab"),
+                    Regex.search("^abc$", "abc"),
+                    Regex.search("^abc$", "abcd"),
+                    Regex.search("a.c", "axc"),
+                    Regex.search("[0-9]+", "xx42yy"),
+                    Regex.search("^[a-z]+$", "hello"),
+                    Regex.search("^[a-z]+$", "Hello"),
+                    Regex.search("colou?r", "color"));
+                return;
+            }
+        }
+    }
+}

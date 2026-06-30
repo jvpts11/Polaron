@@ -794,6 +794,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Backtracking regex (spec 4): literals, ., classes, * + ?, ^ $ anchors via Regex.search.
+        add_test(NAME codegen_regex_match_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/regex_match.ldp3"
+            "-DCONTAINS=star=1 full=1 nofull=0 dot=1 digits=1 lower=1 mixed=0 opt=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Path-string manipulation (spec 34.4): Paths join/basename/dirname/extension.
         add_test(NAME codegen_path_utils_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

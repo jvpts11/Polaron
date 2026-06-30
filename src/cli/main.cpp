@@ -1191,6 +1191,93 @@ R"LDP3(
                 return text.substring(0, 1).toUpper().concat(text.substring(1, text.length()));
             }
         }
+        // A small backtracking regular-expression matcher (spec 4): literals, . (any), character classes
+        // [abc]/[a-z]/[^...], the quantifiers * + ?, and the anchors ^ and $. search reports whether the
+        // pattern occurs in the text; wrap a pattern in ^ and $ to require a full match. Pure LDP3 over
+        // the String primitives -- the helpers recurse to handle backtracking.
+        public class Regex {
+            // The index just past the atom starting at pi: one char, or the whole [...] class.
+            private static method atomEnd(String pat, int pi) returns int {
+                if (pat.charAt(pi) == '[') {
+                    mutable int j = pi + 1;
+                    if (j < pat.length() && pat.charAt(j) == '^') { j = j + 1; }
+                    if (j < pat.length() && pat.charAt(j) == ']') { j = j + 1; }
+                    while (j < pat.length() && pat.charAt(j) != ']') { j = j + 1; }
+                    return j + 1;
+                }
+                return pi + 1;
+            }
+            // Whether ch is in the class spelled between [ and ] (indices [start, end)); ^ first negates.
+            private static method matchClass(String pat, int start, int end, char ch) returns boolean {
+                mutable int i = start;
+                mutable boolean negate = false;
+                if (i < end && pat.charAt(i) == '^') { negate = true; i = i + 1; }
+                mutable boolean found = false;
+                while (i < end) {
+                    if (i + 2 < end && pat.charAt(i + 1) == '-') {
+                        if (ch >= pat.charAt(i) && ch <= pat.charAt(i + 2)) { found = true; }
+                        i = i + 3;
+                    } else {
+                        if (pat.charAt(i) == ch) { found = true; }
+                        i = i + 1;
+                    }
+                }
+                if (negate) { return !found; }
+                return found;
+            }
+            // Whether the single atom at [pi, atomEnd) matches one character ch.
+            private static method matchAtom(String pat, int pi, int atomEnd, char ch) returns boolean {
+                char p = pat.charAt(pi);
+                if (p == '.') { return true; }
+                if (p == '[') { return Regex.matchClass(pat, pi + 1, atomEnd - 1, ch); }
+                return p == ch;
+            }
+            // Matches at least min repetitions of the atom, then the rest; backtracks from the longest run.
+            private static method matchStar(int min, String pat, int pi, int atomEnd, String text, int ti)
+                    returns boolean {
+                mutable int count = 0;
+                while (ti + count < text.length() &&
+                       Regex.matchAtom(pat, pi, atomEnd, text.charAt(ti + count))) {
+                    count = count + 1;
+                }
+                mutable int k = count;
+                while (k >= min) {
+                    if (Regex.matchHere(pat, atomEnd + 1, text, ti + k)) { return true; }
+                    k = k - 1;
+                }
+                return false;
+            }
+            // Whether pat[pi:] matches text[ti:].
+            private static method matchHere(String pat, int pi, String text, int ti) returns boolean {
+                if (pi >= pat.length()) { return true; }
+                if (pat.charAt(pi) == '$' && pi + 1 == pat.length()) { return ti == text.length(); }
+                int ae = Regex.atomEnd(pat, pi);
+                mutable char quant = ' ';
+                if (ae < pat.length()) {
+                    char q = pat.charAt(ae);
+                    if (q == '*' || q == '+' || q == '?') { quant = q; }
+                }
+                if (quant == '*') { return Regex.matchStar(0, pat, pi, ae, text, ti); }
+                if (quant == '+') { return Regex.matchStar(1, pat, pi, ae, text, ti); }
+                if (quant == '?') {
+                    if (ti < text.length() && Regex.matchAtom(pat, pi, ae, text.charAt(ti))) {
+                        if (Regex.matchHere(pat, ae + 1, text, ti + 1)) { return true; }
+                    }
+                    return Regex.matchHere(pat, ae + 1, text, ti);
+                }
+                if (ti < text.length() && Regex.matchAtom(pat, pi, ae, text.charAt(ti))) {
+                    return Regex.matchHere(pat, ae, text, ti + 1);
+                }
+                return false;
+            }
+            public static method search(String pat, String text) returns boolean {
+                if (pat.length() > 0 && pat.charAt(0) == '^') { return Regex.matchHere(pat, 1, text, 0); }
+                for (mutable int start = 0; start <= text.length(); start++) {
+                    if (Regex.matchHere(pat, 0, text, start)) { return true; }
+                }
+                return false;
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
