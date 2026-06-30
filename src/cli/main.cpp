@@ -2203,6 +2203,94 @@ R"LDP3(
                 return prev[m];
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // Percent-encoding for URLs (spec 4): unreserved characters (letters, digits, - _ . ~) pass through,
+        // everything else becomes %XX of its byte. decode reverses %XX escapes.
+        public class UrlCodec {
+            private static method isUnreserved(char c) returns boolean {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                    || c == '-' || c == '_' || c == '.' || c == '~';
+            }
+            private static method hexDigit(int v) returns char {
+                if (v < 10) { return cast<char>(cast<int>('0') + v); }
+                return cast<char>(cast<int>('A') + (v - 10));
+            }
+            private static method hexVal(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - cast<int>('0'); }
+                if (c >= 'A' && c <= 'F') { return cast<int>(c) - cast<int>('A') + 10; }
+                return cast<int>(c) - cast<int>('a') + 10;
+            }
+            public static method encode(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (UrlCodec.isUnreserved(c)) {
+                        sb.appendChar(c);
+                    } else {
+                        int v = cast<int>(c);
+                        sb.appendChar('%');
+                        sb.appendChar(UrlCodec.hexDigit(v / 16));
+                        sb.appendChar(UrlCodec.hexDigit(v % 16));
+                    }
+                }
+                return sb.toString();
+            }
+            public static method decode(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    char c = s.charAt(i);
+                    if (c == '%' && i + 2 < s.length()) {
+                        int v = UrlCodec.hexVal(s.charAt(i + 1)) * 16 + UrlCodec.hexVal(s.charAt(i + 2));
+                        sb.appendChar(cast<char>(v));
+                        i = i + 3;
+                    } else {
+                        sb.appendChar(c);
+                        i = i + 1;
+                    }
+                }
+                return sb.toString();
+            }
+        }
+        // Greedy word wrapping (spec 4): splits text on spaces and packs words into lines no longer than the
+        // given width, returning the lines. A single word longer than the width gets its own line.
+        public class WordWrap {
+            public static method wrap(String text, int width) returns ArrayList<String> {
+                mutable ArrayList<String> lines = new ArrayList<String>() on heap;
+                mutable StringBuilder line = new StringBuilder() on heap;
+                mutable StringBuilder word = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i <= text.length()) {
+                    boolean atEnd = i == text.length();
+                    mutable char c = ' ';
+                    if (!atEnd) { c = text.charAt(i); }
+                    if (atEnd || c == ' ') {
+                        if (word.length() > 0) {
+                            if (line.length() == 0) {
+                                line.append(word.toString());
+                            } else {
+                                if (line.length() + 1 + word.length() <= width) {
+                                    line.appendChar(' ');
+                                    line.append(word.toString());
+                                } else {
+                                    lines.add(line.toString());
+                                    line = new StringBuilder() on heap;
+                                    line.append(word.toString());
+                                }
+                            }
+                            word = new StringBuilder() on heap;
+                        }
+                    } else {
+                        word.appendChar(c);
+                    }
+                    i = i + 1;
+                }
+                if (line.length() > 0) { lines.add(line.toString()); }
+                return lines;
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
@@ -2684,6 +2772,32 @@ R"LDP3(
                     e = e / 2;
                 }
                 return cast<int>(result);
+            }
+            // Sum of the decimal digits of |n| (spec 34.6).
+            public static method digitSum(int n) returns int {
+                mutable int x = n;
+                if (x < 0) { x = 0 - x; }
+                mutable int s = 0;
+                while (x > 0) {
+                    s = s + x % 10;
+                    x = x / 10;
+                }
+                return s;
+            }
+            // The digits of |n| reversed, as an integer (e.g. 123 -> 321).
+            public static method reverseDigits(int n) returns int {
+                mutable int x = n;
+                if (x < 0) { x = 0 - x; }
+                mutable int r = 0;
+                while (x > 0) {
+                    r = r * 10 + x % 10;
+                    x = x / 10;
+                }
+                return r;
+            }
+            // Whether n is a non-negative decimal palindrome.
+            public static method isPalindrome(int n) returns boolean {
+                return n >= 0 && IntMath.reverseDigits(n) == n;
             }
         }
         // An exact fraction kept in lowest terms with a positive denominator (spec 34.6). The constructor
