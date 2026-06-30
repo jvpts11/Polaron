@@ -1,0 +1,20 @@
+import System.IO.Console;
+import System.Text.Strings;
+program StringExtras;
+
+// More Strings utilities (spec 4): one-sided trims, blank test, case-insensitive equality. Trim results are
+// checked by length to stay unambiguous about whitespace.
+// Prints: tsLen=4 teLen=4 blank1=1 blank2=0 eq=1 neq=0.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("tsLen=%d teLen=%d blank1=%d blank2=%d eq=%d neq=%d\n",
+                    Strings.trimStart("  hi  ").length(), Strings.trimEnd("  hi  ").length(),
+                    Strings.isBlank("   "), Strings.isBlank(" x "),
+                    Strings.equalsIgnoreCase("Hello", "HELLO"), Strings.equalsIgnoreCase("a", "b"));
+                return;
+            }
+        }
+    }
+}

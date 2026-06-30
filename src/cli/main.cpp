@@ -1393,6 +1393,31 @@ R"LDP3(
                 if (text.length() == 0) { return text; }
                 return text.substring(0, 1).toUpper().concat(text.substring(1, text.length()));
             }
+            private static method isSpaceChar(char c) returns boolean {
+                return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+            }
+            // Trims whitespace from one end only (spec 4); the built-in String.trim does both ends.
+            public static method trimStart(String text) returns String {
+                mutable int i = 0;
+                while (i < text.length() && Strings.isSpaceChar(text.charAt(i))) { i = i + 1; }
+                return text.substring(i, text.length());
+            }
+            public static method trimEnd(String text) returns String {
+                mutable int e = text.length();
+                while (e > 0 && Strings.isSpaceChar(text.charAt(e - 1))) { e = e - 1; }
+                return text.substring(0, e);
+            }
+            // Whether a string is empty or only whitespace (spec 4).
+            public static method isBlank(String text) returns boolean {
+                for (mutable int i = 0; i < text.length(); i++) {
+                    if (!Strings.isSpaceChar(text.charAt(i))) { return false; }
+                }
+                return true;
+            }
+            // Case-insensitive equality, comparing the lower-cased forms (spec 4).
+            public static method equalsIgnoreCase(String a, String b) returns boolean {
+                return a.toLower().equals(b.toLower());
+            }
         }
 )LDP3"
 // Split here only to stay under the MSVC per-string-literal size limit; the two raw chunks concatenate

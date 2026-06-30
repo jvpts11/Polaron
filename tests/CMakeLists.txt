@@ -902,6 +902,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Even more Strings utilities (spec 4): one-sided trims, isBlank, equalsIgnoreCase.
+        add_test(NAME codegen_string_extras_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/string_extras.ldp3"
+            "-DCONTAINS=tsLen=4 teLen=4 blank1=1 blank2=0 eq=1 neq=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # More Strings utilities (spec 4): format placeholders, count, reverse, capitalize.
         add_test(NAME codegen_string_format_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
