@@ -2291,6 +2291,76 @@ R"LDP3(
                 return lines;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // Character classification and case conversion (spec 4): the usual is-digit/letter/whitespace tests,
+        // ASCII upper/lower conversion, and digitValue (-1 if not a digit).
+        public class Chars {
+            public static method isDigit(char c) returns boolean { return c >= '0' && c <= '9'; }
+            public static method isLetter(char c) returns boolean {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+            }
+            public static method isWhitespace(char c) returns boolean {
+                return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+            }
+            public static method isUpper(char c) returns boolean { return c >= 'A' && c <= 'Z'; }
+            public static method isLower(char c) returns boolean { return c >= 'a' && c <= 'z'; }
+            public static method toUpper(char c) returns char {
+                if (c >= 'a' && c <= 'z') { return cast<char>(cast<int>(c) - 32); }
+                return c;
+            }
+            public static method toLower(char c) returns char {
+                if (c >= 'A' && c <= 'Z') { return cast<char>(cast<int>(c) + 32); }
+                return c;
+            }
+            public static method digitValue(char c) returns int {
+                if (Chars.isDigit(c)) { return cast<int>(c) - cast<int>('0'); }
+                return 0 - 1;
+            }
+        }
+        // Roman numerals (spec 4): toRoman writes a positive integer greedily from the largest symbol down;
+        // fromRoman reads one back, subtracting a symbol whose value is less than the one after it.
+        public class Roman {
+            public static method toRoman(int n) returns String {
+                mutable int[] vals = new int[13]();
+                vals[0] = 1000; vals[1] = 900; vals[2] = 500; vals[3] = 400; vals[4] = 100; vals[5] = 90;
+                vals[6] = 50; vals[7] = 40; vals[8] = 10; vals[9] = 9; vals[10] = 5; vals[11] = 4; vals[12] = 1;
+                mutable String[] syms = new String[13]();
+                syms[0] = "M"; syms[1] = "CM"; syms[2] = "D"; syms[3] = "CD"; syms[4] = "C"; syms[5] = "XC";
+                syms[6] = "L"; syms[7] = "XL"; syms[8] = "X"; syms[9] = "IX"; syms[10] = "V"; syms[11] = "IV"; syms[12] = "I";
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int x = n;
+                for (mutable int i = 0; i < 13; i++) {
+                    while (x >= vals[i]) {
+                        sb.append(syms[i]);
+                        x = x - vals[i];
+                    }
+                }
+                return sb.toString();
+            }
+            private static method val(char c) returns int {
+                if (c == 'M') { return 1000; }
+                if (c == 'D') { return 500; }
+                if (c == 'C') { return 100; }
+                if (c == 'L') { return 50; }
+                if (c == 'X') { return 10; }
+                if (c == 'V') { return 5; }
+                return 1;
+            }
+            public static method fromRoman(String s) returns int {
+                mutable int total = 0;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    int v = Roman.val(s.charAt(i));
+                    if (i + 1 < s.length() && v < Roman.val(s.charAt(i + 1))) {
+                        total = total - v;
+                    } else {
+                        total = total + v;
+                    }
+                }
+                return total;
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
@@ -2934,6 +3004,27 @@ R"LDP3(
                     }
                 }
                 return best;
+            }
+)LDP3"
+// Split only for the MSVC literal-size limit; mid-class is fine since the literals are concatenated.
+R"LDP3(
+            // The value at the given percentile p in [0,100] of a sorted copy (spec 34.6), by nearest-rank
+            // on the index (p of the way from first to last element).
+            public static method percentile(int[] xs, int p) returns int {
+                int n = xs.length();
+                if (n == 0) { return 0; }
+                mutable int[] c = new int[n]();
+                for (mutable int i = 0; i < n; i++) { c[i] = xs[i]; }
+                for (mutable int i = 1; i < n; i++) {
+                    int key = c[i];
+                    mutable int j = i - 1;
+                    while (j >= 0 && c[j] > key) {
+                        c[j + 1] = c[j];
+                        j = j - 1;
+                    }
+                    c[j + 1] = key;
+                }
+                return c[(p * (n - 1)) / 100];
             }
         }
 )LDP3"

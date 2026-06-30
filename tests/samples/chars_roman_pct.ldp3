@@ -1,0 +1,28 @@
+import System.IO.Console;
+import System.Text.Chars;
+import System.Text.Roman;
+import System.Math.Stats;
+program CharsRomanPct;
+
+// Character utilities, Roman numerals, and percentiles (spec 4 / 34.6): case conversion and digit test,
+// 2024 to/from Roman, and the 50th/25th percentiles of [5,1,3,2,4].
+// Prints: up=A lo=z dig=1 rom=MMXXIV back=2024 p50=3 p25=2.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] xs = new int[5]();
+                xs[0] = 5;
+                xs[1] = 1;
+                xs[2] = 3;
+                xs[3] = 2;
+                xs[4] = 4;
+                System.IO.Console.printf("up=%c lo=%c dig=%d rom=%s back=%d p50=%d p25=%d\n",
+                    Chars.toUpper('a'), Chars.toLower('Z'), Chars.isDigit('7'),
+                    Roman.toRoman(2024), Roman.fromRoman("MMXXIV"),
+                    Stats.percentile(xs, 50), Stats.percentile(xs, 25));
+                return;
+            }
+        }
+    }
+}
