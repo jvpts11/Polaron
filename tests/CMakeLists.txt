@@ -839,6 +839,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Node structures via arenas (spec 34.1): Trie (arena) and Graph (edge list + BFS).
+        add_test(NAME codegen_trie_graph_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/trie_graph.ldp3"
+            "-DCONTAINS=cat=1 ca=0 pre=1 cab=0 d03=2 d05=-1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # More collections (spec 34.1): Multiset, RingBuffer, LinkedHashMap.
         add_test(NAME codegen_collection_more_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

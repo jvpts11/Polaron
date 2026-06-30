@@ -1234,6 +1234,106 @@ R"LDP3(
                 return out;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Collections namespace.
+R"LDP3(
+        // A prefix tree over lowercase-letter words (spec 34.1), stored as an arena: every node's 26 child
+        // links and its end-of-word flag live in flat arrays indexed by node number, so there are no node
+        // pointers. A link of 0 means "none" (node 0 is the root, which is never a child).
+        public class Trie {
+            private mutable int[] next;
+            private mutable boolean[] isWord;
+            private mutable int nodes;
+            private mutable int cap;
+            public constructor Trie() {
+                this.cap = 8;
+                this.next = new int[8 * 26]();
+                this.isWord = new boolean[8]();
+                this.nodes = 1;
+            }
+            private method ensure() returns void {
+                if (this.nodes < this.cap) { return; }
+                int nc = this.cap * 2;
+                mutable int[] nn = new int[nc * 26]();
+                mutable boolean[] nw = new boolean[nc]();
+                for (mutable int i = 0; i < this.cap * 26; i++) { nn[i] = this.next[i]; }
+                for (mutable int i = 0; i < this.cap; i++) { nw[i] = this.isWord[i]; }
+                this.next = nn;
+                this.isWord = nw;
+                this.cap = nc;
+                return;
+            }
+            public method insert(String word) returns void {
+                mutable int node = 0;
+                for (mutable int i = 0; i < word.length(); i++) {
+                    int c = cast<int>(word.charAt(i)) - cast<int>('a');
+                    if (this.next[node * 26 + c] == 0) {
+                        this.ensure();
+                        this.next[node * 26 + c] = this.nodes;
+                        this.nodes = this.nodes + 1;
+                    }
+                    node = this.next[node * 26 + c];
+                }
+                this.isWord[node] = true;
+                return;
+            }
+            public method contains(String word) returns boolean {
+                mutable int node = 0;
+                for (mutable int i = 0; i < word.length(); i++) {
+                    int c = cast<int>(word.charAt(i)) - cast<int>('a');
+                    if (this.next[node * 26 + c] == 0) { return false; }
+                    node = this.next[node * 26 + c];
+                }
+                return this.isWord[node];
+            }
+            public method startsWith(String prefix) returns boolean {
+                mutable int node = 0;
+                for (mutable int i = 0; i < prefix.length(); i++) {
+                    int c = cast<int>(prefix.charAt(i)) - cast<int>('a');
+                    if (this.next[node * 26 + c] == 0) { return false; }
+                    node = this.next[node * 26 + c];
+                }
+                return true;
+            }
+        }
+        // An undirected graph on a fixed vertex set (spec 34.1), edges kept as two parallel lists so no
+        // per-node pointers are needed. distance is the shortest hop count between two vertices by BFS, or
+        // -1 if they are not connected.
+        public class Graph {
+            private mutable int n;
+            private mutable ArrayList<int> eu;
+            private mutable ArrayList<int> ev;
+            public constructor Graph(int vertices) {
+                this.n = vertices;
+                this.eu = new ArrayList<int>() on heap;
+                this.ev = new ArrayList<int>() on heap;
+            }
+            public method addEdge(int u, int v) returns void {
+                this.eu.add(u);
+                this.ev.add(v);
+                return;
+            }
+            public method distance(int src, int dst) returns int {
+                mutable int[] dist = new int[this.n]();
+                for (mutable int i = 0; i < this.n; i++) { dist[i] = 0 - 1; }
+                mutable Queue<int> q = new Queue<int>() on heap;
+                dist[src] = 0;
+                q.enqueue(src);
+                while (!q.isEmpty()) {
+                    int u = q.dequeue();
+                    for (mutable int i = 0; i < this.eu.size(); i++) {
+                        mutable int a = 0 - 1;
+                        if (this.eu.get(i) == u) { a = this.ev.get(i); }
+                        else { if (this.ev.get(i) == u) { a = this.eu.get(i); } }
+                        if (a >= 0 && dist[a] < 0) {
+                            dist[a] = dist[u] + 1;
+                            q.enqueue(a);
+                        }
+                    }
+                }
+                return dist[dst];
+            }
+        }
     }
 )LDP3"
 // (split 2: another ~16KB literal boundary.)

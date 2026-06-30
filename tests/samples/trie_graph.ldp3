@@ -1,0 +1,30 @@
+import System.IO.Console;
+import System.Collections.Trie;
+import System.Collections.Graph;
+program TrieGraph;
+
+// Node structures without node pointers (spec 34.1): an arena-backed Trie (children indexed by node number
+// in flat arrays) and an edge-list Graph with BFS shortest distance.
+// Prints: cat=1 ca=0 pre=1 cab=0 d03=2 d05=-1.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Trie t = new Trie() on heap;
+                t.insert("cat");
+                t.insert("car");
+                t.insert("dog");
+                mutable Graph g = new Graph(6) on heap;
+                g.addEdge(0, 1);
+                g.addEdge(1, 2);
+                g.addEdge(2, 3);
+                g.addEdge(0, 4);
+                g.addEdge(4, 3);
+                System.IO.Console.printf("cat=%d ca=%d pre=%d cab=%d d03=%d d05=%d\n",
+                    t.contains("cat"), t.contains("ca"), t.startsWith("ca"), t.contains("cab"),
+                    g.distance(0, 3), g.distance(0, 5));
+                return;
+            }
+        }
+    }
+}
