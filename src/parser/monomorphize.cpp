@@ -30,6 +30,30 @@ std::string resolveAliasName(const std::string& name) {
 // Substitutes type parameters in a TypeRef (T -> int). Generic args are
 // substituted in place; typeRefStr/typeRefName mangle them later. Also expands any
 // `typealias` in the base name or type arguments (transparent rewrite, spec 24).
+// Substitute type params inside one (possibly nested-mangled) type-argument string. A simple arg ("T") is
+// looked up whole; a nested generic arg ("Handler$T", from ArrayList<Handler<T>>) has each '$'-separated
+// segment substituted so the inner T becomes concrete ("Handler$int") instead of missing the lookup.
+std::string substArg(const std::string& arg, const Subst& s) {
+    std::string a = resolveAliasName(arg);
+    if (a.find('$') == std::string::npos) {
+        auto it = s.find(a);
+        return it != s.end() ? it->second : a;
+    }
+    std::string rebuilt;
+    std::size_t start = 0;
+    while (true) {
+        const std::size_t d = a.find('$', start);
+        std::string seg = a.substr(start, d == std::string::npos ? std::string::npos : d - start);
+        seg = resolveAliasName(seg);
+        if (auto si = s.find(seg); si != s.end()) seg = si->second;
+        rebuilt += seg;
+        if (d == std::string::npos) break;
+        rebuilt += "$";
+        start = d + 1;
+    }
+    return rebuilt;
+}
+
 ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
     ast::TypeRef r = t;
     if (auto ai = g_aliases.find(r.name); ai != g_aliases.end()) {
@@ -94,11 +118,7 @@ ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
     }
     auto it = s.find(r.name);
     if (it != s.end()) r.name = it->second;
-    for (std::string& a : r.typeArgs) {
-        a = resolveAliasName(a);
-        auto ai = s.find(a);
-        if (ai != s.end()) a = ai->second;
-    }
+    for (std::string& a : r.typeArgs) a = substArg(a, s);  // handles nested mangled args (Handler$T)
     return r;
 }
 
@@ -237,11 +257,7 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         }
         auto it = s.find(n->className);
         if (it != s.end()) n->className = it->second;
-        for (const std::string& a : x->typeArgs) {
-            const std::string ra = resolveAliasName(a);
-            auto ai = s.find(ra);
-            n->typeArgs.push_back(ai != s.end() ? ai->second : ra);
-        }
+        for (const std::string& a : x->typeArgs) n->typeArgs.push_back(substArg(a, s));
         for (const auto& a : x->args) n->args.push_back(cloneExpr(a.get(), s));
         n->location = x->location;
         n->region = x->region;
@@ -672,10 +688,30 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
 }
 
 // ---- Collect generic instantiations used in the program ----
+// A type argument can itself be a nested mangled generic, e.g. ArrayList<Handler<int>> stores the arg as
+// "Handler$int". That inner instance (Handler$int) must be generated too, so split "Base$arg1$arg2..." and
+// register it when Base is generic, recursing for deeper nesting (spec 15.1).
+void collectTypeArgString(const std::string& a, const std::set<std::string>& generics, InstMap& out) {
+    const std::size_t d = a.find('$');
+    if (d == std::string::npos) return;  // a plain type, nothing nested to instantiate
+    const std::string base = a.substr(0, d);
+    if (generics.count(base) == 0) return;
+    std::vector<std::string> args;
+    std::size_t start = d + 1;
+    while (true) {
+        const std::size_t e = a.find('$', start);
+        args.push_back(a.substr(start, e == std::string::npos ? std::string::npos : e - start));
+        if (e == std::string::npos) break;
+        start = e + 1;
+    }
+    out[a] = {base, args};
+    for (const std::string& arg : args) collectTypeArgString(arg, generics, out);
+}
 void collectType(const ast::TypeRef& t, const std::set<std::string>& generics, InstMap& out) {
     if (!t.typeArgs.empty() && generics.count(t.name) > 0) {
         out[ast::mangleGeneric(t.name, t.typeArgs)] = {t.name, t.typeArgs};
     }
+    for (const std::string& a : t.typeArgs) collectTypeArgString(a, generics, out);
 }
 void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& out);
 void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& out);
@@ -1278,10 +1314,21 @@ bool monomorphize(ast::Program& program) {
         done.insert(m);
         const auto& [base, args] = insts[m];
         // Skip a template's self-reference with its own type parameter (e.g. Node$T from a
-        // `Node<T>* next` field) -- it is not a real instantiation (see typeParamNames).
+        // `Node<T>* next` field) -- it is not a real instantiation (see typeParamNames). An arg may be a
+        // nested mangled generic (e.g. "Handler$T" from a field ArrayList<Handler<T>>); if any of its
+        // '$'-separated segments is a type parameter, this is still a template self-reference, not concrete.
         bool selfParam = false;
-        for (const auto& a : args)
-            if (typeParamNames.count(a) > 0) selfParam = true;
+        for (const auto& a : args) {
+            std::size_t start = 0;
+            while (true) {
+                const std::size_t d = a.find('$', start);
+                const std::string seg =
+                    a.substr(start, d == std::string::npos ? std::string::npos : d - start);
+                if (typeParamNames.count(seg) > 0) selfParam = true;
+                if (d == std::string::npos) break;
+                start = d + 1;
+            }
+        }
         if (selfParam) continue;
         auto tit = templates.find(base);
         if (tit == templates.end() || tit->second->typeParams.size() != args.size()) continue;

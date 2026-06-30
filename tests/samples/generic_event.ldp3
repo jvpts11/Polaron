@@ -1,0 +1,50 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program GenericEvent;
+
+// Nested generics (spec 15.1): a generic Event<T> whose field is ArrayList<Handler<T>> -- a generic
+// instantiated with another generic that uses the outer type parameter. Instantiating Event<int> must
+// produce ArrayList<Handler<int>>, which the monomorphizer now substitutes through the nested arg.
+// Prints (order): tick 5 / tick 10 / total=15 nsub=2.
+public bundle main {
+    public namespace app {
+        public class Handler<T> {
+            private mutable function<void, T> fn;
+            public constructor Handler(function<void, T> f) { this.fn = f; }
+            public method invoke(T arg) returns void { this.fn(arg); return; }
+        }
+        public class Event<T> {
+            private mutable ArrayList<Handler<T>> handlers;
+            public constructor Event() { this.handlers = new ArrayList<Handler<T>>() on heap; }
+            public method subscribe(function<void, T> h) returns void {
+                this.handlers.add(new Handler<T>(h) on heap);
+                return;
+            }
+            public method emit(T arg) returns void {
+                for (mutable int i = 0; i < this.handlers.size(); i++) {
+                    this.handlers.get(i).invoke(arg);
+                }
+                return;
+            }
+            public method count() returns int { return this.handlers.size(); }
+        }
+        public class Box {
+            private mutable int v;
+            public constructor Box() { this.v = 0; }
+            public method add(int x) returns void { this.v = this.v + x; return; }
+            public method get() returns int { return this.v; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Box bx = new Box() on heap;
+                mutable Event<int> onTick = new Event<int>() on heap;
+                onTick.subscribe(lambda[captures: byvalue bx](int x) returns void { bx.add(x); });
+                onTick.subscribe(lambda(int x) returns void { System.IO.Console.printf("tick %d\n", x); });
+                onTick.emit(5);
+                onTick.emit(10);
+                System.IO.Console.printf("total=%d nsub=%d\n", bx.get(), onTick.count());
+                return;
+            }
+        }
+    }
+}
