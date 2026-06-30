@@ -1067,6 +1067,93 @@ R"LDP3(
             }
             public method size() returns int { return this.nbits; }
         }
+        // Counts how many times each value is added (spec 34.1): a multiset over a HashMap. add bumps a
+        // value's tally, count reads it (0 if absent), distinct is the number of values seen, total the sum
+        // of all tallies. The element type must be Hashable, like any HashMap key. (Named Multiset rather
+        // than Counter so it does not shadow a user class commonly called Counter.)
+        public class Multiset<T> {
+            private mutable HashMap<T, int> counts;
+            public constructor Multiset() {
+                this.counts = new HashMap<T, int>() on heap;
+            }
+            public method add(T item) returns void {
+                if (this.counts.containsKey(item)) {
+                    this.counts.put(item, this.counts.get(item) + 1);
+                } else {
+                    this.counts.put(item, 1);
+                }
+                return;
+            }
+            public method count(T item) returns int {
+                if (this.counts.containsKey(item)) { return this.counts.get(item); }
+                return 0;
+            }
+            public method distinct() returns int {
+                return this.counts.size();
+            }
+            public method total() returns int {
+                mutable int[] tallies = this.counts.valueArray();
+                mutable int sum = 0;
+                for (mutable int i = 0; i < tallies.length(); i++) { sum = sum + tallies[i]; }
+                return sum;
+            }
+            public method keys() returns T[] {
+                return this.counts.keyArray();
+            }
+        }
+        // A fixed-capacity circular buffer (spec 34.1): push appends and, once full, overwrites the oldest
+        // element; pop and peek read from the oldest end. Indices wrap with modulo, so there is no shifting.
+        public class RingBuffer<T> {
+            private mutable T[] buf;
+            private mutable int head;
+            private mutable int count;
+            private mutable int cap;
+            public constructor RingBuffer(int capacity) {
+                this.cap = capacity;
+                this.buf = new T[capacity]();
+                this.head = 0;
+                this.count = 0;
+            }
+            public method push(T item) returns void {
+                int tail = (this.head + this.count) % this.cap;
+                this.buf[tail] = item;
+                if (this.count == this.cap) { this.head = (this.head + 1) % this.cap; }
+                else { this.count = this.count + 1; }
+                return;
+            }
+            public method pop() returns T {
+                T v = this.buf[this.head];
+                this.head = (this.head + 1) % this.cap;
+                this.count = this.count - 1;
+                return v;
+            }
+            public method peek() returns T { return this.buf[this.head]; }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+            public method isFull() returns boolean { return this.count == this.cap; }
+            public method capacity() returns int { return this.cap; }
+        }
+        // A map that remembers insertion order (spec 34.1): a HashMap for lookup plus a list of keys in the
+        // order they were first added. put updates in place without reordering; keysInOrder walks them as
+        // inserted, which a plain HashMap does not promise.
+        public class LinkedHashMap<K, V> {
+            private mutable HashMap<K, V> map;
+            private mutable ArrayList<K> order;
+            public constructor LinkedHashMap() {
+                this.map = new HashMap<K, V>() on heap;
+                this.order = new ArrayList<K>() on heap;
+            }
+            public method put(K key, V value) returns void {
+                if (!this.map.containsKey(key)) { this.order.add(key); }
+                this.map.put(key, value);
+                return;
+            }
+            public method get(K key) returns V { return this.map.get(key); }
+            public method containsKey(K key) returns boolean { return this.map.containsKey(key); }
+            public method size() returns int { return this.map.size(); }
+            public method isEmpty() returns boolean { return this.map.size() == 0; }
+            public method keysInOrder() returns ArrayList<K> { return this.order; }
+        }
     }
 )LDP3"
 // (split 2: another ~16KB literal boundary.)

@@ -1,0 +1,35 @@
+import System.IO.Console;
+import System.Collections.Multiset;
+import System.Collections.RingBuffer;
+import System.Collections.LinkedHashMap;
+import System.Collections.ArrayList;
+program CollectionMore;
+
+// More collections (spec 34.1): Multiset tallies occurrences, RingBuffer is a fixed circular buffer that
+// overwrites the oldest when full, LinkedHashMap keeps keys in insertion order.
+// Prints: cx=2 ctotal=3 rbpeek=2 rbfull=1 lmk0=z lmz=9.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Multiset<String> c = new Multiset<String>() on heap;
+                c.add("x");
+                c.add("x");
+                c.add("y");
+                mutable RingBuffer<int> rb = new RingBuffer<int>(3) on heap;
+                rb.push(1);
+                rb.push(2);
+                rb.push(3);
+                rb.push(4);
+                mutable LinkedHashMap<String, int> lm = new LinkedHashMap<String, int>() on heap;
+                lm.put("z", 1);
+                lm.put("a", 2);
+                lm.put("z", 9);
+                ArrayList<String> ks = lm.keysInOrder();
+                System.IO.Console.printf("cx=%d ctotal=%d rbpeek=%d rbfull=%d lmk0=%s lmz=%d\n",
+                    c.count("x"), c.total(), rb.peek(), rb.isFull(), ks.get(0), lm.get("z"));
+                return;
+            }
+        }
+    }
+}
