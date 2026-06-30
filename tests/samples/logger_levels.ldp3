@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.IO.Logger;
+program LoggerLevels;
+
+// Leveled logging (spec 34): messages below the configured level are dropped. The logger starts at info,
+// so debug is hidden; after raising the level to warn, info is hidden too.
+// Prints: [INFO] app: hello / [WARN] app: careful / [ERROR] app: boom.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Logger log = new Logger("app") on heap;
+                log.debug("hidden");
+                log.info("hello");
+                log.warn("careful");
+                log.setLevel(2);
+                log.info("hidden2");
+                log.error("boom");
+                return;
+            }
+        }
+    }
+}

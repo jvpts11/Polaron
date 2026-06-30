@@ -2902,7 +2902,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             const bool isPrintln = name == "System.IO.Console.println";
             const bool isPrint = name == "System.IO.Console.print";
             if (isRead || isPrintf || isPrintln || isPrint) {
-                if (freestanding_)
+                // The prelude's own library classes (e.g. Logger) may reference Console; their mere
+                // presence must not break a freestanding program that never uses them (unused prelude code
+                // is dead-stripped). Only flag Console used directly in user code.
+                if (freestanding_ && std::string(call->loc.file) != "<prelude>")
                     error("Console (managed stdlib) is not available in freestanding mode; use FFI "
                           "for I/O (spec 36.3)",
                           call->loc);

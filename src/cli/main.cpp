@@ -217,6 +217,41 @@ public bundle std {
                 return parts.get(parts.size() - 1);
             }
         }
+        // Leveled logging to the console (spec 34): each message carries a level (debug/info/warn/error)
+        // and is printed with the logger's name only when its level is at or above the configured minimum,
+        // which starts at info. A quick way to get structured, filterable output without a framework.
+        public class Logger {
+            private mutable String name;
+            private mutable int minLevel;
+            public constructor Logger(String name) {
+                this.name = name;
+                this.minLevel = 1;
+            }
+            public method setLevel(int level) returns void {
+                this.minLevel = level;
+                return;
+            }
+            private method emit(String level, String message) returns void {
+                System.IO.Console.printf("[%s] %s: %s\n", level, this.name, message);
+                return;
+            }
+            public method debug(String message) returns void {
+                if (this.minLevel <= 0) { this.emit("DEBUG", message); }
+                return;
+            }
+            public method info(String message) returns void {
+                if (this.minLevel <= 1) { this.emit("INFO", message); }
+                return;
+            }
+            public method warn(String message) returns void {
+                if (this.minLevel <= 2) { this.emit("WARN", message); }
+                return;
+            }
+            public method error(String message) returns void {
+                if (this.minLevel <= 3) { this.emit("ERROR", message); }
+                return;
+            }
+        }
     }
     public namespace System.Math {
         // Math (spec 34.6) is a compiler builtin (its functions lower to LLVM intrinsics), not a
