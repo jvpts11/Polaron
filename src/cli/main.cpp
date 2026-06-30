@@ -2271,6 +2271,64 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
+        // Base32 (RFC 4648) over a string's bytes: 5 bytes encode to 8 chars of the alphabet
+        // ABCDEFGHIJKLMNOPQRSTUVWXYZ234567, '=' padded. encode/decode round-trip. Uses a 40-bit long buffer.
+        public class Base32 {
+            private static method val(char c) returns int {
+                if (c >= 'A' && c <= 'Z') { return cast<int>(c) - cast<int>('A'); }
+                if (c >= '2' && c <= '7') { return cast<int>(c) - cast<int>('2') + 26; }
+                return 0;
+            }
+            public static method encode(String data) returns String {
+                String AL = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                int n = data.length();
+                mutable int i = 0;
+                while (i < n) {
+                    mutable long buf = 0;
+                    mutable int cnt = 0;
+                    for (mutable int j = 0; j < 5; j++) {
+                        buf = buf << 8;
+                        if (i + j < n) {
+                            buf = buf | cast<long>(cast<int>(data.charAt(i + j)) & 255);
+                            cnt = cnt + 1;
+                        }
+                    }
+                    mutable int outc = 8;
+                    if (cnt == 1) { outc = 2; }
+                    if (cnt == 2) { outc = 4; }
+                    if (cnt == 3) { outc = 5; }
+                    if (cnt == 4) { outc = 7; }
+                    for (mutable int k = 0; k < 8; k++) {
+                        int shift = 35 - k * 5;
+                        int idx = cast<int>((buf >> shift) & cast<long>(31));
+                        if (k < outc) { sb.appendChar(AL.charAt(idx)); } else { sb.appendChar('='); }
+                    }
+                    i = i + 5;
+                }
+                return sb.toString();
+            }
+            public static method decode(String s) returns String {
+                mutable StringBuilder out = new StringBuilder() on heap;
+                mutable long buf = 0;
+                mutable int bits = 0;
+                int n = s.length();
+                for (mutable int i = 0; i < n; i++) {
+                    char c = s.charAt(i);
+                    if (c == '=') { return out.toString(); }
+                    buf = (buf << 5) | cast<long>(Base32.val(c));
+                    bits = bits + 5;
+                    if (bits >= 8) {
+                        bits = bits - 8;
+                        out.appendChar(cast<char>(cast<int>((buf >> bits) & cast<long>(255))));
+                    }
+                }
+                return out.toString();
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
         // Non-cryptographic checksums and hashes over a string's bytes (spec 4): CRC-32 (reflected, the
         // zip/png polynomial) and 32-bit FNV-1a. Uses unsigned 32-bit arithmetic, which wraps and shifts
         // logically. Returned as int (the same 32 bits reinterpreted).
@@ -2308,6 +2366,204 @@ R"LDP3(
                 return cast<int>((b << 16) | a);
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // SHA-256 cryptographic hash (FIPS 180-4), pure LDP3 over 32-bit unsigned arithmetic (spec 4). digest
+        // returns the 64-character lowercase hex of the hash. The method is named digest, not hash, since hash
+        // is the Hashable interface method.
+        public class Sha256 {
+            private static method rotr(uint x, int n) returns uint { return (x >> n) | (x << (32 - n)); }
+            private static method putWord(int[] out, int off, uint w) returns void {
+                out[off]   = cast<int>((w >> 24) & cast<uint>(255));
+                out[off+1] = cast<int>((w >> 16) & cast<uint>(255));
+                out[off+2] = cast<int>((w >> 8) & cast<uint>(255));
+                out[off+3] = cast<int>(w & cast<uint>(255));
+                return;
+            }
+            // Lowercase hex of the first n bytes of an int[] (each entry treated as a 0..255 byte).
+            public static method toHex(int[] bytes, int n) returns String {
+                String digs = "0123456789abcdef";
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < n; i++) {
+                    int b = bytes[i] & 255;
+                    sb.appendChar(digs.charAt((b >> 4) & 15));
+                    sb.appendChar(digs.charAt(b & 15));
+                }
+                return sb.toString();
+            }
+            // Core: hash the first len bytes of data, returning the 32 raw output bytes (used by Hmac).
+            public static method digestRaw(int[] data, int len) returns int[] {
+                mutable int padded = len + 1;
+                while (padded % 64 != 56) { padded = padded + 1; }
+                padded = padded + 8;
+                mutable int[] m = new int[padded]();
+                for (mutable int i = 0; i < len; i++) { m[i] = data[i] & 255; }
+                m[len] = 128;
+                long bits = cast<long>(len) * cast<long>(8);
+                for (mutable int i = 0; i < 8; i++) {
+                    m[padded - 1 - i] = cast<int>((bits >> (i * 8)) & cast<long>(255));
+                }
+                mutable uint[] k = new uint[64]();
+                k[0]=cast<uint>(0x428a2f98); k[1]=cast<uint>(0x71374491); k[2]=cast<uint>(0xb5c0fbcf); k[3]=cast<uint>(0xe9b5dba5);
+                k[4]=cast<uint>(0x3956c25b); k[5]=cast<uint>(0x59f111f1); k[6]=cast<uint>(0x923f82a4); k[7]=cast<uint>(0xab1c5ed5);
+                k[8]=cast<uint>(0xd807aa98); k[9]=cast<uint>(0x12835b01); k[10]=cast<uint>(0x243185be); k[11]=cast<uint>(0x550c7dc3);
+                k[12]=cast<uint>(0x72be5d74); k[13]=cast<uint>(0x80deb1fe); k[14]=cast<uint>(0x9bdc06a7); k[15]=cast<uint>(0xc19bf174);
+                k[16]=cast<uint>(0xe49b69c1); k[17]=cast<uint>(0xefbe4786); k[18]=cast<uint>(0x0fc19dc6); k[19]=cast<uint>(0x240ca1cc);
+                k[20]=cast<uint>(0x2de92c6f); k[21]=cast<uint>(0x4a7484aa); k[22]=cast<uint>(0x5cb0a9dc); k[23]=cast<uint>(0x76f988da);
+                k[24]=cast<uint>(0x983e5152); k[25]=cast<uint>(0xa831c66d); k[26]=cast<uint>(0xb00327c8); k[27]=cast<uint>(0xbf597fc7);
+                k[28]=cast<uint>(0xc6e00bf3); k[29]=cast<uint>(0xd5a79147); k[30]=cast<uint>(0x06ca6351); k[31]=cast<uint>(0x14292967);
+                k[32]=cast<uint>(0x27b70a85); k[33]=cast<uint>(0x2e1b2138); k[34]=cast<uint>(0x4d2c6dfc); k[35]=cast<uint>(0x53380d13);
+                k[36]=cast<uint>(0x650a7354); k[37]=cast<uint>(0x766a0abb); k[38]=cast<uint>(0x81c2c92e); k[39]=cast<uint>(0x92722c85);
+                k[40]=cast<uint>(0xa2bfe8a1); k[41]=cast<uint>(0xa81a664b); k[42]=cast<uint>(0xc24b8b70); k[43]=cast<uint>(0xc76c51a3);
+                k[44]=cast<uint>(0xd192e819); k[45]=cast<uint>(0xd6990624); k[46]=cast<uint>(0xf40e3585); k[47]=cast<uint>(0x106aa070);
+                k[48]=cast<uint>(0x19a4c116); k[49]=cast<uint>(0x1e376c08); k[50]=cast<uint>(0x2748774c); k[51]=cast<uint>(0x34b0bcb5);
+                k[52]=cast<uint>(0x391c0cb3); k[53]=cast<uint>(0x4ed8aa4a); k[54]=cast<uint>(0x5b9cca4f); k[55]=cast<uint>(0x682e6ff3);
+                k[56]=cast<uint>(0x748f82ee); k[57]=cast<uint>(0x78a5636f); k[58]=cast<uint>(0x84c87814); k[59]=cast<uint>(0x8cc70208);
+                k[60]=cast<uint>(0x90befffa); k[61]=cast<uint>(0xa4506ceb); k[62]=cast<uint>(0xbef9a3f7); k[63]=cast<uint>(0xc67178f2);
+                mutable uint h0=cast<uint>(0x6a09e667); mutable uint h1=cast<uint>(0xbb67ae85);
+                mutable uint h2=cast<uint>(0x3c6ef372); mutable uint h3=cast<uint>(0xa54ff53a);
+                mutable uint h4=cast<uint>(0x510e527f); mutable uint h5=cast<uint>(0x9b05688c);
+                mutable uint h6=cast<uint>(0x1f83d9ab); mutable uint h7=cast<uint>(0x5be0cd19);
+                mutable uint[] w = new uint[64]();
+                mutable int blk = 0;
+                while (blk < padded) {
+                    for (mutable int t = 0; t < 16; t++) {
+                        int b = blk + t * 4;
+                        w[t] = (cast<uint>(m[b]) << 24) | (cast<uint>(m[b+1]) << 16)
+                             | (cast<uint>(m[b+2]) << 8) | cast<uint>(m[b+3]);
+                    }
+                    for (mutable int t = 16; t < 64; t++) {
+                        uint s0 = Sha256.rotr(w[t-15],7) ^ Sha256.rotr(w[t-15],18) ^ (w[t-15] >> 3);
+                        uint s1 = Sha256.rotr(w[t-2],17) ^ Sha256.rotr(w[t-2],19) ^ (w[t-2] >> 10);
+                        w[t] = w[t-16] + s0 + w[t-7] + s1;
+                    }
+                    mutable uint a=h0; mutable uint b2=h1; mutable uint c=h2; mutable uint d=h3;
+                    mutable uint e=h4; mutable uint f=h5; mutable uint g=h6; mutable uint hh=h7;
+                    for (mutable int t = 0; t < 64; t++) {
+                        uint bigS1 = Sha256.rotr(e,6) ^ Sha256.rotr(e,11) ^ Sha256.rotr(e,25);
+                        uint ch = (e & f) ^ ((~e) & g);
+                        uint t1 = hh + bigS1 + ch + k[t] + w[t];
+                        uint bigS0 = Sha256.rotr(a,2) ^ Sha256.rotr(a,13) ^ Sha256.rotr(a,22);
+                        uint maj = (a & b2) ^ (a & c) ^ (b2 & c);
+                        uint t2 = bigS0 + maj;
+                        hh=g; g=f; f=e; e=d+t1; d=c; c=b2; b2=a; a=t1+t2;
+                    }
+                    h0=h0+a; h1=h1+b2; h2=h2+c; h3=h3+d; h4=h4+e; h5=h5+f; h6=h6+g; h7=h7+hh;
+                    blk = blk + 64;
+                }
+                mutable int[] out = new int[32]();
+                Sha256.putWord(out,0,h0); Sha256.putWord(out,4,h1); Sha256.putWord(out,8,h2); Sha256.putWord(out,12,h3);
+                Sha256.putWord(out,16,h4); Sha256.putWord(out,20,h5); Sha256.putWord(out,24,h6); Sha256.putWord(out,28,h7);
+                return out;
+            }
+            // Hash a String (bytes are charAt & 255) into the 64-character lowercase hex digest.
+            public static method digest(String msg) returns String {
+                int len = msg.length();
+                mutable int[] data = new int[len + 1]();
+                for (mutable int i = 0; i < len; i++) { data[i] = cast<int>(msg.charAt(i)) & 255; }
+                return Sha256.toHex(Sha256.digestRaw(data, len), 32);
+            }
+            // Hash the first len bytes of an int[] into the lowercase hex digest.
+            public static method digestBytes(int[] data, int len) returns String {
+                return Sha256.toHex(Sha256.digestRaw(data, len), 32);
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // HMAC-SHA256 keyed message authentication (RFC 2104), pure LDP3 on top of Sha256. sha256 returns the
+        // lowercase hex of HMAC-SHA256(key, msg). Keys longer than the 64-byte block are hashed down first.
+        public class Hmac {
+            public static method sha256(String key, String msg) returns String {
+                int B = 64;
+                int klen = key.length();
+                mutable int[] keyBytes = new int[klen + 1]();
+                for (mutable int i = 0; i < klen; i++) { keyBytes[i] = cast<int>(key.charAt(i)) & 255; }
+                mutable int[] kb = new int[B]();
+                if (klen > B) {
+                    int[] kh = Sha256.digestRaw(keyBytes, klen);
+                    for (mutable int i = 0; i < 32; i++) { kb[i] = kh[i]; }
+                } else {
+                    for (mutable int i = 0; i < klen; i++) { kb[i] = keyBytes[i]; }
+                }
+                int mlen = msg.length();
+                mutable int[] inner = new int[B + mlen]();
+                for (mutable int i = 0; i < B; i++) { inner[i] = kb[i] ^ 54; }
+                for (mutable int i = 0; i < mlen; i++) { inner[B + i] = cast<int>(msg.charAt(i)) & 255; }
+                int[] ih = Sha256.digestRaw(inner, B + mlen);
+                mutable int[] outer = new int[B + 32]();
+                for (mutable int i = 0; i < B; i++) { outer[i] = kb[i] ^ 92; }
+                for (mutable int i = 0; i < 32; i++) { outer[B + i] = ih[i]; }
+                return Sha256.toHex(Sha256.digestRaw(outer, B + 32), 32);
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // SHA-1 cryptographic hash (FIPS 180-1), pure LDP3 over 32-bit unsigned arithmetic. digest returns the
+        // 40-character lowercase hex. (SHA-1 is broken for collision resistance; provided for legacy interop
+        // such as Git object ids.) Reuses Sha256.putWord/toHex for the byte/hex plumbing.
+        public class Sha1 {
+            private static method rotl(uint x, int n) returns uint { return (x << n) | (x >> (32 - n)); }
+            public static method digestRaw(int[] data, int len) returns int[] {
+                mutable int padded = len + 1;
+                while (padded % 64 != 56) { padded = padded + 1; }
+                padded = padded + 8;
+                mutable int[] m = new int[padded]();
+                for (mutable int i = 0; i < len; i++) { m[i] = data[i] & 255; }
+                m[len] = 128;
+                long bits = cast<long>(len) * cast<long>(8);
+                for (mutable int i = 0; i < 8; i++) {
+                    m[padded - 1 - i] = cast<int>((bits >> (i * 8)) & cast<long>(255));
+                }
+                mutable uint h0 = cast<uint>(0x67452301); mutable uint h1 = cast<uint>(0xEFCDAB89);
+                mutable uint h2 = cast<uint>(0x98BADCFE); mutable uint h3 = cast<uint>(0x10325476);
+                mutable uint h4 = cast<uint>(0xC3D2E1F0);
+                mutable uint[] w = new uint[80]();
+                mutable int blk = 0;
+                while (blk < padded) {
+                    for (mutable int t = 0; t < 16; t++) {
+                        int b = blk + t * 4;
+                        w[t] = (cast<uint>(m[b]) << 24) | (cast<uint>(m[b+1]) << 16)
+                             | (cast<uint>(m[b+2]) << 8) | cast<uint>(m[b+3]);
+                    }
+                    for (mutable int t = 16; t < 80; t++) {
+                        w[t] = Sha1.rotl(w[t-3] ^ w[t-8] ^ w[t-14] ^ w[t-16], 1);
+                    }
+                    mutable uint a = h0; mutable uint b2 = h1; mutable uint c = h2; mutable uint d = h3; mutable uint e = h4;
+                    for (mutable int t = 0; t < 80; t++) {
+                        mutable uint f = cast<uint>(0);
+                        mutable uint k = cast<uint>(0);
+                        if (t < 20) { f = (b2 & c) | ((~b2) & d); k = cast<uint>(0x5A827999); }
+                        else {
+                            if (t < 40) { f = b2 ^ c ^ d; k = cast<uint>(0x6ED9EBA1); }
+                            else {
+                                if (t < 60) { f = (b2 & c) | (b2 & d) | (c & d); k = cast<uint>(0x8F1BBCDC); }
+                                else { f = b2 ^ c ^ d; k = cast<uint>(0xCA62C1D6); }
+                            }
+                        }
+                        uint tmp = Sha1.rotl(a, 5) + f + e + k + w[t];
+                        e = d; d = c; c = Sha1.rotl(b2, 30); b2 = a; a = tmp;
+                    }
+                    h0 = h0 + a; h1 = h1 + b2; h2 = h2 + c; h3 = h3 + d; h4 = h4 + e;
+                    blk = blk + 64;
+                }
+                mutable int[] out = new int[20]();
+                Sha256.putWord(out, 0, h0); Sha256.putWord(out, 4, h1); Sha256.putWord(out, 8, h2);
+                Sha256.putWord(out, 12, h3); Sha256.putWord(out, 16, h4);
+                return out;
+            }
+            public static method digest(String msg) returns String {
+                int len = msg.length();
+                mutable int[] data = new int[len + 1]();
+                for (mutable int i = 0; i < len; i++) { data[i] = cast<int>(msg.charAt(i)) & 255; }
+                return Sha256.toHex(Sha1.digestRaw(data, len), 20);
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
         // A Bloom filter: a probabilistic set that never misses a member but may report a false positive
         // (spec 34.1). Two independent hashes (FNV-1a and CRC-32 from Digest) set and test bits in a fixed
         // bit array. mightContain returning false is definitive; true means probably present.
@@ -2332,6 +2588,138 @@ R"LDP3(
                 return this.bits[this.idx(Digest.fnv1a(key))] && this.bits[this.idx(Digest.crc32(key))];
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // Huffman coding (spec 34.1): builds an optimal prefix code from a string's byte frequencies and
+        // packs it into a tree stored in flat arena arrays (no self-referential pointers). encode turns the
+        // text into a '0'/'1' bit string; decode walks the tree to recover it. Construct once over the source
+        // text, then encode/decode against that codebook. Two smallest nodes are merged each step (ties by
+        // lowest id) for a deterministic tree, so a round-trip always reproduces the input exactly.
+        public class Huffman {
+            private mutable int[] freq;
+            private mutable int[] left;
+            private mutable int[] right;
+            private mutable int[] parent;
+            private mutable int[] bit;
+            private mutable int[] sym;
+            private mutable int count;
+            private mutable int root;
+            private mutable String[] codes;
+
+            public constructor Huffman(String data) {
+                this.freq = new int[512]();
+                this.left = new int[512]();
+                this.right = new int[512]();
+                this.parent = new int[512]();
+                this.bit = new int[512]();
+                this.sym = new int[512]();
+                this.codes = new String[256]();
+                mutable boolean[] alive = new boolean[512]();
+                mutable int[] cnt = new int[256]();
+                int n = data.length();
+                for (mutable int i = 0; i < n; i++) {
+                    int ch = cast<int>(data.charAt(i)) & 255;
+                    cnt[ch] = cnt[ch] + 1;
+                }
+                this.count = 0;
+                for (mutable int b = 0; b < 256; b++) {
+                    if (cnt[b] > 0) {
+                        int id = this.count;
+                        this.freq[id] = cnt[b];
+                        this.sym[id] = b;
+                        this.left[id] = -1;
+                        this.right[id] = -1;
+                        this.parent[id] = -1;
+                        alive[id] = true;
+                        this.count = id + 1;
+                    }
+                }
+                mutable int live = this.count;
+                this.root = 0;
+                while (live > 1) {
+                    mutable int a = -1;
+                    mutable int b2 = -1;
+                    for (mutable int i = 0; i < this.count; i++) {
+                        if (alive[i]) {
+                            if (a == -1) { a = i; }
+                            else {
+                                if (this.freq[i] < this.freq[a]) { b2 = a; a = i; }
+                                else {
+                                    if (b2 == -1) { b2 = i; }
+                                    else { if (this.freq[i] < this.freq[b2]) { b2 = i; } }
+                                }
+                            }
+                        }
+                    }
+                    int id = this.count;
+                    this.freq[id] = this.freq[a] + this.freq[b2];
+                    this.left[id] = a;
+                    this.right[id] = b2;
+                    this.sym[id] = -1;
+                    this.parent[id] = -1;
+                    this.parent[a] = id;
+                    this.bit[a] = 0;
+                    this.parent[b2] = id;
+                    this.bit[b2] = 1;
+                    alive[a] = false;
+                    alive[b2] = false;
+                    alive[id] = true;
+                    this.count = id + 1;
+                    this.root = id;
+                    live = live - 1;
+                }
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (this.left[i] == -1) {
+                        mutable int[] tmp = new int[64]();
+                        mutable int d = 0;
+                        mutable int node = i;
+                        while (this.parent[node] != -1) {
+                            tmp[d] = this.bit[node];
+                            d = d + 1;
+                            node = this.parent[node];
+                        }
+                        mutable StringBuilder sb = new StringBuilder() on heap;
+                        if (d == 0) { sb.appendChar('0'); }
+                        for (mutable int j = d - 1; j >= 0; j = j - 1) {
+                            if (tmp[j] == 0) { sb.appendChar('0'); } else { sb.appendChar('1'); }
+                        }
+                        this.codes[this.sym[i]] = sb.toString();
+                    }
+                }
+                return;
+            }
+            // The '0'/'1' code assigned to a byte value (empty string for bytes not in the source).
+            public method codeOf(int byteValue) returns String { return this.codes[byteValue & 255]; }
+            public method encode(String data) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                int n = data.length();
+                for (mutable int i = 0; i < n; i++) {
+                    sb.append(this.codes[cast<int>(data.charAt(i)) & 255]);
+                }
+                return sb.toString();
+            }
+            public method decode(String bits) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                int n = bits.length();
+                if (this.left[this.root] == -1) {
+                    for (mutable int i = 0; i < n; i++) { sb.appendChar(cast<char>(this.sym[this.root])); }
+                    return sb.toString();
+                }
+                mutable int node = this.root;
+                for (mutable int i = 0; i < n; i++) {
+                    if (bits.charAt(i) == '0') { node = this.left[node]; } else { node = this.right[node]; }
+                    if (this.left[node] == -1) {
+                        sb.appendChar(cast<char>(this.sym[node]));
+                        node = this.root;
+                    }
+                }
+                return sb.toString();
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
         // Run-length encoding of a string (spec 34): each run of a repeated character becomes that character
         // followed by its decimal count, e.g. "aaabbbbc" -> "a3b4c1". decode reverses it, reading a
         // character and the digits that follow as a repeat count.
@@ -2673,6 +3061,143 @@ R"LDP3(
                     }
                 }
                 return total;
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // A minimal INI / config parser (spec 34): reads [section] headers and key=value lines (';' and '#'
+        // start comments; surrounding whitespace is trimmed) into a flat "section.key" -> value map. get
+        // returns the value or "" when absent; has reports presence.
+        public class Ini {
+            private mutable HashMap<String, String> map;
+            public constructor Ini(String text) {
+                this.map = new HashMap<String, String>() on heap;
+                mutable String section = "";
+                ArrayList<String> lines = Strings.split(text, "\n");
+                for (mutable int li = 0; li < lines.size(); li++) {
+                    String line = lines.get(li).trim();
+                    if (line.length() == 0) { continue; }
+                    char first = line.charAt(0);
+                    if (first == ';' || first == '#') { continue; }
+                    if (first == '[') {
+                        int close = line.indexOf("]");
+                        if (close > 0) { section = line.substring(1, close); }
+                    } else {
+                        int eq = line.indexOf("=");
+                        if (eq >= 0) {
+                            String key = line.substring(0, eq).trim();
+                            String val = line.substring(eq + 1, line.length()).trim();
+                            this.map.put(section.concat(".").concat(key), val);
+                        }
+                    }
+                }
+                return;
+            }
+            public method get(String section, String key) returns String {
+                String full = section.concat(".").concat(key);
+                if (this.map.containsKey(full)) { return this.map.get(full); }
+                return "";
+            }
+            public method has(String section, String key) returns boolean {
+                return this.map.containsKey(section.concat(".").concat(key));
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // RFC 4122 UUIDs (spec 34): format 16 bytes as the canonical 8-4-4-4-12 hex string, build a version-4
+        // UUID from 16 random bytes (setting the version and variant bits), or generate one deterministically
+        // from an int seed via an inline xorshift. isValid checks the canonical shape.
+        public class Uuid {
+            private static method hx(int v) returns char {
+                String d = "0123456789abcdef";
+                return d.charAt(v & 15);
+            }
+            public static method format(int[] bytes) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < 16; i++) {
+                    if (i == 4 || i == 6 || i == 8 || i == 10) { sb.appendChar('-'); }
+                    int b = bytes[i] & 255;
+                    sb.appendChar(Uuid.hx(b >> 4));
+                    sb.appendChar(Uuid.hx(b));
+                }
+                return sb.toString();
+            }
+            public static method v4(int[] randomBytes) returns String {
+                mutable int[] b = new int[16]();
+                for (mutable int i = 0; i < 16; i++) { b[i] = randomBytes[i] & 255; }
+                b[6] = (b[6] & 15) | 64;
+                b[8] = (b[8] & 63) | 128;
+                return Uuid.format(b);
+            }
+            public static method v4Seeded(int seed) returns String {
+                mutable ulong x = cast<ulong>(seed);
+                if (x == cast<ulong>(0)) { x = cast<ulong>(1); }
+                mutable int[] b = new int[16]();
+                for (mutable int i = 0; i < 16; i++) {
+                    x = x ^ (x << 13);
+                    x = x ^ (x >> 7);
+                    x = x ^ (x << 17);
+                    b[i] = cast<int>((x >> 24) & cast<ulong>(255));
+                }
+                return Uuid.v4(b);
+            }
+            public static method isValid(String s) returns boolean {
+                if (s.length() != 36) { return false; }
+                for (mutable int i = 0; i < 36; i++) {
+                    char c = s.charAt(i);
+                    if (i == 8 || i == 13 || i == 18 || i == 23) {
+                        if (c != '-') { return false; }
+                    } else {
+                        boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                        if (!hex) { return false; }
+                    }
+                }
+                return true;
+            }
+        }
+        // Semantic versioning (semver.org): parse "major.minor.patch" (an optional leading 'v' and any
+        // -prerelease/+build suffix are ignored) and compare two versions field by field. compareTo returns
+        // -1, 0 or 1.
+        public class Semver {
+            private mutable int major;
+            private mutable int minor;
+            private mutable int patch;
+            public constructor Semver(String v) {
+                mutable int i = 0;
+                if (v.length() > 0 && v.charAt(0) == 'v') { i = 1; }
+                mutable int[] parts = new int[3]();
+                mutable int pi = 0;
+                mutable int cur = 0;
+                int n = v.length();
+                while (i < n && pi < 3) {
+                    char c = v.charAt(i);
+                    if (c >= '0' && c <= '9') { cur = cur * 10 + (cast<int>(c) - cast<int>('0')); }
+                    else {
+                        if (c == '.') { parts[pi] = cur; pi = pi + 1; cur = 0; }
+                        else { i = n; }
+                    }
+                    i = i + 1;
+                }
+                if (pi < 3) { parts[pi] = cur; }
+                this.major = parts[0];
+                this.minor = parts[1];
+                this.patch = parts[2];
+            }
+            public method getMajor() returns int { return this.major; }
+            public method getMinor() returns int { return this.minor; }
+            public method getPatch() returns int { return this.patch; }
+            public method compareTo(Semver o) returns int {
+                if (this.major != o.getMajor()) { if (this.major < o.getMajor()) { return -1; } return 1; }
+                if (this.minor != o.getMinor()) { if (this.minor < o.getMinor()) { return -1; } return 1; }
+                if (this.patch != o.getPatch()) { if (this.patch < o.getPatch()) { return -1; } return 1; }
+                return 0;
+            }
+            public method toString() returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendInt(this.major).append(".").appendInt(this.minor).append(".").appendInt(this.patch);
+                return sb.toString();
             }
         }
     }

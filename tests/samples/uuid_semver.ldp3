@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Text.Uuid;
+import System.Text.Semver;
+program UuidSemver;
+
+// RFC 4122 UUIDs and semantic versions, both pure LDP3. Prints:
+//   uuid=9797c112-41d7-4d76-af35-925007fe8286 valid=1 v=4
+//   a=1.2.3 cmp_ab=-1 cmp_ac=0
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String u = Uuid.v4Seeded(123456789);
+                System.IO.Console.printf("uuid=%s valid=%d v=%c\n", u, Uuid.isValid(u), u.charAt(14));
+                mutable Semver a = new Semver("1.2.3") on heap;
+                mutable Semver b = new Semver("v1.10.0") on heap;
+                mutable Semver c = new Semver("1.2.3-beta") on heap;
+                System.IO.Console.printf("a=%s cmp_ab=%d cmp_ac=%d\n", a.toString(), a.compareTo(b), a.compareTo(c));
+                return;
+            }
+        }
+    }
+}

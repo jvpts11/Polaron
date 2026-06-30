@@ -1,0 +1,20 @@
+import System.IO.Console;
+import System.Text.Sha256;
+program Sha256Demo;
+
+// SHA-256 (FIPS 180-4) in pure LDP3 — System.Text.Sha256.digest returns the lowercase hex digest.
+// Verified against the reference vectors: "" and "abc".
+// Prints:
+//   abc=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+//   empty=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("abc=%s\n", Sha256.digest("abc"));
+                System.IO.Console.printf("empty=%s\n", Sha256.digest(""));
+                return;
+            }
+        }
+    }
+}

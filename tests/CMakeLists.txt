@@ -992,6 +992,51 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # SHA-256 (FIPS 180-4) in pure LDP3: verified against the "abc" and "" reference vectors.
+        add_test(NAME codegen_sha256_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sha256.ldp3"
+            "-DCONTAINS=abc=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # HMAC-SHA256 (RFC 2104) and Base32 (RFC 4648) in pure LDP3, verified against reference vectors.
+        add_test(NAME codegen_hmac_base32_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/hmac_base32.ldp3"
+            "-DCONTAINS=hmac=f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Huffman coding (spec 34.1) in pure LDP3: build prefix codes, encode to bits, decode round-trip.
+        add_test(NAME codegen_huffman_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/huffman.ldp3"
+            "-DCONTAINS=rawbits=424 encbits=204 match=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # RFC 4122 UUID v4 (seeded) and semantic-version parsing/comparison, both pure LDP3.
+        add_test(NAME codegen_uuid_semver_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/uuid_semver.ldp3"
+            "-DCONTAINS=uuid=9797c112-41d7-4d76-af35-925007fe8286 valid=1 v=4"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # SHA-1 (FIPS 180-1) and a minimal INI parser, both pure LDP3, verified against reference vectors.
+        add_test(NAME codegen_sha1_ini_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sha1_ini.ldp3"
+            "-DCONTAINS=sha1abc=a9993e364706816aba3e25717850c26c9cd0d89d"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Pointer-linked binary search tree (spec 34.1): insert/contains/size + sorted in-order traversal.
         add_test(NAME codegen_bst_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

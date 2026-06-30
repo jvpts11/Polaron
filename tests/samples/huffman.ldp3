@@ -1,0 +1,25 @@
+import System.IO.Console;
+import System.Text.Huffman;
+program HuffmanCompression;
+
+// Huffman coding (spec 34.1) in pure LDP3: build a prefix-code tree from a string, encode to a bit string,
+// and decode back. Prints (53 chars * 8 = 424 raw bits, compressed to 204, exact round-trip):
+//   rawbits=424 encbits=204 match=1
+//   round=this is an example of a huffman tree compression test
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String text = "this is an example of a huffman tree compression test";
+                mutable Huffman h = new Huffman(text) on heap;
+                String bits = h.encode(text);
+                String back = h.decode(bits);
+                int rawBits = text.length() * 8;
+                boolean ok = back.equals(text);
+                System.IO.Console.printf("rawbits=%d encbits=%d match=%d\n", rawBits, bits.length(), ok);
+                System.IO.Console.printf("round=%s\n", back);
+                return;
+            }
+        }
+    }
+}
