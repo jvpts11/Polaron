@@ -1847,6 +1847,131 @@ R"LDP3(
                 return sb.toString();
             }
         }
+        // Integer math helpers (spec 34.6): gcd/lcm (Euclid), factorial, primality by trial division,
+        // integer power and integer square root. All operate on plain ints, no floating point. (Named
+        // IntMath, not MathX, to avoid shadowing a user class.)
+        public class IntMath {
+            public static method gcd(int a, int b) returns int {
+                mutable int x = a;
+                if (x < 0) { x = 0 - x; }
+                mutable int y = b;
+                if (y < 0) { y = 0 - y; }
+                while (y != 0) {
+                    int t = y;
+                    y = x % y;
+                    x = t;
+                }
+                return x;
+            }
+            public static method lcm(int a, int b) returns int {
+                if (a == 0 || b == 0) { return 0; }
+                int g = IntMath.gcd(a, b);
+                int r = (a / g) * b;
+                if (r < 0) { return 0 - r; }
+                return r;
+            }
+            public static method factorial(int n) returns int {
+                mutable int r = 1;
+                for (mutable int i = 2; i <= n; i++) { r = r * i; }
+                return r;
+            }
+            public static method isPrime(int n) returns boolean {
+                if (n < 2) { return false; }
+                mutable int i = 2;
+                while (i * i <= n) {
+                    if (n % i == 0) { return false; }
+                    i = i + 1;
+                }
+                return true;
+            }
+            public static method ipow(int base, int exp) returns int {
+                mutable int r = 1;
+                for (mutable int i = 0; i < exp; i++) { r = r * base; }
+                return r;
+            }
+            public static method isqrt(int n) returns int {
+                if (n < 0) { return 0; }
+                mutable int r = 0;
+                while ((r + 1) * (r + 1) <= n) { r = r + 1; }
+                return r;
+            }
+        }
+        // An exact fraction kept in lowest terms with a positive denominator (spec 34.6). The constructor
+        // divides out the gcd and normalizes the sign; arithmetic returns new reduced Rationals.
+        public class Rational {
+            private mutable int num;
+            private mutable int den;
+            public constructor Rational(int n, int d) {
+                mutable int g = IntMath.gcd(n, d);
+                if (g == 0) { g = 1; }
+                mutable int sign = 1;
+                if (d < 0) { sign = 0 - 1; }
+                this.num = sign * n / g;
+                this.den = sign * d / g;
+            }
+            public method numerator() returns int { return this.num; }
+            public method denominator() returns int { return this.den; }
+            public method add(Rational o) returns Rational {
+                return new Rational(this.num * o.denominator() + o.numerator() * this.den,
+                                    this.den * o.denominator()) on heap;
+            }
+            public method sub(Rational o) returns Rational {
+                return new Rational(this.num * o.denominator() - o.numerator() * this.den,
+                                    this.den * o.denominator()) on heap;
+            }
+            public method mul(Rational o) returns Rational {
+                return new Rational(this.num * o.numerator(), this.den * o.denominator()) on heap;
+            }
+            public method toDouble() returns double {
+                return cast<double>(this.num) / cast<double>(this.den);
+            }
+        }
+        // A complex number with double real and imaginary parts (spec 34.6): add/sub/mul and conjugate.
+        public class Complex {
+            private mutable double re;
+            private mutable double im;
+            public constructor Complex(double re, double im) {
+                this.re = re;
+                this.im = im;
+            }
+            public method real() returns double { return this.re; }
+            public method imag() returns double { return this.im; }
+            public method add(Complex o) returns Complex {
+                return new Complex(this.re + o.real(), this.im + o.imag()) on heap;
+            }
+            public method sub(Complex o) returns Complex {
+                return new Complex(this.re - o.real(), this.im - o.imag()) on heap;
+            }
+            public method mul(Complex o) returns Complex {
+                return new Complex(this.re * o.real() - this.im * o.imag(),
+                                   this.re * o.imag() + this.im * o.real()) on heap;
+            }
+            public method conjugate() returns Complex {
+                return new Complex(this.re, 0.0 - this.im) on heap;
+            }
+        }
+        // Summary statistics over an int array (spec 34.6): sum, integer mean, minimum and maximum.
+        public class Stats {
+            public static method sum(int[] xs) returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < xs.length(); i++) { s = s + xs[i]; }
+                return s;
+            }
+            public static method mean(int[] xs) returns int {
+                if (xs.length() == 0) { return 0; }
+                return Stats.sum(xs) / xs.length();
+            }
+            public static method min(int[] xs) returns int {
+                mutable int m = xs[0];
+                for (mutable int i = 1; i < xs.length(); i++) { if (xs[i] < m) { m = xs[i]; } }
+                return m;
+            }
+            public static method max(int[] xs) returns int {
+                mutable int m = xs[0];
+                for (mutable int i = 1; i < xs.length(); i++) { if (xs[i] > m) { m = xs[i]; } }
+                return m;
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)

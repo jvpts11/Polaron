@@ -1,0 +1,34 @@
+import System.IO.Console;
+import System.Math.IntMath;
+import System.Math.Rational;
+import System.Math.Complex;
+import System.Math.Stats;
+program MathKit;
+
+// Math kit (spec 34.6): IntMath integer helpers, exact Rational, Complex numbers, array Stats.
+// Prints: gcd=6 lcm=12 fact=120 p7=1 p8=0 isqrt=7 ipow=1024 / rat=5/6 cx=-5+10i sum=66 mean=13 min=4 max=23.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("gcd=%d lcm=%d fact=%d p7=%d p8=%d isqrt=%d ipow=%d\n",
+                    IntMath.gcd(12, 18), IntMath.lcm(4, 6), IntMath.factorial(5),
+                    IntMath.isPrime(7), IntMath.isPrime(8), IntMath.isqrt(50), IntMath.ipow(2, 10));
+                Rational r = new Rational(1, 2) on heap;
+                Rational s = r.add(new Rational(1, 3) on heap);
+                Complex p = new Complex(1.0, 2.0) on heap;
+                Complex q = p.mul(new Complex(3.0, 4.0) on heap);
+                mutable int[] xs = new int[5]();
+                xs[0] = 4;
+                xs[1] = 8;
+                xs[2] = 15;
+                xs[3] = 16;
+                xs[4] = 23;
+                System.IO.Console.printf("rat=%d/%d cx=%d+%di sum=%d mean=%d min=%d max=%d\n",
+                    s.numerator(), s.denominator(), cast<int>(q.real()), cast<int>(q.imag()),
+                    Stats.sum(xs), Stats.mean(xs), Stats.min(xs), Stats.max(xs));
+                return;
+            }
+        }
+    }
+}

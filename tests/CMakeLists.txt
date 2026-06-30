@@ -794,6 +794,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Math kit (spec 34.6): MathX integer helpers, Rational, Complex, Stats.
+        add_test(NAME codegen_math_kit_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/math_kit.ldp3"
+            "-DCONTAINS=gcd=6 lcm=12 fact=120 p7=1 p8=0 isqrt=7 ipow=1024 rat=5/6 cx=-5+10i sum=66 mean=13 min=4 max=23"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # More collections (spec 34.1): Multiset, RingBuffer, LinkedHashMap.
         add_test(NAME codegen_collection_more_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
