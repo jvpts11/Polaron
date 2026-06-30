@@ -803,6 +803,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Edit distance + determinant + stats (spec 4/34.6): Levenshtein, Bareiss det, sum/range/mode.
+        add_test(NAME codegen_textdist_det_stats_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/textdist_det_stats.ldp3"
+            "-DCONTAINS=lev=3 det=-2 sum=14 range=2 mode=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Templating + CSV (spec 34): named placeholder substitution and quoted-field CSV parsing.
         add_test(NAME codegen_template_csv_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

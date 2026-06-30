@@ -2174,6 +2174,35 @@ R"LDP3(
                 return out;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // String similarity (spec 4): the Levenshtein edit distance is the fewest single-character inserts,
+        // deletes, or substitutions to turn one string into another. Computed with two rolling DP rows.
+        public class TextDistance {
+            public static method levenshtein(String a, String b) returns int {
+                int n = a.length();
+                int m = b.length();
+                mutable int[] prev = new int[m + 1]();
+                mutable int[] cur = new int[m + 1]();
+                for (mutable int j = 0; j <= m; j++) { prev[j] = j; }
+                for (mutable int i = 1; i <= n; i++) {
+                    cur[0] = i;
+                    for (mutable int j = 1; j <= m; j++) {
+                        mutable int cost = 1;
+                        if (a.charAt(i - 1) == b.charAt(j - 1)) { cost = 0; }
+                        mutable int best = prev[j] + 1;
+                        if (cur[j - 1] + 1 < best) { best = cur[j - 1] + 1; }
+                        if (prev[j - 1] + cost < best) { best = prev[j - 1] + cost; }
+                        cur[j] = best;
+                    }
+                    mutable int[] t = prev;
+                    prev = cur;
+                    cur = t;
+                }
+                return prev[m];
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
@@ -2764,6 +2793,34 @@ R"LDP3(
                 }
                 return c[n / 2];
             }
+            // Sum of all values (spec 34.6).
+            public static method sum(int[] xs) returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < xs.length(); i++) { s = s + xs[i]; }
+                return s;
+            }
+            // Spread between the largest and smallest values.
+            public static method range(int[] xs) returns int {
+                if (xs.length() == 0) { return 0; }
+                return Stats.max(xs) - Stats.min(xs);
+            }
+            // The most frequently occurring value; ties resolve to the first one reaching the top count.
+            public static method mode(int[] xs) returns int {
+                if (xs.length() == 0) { return 0; }
+                mutable int best = xs[0];
+                mutable int bestCount = 0;
+                for (mutable int i = 0; i < xs.length(); i++) {
+                    mutable int c = 0;
+                    for (mutable int j = 0; j < xs.length(); j++) {
+                        if (xs[j] == xs[i]) { c = c + 1; }
+                    }
+                    if (c > bestCount) {
+                        bestCount = c;
+                        best = xs[i];
+                    }
+                }
+                return best;
+            }
         }
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Math namespace.
@@ -2834,6 +2891,37 @@ R"LDP3(
                     for (mutable int j = 0; j < this.ncols; j++) { m.set(i, j, this.get(i, j) + o.get(i, j)); }
                 }
                 return m;
+            }
+            // Exact integer determinant via the Bareiss fraction-free elimination (spec 34.6): every division
+            // is exact, so it stays in integers. Returns 0 for a singular matrix; assumes a square matrix.
+            public method determinant() returns int {
+                int n = this.nrows;
+                mutable int[] m = new int[n * n]();
+                for (mutable int i = 0; i < n * n; i++) { m[i] = this.cells[i]; }
+                mutable int prev = 1;
+                mutable int sign = 1;
+                for (mutable int k = 0; k < n - 1; k++) {
+                    if (m[k * n + k] == 0) {
+                        mutable int sw = 0 - 1;
+                        for (mutable int r = k + 1; r < n; r++) {
+                            if (m[r * n + k] != 0) { sw = r; }
+                        }
+                        if (sw < 0) { return 0; }
+                        for (mutable int c = 0; c < n; c++) {
+                            int t = m[k * n + c];
+                            m[k * n + c] = m[sw * n + c];
+                            m[sw * n + c] = t;
+                        }
+                        sign = 0 - sign;
+                    }
+                    for (mutable int i = k + 1; i < n; i++) {
+                        for (mutable int j = k + 1; j < n; j++) {
+                            m[i * n + j] = (m[i * n + j] * m[k * n + k] - m[i * n + k] * m[k * n + j]) / prev;
+                        }
+                    }
+                    prev = m[k * n + k];
+                }
+                return sign * m[(n - 1) * n + (n - 1)];
             }
         }
 )LDP3"
