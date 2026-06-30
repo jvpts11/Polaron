@@ -1,0 +1,69 @@
+import System.IO.Console;
+import System.Ecs.World;
+import System.Ecs.ComponentStore;
+program EcsWorld;
+
+// A data-oriented entity-component-system (spec 34): World hands out entity ids and recycles destroyed ones,
+// ComponentStore keeps each component in a sparse set. A movement "system" advances every entity that has
+// both a Position and a Velocity. Position/Velocity are plain component classes defined here.
+// Prints: a=1,2 c=4,4 size=3 bDead=0 dReuse=1.
+public bundle main {
+    public namespace app {
+        public class Position {
+            private mutable int x;
+            private mutable int y;
+            public constructor Position(int x, int y) {
+                this.x = x;
+                this.y = y;
+            }
+            public method getX() returns int { return this.x; }
+            public method getY() returns int { return this.y; }
+            public method moved(int dx, int dy) returns Position {
+                return new Position(this.x + dx, this.y + dy) on heap;
+            }
+        }
+        public class Velocity {
+            private mutable int dx;
+            private mutable int dy;
+            public constructor Velocity(int dx, int dy) {
+                this.dx = dx;
+                this.dy = dy;
+            }
+            public method getDx() returns int { return this.dx; }
+            public method getDy() returns int { return this.dy; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable World w = new World() on heap;
+                mutable ComponentStore<Position> pos = new ComponentStore<Position>(64) on heap;
+                mutable ComponentStore<Velocity> vel = new ComponentStore<Velocity>(64) on heap;
+                int a = w.createEntity();
+                int b = w.createEntity();
+                int c = w.createEntity();
+                pos.add(a, new Position(0, 0) on heap);
+                pos.add(b, new Position(10, 10) on heap);
+                pos.add(c, new Position(5, 5) on heap);
+                vel.add(a, new Velocity(1, 2) on heap);
+                vel.add(c, new Velocity(0 - 1, 0 - 1) on heap);
+                for (mutable int i = 0; i < pos.size(); i++) {
+                    int e = pos.entityAt(i);
+                    if (vel.has(e)) {
+                        Position p = pos.get(e);
+                        Velocity v = vel.get(e);
+                        pos.set(e, p.moved(v.getDx(), v.getDy()));
+                    }
+                }
+                w.destroyEntity(b);
+                boolean bDead = w.isAlive(b);
+                int d = w.createEntity();
+                mutable int reuse = 0;
+                if (d == b) { reuse = 1; }
+                Position pa = pos.get(a);
+                Position pc = pos.get(c);
+                System.IO.Console.printf("a=%d,%d c=%d,%d size=%d bDead=%d dReuse=%d\n",
+                    pa.getX(), pa.getY(), pc.getX(), pc.getY(), w.size(), bDead, reuse);
+                return;
+            }
+        }
+    }
+}

@@ -803,6 +803,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Entity-component-system (spec 34): World entity ids + recycling, ComponentStore sparse set, system.
+        add_test(NAME codegen_ecs_world_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ecs_world.ldp3"
+            "-DCONTAINS=a=1,2 c=4,4 size=3 bDead=0 dReuse=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Char utils + Roman numerals + percentile (spec 4/34.6): case/digit, 2024<->Roman, percentiles.
         add_test(NAME codegen_chars_roman_pct_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
