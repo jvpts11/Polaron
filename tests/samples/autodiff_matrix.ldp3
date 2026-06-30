@@ -1,0 +1,33 @@
+import System.IO.Console;
+import System.Math.Dual;
+import System.Math.Matrix;
+program AutodiffMatrix;
+
+// Forward-mode autodiff and dense matrices (spec 34.6): evaluating x*x*x + x with a Dual variable at x=3
+// yields both the value (30) and the exact derivative 3x^2+1 = 28. Matrix does multiply and transpose.
+// Prints: fval=30 fder=28 c00=19 c11=50 t01=3.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dual x = Dual.variable(3.0);
+                Dual f = x.mul(x).mul(x).add(x);
+                mutable Matrix a = new Matrix(2, 2) on heap;
+                a.set(0, 0, 1);
+                a.set(0, 1, 2);
+                a.set(1, 0, 3);
+                a.set(1, 1, 4);
+                mutable Matrix b = new Matrix(2, 2) on heap;
+                b.set(0, 0, 5);
+                b.set(0, 1, 6);
+                b.set(1, 0, 7);
+                b.set(1, 1, 8);
+                Matrix c = a.multiply(b);
+                Matrix t = a.transpose();
+                System.IO.Console.printf("fval=%d fder=%d c00=%d c11=%d t01=%d\n",
+                    cast<int>(f.value()), cast<int>(f.deriv()), c.get(0, 0), c.get(1, 1), t.get(0, 1));
+                return;
+            }
+        }
+    }
+}

@@ -2302,6 +2302,77 @@ R"LDP3(
                 return c[n / 2];
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Math namespace.
+R"LDP3(
+        // Forward-mode automatic differentiation via dual numbers (spec 34.6): each value carries its
+        // derivative alongside it, and the arithmetic propagates the chain rule. Evaluate a function with
+        // variable(x) and the result's deriv() is the exact derivative at x; constant(c) has derivative 0.
+        public class Dual {
+            private mutable double v;
+            private mutable double d;
+            public constructor Dual(double value, double deriv) {
+                this.v = value;
+                this.d = deriv;
+            }
+            public static method variable(double x) returns Dual { return new Dual(x, 1.0) on heap; }
+            public static method constant(double x) returns Dual { return new Dual(x, 0.0) on heap; }
+            public method value() returns double { return this.v; }
+            public method deriv() returns double { return this.d; }
+            public method add(Dual o) returns Dual {
+                return new Dual(this.v + o.value(), this.d + o.deriv()) on heap;
+            }
+            public method sub(Dual o) returns Dual {
+                return new Dual(this.v - o.value(), this.d - o.deriv()) on heap;
+            }
+            public method mul(Dual o) returns Dual {
+                return new Dual(this.v * o.value(), this.v * o.deriv() + this.d * o.value()) on heap;
+            }
+        }
+        // A dense matrix of integers stored row-major in a flat array (spec 34.6): set/get by (row, col),
+        // matrix multiply, transpose, and elementwise add. No per-element objects, just one int array.
+        public class Matrix {
+            private mutable int[] cells;
+            private mutable int nrows;
+            private mutable int ncols;
+            public constructor Matrix(int rows, int cols) {
+                this.nrows = rows;
+                this.ncols = cols;
+                this.cells = new int[rows * cols]();
+            }
+            public method rows() returns int { return this.nrows; }
+            public method cols() returns int { return this.ncols; }
+            public method set(int r, int c, int value) returns void {
+                this.cells[r * this.ncols + c] = value;
+                return;
+            }
+            public method get(int r, int c) returns int { return this.cells[r * this.ncols + c]; }
+            public method multiply(Matrix o) returns Matrix {
+                mutable Matrix m = new Matrix(this.nrows, o.cols()) on heap;
+                for (mutable int i = 0; i < this.nrows; i++) {
+                    for (mutable int j = 0; j < o.cols(); j++) {
+                        mutable int s = 0;
+                        for (mutable int k = 0; k < this.ncols; k++) { s = s + this.get(i, k) * o.get(k, j); }
+                        m.set(i, j, s);
+                    }
+                }
+                return m;
+            }
+            public method transpose() returns Matrix {
+                mutable Matrix m = new Matrix(this.ncols, this.nrows) on heap;
+                for (mutable int i = 0; i < this.nrows; i++) {
+                    for (mutable int j = 0; j < this.ncols; j++) { m.set(j, i, this.get(i, j)); }
+                }
+                return m;
+            }
+            public method add(Matrix o) returns Matrix {
+                mutable Matrix m = new Matrix(this.nrows, this.ncols) on heap;
+                for (mutable int i = 0; i < this.nrows; i++) {
+                    for (mutable int j = 0; j < this.ncols; j++) { m.set(i, j, this.get(i, j) + o.get(i, j)); }
+                }
+                return m;
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)

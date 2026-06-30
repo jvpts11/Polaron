@@ -803,6 +803,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Autodiff + matrices (spec 34.6): Dual forward-mode derivatives, Matrix multiply/transpose.
+        add_test(NAME codegen_autodiff_matrix_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/autodiff_matrix.ldp3"
+            "-DCONTAINS=fval=30 fder=28 c00=19 c11=50 t01=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # More math (spec 34.6): IntMath combinatorics (nCr/nPr), Stats variance/stddev/median.
         add_test(NAME codegen_math_extras_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
