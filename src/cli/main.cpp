@@ -1191,6 +1191,10 @@ R"LDP3(
                 return text.substring(0, 1).toUpper().concat(text.substring(1, text.length()));
             }
         }
+)LDP3"
+// Split here only to stay under the MSVC per-string-literal size limit; the two raw chunks concatenate
+// into one continuous System.Text namespace.
+R"LDP3(
         // A small backtracking regular-expression matcher (spec 4): literals, . (any), character classes
         // [abc]/[a-z]/[^...], the quantifiers * + ?, and the anchors ^ and $. search reports whether the
         // pattern occurs in the text; wrap a pattern in ^ and $ to require a full match. Pure LDP3 over
@@ -1276,6 +1280,56 @@ R"LDP3(
                     if (Regex.matchHere(pat, 0, text, start)) { return true; }
                 }
                 return false;
+            }
+        }
+        // UTF-8 decoding (spec 4): String.charAt and String.length are byte-level, so Utf8 reads whole
+        // Unicode codepoints out of the byte sequence -- length counts characters, codepointAt decodes the
+        // one at a byte offset, and codepoints returns them all. A lead byte's high bits give the width.
+        public class Utf8 {
+            private static method seqLen(int lead) returns int {
+                if (lead < 128) { return 1; }     // 0xxxxxxx (ASCII)
+                if (lead >= 240) { return 4; }    // 11110xxx
+                if (lead >= 224) { return 3; }    // 1110xxxx
+                if (lead >= 192) { return 2; }    // 110xxxxx
+                return 1;                          // a stray continuation byte: step over it
+            }
+            // The number of bytes occupied by the character at byte offset i (advance by this).
+            public static method widthAt(String s, int i) returns int {
+                return Utf8.seqLen(cast<int>(s.charAt(i)));
+            }
+            // The Unicode codepoint of the character at byte offset i.
+            public static method codepointAt(String s, int i) returns int {
+                mutable int lead = cast<int>(s.charAt(i));
+                int n = Utf8.seqLen(lead);
+                if (n == 1) { return lead; }
+                mutable int cp = 0;
+                if (n == 2) { cp = lead - 192; }
+                if (n == 3) { cp = lead - 224; }
+                if (n == 4) { cp = lead - 240; }
+                for (mutable int k = 1; k < n; k++) {
+                    cp = cp * 64 + (cast<int>(s.charAt(i + k)) - 128);
+                }
+                return cp;
+            }
+            // The number of Unicode characters (codepoints), not bytes.
+            public static method length(String s) returns int {
+                mutable int count = 0;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    i = i + Utf8.seqLen(cast<int>(s.charAt(i)));
+                    count = count + 1;
+                }
+                return count;
+            }
+            // Every codepoint in order.
+            public static method codepoints(String s) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    out.add(Utf8.codepointAt(s, i));
+                    i = i + Utf8.seqLen(cast<int>(s.charAt(i)));
+                }
+                return out;
             }
         }
     }

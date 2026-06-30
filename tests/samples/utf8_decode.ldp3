@@ -1,0 +1,22 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Text.Utf8;
+program Utf8Decode;
+
+// UTF-8 decoding (spec 4): String.length is bytes, Utf8.length counts characters; codepointAt decodes the
+// character at a byte offset and codepoints returns them all. "cafe<acute>" plus the euro sign is 8 bytes
+// but 5 characters. Prints: bytes=8 chars=5 cp3=233 width3=2 cps_n=5 cps_last=8364.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String s = "café€";
+                ArrayList<int> cps = Utf8.codepoints(s);
+                System.IO.Console.printf("bytes=%d chars=%d cp3=%d width3=%d cps_n=%d cps_last=%d\n",
+                    s.length(), Utf8.length(s), Utf8.codepointAt(s, 3), Utf8.widthAt(s, 3),
+                    cps.size(), cps.get(4));
+                return;
+            }
+        }
+    }
+}
