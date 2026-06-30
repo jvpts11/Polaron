@@ -188,6 +188,35 @@ public bundle std {
                 return;
             }
         }
+        // Path-string manipulation (spec 34.4): join segments, and pull apart a path into its directory,
+        // final component, and extension. Pure string work over "/" -- it does not touch the filesystem.
+        public class Paths {
+            public static method join(String base, String name) returns String {
+                if (base.length() == 0) { return name; }
+                if (base.endsWith("/")) { return base.concat(name); }
+                return base.concat("/").concat(name);
+            }
+            public static method basename(String path) returns String {
+                mutable ArrayList<String> parts = Strings.split(path, "/");
+                return parts.get(parts.size() - 1);
+            }
+            public static method dirname(String path) returns String {
+                mutable ArrayList<String> parts = Strings.split(path, "/");
+                if (parts.size() <= 1) { return ""; }
+                mutable String result = "";
+                for (mutable int i = 0; i < parts.size() - 1; i++) {
+                    if (i > 0) { result = result.concat("/"); }
+                    result = result.concat(parts.get(i));
+                }
+                return result;
+            }
+            public static method extension(String path) returns String {
+                String base = Paths.basename(path);
+                mutable ArrayList<String> parts = Strings.split(base, ".");
+                if (parts.size() < 2) { return ""; }
+                return parts.get(parts.size() - 1);
+            }
+        }
     }
     public namespace System.Math {
         // Math (spec 34.6) is a compiler builtin (its functions lower to LLVM intrinsics), not a
