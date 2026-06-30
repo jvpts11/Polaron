@@ -794,7 +794,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # Math kit (spec 34.6): MathX integer helpers, Rational, Complex, Stats.
+        # Hex/Base64 encoding (spec 4): encode bytes to text and decode back, round-tripping.
+        add_test(NAME codegen_encoding_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/encoding_hex_base64.ldp3"
+            "-DCONTAINS=hex=414243 back=ABC b64=TWFu dec=Man decMa=Ma decM=M"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Math kit (spec 34.6): IntMath integer helpers, Rational, Complex, Stats.
         add_test(NAME codegen_math_kit_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"

@@ -1502,6 +1502,82 @@ R"LDP3(
                 return line;
             }
         }
+        // Hexadecimal encoding (spec 4): each byte of a string becomes two lowercase hex digits, and back.
+        public class Hex {
+            private static method hexVal(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - cast<int>('0'); }
+                if (c >= 'a' && c <= 'f') { return cast<int>(c) - cast<int>('a') + 10; }
+                if (c >= 'A' && c <= 'F') { return cast<int>(c) - cast<int>('A') + 10; }
+                return 0;
+            }
+            public static method encode(String data) returns String {
+                String digits = "0123456789abcdef";
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < data.length(); i++) {
+                    int b = cast<int>(data.charAt(i));
+                    sb.appendChar(digits.charAt(b / 16));
+                    sb.appendChar(digits.charAt(b % 16));
+                }
+                return sb.toString();
+            }
+            public static method decode(String hex) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i + 1 < hex.length(); i = i + 2) {
+                    int hi = Hex.hexVal(hex.charAt(i));
+                    int lo = Hex.hexVal(hex.charAt(i + 1));
+                    sb.appendChar(cast<char>(hi * 16 + lo));
+                }
+                return sb.toString();
+            }
+        }
+        // Base64 encoding (spec 4): three bytes become four characters of the standard alphabet, with =
+        // padding on the final group; decode reverses it. Bytes are read from and written to String storage.
+        public class Base64 {
+            private static method val(char c) returns int {
+                if (c >= 'A' && c <= 'Z') { return cast<int>(c) - cast<int>('A'); }
+                if (c >= 'a' && c <= 'z') { return cast<int>(c) - cast<int>('a') + 26; }
+                if (c >= '0' && c <= '9') { return cast<int>(c) - cast<int>('0') + 52; }
+                if (c == '+') { return 62; }
+                if (c == '/') { return 63; }
+                return 0;
+            }
+            public static method encode(String data) returns String {
+                String alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                int n = data.length();
+                while (i < n) {
+                    int b0 = cast<int>(data.charAt(i));
+                    mutable int b1 = 0;
+                    boolean has1 = i + 1 < n;
+                    if (has1) { b1 = cast<int>(data.charAt(i + 1)); }
+                    mutable int b2 = 0;
+                    boolean has2 = i + 2 < n;
+                    if (has2) { b2 = cast<int>(data.charAt(i + 2)); }
+                    int triple = b0 * 65536 + b1 * 256 + b2;
+                    sb.appendChar(alpha.charAt((triple / 262144) % 64));
+                    sb.appendChar(alpha.charAt((triple / 4096) % 64));
+                    if (has1) { sb.appendChar(alpha.charAt((triple / 64) % 64)); } else { sb.appendChar('='); }
+                    if (has2) { sb.appendChar(alpha.charAt(triple % 64)); } else { sb.appendChar('='); }
+                    i = i + 3;
+                }
+                return sb.toString();
+            }
+            public static method decode(String data) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                int n = data.length();
+                while (i + 3 < n) {
+                    int triple = Base64.val(data.charAt(i)) * 262144 + Base64.val(data.charAt(i + 1)) * 4096
+                               + Base64.val(data.charAt(i + 2)) * 64 + Base64.val(data.charAt(i + 3));
+                    sb.appendChar(cast<char>((triple / 65536) % 256));
+                    if (data.charAt(i + 2) != '=') { sb.appendChar(cast<char>((triple / 256) % 256)); }
+                    if (data.charAt(i + 3) != '=') { sb.appendChar(cast<char>(triple % 256)); }
+                    i = i + 4;
+                }
+                return sb.toString();
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so

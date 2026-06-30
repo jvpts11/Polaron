@@ -1,0 +1,20 @@
+import System.IO.Console;
+import System.Text.Hex;
+import System.Text.Base64;
+program EncodingHexBase64;
+
+// Hex and Base64 encoding (spec 4): encode bytes to text and decode back, round-tripping.
+// Prints: hex=414243 back=ABC b64=TWFu dec=Man decMa=Ma decM=M.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String h = Hex.encode("ABC");
+                String e = Base64.encode("Man");
+                System.IO.Console.printf("hex=%s back=%s b64=%s dec=%s decMa=%s decM=%s\n",
+                    h, Hex.decode(h), e, Base64.decode(e), Base64.decode("TWE="), Base64.decode("TQ=="));
+                return;
+            }
+        }
+    }
+}
