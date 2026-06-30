@@ -1,0 +1,26 @@
+import System.IO.Console;
+import System.Net.Http;
+import System.Net.HttpResponse;
+program HttpParse;
+
+// HTTP client over Socket (spec 34): request building and response parsing (the pure parts; Http.get does
+// the live socket round-trip). Parses a canned response and checks a built GET request.
+// Prints: status=200 body=hello ctype=text/plain reqOk=1 hostOk=1.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello";
+                HttpResponse r = new HttpResponse(raw) on heap;
+                String req = Http.buildRequest("GET", "example.com", "/index");
+                mutable int reqOk = 0;
+                if (req.indexOf("GET /index HTTP/1.1") >= 0) { reqOk = 1; }
+                mutable int hostOk = 0;
+                if (req.indexOf("Host: example.com") >= 0) { hostOk = 1; }
+                System.IO.Console.printf("status=%d body=%s ctype=%s reqOk=%d hostOk=%d\n",
+                    r.status(), r.body(), r.header("Content-Type"), reqOk, hostOk);
+                return;
+            }
+        }
+    }
+}

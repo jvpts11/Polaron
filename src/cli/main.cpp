@@ -3477,6 +3477,68 @@ R"LDP3(
             public method receive(int max) returns String { return Net.recv(this.handle, max); }
             public method close() returns void { Net.close(this.handle); }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Net namespace.
+R"LDP3(
+        // A parsed HTTP response (spec 34): the raw text is kept and queried lazily. status reads the code
+        // from the start line, header returns a field's value, and body is everything after the blank line.
+        public class HttpResponse {
+            private mutable String raw;
+            public constructor HttpResponse(String raw) { this.raw = raw; }
+            public method raw() returns String { return this.raw; }
+            public method status() returns int {
+                int sp = this.raw.indexOf(" ");
+                if (sp < 0) { return 0; }
+                mutable int n = 0;
+                mutable int i = sp + 1;
+                while (i < this.raw.length() && this.raw.charAt(i) >= '0' && this.raw.charAt(i) <= '9') {
+                    n = n * 10 + (cast<int>(this.raw.charAt(i)) - cast<int>('0'));
+                    i = i + 1;
+                }
+                return n;
+            }
+            public method body() returns String {
+                int idx = this.raw.indexOf("\r\n\r\n");
+                if (idx < 0) { return ""; }
+                return this.raw.substring(idx + 4, this.raw.length());
+            }
+            public method header(String name) returns String {
+                String key = name.concat(": ");
+                int idx = this.raw.indexOf(key);
+                if (idx < 0) { return ""; }
+                int start = idx + key.length();
+                mutable int end = start;
+                while (end < this.raw.length() && this.raw.charAt(end) != '\r') { end = end + 1; }
+                return this.raw.substring(start, end);
+            }
+        }
+        // A minimal HTTP/1.1 client over Socket (spec 34). buildRequest formats a request line plus Host and
+        // Connection: close headers; get opens a socket, sends a GET, drains the reply, and parses it. The
+        // request building and response parsing are pure; get performs the network round-trip.
+        public class Http {
+            public static method buildRequest(String verb, String host, String path) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.append(verb);
+                sb.append(" ");
+                sb.append(path);
+                sb.append(" HTTP/1.1\r\nHost: ");
+                sb.append(host);
+                sb.append("\r\nConnection: close\r\n\r\n");
+                return sb.toString();
+            }
+            public static method get(String host, int port, String path) returns HttpResponse {
+                mutable Socket s = new Socket(host, port) on heap;
+                s.send(Http.buildRequest("GET", host, path));
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable boolean more = true;
+                while (more) {
+                    String chunk = s.receive(4096);
+                    if (chunk.length() == 0) { more = false; } else { sb.append(chunk); }
+                }
+                s.close();
+                return new HttpResponse(sb.toString()) on heap;
+            }
+        }
     }
 }
 )LDP3";
