@@ -1031,6 +1031,42 @@ R"LDP3(
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
         }
+        // A compact set of bit flags packed into 32-bit words (spec 34.1): set/clear/flip/get a bit by
+        // index, count the ones. Cheaper than a HashSet<int> for dense indices in a known range.
+        public class Bitset {
+            private mutable int[] words;
+            private mutable int nbits;
+            public constructor Bitset(int size) {
+                this.nbits = size;
+                this.words = new int[(size + 31) / 32]();
+            }
+            public method set(int i) returns void {
+                this.words[i / 32] = this.words[i / 32] | (1 << (i % 32));
+                return;
+            }
+            public method clear(int i) returns void {
+                this.words[i / 32] = this.words[i / 32] & (~(1 << (i % 32)));
+                return;
+            }
+            public method flip(int i) returns void {
+                this.words[i / 32] = this.words[i / 32] ^ (1 << (i % 32));
+                return;
+            }
+            public method get(int i) returns boolean {
+                return (this.words[i / 32] & (1 << (i % 32))) != 0;
+            }
+            public method count() returns int {
+                mutable int total = 0;
+                for (mutable int w = 0; w < this.words.length(); w++) {
+                    mutable int x = this.words[w];
+                    for (mutable int b = 0; b < 32; b++) {
+                        if ((x & (1 << b)) != 0) { total = total + 1; }
+                    }
+                }
+                return total;
+            }
+            public method size() returns int { return this.nbits; }
+        }
     }
 )LDP3"
 // (split 2: another ~16KB literal boundary.)

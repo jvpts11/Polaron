@@ -1,0 +1,25 @@
+import System.IO.Console;
+import System.Collections.Bitset;
+program BitsetOps;
+
+// Bitset (spec 34.1): bit flags packed into 32-bit words, set/clear/flip/get by index and count the ones.
+// Prints: g3=1 g4=0 g99=1 count=3 / g40=0 g4=1 count=3 size=100.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Bitset bs = new Bitset(100) on heap;
+                bs.set(3);
+                bs.set(40);
+                bs.set(99);
+                System.IO.Console.printf("g3=%d g4=%d g99=%d count=%d\n",
+                    bs.get(3), bs.get(4), bs.get(99), bs.count());
+                bs.clear(40);
+                bs.flip(4);
+                System.IO.Console.printf("g40=%d g4=%d count=%d size=%d\n",
+                    bs.get(40), bs.get(4), bs.count(), bs.size());
+                return;
+            }
+        }
+    }
+}

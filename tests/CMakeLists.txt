@@ -794,6 +794,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Bitset (spec 34.1): packed bit flags with set/clear/flip/get/count.
+        add_test(NAME codegen_bitset_ops_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bitset_ops.ldp3"
+            "-DCONTAINS=g3=1 g4=0 g99=1 count=3 g40=0 g4=1 count=3 size=100"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Scanner (spec 4): tokenize text into ints/words/lines with a stateful cursor.
         add_test(NAME codegen_scanner_tokens_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
