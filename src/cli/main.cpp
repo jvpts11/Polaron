@@ -252,6 +252,31 @@ public bundle std {
                 return;
             }
         }
+        // Reads a program's command-line arguments (spec 34): has tests for a flag, value returns the token
+        // after a flag (empty if absent), and get/count index the raw arguments. Wraps the String[] handed
+        // to main, so a program parses its options without scanning the array by hand.
+        public class Args {
+            private mutable String[] argv;
+            public constructor Args(String[] argv) {
+                this.argv = argv;
+            }
+            public method has(String flag) returns boolean {
+                for (mutable int i = 0; i < this.argv.length(); i++) {
+                    if (this.argv[i].equals(flag)) { return true; }
+                }
+                return false;
+            }
+            public method value(String flag) returns String {
+                for (mutable int i = 0; i < this.argv.length(); i++) {
+                    if (this.argv[i].equals(flag) && i + 1 < this.argv.length()) {
+                        return this.argv[i + 1];
+                    }
+                }
+                return "";
+            }
+            public method count() returns int { return this.argv.length(); }
+            public method get(int i) returns String { return this.argv[i]; }
+        }
     }
     public namespace System.Math {
         // Math (spec 34.6) is a compiler builtin (its functions lower to LLVM intrinsics), not a
@@ -1188,6 +1213,26 @@ R"LDP3(
             public method size() returns int { return this.map.size(); }
             public method isEmpty() returns boolean { return this.map.size() == 0; }
             public method keysInOrder() returns ArrayList<K> { return this.order; }
+        }
+        // Builds lists of integers over a range (spec 34.1): upTo(n) is 0..n-1, between(a,b) is a..b-1, and
+        // step(a,b,s) walks a..b in increments of s. A convenience for counting loops expressed as data.
+        public class Range {
+            public static method upTo(int n) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                for (mutable int i = 0; i < n; i++) { out.add(i); }
+                return out;
+            }
+            public static method between(int start, int end) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                for (mutable int i = start; i < end; i++) { out.add(i); }
+                return out;
+            }
+            public static method stepBy(int start, int end, int by) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                if (by <= 0) { return out; }
+                for (mutable int i = start; i < end; i = i + by) { out.add(i); }
+                return out;
+            }
         }
     }
 )LDP3"
