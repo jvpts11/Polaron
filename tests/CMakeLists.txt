@@ -803,6 +803,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Event dispatch (spec 34): Signal/IntEvent/StringEvent publish to subscribed handler functions.
+        add_test(NAME codegen_events_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/events.ldp3"
+            "-DCONTAINS=msg=hi total=17 nsig=1 ntick=2 nmsg=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Entity-component-system (spec 34): World entity ids + recycling, ComponentStore sparse set, system.
         add_test(NAME codegen_ecs_world_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

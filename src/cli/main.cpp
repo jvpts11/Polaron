@@ -1626,6 +1626,121 @@ R"LDP3(
         }
     }
 )LDP3"
+// (split: System.Events in its own literal.)
+R"LDP3(
+    public namespace System.Events {
+        // Observer/event dispatch (spec 34): a publisher keeps a list of handler functions and calls them all
+        // on emit. Each handler is wrapped in a small object so it can live in an ArrayList (function values
+        // are not directly storable in a list yet). These are the concrete payload types; a fully generic
+        // Event<T> awaits nested-generic monomorphization.
+        public class VoidHandler {
+            private mutable function<void> fn;
+            public constructor VoidHandler(function<void> f) { this.fn = f; }
+            public method invoke() returns void { this.fn(); return; }
+        }
+        // Fires with no payload (a notification), e.g. onSave, onClose. Handlers live in a plain growable
+        // array (not an ArrayList) so the type needs no equality and the event works in freestanding too.
+        public class Signal {
+            private mutable VoidHandler[] hs;
+            private mutable int count;
+            private mutable int cap;
+            public constructor Signal() {
+                this.cap = 4;
+                this.hs = new VoidHandler[4]();
+                this.count = 0;
+            }
+            private method grow() returns void {
+                int nc = this.cap * 2;
+                mutable VoidHandler[] nh = new VoidHandler[nc]();
+                for (mutable int i = 0; i < this.count; i++) { nh[i] = this.hs[i]; }
+                this.hs = nh;
+                this.cap = nc;
+                return;
+            }
+            public method subscribe(function<void> h) returns void {
+                if (this.count == this.cap) { this.grow(); }
+                this.hs[this.count] = new VoidHandler(h) on heap;
+                this.count = this.count + 1;
+                return;
+            }
+            public method emit() returns void {
+                for (mutable int i = 0; i < this.count; i++) { this.hs[i].invoke(); }
+                return;
+            }
+            public method count() returns int { return this.count; }
+        }
+        public class IntHandler {
+            private mutable function<void, int> fn;
+            public constructor IntHandler(function<void, int> f) { this.fn = f; }
+            public method invoke(int arg) returns void { this.fn(arg); return; }
+        }
+        // Fires with an int payload, e.g. onTick(elapsed), onScore(points).
+        public class IntEvent {
+            private mutable IntHandler[] hs;
+            private mutable int count;
+            private mutable int cap;
+            public constructor IntEvent() {
+                this.cap = 4;
+                this.hs = new IntHandler[4]();
+                this.count = 0;
+            }
+            private method grow() returns void {
+                int nc = this.cap * 2;
+                mutable IntHandler[] nh = new IntHandler[nc]();
+                for (mutable int i = 0; i < this.count; i++) { nh[i] = this.hs[i]; }
+                this.hs = nh;
+                this.cap = nc;
+                return;
+            }
+            public method subscribe(function<void, int> h) returns void {
+                if (this.count == this.cap) { this.grow(); }
+                this.hs[this.count] = new IntHandler(h) on heap;
+                this.count = this.count + 1;
+                return;
+            }
+            public method emit(int arg) returns void {
+                for (mutable int i = 0; i < this.count; i++) { this.hs[i].invoke(arg); }
+                return;
+            }
+            public method count() returns int { return this.count; }
+        }
+        public class StringHandler {
+            private mutable function<void, String> fn;
+            public constructor StringHandler(function<void, String> f) { this.fn = f; }
+            public method invoke(String arg) returns void { this.fn(arg); return; }
+        }
+        // Fires with a String payload, e.g. onMessage(text), onError(reason).
+        public class StringEvent {
+            private mutable StringHandler[] hs;
+            private mutable int count;
+            private mutable int cap;
+            public constructor StringEvent() {
+                this.cap = 4;
+                this.hs = new StringHandler[4]();
+                this.count = 0;
+            }
+            private method grow() returns void {
+                int nc = this.cap * 2;
+                mutable StringHandler[] nh = new StringHandler[nc]();
+                for (mutable int i = 0; i < this.count; i++) { nh[i] = this.hs[i]; }
+                this.hs = nh;
+                this.cap = nc;
+                return;
+            }
+            public method subscribe(function<void, String> h) returns void {
+                if (this.count == this.cap) { this.grow(); }
+                this.hs[this.count] = new StringHandler(h) on heap;
+                this.count = this.count + 1;
+                return;
+            }
+            public method emit(String arg) returns void {
+                for (mutable int i = 0; i < this.count; i++) { this.hs[i].invoke(arg); }
+                return;
+            }
+            public method count() returns int { return this.count; }
+        }
+    }
+)LDP3"
 // (split 2: another ~16KB literal boundary.)
 R"LDP3(
     public namespace System.Text {

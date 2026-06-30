@@ -1,0 +1,39 @@
+import System.IO.Console;
+import System.Events.Signal;
+import System.Events.IntEvent;
+import System.Events.StringEvent;
+program Events;
+
+// Observer/event dispatch (spec 34): publishers hold handler functions and call them all on emit. Signal
+// carries no payload, IntEvent an int, StringEvent a String. Handlers may capture state (the Box counter).
+// Prints (order): tick 5 / tick 10 / msg=hi / total=17 nsig=1 ntick=2 nmsg=1.
+public bundle main {
+    public namespace app {
+        public class Box {
+            private mutable int v;
+            public constructor Box() { this.v = 0; }
+            public method add(int x) returns void { this.v = this.v + x; return; }
+            public method get() returns int { return this.v; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Box bx = new Box() on heap;
+                mutable Signal onSave = new Signal() on heap;
+                onSave.subscribe(lambda[captures: byvalue bx]() returns void { bx.add(1); });
+                onSave.emit();
+                onSave.emit();
+                mutable IntEvent onTick = new IntEvent() on heap;
+                onTick.subscribe(lambda[captures: byvalue bx](int x) returns void { bx.add(x); });
+                onTick.subscribe(lambda(int x) returns void { System.IO.Console.printf("tick %d\n", x); });
+                onTick.emit(5);
+                onTick.emit(10);
+                mutable StringEvent onMsg = new StringEvent() on heap;
+                onMsg.subscribe(lambda(String m) returns void { System.IO.Console.printf("msg=%s\n", m); });
+                onMsg.emit("hi");
+                System.IO.Console.printf("total=%d nsig=%d ntick=%d nmsg=%d\n",
+                    bx.get(), onSave.count(), onTick.count(), onMsg.count());
+                return;
+            }
+        }
+    }
+}
