@@ -1,0 +1,29 @@
+import System.IO.Console;
+import System.Collections.Bst;
+import System.Collections.ArrayList;
+program BstSample;
+
+// A pointer-linked binary search tree (spec 34.1): nodes point to their children via scalar nullable
+// pointers. insert ignores duplicates, contains tests membership, and inOrder returns the keys sorted.
+// Prints: has4=1 has6=0 size=6 first=1 last=8 mid=5.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Bst t = new Bst() on heap;
+                t.insert(5);
+                t.insert(3);
+                t.insert(8);
+                t.insert(1);
+                t.insert(4);
+                t.insert(5);
+                t.insert(7);
+                ArrayList<int> sorted = t.inOrder();
+                System.IO.Console.printf("has4=%d has6=%d size=%d first=%d last=%d mid=%d\n",
+                    t.contains(4), t.contains(6), t.size(),
+                    sorted.get(0), sorted.get(sorted.size() - 1), sorted.get(3));
+                return;
+            }
+        }
+    }
+}

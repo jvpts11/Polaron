@@ -1505,6 +1505,86 @@ R"LDP3(
             public method connected(int a, int b) returns boolean { return this.find(a) == this.find(b); }
             public method groups() returns int { return this.count; }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Collections namespace.
+R"LDP3(
+        // A node in a binary search tree (spec 34.1), linked by scalar nullable pointers to its children
+        // (arrays/lists of pointers are not yet supported, but a `nullable T*` link field is). collect does an
+        // in-order walk, appending keys in sorted order.
+        public class BstNode {
+            public mutable int key;
+            public mutable nullable BstNode* left;
+            public mutable nullable BstNode* right;
+            public constructor BstNode(int k) {
+                this.key = k;
+                this.left = null;
+                this.right = null;
+            }
+            public method collect(ArrayList<int> out) returns void {
+                if (this.left != null) { this.left.collect(out); }
+                out.add(this.key);
+                if (this.right != null) { this.right.collect(out); }
+                return;
+            }
+        }
+        // An ordered set of integers backed by an unbalanced binary search tree (spec 34.1): insert ignores
+        // duplicates, contains tests membership, and inOrder returns the keys sorted. A genuinely
+        // pointer-linked structure (each node points to its children).
+        public class Bst {
+            private mutable nullable BstNode* root;
+            private mutable int count;
+            public constructor Bst() {
+                this.root = null;
+                this.count = 0;
+            }
+            public method insert(int k) returns void {
+                if (this.root == null) {
+                    this.root = new BstNode(k) on heap;
+                    this.count = this.count + 1;
+                    return;
+                }
+                mutable nullable BstNode* cur = this.root;
+                mutable boolean done = false;
+                while (!done) {
+                    if (k < cur.key) {
+                        if (cur.left == null) {
+                            cur.left = new BstNode(k) on heap;
+                            this.count = this.count + 1;
+                            done = true;
+                        } else {
+                            cur = cur.left;
+                        }
+                    } else {
+                        if (k > cur.key) {
+                            if (cur.right == null) {
+                                cur.right = new BstNode(k) on heap;
+                                this.count = this.count + 1;
+                                done = true;
+                            } else {
+                                cur = cur.right;
+                            }
+                        } else {
+                            done = true;
+                        }
+                    }
+                }
+                return;
+            }
+            public method contains(int k) returns boolean {
+                mutable nullable BstNode* cur = this.root;
+                while (cur != null) {
+                    if (k == cur.key) { return true; }
+                    if (k < cur.key) { cur = cur.left; } else { cur = cur.right; }
+                }
+                return false;
+            }
+            public method size() returns int { return this.count; }
+            public method inOrder() returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                if (this.root != null) { this.root.collect(out); }
+                return out;
+            }
+        }
     }
 )LDP3"
 // (split: System.Ecs in its own literal.)

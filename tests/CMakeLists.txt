@@ -983,6 +983,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Pointer-linked binary search tree (spec 34.1): insert/contains/size + sorted in-order traversal.
+        add_test(NAME codegen_bst_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bst.ldp3"
+            "-DCONTAINS=has4=1 has6=0 size=6 first=1 last=8 mid=5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Node structures via arenas (spec 34.1): Trie (arena) and Graph (edge list + BFS).
         add_test(NAME codegen_trie_graph_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
