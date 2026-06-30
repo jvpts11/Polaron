@@ -1,0 +1,26 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program CollectionSorted;
+
+// sortedBy returns a new list ordered by a comparator lambda (spec 34); the original is left untouched.
+// Same list sorted ascending and descending. Prints: asc=10,20,30,40,50 / desc0=50 orig0=30.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> nums = new ArrayList<int>();
+                nums.add(30);
+                nums.add(10);
+                nums.add(50);
+                nums.add(20);
+                nums.add(40);
+                ArrayList<int> asc = nums.sortedBy(lambda(int a, int b) returns int { return a - b; });
+                ArrayList<int> desc = nums.sortedBy(lambda(int a, int b) returns int { return b - a; });
+                System.IO.Console.printf("asc=%d,%d,%d,%d,%d\n",
+                    asc.get(0), asc.get(1), asc.get(2), asc.get(3), asc.get(4));
+                System.IO.Console.printf("desc0=%d orig0=%d\n", desc.get(0), nums.get(0));
+                return;
+            }
+        }
+    }
+}

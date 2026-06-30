@@ -346,6 +346,23 @@ R"LDP3(
                 }
                 return hits;
             }
+            // Returns a new list with the elements ordered by a comparator (spec 34): compare(a, b) is
+            // negative when a comes first, positive when b does. Stable insertion sort, leaves this list
+            // untouched. The comparator keeps it generic -- the element type needs no ordering of its own.
+            public method sortedBy(function<int, T, T> compare) returns ArrayList<T> {
+                mutable ArrayList<T> out = new ArrayList<T>() on heap;
+                for (mutable int i = 0; i < this.count; i++) { out.add(this.data[i]); }
+                for (mutable int i = 1; i < out.size(); i++) {
+                    mutable T key = out.get(i);
+                    mutable int j = i - 1;
+                    while (j >= 0 && compare(out.get(j), key) > 0) {
+                        out.set(j + 1, out.get(j));
+                        j = j - 1;
+                    }
+                    out.set(j + 1, key);
+                }
+                return out;
+            }
             public override method iterator() returns Iterator<T> {
                 return new ArrayListIterator<T>(this) on heap;
             }
