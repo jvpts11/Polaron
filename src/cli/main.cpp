@@ -1334,6 +1334,177 @@ R"LDP3(
                 return dist[dst];
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Collections namespace.
+R"LDP3(
+        // A generational arena (spec 17): insert returns a stable handle that stays valid until removed,
+        // even as the backing storage grows or other slots are reused. A removed slot bumps its generation,
+        // so an old handle to it no longer matches and containsHandle reports it stale. A handle packs the
+        // slot index and generation into one int.
+        public class SlotMap<T> {
+            private mutable T[] values;
+            private mutable int[] gens;
+            private mutable boolean[] occ;
+            private mutable int[] freeList;
+            private mutable int freeCount;
+            private mutable int cap;
+            private mutable int len;
+            public constructor SlotMap() {
+                this.cap = 4;
+                this.values = new T[4]();
+                this.gens = new int[4]();
+                this.occ = new boolean[4]();
+                this.freeList = new int[4]();
+                this.freeCount = 4;
+                this.len = 0;
+                for (mutable int i = 0; i < 4; i++) { this.freeList[i] = i; }
+            }
+            private method grow() returns void {
+                int nc = this.cap * 2;
+                mutable T[] nv = new T[nc]();
+                mutable int[] ng = new int[nc]();
+                mutable boolean[] no = new boolean[nc]();
+                mutable int[] nf = new int[nc]();
+                for (mutable int i = 0; i < this.cap; i++) {
+                    nv[i] = this.values[i];
+                    ng[i] = this.gens[i];
+                    no[i] = this.occ[i];
+                }
+                mutable int fc = 0;
+                for (mutable int i = this.cap; i < nc; i++) {
+                    nf[fc] = i;
+                    fc = fc + 1;
+                }
+                this.values = nv;
+                this.gens = ng;
+                this.occ = no;
+                this.freeList = nf;
+                this.freeCount = fc;
+                this.cap = nc;
+                return;
+            }
+            public method insert(T value) returns int {
+                if (this.freeCount == 0) { this.grow(); }
+                int slot = this.freeList[this.freeCount - 1];
+                this.freeCount = this.freeCount - 1;
+                this.values[slot] = value;
+                this.occ[slot] = true;
+                this.len = this.len + 1;
+                return slot * 1048576 + this.gens[slot];
+            }
+            public method containsHandle(int h) returns boolean {
+                int slot = h / 1048576;
+                int gen = h % 1048576;
+                return slot < this.cap && this.occ[slot] && this.gens[slot] == gen;
+            }
+            public method get(int h) returns T { return this.values[h / 1048576]; }
+            public method remove(int h) returns void {
+                if (this.containsHandle(h)) {
+                    int slot = h / 1048576;
+                    this.occ[slot] = false;
+                    this.gens[slot] = this.gens[slot] + 1;
+                    this.freeList[this.freeCount] = slot;
+                    this.freeCount = this.freeCount + 1;
+                    this.len = this.len - 1;
+                }
+                return;
+            }
+            public method size() returns int { return this.len; }
+        }
+        // A binary min-heap of integers (spec 34.1): push and pop keep the smallest element at the top, so
+        // repeated pop yields ascending order. Backing array grows as needed.
+        public class IntHeap {
+            private mutable int[] h;
+            private mutable int n;
+            private mutable int cap;
+            public constructor IntHeap() {
+                this.cap = 8;
+                this.h = new int[8]();
+                this.n = 0;
+            }
+            private method grow() returns void {
+                int nc = this.cap * 2;
+                mutable int[] nh = new int[nc]();
+                for (mutable int i = 0; i < this.n; i++) { nh[i] = this.h[i]; }
+                this.h = nh;
+                this.cap = nc;
+                return;
+            }
+            public method push(int v) returns void {
+                if (this.n == this.cap) { this.grow(); }
+                this.h[this.n] = v;
+                mutable int i = this.n;
+                this.n = this.n + 1;
+                while (i > 0 && this.h[(i - 1) / 2] > this.h[i]) {
+                    int t = this.h[i];
+                    this.h[i] = this.h[(i - 1) / 2];
+                    this.h[(i - 1) / 2] = t;
+                    i = (i - 1) / 2;
+                }
+                return;
+            }
+            public method pop() returns int {
+                int top = this.h[0];
+                this.n = this.n - 1;
+                this.h[0] = this.h[this.n];
+                mutable int i = 0;
+                while (true) {
+                    int l = 2 * i + 1;
+                    int r = 2 * i + 2;
+                    mutable int sm = i;
+                    if (l < this.n && this.h[l] < this.h[sm]) { sm = l; }
+                    if (r < this.n && this.h[r] < this.h[sm]) { sm = r; }
+                    if (sm == i) { return top; }
+                    int t = this.h[i];
+                    this.h[i] = this.h[sm];
+                    this.h[sm] = t;
+                    i = sm;
+                }
+                return top;
+            }
+            public method peek() returns int { return this.h[0]; }
+            public method size() returns int { return this.n; }
+        }
+        // Disjoint-set / union-find over a fixed range 0..n-1 (spec 34.1): merge joins two elements' sets,
+        // connected tests membership, groups counts the distinct sets. Union by rank with path halving.
+        public class UnionFind {
+            private mutable int[] parent;
+            private mutable int[] rnk;
+            private mutable int count;
+            public constructor UnionFind(int n) {
+                this.parent = new int[n]();
+                this.rnk = new int[n]();
+                this.count = n;
+                for (mutable int i = 0; i < n; i++) { this.parent[i] = i; }
+            }
+            public method find(int x) returns int {
+                mutable int r = x;
+                while (this.parent[r] != r) {
+                    this.parent[r] = this.parent[this.parent[r]];
+                    r = this.parent[r];
+                }
+                return r;
+            }
+            public method merge(int a, int b) returns void {
+                int ra = this.find(a);
+                int rb = this.find(b);
+                if (ra == rb) { return; }
+                if (this.rnk[ra] < this.rnk[rb]) {
+                    this.parent[ra] = rb;
+                } else {
+                    if (this.rnk[ra] > this.rnk[rb]) {
+                        this.parent[rb] = ra;
+                    } else {
+                        this.parent[rb] = ra;
+                        this.rnk[ra] = this.rnk[ra] + 1;
+                    }
+                }
+                this.count = this.count - 1;
+                return;
+            }
+            public method connected(int a, int b) returns boolean { return this.find(a) == this.find(b); }
+            public method groups() returns int { return this.count; }
+        }
     }
 )LDP3"
 // (split 2: another ~16KB literal boundary.)
@@ -1810,6 +1981,17 @@ R"LDP3(
                     h = (h ^ cast<uint>(cast<int>(data.charAt(i)))) * prime;
                 }
                 return cast<int>(h);
+            }
+            // Adler-32 (the zlib checksum): two running sums modulo 65521, packed high-sum over low-sum.
+            public static method adler32(String data) returns int {
+                mutable uint a = cast<uint>(1);
+                mutable uint b = cast<uint>(0);
+                uint m = cast<uint>(65521);
+                for (mutable int i = 0; i < data.length(); i++) {
+                    a = (a + cast<uint>(cast<int>(data.charAt(i)))) % m;
+                    b = (b + a) % m;
+                }
+                return cast<int>((b << 16) | a);
             }
         }
         // Run-length encoding of a string (spec 34): each run of a repeated character becomes that character

@@ -803,6 +803,24 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Arena + heap + union-find (spec 17/34.1): stale-handle rejection, min-heap order, disjoint sets.
+        add_test(NAME codegen_arena_heap_uf_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/arena_heap_uf.ldp3"
+            "-DCONTAINS=sm1=10 stale2=0 sm3=99 pop=1 c02=1 grp=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Adler-32 checksum (spec 4): zlib checksum of "abc".
+        add_test(NAME codegen_adler_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/adler.ldp3"
+            "-DCONTAINS=adler=38600999"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # RLE compression + expression evaluator (spec 34): round-trip RLE and precedence/paren arithmetic.
         add_test(NAME codegen_rle_calc_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

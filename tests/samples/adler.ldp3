@@ -1,0 +1,16 @@
+import System.IO.Console;
+import System.Text.Digest;
+program Adler;
+
+// Adler-32 checksum (spec 4): the zlib checksum of "abc" is 0x024D0127.
+// Prints: adler=38600999.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("adler=%d\n", Digest.adler32("abc"));
+                return;
+            }
+        }
+    }
+}
