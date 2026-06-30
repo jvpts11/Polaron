@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Text.Rle;
+import System.Text.Calculator;
+program RleCalc;
+
+// Run-length compression and an arithmetic expression evaluator (spec 34): RLE round-trips "aaabbbbc",
+// and the Calculator respects precedence and parentheses.
+// Prints: enc=a3b4c1 rt=1 a=14 b=20 c=60.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String enc = Rle.encode("aaabbbbc");
+                Calculator a = new Calculator("2 + 3 * 4") on heap;
+                Calculator b = new Calculator("(2 + 3) * 4") on heap;
+                Calculator c = new Calculator("100 - 6 * 7 + 2") on heap;
+                System.IO.Console.printf("enc=%s rt=%d a=%d b=%d c=%d\n",
+                    enc, Rle.decode(enc).equals("aaabbbbc"), a.evaluate(), b.evaluate(), c.evaluate());
+                return;
+            }
+        }
+    }
+}

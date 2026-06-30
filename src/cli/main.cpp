@@ -1812,6 +1812,101 @@ R"LDP3(
                 return cast<int>(h);
             }
         }
+        // Run-length encoding of a string (spec 34): each run of a repeated character becomes that character
+        // followed by its decimal count, e.g. "aaabbbbc" -> "a3b4c1". decode reverses it, reading a
+        // character and the digits that follow as a repeat count.
+        public class Rle {
+            public static method encode(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    char c = s.charAt(i);
+                    mutable int run = 1;
+                    while (i + run < s.length() && s.charAt(i + run) == c) { run = run + 1; }
+                    sb.appendChar(c);
+                    sb.appendInt(run);
+                    i = i + run;
+                }
+                return sb.toString();
+            }
+            public static method decode(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    char c = s.charAt(i);
+                    i = i + 1;
+                    mutable int count = 0;
+                    while (i < s.length() && s.charAt(i) >= '0' && s.charAt(i) <= '9') {
+                        count = count * 10 + (cast<int>(s.charAt(i)) - cast<int>('0'));
+                        i = i + 1;
+                    }
+                    for (mutable int k = 0; k < count; k++) { sb.appendChar(c); }
+                }
+                return sb.toString();
+            }
+        }
+        // Evaluates an integer arithmetic expression (spec 34): + - * / with the usual precedence and
+        // parentheses, by recursive descent. Spaces are ignored; division truncates toward zero.
+        public class Calculator {
+            private mutable String s;
+            private mutable int pos;
+            public constructor Calculator(String expr) {
+                this.s = expr;
+                this.pos = 0;
+            }
+            private method peek() returns char {
+                if (this.pos < this.s.length()) { return this.s.charAt(this.pos); }
+                return cast<char>(0);
+            }
+            private method skip() returns void {
+                while (this.pos < this.s.length() && this.s.charAt(this.pos) == ' ') { this.pos = this.pos + 1; }
+                return;
+            }
+            private method factor() returns int {
+                this.skip();
+                if (this.peek() == '(') {
+                    this.pos = this.pos + 1;
+                    int v = this.expr();
+                    this.skip();
+                    this.pos = this.pos + 1;
+                    return v;
+                }
+                mutable int n = 0;
+                while (this.peek() >= '0' && this.peek() <= '9') {
+                    n = n * 10 + (cast<int>(this.peek()) - cast<int>('0'));
+                    this.pos = this.pos + 1;
+                }
+                return n;
+            }
+            private method term() returns int {
+                mutable int v = this.factor();
+                this.skip();
+                while (this.peek() == '*' || this.peek() == '/') {
+                    char op = this.peek();
+                    this.pos = this.pos + 1;
+                    int r = this.factor();
+                    this.skip();
+                    if (op == '*') { v = v * r; } else { v = v / r; }
+                }
+                return v;
+            }
+            private method expr() returns int {
+                mutable int v = this.term();
+                this.skip();
+                while (this.peek() == '+' || this.peek() == '-') {
+                    char op = this.peek();
+                    this.pos = this.pos + 1;
+                    int r = this.term();
+                    this.skip();
+                    if (op == '+') { v = v + r; } else { v = v - r; }
+                }
+                return v;
+            }
+            public method evaluate() returns int {
+                this.pos = 0;
+                return this.expr();
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so

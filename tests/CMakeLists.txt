@@ -803,6 +803,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # RLE compression + expression evaluator (spec 34): round-trip RLE and precedence/paren arithmetic.
+        add_test(NAME codegen_rle_calc_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/rle_calc.ldp3"
+            "-DCONTAINS=enc=a3b4c1 rt=1 a=14 b=20 c=60"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Polynomials + integer vectors (spec 34.6): Horner eval/derivative, dot product, squared norm.
         add_test(NAME codegen_poly_vector_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
