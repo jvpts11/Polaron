@@ -3948,6 +3948,95 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
+        // Reverse Polish (postfix) evaluator (spec 34): tokens are space-separated integers and the operators
+        // + - * / %, evaluated with an operand stack. Complements the infix Calculator.
+        public class Rpn {
+            private static method parseTok(String t) returns int {
+                mutable int i = 0;
+                mutable boolean neg = false;
+                if (t.charAt(0) == '-') { neg = true; i = 1; }
+                mutable int v = 0;
+                while (i < t.length()) { v = v * 10 + (cast<int>(t.charAt(i)) - cast<int>('0')); i = i + 1; }
+                if (neg) { return 0 - v; }
+                return v;
+            }
+            private static method isNumber(String t) returns boolean {
+                char c = t.charAt(0);
+                if (c >= '0' && c <= '9') { return true; }
+                return c == '-' && t.length() > 1;
+            }
+            public static method eval(String expr) returns int {
+                ArrayList<String> toks = Strings.split(expr, " ");
+                mutable int[] st = new int[toks.size() + 1]();
+                mutable int sp = 0;
+                for (mutable int i = 0; i < toks.size(); i++) {
+                    String t = toks.get(i);
+                    if (t.length() == 0) { continue; }
+                    if (Rpn.isNumber(t)) { st[sp] = Rpn.parseTok(t); sp = sp + 1; }
+                    else {
+                        int b = st[sp - 1]; int a = st[sp - 2]; sp = sp - 2;
+                        char op = t.charAt(0);
+                        mutable int r = 0;
+                        if (op == '+') { r = a + b; }
+                        if (op == '-') { r = a - b; }
+                        if (op == '*') { r = a * b; }
+                        if (op == '/') { r = a / b; }
+                        if (op == '%') { r = a % b; }
+                        st[sp] = r; sp = sp + 1;
+                    }
+                }
+                return st[sp - 1];
+            }
+        }
+        // Shunting-yard (spec 34): converts a space-separated infix expression (integers, + - * / %, and
+        // parentheses) to Reverse Polish, ready for Rpn.eval. Higher-precedence operators pop first.
+        public class ShuntingYard {
+            private static method prec(char op) returns int {
+                if (op == '+' || op == '-') { return 1; }
+                if (op == '*' || op == '/' || op == '%') { return 2; }
+                return 0;
+            }
+            public static method toRpn(String infix) returns String {
+                ArrayList<String> toks = Strings.split(infix, " ");
+                mutable StringBuilder out = new StringBuilder() on heap;
+                mutable char[] ops = new char[128]();
+                mutable int sp = 0;
+                for (mutable int i = 0; i < toks.size(); i++) {
+                    String t = toks.get(i);
+                    if (t.length() == 0) { continue; }
+                    char c = t.charAt(0);
+                    if ((c >= '0' && c <= '9') || (c == '-' && t.length() > 1)) {
+                        if (out.length() > 0) { out.appendChar(' '); }
+                        out.append(t);
+                    } else {
+                        if (c == '(') { ops[sp] = c; sp = sp + 1; }
+                        else {
+                            if (c == ')') {
+                                while (sp > 0 && ops[sp - 1] != '(') {
+                                    if (out.length() > 0) { out.appendChar(' '); }
+                                    out.appendChar(ops[sp - 1]); sp = sp - 1;
+                                }
+                                sp = sp - 1;
+                            } else {
+                                while (sp > 0 && ShuntingYard.prec(ops[sp - 1]) >= ShuntingYard.prec(c)) {
+                                    if (out.length() > 0) { out.appendChar(' '); }
+                                    out.appendChar(ops[sp - 1]); sp = sp - 1;
+                                }
+                                ops[sp] = c; sp = sp + 1;
+                            }
+                        }
+                    }
+                }
+                while (sp > 0) {
+                    if (out.length() > 0) { out.appendChar(' '); }
+                    out.appendChar(ops[sp - 1]); sp = sp - 1;
+                }
+                return out.toString();
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
         // Fills {name} placeholders in a template from a map (spec 34): an unknown key is left as-is, so the
         // braces survive when there is no matching value.
         public class Template {
