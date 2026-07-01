@@ -5634,6 +5634,39 @@ R"LDP3(
                 return false;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.App namespace.
+R"LDP3(
+        // A tiny stack virtual machine (spec 34): executes a flat program of (opcode, operand) pairs against
+        // an operand stack and a small memory. Opcodes: 0 HALT, 1 PUSH v, 2 STORE a, 3 LOAD a, 4 MUL, 5 SUB,
+        // 6 JZ t, 7 JMP t, 8 ADD (jump targets are instruction indices). run returns the top of the stack.
+        public class StackVm {
+            public static method run(int[] prog, int plen, int memSize) returns int {
+                mutable int[] stack = new int[256]();
+                mutable int sp = 0;
+                mutable int[] mem = new int[memSize]();
+                mutable int ip = 0;
+                mutable boolean running = true;
+                while (running && ip * 2 < plen) {
+                    int op = prog[ip * 2];
+                    int arg = prog[ip * 2 + 1];
+                    if (op == 0) { running = false; }
+                    else {
+                        if (op == 1) { stack[sp] = arg; sp = sp + 1; ip = ip + 1; }
+                        else { if (op == 2) { sp = sp - 1; mem[arg] = stack[sp]; ip = ip + 1; }
+                        else { if (op == 3) { stack[sp] = mem[arg]; sp = sp + 1; ip = ip + 1; }
+                        else { if (op == 4) { sp = sp - 1; int b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] * b; sp = sp + 1; ip = ip + 1; }
+                        else { if (op == 5) { sp = sp - 1; int b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] - b; sp = sp + 1; ip = ip + 1; }
+                        else { if (op == 6) { sp = sp - 1; if (stack[sp] == 0) { ip = arg; } else { ip = ip + 1; } }
+                        else { if (op == 7) { ip = arg; }
+                        else { if (op == 8) { sp = sp - 1; int b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] + b; sp = sp + 1; ip = ip + 1; }
+                        else { ip = ip + 1; } } } } } } } }
+                    }
+                }
+                if (sp > 0) { return stack[sp - 1]; }
+                return 0;
+            }
+        }
     }
 }
 )LDP3";

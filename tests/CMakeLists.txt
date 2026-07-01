@@ -1118,6 +1118,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A bytecode stack virtual machine (spec 34) in pure LDP3, running factorial and a summation loop.
+        add_test(NAME codegen_stack_vm_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/stack_vm.ldp3"
+            "-DCONTAINS=fact5=120 sum10=55"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Resilience patterns (spec 34): a circuit breaker and a token-bucket rate limiter, deterministic.
         add_test(NAME codegen_resilience_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
