@@ -6774,6 +6774,37 @@ R"LDP3(
             public static method toRadians(double deg) returns double { return deg * Numerics.pi() / 180.0; }
             public static method toDegrees(double rad) returns double { return rad * 180.0 / Numerics.pi(); }
         }
+        // A 4x4 matrix (spec 34.6) in row-major storage for 3D transforms: identity factory, get/set,
+        // matrix product, and transpose (each returns a new matrix). Pairs with Vector4.
+        public class Mat4 {
+            private mutable double[] m;
+            public constructor Mat4() { this.m = new double[16](); }
+            public static method identity() returns Mat4 {
+                mutable Mat4 r = new Mat4() on heap;
+                for (mutable int i = 0; i < 4; i++) { r.set(i, i, 1.0); }
+                return r;
+            }
+            public method get(int r, int c) returns double { return this.m[r * 4 + c]; }
+            public method set(int r, int c, double v) returns void { this.m[r * 4 + c] = v; return; }
+            public method multiply(Mat4 o) returns Mat4 {
+                mutable Mat4 r = new Mat4() on heap;
+                for (mutable int i = 0; i < 4; i++) {
+                    for (mutable int j = 0; j < 4; j++) {
+                        mutable double s = 0.0;
+                        for (mutable int k = 0; k < 4; k++) { s = s + this.get(i, k) * o.get(k, j); }
+                        r.set(i, j, s);
+                    }
+                }
+                return r;
+            }
+            public method transpose() returns Mat4 {
+                mutable Mat4 r = new Mat4() on heap;
+                for (mutable int i = 0; i < 4; i++) {
+                    for (mutable int j = 0; j < 4; j++) { r.set(j, i, this.get(i, j)); }
+                }
+                return r;
+            }
+        }
         // Radix-2 fast Fourier transform (spec 34.6), iterative Cooley-Tukey over parallel real/imag arrays
         // whose length is a power of two. forward transforms in place; inverse transforms and divides by n so
         // that inverse(forward(x)) == x. Twiddle factors advance by complex multiplication from Numerics.

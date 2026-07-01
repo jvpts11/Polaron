@@ -1,0 +1,22 @@
+import System.IO.Console;
+import System.Math.Mat4;
+program Mat4Demo;
+
+// 4x4 transform matrix (spec 34.6) in pure LDP3. Prints:
+//   id00=1.0 id12=0.0 prod03=5.0 prod22=3.0 trans01=7.0
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Mat4 id = Mat4.identity();
+                mutable Mat4 a = new Mat4() on heap;
+                a.set(0, 3, 5.0); a.set(1, 0, 7.0); a.set(2, 2, 3.0);
+                mutable Mat4 prod = id.multiply(a);
+                mutable Mat4 at = a.transpose();
+                System.IO.Console.printf("id00=%.1f id12=%.1f prod03=%.1f prod22=%.1f trans01=%.1f\n",
+                    id.get(0, 0), id.get(1, 2), prod.get(0, 3), prod.get(2, 2), at.get(0, 1));
+                return;
+            }
+        }
+    }
+}

@@ -1469,6 +1469,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # 4x4 transform matrix (spec 34.6): identity/multiply/transpose, pure LDP3.
+        add_test(NAME codegen_mat4_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/mat4.ldp3"
+            "-DCONTAINS=id00=1.0 id12=0.0 prod03=5.0 prod22=3.0 trans01=7.0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Graphics/animation math (spec 34.6): Vector2/Vector4/Easing/Angle, pure LDP3.
         add_test(NAME codegen_graphics_math_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
