@@ -4040,6 +4040,59 @@ R"LDP3(
             public static method encrypt(String s, String key) returns String { return Vigenere.proc(s, key, 1); }
             public static method decrypt(String s, String key) returns String { return Vigenere.proc(s, key, -1); }
         }
+        // URL/filename slugs (spec 34): lowercase, collapse every run of non-alphanumeric characters to a
+        // single dash, and trim leading/trailing dashes.
+        public class Slugify {
+            public static method make(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable boolean pendingDash = false;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    mutable boolean alnum = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z');
+                    mutable char lc = c;
+                    if (c >= 'A' && c <= 'Z') { lc = cast<char>(cast<int>(c) + 32); alnum = true; }
+                    if (alnum) {
+                        if (pendingDash && sb.length() > 0) { sb.appendChar('-'); }
+                        pendingDash = false;
+                        sb.appendChar(lc);
+                    } else {
+                        pendingDash = true;
+                    }
+                }
+                return sb.toString();
+            }
+        }
+        // English pluralization (spec 34), simple rules: -s/-x/-z/-ch/-sh take "es", a consonant+y becomes
+        // "ies", otherwise append "s".
+        public class Inflector {
+            private static method endsWith(String s, String suf) returns boolean {
+                int n = s.length();
+                int m = suf.length();
+                if (m > n) { return false; }
+                for (mutable int i = 0; i < m; i++) {
+                    if (s.charAt(n - m + i) != suf.charAt(i)) { return false; }
+                }
+                return true;
+            }
+            public static method pluralize(String w) returns String {
+                int n = w.length();
+                if (n == 0) { return w; }
+                char last = w.charAt(n - 1);
+                if (Inflector.endsWith(w, "s") || Inflector.endsWith(w, "x") || Inflector.endsWith(w, "z")
+                    || Inflector.endsWith(w, "ch") || Inflector.endsWith(w, "sh")) {
+                    return w.concat("es");
+                }
+                if (last == 'y') {
+                    mutable boolean vowelBefore = false;
+                    if (n >= 2) {
+                        char b = w.charAt(n - 2);
+                        if (b == 'a' || b == 'e' || b == 'i' || b == 'o' || b == 'u') { vowelBefore = true; }
+                    }
+                    if (!vowelBefore) { return w.substring(0, n - 1).concat("ies"); }
+                }
+                return w.concat("s");
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
