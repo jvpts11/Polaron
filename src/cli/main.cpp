@@ -5124,6 +5124,40 @@ R"LDP3(
                 return sign.concat(sb.toString());
             }
         }
+        // Human-friendly formatting (spec 34): binary byte sizes (1024-based, one decimal above bytes) and
+        // English ordinals (1st, 2nd, 3rd, 11th, 21st), handling the 11-13 "th" exception.
+        public class Humanize {
+            public static method bytes(long n) returns String {
+                mutable String[] units = new String[5]();
+                units[0]="B"; units[1]="KB"; units[2]="MB"; units[3]="GB"; units[4]="TB";
+                mutable double d = cast<double>(n);
+                mutable int u = 0;
+                while (d >= 1024.0 && u < 4) { d = d / 1024.0; u = u + 1; }
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                if (u == 0) {
+                    sb.appendInt(cast<int>(n)); sb.appendChar(' '); sb.append(units[0]);
+                } else {
+                    int whole = cast<int>(d * 10.0 + 0.5);
+                    sb.appendInt(whole / 10); sb.appendChar('.'); sb.appendInt(whole % 10);
+                    sb.appendChar(' '); sb.append(units[u]);
+                }
+                return sb.toString();
+            }
+            public static method ordinal(int n) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendInt(n);
+                int m100 = n % 100;
+                mutable String suf = "th";
+                if (m100 < 11 || m100 > 13) {
+                    int m10 = n % 10;
+                    if (m10 == 1) { suf = "st"; }
+                    if (m10 == 2) { suf = "nd"; }
+                    if (m10 == 3) { suf = "rd"; }
+                }
+                sb.append(suf);
+                return sb.toString();
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
