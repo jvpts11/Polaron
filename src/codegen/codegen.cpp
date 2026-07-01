@@ -7179,6 +7179,10 @@ struct CodeGenerator::Impl {
     void exportBundleSymbols() {
         for (llvm::Function& f : module.functions()) {
             if (f.isDeclaration()) continue;
+            // Internal helpers such as __ldp3_lambda_N (closure code) are private to the module: they never
+            // collide across objects and must keep default storage class (LLVM forbids dllexport on local
+            // linkage). Leave them untouched -- do not export or weaken them.
+            if (f.hasLocalLinkage()) continue;
             const llvm::StringRef name = f.getName();
             const std::size_t dot = name.find('.');
             const std::string owner =
