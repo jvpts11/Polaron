@@ -1109,6 +1109,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Computational geometry (spec 34.6): shoelace area, point-in-polygon, and convex hull, pure LDP3.
+        add_test(NAME codegen_geometry_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/geometry.ldp3"
+            "-DCONTAINS=area2=32 in=1 out=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # String algorithms (spec 34.1): KMP substring search and Manacher longest-palindrome, pure LDP3.
         add_test(NAME codegen_string_search_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

@@ -4877,6 +4877,77 @@ R"LDP3(
                 return true;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Math namespace.
+R"LDP3(
+        // Planar geometry over integer coordinates (spec 34.6): Polygon.area2 is twice the shoelace area
+        // (kept doubled so integer inputs stay integer), and contains tests point-in-polygon by ray casting.
+        public class Polygon {
+            public static method area2(int[] xs, int[] ys, int n) returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < n; i++) {
+                    int j = (i + 1) % n;
+                    s = s + xs[i] * ys[j] - xs[j] * ys[i];
+                }
+                if (s < 0) { s = 0 - s; }
+                return s;
+            }
+            public static method contains(int[] xs, int[] ys, int n, int px, int py) returns boolean {
+                mutable boolean inside = false;
+                mutable int j = n - 1;
+                for (mutable int i = 0; i < n; i++) {
+                    boolean straddles = (ys[i] > py) != (ys[j] > py);
+                    if (straddles) {
+                        int dx = xs[j] - xs[i];
+                        int dy = ys[j] - ys[i];
+                        int lhs = (px - xs[i]) * dy;
+                        int rhs = dx * (py - ys[i]);
+                        if (dy > 0) {
+                            if (lhs < rhs) { inside = !inside; }
+                        } else {
+                            if (lhs > rhs) { inside = !inside; }
+                        }
+                    }
+                    j = i;
+                }
+                return inside;
+            }
+        }
+        // Convex hull of a point set (spec 34.6) by Andrew's monotone chain; size returns the number of hull
+        // vertices, dropping collinear points. Points are given as parallel xs/ys arrays.
+        public class ConvexHull {
+            private static method cross(int[] xs, int[] ys, int o, int a, int b) returns int {
+                return (xs[a] - xs[o]) * (ys[b] - ys[o]) - (ys[a] - ys[o]) * (xs[b] - xs[o]);
+            }
+            public static method size(int[] xs, int[] ys, int n) returns int {
+                if (n < 3) { return n; }
+                mutable int[] idx = new int[n]();
+                for (mutable int i = 0; i < n; i++) { idx[i] = i; }
+                for (mutable int i = 1; i < n; i++) {
+                    int key = idx[i];
+                    mutable int j = i - 1;
+                    while (j >= 0 && (xs[idx[j]] > xs[key] || (xs[idx[j]] == xs[key] && ys[idx[j]] > ys[key]))) {
+                        idx[j + 1] = idx[j];
+                        j = j - 1;
+                    }
+                    idx[j + 1] = key;
+                }
+                mutable int[] hull = new int[2 * n]();
+                mutable int k = 0;
+                for (mutable int t = 0; t < n; t++) {
+                    int p = idx[t];
+                    while (k >= 2 && ConvexHull.cross(xs, ys, hull[k-2], hull[k-1], p) <= 0) { k = k - 1; }
+                    hull[k] = p; k = k + 1;
+                }
+                int lower = k + 1;
+                for (mutable int t = n - 2; t >= 0; t = t - 1) {
+                    int p = idx[t];
+                    while (k >= lower && ConvexHull.cross(xs, ys, hull[k-2], hull[k-1], p) <= 0) { k = k - 1; }
+                    hull[k] = p; k = k + 1;
+                }
+                return k - 1;
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)
