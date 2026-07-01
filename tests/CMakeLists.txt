@@ -1136,6 +1136,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # CSV row writing (RFC 4180, spec 34) with quoting/escaping, pure LDP3.
+        add_test(NAME codegen_csv_writer_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/csv_writer.ldp3"
+            "-DCONTAINS=row=a,\"b,c\",\"d\"\"e\""
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Checksum validators (spec 34): Luhn (mod-10) and ISBN-13, pure LDP3.
         add_test(NAME codegen_validators_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

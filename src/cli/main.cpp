@@ -3604,6 +3604,30 @@ R"LDP3(
                 return out;
             }
         }
+        // CSV row writer (RFC 4180, spec 34): joins cells with commas, quoting any cell that contains a comma,
+        // quote or newline and doubling embedded quotes. Complements the Csv parser.
+        public class CsvWriter {
+            public static method buildRow(String[] cells, int n) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < n; i++) {
+                    if (i > 0) { sb.appendChar(','); }
+                    String c = cells[i];
+                    boolean needQuote = c.contains(",") || c.contains("\"") || c.contains("\n");
+                    if (needQuote) {
+                        sb.appendChar('"');
+                        for (mutable int j = 0; j < c.length(); j++) {
+                            char ch = c.charAt(j);
+                            if (ch == '"') { sb.appendChar('"'); sb.appendChar('"'); }
+                            else { sb.appendChar(ch); }
+                        }
+                        sb.appendChar('"');
+                    } else {
+                        sb.append(c);
+                    }
+                }
+                return sb.toString();
+            }
+        }
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
