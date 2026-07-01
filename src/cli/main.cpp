@@ -1876,6 +1876,45 @@ R"LDP3(
                 return count;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Collections namespace.
+R"LDP3(
+        // A bidirectional map (spec 34): keeps key->value and value->key in sync so either side can be looked
+        // up. put overwrites both directions; getByKey/getByValue resolve across them.
+        public class BiMap<K, V> {
+            private mutable HashMap<K, V> fwd;
+            private mutable HashMap<V, K> bwd;
+            public constructor BiMap() {
+                this.fwd = new HashMap<K, V>() on heap;
+                this.bwd = new HashMap<V, K>() on heap;
+            }
+            public method put(K k, V v) returns void {
+                this.fwd.put(k, v);
+                this.bwd.put(v, k);
+                return;
+            }
+            public method getByKey(K k) returns V { return this.fwd.get(k); }
+            public method getByValue(V v) returns K { return this.bwd.get(v); }
+            public method hasKey(K k) returns boolean { return this.fwd.containsKey(k); }
+            public method size() returns int { return this.fwd.size(); }
+        }
+        // A multimap (spec 34): each key maps to a growable list of values. put appends; countFor and get(k,i)
+        // read the list for a key.
+        public class MultiMap<K, V> {
+            private mutable HashMap<K, ArrayList<V>> map;
+            public constructor MultiMap() { this.map = new HashMap<K, ArrayList<V>>() on heap; }
+            public method put(K k, V v) returns void {
+                if (!this.map.containsKey(k)) { this.map.put(k, new ArrayList<V>() on heap); }
+                mutable ArrayList<V> lst = this.map.get(k);
+                lst.add(v);
+                return;
+            }
+            public method countFor(K k) returns int {
+                if (!this.map.containsKey(k)) { return 0; }
+                return this.map.get(k).size();
+            }
+            public method get(K k, int i) returns V { return this.map.get(k).get(i); }
+        }
     }
 )LDP3"
 // (split: System.Ecs in its own literal.)

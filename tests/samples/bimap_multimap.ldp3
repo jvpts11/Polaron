@@ -1,0 +1,29 @@
+import System.IO.Console;
+import System.Collections.BiMap;
+import System.Collections.MultiMap;
+program BiMapMultiMap;
+
+// Generic bidirectional map and multimap (spec 34) in pure LDP3. Prints:
+//   byKey=2 byVal=one size=2 has=1
+//   fruitN=2 f0=apple f1=banana vegN=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable BiMap<String, int> bm = new BiMap<String, int>() on heap;
+                bm.put("one", 1);
+                bm.put("two", 2);
+                System.IO.Console.printf("byKey=%d byVal=%s size=%d has=%d\n",
+                    bm.getByKey("two"), bm.getByValue(1), bm.size(), bm.hasKey("one"));
+
+                mutable MultiMap<String, String> mm = new MultiMap<String, String>() on heap;
+                mm.put("fruit", "apple");
+                mm.put("fruit", "banana");
+                mm.put("veg", "carrot");
+                System.IO.Console.printf("fruitN=%d f0=%s f1=%s vegN=%d\n",
+                    mm.countFor("fruit"), mm.get("fruit", 0), mm.get("fruit", 1), mm.countFor("veg"));
+                return;
+            }
+        }
+    }
+}
