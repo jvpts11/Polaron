@@ -3841,6 +3841,97 @@ R"LDP3(
                 return p == pn;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // LEB128 variable-length integers (spec 4): seven bits per byte, high bit set while more bytes follow,
+        // so small values take one byte. encode returns the bytes; decode reads them back.
+        public class VarInt {
+            public static method encode(long value) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                mutable long v = value;
+                mutable boolean more = true;
+                while (more) {
+                    mutable int b = cast<int>(v & cast<long>(127));
+                    v = v >> 7;
+                    if (v == 0) { more = false; } else { b = b | 128; }
+                    out.add(b);
+                }
+                return out;
+            }
+            public static method decode(ArrayList<int> bytes) returns long {
+                mutable long result = 0;
+                mutable int shift = 0;
+                mutable int i = 0;
+                mutable boolean more = true;
+                while (more && i < bytes.size()) {
+                    int b = bytes.get(i);
+                    result = result | (cast<long>(b & 127) << shift);
+                    if ((b & 128) == 0) { more = false; }
+                    shift = shift + 7;
+                    i = i + 1;
+                }
+                return result;
+            }
+        }
+        // A most-significant-bit-first bit writer (spec 4): pack individual bits or fixed-width fields into a
+        // byte buffer, then read them back with BitReader. Useful for entropy coders such as Huffman.
+        public class BitWriter {
+            private mutable int[] buf;
+            private mutable int nbits;
+            public constructor BitWriter() {
+                this.buf = new int[64]();
+                this.nbits = 0;
+            }
+            private method ensure(int idx) returns void {
+                if (idx < this.buf.length()) { return; }
+                mutable int[] bigger = new int[this.buf.length() * 2]();
+                for (mutable int i = 0; i < this.buf.length(); i++) { bigger[i] = this.buf[i]; }
+                this.buf = bigger;
+                return;
+            }
+            public method writeBit(int bit) returns void {
+                int idx = this.nbits / 8;
+                this.ensure(idx);
+                int off = 7 - (this.nbits % 8);
+                if ((bit & 1) == 1) { this.buf[idx] = this.buf[idx] | (1 << off); }
+                this.nbits = this.nbits + 1;
+                return;
+            }
+            public method writeBits(int value, int count) returns void {
+                for (mutable int i = count - 1; i >= 0; i = i - 1) {
+                    this.writeBit((value >> i) & 1);
+                }
+                return;
+            }
+            public method bitCount() returns int { return this.nbits; }
+            public method toBytes() returns int[] {
+                int n = (this.nbits + 7) / 8;
+                mutable int[] out = new int[n]();
+                for (mutable int i = 0; i < n; i++) { out[i] = this.buf[i]; }
+                return out;
+            }
+        }
+        // Reads bits most-significant-first out of a byte array, matching BitWriter (spec 4).
+        public class BitReader {
+            private mutable int[] buf;
+            private mutable int pos;
+            public constructor BitReader(int[] bytes) {
+                this.buf = bytes;
+                this.pos = 0;
+            }
+            public method readBit() returns int {
+                int idx = this.pos / 8;
+                int off = 7 - (this.pos % 8);
+                this.pos = this.pos + 1;
+                return (this.buf[idx] >> off) & 1;
+            }
+            public method readBits(int count) returns int {
+                mutable int v = 0;
+                for (mutable int i = 0; i < count; i++) { v = (v << 1) | this.readBit(); }
+                return v;
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so

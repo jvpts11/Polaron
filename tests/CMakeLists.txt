@@ -1109,6 +1109,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Binary serialization (spec 4): LEB128 varints and MSB-first bit packing, round-tripped, pure LDP3.
+        add_test(NAME codegen_binary_serial_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/binary_serial.ldp3"
+            "-DCONTAINS=vlen=2 b0=172 b1=2 val=300 big=123456789"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Computational geometry (spec 34.6): shoelace area, point-in-polygon, and convex hull, pure LDP3.
         add_test(NAME codegen_geometry_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
