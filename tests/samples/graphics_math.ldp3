@@ -1,0 +1,30 @@
+import System.IO.Console;
+import System.Math.Vector2;
+import System.Math.Vector4;
+import System.Math.Easing;
+import System.Math.Angle;
+import System.Math.Numerics;
+program GraphicsMath;
+
+// Graphics/animation math (spec 34.6) in pure LDP3. Prints:
+//   len=5.00 dot=11.00 addx=4.00
+//   v4len=7.00
+//   qi=0.250 qo=0.750 ci=0.125 co=0.875
+//   rad=3.1416 deg=180.0
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Vector2 a = new Vector2(3.0, 4.0) on heap;
+                mutable Vector2 b = new Vector2(1.0, 2.0) on heap;
+                System.IO.Console.printf("len=%.2f dot=%.2f addx=%.2f\n", a.length(), a.dot(b), a.add(b).x);
+                mutable Vector4 v = new Vector4(2.0, 3.0, 6.0, 0.0) on heap;
+                System.IO.Console.printf("v4len=%.2f\n", v.length());
+                System.IO.Console.printf("qi=%.3f qo=%.3f ci=%.3f co=%.3f\n",
+                    Easing.quadIn(0.5), Easing.quadOut(0.5), Easing.cubicIn(0.5), Easing.cubicOut(0.5));
+                System.IO.Console.printf("rad=%.4f deg=%.1f\n", Angle.toRadians(180.0), Angle.toDegrees(Numerics.pi()));
+                return;
+            }
+        }
+    }
+}

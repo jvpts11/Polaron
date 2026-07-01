@@ -6618,6 +6618,45 @@ R"LDP3(
                 return cast<int>(r);
             }
         }
+)LDP3"
+// Graphics/animation math in its own literal; still System.Math.
+R"LDP3(
+        // A 2D vector (spec 34.6): add/sub/scale return new vectors; dot and length are scalars.
+        public class Vector2 {
+            public mutable double x;
+            public mutable double y;
+            public constructor Vector2(double x, double y) { this.x = x; this.y = y; }
+            public method add(Vector2 o) returns Vector2 { return new Vector2(this.x + o.x, this.y + o.y) on heap; }
+            public method sub(Vector2 o) returns Vector2 { return new Vector2(this.x - o.x, this.y - o.y) on heap; }
+            public method scale(double s) returns Vector2 { return new Vector2(this.x * s, this.y * s) on heap; }
+            public method dot(Vector2 o) returns double { return this.x * o.x + this.y * o.y; }
+            public method length() returns double { return Numerics.sqrt(this.x * this.x + this.y * this.y); }
+        }
+        // A 4D vector (spec 34.6), e.g. homogeneous coordinates: add, dot, and length.
+        public class Vector4 {
+            public mutable double x;
+            public mutable double y;
+            public mutable double z;
+            public mutable double w;
+            public constructor Vector4(double x, double y, double z, double w) {
+                this.x = x; this.y = y; this.z = z; this.w = w;
+            }
+            public method add(Vector4 o) returns Vector4 { return new Vector4(this.x+o.x, this.y+o.y, this.z+o.z, this.w+o.w) on heap; }
+            public method dot(Vector4 o) returns double { return this.x*o.x + this.y*o.y + this.z*o.z + this.w*o.w; }
+            public method length() returns double { return Numerics.sqrt(this.x*this.x + this.y*this.y + this.z*this.z + this.w*this.w); }
+        }
+        // Easing curves (spec 34.6) mapping t in [0,1] to [0,1] for animation: quadratic and cubic in/out.
+        public class Easing {
+            public static method quadIn(double t) returns double { return t * t; }
+            public static method quadOut(double t) returns double { return t * (2.0 - t); }
+            public static method cubicIn(double t) returns double { return t * t * t; }
+            public static method cubicOut(double t) returns double { double u = 1.0 - t; return 1.0 - u * u * u; }
+        }
+        // Angle conversions (spec 34.6) between degrees and radians.
+        public class Angle {
+            public static method toRadians(double deg) returns double { return deg * Numerics.pi() / 180.0; }
+            public static method toDegrees(double rad) returns double { return rad * 180.0 / Numerics.pi(); }
+        }
         // Radix-2 fast Fourier transform (spec 34.6), iterative Cooley-Tukey over parallel real/imag arrays
         // whose length is a power of two. forward transforms in place; inverse transforms and divides by n so
         // that inverse(forward(x)) == x. Twiddle factors advance by complex multiplication from Numerics.
