@@ -1588,6 +1588,60 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Collections namespace.
 R"LDP3(
+        // A sorted set of ints (spec 34.1) on a growable sorted array with binary search: add (deduping),
+        // contains, navigable floor (largest <= v) and ceiling (smallest >= v), plus order statistics rank
+        // (count of elements < v) and kth (the i-th smallest). floor/ceiling return int min/max when absent.
+        public class SortedIntSet {
+            private mutable int[] data;
+            private mutable int count;
+            public constructor SortedIntSet() {
+                this.data = new int[8]();
+                this.count = 0;
+            }
+            private method lowerBound(int v) returns int {
+                mutable int lo = 0;
+                mutable int hi = this.count;
+                while (lo < hi) {
+                    int mid = (lo + hi) / 2;
+                    if (this.data[mid] < v) { lo = mid + 1; } else { hi = mid; }
+                }
+                return lo;
+            }
+            private method ensure(int need) returns void {
+                if (need <= this.data.length()) { return; }
+                mutable int[] bigger = new int[this.data.length() * 2]();
+                for (mutable int i = 0; i < this.count; i++) { bigger[i] = this.data[i]; }
+                this.data = bigger;
+                return;
+            }
+            public method add(int v) returns void {
+                int p = this.lowerBound(v);
+                if (p < this.count && this.data[p] == v) { return; }
+                this.ensure(this.count + 1);
+                for (mutable int i = this.count; i > p; i = i - 1) { this.data[i] = this.data[i - 1]; }
+                this.data[p] = v;
+                this.count = this.count + 1;
+                return;
+            }
+            public method contains(int v) returns boolean {
+                int p = this.lowerBound(v);
+                return p < this.count && this.data[p] == v;
+            }
+            public method rank(int v) returns int { return this.lowerBound(v); }
+            public method floor(int v) returns int {
+                int p = this.lowerBound(v);
+                if (p < this.count && this.data[p] == v) { return v; }
+                if (p == 0) { return -2147483648; }
+                return this.data[p - 1];
+            }
+            public method ceiling(int v) returns int {
+                int p = this.lowerBound(v);
+                if (p == this.count) { return 2147483647; }
+                return this.data[p];
+            }
+            public method kth(int i) returns int { return this.data[i]; }
+            public method size() returns int { return this.count; }
+        }
         // A Fenwick tree / binary indexed tree (spec 34.1): O(log n) point updates and prefix/range sums over
         // int values. Indices are 0-based at the public API; the lowest-set-bit trick (x & -x) walks the tree.
         public class Fenwick {

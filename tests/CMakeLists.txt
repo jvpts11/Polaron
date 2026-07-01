@@ -1055,6 +1055,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Navigable sorted int set (spec 34.1): floor/ceiling/rank/kth, pure LDP3.
+        add_test(NAME codegen_sorted_int_set_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sorted_int_set.ldp3"
+            "-DCONTAINS=size=5 has3=1 has4=0 floor4=3 ceil4=5 rank5=3 k0=1 k4=8"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Min-tracking stack and sliding-window maximum (spec 34.1), pure LDP3.
         add_test(NAME codegen_minstack_window_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

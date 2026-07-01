@@ -1,0 +1,19 @@
+import System.IO.Console;
+import System.Collections.SortedIntSet;
+program SortedIntSetDemo;
+
+// A navigable sorted int set (spec 34.1) in pure LDP3. Prints:
+//   size=5 has3=1 has4=0 floor4=3 ceil4=5 rank5=3 k0=1 k4=8
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable SortedIntSet s = new SortedIntSet() on heap;
+                s.add(5); s.add(1); s.add(3); s.add(3); s.add(8); s.add(2);   // duplicate 3 ignored
+                System.IO.Console.printf("size=%d has3=%d has4=%d floor4=%d ceil4=%d rank5=%d k0=%d k4=%d\n",
+                    s.size(), s.contains(3), s.contains(4), s.floor(4), s.ceiling(4), s.rank(5), s.kth(0), s.kth(4));
+                return;
+            }
+        }
+    }
+}
