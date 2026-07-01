@@ -1154,6 +1154,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Dense double matrix (spec 34.6) in pure LDP3: multiply, transpose, determinant.
+        add_test(NAME codegen_matrixd_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/matrixd.ldp3"
+            "-DCONTAINS=c00=19.0 c11=50.0 t01=3.0 det=-2.0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Quaternion 3D rotation math (spec 34.6) in pure LDP3: product, magnitude, normalize.
         add_test(NAME codegen_quaternion_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

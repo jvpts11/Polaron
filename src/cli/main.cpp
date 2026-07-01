@@ -5570,6 +5570,63 @@ R"LDP3(
                 return new Quaternion(this.w/m, this.x/m, this.y/m, this.z/m) on heap;
             }
         }
+        // Dense double matrix (spec 34.6) stored row-major: element get/set, matrix multiply and transpose
+        // (returning new matrices), and determinant by Gaussian elimination with partial pivoting.
+        public class MatrixD {
+            private mutable int rows;
+            private mutable int cols;
+            private mutable double[] data;
+            public constructor MatrixD(int rows, int cols) {
+                this.rows = rows; this.cols = cols; this.data = new double[rows * cols]();
+            }
+            public method set(int r, int c, double v) returns void { this.data[r * this.cols + c] = v; return; }
+            public method get(int r, int c) returns double { return this.data[r * this.cols + c]; }
+            public method rowCount() returns int { return this.rows; }
+            public method colCount() returns int { return this.cols; }
+            public method mul(MatrixD o) returns MatrixD {
+                mutable MatrixD res = new MatrixD(this.rows, o.colCount()) on heap;
+                for (mutable int i = 0; i < this.rows; i++) {
+                    for (mutable int j = 0; j < o.colCount(); j++) {
+                        mutable double s = 0.0;
+                        for (mutable int k = 0; k < this.cols; k++) { s = s + this.get(i, k) * o.get(k, j); }
+                        res.set(i, j, s);
+                    }
+                }
+                return res;
+            }
+            public method transpose() returns MatrixD {
+                mutable MatrixD res = new MatrixD(this.cols, this.rows) on heap;
+                for (mutable int i = 0; i < this.rows; i++) {
+                    for (mutable int j = 0; j < this.cols; j++) { res.set(j, i, this.get(i, j)); }
+                }
+                return res;
+            }
+            public method determinant() returns double {
+                int n = this.rows;
+                mutable double[] a = new double[n * n]();
+                for (mutable int i = 0; i < n * n; i++) { a[i] = this.data[i]; }
+                mutable double det = 1.0;
+                for (mutable int col = 0; col < n; col++) {
+                    mutable int piv = col;
+                    for (mutable int r = col + 1; r < n; r++) {
+                        if (Numerics.abs(a[r*n + col]) > Numerics.abs(a[piv*n + col])) { piv = r; }
+                    }
+                    if (Numerics.abs(a[piv*n + col]) == 0.0) { return 0.0; }
+                    if (piv != col) {
+                        for (mutable int c = 0; c < n; c++) {
+                            double t = a[col*n + c]; a[col*n + c] = a[piv*n + c]; a[piv*n + c] = t;
+                        }
+                        det = 0.0 - det;
+                    }
+                    det = det * a[col*n + col];
+                    for (mutable int r = col + 1; r < n; r++) {
+                        double f = a[r*n + col] / a[col*n + col];
+                        for (mutable int c = col; c < n; c++) { a[r*n + c] = a[r*n + c] - f * a[col*n + c]; }
+                    }
+                }
+                return det;
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)

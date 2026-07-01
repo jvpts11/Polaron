@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Math.MatrixD;
+program MatrixDDemo;
+
+// Dense double matrix (spec 34.6) in pure LDP3: multiply, transpose, determinant. Prints:
+//   c00=19.0 c11=50.0 t01=3.0 det=-2.0
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable MatrixD a = new MatrixD(2, 2) on heap;
+                a.set(0,0,1.0); a.set(0,1,2.0); a.set(1,0,3.0); a.set(1,1,4.0);
+                mutable MatrixD b = new MatrixD(2, 2) on heap;
+                b.set(0,0,5.0); b.set(0,1,6.0); b.set(1,0,7.0); b.set(1,1,8.0);
+                MatrixD c = a.mul(b);
+                MatrixD t = a.transpose();
+                System.IO.Console.printf("c00=%.1f c11=%.1f t01=%.1f det=%.1f\n",
+                    c.get(0,0), c.get(1,1), t.get(0,1), a.determinant());
+                return;
+            }
+        }
+    }
+}
