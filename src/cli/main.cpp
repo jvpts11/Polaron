@@ -1854,6 +1854,48 @@ R"LDP3(
                 return dp[m*w + n];
             }
         }
+        // Maximum-subarray sum (spec 34.1) by Kadane's algorithm: the largest sum of any contiguous run.
+        public class Kadane {
+            public static method maxSubarray(int[] a, int n) returns int {
+                if (n == 0) { return 0; }
+                mutable int best = a[0];
+                mutable int cur = a[0];
+                for (mutable int i = 1; i < n; i++) {
+                    int ext = cur + a[i];
+                    if (a[i] > ext) { cur = a[i]; } else { cur = ext; }
+                    if (cur > best) { best = cur; }
+                }
+                return best;
+            }
+        }
+        // Interval merging (spec 34.1): sorts intervals by start and coalesces overlaps in place, writing the
+        // merged starts/ends back into the first `count` slots and returning that count; coveredLength totals
+        // the merged spans.
+        public class IntervalMerge {
+            public static method merge(int[] starts, int[] ends, int n) returns int {
+                for (mutable int i = 1; i < n; i++) {
+                    int ks = starts[i]; int ke = ends[i];
+                    mutable int j = i - 1;
+                    while (j >= 0 && starts[j] > ks) { starts[j+1] = starts[j]; ends[j+1] = ends[j]; j = j - 1; }
+                    starts[j+1] = ks; ends[j+1] = ke;
+                }
+                if (n == 0) { return 0; }
+                mutable int count = 1;
+                for (mutable int i = 1; i < n; i++) {
+                    if (starts[i] <= ends[count-1]) {
+                        if (ends[i] > ends[count-1]) { ends[count-1] = ends[i]; }
+                    } else {
+                        starts[count] = starts[i]; ends[count] = ends[i]; count = count + 1;
+                    }
+                }
+                return count;
+            }
+            public static method coveredLength(int[] starts, int[] ends, int mergedCount) returns int {
+                mutable int total = 0;
+                for (mutable int i = 0; i < mergedCount; i++) { total = total + (ends[i] - starts[i]); }
+                return total;
+            }
+        }
         // Activity selection (spec 34.1): the maximum number of mutually non-overlapping intervals, by the
         // greedy earliest-finishing-time rule (intervals are sorted by end time first). starts[i]/ends[i]
         // describe interval i.

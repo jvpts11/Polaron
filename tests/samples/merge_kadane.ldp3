@@ -1,0 +1,27 @@
+import System.IO.Console;
+import System.Collections.IntervalMerge;
+import System.Collections.Kadane;
+program MergeKadane;
+
+// Interval merging and Kadane's max subarray (spec 34.1) in pure LDP3. Prints:
+//   merged=3 covered=10 first=1-6
+//   kadane=6
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] s = new int[4]();
+                mutable int[] e = new int[4]();
+                s[0]=1; e[0]=3; s[1]=2; e[1]=6; s[2]=8; e[2]=10; s[3]=15; e[3]=18;
+                int m = IntervalMerge.merge(s, e, 4);
+                System.IO.Console.printf("merged=%d covered=%d first=%d-%d\n",
+                    m, IntervalMerge.coveredLength(s, e, m), s[0], e[0]);
+
+                mutable int[] arr = new int[9]();
+                arr[0]=0-2; arr[1]=1; arr[2]=0-3; arr[3]=4; arr[4]=0-1; arr[5]=2; arr[6]=1; arr[7]=0-5; arr[8]=4;
+                System.IO.Console.printf("kadane=%d\n", Kadane.maxSubarray(arr, 9));
+                return;
+            }
+        }
+    }
+}
