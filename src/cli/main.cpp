@@ -5039,6 +5039,121 @@ R"LDP3(
                 return k - 1;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Math namespace.
+R"LDP3(
+        // Count-Min sketch (spec 34.1): a sub-linear frequency estimator. add accumulates counts across depth
+        // independent hash rows; estimate returns the minimum row, which never underestimates (and is exact
+        // when the width is large enough to avoid collisions).
+        public class CountMinSketch {
+            private mutable int[] table;
+            private mutable int d;
+            private mutable int w;
+            public constructor CountMinSketch(int width, int depth) {
+                this.w = width;
+                this.d = depth;
+                this.table = new int[width * depth]();
+            }
+            private method hash(String key, int row) returns int {
+                mutable int acc = 17 + row * 31;
+                for (mutable int i = 0; i < key.length(); i++) {
+                    acc = acc * 131 + (cast<int>(key.charAt(i)) & 255);
+                }
+                acc = acc & 2147483647;
+                return acc % this.w;
+            }
+            public method add(String key, int count) returns void {
+                for (mutable int r = 0; r < this.d; r++) {
+                    int idx = r * this.w + this.hash(key, r);
+                    this.table[idx] = this.table[idx] + count;
+                }
+                return;
+            }
+            public method estimate(String key) returns int {
+                mutable int best = 2147483647;
+                for (mutable int r = 0; r < this.d; r++) {
+                    int v = this.table[r * this.w + this.hash(key, r)];
+                    if (v < best) { best = v; }
+                }
+                return best;
+            }
+        }
+        // HyperLogLog (spec 34.1): estimates the number of distinct items in near-constant memory. Each key's
+        // hash picks a register (low bits) and contributes the rank of its leading one-bit; estimate combines
+        // the registers, with linear counting in the small-cardinality range. precision is log2 of the register
+        // count (e.g. 10 -> 1024 registers, ~3% error).
+        public class HyperLogLog {
+            private mutable int[] reg;
+            private mutable int p;
+            private mutable int m;
+            public constructor HyperLogLog(int precision) {
+                this.p = precision;
+                this.m = 1 << precision;
+                this.reg = new int[this.m]();
+            }
+            private static method mix(String s) returns uint {
+                mutable uint h = cast<uint>(2166136261);
+                for (mutable int i = 0; i < s.length(); i++) {
+                    h = (h ^ cast<uint>(cast<int>(s.charAt(i)) & 255)) * cast<uint>(16777619);
+                }
+                h = h ^ (h >> 16);
+                h = h * cast<uint>(2246822519);
+                h = h ^ (h >> 13);
+                h = h * cast<uint>(3266489917);
+                h = h ^ (h >> 16);
+                return h;
+            }
+            private static method clz(uint x) returns int {
+                if (x == cast<uint>(0)) { return 32; }
+                mutable int n = 0;
+                mutable uint v = x;
+                while ((v & cast<uint>(2147483648)) == cast<uint>(0)) { n = n + 1; v = v << 1; }
+                return n;
+            }
+            // Natural log without the Math builtin (whose bare name can bind to a user class named Math):
+            // reduce x to [1,2) tracking the power of two, then sum the atanh series.
+            private static method ln(double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                mutable double v = x;
+                mutable int e = 0;
+                while (v >= 2.0) { v = v / 2.0; e = e + 1; }
+                while (v < 1.0) { v = v * 2.0; e = e - 1; }
+                double t = (v - 1.0) / (v + 1.0);
+                double t2 = t * t;
+                mutable double term = t;
+                mutable double sum = 0.0;
+                mutable int k = 1;
+                while (k <= 15) {
+                    sum = sum + term / cast<double>(k);
+                    term = term * t2;
+                    k = k + 2;
+                }
+                return 2.0 * sum + cast<double>(e) * 0.6931471805599453;
+            }
+            public method add(String key) returns void {
+                uint h = HyperLogLog.mix(key);
+                int idx = cast<int>(h & cast<uint>(this.m - 1));
+                uint rest = (h >> this.p) | (cast<uint>(1) << (31 - this.p));
+                mutable int rank = HyperLogLog.clz(rest) + 1 - this.p;
+                if (rank < 1) { rank = 1; }
+                if (rank > this.reg[idx]) { this.reg[idx] = rank; }
+                return;
+            }
+            public method estimate() returns int {
+                double alpha = 0.7213 / (1.0 + 1.079 / cast<double>(this.m));
+                mutable double sum = 0.0;
+                mutable int zeros = 0;
+                for (mutable int i = 0; i < this.m; i++) {
+                    sum = sum + 1.0 / cast<double>(1 << this.reg[i]);
+                    if (this.reg[i] == 0) { zeros = zeros + 1; }
+                }
+                mutable double est = alpha * cast<double>(this.m) * cast<double>(this.m) / sum;
+                if (est <= 2.5 * cast<double>(this.m) && zeros > 0) {
+                    est = cast<double>(this.m) * HyperLogLog.ln(cast<double>(this.m) / cast<double>(zeros));
+                }
+                return cast<int>(est);
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)

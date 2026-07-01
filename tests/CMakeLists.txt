@@ -1109,6 +1109,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Probabilistic data structures (spec 34.1): Count-Min sketch and HyperLogLog, pure LDP3.
+        add_test(NAME codegen_probabilistic_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/probabilistic.ldp3"
+            "-DCONTAINS=cms_a=5 cms_b=3 cms_c=1 cms_z=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Binary serialization (spec 4): LEB128 varints and MSB-first bit packing, round-tripped, pure LDP3.
         add_test(NAME codegen_binary_serial_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
