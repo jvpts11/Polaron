@@ -5,13 +5,16 @@
 #
 # Required -D args: LDP3C, CLANG, INPUT, EXPECTED, WORKDIR
 
-set(ll "${WORKDIR}/e2e_out.ll")
-set(exe "${WORKDIR}/e2e_out.exe")
-
 # OPT is optional: an ldp3c optimization flag (e.g. -O3) to exercise the in-process pipeline.
 if(NOT DEFINED OPT)
     set(OPT "")
 endif()
+
+# Unique intermediate file names per test configuration so the suite is safe to run in parallel
+# (ctest -j): every test used to share e2e_out.ll/.exe in WORKDIR and clobber each other's files.
+string(MD5 _tag "${INPUT}|${INPUT2}|${OPT}")
+set(ll "${WORKDIR}/e2e_${_tag}.ll")
+set(exe "${WORKDIR}/e2e_${_tag}.exe")
 
 # INPUT2 is optional: a program may span multiple .ldp3 files.
 if(DEFINED INPUT2)

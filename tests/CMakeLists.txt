@@ -3298,3 +3298,16 @@ add_executable(ldp3_unit_tests
 )
 target_link_libraries(ldp3_unit_tests PRIVATE ldp3_core doctest::doctest)
 add_test(NAME unit_tests COMMAND ldp3_unit_tests)
+
+# The bundle tests build fixed-name .ldb/.ldh artifacts in a shared directory, so they cannot run
+# concurrently with each other under `ctest -j`. A shared resource lock serializes them among themselves
+# while they still overlap the (parallel-safe) codegen tests. The `if(TEST ...)` guard keeps this valid
+# in configurations where a given bundle test was not defined.
+foreach(_bt bundle_lib_roundtrip bundle_vtable_conflict_rejected bundle_static_call_runs
+        bundle_instance_runs bundle_virtual_runs bundle_plugin_runs bundle_dynamic_runs
+        bundle_dynamic_instance_runs bundle_dynamic_virtual_runs bundle_absent_caught
+        bundle_abi_mismatch_caught)
+    if(TEST ${_bt})
+        set_tests_properties(${_bt} PROPERTIES RESOURCE_LOCK bundle_artifacts)
+    endif()
+endforeach()
