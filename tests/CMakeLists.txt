@@ -1370,6 +1370,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Bit-twiddling helpers (spec 34.6): popcount/clz/ctz/isPow2/nextPow2/reverse, pure LDP3.
+        add_test(NAME codegen_bits_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bits.ldp3"
+            "-DCONTAINS=pc=8 lz=31 tz=3 p16=1 p17=0 np17=32 np16=16 rev=16"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Interpolation helpers (spec 34.6): lerp/inverseLerp/clamp/smoothstep/remap, pure LDP3.
         add_test(NAME codegen_interpolation_math_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

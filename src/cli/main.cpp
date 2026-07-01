@@ -6336,6 +6336,44 @@ R"LDP3(
                 return Interpolation.lerp(outLo, outHi, t);
             }
         }
+        // Bit-twiddling helpers (spec 34.6) over 32-bit words: population count, leading/trailing zero counts,
+        // power-of-two test and round-up, and full bit reversal. Uses uint for logical (zero-fill) shifts.
+        public class Bits {
+            public static method popcount(int x) returns int {
+                mutable uint v = cast<uint>(x);
+                mutable int c = 0;
+                while (v != cast<uint>(0)) { c = c + cast<int>(v & cast<uint>(1)); v = v >> 1; }
+                return c;
+            }
+            public static method leadingZeros(int x) returns int {
+                mutable uint v = cast<uint>(x);
+                if (v == cast<uint>(0)) { return 32; }
+                mutable int n = 0;
+                while ((v & cast<uint>(2147483648)) == cast<uint>(0)) { n = n + 1; v = v << 1; }
+                return n;
+            }
+            public static method trailingZeros(int x) returns int {
+                if (x == 0) { return 32; }
+                mutable uint v = cast<uint>(x);
+                mutable int n = 0;
+                while ((v & cast<uint>(1)) == cast<uint>(0)) { n = n + 1; v = v >> 1; }
+                return n;
+            }
+            public static method isPow2(int n) returns boolean { return n > 0 && (n & (n - 1)) == 0; }
+            public static method nextPow2(int n) returns int {
+                if (n <= 1) { return 1; }
+                return 1 << (32 - Bits.leadingZeros(n - 1));
+            }
+            public static method reverse(int x) returns int {
+                mutable uint v = cast<uint>(x);
+                mutable uint r = cast<uint>(0);
+                for (mutable int i = 0; i < 32; i++) {
+                    r = (r << 1) | (v & cast<uint>(1));
+                    v = v >> 1;
+                }
+                return cast<int>(r);
+            }
+        }
         // Radix-2 fast Fourier transform (spec 34.6), iterative Cooley-Tukey over parallel real/imag arrays
         // whose length is a power of two. forward transforms in place; inverse transforms and divides by n so
         // that inverse(forward(x)) == x. Twiddle factors advance by complex multiplication from Numerics.
