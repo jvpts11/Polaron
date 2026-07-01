@@ -1938,6 +1938,32 @@ R"LDP3(
                 return dp[m*w + n];
             }
         }
+        // Quickselect (spec 34.1): the k-th smallest element (0-indexed) in expected linear time, using
+        // Lomuto partitioning with a last-element pivot. Partitions the array in place.
+        public class QuickSelect {
+            private static method partition(int[] a, int lo, int hi) returns int {
+                int pivot = a[hi];
+                mutable int i = lo;
+                for (mutable int j = lo; j < hi; j++) {
+                    if (a[j] < pivot) {
+                        int t = a[i]; a[i] = a[j]; a[j] = t;
+                        i = i + 1;
+                    }
+                }
+                int t2 = a[i]; a[i] = a[hi]; a[hi] = t2;
+                return i;
+            }
+            public static method select(int[] a, int n, int k) returns int {
+                mutable int lo = 0;
+                mutable int hi = n - 1;
+                while (lo < hi) {
+                    int p = QuickSelect.partition(a, lo, hi);
+                    if (p == k) { return a[p]; }
+                    if (p < k) { lo = p + 1; } else { hi = p - 1; }
+                }
+                return a[lo];
+            }
+        }
         // A stack that also reports its minimum in O(1) (spec 34.1): a parallel stack carries the running
         // minimum at each depth. push/pop/peek/getMin/size.
         public class MinStack {
