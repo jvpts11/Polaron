@@ -5558,6 +5558,49 @@ R"LDP3(
                 return t;
             }
         }
+        // Chinese remainder theorem (spec 34.6): solve x = a[i] (mod n[i]) for pairwise-coprime moduli,
+        // returning the least non-negative solution. Combines congruences one at a time using modInverse.
+        public class Crt {
+            public static method solve(int[] a, int[] n, int k) returns long {
+                mutable long x = cast<long>(a[0]);
+                mutable long m = cast<long>(n[0]);
+                for (mutable int i = 1; i < k; i++) {
+                    int ni = n[i];
+                    long inv = cast<long>(NumberTheory.modInverse(cast<int>(m % cast<long>(ni)), ni));
+                    long diff = ((cast<long>(a[i]) - x) % cast<long>(ni) + cast<long>(ni)) % cast<long>(ni);
+                    long t = (diff * inv) % cast<long>(ni);
+                    x = x + m * t;
+                    m = m * cast<long>(ni);
+                }
+                return ((x % m) + m) % m;
+            }
+        }
+        // Integer factorization by trial division (spec 34.6): the largest prime factor and the count of
+        // prime factors with multiplicity.
+        public class Factorize {
+            public static method largestPrimeFactor(int num) returns int {
+                mutable long m = cast<long>(num);
+                mutable int largest = 1;
+                mutable long d = 2;
+                while (d * d <= m) {
+                    while (m % d == 0) { largest = cast<int>(d); m = m / d; }
+                    d = d + 1;
+                }
+                if (m > 1) { largest = cast<int>(m); }
+                return largest;
+            }
+            public static method factorCount(int num) returns int {
+                mutable int m = num;
+                mutable int count = 0;
+                mutable int d = 2;
+                while (d * d <= m) {
+                    while (m % d == 0) { count = count + 1; m = m / d; }
+                    d = d + 1;
+                }
+                if (m > 1) { count = count + 1; }
+                return count;
+            }
+        }
         // Combinatorics (spec 34.6): factorial and binomial coefficients in long, the nth Catalan number, and
         // an in-place next-lexicographic-permutation (returns false past the last permutation).
         public class Combinatorics {

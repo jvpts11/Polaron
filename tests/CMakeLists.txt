@@ -1145,6 +1145,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Chinese remainder theorem and integer factorization (spec 34.6), pure LDP3.
+        add_test(NAME codegen_crt_factorize_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/crt_factorize.ldp3"
+            "-DCONTAINS=crt=23"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Number theory (gcd/lcm/modpow/Miller-Rabin/modInverse) + combinatorics, both pure LDP3.
         add_test(NAME codegen_number_theory_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
