@@ -1,0 +1,39 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import reflect;
+program MethodAnnotations;
+
+// Method-level annotation reflection (spec 31): a Method token reports its own applied annotations via
+// annotations(), mirroring Type.annotations() for classes. Prints:
+//   save ann=Audited count=1
+//   plain count=0
+public bundle main {
+    public namespace app {
+        public annotation Marker { }
+        public annotation Audited { }
+
+        public class Widget {
+            private int id;
+            public constructor Widget() { this.id = 0; }
+            [Audited]
+            public method save() returns void { return; }
+            public method plain() returns void { return; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Type t = reflect.typeOf<Widget>();
+                ArrayList<Method> ms = t.methods();
+                for (Method m in ms) {
+                    ArrayList<Annotation> anns = m.annotations();
+                    if (anns.size() > 0) {
+                        System.IO.Console.printf("%s ann=%s count=%d\n", m.name(), anns.get(0).name(), anns.size());
+                    } else {
+                        System.IO.Console.printf("%s count=0\n", m.name());
+                    }
+                }
+                return;
+            }
+        }
+    }
+}

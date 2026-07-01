@@ -3255,6 +3255,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "name" && call->args.empty()) return "String";
                 if (mem->member == "firstByte" && call->args.empty()) return "int";
                 if (mem->member == "invoke") return "void";  // invoke(receiver [, args])
+                if (mem->member == "annotations" && call->args.empty())
+                    return "ArrayList$Annotation";  // the method's own applied annotations (spec 31)
                 if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";  // identity
                 if (mem->member == "hash" && call->args.empty()) return "long";
                 error("Method has no method '" + mem->member + "'", call->loc);

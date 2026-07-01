@@ -1662,6 +1662,7 @@ struct CodeGenerator::Impl {
                     if (mem->member == "name") return "String";
                     if (mem->member == "invoke") return "void";
                     if (mem->member == "firstByte") return "int";
+                    if (mem->member == "annotations") return "ArrayList$Annotation";
                 }
                 if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                     if (enums.count(oid->name) > 0) {
@@ -2346,8 +2347,10 @@ struct CodeGenerator::Impl {
                 context,
                 {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(),
                  builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
-                 builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()},
-                "ReflectType");  // ..., i64 annCount, ptr annNames, ptr fieldGetters, ptr fieldSetters
+                 builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(),
+                 builder.getPtrTy(), builder.getPtrTy()},
+                "ReflectType");  // ..., ptr fieldGetters, ptr fieldSetters, ptr methodAnnCounts(i64[]),
+                                 // ptr methodAnnNames(ptr[] -> String[])
         return typeStructTy;
     }
     // The reflection Annotation token layout: { ptr name }. Lazily created.
@@ -2357,11 +2360,14 @@ struct CodeGenerator::Impl {
                 llvm::StructType::create(context, {builder.getPtrTy()}, "ReflectAnnotation");
         return annotationStructTy;
     }
-    // The reflection Method token layout: { ptr name, ptr fn }. Lazily created.
+    // The reflection Method token layout: { ptr name, ptr fn, i64 annCount, ptr annNames(String[]) }.
+    // The annotation slots let a Method report its own applied annotations (spec 31). Lazily created.
     llvm::StructType* methodTokenType() {
         if (methodStructTy == nullptr)
             methodStructTy = llvm::StructType::create(
-                context, {builder.getPtrTy(), builder.getPtrTy()}, "ReflectMethod");
+                context,
+                {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy()},
+                "ReflectMethod");
         return methodStructTy;
     }
     // The reflection Field token layout: { ptr name, ptr getFn, ptr setFn }. The accessors box/unbox
@@ -2469,6 +2475,30 @@ struct CodeGenerator::Impl {
         };
         llvm::Constant* fGetG = fnArray(getFns, "fieldget." + className);
         llvm::Constant* fSetG = fnArray(setFns, "fieldset." + className);
+        // Per-method annotation arrays (spec 31), parallel to methodNames: for each method, its own
+        // applied annotations as {count, String[]}, so a Method token can report them.
+        std::vector<llvm::Constant*> mAnnCounts, mAnnPtrs;
+        if (auto cit = classes.find(className); cit != classes.end() && cit->second.decl != nullptr) {
+            std::size_t mi = 0;
+            for (const ast::MemberPtr& m : cit->second.decl->members) {
+                if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get())) {
+                    std::vector<std::string> anns;
+                    for (const ast::AnnotationUse& a : md->annotations) anns.push_back(a.name);
+                    auto [cnt, arr] = nameArray(anns, "methodann." + className + "." + std::to_string(mi));
+                    mAnnCounts.push_back(cnt);
+                    mAnnPtrs.push_back(arr);
+                    ++mi;
+                }
+            }
+        }
+        llvm::ArrayType* mAnnCountArrTy = llvm::ArrayType::get(builder.getInt64Ty(), mAnnCounts.size());
+        auto* mAnnCountsG = new llvm::GlobalVariable(
+            module, mAnnCountArrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantArray::get(mAnnCountArrTy, mAnnCounts), "methodanncounts." + className);
+        llvm::ArrayType* mAnnPtrArrTy = llvm::ArrayType::get(builder.getPtrTy(), mAnnPtrs.size());
+        auto* mAnnPtrsG = new llvm::GlobalVariable(
+            module, mAnnPtrArrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantArray::get(mAnnPtrArrTy, mAnnPtrs), "methodannptrs." + className);
         // size of an instance + the (no-arg) constructor, for Type.instantiate().
         llvm::Constant* size = llvm::ConstantInt::get(builder.getInt64Ty(), 8);
         if (auto cit = classes.find(className); cit != classes.end())
@@ -2479,7 +2509,7 @@ struct CodeGenerator::Impl {
                                      : llvm::ConstantPointerNull::get(builder.getPtrTy());
         llvm::Constant* obj = llvm::ConstantStruct::get(
             typeTokenType(), {nameStr, mcount, mnames, fnsG, fcount, fnames, size, ctorFn, acount,
-                              anames, fGetG, fSetG});
+                              anames, fGetG, fSetG, mAnnCountsG, mAnnPtrsG});
         auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
                                            llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
         typeGlobals[className] = g;
@@ -4656,6 +4686,17 @@ struct CodeGenerator::Impl {
                                                        builder.CreateStructGEP(typeTokenType(), t, 3),
                                                        "fns")
                                   : nullptr;
+                    // Per-method annotation arrays (Type token slots 12, 13), for Method.annotations().
+                    llvm::Value* mAnnCounts =
+                        isMethods ? builder.CreateLoad(builder.getPtrTy(),
+                                                       builder.CreateStructGEP(typeTokenType(), t, 12),
+                                                       "manncounts")
+                                  : nullptr;
+                    llvm::Value* mAnnPtrs =
+                        isMethods ? builder.CreateLoad(builder.getPtrTy(),
+                                                       builder.CreateStructGEP(typeTokenType(), t, 13),
+                                                       "mannptrs")
+                                  : nullptr;
                     llvm::Value* fGet = isFields
                                             ? builder.CreateLoad(
                                                   builder.getPtrTy(),
@@ -4685,6 +4726,16 @@ struct CodeGenerator::Impl {
                         llvm::Value* fn = builder.CreateLoad(
                             builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), fns, i), "fn");
                         builder.CreateStore(fn, builder.CreateStructGEP(tokTy, tok, 1));
+                        // Method token slots 2 (annotation count), 3 (annotation String[]).
+                        builder.CreateStore(
+                            builder.CreateLoad(builder.getInt64Ty(),
+                                               builder.CreateGEP(builder.getInt64Ty(), mAnnCounts, i),
+                                               "mac"),
+                            builder.CreateStructGEP(tokTy, tok, 2));
+                        builder.CreateStore(
+                            builder.CreateLoad(builder.getPtrTy(),
+                                               builder.CreateGEP(builder.getPtrTy(), mAnnPtrs, i), "map"),
+                            builder.CreateStructGEP(tokTy, tok, 3));
                     } else if (isFields) {  // the field's get/set accessors (Field token slots 1, 2)
                         builder.CreateStore(
                             builder.CreateLoad(builder.getPtrTy(),
@@ -4748,6 +4799,46 @@ struct CodeGenerator::Impl {
                 if (mem->member == "name")
                     return builder.CreateLoad(builder.getPtrTy(),
                                               builder.CreateStructGEP(methodTokenType(), m, 0), "m.name");
+                // annotations(): the method's own applied annotations (spec 31), from token slots 2/3.
+                if (mem->member == "annotations") {
+                    const std::string listCls = "ArrayList$Annotation";
+                    auto clsIt = classes.find(listCls);
+                    auto ctorIt2 = functions.find(listCls + "." + listCls);
+                    auto addIt2 = functions.find(listCls + ".add");
+                    if (clsIt == classes.end() || ctorIt2 == functions.end() ||
+                        addIt2 == functions.end()) {
+                        error("internal: ArrayList$Annotation not available for reflection", mem->loc);
+                        return nullptr;
+                    }
+                    llvm::Value* list =
+                        builder.CreateCall(mallocFn(), {sizeOf(clsIt->second.type)}, "annlist");
+                    builder.CreateCall(ctorIt2->second, {list});
+                    llvm::Value* count = builder.CreateLoad(
+                        builder.getInt64Ty(), builder.CreateStructGEP(methodTokenType(), m, 2), "annc");
+                    llvm::Value* names = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(methodTokenType(), m, 3), "annn");
+                    llvm::Function* curFn = currentFn;
+                    llvm::Value* iSlot = createEntryAlloca("ai", builder.getInt64Ty());
+                    builder.CreateStore(builder.getInt64(0), iSlot);
+                    auto* hdr = llvm::BasicBlock::Create(context, "ma.hdr", curFn);
+                    auto* body = llvm::BasicBlock::Create(context, "ma.body", curFn);
+                    auto* done = llvm::BasicBlock::Create(context, "ma.done", curFn);
+                    builder.CreateBr(hdr);
+                    builder.SetInsertPoint(hdr);
+                    llvm::Value* i = builder.CreateLoad(builder.getInt64Ty(), iSlot, "i");
+                    builder.CreateCondBr(builder.CreateICmpSLT(i, count), body, done);
+                    builder.SetInsertPoint(body);
+                    llvm::Value* nm = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), names, i), "nm");
+                    llvm::Value* tok =
+                        builder.CreateCall(mallocFn(), {sizeOf(annotationTokenType())}, "ann");
+                    builder.CreateStore(nm, builder.CreateStructGEP(annotationTokenType(), tok, 0));
+                    builder.CreateCall(addIt2->second, {list, tok});
+                    builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
+                    builder.CreateBr(hdr);
+                    builder.SetInsertPoint(done);
+                    return list;
+                }
                 // firstByte(): the first machine-code byte of the method (0xCC = 204 after a
                 // physical unimport), so the code overwrite is observable.
                 if (mem->member == "firstByte") {
