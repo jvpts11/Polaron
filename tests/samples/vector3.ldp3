@@ -1,0 +1,21 @@
+import System.IO.Console;
+import System.Math.Vector3;
+program Vector3Demo;
+
+// 3D vector math (spec 34.6) in pure LDP3. Prints:
+//   cross=0.0,0.0,1.0 dot=0.0 len=5.0 nlen=1.0000
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Vector3 a = new Vector3(1.0, 0.0, 0.0) on heap;
+                mutable Vector3 b = new Vector3(0.0, 1.0, 0.0) on heap;
+                Vector3 c = a.cross(b);
+                mutable Vector3 v = new Vector3(3.0, 4.0, 0.0) on heap;
+                System.IO.Console.printf("cross=%.1f,%.1f,%.1f dot=%.1f len=%.1f nlen=%.4f\n",
+                    c.getX(), c.getY(), c.getZ(), a.dot(b), v.length(), v.normalize().length());
+                return;
+            }
+        }
+    }
+}

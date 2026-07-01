@@ -5806,6 +5806,32 @@ R"LDP3(
                 return det;
             }
         }
+        // A 3D vector (spec 34.6) of doubles: add/sub/scale, dot and cross products, length and normalize (via
+        // the Numerics square root). Immutable; operations return new heap vectors.
+        public class Vector3 {
+            private mutable double x;
+            private mutable double y;
+            private mutable double z;
+            public constructor Vector3(double x, double y, double z) { this.x = x; this.y = y; this.z = z; }
+            public method getX() returns double { return this.x; }
+            public method getY() returns double { return this.y; }
+            public method getZ() returns double { return this.z; }
+            public method add(Vector3 o) returns Vector3 { return new Vector3(this.x+o.getX(), this.y+o.getY(), this.z+o.getZ()) on heap; }
+            public method sub(Vector3 o) returns Vector3 { return new Vector3(this.x-o.getX(), this.y-o.getY(), this.z-o.getZ()) on heap; }
+            public method scale(double s) returns Vector3 { return new Vector3(this.x*s, this.y*s, this.z*s) on heap; }
+            public method dot(Vector3 o) returns double { return this.x*o.getX() + this.y*o.getY() + this.z*o.getZ(); }
+            public method cross(Vector3 o) returns Vector3 {
+                return new Vector3(this.y*o.getZ() - this.z*o.getY(),
+                                   this.z*o.getX() - this.x*o.getZ(),
+                                   this.x*o.getY() - this.y*o.getX()) on heap;
+            }
+            public method length() returns double { return Numerics.sqrt(this.dot(this)); }
+            public method normalize() returns Vector3 {
+                double m = this.length();
+                if (m == 0.0) { return new Vector3(0.0, 0.0, 0.0) on heap; }
+                return this.scale(1.0 / m);
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)

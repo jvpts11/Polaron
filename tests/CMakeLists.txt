@@ -1199,6 +1199,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # 3D vector math (spec 34.6) in pure LDP3: dot, cross, length, normalize.
+        add_test(NAME codegen_vector3_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/vector3.ldp3"
+            "-DCONTAINS=cross=0.0,0.0,1.0 dot=0.0 len=5.0 nlen=1.0000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Dense double matrix (spec 34.6) in pure LDP3: multiply, transpose, determinant.
         add_test(NAME codegen_matrixd_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
