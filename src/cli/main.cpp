@@ -4450,6 +4450,75 @@ R"LDP3(
                 return r;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Math namespace.
+R"LDP3(
+        // A dense linear-system solver (spec 34.6) via Gaussian elimination with partial pivoting. solve takes
+        // the system as a flat row-major n-by-(n+1) augmented matrix [A|b] (which it overwrites) and returns
+        // the solution vector x. Uses double throughout.
+        public class GaussSolver {
+            private static method dabs(double x) returns double { if (x < 0.0) { return 0.0 - x; } return x; }
+            public static method solve(double[] aug, int n) returns double[] {
+                int w = n + 1;
+                for (mutable int col = 0; col < n; col++) {
+                    mutable int piv = col;
+                    for (mutable int r = col + 1; r < n; r++) {
+                        if (GaussSolver.dabs(aug[r*w + col]) > GaussSolver.dabs(aug[piv*w + col])) { piv = r; }
+                    }
+                    if (piv != col) {
+                        for (mutable int c = 0; c < w; c++) {
+                            double tmp = aug[col*w + c];
+                            aug[col*w + c] = aug[piv*w + c];
+                            aug[piv*w + c] = tmp;
+                        }
+                    }
+                    double d = aug[col*w + col];
+                    for (mutable int r = col + 1; r < n; r++) {
+                        double factor = aug[r*w + col] / d;
+                        for (mutable int c = col; c < w; c++) {
+                            aug[r*w + c] = aug[r*w + c] - factor * aug[col*w + c];
+                        }
+                    }
+                }
+                mutable double[] x = new double[n]();
+                for (mutable int i = n - 1; i >= 0; i = i - 1) {
+                    mutable double s = aug[i*w + n];
+                    for (mutable int j = i + 1; j < n; j++) { s = s - aug[i*w + j] * x[j]; }
+                    x[i] = s / aug[i*w + i];
+                }
+                return x;
+            }
+        }
+        // Online mean and variance (spec 34.6) via Welford's algorithm: add samples one at a time in O(1) space,
+        // then read the running mean and the population or sample variance without keeping the data.
+        public class RunningStats {
+            private mutable int cnt;
+            private mutable double mean;
+            private mutable double m2;
+            public constructor RunningStats() {
+                this.cnt = 0;
+                this.mean = 0.0;
+                this.m2 = 0.0;
+            }
+            public method add(double x) returns void {
+                this.cnt = this.cnt + 1;
+                double delta = x - this.mean;
+                this.mean = this.mean + delta / cast<double>(this.cnt);
+                double delta2 = x - this.mean;
+                this.m2 = this.m2 + delta * delta2;
+                return;
+            }
+            public method getMean() returns double { return this.mean; }
+            public method populationVariance() returns double {
+                if (this.cnt < 1) { return 0.0; }
+                return this.m2 / cast<double>(this.cnt);
+            }
+            public method sampleVariance() returns double {
+                if (this.cnt < 2) { return 0.0; }
+                return this.m2 / cast<double>(this.cnt - 1);
+            }
+            public method count() returns int { return this.cnt; }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)
