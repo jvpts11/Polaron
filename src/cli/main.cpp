@@ -3219,6 +3219,98 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
+        // Knuth-Morris-Pratt substring search (spec 34.1): a failure table (longest proper prefix that is also
+        // a suffix) lets the scan never re-read text. indexOf returns the first match or -1; count reports
+        // occurrences, counting overlaps.
+        public class Kmp {
+            private static method buildLps(String p) returns int[] {
+                int m = p.length();
+                mutable int[] lps = new int[m + 1]();
+                mutable int len = 0;
+                mutable int i = 1;
+                while (i < m) {
+                    if (p.charAt(i) == p.charAt(len)) {
+                        len = len + 1; lps[i] = len; i = i + 1;
+                    } else {
+                        if (len != 0) { len = lps[len - 1]; }
+                        else { lps[i] = 0; i = i + 1; }
+                    }
+                }
+                return lps;
+            }
+            public static method indexOf(String text, String pattern) returns int {
+                int n = text.length();
+                int m = pattern.length();
+                if (m == 0) { return 0; }
+                int[] lps = Kmp.buildLps(pattern);
+                mutable int i = 0;
+                mutable int j = 0;
+                while (i < n) {
+                    if (text.charAt(i) == pattern.charAt(j)) {
+                        i = i + 1; j = j + 1;
+                        if (j == m) { return i - m; }
+                    } else {
+                        if (j != 0) { j = lps[j - 1]; }
+                        else { i = i + 1; }
+                    }
+                }
+                return -1;
+            }
+            public static method count(String text, String pattern) returns int {
+                int n = text.length();
+                int m = pattern.length();
+                if (m == 0) { return 0; }
+                int[] lps = Kmp.buildLps(pattern);
+                mutable int i = 0;
+                mutable int j = 0;
+                mutable int total = 0;
+                while (i < n) {
+                    if (text.charAt(i) == pattern.charAt(j)) {
+                        i = i + 1; j = j + 1;
+                        if (j == m) { total = total + 1; j = lps[j - 1]; }
+                    } else {
+                        if (j != 0) { j = lps[j - 1]; }
+                        else { i = i + 1; }
+                    }
+                }
+                return total;
+            }
+        }
+        // Manacher's algorithm (spec 34.1): the length of the longest palindromic substring in linear time,
+        // over a transformed array with sentinels so odd and even palindromes are handled uniformly.
+        public class Manacher {
+            public static method longestPalindrome(String s) returns int {
+                int n = s.length();
+                if (n == 0) { return 0; }
+                int t = 2 * n + 3;
+                mutable int[] c = new int[t]();
+                c[0] = 1;
+                c[t - 1] = 2;
+                for (mutable int i = 0; i < n; i++) {
+                    c[2 + 2*i] = cast<int>(s.charAt(i)) & 255;
+                    c[1 + 2*i] = 3;
+                }
+                c[t - 2] = 3;
+                mutable int[] p = new int[t]();
+                mutable int center = 0;
+                mutable int right = 0;
+                mutable int best = 0;
+                for (mutable int i = 1; i < t - 1; i++) {
+                    if (i < right) {
+                        int mirror = 2 * center - i;
+                        int span = right - i;
+                        if (p[mirror] < span) { p[i] = p[mirror]; } else { p[i] = span; }
+                    }
+                    while (c[i + p[i] + 1] == c[i - p[i] - 1]) { p[i] = p[i] + 1; }
+                    if (i + p[i] > right) { center = i; right = i + p[i]; }
+                    if (p[i] > best) { best = p[i]; }
+                }
+                return best;
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
         // Run-length encoding of a string (spec 34): each run of a repeated character becomes that character
         // followed by its decimal count, e.g. "aaabbbbc" -> "a3b4c1". decode reverses it, reading a
         // character and the digits that follow as a repeat count.

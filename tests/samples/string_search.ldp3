@@ -1,0 +1,25 @@
+import System.IO.Console;
+import System.Text.Kmp;
+import System.Text.Manacher;
+program StringSearch;
+
+// String algorithms (spec 34.1) in pure LDP3: KMP substring search and Manacher longest palindrome. Prints:
+//   idx=6 cnt=3 miss=-1
+//   pal1=3 pal2=2 pal3=10
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("idx=%d cnt=%d miss=%d\n",
+                    Kmp.indexOf("abxabcabcaby", "abcaby"),
+                    Kmp.count("aaaa", "aa"),
+                    Kmp.indexOf("hello", "world"));
+                System.IO.Console.printf("pal1=%d pal2=%d pal3=%d\n",
+                    Manacher.longestPalindrome("babad"),
+                    Manacher.longestPalindrome("cbbd"),
+                    Manacher.longestPalindrome("forgeeksskeegfor"));
+                return;
+            }
+        }
+    }
+}
