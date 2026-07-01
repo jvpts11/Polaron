@@ -3533,6 +3533,56 @@ R"LDP3(
                 return sb.toString();
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // A simple deterministic finite state machine (spec 34): register (from, event) -> to transitions and
+        // drive them with fire(event), which advances the current state and returns whether a transition
+        // existed. Transitions live in a "state|event" -> next map.
+        public class StateMachine {
+            private mutable HashMap<String, String> transitions;
+            private mutable String current;
+            public constructor StateMachine(String initial) {
+                this.transitions = new HashMap<String, String>() on heap;
+                this.current = initial;
+            }
+            public method addTransition(String from, String event, String to) returns void {
+                this.transitions.put(from.concat("|").concat(event), to);
+                return;
+            }
+            public method fire(String event) returns boolean {
+                String key = this.current.concat("|").concat(event);
+                if (this.transitions.containsKey(key)) { this.current = this.transitions.get(key); return true; }
+                return false;
+            }
+            public method state() returns String { return this.current; }
+        }
+        // Glob / wildcard matching (spec 34): '*' matches any run of characters (including none) and '?' matches
+        // exactly one. Iterative with backtracking on the last '*', so it runs in linear space.
+        public class Glob {
+            public static method matches(String pattern, String text) returns boolean {
+                int pn = pattern.length();
+                int tn = text.length();
+                mutable int p = 0;
+                mutable int t = 0;
+                mutable int star = -1;
+                mutable int mark = 0;
+                while (t < tn) {
+                    if (p < pn && (pattern.charAt(p) == '?' || pattern.charAt(p) == text.charAt(t))) {
+                        p = p + 1; t = t + 1;
+                    } else {
+                        if (p < pn && pattern.charAt(p) == '*') {
+                            star = p; mark = t; p = p + 1;
+                        } else {
+                            if (star != -1) { p = star + 1; mark = mark + 1; t = mark; }
+                            else { return false; }
+                        }
+                    }
+                }
+                while (p < pn && pattern.charAt(p) == '*') { p = p + 1; }
+                return p == pn;
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
