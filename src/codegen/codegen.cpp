@@ -5925,6 +5925,19 @@ struct CodeGenerator::Impl {
                     return;
                 }
             }
+            // Empty-state region (spec 17.2 form 3): `region r;` with no initializer declares an
+            // unallocated region (null block) that a later `r = itself.allocate(...)` fills via the
+            // ordinary assignment path. Unlike a lazy region there is no remembered size, so it is NOT
+            // put in lazyRegions_; scope-end free(null) is harmless if it is never allocated.
+            if (declType == "region" && vd->init == nullptr) {
+                llvm::Value* slot = createEntryAlloca(vd->name, builder.getPtrTy());
+                builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
+                locals[vd->name] = LocalSlot{slot, "region", vd->isVolatile};
+                if (vd->isVolatile) volatileRegions_.insert(vd->name);  // spec 37.5 (MMIO)
+                if (!vd->isEternal)
+                    scopeRegions.push_back(RegionLocal{slot, vd->isEternal, vd->name});
+                return;
+            }
             llvm::Value* initV = emitExpr(*vd->init);
             pendingPersistKey.clear();
             if (initV == nullptr) return;

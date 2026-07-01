@@ -2259,6 +2259,11 @@ std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
         decl->type = parseTypeRef();
     }
     decl->name = expect(TokenKind::Identifier, "a variable name").lexeme;
+    // A region may be declared empty (`region r;`, spec 17.2 form 3) and allocated later via
+    // `r = itself.allocate(...)`; it is the one declaration form that omits the initializer.
+    if (!decl->isVar && decl->type.name == "region" && check(TokenKind::Semicolon)) {
+        return decl;  // init stays null
+    }
     expect(TokenKind::Assign, "'=' (variables require an initializer)");
     decl->init = parseExpression();
     if (!decl->isVar) rewriteVariantCtor(decl->init, decl->type);

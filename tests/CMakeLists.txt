@@ -3029,6 +3029,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Region empty-state (spec 17.2 form 3): `region r;` declared unallocated, allocated later.
+        add_test(NAME codegen_region_empty_state_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_empty_state.ldp3"
+            "-DCONTAINS=v=42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # lazy import (spec 37.3): a lazily imported class runs its onClassLoad on the first
         # instance, not at boot, so "start" prints before "server loaded".
         add_test(NAME codegen_lazy_import_runs COMMAND "${CMAKE_COMMAND}"

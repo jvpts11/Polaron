@@ -1538,7 +1538,9 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             error("assignment to undeclared variable '" + id->name + "'", loc);
             return;
         }
-        if (!var->isMutable) {
+        // A region handle may be (re)bound to bind an empty `region r;` to its allocation (spec 17.2
+        // form 3), so region locals are assignable without an explicit `mutable`.
+        if (!var->isMutable && var->type != "region") {
             error("cannot assign to immutable variable '" + id->name + "' (declare it 'mutable')",
                   loc);
         }
@@ -1843,7 +1845,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
-        const std::string initType = typeOf(*vd->init);
+        // A region may be declared empty (`region r;`, spec 17.2 form 3) and allocated later; its
+        // init is then null. Every other declaration carries an initializer (the parser enforces it).
+        const std::string initType = vd->init ? typeOf(*vd->init) : std::string();
         const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);
         if (!vd->isVar) checkTypeAccessible(declType, vd->loc);
         if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType) &&
@@ -1871,7 +1875,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get())) {
             regionConstraints_[vd->name] = RegionConstraints{ri->accepts, ri->rejects};
         }
-        checkOwnershipAssign(declType, *vd->init, vd->loc);
+        if (vd->init) checkOwnershipAssign(declType, *vd->init, vd->loc);
         return;
     }
     if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {

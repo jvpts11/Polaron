@@ -1,0 +1,26 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionEmptyState;
+
+// Region empty-state (spec 17.2 form 3): a region declared with no initializer (`region r;`) is
+// allocated later via `r = itself.allocate(...)`, then used normally. Prints:
+//   v=42
+public bundle main {
+    public namespace app {
+        public class Cell {
+            public mutable int v;
+            public constructor Cell() { this.v = 0; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                region r;                            // empty-state: no backing yet
+                r = itself.allocate(64 kilobytes);   // allocate now
+                Cell* c = new Cell() in region r;
+                c.v = 42;
+                System.IO.Console.println($"v={c.v}");
+                release region r;
+                return;
+            }
+        }
+    }
+}
