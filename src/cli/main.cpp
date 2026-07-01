@@ -6944,6 +6944,44 @@ R"LDP3(
             }
         }
     }
+)LDP3"
+// System.Test in its own literal (the unit-test framework, spec 34).
+R"LDP3(
+    public namespace System.Test {
+        // Boolean assertion helpers (spec 34): each returns whether the check holds, to be fed to
+        // TestRunner.check. near compares doubles within an epsilon.
+        public class Assert {
+            public static method eq(int a, int b) returns boolean { return a == b; }
+            public static method eqLong(long a, long b) returns boolean { return a == b; }
+            public static method eqStr(String a, String b) returns boolean { return a.equals(b); }
+            public static method near(double a, double b, double eps) returns boolean {
+                mutable double d = a - b;
+                if (d < 0.0) { d = 0.0 - d; }
+                return d <= eps;
+            }
+            public static method isTrue(boolean c) returns boolean { return c; }
+            public static method isFalse(boolean c) returns boolean { return !c; }
+        }
+        // A minimal unit-test runner (spec 34): check tallies a pass/fail and prints a line; report prints the
+        // summary and allPassed says whether every check held. Lets LDP3 code (and this stdlib) self-test.
+        public class TestRunner {
+            private mutable int passed;
+            private mutable int failed;
+            public constructor TestRunner() { this.passed = 0; this.failed = 0; }
+            public method check(String name, boolean cond) returns void {
+                if (cond) { this.passed = this.passed + 1; System.IO.Console.printf("PASS %s\n", name); }
+                else { this.failed = this.failed + 1; System.IO.Console.printf("FAIL %s\n", name); }
+                return;
+            }
+            public method passed() returns int { return this.passed; }
+            public method failed() returns int { return this.failed; }
+            public method allPassed() returns boolean { return this.failed == 0; }
+            public method report() returns void {
+                System.IO.Console.printf("%d passed, %d failed\n", this.passed, this.failed);
+                return;
+            }
+        }
+    }
 }
 )LDP3";
 
