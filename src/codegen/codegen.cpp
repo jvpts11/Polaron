@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -36,6 +37,82 @@
 namespace ldp3 {
 
 namespace {
+
+// ---- Free-variable collection for lambda auto-capture ----
+// Walk a lambda body and gather every identifier it references (as a value or a call target),
+// descending into nested lambdas so that a variable used only by an inner lambda is still captured
+// at each enclosing level (capture chaining). Leaf nodes (literals, break/continue/labels) contribute
+// nothing; a node type not handled here simply isn't traversed (its identifiers go uncaptured -- a safe
+// degradation, never a crash). The caller intersects this set with the enclosing locals, so type names,
+// static receivers, and the lambda's own params are filtered out there.
+void collectRefs(const ast::Expr* e, std::set<std::string>& out);
+void collectRefs(const ast::Stmt* s, std::set<std::string>& out);
+void collectRefs(const ast::Block& b, std::set<std::string>& out) {
+    for (const auto& st : b.statements) collectRefs(st.get(), out);
+}
+
+void collectRefs(const ast::Expr* e, std::set<std::string>& out) {
+    if (!e) return;
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) { out.insert(id->name); return; }
+    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) { collectRefs(m->object.get(), out); return; }
+    if (const auto* c = dynamic_cast<const ast::CallExpr*>(e)) {
+        collectRefs(c->callee.get(), out);
+        for (const auto& a : c->args) collectRefs(a.get(), out);
+        return;
+    }
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e)) { collectRefs(b->lhs.get(), out); collectRefs(b->rhs.get(), out); return; }
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e)) { collectRefs(u->operand.get(), out); return; }
+    if (const auto* t = dynamic_cast<const ast::TernaryExpr*>(e)) { collectRefs(t->cond.get(), out); collectRefs(t->thenExpr.get(), out); collectRefs(t->elseExpr.get(), out); return; }
+    if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(e)) { collectRefs(nc->lhs.get(), out); collectRefs(nc->rhs.get(), out); return; }
+    if (const auto* idx = dynamic_cast<const ast::IndexExpr*>(e)) { collectRefs(idx->array.get(), out); collectRefs(idx->index.get(), out); return; }
+    if (const auto* nw = dynamic_cast<const ast::NewExpr*>(e)) { for (const auto& a : nw->args) collectRefs(a.get(), out); return; }
+    if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(e)) { collectRefs(na->size.get(), out); return; }
+    if (const auto* al = dynamic_cast<const ast::ArrayLiteralExpr*>(e)) { for (const auto& x : al->elements) collectRefs(x.get(), out); return; }
+    if (const auto* tp = dynamic_cast<const ast::TupleExpr*>(e)) { for (const auto& x : tp->elements) collectRefs(x.get(), out); return; }
+    if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(e)) { for (const auto& x : is->exprs) collectRefs(x.get(), out); return; }
+    if (const auto* cst = dynamic_cast<const ast::CastExpr*>(e)) { collectRefs(cst->operand.get(), out); return; }
+    if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(e)) { collectRefs(aw->operand.get(), out); return; }
+    if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(e)) { collectRefs(mv->operand.get(), out); return; }
+    if (const auto* tr = dynamic_cast<const ast::TryExpr*>(e)) { collectRefs(tr->operand.get(), out); return; }
+    if (const auto* od = dynamic_cast<const ast::OldExpr*>(e)) { collectRefs(od->inner.get(), out); return; }
+    if (const auto* rg = dynamic_cast<const ast::RangeExpr*>(e)) { collectRefs(rg->start.get(), out); collectRefs(rg->end.get(), out); collectRefs(rg->step.get(), out); return; }
+    if (const auto* mr = dynamic_cast<const ast::MethodRefExpr*>(e)) { collectRefs(mr->object.get(), out); return; }
+    if (const auto* lm = dynamic_cast<const ast::LambdaExpr*>(e)) { collectRefs(lm->body, out); return; }  // descend for capture chaining
+    if (const auto* mx = dynamic_cast<const ast::MatchExpr*>(e)) {
+        collectRefs(mx->subject.get(), out);
+        for (const auto& cs : mx->cases) { collectRefs(cs.result.get(), out); collectRefs(cs.body, out); }
+        collectRefs(mx->defaultResult.get(), out);
+        if (mx->defaultBody) collectRefs(*mx->defaultBody, out);
+        return;
+    }
+    // literals and other leaf expressions contribute no identifiers
+}
+
+void collectRefs(const ast::Stmt* s, std::set<std::string>& out) {
+    if (!s) return;
+    if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s)) { collectRefs(es->expr.get(), out); return; }
+    if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(s)) { collectRefs(rs->value.get(), out); return; }
+    if (const auto* ys = dynamic_cast<const ast::YieldStmt*>(s)) { collectRefs(ys->value.get(), out); return; }
+    if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) { collectRefs(vd->init.get(), out); return; }
+    if (const auto* td = dynamic_cast<const ast::TupleDeclStmt*>(s)) { collectRefs(td->init.get(), out); return; }
+    if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) { collectRefs(as->target.get(), out); collectRefs(as->value.get(), out); return; }
+    if (const auto* ic = dynamic_cast<const ast::IncDecStmt*>(s)) { collectRefs(ic->target.get(), out); return; }
+    if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(s)) { collectRefs(ifs->cond.get(), out); collectRefs(ifs->thenBlock, out); if (ifs->elseBlock) collectRefs(*ifs->elseBlock, out); return; }
+    if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(s)) { collectRefs(ws->cond.get(), out); collectRefs(ws->body, out); return; }
+    if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(s)) { collectRefs(dw->body, out); collectRefs(dw->cond.get(), out); return; }
+    if (const auto* fs = dynamic_cast<const ast::ForStmt*>(s)) { collectRefs(fs->init.get(), out); collectRefs(fs->cond.get(), out); collectRefs(fs->update.get(), out); collectRefs(fs->body, out); return; }
+    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(s)) { collectRefs(fe->iterable.get(), out); collectRefs(fe->body, out); return; }
+    if (const auto* df = dynamic_cast<const ast::DeferStmt*>(s)) { collectRefs(df->body, out); return; }
+    if (const auto* us = dynamic_cast<const ast::UsingStmt*>(s)) { collectRefs(us->decl.get(), out); collectRefs(us->body, out); return; }
+    if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(s)) { collectRefs(sy->mutex.get(), out); collectRefs(sy->body, out); return; }
+    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(s)) { collectRefs(ms->subject.get(), out); for (const auto& cs : ms->cases) { collectRefs(cs.result.get(), out); collectRefs(cs.body, out); } if (ms->defaultBody) collectRefs(*ms->defaultBody, out); return; }
+    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(s)) { collectRefs(sw->subject.get(), out); for (const auto& cs : sw->cases) { collectRefs(cs.value.get(), out); collectRefs(cs.body, out); } if (sw->defaultBody) collectRefs(*sw->defaultBody, out); return; }
+    if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(s)) { collectRefs(th->value.get(), out); return; }
+    if (const auto* ts = dynamic_cast<const ast::TryStmt*>(s)) { collectRefs(ts->body, out); for (const auto& c : ts->catches) collectRefs(c.body, out); if (ts->finallyBlock) collectRefs(*ts->finallyBlock, out); return; }
+    if (const auto* ls = dynamic_cast<const ast::LabeledStmt*>(s)) { collectRefs(ls->stmt.get(), out); return; }
+    if (const auto* dl = dynamic_cast<const ast::DeleteStmt*>(s)) { collectRefs(dl->target.get(), out); return; }
+    // leaf statements (break/continue/goto/label/asm/...) contribute no identifiers
+}
 
 std::string resolveEscapes(const std::string& raw) {
     std::string out;
@@ -2493,11 +2570,32 @@ struct CodeGenerator::Impl {
             llvm::Function* fn = llvm::Function::Create(
                 llvm::FunctionType::get(rt, pts, false), llvm::Function::InternalLinkage,
                 "__ldp3_lambda_" + std::to_string(lambdaCounter++), module);
+            // Effective captures = explicitly-declared captures plus auto-captured free variables: any
+            // identifier the body references that resolves to an enclosing local (and isn't the lambda's
+            // own param or an already-declared capture). Auto-captures are byvalue, which copies the value
+            // (for a function value, the closure pointer) so an escaping lambda never dangles on a stack var.
+            std::vector<ast::Capture> eff = lam->captures;
+            {
+                std::set<std::string> refs;
+                collectRefs(lam->body, refs);
+                std::set<std::string> excluded;
+                for (const auto& p : lam->params) excluded.insert(p.name);
+                for (const auto& cap : lam->captures) excluded.insert(cap.name);
+                for (const auto& name : refs) {
+                    if (excluded.count(name)) continue;
+                    if (locals.find(name) == locals.end()) continue;  // only enclosing locals
+                    ast::Capture c;
+                    c.byRef = false;
+                    c.name = name;
+                    eff.push_back(c);
+                    excluded.insert(name);
+                }
+            }
             // Collect each captured variable's storage and type from the enclosing scope before
             // emitBody clears `locals`.
             std::vector<llvm::Value*> capStorages;
             std::vector<std::string> capTypes;
-            for (const auto& cap : lam->captures) {
+            for (const auto& cap : eff) {
                 auto cit = locals.find(cap.name);
                 capStorages.push_back(cit != locals.end() ? cit->second.storage : nullptr);
                 capTypes.push_back(cit != locals.end() ? cit->second.type : std::string("int"));
@@ -2511,7 +2609,7 @@ struct CodeGenerator::Impl {
             auto sOld = oldValues_;  // emitBody clears these; the enclosing method's old() slots must survive
             auto sIP = builder.saveIP();
             emitBody(fn, lam->body, lam->params, "", rt, nullptr, nullptr, nullptr, nullptr,
-                     /*hasEnv=*/true, &lam->captures, &capTypes);
+                     /*hasEnv=*/true, &eff, &capTypes);
             currentFn = sFn; currentClass = sCls; currentRetType = sRet;
             currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
             currentDtorChain = sDtorChain;
@@ -2522,13 +2620,13 @@ struct CodeGenerator::Impl {
             // Build the environment: one pointer slot per capture. byvalue copies the value into a
             // fresh heap slot; byref shares the variable's own storage.
             llvm::Value* envPtr = llvm::ConstantPointerNull::get(builder.getPtrTy());
-            if (!lam->captures.empty()) {
+            if (!eff.empty()) {
                 envPtr = builder.CreateCall(
-                    mallocFn(), {builder.getInt64(8 * (std::int64_t)lam->captures.size())}, "env");
-                for (std::size_t i = 0; i < lam->captures.size(); i++) {
+                    mallocFn(), {builder.getInt64(8 * (std::int64_t)eff.size())}, "env");
+                for (std::size_t i = 0; i < eff.size(); i++) {
                     llvm::Value* dst =
                         builder.CreateGEP(builder.getPtrTy(), envPtr, builder.getInt32(i));
-                    if (lam->captures[i].byRef) {
+                    if (eff[i].byRef) {
                         builder.CreateStore(capStorages[i], dst);  // share the original storage
                     } else {
                         llvm::Type* vt = llvmType(capTypes[i]);

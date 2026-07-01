@@ -1,0 +1,29 @@
+import System.IO.Console;
+program ClosuresDemo;
+
+// Closures via automatic free-variable capture (spec 22): a lambda that references an enclosing local
+// or parameter captures it by value. makeAdder captures a primitive; compose captures and invokes two
+// function values. Prints:
+//   add5=15 dbl=20 composed=30
+public bundle main {
+    public namespace app {
+        public class Fns {
+            public static method makeAdder(int n) returns function<int, int> {
+                return lambda(int x) returns int { return x + n; };
+            }
+            public static method compose(function<int, int> f, function<int, int> g) returns function<int, int> {
+                return lambda(int x) returns int { return f(g(x)); };
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                function<int, int> add5 = Fns.makeAdder(5);
+                function<int, int> dbl = lambda(int x) returns int { return x * 2; };
+                function<int, int> add5thenDbl = Fns.compose(dbl, add5);   // dbl(add5(x))
+                System.IO.Console.printf("add5=%d dbl=%d composed=%d\n", add5(10), dbl(10), add5thenDbl(10));
+                return;
+            }
+        }
+    }
+}
