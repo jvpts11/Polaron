@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Text.Colors;
+program ColorsDemo;
+
+// 24-bit RGB color utilities (spec 34) in pure LDP3. Prints:
+//   pack=16744448 hex=#ff8000 r=255 g=128 b=0
+//   from=16744448 lerp=8355711 lum=76
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int orange = Colors.pack(255, 128, 0);
+                System.IO.Console.printf("pack=%d hex=%s r=%d g=%d b=%d\n",
+                    orange, Colors.toHex(orange), Colors.red(orange), Colors.green(orange), Colors.blue(orange));
+                System.IO.Console.printf("from=%d lerp=%d lum=%d\n",
+                    Colors.fromHex("#ff8000"),
+                    Colors.lerp(0, 16777215, 50),
+                    Colors.luminance(Colors.pack(255, 0, 0)));
+                return;
+            }
+        }
+    }
+}

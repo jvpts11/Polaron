@@ -1109,6 +1109,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # 24-bit RGB color utilities (spec 34): pack/unpack, hex, lerp, luminance, pure LDP3.
+        add_test(NAME codegen_colors_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/colors.ldp3"
+            "-DCONTAINS=pack=16744448 hex=#ff8000 r=255 g=128 b=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Probabilistic data structures (spec 34.1): Count-Min sketch and HyperLogLog, pure LDP3.
         add_test(NAME codegen_probabilistic_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

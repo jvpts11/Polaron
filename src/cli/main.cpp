@@ -3932,6 +3932,60 @@ R"LDP3(
                 return v;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // 24-bit RGB color utilities (spec 34): pack/unpack channels into a 0xRRGGBB int, hex parse/format,
+        // linear interpolation between two colors (t is a 0..100 percent), Rec.601 luminance and grayscale.
+        public class Colors {
+            public static method pack(int r, int g, int b) returns int {
+                return ((r & 255) << 16) | ((g & 255) << 8) | (b & 255);
+            }
+            public static method red(int c) returns int { return (c >> 16) & 255; }
+            public static method green(int c) returns int { return (c >> 8) & 255; }
+            public static method blue(int c) returns int { return c & 255; }
+            private static method hx(int v) returns char {
+                String d = "0123456789abcdef";
+                return d.charAt(v & 15);
+            }
+            public static method toHex(int c) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendChar('#');
+                int r = Colors.red(c);
+                int g = Colors.green(c);
+                int b = Colors.blue(c);
+                sb.appendChar(Colors.hx(r >> 4)); sb.appendChar(Colors.hx(r));
+                sb.appendChar(Colors.hx(g >> 4)); sb.appendChar(Colors.hx(g));
+                sb.appendChar(Colors.hx(b >> 4)); sb.appendChar(Colors.hx(b));
+                return sb.toString();
+            }
+            private static method hv(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - cast<int>('0'); }
+                if (c >= 'a' && c <= 'f') { return cast<int>(c) - cast<int>('a') + 10; }
+                if (c >= 'A' && c <= 'F') { return cast<int>(c) - cast<int>('A') + 10; }
+                return 0;
+            }
+            public static method fromHex(String s) returns int {
+                mutable int i = 0;
+                if (s.length() > 0 && s.charAt(0) == '#') { i = 1; }
+                mutable int v = 0;
+                while (i < s.length()) { v = (v << 4) | Colors.hv(s.charAt(i)); i = i + 1; }
+                return v & 16777215;
+            }
+            public static method lerp(int c1, int c2, int t) returns int {
+                int r = (Colors.red(c1) * (100 - t) + Colors.red(c2) * t) / 100;
+                int g = (Colors.green(c1) * (100 - t) + Colors.green(c2) * t) / 100;
+                int b = (Colors.blue(c1) * (100 - t) + Colors.blue(c2) * t) / 100;
+                return Colors.pack(r, g, b);
+            }
+            public static method luminance(int c) returns int {
+                return (299 * Colors.red(c) + 587 * Colors.green(c) + 114 * Colors.blue(c)) / 1000;
+            }
+            public static method grayscale(int c) returns int {
+                int y = Colors.luminance(c);
+                return Colors.pack(y, y, y);
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
