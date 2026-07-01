@@ -5208,6 +5208,90 @@ R"LDP3(
                 return cast<int>(est);
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Math namespace.
+R"LDP3(
+        // Self-contained transcendental functions (spec 34.6) in pure LDP3, so scientific classes never
+        // depend on the Math builtin (whose bare name can bind to a user class called Math). sqrt is Newton's
+        // method; ln reduces to [1,2) then an atanh series; exp reduces by ln2 then a Taylor series; sin/cos
+        // reduce modulo 2*pi then Taylor; pow is exp(e*ln(b)) for positive b.
+        public class Numerics {
+            public static method pi() returns double { return 3.14159265358979323846; }
+            public static method abs(double x) returns double { if (x < 0.0) { return 0.0 - x; } return x; }
+            public static method sqrt(double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                mutable double g = x;
+                if (g > 1.0) { g = x / 2.0; }
+                for (mutable int i = 0; i < 40; i++) { g = 0.5 * (g + x / g); }
+                return g;
+            }
+            public static method ln(double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                mutable double v = x;
+                mutable int e = 0;
+                while (v >= 2.0) { v = v / 2.0; e = e + 1; }
+                while (v < 1.0) { v = v * 2.0; e = e - 1; }
+                double t = (v - 1.0) / (v + 1.0);
+                double t2 = t * t;
+                mutable double term = t;
+                mutable double sum = 0.0;
+                mutable int k = 1;
+                while (k <= 25) { sum = sum + term / cast<double>(k); term = term * t2; k = k + 2; }
+                return 2.0 * sum + cast<double>(e) * 0.6931471805599453;
+            }
+            public static method exp(double x) returns double {
+                double ln2 = 0.6931471805599453;
+                double xr = x / ln2;
+                mutable int k = cast<int>(xr + 0.5);
+                if (x < 0.0) { k = cast<int>(xr - 0.5); }
+                double r = x - cast<double>(k) * ln2;
+                mutable double term = 1.0;
+                mutable double sum = 1.0;
+                for (mutable int i = 1; i <= 18; i++) { term = term * r / cast<double>(i); sum = sum + term; }
+                mutable double p = 1.0;
+                mutable int kk = k;
+                if (kk >= 0) { for (mutable int i = 0; i < kk; i++) { p = p * 2.0; } }
+                else { for (mutable int i = 0; i < 0 - kk; i++) { p = p / 2.0; } }
+                return sum * p;
+            }
+            private static method reduce(double x) returns double {
+                double tau = 6.283185307179586;
+                mutable double r = x;
+                while (r > 3.141592653589793) { r = r - tau; }
+                while (r < 0.0 - 3.141592653589793) { r = r + tau; }
+                return r;
+            }
+            public static method sin(double x) returns double {
+                double r = Numerics.reduce(x);
+                double r2 = r * r;
+                mutable double term = r;
+                mutable double sum = r;
+                mutable int n = 1;
+                while (n <= 12) {
+                    term = 0.0 - term * r2 / cast<double>((2*n) * (2*n + 1));
+                    sum = sum + term;
+                    n = n + 1;
+                }
+                return sum;
+            }
+            public static method cos(double x) returns double {
+                double r = Numerics.reduce(x);
+                double r2 = r * r;
+                mutable double term = 1.0;
+                mutable double sum = 1.0;
+                mutable int n = 1;
+                while (n <= 12) {
+                    term = 0.0 - term * r2 / cast<double>((2*n - 1) * (2*n));
+                    sum = sum + term;
+                    n = n + 1;
+                }
+                return sum;
+            }
+            public static method pow(double b, double e) returns double {
+                if (b <= 0.0) { return 0.0; }
+                return Numerics.exp(e * Numerics.ln(b));
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)

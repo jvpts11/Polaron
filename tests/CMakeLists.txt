@@ -1109,6 +1109,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Self-contained transcendentals (spec 34.6): sqrt/exp/ln/sin/cos/pow in pure LDP3.
+        add_test(NAME codegen_numerics_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/numerics.ldp3"
+            "-DCONTAINS=sqrt2=1.414214 exp1=2.718282 ln_e=1.000000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # 24-bit RGB color utilities (spec 34): pack/unpack, hex, lerp, luminance, pure LDP3.
         add_test(NAME codegen_colors_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
