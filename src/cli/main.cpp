@@ -1585,6 +1585,237 @@ R"LDP3(
                 return out;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Collections namespace.
+R"LDP3(
+        // A Fenwick tree / binary indexed tree (spec 34.1): O(log n) point updates and prefix/range sums over
+        // int values. Indices are 0-based at the public API; the lowest-set-bit trick (x & -x) walks the tree.
+        public class Fenwick {
+            private mutable int[] tree;
+            private mutable int n;
+            public constructor Fenwick(int size) {
+                this.n = size;
+                this.tree = new int[size + 1]();
+            }
+            public method add(int i, int delta) returns void {
+                mutable int x = i + 1;
+                while (x <= this.n) { this.tree[x] = this.tree[x] + delta; x = x + (x & (0 - x)); }
+                return;
+            }
+            public method prefixSum(int i) returns int {
+                mutable int x = i + 1;
+                mutable int s = 0;
+                while (x > 0) { s = s + this.tree[x]; x = x - (x & (0 - x)); }
+                return s;
+            }
+            public method rangeSum(int lo, int hi) returns int {
+                if (lo == 0) { return this.prefixSum(hi); }
+                return this.prefixSum(hi) - this.prefixSum(lo - 1);
+            }
+        }
+        // An iterative segment tree (spec 34.1) for range sums with O(log n) point updates. Built from an int[];
+        // query(lo, hi) is the inclusive sum, update(i, value) sets one position. Works for any length n.
+        public class SegmentTree {
+            private mutable int[] t;
+            private mutable int n;
+            public constructor SegmentTree(int[] data) {
+                this.n = data.length();
+                this.t = new int[2 * this.n]();
+                for (mutable int i = 0; i < this.n; i++) { this.t[this.n + i] = data[i]; }
+                for (mutable int i = this.n - 1; i >= 1; i = i - 1) { this.t[i] = this.t[2*i] + this.t[2*i+1]; }
+            }
+            public method update(int i, int value) returns void {
+                mutable int p = i + this.n;
+                this.t[p] = value;
+                p = p / 2;
+                while (p >= 1) { this.t[p] = this.t[2*p] + this.t[2*p+1]; p = p / 2; }
+                return;
+            }
+            public method query(int lo, int hi) returns int {
+                mutable int res = 0;
+                mutable int l = lo + this.n;
+                mutable int r = hi + this.n + 1;
+                while (l < r) {
+                    if ((l & 1) == 1) { res = res + this.t[l]; l = l + 1; }
+                    if ((r & 1) == 1) { r = r - 1; res = res + this.t[r]; }
+                    l = l / 2; r = r / 2;
+                }
+                return res;
+            }
+        }
+        // A sparse table (spec 34.1) for O(1) range-minimum queries over a fixed int[], after O(n log n) build.
+        // Rows are stored flat (row j at offset j*n); queryMin(lo, hi) is the inclusive minimum.
+        public class SparseTable {
+            private mutable int[] table;
+            private mutable int n;
+            private mutable int k;
+            public constructor SparseTable(int[] data) {
+                this.n = data.length();
+                mutable int K = 1;
+                while ((1 << K) <= this.n) { K = K + 1; }
+                this.k = K;
+                this.table = new int[K * this.n]();
+                for (mutable int i = 0; i < this.n; i++) { this.table[i] = data[i]; }
+                for (mutable int j = 1; j < K; j++) {
+                    mutable int i = 0;
+                    while (i + (1 << j) <= this.n) {
+                        int a = this.table[(j-1)*this.n + i];
+                        int b = this.table[(j-1)*this.n + i + (1 << (j-1))];
+                        if (a < b) { this.table[j*this.n + i] = a; } else { this.table[j*this.n + i] = b; }
+                        i = i + 1;
+                    }
+                }
+            }
+            public method queryMin(int lo, int hi) returns int {
+                int len = hi - lo + 1;
+                mutable int j = 0;
+                while ((1 << (j + 1)) <= len) { j = j + 1; }
+                int a = this.table[j*this.n + lo];
+                int b = this.table[j*this.n + (hi - (1 << j) + 1)];
+                if (a < b) { return a; }
+                return b;
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Collections namespace.
+R"LDP3(
+        // A weighted undirected graph (spec 34.1) on a dense adjacency matrix (-1 means no edge). dijkstra
+        // returns the shortest-path distances from src (O(V^2), unreachable stay at "infinity"); mstWeight is
+        // the total weight of a minimum spanning tree via Prim. Vertices are 0..vertices-1.
+        public class WeightedGraph {
+            private mutable int[] adj;
+            private mutable int n;
+            public constructor WeightedGraph(int vertices) {
+                this.n = vertices;
+                this.adj = new int[vertices * vertices]();
+                for (mutable int i = 0; i < vertices * vertices; i++) { this.adj[i] = -1; }
+            }
+            public method addEdge(int u, int v, int w) returns void {
+                this.adj[u * this.n + v] = w;
+                this.adj[v * this.n + u] = w;
+                return;
+            }
+            public method dijkstra(int src) returns int[] {
+                int INF = 1000000000;
+                mutable int[] dist = new int[this.n]();
+                mutable boolean[] visited = new boolean[this.n]();
+                for (mutable int i = 0; i < this.n; i++) { dist[i] = INF; }
+                dist[src] = 0;
+                for (mutable int iter = 0; iter < this.n; iter++) {
+                    mutable int u = -1;
+                    mutable int best = INF;
+                    for (mutable int i = 0; i < this.n; i++) {
+                        if (!visited[i] && dist[i] < best) { best = dist[i]; u = i; }
+                    }
+                    if (u == -1) { iter = this.n; }
+                    else {
+                        visited[u] = true;
+                        for (mutable int v = 0; v < this.n; v++) {
+                            int w = this.adj[u * this.n + v];
+                            if (w >= 0 && !visited[v] && dist[u] + w < dist[v]) { dist[v] = dist[u] + w; }
+                        }
+                    }
+                }
+                return dist;
+            }
+            public method mstWeight() returns int {
+                int INF = 1000000000;
+                mutable int[] key = new int[this.n]();
+                mutable boolean[] inMst = new boolean[this.n]();
+                for (mutable int i = 0; i < this.n; i++) { key[i] = INF; }
+                key[0] = 0;
+                mutable int total = 0;
+                for (mutable int iter = 0; iter < this.n; iter++) {
+                    mutable int u = -1;
+                    mutable int best = INF;
+                    for (mutable int i = 0; i < this.n; i++) {
+                        if (!inMst[i] && key[i] < best) { best = key[i]; u = i; }
+                    }
+                    if (u == -1) { iter = this.n; }
+                    else {
+                        inMst[u] = true;
+                        total = total + key[u];
+                        for (mutable int v = 0; v < this.n; v++) {
+                            int w = this.adj[u * this.n + v];
+                            if (w >= 0 && !inMst[v] && w < key[v]) { key[v] = w; }
+                        }
+                    }
+                }
+                return total;
+            }
+        }
+        // A fixed-capacity LRU cache (spec 34) mapping int keys to int values, with O(1) get/put. A doubly
+        // linked list over slot arrays tracks recency (head = most recent); a HashMap finds a key's slot.
+        // get returns -1 when the key is absent; put evicts the least-recently-used entry when full.
+        public class LruCache {
+            private mutable int cap;
+            private mutable int size;
+            private mutable int head;
+            private mutable int tail;
+            private mutable int[] keys;
+            private mutable int[] vals;
+            private mutable int[] prev;
+            private mutable int[] next;
+            private mutable HashMap<int, int> slotByKey;
+            public constructor LruCache(int capacity) {
+                this.cap = capacity;
+                this.size = 0;
+                this.head = -1;
+                this.tail = -1;
+                this.keys = new int[capacity]();
+                this.vals = new int[capacity]();
+                this.prev = new int[capacity]();
+                this.next = new int[capacity]();
+                this.slotByKey = new HashMap<int, int>() on heap;
+            }
+            private method unlink(int s) returns void {
+                int p = this.prev[s];
+                int nx = this.next[s];
+                if (p != -1) { this.next[p] = nx; } else { this.head = nx; }
+                if (nx != -1) { this.prev[nx] = p; } else { this.tail = p; }
+                return;
+            }
+            private method pushHead(int s) returns void {
+                this.prev[s] = -1;
+                this.next[s] = this.head;
+                if (this.head != -1) { this.prev[this.head] = s; }
+                this.head = s;
+                if (this.tail == -1) { this.tail = s; }
+                return;
+            }
+            public method get(int key) returns int {
+                if (!this.slotByKey.containsKey(key)) { return -1; }
+                int s = this.slotByKey.get(key);
+                this.unlink(s);
+                this.pushHead(s);
+                return this.vals[s];
+            }
+            public method contains(int key) returns boolean { return this.slotByKey.containsKey(key); }
+            public method put(int key, int value) returns void {
+                if (this.slotByKey.containsKey(key)) {
+                    int s = this.slotByKey.get(key);
+                    this.vals[s] = value;
+                    this.unlink(s);
+                    this.pushHead(s);
+                    return;
+                }
+                mutable int s = 0;
+                if (this.size < this.cap) {
+                    s = this.size;
+                    this.size = this.size + 1;
+                } else {
+                    s = this.tail;
+                    this.slotByKey.remove(this.keys[s]);
+                    this.unlink(s);
+                }
+                this.keys[s] = key;
+                this.vals[s] = value;
+                this.slotByKey.put(key, s);
+                this.pushHead(s);
+                return;
+            }
+            public method count() returns int { return this.size; }
+        }
     }
 )LDP3"
 // (split: System.Ecs in its own literal.)

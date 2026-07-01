@@ -1037,6 +1037,24 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Range-query structures (spec 34.1): Fenwick (prefix/range sums), iterative segment tree, sparse table.
+        add_test(NAME codegen_range_queries_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/range_queries.ldp3"
+            "-DCONTAINS=fw_pre7=46 fw_r2to5=28"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Graph algorithms (Dijkstra shortest paths + Prim MST) and an O(1) LRU cache, both pure LDP3.
+        add_test(NAME codegen_graph_lru_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/graph_lru.ldp3"
+            "-DCONTAINS=dist=0,3,1,4,7 mst=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Pointer-linked binary search tree (spec 34.1): insert/contains/size + sorted in-order traversal.
         add_test(NAME codegen_bst_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
