@@ -1253,6 +1253,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # CSV record parsing (RFC 4180, spec 34) with quoted fields, pure LDP3.
+        add_test(NAME codegen_csv_reader_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/csv_reader.ldp3"
+            "-DCONTAINS=n=4 f0=a f1=b,c"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # CSV row writing (RFC 4180, spec 34) with quoting/escaping, pure LDP3.
         add_test(NAME codegen_csv_writer_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

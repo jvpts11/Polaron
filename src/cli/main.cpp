@@ -4189,6 +4189,34 @@ R"LDP3(
                 return sb.toString();
             }
         }
+        // Parse one RFC 4180 CSV record (spec 34), the inverse of CsvWriter: quoted fields may contain commas
+        // and escaped quotes (a doubled "" becomes a single "). Returns the fields in order.
+        public class CsvReader {
+            public static method parseLine(String line) returns ArrayList<String> {
+                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                mutable StringBuilder cur = new StringBuilder() on heap;
+                mutable boolean inQuotes = false;
+                mutable int i = 0;
+                while (i < line.length()) {
+                    char c = line.charAt(i);
+                    if (inQuotes) {
+                        if (c == '"') {
+                            if (i + 1 < line.length() && line.charAt(i + 1) == '"') { cur.appendChar('"'); i = i + 1; }
+                            else { inQuotes = false; }
+                        } else { cur.appendChar(c); }
+                    } else {
+                        if (c == '"') { inQuotes = true; }
+                        else {
+                            if (c == ',') { out.add(cur.toString()); cur = new StringBuilder() on heap; }
+                            else { cur.appendChar(c); }
+                        }
+                    }
+                    i = i + 1;
+                }
+                out.add(cur.toString());
+                return out;
+            }
+        }
         // Identifier case conversion (spec 34): between camelCase and snake_case/kebab-case. toSnake/toKebab
         // insert a separator before each interior uppercase letter and lowercase it; toCamel uppercases the
         // letter after each separator.
