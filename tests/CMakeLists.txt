@@ -992,6 +992,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Arbitrary-base integer conversion (spec 4), bases 2..36, pure LDP3.
+        add_test(NAME codegen_radix_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/radix.ldp3"
+            "-DCONTAINS=hex=ff bin=1010 zero=0 neg=-ff"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Ascii85 / Base85 (spec 4) in pure LDP3, encode/decode round-trip ("Man " -> 9jqo^).
         add_test(NAME codegen_ascii85_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

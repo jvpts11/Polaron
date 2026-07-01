@@ -2774,6 +2774,48 @@ R"LDP3(
                 return sb.toString();
             }
         }
+        // Arbitrary-base integer conversion (spec 4), bases 2..36 using 0-9 then a-z. toBase renders a long
+        // (with a leading '-' for negatives); fromBase parses such a string back (case-insensitive).
+        public class Radix {
+            private static method digitChar(int d) returns char {
+                if (d < 10) { return cast<char>(cast<int>('0') + d); }
+                return cast<char>(cast<int>('a') + d - 10);
+            }
+            private static method digitValue(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - cast<int>('0'); }
+                if (c >= 'a' && c <= 'z') { return cast<int>(c) - cast<int>('a') + 10; }
+                if (c >= 'A' && c <= 'Z') { return cast<int>(c) - cast<int>('A') + 10; }
+                return 0;
+            }
+            public static method toBase(long n, int base) returns String {
+                if (n == 0) { return "0"; }
+                mutable long v = n;
+                mutable boolean neg = false;
+                if (v < 0) { neg = true; v = 0 - v; }
+                mutable StringBuilder rev = new StringBuilder() on heap;
+                while (v > 0) {
+                    rev.appendChar(Radix.digitChar(cast<int>(v % cast<long>(base))));
+                    v = v / cast<long>(base);
+                }
+                mutable StringBuilder out = new StringBuilder() on heap;
+                if (neg) { out.appendChar('-'); }
+                String r = rev.toString();
+                for (mutable int i = r.length() - 1; i >= 0; i = i - 1) { out.appendChar(r.charAt(i)); }
+                return out.toString();
+            }
+            public static method fromBase(String s, int base) returns long {
+                mutable int i = 0;
+                mutable boolean neg = false;
+                if (s.length() > 0 && s.charAt(0) == '-') { neg = true; i = 1; }
+                mutable long v = 0;
+                while (i < s.length()) {
+                    v = v * cast<long>(base) + cast<long>(Radix.digitValue(s.charAt(i)));
+                    i = i + 1;
+                }
+                if (neg) { return 0 - v; }
+                return v;
+            }
+        }
         // Base64 encoding (spec 4): three bytes become four characters of the standard alphabet, with =
         // padding on the final group; decode reverses it. Bytes are read from and written to String storage.
         public class Base64 {
