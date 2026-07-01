@@ -1854,6 +1854,47 @@ R"LDP3(
                 return dp[m*w + n];
             }
         }
+        // A stack that also reports its minimum in O(1) (spec 34.1): a parallel stack carries the running
+        // minimum at each depth. push/pop/peek/getMin/size.
+        public class MinStack {
+            private mutable int[] vals;
+            private mutable int[] mins;
+            private mutable int top;
+            public constructor MinStack(int capacity) {
+                this.vals = new int[capacity]();
+                this.mins = new int[capacity]();
+                this.top = 0;
+            }
+            public method push(int v) returns void {
+                this.vals[this.top] = v;
+                if (this.top == 0 || v < this.mins[this.top - 1]) { this.mins[this.top] = v; }
+                else { this.mins[this.top] = this.mins[this.top - 1]; }
+                this.top = this.top + 1;
+                return;
+            }
+            public method pop() returns int { this.top = this.top - 1; return this.vals[this.top]; }
+            public method peek() returns int { return this.vals[this.top - 1]; }
+            public method getMin() returns int { return this.mins[this.top - 1]; }
+            public method size() returns int { return this.top; }
+        }
+        // Sliding-window maximum (spec 34.1): the maximum of every length-k window, in linear time via a
+        // monotonic deque of indices. Returns the n-k+1 maxima.
+        public class SlidingWindowMax {
+            public static method maxOfEach(int[] a, int n, int k) returns int[] {
+                mutable int[] out = new int[n - k + 1]();
+                mutable int[] dq = new int[n]();
+                mutable int head = 0;
+                mutable int tail = 0;
+                mutable int oi = 0;
+                for (mutable int i = 0; i < n; i++) {
+                    while (head < tail && dq[head] <= i - k) { head = head + 1; }
+                    while (head < tail && a[dq[tail - 1]] <= a[i]) { tail = tail - 1; }
+                    dq[tail] = i; tail = tail + 1;
+                    if (i >= k - 1) { out[oi] = a[dq[head]]; oi = oi + 1; }
+                }
+                return out;
+            }
+        }
         // Maximum-subarray sum (spec 34.1) by Kadane's algorithm: the largest sum of any contiguous run.
         public class Kadane {
             public static method maxSubarray(int[] a, int n) returns int {
