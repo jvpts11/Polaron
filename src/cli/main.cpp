@@ -970,6 +970,69 @@ R"LDP3(
                 this.fillValues(this.root, out, 0);
                 return out;
             }
+)LDP3"
+// Split only for the MSVC literal-size limit; still inside TreeMap in System.Collections.
+R"LDP3(
+            private method zeroKey() returns K {  // zero/null default when no navigable key exists
+                mutable K[] zero = new K[1]();
+                K z = zero[0];
+                delete zero;
+                return z;
+            }
+            public method firstKey() returns K {  // smallest key (leftmost)
+                if (this.root == null) { return this.zeroKey(); }
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                while (cur.left != null) { cur = cur.left; }
+                return cur.key;
+            }
+            public method lastKey() returns K {  // largest key (rightmost)
+                if (this.root == null) { return this.zeroKey(); }
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                while (cur.right != null) { cur = cur.right; }
+                return cur.key;
+            }
+            public method floorKey(K key) returns K {  // largest key <= given
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                mutable nullable TreeNode<K, V>* best = null;
+                while (cur != null) {
+                    int c = key.compareTo(cur.key);
+                    if (c == 0) { return cur.key; }
+                    if (c < 0) { cur = cur.left; } else { best = cur; cur = cur.right; }
+                }
+                if (best == null) { return this.zeroKey(); }
+                return best.key;
+            }
+            public method ceilingKey(K key) returns K {  // smallest key >= given
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                mutable nullable TreeNode<K, V>* best = null;
+                while (cur != null) {
+                    int c = key.compareTo(cur.key);
+                    if (c == 0) { return cur.key; }
+                    if (c > 0) { cur = cur.right; } else { best = cur; cur = cur.left; }
+                }
+                if (best == null) { return this.zeroKey(); }
+                return best.key;
+            }
+            public method higherKey(K key) returns K {  // smallest key > given
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                mutable nullable TreeNode<K, V>* best = null;
+                while (cur != null) {
+                    int c = key.compareTo(cur.key);
+                    if (c < 0) { best = cur; cur = cur.left; } else { cur = cur.right; }
+                }
+                if (best == null) { return this.zeroKey(); }
+                return best.key;
+            }
+            public method lowerKey(K key) returns K {  // largest key < given
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                mutable nullable TreeNode<K, V>* best = null;
+                while (cur != null) {
+                    int c = key.compareTo(cur.key);
+                    if (c > 0) { best = cur; cur = cur.right; } else { cur = cur.left; }
+                }
+                if (best == null) { return this.zeroKey(); }
+                return best.key;
+            }
             public method size() returns int { return this.count; }
             public method isEmpty() returns boolean { return this.count == 0; }
         }
