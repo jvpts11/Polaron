@@ -6161,8 +6161,29 @@ struct CodeGenerator::Impl {
             }
             if (rs->value != nullptr) {
                 llvm::Value* v = emitExpr(*rs->value);
-                if (v != nullptr && currentRetType->isDoubleTy() && v->getType()->isIntegerTy()) {
-                    v = builder.CreateSIToFP(v, currentRetType);  // int -> double return
+                // Widen/convert the returned value to the declared return type, the same implicit numeric
+                // coercion assignments and arguments already apply (e.g. `return 0;` from a `long` method,
+                // or an int/float from a double method). Signedness of any integer widening follows the
+                // returned value's type. sret functions have a void currentRetType and are handled below.
+                if (v != nullptr && !currentRetType->isVoidTy() && currentRetType != v->getType()) {
+                    if (currentRetType->isFloatingPointTy() && v->getType()->isIntegerTy()) {
+                        v = isUnsigned(typeName(*rs->value)) ? builder.CreateUIToFP(v, currentRetType)
+                                                             : builder.CreateSIToFP(v, currentRetType);
+                    } else if (currentRetType->isFloatingPointTy() && v->getType()->isFloatingPointTy()) {
+                        v = currentRetType->getPrimitiveSizeInBits() >
+                                    v->getType()->getPrimitiveSizeInBits()
+                                ? builder.CreateFPExt(v, currentRetType)
+                                : builder.CreateFPTrunc(v, currentRetType);
+                    } else if (currentRetType->isIntegerTy() && v->getType()->isIntegerTy()) {
+                        unsigned want = currentRetType->getIntegerBitWidth();
+                        unsigned have = v->getType()->getIntegerBitWidth();
+                        if (want > have) {
+                            v = isUnsigned(typeName(*rs->value)) ? builder.CreateZExt(v, currentRetType)
+                                                                 : builder.CreateSExt(v, currentRetType);
+                        } else if (want < have) {
+                            v = builder.CreateTrunc(v, currentRetType);
+                        }
+                    }
                 }
                 // A value struct returned by value uses sret: copy it into the caller-provided
                 // result slot (the trailing argument) and return void. Each caller owns its result,

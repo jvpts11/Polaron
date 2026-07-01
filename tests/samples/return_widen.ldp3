@@ -1,0 +1,20 @@
+import System.IO.Console;
+program ReturnWiden;
+
+// Regression: a return implicitly widens the value to the declared return type, like assignments and
+// arguments already do (this used to be a codegen error: `ret i32` under an i64 function). Prints:
+//   rl=42 rd=7.0 rneg=-5
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method asLong() returns long { return 42; }        // int literal -> long
+            public static method asDouble() returns double { return 7; }     // int literal -> double
+            public static method negLong() returns long { return 0 - 5; }    // negative int -> long (sign-extend)
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("rl=%d rd=%.1f rneg=%d\n",
+                    cast<int>(Main.asLong()), Main.asDouble(), cast<int>(Main.negLong()));
+                return;
+            }
+        }
+    }
+}
