@@ -1136,6 +1136,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Identifier case conversion (spec 34): camelCase <-> snake_case/kebab-case, pure LDP3.
+        add_test(NAME codegen_case_convert_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/case_convert.ldp3"
+            "-DCONTAINS=snake=hello_world kebab=hello-world camel=helloWorld camel2=fooBarBaz"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # CSV row writing (RFC 4180, spec 34) with quoting/escaping, pure LDP3.
         add_test(NAME codegen_csv_writer_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

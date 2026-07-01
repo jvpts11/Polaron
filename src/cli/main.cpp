@@ -3628,6 +3628,47 @@ R"LDP3(
                 return sb.toString();
             }
         }
+        // Identifier case conversion (spec 34): between camelCase and snake_case/kebab-case. toSnake/toKebab
+        // insert a separator before each interior uppercase letter and lowercase it; toCamel uppercases the
+        // letter after each separator.
+        public class CaseConvert {
+            private static method lower(char c) returns char {
+                if (c >= 'A' && c <= 'Z') { return cast<char>(cast<int>(c) + 32); }
+                return c;
+            }
+            private static method upper(char c) returns char {
+                if (c >= 'a' && c <= 'z') { return cast<char>(cast<int>(c) - 32); }
+                return c;
+            }
+            private static method delimit(String s, char sep) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c >= 'A' && c <= 'Z') {
+                        if (i > 0) { sb.appendChar(sep); }
+                        sb.appendChar(CaseConvert.lower(c));
+                    } else {
+                        sb.appendChar(c);
+                    }
+                }
+                return sb.toString();
+            }
+            public static method toSnake(String s) returns String { return CaseConvert.delimit(s, '_'); }
+            public static method toKebab(String s) returns String { return CaseConvert.delimit(s, '-'); }
+            public static method toCamel(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable boolean up = false;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c == '_' || c == '-') { up = true; }
+                    else {
+                        if (up) { sb.appendChar(CaseConvert.upper(c)); up = false; }
+                        else { sb.appendChar(c); }
+                    }
+                }
+                return sb.toString();
+            }
+        }
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
