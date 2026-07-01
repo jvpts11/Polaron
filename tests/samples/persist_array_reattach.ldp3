@@ -1,0 +1,38 @@
+import System.IO.Console;
+program PersistArrayReattach;
+
+// Persistent reattach by array index (spec 18.5): `arr[i] = new T()` keys the object's persistent
+// block by (array identity, index), so a persistent field survives delete+recreate at that slot -- and
+// distinct indices keep independent blocks. Here `serial` (a partial-ctor persistent) counts per index:
+// index 0 goes 0,1,2 across the delete/recreate cycles; index 1 starts fresh at 0. Prints:
+//   0 1 0 2
+public bundle main {
+    public namespace app {
+        public class Car {
+            public eternal persistent mutable int serial = 0;
+            public mutable int motor;
+            public constructor Car(int serial, int motor) {
+                this.serial = serial;
+                this.motor = motor;
+            }
+        }
+        public class Main {
+            public static method cycle(Car[] cars, int i) returns int {
+                cars[i] = new Car(7) on heap;   // partial: serial reattaches from block[cars, i]
+                int s = cars[i].serial;
+                cars[i].serial = cars[i].serial + 1;
+                delete cars[i];
+                return s;
+            }
+            public static method main(string[] args) returns void {
+                Car[] cars = new Car[2]();
+                int a = Main.cycle(cars, 0);
+                int b = Main.cycle(cars, 0);
+                int c = Main.cycle(cars, 1);
+                int d = Main.cycle(cars, 0);
+                System.IO.Console.printf("%d %d %d %d\n", a, b, c, d);
+                return;
+            }
+        }
+    }
+}

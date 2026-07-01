@@ -412,6 +412,9 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, std::unordered_set<std::string>> persistentInstanceFields;
     // set by a var-decl just before emitNew so the new object can wire up its persistent block
     std::string pendingPersistKey;
+    // set for `arr[i] = new T()` (spec 18.5): the runtime index that, with pendingPersistKey (the array
+    // identity), keys the object's persistent block so it reattaches by slot across a delete
+    llvm::Value* pendingPersistIndex = nullptr;
     int lambdaCounter = 0;  // unique names for lowered lambda functions
     std::unordered_map<std::string, std::string> literalReturnType;  // mangled suffix (name$param) -> return type
     std::unordered_map<std::string, std::vector<std::string>> literalSuffixParams;  // suffix name -> param types
@@ -1828,6 +1831,15 @@ struct CodeGenerator::Impl {
         llvm::FunctionType* ty = llvm::FunctionType::get(
             builder.getPtrTy(), {builder.getPtrTy(), builder.getInt64Ty()}, false);
         return module.getOrInsertFunction("realloc", ty);
+    }
+    // __ldp3_persist_slot(key, index, size) -> block: the in-process registry for index-keyed
+    // persistent reattach (spec 18.5). Returns the surviving block for (key, index) or a fresh zeroed
+    // one, so `delete arr[i]; arr[i] = new T()` reattaches by slot within a run.
+    llvm::FunctionCallee persistSlotFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getPtrTy(),
+            {builder.getPtrTy(), builder.getInt64Ty(), builder.getInt64Ty()}, false);
+        return module.getOrInsertFunction("__ldp3_persist_slot", ty);
     }
 
     llvm::FunctionCallee freeFn() {
@@ -3514,13 +3526,22 @@ struct CodeGenerator::Impl {
         // and write this.<persistent field>. Keyed by the binding variable's identity.
         llvm::Value* persistBlockRef = nullptr;
         if (cit->second.persistPtrIdx != 0) {
-            if (!pendingPersistKey.empty()) {
+            if (pendingPersistIndex != nullptr && !pendingPersistKey.empty()) {
+                // Index-keyed reattach (spec 18.5): `arr[i] = new T()`. A runtime registry keyed by
+                // (array identity, index) returns the same block for the same slot across a delete, so
+                // the object's persistent fields survive delete+recreate at that index.
+                llvm::Value* keyStr = builder.CreateGlobalStringPtr(pendingPersistKey, "pkey");
+                llvm::Value* idx64 =
+                    builder.CreateSExtOrTrunc(pendingPersistIndex, builder.getInt64Ty(), "pidx");
+                persistBlockRef = builder.CreateCall(
+                    persistSlotFn(), {keyStr, idx64, sizeOf(cit->second.persistBlock)},
+                    "__persist.slot");
+            } else if (!pendingPersistKey.empty()) {
                 persistBlockRef = getPersistBlock(pendingPersistKey, cit->second.persistBlock);
             } else {
-                // No name binding (e.g. an array element or temporary): give the object its own
-                // zeroed persistent block so its persistent fields are usable instead of leaving the
-                // __persist pointer wild (a segfault on first access). Index-keyed reattach across a
-                // delete (spec 18.5) is a follow-up; this at least makes it sound within the run.
+                // No name binding (e.g. a temporary): give the object its own zeroed persistent block
+                // so its persistent fields are usable instead of leaving the __persist pointer wild (a
+                // segfault on first access). No reattach identity for a bare temporary.
                 llvm::Value* sz = sizeOf(cit->second.persistBlock);
                 persistBlockRef = builder.CreateCall(mallocFn(), {sz}, "__persist.anon");
                 builder.CreateCall(memsetFn(), {persistBlockRef, builder.getInt32(0), sz});
@@ -3529,6 +3550,7 @@ struct CodeGenerator::Impl {
                                                         cit->second.persistPtrIdx, "__persist");
             builder.CreateStore(persistBlockRef, slot);
             pendingPersistKey.clear();
+            pendingPersistIndex = nullptr;
         }
         auto fnit = functions.find(cn + "." + cn);
         if (fnit != functions.end()) {
@@ -6062,10 +6084,28 @@ struct CodeGenerator::Impl {
                 st->setAlignment(al);
                 return;
             }
+            // Persistent reattach by array index (spec 18.5): `arr[i] = new T()` for a persistent-bearing
+            // T keys the object's block by (array identity, runtime index) so the persistent fields
+            // reattach across a delete at that slot, rather than getting a fresh anonymous block.
+            pendingPersistIndex = nullptr;
+            if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(assign->target.get())) {
+                if (const auto* arrId = dynamic_cast<const ast::IdentifierExpr*>(ix->array.get())) {
+                    if (const auto* nw = dynamic_cast<const ast::NewExpr*>(assign->value.get())) {
+                        auto pcit = classes.find(ast::mangleGeneric(nw->className, nw->typeArgs));
+                        if (pcit != classes.end() && pcit->second.persistPtrIdx != 0) {
+                            pendingPersistKey =
+                                (currentFn != nullptr ? currentFn->getName().str() : std::string()) +
+                                "." + arrId->name;
+                            pendingPersistIndex = emitExpr(*ix->index);
+                        }
+                    }
+                }
+            }
             llvm::Value* slot = emitLValue(*assign->target);
             if (slot == nullptr) return;
             llvm::Value* v = emitExpr(*assign->value);
             if (v == nullptr) return;
+            pendingPersistIndex = nullptr;  // defensive: never leak into the next new
             // Value semantics: assigning a class value makes the target an independent copy.
             if (isClassValue(targetType) && isCopyDiscipline(targetType) &&
                 isCopyableLValue(*assign->value)) {

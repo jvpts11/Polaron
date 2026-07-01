@@ -27,6 +27,30 @@ void __ldp3_panic(const char* msg) {
     exit(70);
 }
 
+// Index-keyed persistent registry (spec 18.5): the in-process store behind `arr[i] = new T()`
+// reattach. Each (key, index) pair maps to one zeroed persistent block that survives delete within a
+// run, so the same slot returns the same block and its persistent fields reattach across delete +
+// recreate. `key` is a static string constant emitted by the compiler (lives for the whole run).
+typedef struct Ldp3PSlot {
+    const char* key;
+    long long index;
+    void* block;
+    struct Ldp3PSlot* next;
+} Ldp3PSlot;
+static Ldp3PSlot* g_ldp3_pslots = NULL;
+void* __ldp3_persist_slot(const char* key, long long index, long long size) {
+    for (Ldp3PSlot* p = g_ldp3_pslots; p != NULL; p = p->next)
+        if (p->index == index && strcmp(p->key, key) == 0) return p->block;
+    void* block = calloc(1, (size_t)size);
+    Ldp3PSlot* s = (Ldp3PSlot*)malloc(sizeof(Ldp3PSlot));
+    s->key = key;
+    s->index = index;
+    s->block = block;
+    s->next = g_ldp3_pslots;
+    g_ldp3_pslots = s;
+    return block;
+}
+
 // Pointer visited-set for `cascade` cycle detection (spec 37.1, rule 2). A small open-
 // addressing hash set over object addresses: add() returns 1 the first time a pointer is
 // seen and 0 afterwards, so a cascade walk skips objects it already processed (and so never
