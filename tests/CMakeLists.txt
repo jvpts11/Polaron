@@ -1136,6 +1136,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Calendar arithmetic (spec 34): leap years, days in month, Zeller day-of-week, day-of-year.
+        add_test(NAME codegen_calendar_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/calendar.ldp3"
+            "-DCONTAINS=y2000sat=6 y2024mon=1 leap2000=1 leap1900=0 feb2024=29 doy=61"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Feature flags and an object-id pool (spec 34) in pure LDP3.
         add_test(NAME codegen_feature_pool_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

@@ -4289,6 +4289,34 @@ R"LDP3(
                 return Date.fromEpochDay(this.toEpochDay() + n);
             }
         }
+        // Calendar arithmetic (spec 34): leap years, days in a month, day of the week (0=Sunday..6=Saturday
+        // via Zeller's congruence) and day of the year.
+        public class Calendar {
+            public static method isLeapYear(int y) returns boolean {
+                if (y % 400 == 0) { return true; }
+                if (y % 100 == 0) { return false; }
+                return y % 4 == 0;
+            }
+            public static method daysInMonth(int y, int m) returns int {
+                if (m == 2) { if (Calendar.isLeapYear(y)) { return 29; } return 28; }
+                if (m == 4 || m == 6 || m == 9 || m == 11) { return 30; }
+                return 31;
+            }
+            public static method dayOfWeek(int year, int month, int day) returns int {
+                mutable int m = month;
+                mutable int y = year;
+                if (m < 3) { m = m + 12; y = y - 1; }
+                int k = y % 100;
+                int j = y / 100;
+                int h = (day + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
+                return (h + 6) % 7;
+            }
+            public static method dayOfYear(int y, int m, int d) returns int {
+                mutable int total = d;
+                for (mutable int mm = 1; mm < m; mm++) { total = total + Calendar.daysInMonth(y, mm); }
+                return total;
+            }
+        }
     }
 )LDP3"
 // (split: System.Json in its own literal.)
