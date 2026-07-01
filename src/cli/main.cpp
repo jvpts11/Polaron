@@ -2798,6 +2798,54 @@ R"LDP3(
                 return out;
             }
         }
+        // Ascii85 / Base85 (spec 4, Adobe variant without delimiters): four bytes become five printable chars
+        // (base 85 starting at '!'), a final partial group emitting one fewer char than its bytes+1. encode
+        // takes the first n bytes; decode returns the bytes (padding a short final group with 'u').
+        public class Ascii85 {
+            public static method encode(int[] bytes, int n) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < n) {
+                    mutable long val = 0;
+                    mutable int cnt = 0;
+                    for (mutable int k = 0; k < 4; k++) {
+                        val = val * 256;
+                        if (i + k < n) { val = val + cast<long>(bytes[i + k] & 255); cnt = cnt + 1; }
+                    }
+                    mutable int[] dig = new int[5]();
+                    mutable long v = val;
+                    for (mutable int k = 4; k >= 0; k = k - 1) { dig[k] = cast<int>(v % 85); v = v / 85; }
+                    for (mutable int k = 0; k < cnt + 1; k++) { sb.appendChar(cast<char>(33 + dig[k])); }
+                    i = i + 4;
+                }
+                return sb.toString();
+            }
+            public static method decode(String s) returns int[] {
+                int n = s.length();
+                mutable int total = 0;
+                mutable int gi = 0;
+                while (gi < n) { mutable int c = n - gi; if (c > 5) { c = 5; } total = total + (c - 1); gi = gi + 5; }
+                mutable int[] out = new int[total]();
+                mutable int pos = 0;
+                mutable int i = 0;
+                while (i < n) {
+                    mutable int c = n - i; if (c > 5) { c = 5; }
+                    mutable long val = 0;
+                    for (mutable int k = 0; k < 5; k++) {
+                        mutable int d = 84;
+                        if (k < c) { d = cast<int>(s.charAt(i + k)) - 33; }
+                        val = val * 85 + cast<long>(d);
+                    }
+                    for (mutable int k = 0; k < c - 1; k++) {
+                        int shift = (3 - k) * 8;
+                        out[pos] = cast<int>((val >> shift) & cast<long>(255));
+                        pos = pos + 1;
+                    }
+                    i = i + 5;
+                }
+                return out;
+            }
+        }
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(

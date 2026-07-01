@@ -1,0 +1,26 @@
+import System.IO.Console;
+import System.Text.Ascii85;
+program Ascii85Demo;
+
+// Ascii85 / Base85 (spec 4) in pure LDP3, encode/decode round-trip. Prints:
+//   man=9jqo^ roundtrip=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] man = new int[4]();
+                man[0]=77; man[1]=97; man[2]=110; man[3]=32;   // "Man "
+                String enc = Ascii85.encode(man, 4);
+
+                mutable int[] data = new int[13]();
+                String src = "Hello, World!";
+                for (mutable int i = 0; i < 13; i++) { data[i] = cast<int>(src.charAt(i)) & 255; }
+                String e2 = Ascii85.encode(data, 13);
+                int[] dec = Ascii85.decode(e2);
+                String e3 = Ascii85.encode(dec, dec.length());
+                System.IO.Console.printf("man=%s roundtrip=%d\n", enc, e2.equals(e3));
+                return;
+            }
+        }
+    }
+}
