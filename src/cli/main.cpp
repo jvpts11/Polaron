@@ -1915,6 +1915,50 @@ R"LDP3(
             }
             public method get(K k, int i) returns V { return this.map.get(k).get(i); }
         }
+        // A 2D Fenwick tree / binary indexed tree (spec 34.1): O(log r * log c) point updates and O(1)-indexed
+        // rectangle sums over an int grid. update/prefix/rangeSum take 0-based coordinates.
+        public class Fenwick2D {
+            private mutable int[] tree;
+            private mutable int rows;
+            private mutable int cols;
+            public constructor Fenwick2D(int rows, int cols) {
+                this.rows = rows;
+                this.cols = cols;
+                this.tree = new int[(rows + 1) * (cols + 1)]();
+            }
+            public method update(int r, int c, int delta) returns void {
+                mutable int i = r + 1;
+                while (i <= this.rows) {
+                    mutable int j = c + 1;
+                    while (j <= this.cols) {
+                        this.tree[i * (this.cols + 1) + j] = this.tree[i * (this.cols + 1) + j] + delta;
+                        j = j + (j & (0 - j));
+                    }
+                    i = i + (i & (0 - i));
+                }
+                return;
+            }
+            public method prefix(int r, int c) returns int {
+                mutable int s = 0;
+                mutable int i = r + 1;
+                while (i > 0) {
+                    mutable int j = c + 1;
+                    while (j > 0) {
+                        s = s + this.tree[i * (this.cols + 1) + j];
+                        j = j - (j & (0 - j));
+                    }
+                    i = i - (i & (0 - i));
+                }
+                return s;
+            }
+            public method rangeSum(int r1, int c1, int r2, int c2) returns int {
+                mutable int s = this.prefix(r2, c2);
+                if (r1 > 0) { s = s - this.prefix(r1 - 1, c2); }
+                if (c1 > 0) { s = s - this.prefix(r2, c1 - 1); }
+                if (r1 > 0 && c1 > 0) { s = s + this.prefix(r1 - 1, c1 - 1); }
+                return s;
+            }
+        }
         // A directed graph (spec 34.1) on a dense adjacency matrix: topoSort fills a topological ordering by
         // Kahn's algorithm (lowest-index source first) and returns how many vertices were placed; fewer than
         // n means a cycle, which hasCycle reports.
@@ -2757,6 +2801,19 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
+        // Fletcher-16 checksum (spec 4) over a string's bytes: two running mod-255 sums combined as a 16-bit
+        // value. Cheaper than CRC with good error detection.
+        public class Fletcher {
+            public static method fletcher16(String data) returns int {
+                mutable int s1 = 0;
+                mutable int s2 = 0;
+                for (mutable int i = 0; i < data.length(); i++) {
+                    s1 = (s1 + (cast<int>(data.charAt(i)) & 255)) % 255;
+                    s2 = (s2 + s1) % 255;
+                }
+                return (s2 << 8) | s1;
+            }
+        }
         // Non-cryptographic checksums and hashes over a string's bytes (spec 4): CRC-32 (reflected, the
         // zip/png polynomial) and 32-bit FNV-1a. Uses unsigned 32-bit arithmetic, which wraps and shifts
         // logically. Returned as int (the same 32 bits reinterpreted).

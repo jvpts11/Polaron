@@ -1046,6 +1046,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # 2D Fenwick tree (grid range sums) and Fletcher-16 checksum (spec 34.1/4), pure LDP3.
+        add_test(NAME codegen_fenwick2d_fletcher_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/fenwick2d_fletcher.ldp3"
+            "-DCONTAINS=total=11 mid=8 row0=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Directed graph (spec 34.1): topological sort (Kahn) and cycle detection, pure LDP3.
         add_test(NAME codegen_digraph_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
