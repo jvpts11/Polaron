@@ -4830,6 +4830,35 @@ R"LDP3(
                 return w.concat("s");
             }
         }
+        // Levenshtein edit distance (spec 34): the minimum single-character insertions, deletions, and
+        // substitutions to turn one string into another, via two-row dynamic programming. Good for fuzzy
+        // matching and spell-checking.
+        public class Levenshtein {
+            public static method distance(String a, String b) returns int {
+                int n = a.length();
+                int m = b.length();
+                if (n == 0) { return m; }
+                if (m == 0) { return n; }
+                mutable int[] prev = new int[m + 1]();
+                mutable int[] cur = new int[m + 1]();
+                for (mutable int j = 0; j <= m; j++) { prev[j] = j; }
+                for (mutable int i = 1; i <= n; i++) {
+                    cur[0] = i;
+                    for (mutable int j = 1; j <= m; j++) {
+                        mutable int cost = 1;
+                        if (a.charAt(i - 1) == b.charAt(j - 1)) { cost = 0; }
+                        mutable int mn = prev[j] + 1;
+                        int ins = cur[j - 1] + 1;
+                        int sub = prev[j - 1] + cost;
+                        if (ins < mn) { mn = ins; }
+                        if (sub < mn) { mn = sub; }
+                        cur[j] = mn;
+                    }
+                    for (mutable int j = 0; j <= m; j++) { prev[j] = cur[j]; }
+                }
+                return prev[m];
+            }
+        }
         // Jaro-Winkler string similarity (spec 34) in [0,1]: the Jaro score adjusted upward for a common
         // prefix (up to 4 chars, factor 0.1). Good for fuzzy matching short strings like names.
         public class JaroWinkler {
