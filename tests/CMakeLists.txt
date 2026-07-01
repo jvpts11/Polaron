@@ -1073,6 +1073,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Frequency counter / multiset of ints (spec 34.1): count/mostCommon/total, pure LDP3.
+        add_test(NAME codegen_int_counter_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/int_counter.ldp3"
+            "-DCONTAINS=c3=3 c2=2 c9=0 common=3 max=3 total=6 distinct=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Navigable sorted int set (spec 34.1): floor/ceiling/rank/kth, pure LDP3.
         add_test(NAME codegen_sorted_int_set_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

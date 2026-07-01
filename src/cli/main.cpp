@@ -1642,6 +1642,36 @@ R"LDP3(
             public method kth(int i) returns int { return this.data[i]; }
             public method size() returns int { return this.count; }
         }
+        // A multiset / frequency counter of ints (spec 34.1) backed by a HashMap: add tallies occurrences and
+        // tracks the running most-common value, total, and distinct count in O(1) per add; count returns 0 for
+        // absent keys.
+        public class IntCounter {
+            private mutable HashMap<int, int> counts;
+            private mutable int total;
+            private mutable int distinct;
+            private mutable int best;
+            private mutable int bestCount;
+            public constructor IntCounter() {
+                this.counts = new HashMap<int, int>() on heap;
+                this.total = 0; this.distinct = 0; this.best = 0; this.bestCount = 0;
+            }
+            public method add(int v) returns void {
+                mutable int c = 1;
+                if (this.counts.containsKey(v)) { c = this.counts.get(v) + 1; } else { this.distinct = this.distinct + 1; }
+                this.counts.put(v, c);
+                this.total = this.total + 1;
+                if (c > this.bestCount) { this.bestCount = c; this.best = v; }
+                return;
+            }
+            public method count(int v) returns int {
+                if (this.counts.containsKey(v)) { return this.counts.get(v); }
+                return 0;
+            }
+            public method mostCommon() returns int { return this.best; }
+            public method maxCount() returns int { return this.bestCount; }
+            public method total() returns int { return this.total; }
+            public method distinct() returns int { return this.distinct; }
+        }
         // A Fenwick tree / binary indexed tree (spec 34.1): O(log n) point updates and prefix/range sums over
         // int values. Indices are 0-based at the public API; the lowest-set-bit trick (x & -x) walks the tree.
         public class Fenwick {
