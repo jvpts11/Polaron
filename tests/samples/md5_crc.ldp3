@@ -1,0 +1,21 @@
+import System.IO.Console;
+import System.Text.Md5;
+import System.Text.Crc;
+program Md5Crc;
+
+// MD5 (RFC 1321) and CRC-16/XMODEM in pure LDP3, verified against reference vectors. Prints:
+//   md5abc=900150983cd24fb0d6963f7d28e17f72
+//   md5empty=d41d8cd98f00b204e9800998ecf8427e
+//   crc16=12739
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("md5abc=%s\n", Md5.digest("abc"));
+                System.IO.Console.printf("md5empty=%s\n", Md5.digest(""));
+                System.IO.Console.printf("crc16=%d\n", Crc.crc16("123456789"));
+                return;
+            }
+        }
+    }
+}

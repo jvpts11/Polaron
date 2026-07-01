@@ -1055,6 +1055,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # MD5 (RFC 1321) and CRC-16/XMODEM in pure LDP3, verified against reference vectors.
+        add_test(NAME codegen_md5_crc_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/md5_crc.ldp3"
+            "-DCONTAINS=md5abc=900150983cd24fb0d6963f7d28e17f72"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Pointer-linked binary search tree (spec 34.1): insert/contains/size + sorted in-order traversal.
         add_test(NAME codegen_bst_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

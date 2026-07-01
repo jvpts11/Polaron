@@ -2795,6 +2795,108 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
+        // MD5 message digest (RFC 1321), pure LDP3 over 32-bit unsigned arithmetic (little-endian, unlike the
+        // SHA family). digest returns the 32-character lowercase hex. (MD5 is broken for collision resistance;
+        // provided for legacy interop/checksums only.) Reuses Sha256.toHex for the final hex.
+        public class Md5 {
+            private static method rotl(uint x, int n) returns uint { return (x << n) | (x >> (32 - n)); }
+            private static method putLE(int[] out, int off, uint w) returns void {
+                out[off]   = cast<int>(w & cast<uint>(255));
+                out[off+1] = cast<int>((w >> 8) & cast<uint>(255));
+                out[off+2] = cast<int>((w >> 16) & cast<uint>(255));
+                out[off+3] = cast<int>((w >> 24) & cast<uint>(255));
+                return;
+            }
+            public static method digest(String msg) returns String {
+                int len = msg.length();
+                mutable int padded = len + 1;
+                while (padded % 64 != 56) { padded = padded + 1; }
+                padded = padded + 8;
+                mutable int[] m = new int[padded]();
+                for (mutable int i = 0; i < len; i++) { m[i] = cast<int>(msg.charAt(i)) & 255; }
+                m[len] = 128;
+                long bitLen = cast<long>(len) * cast<long>(8);
+                for (mutable int i = 0; i < 8; i++) {
+                    m[padded - 8 + i] = cast<int>((bitLen >> (i * 8)) & cast<long>(255));
+                }
+                mutable int[] s = new int[64]();
+                int[] sv = new int[16]();
+                sv[0]=7; sv[1]=12; sv[2]=17; sv[3]=22; sv[4]=5; sv[5]=9; sv[6]=14; sv[7]=20;
+                sv[8]=4; sv[9]=11; sv[10]=16; sv[11]=23; sv[12]=6; sv[13]=10; sv[14]=15; sv[15]=21;
+                for (mutable int i = 0; i < 64; i++) {
+                    int grp = i / 16;
+                    s[i] = sv[grp * 4 + (i % 4)];
+                }
+                mutable uint[] k = new uint[64]();
+                k[0]=cast<uint>(0xd76aa478); k[1]=cast<uint>(0xe8c7b756); k[2]=cast<uint>(0x242070db); k[3]=cast<uint>(0xc1bdceee);
+                k[4]=cast<uint>(0xf57c0faf); k[5]=cast<uint>(0x4787c62a); k[6]=cast<uint>(0xa8304613); k[7]=cast<uint>(0xfd469501);
+                k[8]=cast<uint>(0x698098d8); k[9]=cast<uint>(0x8b44f7af); k[10]=cast<uint>(0xffff5bb1); k[11]=cast<uint>(0x895cd7be);
+                k[12]=cast<uint>(0x6b901122); k[13]=cast<uint>(0xfd987193); k[14]=cast<uint>(0xa679438e); k[15]=cast<uint>(0x49b40821);
+                k[16]=cast<uint>(0xf61e2562); k[17]=cast<uint>(0xc040b340); k[18]=cast<uint>(0x265e5a51); k[19]=cast<uint>(0xe9b6c7aa);
+                k[20]=cast<uint>(0xd62f105d); k[21]=cast<uint>(0x02441453); k[22]=cast<uint>(0xd8a1e681); k[23]=cast<uint>(0xe7d3fbc8);
+                k[24]=cast<uint>(0x21e1cde6); k[25]=cast<uint>(0xc33707d6); k[26]=cast<uint>(0xf4d50d87); k[27]=cast<uint>(0x455a14ed);
+                k[28]=cast<uint>(0xa9e3e905); k[29]=cast<uint>(0xfcefa3f8); k[30]=cast<uint>(0x676f02d9); k[31]=cast<uint>(0x8d2a4c8a);
+                k[32]=cast<uint>(0xfffa3942); k[33]=cast<uint>(0x8771f681); k[34]=cast<uint>(0x6d9d6122); k[35]=cast<uint>(0xfde5380c);
+                k[36]=cast<uint>(0xa4beea44); k[37]=cast<uint>(0x4bdecfa9); k[38]=cast<uint>(0xf6bb4b60); k[39]=cast<uint>(0xbebfbc70);
+                k[40]=cast<uint>(0x289b7ec6); k[41]=cast<uint>(0xeaa127fa); k[42]=cast<uint>(0xd4ef3085); k[43]=cast<uint>(0x04881d05);
+                k[44]=cast<uint>(0xd9d4d039); k[45]=cast<uint>(0xe6db99e5); k[46]=cast<uint>(0x1fa27cf8); k[47]=cast<uint>(0xc4ac5665);
+                k[48]=cast<uint>(0xf4292244); k[49]=cast<uint>(0x432aff97); k[50]=cast<uint>(0xab9423a7); k[51]=cast<uint>(0xfc93a039);
+                k[52]=cast<uint>(0x655b59c3); k[53]=cast<uint>(0x8f0ccc92); k[54]=cast<uint>(0xffeff47d); k[55]=cast<uint>(0x85845dd1);
+                k[56]=cast<uint>(0x6fa87e4f); k[57]=cast<uint>(0xfe2ce6e0); k[58]=cast<uint>(0xa3014314); k[59]=cast<uint>(0x4e0811a1);
+                k[60]=cast<uint>(0xf7537e82); k[61]=cast<uint>(0xbd3af235); k[62]=cast<uint>(0x2ad7d2bb); k[63]=cast<uint>(0xeb86d391);
+                mutable uint a0 = cast<uint>(0x67452301); mutable uint b0 = cast<uint>(0xefcdab89);
+                mutable uint c0 = cast<uint>(0x98badcfe); mutable uint d0 = cast<uint>(0x10325476);
+                mutable uint[] w = new uint[16]();
+                mutable int blk = 0;
+                while (blk < padded) {
+                    for (mutable int t = 0; t < 16; t++) {
+                        int b = blk + t * 4;
+                        w[t] = cast<uint>(m[b]) | (cast<uint>(m[b+1]) << 8)
+                             | (cast<uint>(m[b+2]) << 16) | (cast<uint>(m[b+3]) << 24);
+                    }
+                    mutable uint a = a0; mutable uint b2 = b0; mutable uint c = c0; mutable uint d = d0;
+                    for (mutable int i = 0; i < 64; i++) {
+                        mutable uint f = cast<uint>(0);
+                        mutable int g = 0;
+                        if (i < 16) { f = (b2 & c) | ((~b2) & d); g = i; }
+                        else {
+                            if (i < 32) { f = (d & b2) | ((~d) & c); g = (5 * i + 1) % 16; }
+                            else {
+                                if (i < 48) { f = b2 ^ c ^ d; g = (3 * i + 5) % 16; }
+                                else { f = c ^ (b2 | (~d)); g = (7 * i) % 16; }
+                            }
+                        }
+                        f = f + a + k[i] + w[g];
+                        a = d; d = c; c = b2;
+                        b2 = b2 + Md5.rotl(f, s[i]);
+                    }
+                    a0 = a0 + a; b0 = b0 + b2; c0 = c0 + c; d0 = d0 + d;
+                    blk = blk + 64;
+                }
+                mutable int[] out = new int[16]();
+                Md5.putLE(out, 0, a0); Md5.putLE(out, 4, b0); Md5.putLE(out, 8, c0); Md5.putLE(out, 12, d0);
+                return Sha256.toHex(out, 16);
+            }
+        }
+        // CRC-16/XMODEM (spec 4): a 16-bit checksum over a string's bytes with polynomial 0x1021 and zero
+        // initial value, returned as an int. Bitwise, table-free.
+        public class Crc {
+            public static method crc16(String data) returns int {
+                mutable int crc = 0;
+                int n = data.length();
+                for (mutable int i = 0; i < n; i++) {
+                    crc = crc ^ ((cast<int>(data.charAt(i)) & 255) << 8);
+                    for (mutable int b = 0; b < 8; b++) {
+                        if ((crc & 32768) != 0) { crc = ((crc << 1) ^ 4129) & 65535; }
+                        else { crc = (crc << 1) & 65535; }
+                    }
+                }
+                return crc;
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
         // A Bloom filter: a probabilistic set that never misses a member but may report a false positive
         // (spec 34.1). Two independent hashes (FNV-1a and CRC-32 from Digest) set and test bits in a fixed
         // bit array. mightContain returning false is definitive; true means probably present.
