@@ -3986,6 +3986,60 @@ R"LDP3(
                 return Colors.pack(y, y, y);
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // Caesar shift cipher (spec 34): rotate each letter by n, wrapping within its case; non-letters pass
+        // through. decrypt is the inverse shift; rot13 is the classic shift of 13.
+        public class Caesar {
+            private static method shiftChar(char c, int n) returns char {
+                if (c >= 'A' && c <= 'Z') {
+                    return cast<char>((cast<int>(c) - cast<int>('A') + n + 2600) % 26 + cast<int>('A'));
+                }
+                if (c >= 'a' && c <= 'z') {
+                    return cast<char>((cast<int>(c) - cast<int>('a') + n + 2600) % 26 + cast<int>('a'));
+                }
+                return c;
+            }
+            public static method encrypt(String s, int n) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < s.length(); i++) { sb.appendChar(Caesar.shiftChar(s.charAt(i), n)); }
+                return sb.toString();
+            }
+            public static method decrypt(String s, int n) returns String { return Caesar.encrypt(s, 26 - (n % 26)); }
+            public static method rot13(String s) returns String { return Caesar.encrypt(s, 13); }
+        }
+        // Vigenere cipher (spec 34): a repeating-key poly-alphabetic shift over letters (case preserved,
+        // non-letters skipped and not consuming key). encrypt and decrypt are inverses.
+        public class Vigenere {
+            private static method proc(String s, String key, int dir) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int ki = 0;
+                int klen = key.length();
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    mutable boolean upper = c >= 'A' && c <= 'Z';
+                    mutable boolean lower = c >= 'a' && c <= 'z';
+                    if (upper || lower) {
+                        char kc = key.charAt(ki % klen);
+                        mutable int kshift = 0;
+                        if (kc >= 'A' && kc <= 'Z') { kshift = cast<int>(kc) - cast<int>('A'); }
+                        if (kc >= 'a' && kc <= 'z') { kshift = cast<int>(kc) - cast<int>('a'); }
+                        mutable int base = cast<int>('A');
+                        if (lower) { base = cast<int>('a'); }
+                        int off = cast<int>(c) - base;
+                        int shifted = (off + dir * kshift + 2600) % 26;
+                        sb.appendChar(cast<char>(base + shifted));
+                        ki = ki + 1;
+                    } else {
+                        sb.appendChar(c);
+                    }
+                }
+                return sb.toString();
+            }
+            public static method encrypt(String s, String key) returns String { return Vigenere.proc(s, key, 1); }
+            public static method decrypt(String s, String key) returns String { return Vigenere.proc(s, key, -1); }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so

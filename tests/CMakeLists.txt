@@ -1109,6 +1109,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Classic ciphers (spec 34): Caesar/rot13 and Vigenere, verified against the ATTACKATDAWN vector.
+        add_test(NAME codegen_ciphers_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ciphers.ldp3"
+            "-DCONTAINS=vig=LXFOPVEFRNHR back=ATTACKATDAWN"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Radix-2 fast Fourier transform (spec 34.6) in pure LDP3, forward + inverse round-trip.
         add_test(NAME codegen_fft_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
