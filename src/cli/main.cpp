@@ -4401,6 +4401,26 @@ R"LDP3(
                 return sb.toString();
             }
         }
+        // URL query-string parsing (spec 34): splits "k=v&k=v" on & into a map, with each key/value
+        // percent-decoded via UrlCodec. A key with no '=' maps to the empty string.
+        public class QueryString {
+            public static method parse(String qs) returns HashMap<String, String> {
+                mutable HashMap<String, String> m = new HashMap<String, String>() on heap;
+                mutable ArrayList<String> parts = Strings.split(qs, "&");
+                for (mutable int i = 0; i < parts.size(); i++) {
+                    String p = parts.get(i);
+                    if (p.length() == 0) { continue; }
+                    int eq = p.indexOf("=");
+                    if (eq < 0) { m.put(UrlCodec.decode(p), ""); }
+                    else {
+                        String k = UrlCodec.decode(p.substring(0, eq));
+                        String v = UrlCodec.decode(p.substring(eq + 1, p.length()));
+                        m.put(k, v);
+                    }
+                }
+                return m;
+            }
+        }
         // Greedy word wrapping (spec 4): splits text on spaces and packs words into lines no longer than the
         // given width, returning the lines. A single word longer than the width gets its own line.
         public class WordWrap {

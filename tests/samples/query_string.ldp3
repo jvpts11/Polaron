@@ -1,0 +1,19 @@
+import System.IO.Console;
+import System.Text.QueryString;
+import System.Collections.HashMap;
+program QueryStringDemo;
+
+// URL query-string parsing (spec 34) in pure LDP3, with percent-decoding. Prints:
+//   a=1 b=2 c=hello me=A B x=
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable HashMap<String, String> m = QueryString.parse("a=1&b=2&c=hello&me=A%20B&x");
+                System.IO.Console.printf("a=%s b=%s c=%s me=%s x=%s\n",
+                    m.get("a"), m.get("b"), m.get("c"), m.get("me"), m.get("x"));
+                return;
+            }
+        }
+    }
+}
