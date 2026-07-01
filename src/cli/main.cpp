@@ -3276,6 +3276,79 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
+        // SHA-224 (FIPS 180-4), the SHA-256 compression with different initial hash values and a 28-byte
+        // (56 hex char) output. Reuses Sha256.rotr/putWord/toHex; the round constants match SHA-256.
+        public class Sha224 {
+            public static method digest(String msg) returns String {
+                int len = msg.length();
+                mutable int padded = len + 1;
+                while (padded % 64 != 56) { padded = padded + 1; }
+                padded = padded + 8;
+                mutable int[] m = new int[padded]();
+                for (mutable int i = 0; i < len; i++) { m[i] = cast<int>(msg.charAt(i)) & 255; }
+                m[len] = 128;
+                long bits = cast<long>(len) * cast<long>(8);
+                for (mutable int i = 0; i < 8; i++) {
+                    m[padded - 1 - i] = cast<int>((bits >> (i * 8)) & cast<long>(255));
+                }
+                mutable uint[] k = new uint[64]();
+                k[0]=cast<uint>(0x428a2f98); k[1]=cast<uint>(0x71374491); k[2]=cast<uint>(0xb5c0fbcf); k[3]=cast<uint>(0xe9b5dba5);
+                k[4]=cast<uint>(0x3956c25b); k[5]=cast<uint>(0x59f111f1); k[6]=cast<uint>(0x923f82a4); k[7]=cast<uint>(0xab1c5ed5);
+                k[8]=cast<uint>(0xd807aa98); k[9]=cast<uint>(0x12835b01); k[10]=cast<uint>(0x243185be); k[11]=cast<uint>(0x550c7dc3);
+                k[12]=cast<uint>(0x72be5d74); k[13]=cast<uint>(0x80deb1fe); k[14]=cast<uint>(0x9bdc06a7); k[15]=cast<uint>(0xc19bf174);
+                k[16]=cast<uint>(0xe49b69c1); k[17]=cast<uint>(0xefbe4786); k[18]=cast<uint>(0x0fc19dc6); k[19]=cast<uint>(0x240ca1cc);
+                k[20]=cast<uint>(0x2de92c6f); k[21]=cast<uint>(0x4a7484aa); k[22]=cast<uint>(0x5cb0a9dc); k[23]=cast<uint>(0x76f988da);
+                k[24]=cast<uint>(0x983e5152); k[25]=cast<uint>(0xa831c66d); k[26]=cast<uint>(0xb00327c8); k[27]=cast<uint>(0xbf597fc7);
+                k[28]=cast<uint>(0xc6e00bf3); k[29]=cast<uint>(0xd5a79147); k[30]=cast<uint>(0x06ca6351); k[31]=cast<uint>(0x14292967);
+                k[32]=cast<uint>(0x27b70a85); k[33]=cast<uint>(0x2e1b2138); k[34]=cast<uint>(0x4d2c6dfc); k[35]=cast<uint>(0x53380d13);
+                k[36]=cast<uint>(0x650a7354); k[37]=cast<uint>(0x766a0abb); k[38]=cast<uint>(0x81c2c92e); k[39]=cast<uint>(0x92722c85);
+                k[40]=cast<uint>(0xa2bfe8a1); k[41]=cast<uint>(0xa81a664b); k[42]=cast<uint>(0xc24b8b70); k[43]=cast<uint>(0xc76c51a3);
+                k[44]=cast<uint>(0xd192e819); k[45]=cast<uint>(0xd6990624); k[46]=cast<uint>(0xf40e3585); k[47]=cast<uint>(0x106aa070);
+                k[48]=cast<uint>(0x19a4c116); k[49]=cast<uint>(0x1e376c08); k[50]=cast<uint>(0x2748774c); k[51]=cast<uint>(0x34b0bcb5);
+                k[52]=cast<uint>(0x391c0cb3); k[53]=cast<uint>(0x4ed8aa4a); k[54]=cast<uint>(0x5b9cca4f); k[55]=cast<uint>(0x682e6ff3);
+                k[56]=cast<uint>(0x748f82ee); k[57]=cast<uint>(0x78a5636f); k[58]=cast<uint>(0x84c87814); k[59]=cast<uint>(0x8cc70208);
+                k[60]=cast<uint>(0x90befffa); k[61]=cast<uint>(0xa4506ceb); k[62]=cast<uint>(0xbef9a3f7); k[63]=cast<uint>(0xc67178f2);
+                mutable uint h0=cast<uint>(0xc1059ed8); mutable uint h1=cast<uint>(0x367cd507);
+                mutable uint h2=cast<uint>(0x3070dd17); mutable uint h3=cast<uint>(0xf70e5939);
+                mutable uint h4=cast<uint>(0xffc00b31); mutable uint h5=cast<uint>(0x68581511);
+                mutable uint h6=cast<uint>(0x64f98fa7); mutable uint h7=cast<uint>(0xbefa4fa4);
+                mutable uint[] w = new uint[64]();
+                mutable int blk = 0;
+                while (blk < padded) {
+                    for (mutable int t = 0; t < 16; t++) {
+                        int b = blk + t * 4;
+                        w[t] = (cast<uint>(m[b]) << 24) | (cast<uint>(m[b+1]) << 16)
+                             | (cast<uint>(m[b+2]) << 8) | cast<uint>(m[b+3]);
+                    }
+                    for (mutable int t = 16; t < 64; t++) {
+                        uint s0 = Sha256.rotr(w[t-15],7) ^ Sha256.rotr(w[t-15],18) ^ (w[t-15] >> 3);
+                        uint s1 = Sha256.rotr(w[t-2],17) ^ Sha256.rotr(w[t-2],19) ^ (w[t-2] >> 10);
+                        w[t] = w[t-16] + s0 + w[t-7] + s1;
+                    }
+                    mutable uint a=h0; mutable uint b2=h1; mutable uint c=h2; mutable uint d=h3;
+                    mutable uint e=h4; mutable uint f=h5; mutable uint g=h6; mutable uint hh=h7;
+                    for (mutable int t = 0; t < 64; t++) {
+                        uint bigS1 = Sha256.rotr(e,6) ^ Sha256.rotr(e,11) ^ Sha256.rotr(e,25);
+                        uint ch = (e & f) ^ ((~e) & g);
+                        uint t1 = hh + bigS1 + ch + k[t] + w[t];
+                        uint bigS0 = Sha256.rotr(a,2) ^ Sha256.rotr(a,13) ^ Sha256.rotr(a,22);
+                        uint maj = (a & b2) ^ (a & c) ^ (b2 & c);
+                        uint t2 = bigS0 + maj;
+                        hh=g; g=f; f=e; e=d+t1; d=c; c=b2; b2=a; a=t1+t2;
+                    }
+                    h0=h0+a; h1=h1+b2; h2=h2+c; h3=h3+d; h4=h4+e; h5=h5+f; h6=h6+g; h7=h7+hh;
+                    blk = blk + 64;
+                }
+                mutable int[] out = new int[28]();
+                Sha256.putWord(out,0,h0); Sha256.putWord(out,4,h1); Sha256.putWord(out,8,h2);
+                Sha256.putWord(out,12,h3); Sha256.putWord(out,16,h4); Sha256.putWord(out,20,h5);
+                Sha256.putWord(out,24,h6);
+                return Sha256.toHex(out, 28);
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
         // MD5 message digest (RFC 1321), pure LDP3 over 32-bit unsigned arithmetic (little-endian, unlike the
         // SHA family). digest returns the 32-character lowercase hex. (MD5 is broken for collision resistance;
         // provided for legacy interop/checksums only.) Reuses Sha256.toHex for the final hex.

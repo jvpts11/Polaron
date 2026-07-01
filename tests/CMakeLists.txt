@@ -1019,6 +1019,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # SHA-224 (FIPS 180-4) in pure LDP3: verified against the "abc" and "" reference vectors.
+        add_test(NAME codegen_sha224_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sha224.ldp3"
+            "-DCONTAINS=abc=23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # SHA-256 (FIPS 180-4) in pure LDP3: verified against the "abc" and "" reference vectors.
         add_test(NAME codegen_sha256_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
