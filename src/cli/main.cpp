@@ -5404,6 +5404,47 @@ R"LDP3(
                 return;
             }
         }
+        // Ordinary least-squares linear regression (spec 34.6): fit y = slope*x + intercept from parallel
+        // arrays and report the coefficient of determination r-squared (computed without a square root).
+        public class Regression {
+            private mutable double slope;
+            private mutable double intercept;
+            private mutable double r2;
+            public constructor Regression(double[] x, double[] y, int n) {
+                mutable double sx = 0.0; mutable double sy = 0.0; mutable double sxy = 0.0;
+                mutable double sxx = 0.0; mutable double syy = 0.0;
+                for (mutable int i = 0; i < n; i++) {
+                    sx = sx + x[i]; sy = sy + y[i]; sxy = sxy + x[i] * y[i];
+                    sxx = sxx + x[i] * x[i]; syy = syy + y[i] * y[i];
+                }
+                double dn = cast<double>(n);
+                this.slope = (dn * sxy - sx * sy) / (dn * sxx - sx * sx);
+                this.intercept = (sy - this.slope * sx) / dn;
+                double num = dn * sxy - sx * sy;
+                double den = (dn * sxx - sx * sx) * (dn * syy - sy * sy);
+                this.r2 = (num * num) / den;
+            }
+            public method getSlope() returns double { return this.slope; }
+            public method getIntercept() returns double { return this.intercept; }
+            public method getR2() returns double { return this.r2; }
+            public method predict(double x) returns double { return this.slope * x + this.intercept; }
+        }
+        // Pearson correlation coefficient (spec 34.6) between two equal-length samples, in [-1, 1].
+        public class Correlation {
+            public static method pearson(double[] x, double[] y, int n) returns double {
+                mutable double sx = 0.0; mutable double sy = 0.0; mutable double sxy = 0.0;
+                mutable double sxx = 0.0; mutable double syy = 0.0;
+                for (mutable int i = 0; i < n; i++) {
+                    sx = sx + x[i]; sy = sy + y[i]; sxy = sxy + x[i] * y[i];
+                    sxx = sxx + x[i] * x[i]; syy = syy + y[i] * y[i];
+                }
+                double dn = cast<double>(n);
+                double num = dn * sxy - sx * sy;
+                double den = Numerics.sqrt((dn * sxx - sx * sx) * (dn * syy - sy * sy));
+                if (den == 0.0) { return 0.0; }
+                return num / den;
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)

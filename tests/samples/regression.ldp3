@@ -1,0 +1,24 @@
+import System.IO.Console;
+import System.Math.Regression;
+import System.Math.Correlation;
+program RegressionDemo;
+
+// Least-squares regression and Pearson correlation (spec 34.6) in pure LDP3. Prints:
+//   slope=2.0000 intercept=1.0000 r2=1.0000 predict5=11.0000 pearson=1.0000
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable double[] x = new double[4]();
+                mutable double[] y = new double[4]();
+                x[0]=1.0; x[1]=2.0; x[2]=3.0; x[3]=4.0;
+                y[0]=3.0; y[1]=5.0; y[2]=7.0; y[3]=9.0;   // y = 2x + 1
+                mutable Regression rg = new Regression(x, y, 4) on heap;
+                System.IO.Console.printf("slope=%.4f intercept=%.4f r2=%.4f predict5=%.4f pearson=%.4f\n",
+                    rg.getSlope(), rg.getIntercept(), rg.getR2(), rg.predict(5.0),
+                    Correlation.pearson(x, y, 4));
+                return;
+            }
+        }
+    }
+}

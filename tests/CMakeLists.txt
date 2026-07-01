@@ -1127,6 +1127,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Least-squares regression and Pearson correlation (spec 34.6) in pure LDP3.
+        add_test(NAME codegen_regression_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/regression.ldp3"
+            "-DCONTAINS=slope=2.0000 intercept=1.0000 r2=1.0000 predict5=11.0000 pearson=1.0000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Radix-2 fast Fourier transform (spec 34.6) in pure LDP3, forward + inverse round-trip.
         add_test(NAME codegen_fft_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
