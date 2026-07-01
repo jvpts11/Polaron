@@ -1109,6 +1109,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Radix-2 fast Fourier transform (spec 34.6) in pure LDP3, forward + inverse round-trip.
+        add_test(NAME codegen_fft_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/fft.ldp3"
+            "-DCONTAINS=dc_re=4.0000 dc_im=0.0000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Self-contained transcendentals (spec 34.6): sqrt/exp/ln/sin/cos/pow in pure LDP3.
         add_test(NAME codegen_numerics_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

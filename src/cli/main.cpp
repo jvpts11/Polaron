@@ -5292,6 +5292,64 @@ R"LDP3(
                 return Numerics.exp(e * Numerics.ln(b));
             }
         }
+        // Radix-2 fast Fourier transform (spec 34.6), iterative Cooley-Tukey over parallel real/imag arrays
+        // whose length is a power of two. forward transforms in place; inverse transforms and divides by n so
+        // that inverse(forward(x)) == x. Twiddle factors advance by complex multiplication from Numerics.
+        public class Fft {
+            private static method transform(double[] re, double[] im, int n, int sign) returns void {
+                mutable int j = 0;
+                for (mutable int i = 1; i < n; i++) {
+                    mutable int bit = n >> 1;
+                    while ((j & bit) != 0) { j = j ^ bit; bit = bit >> 1; }
+                    j = j | bit;
+                    if (i < j) {
+                        double tr = re[i]; re[i] = re[j]; re[j] = tr;
+                        double ti = im[i]; im[i] = im[j]; im[j] = ti;
+                    }
+                }
+                double tau = 6.283185307179586;
+                mutable int len = 2;
+                while (len <= n) {
+                    double ang = cast<double>(sign) * tau / cast<double>(len);
+                    double wr = Numerics.cos(ang);
+                    double wi = Numerics.sin(ang);
+                    mutable int base = 0;
+                    while (base < n) {
+                        mutable double cwr = 1.0;
+                        mutable double cwi = 0.0;
+                        int half = len / 2;
+                        for (mutable int k = 0; k < half; k++) {
+                            int a = base + k;
+                            int b = base + k + half;
+                            double ure = re[a];
+                            double uim = im[a];
+                            double vre = re[b] * cwr - im[b] * cwi;
+                            double vim = re[b] * cwi + im[b] * cwr;
+                            re[a] = ure + vre; im[a] = uim + vim;
+                            re[b] = ure - vre; im[b] = uim - vim;
+                            double ncwr = cwr * wr - cwi * wi;
+                            cwi = cwr * wi + cwi * wr;
+                            cwr = ncwr;
+                        }
+                        base = base + len;
+                    }
+                    len = len << 1;
+                }
+                return;
+            }
+            public static method forward(double[] re, double[] im, int n) returns void {
+                Fft.transform(re, im, n, -1);
+                return;
+            }
+            public static method inverse(double[] re, double[] im, int n) returns void {
+                Fft.transform(re, im, n, 1);
+                for (mutable int i = 0; i < n; i++) {
+                    re[i] = re[i] / cast<double>(n);
+                    im[i] = im[i] / cast<double>(n);
+                }
+                return;
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)
