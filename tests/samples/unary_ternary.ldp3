@@ -1,0 +1,20 @@
+import System.IO.Console;
+program UnaryTernary;
+
+// Regression: a unary-minus double as a ternary arm used to mis-type as int, yielding a double value under
+// an i32 phi -- which hung/crashed codegen. The arm now keeps the operand's numeric type. Prints:
+//   sign=-1.0 r=2.0 k=-2
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable double a = -2.0;
+                double sign = (a < 0.0 ? -1.0 : 1.0);              // -1.0
+                double r = a * sign;                              // 2.0
+                int k = cast<int>(a + (a < 0.0 ? -0.5 : 0.5));    // -2.5 -> -2
+                System.IO.Console.printf("sign=%.1f r=%.1f k=%d\n", sign, r, k);
+                return;
+            }
+        }
+    }
+}

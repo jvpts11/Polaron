@@ -1424,7 +1424,10 @@ struct CodeGenerator::Impl {
                         rit->second.methodReturnType.count("operator" + un->op) > 0)
                         return rit->second.methodReturnType.at("operator" + un->op);
             }
-            if (un->op == "~") return typeName(*un->operand);  // bitwise not keeps the width
+            // Negation and bitwise-not keep the operand's numeric type (int/long/float/double); without
+            // this, unary '-' was typed as int, so `-x` on a double misled callers (e.g. a ternary arm's
+            // result type), producing a double value under an i32 phi -- an IR type mismatch.
+            if (un->op == "~" || un->op == "-" || un->op == "+") return typeName(*un->operand);
             return un->op == "!" ? "boolean" : "int";
         }
         if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
