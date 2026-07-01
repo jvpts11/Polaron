@@ -2139,6 +2139,51 @@ R"LDP3(
                 return this.topoSort(o) < this.n;
             }
         }
+        // A uniform spatial hash grid (spec 34.1) for 2D broad-phase queries: points are bucketed by
+        // cell (a HashMap from a packed cell key to the point indices in it), so queryRect only scans the
+        // cells overlapping the query box. Coordinates are assumed non-negative.
+        public class SpatialGrid {
+            private mutable int cell;
+            private mutable int[] px;
+            private mutable int[] py;
+            private mutable int n;
+            private mutable HashMap<int, ArrayList<int>> buckets;
+            public constructor SpatialGrid(int cellSize, int capacity) {
+                this.cell = cellSize;
+                this.px = new int[capacity]();
+                this.py = new int[capacity]();
+                this.n = 0;
+                this.buckets = new HashMap<int, ArrayList<int>>() on heap;
+            }
+            private method key(int cx, int cy) returns int { return cx * 100000 + cy; }
+            public method insert(int x, int y) returns void {
+                int idx = this.n;
+                this.px[idx] = x; this.py[idx] = y; this.n = this.n + 1;
+                int ck = this.key(x / this.cell, y / this.cell);
+                if (!this.buckets.containsKey(ck)) { this.buckets.put(ck, new ArrayList<int>() on heap); }
+                this.buckets.get(ck).add(idx);
+                return;
+            }
+            public method queryRect(int x0, int y0, int x1, int y1) returns int {
+                int cx0 = x0 / this.cell; int cy0 = y0 / this.cell;
+                int cx1 = x1 / this.cell; int cy1 = y1 / this.cell;
+                mutable int count = 0;
+                for (mutable int cx = cx0; cx <= cx1; cx++) {
+                    for (mutable int cy = cy0; cy <= cy1; cy++) {
+                        int ck = this.key(cx, cy);
+                        if (this.buckets.containsKey(ck)) {
+                            mutable ArrayList<int> lst = this.buckets.get(ck);
+                            for (mutable int i = 0; i < lst.size(); i++) {
+                                int idx = lst.get(i);
+                                if (this.px[idx] >= x0 && this.px[idx] <= x1
+                                    && this.py[idx] >= y0 && this.py[idx] <= y1) { count = count + 1; }
+                            }
+                        }
+                    }
+                }
+                return count;
+            }
+        }
     }
 )LDP3"
 // (split: System.Ecs in its own literal.)
