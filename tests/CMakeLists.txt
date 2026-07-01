@@ -1082,6 +1082,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # LZ77 sliding-window compression (round-trip) and Soundex phonetic codes, both pure LDP3.
+        add_test(NAME codegen_lz77_soundex_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lz77_soundex.ldp3"
+            "-DCONTAINS=raw=35 toks=7 ok=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Pointer-linked binary search tree (spec 34.1): insert/contains/size + sorted in-order traversal.
         add_test(NAME codegen_bst_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

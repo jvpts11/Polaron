@@ -3053,6 +3053,112 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
+        // LZ77 sliding-window compression (spec 34.1): encode produces flattened (offset, length, nextChar)
+        // triples over a bounded search window (nextChar is -1 only at the very end); decode replays them,
+        // copying back-references (which may overlap, like run-length) to reconstruct the input exactly.
+        public class Lz77 {
+            private mutable int window;
+            public constructor Lz77(int windowSize) { this.window = windowSize; }
+            public method encode(String data) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                int n = data.length();
+                mutable int i = 0;
+                while (i < n) {
+                    mutable int bestLen = 0;
+                    mutable int bestOff = 0;
+                    mutable int start = i - this.window;
+                    if (start < 0) { start = 0; }
+                    for (mutable int j = start; j < i; j++) {
+                        mutable int len = 0;
+                        while (i + len < n && len < 255 && data.charAt(j + len) == data.charAt(i + len)) {
+                            len = len + 1;
+                        }
+                        if (len > bestLen) { bestLen = len; bestOff = i - j; }
+                    }
+                    int nextPos = i + bestLen;
+                    out.add(bestOff);
+                    out.add(bestLen);
+                    if (nextPos < n) {
+                        out.add(cast<int>(data.charAt(nextPos)) & 255);
+                        i = nextPos + 1;
+                    } else {
+                        out.add(-1);
+                        i = nextPos;
+                    }
+                }
+                return out;
+            }
+            public method decode(ArrayList<int> tokens) returns String {
+                mutable int total = 0;
+                mutable int t = 0;
+                while (t < tokens.size()) {
+                    total = total + tokens.get(t + 1);
+                    if (tokens.get(t + 2) >= 0) { total = total + 1; }
+                    t = t + 3;
+                }
+                mutable int[] buf = new int[total + 1]();
+                mutable int pos = 0;
+                t = 0;
+                while (t < tokens.size()) {
+                    int off = tokens.get(t);
+                    int len = tokens.get(t + 1);
+                    int ch = tokens.get(t + 2);
+                    int base = pos - off;
+                    for (mutable int k = 0; k < len; k++) { buf[pos] = buf[base + k]; pos = pos + 1; }
+                    if (ch >= 0) { buf[pos] = ch; pos = pos + 1; }
+                    t = t + 3;
+                }
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < pos; i++) { sb.appendChar(cast<char>(buf[i])); }
+                return sb.toString();
+            }
+        }
+        // Soundex phonetic encoding (spec 34): maps a name to a letter followed by three digits so that
+        // similar-sounding names share a code (e.g. Robert and Rupert both give R163). Vowels reset run
+        // detection; h and w are transparent between equal-coded consonants.
+        public class Soundex {
+            private static method digit(char c) returns int {
+                if (c == 'b' || c == 'f' || c == 'p' || c == 'v') { return 1; }
+                if (c == 'c' || c == 'g' || c == 'j' || c == 'k' || c == 'q' || c == 's' || c == 'x' || c == 'z') { return 2; }
+                if (c == 'd' || c == 't') { return 3; }
+                if (c == 'l') { return 4; }
+                if (c == 'm' || c == 'n') { return 5; }
+                if (c == 'r') { return 6; }
+                return 0;
+            }
+            private static method lower(char c) returns char {
+                if (c >= 'A' && c <= 'Z') { return cast<char>(cast<int>(c) + 32); }
+                return c;
+            }
+            private static method upper(char c) returns char {
+                if (c >= 'a' && c <= 'z') { return cast<char>(cast<int>(c) - 32); }
+                return c;
+            }
+            public static method encode(String name) returns String {
+                if (name.length() == 0) { return ""; }
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendChar(Soundex.upper(name.charAt(0)));
+                mutable int prev = Soundex.digit(Soundex.lower(name.charAt(0)));
+                mutable int count = 1;
+                mutable int i = 1;
+                while (i < name.length() && count < 4) {
+                    char c = Soundex.lower(name.charAt(i));
+                    if (c == 'h' || c == 'w') {
+                        i = i + 1;
+                    } else {
+                        int d = Soundex.digit(c);
+                        if (d != 0 && d != prev) { sb.appendInt(d); count = count + 1; }
+                        prev = d;
+                        i = i + 1;
+                    }
+                }
+                while (count < 4) { sb.appendChar('0'); count = count + 1; }
+                return sb.toString();
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
         // Run-length encoding of a string (spec 34): each run of a repeated character becomes that character
         // followed by its decimal count, e.g. "aaabbbbc" -> "a3b4c1". decode reverses it, reading a
         // character and the digits that follow as a repeat count.
