@@ -1100,6 +1100,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Comparator combinators over closures (spec 34.1): naturalInt/reversed/thenComparing, pure LDP3.
+        add_test(NAME codegen_comparators_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/comparators.ldp3"
+            "-DCONTAINS=asc=1,2,3 desc=3,2,1 tie=2"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Quickselect k-th smallest (spec 34.1), pure LDP3.
         add_test(NAME codegen_quickselect_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

@@ -2072,6 +2072,25 @@ R"LDP3(
                 return a[lo];
             }
         }
+        // Comparator combinators (spec 34.1) built on closures: naturalInt gives ascending int order,
+        // reversed flips a comparator, and thenComparing chains a tie-breaker after a primary comparator.
+        // Each returns a function<int,int,int> usable with ArrayList.sortedBy.
+        public class Comparators {
+            public static method naturalInt() returns function<int, int, int> {
+                return lambda(int a, int b) returns int { return a - b; };
+            }
+            public static method reversed(function<int, int, int> cmp) returns function<int, int, int> {
+                return lambda(int a, int b) returns int { return cmp(b, a); };
+            }
+            public static method thenComparing(function<int, int, int> first, function<int, int, int> second)
+                returns function<int, int, int> {
+                return lambda(int a, int b) returns int {
+                    int r = first(a, b);
+                    if (r != 0) { return r; }
+                    return second(a, b);
+                };
+            }
+        }
         // A stack that also reports its minimum in O(1) (spec 34.1): a parallel stack carries the running
         // minimum at each depth. push/pop/peek/getMin/size.
         public class MinStack {
