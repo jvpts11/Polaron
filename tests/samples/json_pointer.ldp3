@@ -1,0 +1,34 @@
+import System.IO.Console;
+import System.Json.Json;
+import System.Json.JsonPointer;
+program JsonPointerDemo;
+
+// JSON Pointer resolution (RFC 6901) and pretty-printing (spec 34) in pure LDP3. Prints the indented
+// tree, then:
+//   n1=20 name=bob oob=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Json root = Json.object();
+                Json arr = Json.array();
+                arr.add(Json.ofNum(cast<long>(10)));
+                arr.add(Json.ofNum(cast<long>(20)));
+                root.put("nums", arr);
+                Json user = Json.object();
+                user.put("name", Json.ofStr("bob"));
+                root.put("user", user);
+
+                System.IO.Console.println(root.prettyString());
+
+                nullable Json n1 = JsonPointer.resolve(root, "/nums/1");
+                nullable Json name = JsonPointer.resolve(root, "/user/name");
+                nullable Json oob = JsonPointer.resolve(root, "/nums/5");
+                boolean isNull = oob == null;
+                System.IO.Console.printf("n1=%d name=%s oob=%d\n",
+                    cast<int>(n1.asNum()), name.asStr(), isNull);
+                return;
+            }
+        }
+    }
+}

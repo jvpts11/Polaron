@@ -5540,9 +5540,96 @@ R"LDP3(
                 this.writeInto(sb);
                 return sb.toString();
             }
+            private method pad(StringBuilder sb, int n) returns void {
+                for (mutable int i = 0; i < n; i++) { sb.appendChar(' '); }
+                return;
+            }
+            private method prettyInto(StringBuilder sb, int depth) returns void {
+                if (this.kind == 0) { sb.append("null"); return; }
+                if (this.kind == 1) { if (this.b) { sb.append("true"); } else { sb.append("false"); } return; }
+                if (this.kind == 2) { sb.append(this.num.toString()); return; }
+                if (this.kind == 3) { this.escapeInto(sb, this.str); return; }
+                if (this.kind == 4) {
+                    if (this.childCount == 0) { sb.append("[]"); return; }
+                    sb.appendChar('['); sb.appendChar('\n');
+                    mutable nullable Json* cur = this.firstChild;
+                    mutable boolean first = true;
+                    while (cur != null) {
+                        if (!first) { sb.appendChar(','); sb.appendChar('\n'); }
+                        first = false;
+                        this.pad(sb, depth + 2);
+                        cur.prettyInto(sb, depth + 2);
+                        cur = cur.nextSibling;
+                    }
+                    sb.appendChar('\n'); this.pad(sb, depth); sb.appendChar(']');
+                    return;
+                }
+                if (this.childCount == 0) { sb.append("{}"); return; }
+                sb.appendChar('{'); sb.appendChar('\n');
+                mutable nullable Json* m = this.firstChild;
+                mutable boolean firstM = true;
+                while (m != null) {
+                    if (!firstM) { sb.appendChar(','); sb.appendChar('\n'); }
+                    firstM = false;
+                    this.pad(sb, depth + 2);
+                    this.escapeInto(sb, m.memberKey);
+                    sb.appendChar(':'); sb.appendChar(' ');
+                    m.prettyInto(sb, depth + 2);
+                    m = m.nextSibling;
+                }
+                sb.appendChar('\n'); this.pad(sb, depth); sb.appendChar('}');
+                return;
+            }
+            public method prettyString() returns String {   // indented multi-line JSON
+                StringBuilder sb = new StringBuilder() on heap;
+                this.prettyInto(sb, 0);
+                return sb.toString();
+            }
             public static method parse(String src) returns Json {
                 JsonParser p = new JsonParser(src) on heap;
                 return p.parseValue();
+            }
+        }
+        // JSON Pointer (RFC 6901): resolve a "/a/0/b" path against a Json tree, stepping into object members
+        // by key and array elements by index. Returns null if any step is missing or out of range.
+        public class JsonPointer {
+            private static method parseIndex(String s) returns int {
+                if (s.length() == 0) { return -1; }
+                mutable int v = 0;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c < '0' || c > '9') { return -1; }
+                    v = v * 10 + (cast<int>(c) - cast<int>('0'));
+                }
+                return v;
+            }
+            public static method resolve(Json root, String ptr) returns nullable Json {
+                mutable nullable Json* cur = root;
+                if (ptr.length() == 0) { return cur; }
+                mutable int i = 0;
+                if (ptr.charAt(0) == '/') { i = 1; }
+                mutable StringBuilder tok = new StringBuilder() on heap;
+                while (i <= ptr.length()) {
+                    boolean atEnd = i == ptr.length();
+                    if (atEnd || ptr.charAt(i) == '/') {
+                        String t = tok.toString();
+                        if (cur == null) { return null; }
+                        int k = cur.kindOf();
+                        if (k == 5) { cur = cur.field(t); }
+                        else {
+                            if (k == 4) {
+                                int idx = JsonPointer.parseIndex(t);
+                                if (idx < 0 || idx >= cur.size()) { return null; }
+                                cur = cur.at(idx);
+                            } else { return null; }
+                        }
+                        tok = new StringBuilder() on heap;
+                    } else {
+                        tok.appendChar(ptr.charAt(i));
+                    }
+                    i = i + 1;
+                }
+                return cur;
             }
         }
         // Recursive-descent JSON parser (minimal: null/bool/integer/string/array/object).

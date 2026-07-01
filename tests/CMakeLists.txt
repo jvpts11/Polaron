@@ -1280,6 +1280,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # JSON Pointer resolution (RFC 6901) and pretty-printing (spec 34), pure LDP3.
+        add_test(NAME codegen_json_pointer_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/json_pointer.ldp3"
+            "-DCONTAINS=n1=20 name=bob oob=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # The System.Test unit-test framework (spec 34): Assert + TestRunner, pure LDP3.
         add_test(NAME codegen_test_framework_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
