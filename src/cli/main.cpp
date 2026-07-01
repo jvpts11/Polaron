@@ -5851,6 +5851,41 @@ R"LDP3(
                 return 0;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.App namespace.
+R"LDP3(
+        // Named feature flags (spec 34): enable/disable toggles by name, defaulting to off when unset.
+        public class FeatureFlags {
+            private mutable HashMap<String, boolean> flags;
+            public constructor FeatureFlags() { this.flags = new HashMap<String, boolean>() on heap; }
+            public method enable(String name) returns void { this.flags.put(name, true); return; }
+            public method disable(String name) returns void { this.flags.put(name, false); return; }
+            public method isEnabled(String name) returns boolean {
+                if (this.flags.containsKey(name)) { return this.flags.get(name); }
+                return false;
+            }
+        }
+        // A fixed-capacity pool of reusable integer ids (spec 34): acquire hands out a fresh or recycled id
+        // (or -1 when exhausted); recycle returns one for reuse. inUse reports the live count.
+        public class ObjectPool {
+            private mutable int[] freeIds;
+            private mutable int freeCount;
+            private mutable int nextId;
+            private mutable int capacity;
+            public constructor ObjectPool(int capacity) {
+                this.capacity = capacity; this.freeIds = new int[capacity](); this.freeCount = 0; this.nextId = 0;
+            }
+            public method acquire() returns int {
+                if (this.freeCount > 0) { this.freeCount = this.freeCount - 1; return this.freeIds[this.freeCount]; }
+                if (this.nextId < this.capacity) { int id = this.nextId; this.nextId = this.nextId + 1; return id; }
+                return -1;
+            }
+            public method recycle(int id) returns void {
+                if (this.freeCount < this.capacity) { this.freeIds[this.freeCount] = id; this.freeCount = this.freeCount + 1; }
+                return;
+            }
+            public method inUse() returns int { return this.nextId - this.freeCount; }
+        }
     }
 }
 )LDP3";

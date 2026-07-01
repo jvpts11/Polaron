@@ -1136,6 +1136,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Feature flags and an object-id pool (spec 34) in pure LDP3.
+        add_test(NAME codegen_feature_pool_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/feature_pool.ldp3"
+            "-DCONTAINS=a=0,1,2 exhausted=-1 reuse=1 inUse=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # A bytecode stack virtual machine (spec 34) in pure LDP3, running factorial and a summation loop.
         add_test(NAME codegen_stack_vm_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
