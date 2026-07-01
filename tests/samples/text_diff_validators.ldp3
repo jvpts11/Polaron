@@ -1,0 +1,31 @@
+import System.IO.Console;
+import System.Text.TextDiff;
+import System.Text.Validators;
+program TextDiffValidators;
+
+// Line diff (LCS) and format validators (spec 34) in pure LDP3. Prints:
+//   common=3 added=1 removed=1
+//   em1=1 em2=0 em3=0
+//   url1=1 url2=0 url3=0
+//   iban1=1 iban2=0
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable String[] a = new String[4]();
+                a[0]="a"; a[1]="b"; a[2]="c"; a[3]="d";
+                mutable String[] b = new String[4]();
+                b[0]="a"; b[1]="x"; b[2]="c"; b[3]="d";
+                System.IO.Console.printf("common=%d added=%d removed=%d\n",
+                    TextDiff.common(a, 4, b, 4), TextDiff.added(a, 4, b, 4), TextDiff.removed(a, 4, b, 4));
+                System.IO.Console.printf("em1=%d em2=%d em3=%d\n",
+                    Validators.isEmail("a@b.com"), Validators.isEmail("ab.com"), Validators.isEmail("a@bcom"));
+                System.IO.Console.printf("url1=%d url2=%d url3=%d\n",
+                    Validators.isUrl("https://x.com"), Validators.isUrl("ftp://x"), Validators.isUrl("http://"));
+                System.IO.Console.printf("iban1=%d iban2=%d\n",
+                    Validators.isIban("GB82WEST12345698765432"), Validators.isIban("GB82WEST12345698765433"));
+                return;
+            }
+        }
+    }
+}

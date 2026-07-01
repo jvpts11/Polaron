@@ -5128,6 +5128,78 @@ R"LDP3(
             }
         }
 )LDP3"
+// Text diff and validators in their own literal; still System.Text.
+R"LDP3(
+        // Line-level text diff (spec 34) via the longest common subsequence: common counts shared lines in
+        // order; removed and added are the lines only in the first or second version. Uses two-row LCS DP.
+        public class TextDiff {
+            private static method lcsLen(String[] a, int na, String[] b, int nb) returns int {
+                mutable int[] prev = new int[nb + 1]();
+                mutable int[] cur = new int[nb + 1]();
+                for (mutable int i = 1; i <= na; i++) {
+                    for (mutable int j = 1; j <= nb; j++) {
+                        if (a[i - 1].equals(b[j - 1])) { cur[j] = prev[j - 1] + 1; }
+                        else {
+                            mutable int m = prev[j];
+                            if (cur[j - 1] > m) { m = cur[j - 1]; }
+                            cur[j] = m;
+                        }
+                    }
+                    for (mutable int j = 0; j <= nb; j++) { prev[j] = cur[j]; }
+                }
+                return prev[nb];
+            }
+            public static method common(String[] a, int na, String[] b, int nb) returns int { return TextDiff.lcsLen(a, na, b, nb); }
+            public static method removed(String[] a, int na, String[] b, int nb) returns int { return na - TextDiff.lcsLen(a, na, b, nb); }
+            public static method added(String[] a, int na, String[] b, int nb) returns int { return nb - TextDiff.lcsLen(a, na, b, nb); }
+        }
+        // Lightweight format validators (spec 34): a heuristic email check (single @, dot in the domain, no
+        // spaces), an http/https URL check with a non-empty host, and IBAN via the ISO 7064 mod-97 test.
+        public class Validators {
+            public static method isEmail(String s) returns boolean {
+                mutable int at = 0 - 1;
+                mutable int atCount = 0;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c == ' ') { return false; }
+                    if (c == '@') { at = i; atCount = atCount + 1; }
+                }
+                if (atCount != 1 || at == 0 || at == s.length() - 1) { return false; }
+                mutable boolean dot = false;
+                for (mutable int i = at + 1; i < s.length(); i++) { if (s.charAt(i) == '.') { dot = true; } }
+                return dot;
+            }
+            public static method isUrl(String s) returns boolean {
+                mutable boolean https = s.startsWith("https://");
+                mutable boolean http = s.startsWith("http://");
+                if (!http && !https) { return false; }
+                mutable int start = 7;
+                if (https) { start = 8; }
+                return s.length() > start;
+            }
+            public static method isIban(String s) returns boolean {
+                mutable int len = 0;
+                mutable char[] buf = new char[64]();
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c != ' ') { buf[len] = c; len = len + 1; }
+                }
+                if (len < 5) { return false; }
+                mutable long running = 0;
+                for (mutable int k = 0; k < len; k++) {
+                    mutable int idx = k + 4;
+                    if (idx >= len) { idx = idx - len; }
+                    char c = buf[idx];
+                    if (c >= '0' && c <= '9') { running = (running * 10 + cast<long>(cast<int>(c) - cast<int>('0'))) % 97; }
+                    else {
+                        if (c >= 'A' && c <= 'Z') { running = (running * 100 + cast<long>(cast<int>(c) - cast<int>('A') + 10)) % 97; }
+                        else { return false; }
+                    }
+                }
+                return running == 1;
+            }
+        }
+)LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
         // Spell an integer in English words (spec 34), space-separated and lowercase, up to the billions
