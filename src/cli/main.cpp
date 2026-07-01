@@ -4283,6 +4283,39 @@ R"LDP3(
                 return j + cast<double>(prefix) * 0.1 * (1.0 - j);
             }
         }
+        // Luhn (mod-10) checksum (spec 34), as used by credit-card numbers: doubles every second digit from
+        // the right (subtracting 9 when over 9); valid when the total is a multiple of 10. Non-digits skipped.
+        public class Luhn {
+            public static method isValid(String s) returns boolean {
+                mutable int sum = 0;
+                mutable boolean dbl = false;
+                for (mutable int i = s.length() - 1; i >= 0; i = i - 1) {
+                    char c = s.charAt(i);
+                    if (c < '0' || c > '9') { continue; }
+                    mutable int d = cast<int>(c) - cast<int>('0');
+                    if (dbl) { d = d * 2; if (d > 9) { d = d - 9; } }
+                    sum = sum + d;
+                    dbl = !dbl;
+                }
+                return sum % 10 == 0;
+            }
+        }
+        // ISBN-13 check digit (spec 34): the 13 digits weighted 1,3,1,3,... must sum to a multiple of 10.
+        public class Isbn {
+            public static method isValid13(String s) returns boolean {
+                mutable int sum = 0;
+                mutable int count = 0;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c < '0' || c > '9') { continue; }
+                    int d = cast<int>(c) - cast<int>('0');
+                    if (count % 2 == 0) { sum = sum + d; } else { sum = sum + 3 * d; }
+                    count = count + 1;
+                }
+                if (count != 13) { return false; }
+                return sum % 10 == 0;
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
