@@ -1849,6 +1849,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # multi-implementer catalog dispatch (spec 12.4): a runtime type tag picks the right enum's
+        # method when several enums implement the catalog.
+        add_test(NAME codegen_catalog_multi_dispatch_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_multi_dispatch.ldp3"
+            "-DCONTAINS=w1=7 w2=42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # FFI struct by value (spec 26): a small struct is passed to and returned from a C function
         # by value (the runtime provides the matching C helpers).
         add_test(NAME codegen_ffi_struct_runs COMMAND "${CMAKE_COMMAND}"

@@ -405,6 +405,11 @@ struct CodeGenerator::Impl {
     // Catalog-implementing enums kept as enums (int-style ordinals) but carrying
     // method impls: name -> decl. Methods lower as `Enum.method(i32 this, ...)`.
     std::unordered_map<std::string, const ast::EnumDecl*> enumMethodDecls;
+    std::unordered_set<std::string> catalogNames;  // declared `catalog` type names (spec 12.4)
+    // Stable per-enum type id for the runtime tag on a catalog value (spec 12.4 multi-implementer
+    // dispatch): a catalog value is packed as (enumTypeId << 32 | ordinal) so dispatch can pick the
+    // implementing enum. Assigned in declaration order in declareClasses pass 0.
+    std::unordered_map<std::string, int> enumTypeId;
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
     std::unordered_map<std::string, llvm::GlobalVariable*> staticGlobals;  // "Class.field" -> global
     std::unordered_map<std::string, std::string> staticFieldType;  // "Class.field" -> LDP3 type
@@ -577,6 +582,9 @@ struct CodeGenerator::Impl {
         if (t == "Decimal") return builder.getInt128Ty();  // fixed-point, scale 10^18 (spec 34)
         if (classes.count(t) > 0) return builder.getPtrTy();
         if (auto it = newtypes_.find(t); it != newtypes_.end()) return llvmType(it->second);
+        // A method-carrying catalog value is tagged (enumTypeId << 32 | ordinal) for multi-implementer
+        // dispatch (spec 12.4), so it lowers to i64 rather than a bare i32 ordinal.
+        if (isTaggedCatalog(t)) return builder.getInt64Ty();
         return builder.getIntNTy(intBits(t));
     }
 
@@ -592,6 +600,18 @@ struct CodeGenerator::Impl {
         // the source (value semantics; spec 4). The data pointer is shared until an append replaces it.
         if (to == "string" && (from == "string" || from == "String"))
             return emitStringFromParts(stringLen(v), stringData(v));
+        // Catalog tag (spec 12.4 multi-implementer dispatch): pack an implementing enum's ordinal into a
+        // tagged catalog value as (enumTypeId << 32 | ordinal). catalog->catalog is identity; the reverse
+        // catalog->int is a plain truncation to the low 32 bits (the ordinal), handled by the integer
+        // path below.
+        if (isTaggedCatalog(to)) {
+            if (isTaggedCatalog(from)) return v;
+            if (enums.count(from) > 0 && v->getType()->isIntegerTy()) {
+                llvm::Value* ord = builder.CreateZExt(v, builder.getInt64Ty());
+                return builder.CreateOr(
+                    ord, builder.getInt64(static_cast<std::int64_t>(enumTypeId[from]) << 32));
+            }
+        }
         if (isFloatType(to)) {
             llvm::Type* fty = llvmType(to);
             if (v->getType()->isIntegerTy()) {
@@ -2536,6 +2556,28 @@ struct CodeGenerator::Impl {
                 if (baseType(c) == catalog && functions.count(enumName + "." + method) > 0)
                     return enumName;
         return "";
+    }
+    // Every method-carrying enum implementing `catalog`, in a deterministic order (by type id), for
+    // multi-implementer dispatch (spec 12.4).
+    std::vector<std::string> catalogImplEnums(const std::string& catalog) {
+        std::vector<std::string> out;
+        for (const auto& [enumName, decl] : enumMethodDecls)
+            for (const std::string& c : decl->extendsCatalogs)
+                if (baseType(c) == catalog) { out.push_back(enumName); break; }
+        std::sort(out.begin(), out.end(), [&](const std::string& a, const std::string& b) {
+            return enumTypeId[a] < enumTypeId[b];
+        });
+        return out;
+    }
+    // A catalog is "tagged" (carries a runtime type id alongside its ordinal, lowering to i64) when at
+    // least one method-carrying enum implements it -- i.e. dispatch through it is meaningful. Value-only
+    // catalogs stay a bare i32 ordinal so existing code is unaffected.
+    bool isTaggedCatalog(const std::string& name) {
+        if (catalogNames.count(name) == 0) return false;
+        for (const auto& [enumName, decl] : enumMethodDecls)
+            for (const std::string& c : decl->extendsCatalogs)
+                if (baseType(c) == name) return true;
+        return false;
     }
 
     // Resolves an overloaded literal suffix (spec 17.10 rule 6) to its mangled function key
@@ -5007,16 +5049,14 @@ struct CodeGenerator::Impl {
                     return r;
                 }
             }
-            // Enum (catalog) instance method: the receiver is an enum value. Dispatch
-            // statically by the enum type, passing the ordinal as `this` (an i32). For a
-            // catalog-typed receiver with a single implementing enum, dispatch to that enum
-            // (the value is one of its ordinals); the analyzer rejects the multi-implementer case.
+            // Enum/catalog instance method dispatch (spec 12.4). A direct enum receiver is an i32
+            // ordinal dispatched statically. A catalog-typed receiver is the tagged i64 value: unpack
+            // its ordinal (low 32) and enum type id (high 32) and dispatch to the implementing enum --
+            // directly for one implementer, or via a switch on the type id for several.
             {
                 const std::string est = baseType(typeName(*mem->object));
-                std::string implEnum =
-                    enums.count(est) > 0 ? est : catalogImplementerEnum(est, mem->member);
-                if (!implEnum.empty()) {
-                    auto fnit = functions.find(implEnum + "." + mem->member);
+                if (enums.count(est) > 0) {
+                    auto fnit = functions.find(est + "." + mem->member);
                     if (fnit != functions.end()) {
                         llvm::Value* recv = emitExpr(*mem->object);  // the ordinal (i32)
                         if (recv == nullptr) return nullptr;
@@ -5030,6 +5070,58 @@ struct CodeGenerator::Impl {
                             args.push_back(v);
                         }
                         return emitMaybeInvoke(fnit->second, args);
+                    }
+                } else if (isTaggedCatalog(est)) {
+                    std::vector<std::string> impls;
+                    for (const std::string& e : catalogImplEnums(est))
+                        if (functions.count(e + "." + mem->member) > 0) impls.push_back(e);
+                    if (!impls.empty()) {
+                        llvm::Value* tag = emitExpr(*mem->object);  // i64: enumId<<32 | ordinal
+                        if (tag == nullptr) return nullptr;
+                        llvm::Value* ord = builder.CreateTrunc(tag, builder.getInt32Ty(), "cat.ord");
+                        std::vector<llvm::Value*> argVals;
+                        for (std::size_t i = 0; i < call.args.size(); ++i) {
+                            llvm::Value* v = emitExpr(*call.args[i]);
+                            if (v == nullptr) return nullptr;
+                            argVals.push_back(v);
+                        }
+                        auto callImpl = [&](const std::string& e) -> llvm::Value* {
+                            auto fnit = functions.find(e + "." + mem->member);
+                            std::vector<llvm::Value*> args;
+                            args.push_back(ord);
+                            for (std::size_t i = 0; i < argVals.size(); ++i) {
+                                llvm::Value* v = argVals[i];
+                                if (i + 1 < fnit->second->arg_size())
+                                    v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
+                                args.push_back(v);
+                            }
+                            return builder.CreateCall(fnit->second, args);
+                        };
+                        if (impls.size() == 1) return callImpl(impls[0]);
+                        llvm::Value* enumId = builder.CreateTrunc(
+                            builder.CreateLShr(tag, builder.getInt64(32)), builder.getInt32Ty(), "cat.id");
+                        llvm::Function* fn = currentFn;
+                        llvm::Type* rt = functions[impls[0] + "." + mem->member]->getReturnType();
+                        const bool isVoid = rt->isVoidTy();
+                        llvm::Value* resSlot = isVoid ? nullptr : createEntryAlloca("cat.res", rt);
+                        if (!isVoid) builder.CreateStore(llvm::Constant::getNullValue(rt), resSlot);
+                        auto* contBB = llvm::BasicBlock::Create(context, "cat.cont", fn);
+                        auto* defBB = llvm::BasicBlock::Create(context, "cat.default", fn);
+                        llvm::SwitchInst* sw =
+                            builder.CreateSwitch(enumId, defBB, static_cast<unsigned>(impls.size()));
+                        for (const std::string& e : impls) {
+                            auto* caseBB = llvm::BasicBlock::Create(context, "cat." + e, fn);
+                            sw->addCase(builder.getInt32(enumTypeId[e]), caseBB);
+                            builder.SetInsertPoint(caseBB);
+                            llvm::Value* r = callImpl(e);
+                            if (!isVoid) builder.CreateStore(r, resSlot);
+                            builder.CreateBr(contBB);
+                        }
+                        builder.SetInsertPoint(defBB);
+                        builder.CreateBr(contBB);  // a packed value always matches an arm
+                        builder.SetInsertPoint(contBB);
+                        if (isVoid) return nullptr;
+                        return builder.CreateLoad(rt, resSlot, "cat.result");
                     }
                 }
             }
@@ -6989,9 +7081,11 @@ struct CodeGenerator::Impl {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::EnumDecl& en : ns.enums) {
                     enums[en.name] = en.constants;
+                    enumTypeId[en.name] = static_cast<int>(enumTypeId.size());  // stable per-enum tag id
                     if (en.isJavaStyle) javaEnums[en.name] = &en;
                     else if (!en.members.empty()) enumMethodDecls[en.name] = &en;  // catalog enum
                 }
+                for (const ast::CatalogDecl& cat : ns.catalogs) catalogNames.insert(cat.name);
             }
         }
         // Pass 1: create struct types and record declaration, superclass,

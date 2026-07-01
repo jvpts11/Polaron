@@ -1,0 +1,34 @@
+import System.IO.Console;
+program CatalogMultiDispatch;
+
+// Multi-implementer catalog dispatch (spec 12.4): a catalog value carries a runtime type tag
+// (enum id + ordinal), so a call through a catalog-typed receiver reaches the right enum's method even
+// when several enums implement the catalog. Here AppLevel and SysLevel both implement Tier; dispatch
+// picks each one's weight(). Prints:
+//   w1=7 w2=42
+public bundle main {
+    public namespace app {
+        public catalog Tier {
+            low
+            method weight() returns int;
+        }
+        public enum AppLevel extends Tier {
+            a, b
+            byCatalog { low }
+            public method weight() returns int { return 7; }
+        }
+        public enum SysLevel extends Tier {
+            x, y
+            byCatalog { low }
+            public method weight() returns int { return 42; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Tier t1 = AppLevel.a;
+                Tier t2 = SysLevel.x;
+                System.IO.Console.printf("w1=%d w2=%d\n", t1.weight(), t2.weight());
+                return;
+            }
+        }
+    }
+}

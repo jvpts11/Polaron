@@ -3296,31 +3296,43 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
                 return inner;
             }
-            // Calling a catalog method through a catalog-TYPED receiver (spec 12.4): if exactly one
-            // enum implements the catalog, the value is necessarily one of its ordinals, so dispatch
-            // statically to that enum's method. Several implementers would need a runtime type tag an
-            // i32 ordinal cannot carry, so that remains unsupported.
+            // Calling a catalog method through a catalog-TYPED receiver (spec 12.4). A catalog value
+            // carries a runtime type tag (enum id + ordinal), so dispatch works for any number of
+            // implementers: every implementer must define the method and agree on its return type,
+            // which becomes the call's type.
             if (catalogs_.count(baseType(objType)) > 0) {
                 std::vector<std::string> impls = catalogImplementers(baseType(objType));
-                if (impls.size() == 1) {
-                    for (const auto& arg : call->args) typeOf(*arg);
-                    auto emit = enumMethods_.find(impls[0]);
-                    if (emit != enumMethods_.end()) {
-                        auto mit = emit->second.find(mem->member);
-                        if (mit != emit->second.end()) return mit->second.returnType;
-                    }
-                    error("enum '" + impls[0] + "' implementing catalog '" + baseType(objType) +
-                              "' has no method '" + mem->member + "'",
+                for (const auto& arg : call->args) typeOf(*arg);
+                if (impls.empty()) {
+                    error("cannot call method '" + mem->member + "' through catalog '" +
+                              baseType(objType) + "': no enum implements it",
                           call->loc);
                     return "";
                 }
-                error("cannot call catalog method '" + mem->member + "' through a catalog-typed "
-                          "value of type '" + baseType(objType) + "': " +
-                          (impls.empty() ? "no enum implements it"
-                                         : "several enums implement it, so dispatch needs a runtime "
-                                           "type tag (call it on the concrete enum instead)"),
-                      call->loc);
-                return "";
+                std::string retType;
+                bool ok = true;
+                for (const std::string& impl : impls) {
+                    auto emit = enumMethods_.find(impl);
+                    if (emit == enumMethods_.end() ||
+                        emit->second.find(mem->member) == emit->second.end()) {
+                        error("enum '" + impl + "' implementing catalog '" + baseType(objType) +
+                                  "' has no method '" + mem->member + "'",
+                              call->loc);
+                        ok = false;
+                        break;
+                    }
+                    const std::string rt = emit->second.at(mem->member).returnType;
+                    if (retType.empty()) retType = rt;
+                    else if (rt != retType) {
+                        error("implementers of catalog '" + baseType(objType) + "' disagree on the "
+                                  "return type of '" + mem->member + "' (" + retType + " vs " + rt +
+                                  "); they must match for catalog dispatch",
+                              call->loc);
+                        ok = false;
+                        break;
+                    }
+                }
+                return ok ? retType : std::string();
             }
             const MethodInfo* m = findMethod(objType, mem->member);
             if (m == nullptr) {
