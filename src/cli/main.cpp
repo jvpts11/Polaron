@@ -4613,6 +4613,59 @@ R"LDP3(
                 return this.map.containsKey(section.concat(".").concat(key));
             }
         }
+        // Java-style .properties parsing (spec 34): flat key=value lines (space around '=' trimmed), with #
+        // and ! comment lines skipped. Typed getters (getString/getInt/getBool) fall back to a default when a
+        // key is missing or malformed.
+        public class Properties {
+            private mutable HashMap<String, String> map;
+            private static method trim(String s) returns String {
+                mutable int a = 0;
+                mutable int b = s.length();
+                while (a < b && s.charAt(a) == ' ') { a = a + 1; }
+                while (b > a && s.charAt(b - 1) == ' ') { b = b - 1; }
+                return s.substring(a, b);
+            }
+            public constructor Properties(String text) {
+                this.map = new HashMap<String, String>() on heap;
+                mutable ArrayList<String> lines = Strings.split(text, "\n");
+                for (mutable int i = 0; i < lines.size(); i++) {
+                    String raw = Properties.trim(lines.get(i));
+                    if (raw.length() == 0) { continue; }
+                    char c0 = raw.charAt(0);
+                    if (c0 == '#' || c0 == '!') { continue; }
+                    int eq = raw.indexOf("=");
+                    if (eq < 0) { continue; }
+                    String k = Properties.trim(raw.substring(0, eq));
+                    String v = Properties.trim(raw.substring(eq + 1, raw.length()));
+                    this.map.put(k, v);
+                }
+            }
+            public method has(String key) returns boolean { return this.map.containsKey(key); }
+            public method getString(String key, String def) returns String {
+                if (this.map.containsKey(key)) { return this.map.get(key); }
+                return def;
+            }
+            public method getInt(String key, int def) returns int {
+                if (!this.map.containsKey(key)) { return def; }
+                String v = this.map.get(key);
+                mutable int i = 0;
+                mutable boolean neg = false;
+                if (v.length() > 0 && v.charAt(0) == '-') { neg = true; i = 1; }
+                mutable int n = 0;
+                while (i < v.length()) {
+                    char c = v.charAt(i);
+                    if (c < '0' || c > '9') { return def; }
+                    n = n * 10 + (cast<int>(c) - cast<int>('0'));
+                    i = i + 1;
+                }
+                if (neg) { return 0 - n; }
+                return n;
+            }
+            public method getBool(String key, boolean def) returns boolean {
+                if (!this.map.containsKey(key)) { return def; }
+                return this.map.get(key).equals("true");
+            }
+        }
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(

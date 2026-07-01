@@ -1271,6 +1271,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Java-style .properties parsing (spec 34) with typed getters, pure LDP3.
+        add_test(NAME codegen_properties_config_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/properties_config.ldp3"
+            "-DCONTAINS=name=LDP3 port=8080 debug=1 missing=42 has=1 nokey=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # URL query-string parsing (spec 34) with percent-decoding, pure LDP3.
         add_test(NAME codegen_query_string_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
