@@ -5482,6 +5482,65 @@ R"LDP3(
             }
         }
     }
+)LDP3"
+// Split only for the MSVC literal-size limit; a new namespace for application-layer utilities.
+R"LDP3(
+    public namespace System.App {
+        // Circuit breaker (spec 34): trips to open after threshold consecutive failures and rejects calls
+        // until a cooldown passes, then allows one trial (half-open); a success closes it again, a failure
+        // reopens it. Time is passed in explicitly (milliseconds) so behavior is deterministic and testable.
+        public class CircuitBreaker {
+            private mutable int st;          // 0=closed, 1=open, 2=half-open
+            private mutable int failures;
+            private mutable int threshold;
+            private mutable long openUntil;
+            private mutable long cooldownMs;
+            public constructor CircuitBreaker(int threshold, long cooldownMs) {
+                this.st = 0;
+                this.failures = 0;
+                this.threshold = threshold;
+                this.openUntil = 0;
+                this.cooldownMs = cooldownMs;
+            }
+            public method allow(long now) returns boolean {
+                if (this.st == 1) {
+                    if (now >= this.openUntil) { this.st = 2; return true; }
+                    return false;
+                }
+                return true;
+            }
+            public method recordSuccess() returns void { this.st = 0; this.failures = 0; return; }
+            public method recordFailure(long now) returns void {
+                this.failures = this.failures + 1;
+                if (this.st == 2) { this.st = 1; this.openUntil = now + this.cooldownMs; return; }
+                if (this.failures >= this.threshold) { this.st = 1; this.openUntil = now + this.cooldownMs; }
+                return;
+            }
+            public method getState() returns int { return this.st; }
+        }
+        // Token-bucket rate limiter (spec 34): tokens refill continuously at ratePerMs up to capacity; each
+        // acquire spends tokens if enough are available. Time is passed in explicitly (milliseconds).
+        public class TokenBucket {
+            private mutable double tokens;
+            private mutable double capacity;
+            private mutable double ratePerMs;
+            private mutable long last;
+            public constructor TokenBucket(double capacity, double ratePerMs) {
+                this.tokens = capacity;
+                this.capacity = capacity;
+                this.ratePerMs = ratePerMs;
+                this.last = 0;
+            }
+            public method tryAcquire(long now, int count) returns boolean {
+                double elapsed = cast<double>(now - this.last);
+                this.tokens = this.tokens + elapsed * this.ratePerMs;
+                if (this.tokens > this.capacity) { this.tokens = this.capacity; }
+                this.last = now;
+                if (this.tokens >= cast<double>(count)) { this.tokens = this.tokens - cast<double>(count); return true; }
+                return false;
+            }
+        }
+    }
 }
 )LDP3";
 
