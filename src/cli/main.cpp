@@ -4625,6 +4625,106 @@ R"LDP3(
             }
             public method count() returns int { return this.cnt; }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Math namespace.
+R"LDP3(
+        // Number-theory toolkit (spec 34.6): gcd/lcm, fast modular exponentiation, deterministic Miller-Rabin
+        // primality for 32-bit ints (witnesses 2,3,5,7), and modular inverse via the extended Euclidean
+        // algorithm (returns -1 when a is not invertible mod m).
+        public class NumberTheory {
+            public static method gcd(int a, int b) returns int {
+                mutable int x = a; if (x < 0) { x = 0 - x; }
+                mutable int y = b; if (y < 0) { y = 0 - y; }
+                while (y != 0) { int t = y; y = x % y; x = t; }
+                return x;
+            }
+            public static method lcm(int a, int b) returns int {
+                if (a == 0 || b == 0) { return 0; }
+                return (a / NumberTheory.gcd(a, b)) * b;
+            }
+            public static method modpow(long base, long exp, long mod) returns long {
+                mutable long result = 1;
+                mutable long b = base % mod;
+                mutable long e = exp;
+                while (e > 0) {
+                    if ((e & 1) == 1) { result = (result * b) % mod; }
+                    b = (b * b) % mod;
+                    e = e >> 1;
+                }
+                return result;
+            }
+            private static method millerTest(long d, long n, long a) returns boolean {
+                mutable long x = NumberTheory.modpow(a, d, n);
+                if (x == 1 || x == n - 1) { return true; }
+                mutable long dd = d;
+                while (dd != n - 1) {
+                    x = (x * x) % n;
+                    dd = dd * 2;
+                    if (x == 1) { return false; }
+                    if (x == n - 1) { return true; }
+                }
+                return false;
+            }
+            public static method isPrime(int num) returns boolean {
+                long n = cast<long>(num);
+                if (n < 2) { return false; }
+                if (n < 4) { return true; }
+                if (n % 2 == 0) { return false; }
+                mutable long d = n - 1;
+                while (d % 2 == 0) { d = d / 2; }
+                if (cast<long>(2) < n && !NumberTheory.millerTest(d, n, 2)) { return false; }
+                if (cast<long>(3) < n && !NumberTheory.millerTest(d, n, 3)) { return false; }
+                if (cast<long>(5) < n && !NumberTheory.millerTest(d, n, 5)) { return false; }
+                if (cast<long>(7) < n && !NumberTheory.millerTest(d, n, 7)) { return false; }
+                return true;
+            }
+            public static method modInverse(int a, int m) returns int {
+                mutable int t = 0; mutable int newt = 1;
+                mutable int r = m; mutable int newr = a % m;
+                while (newr != 0) {
+                    int q = r / newr;
+                    int tmpt = t - q * newt; t = newt; newt = tmpt;
+                    int tmpr = r - q * newr; r = newr; newr = tmpr;
+                }
+                if (r > 1) { return -1; }
+                if (t < 0) { t = t + m; }
+                return t;
+            }
+        }
+        // Combinatorics (spec 34.6): factorial and binomial coefficients in long, the nth Catalan number, and
+        // an in-place next-lexicographic-permutation (returns false past the last permutation).
+        public class Combinatorics {
+            public static method factorial(int n) returns long {
+                mutable long r = 1;
+                for (mutable int i = 2; i <= n; i++) { r = r * cast<long>(i); }
+                return r;
+            }
+            public static method choose(int n, int k) returns long {
+                if (k < 0 || k > n) { return cast<long>(0); }
+                mutable int kk = k;
+                if (kk > n - kk) { kk = n - kk; }
+                mutable long r = 1;
+                for (mutable int i = 0; i < kk; i++) {
+                    r = r * cast<long>(n - i);
+                    r = r / cast<long>(i + 1);
+                }
+                return r;
+            }
+            public static method catalan(int n) returns long {
+                return Combinatorics.choose(2 * n, n) / cast<long>(n + 1);
+            }
+            public static method nextPermutation(int[] a, int n) returns boolean {
+                mutable int i = n - 2;
+                while (i >= 0 && a[i] >= a[i + 1]) { i = i - 1; }
+                if (i < 0) { return false; }
+                mutable int j = n - 1;
+                while (a[j] <= a[i]) { j = j - 1; }
+                int tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+                mutable int lo = i + 1; mutable int hi = n - 1;
+                while (lo < hi) { int t2 = a[lo]; a[lo] = a[hi]; a[hi] = t2; lo = lo + 1; hi = hi - 1; }
+                return true;
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)
