@@ -5537,6 +5537,39 @@ R"LDP3(
                 return num / den;
             }
         }
+        // Quaternions (spec 34.6) for 3D rotation math: Hamilton product, conjugate, magnitude and
+        // normalize (via the Numerics square root). Immutable; operations return new heap quaternions.
+        public class Quaternion {
+            private mutable double w;
+            private mutable double x;
+            private mutable double y;
+            private mutable double z;
+            public constructor Quaternion(double w, double x, double y, double z) {
+                this.w = w; this.x = x; this.y = y; this.z = z;
+            }
+            public method getW() returns double { return this.w; }
+            public method getX() returns double { return this.x; }
+            public method getY() returns double { return this.y; }
+            public method getZ() returns double { return this.z; }
+            public method magnitude() returns double {
+                return Numerics.sqrt(this.w*this.w + this.x*this.x + this.y*this.y + this.z*this.z);
+            }
+            public method conjugate() returns Quaternion {
+                return new Quaternion(this.w, 0.0 - this.x, 0.0 - this.y, 0.0 - this.z) on heap;
+            }
+            public method mul(Quaternion o) returns Quaternion {
+                double nw = this.w*o.getW() - this.x*o.getX() - this.y*o.getY() - this.z*o.getZ();
+                double nx = this.w*o.getX() + this.x*o.getW() + this.y*o.getZ() - this.z*o.getY();
+                double ny = this.w*o.getY() - this.x*o.getZ() + this.y*o.getW() + this.z*o.getX();
+                double nz = this.w*o.getZ() + this.x*o.getY() - this.y*o.getX() + this.z*o.getW();
+                return new Quaternion(nw, nx, ny, nz) on heap;
+            }
+            public method normalize() returns Quaternion {
+                double m = this.magnitude();
+                if (m == 0.0) { return new Quaternion(1.0, 0.0, 0.0, 0.0) on heap; }
+                return new Quaternion(this.w/m, this.x/m, this.y/m, this.z/m) on heap;
+            }
+        }
     }
 )LDP3"
 // (split: System.Net in its own literal.)

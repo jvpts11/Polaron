@@ -1,0 +1,22 @@
+import System.IO.Console;
+import System.Math.Quaternion;
+program QuaternionDemo;
+
+// Quaternions (spec 34.6) for 3D rotation math in pure LDP3. Prints:
+//   mag=5.4772 pw=0.0 px=1.0 py=0.0 pz=0.0 normmag=1.0000
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Quaternion q = new Quaternion(1.0, 2.0, 3.0, 4.0) on heap;
+                mutable Quaternion id = new Quaternion(1.0, 0.0, 0.0, 0.0) on heap;
+                mutable Quaternion b = new Quaternion(0.0, 1.0, 0.0, 0.0) on heap;
+                Quaternion p = id.mul(b);
+                Quaternion nn = q.normalize();
+                System.IO.Console.printf("mag=%.4f pw=%.1f px=%.1f py=%.1f pz=%.1f normmag=%.4f\n",
+                    q.magnitude(), p.getW(), p.getX(), p.getY(), p.getZ(), nn.magnitude());
+                return;
+            }
+        }
+    }
+}

@@ -1154,6 +1154,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Quaternion 3D rotation math (spec 34.6) in pure LDP3: product, magnitude, normalize.
+        add_test(NAME codegen_quaternion_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/quaternion.ldp3"
+            "-DCONTAINS=mag=5.4772 pw=0.0 px=1.0 py=0.0 pz=0.0 normmag=1.0000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Least-squares regression and Pearson correlation (spec 34.6) in pure LDP3.
         add_test(NAME codegen_regression_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
