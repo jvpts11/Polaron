@@ -1915,6 +1915,49 @@ R"LDP3(
             }
             public method get(K k, int i) returns V { return this.map.get(k).get(i); }
         }
+        // A directed graph (spec 34.1) on a dense adjacency matrix: topoSort fills a topological ordering by
+        // Kahn's algorithm (lowest-index source first) and returns how many vertices were placed; fewer than
+        // n means a cycle, which hasCycle reports.
+        public class DiGraph {
+            private mutable int[] adj;
+            private mutable int n;
+            public constructor DiGraph(int vertices) {
+                this.n = vertices;
+                this.adj = new int[vertices * vertices]();
+            }
+            public method addEdge(int u, int v) returns void { this.adj[u * this.n + v] = 1; return; }
+            public method topoSort(int[] order) returns int {
+                mutable int[] indeg = new int[this.n]();
+                for (mutable int u = 0; u < this.n; u++) {
+                    for (mutable int v = 0; v < this.n; v++) {
+                        if (this.adj[u * this.n + v] == 1) { indeg[v] = indeg[v] + 1; }
+                    }
+                }
+                mutable boolean[] done = new boolean[this.n]();
+                mutable int cnt = 0;
+                mutable boolean progress = true;
+                while (progress) {
+                    mutable int pick = -1;
+                    mutable int i = 0;
+                    while (i < this.n) {
+                        if (!done[i] && indeg[i] == 0) { pick = i; i = this.n; }
+                        else { i = i + 1; }
+                    }
+                    if (pick == -1) { progress = false; }
+                    else {
+                        done[pick] = true; order[cnt] = pick; cnt = cnt + 1;
+                        for (mutable int j = 0; j < this.n; j++) {
+                            if (this.adj[pick * this.n + j] == 1) { indeg[j] = indeg[j] - 1; }
+                        }
+                    }
+                }
+                return cnt;
+            }
+            public method hasCycle() returns boolean {
+                mutable int[] o = new int[this.n]();
+                return this.topoSort(o) < this.n;
+            }
+        }
     }
 )LDP3"
 // (split: System.Ecs in its own literal.)
