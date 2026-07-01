@@ -1,0 +1,21 @@
+import System.IO.Console;
+import System.Math.Interpolation;
+program InterpolationMath;
+
+// Interpolation helpers (spec 34.6) in pure LDP3. Prints:
+//   lerp=5.00 inv=0.75 ss=0.50 remap=50.00 clamp=10.00
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("lerp=%.2f inv=%.2f ss=%.2f remap=%.2f clamp=%.2f\n",
+                    Interpolation.lerp(0.0, 10.0, 0.5),
+                    Interpolation.inverseLerp(0.0, 10.0, 7.5),
+                    Interpolation.smoothstep(0.0, 1.0, 0.5),
+                    Interpolation.remap(5.0, 0.0, 10.0, 0.0, 100.0),
+                    Interpolation.clamp(15.0, 0.0, 10.0));
+                return;
+            }
+        }
+    }
+}

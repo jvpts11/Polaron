@@ -1325,6 +1325,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Interpolation helpers (spec 34.6): lerp/inverseLerp/clamp/smoothstep/remap, pure LDP3.
+        add_test(NAME codegen_interpolation_math_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interpolation_math.ldp3"
+            "-DCONTAINS=lerp=5.00 inv=0.75 ss=0.50 remap=50.00 clamp=10.00"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Quaternion 3D rotation math (spec 34.6) in pure LDP3: product, magnitude, normalize.
         add_test(NAME codegen_quaternion_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

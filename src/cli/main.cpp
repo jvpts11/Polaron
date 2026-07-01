@@ -6008,6 +6008,31 @@ R"LDP3(
                 return Numerics.exp(e * Numerics.ln(b));
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Math namespace.
+R"LDP3(
+        // Interpolation helpers (spec 34.6): linear interpolate and its inverse, clamp, Hermite smoothstep,
+        // and remap of a value from one range to another. Handy for animation and graphics.
+        public class Interpolation {
+            public static method lerp(double a, double b, double t) returns double { return a + (b - a) * t; }
+            public static method inverseLerp(double a, double b, double v) returns double {
+                if (b == a) { return 0.0; }
+                return (v - a) / (b - a);
+            }
+            public static method clamp(double v, double lo, double hi) returns double {
+                if (v < lo) { return lo; }
+                if (v > hi) { return hi; }
+                return v;
+            }
+            public static method smoothstep(double edge0, double edge1, double x) returns double {
+                double t = Interpolation.clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+                return t * t * (3.0 - 2.0 * t);
+            }
+            public static method remap(double v, double inLo, double inHi, double outLo, double outHi) returns double {
+                double t = Interpolation.inverseLerp(inLo, inHi, v);
+                return Interpolation.lerp(outLo, outHi, t);
+            }
+        }
         // Radix-2 fast Fourier transform (spec 34.6), iterative Cooley-Tukey over parallel real/imag arrays
         // whose length is a power of two. forward transforms in place; inverse transforms and divides by n so
         // that inverse(forward(x)) == x. Twiddle factors advance by complex multiplication from Numerics.
