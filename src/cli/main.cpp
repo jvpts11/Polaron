@@ -3523,6 +3523,20 @@ R"LDP3(
                 return crc;
             }
         }
+        // Adler-32 checksum (RFC 1950 / zlib): two running sums modulo 65521 combined as (b << 16) | a, with
+        // a starting at 1. Faster than CRC but weaker; returned in a long so the high bit stays positive.
+        public class Adler32 {
+            public static method checksum(String data) returns long {
+                mutable long a = 1;
+                mutable long b = 0;
+                long mod = 65521;
+                for (mutable int i = 0; i < data.length(); i++) {
+                    a = (a + cast<long>(cast<int>(data.charAt(i)) & 255)) % mod;
+                    b = (b + a) % mod;
+                }
+                return (b << 16) | a;
+            }
+        }
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
