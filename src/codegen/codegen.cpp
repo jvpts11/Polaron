@@ -17,6 +17,8 @@
 #include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Transforms/IPO/GlobalDCE.h>
+#include <llvm/Transforms/IPO/Internalize.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 
 #include <algorithm>
@@ -4954,6 +4956,25 @@ struct CodeGenerator::Impl {
                                                  llvm::ConstantArray::get(arrTy, fns), "__ldp3_fns");
     }
 
+    // Dead-code elimination for executables: every class method is emitted with external linkage, so
+    // the whole prelude (all non-generic stdlib classes) lands in every program's IR even when unused,
+    // bloating the .ll and the clang parse. We internalize everything but the C entry point `main`, then
+    // run LLVM's GlobalDCE, which reaches transitively from `main` (and from llvm.used, global_ctors, and
+    // any address-taken function -- threads/async entries, reflection Method tokens, the unimport address
+    // table) and drops the rest. Skipped in library mode, whose public API must stay exported. Generic
+    // classes already cost nothing unless monomorphized; this reclaims the non-generic ones.
+    void stripDeadCode() {
+        if (libraryMode) return;
+        llvm::ModuleAnalysisManager mam;
+        llvm::PassBuilder pb;
+        pb.registerModuleAnalyses(mam);
+        llvm::ModulePassManager mpm;
+        mpm.addPass(llvm::InternalizePass(
+            [](const llvm::GlobalValue& gv) { return gv.getName() == "main"; }));
+        mpm.addPass(llvm::GlobalDCEPass());
+        mpm.run(module, mam);
+    }
+
     // Physically overwrites the machine code of a class's methods (and ctor/dtor) in RAM
     // with int3 traps, via the runtime helper (spec 30 aggressive unload). The code is
     // ripped from memory; the alive guard ensures we never branch into the traps.
@@ -8009,12 +8030,17 @@ bool CodeGenerator::generate() {
     impl_->emitNamespaceConsts();
     impl_->emitStaticFields();
     impl_->declareFunctions();
-    impl_->buildFunctionTable();  // address table for physical unimport (spec 30)
+    // The address table anchors every function, so only emit it when the program actually uses
+    // unimport/reimport (spec 30); otherwise it would defeat dead-code elimination below.
+    // unimportableClasses was filled by collectAbstainedLabels() above.
+    if (!impl_->unimportableClasses.empty())
+        impl_->buildFunctionTable();  // address table for physical unimport (spec 30)
     impl_->emitVtables();
     impl_->emitFunctions();
     impl_->emitDynamicThunks();  // runtime-resolving thunks for --use-dynamic bundles
     if (impl_->libraryMode) impl_->exportBundleSymbols();  // make the .ldb's functions DLL-loadable
     if (!errors_.empty()) return false;
+    impl_->stripDeadCode();  // drop unreferenced prelude/user code from executables
 
     std::string verifyMsg;
     llvm::raw_string_ostream os(verifyMsg);
