@@ -4528,6 +4528,68 @@ R"LDP3(
                 return sum % 10 == 0;
             }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
+        // Spell an integer in English words (spec 34), space-separated and lowercase, up to the billions
+        // (covers the full int range). Negative numbers are prefixed with "minus".
+        public class NumberWords {
+            private static method ones(int n) returns String {
+                mutable String[] w = new String[10]();
+                w[0]=""; w[1]="one"; w[2]="two"; w[3]="three"; w[4]="four";
+                w[5]="five"; w[6]="six"; w[7]="seven"; w[8]="eight"; w[9]="nine";
+                return w[n];
+            }
+            private static method teens(int n) returns String {
+                mutable String[] w = new String[10]();
+                w[0]="ten"; w[1]="eleven"; w[2]="twelve"; w[3]="thirteen"; w[4]="fourteen";
+                w[5]="fifteen"; w[6]="sixteen"; w[7]="seventeen"; w[8]="eighteen"; w[9]="nineteen";
+                return w[n - 10];
+            }
+            private static method tens(int n) returns String {
+                mutable String[] w = new String[10]();
+                w[2]="twenty"; w[3]="thirty"; w[4]="forty"; w[5]="fifty";
+                w[6]="sixty"; w[7]="seventy"; w[8]="eighty"; w[9]="ninety";
+                return w[n];
+            }
+            private static method under100(int n) returns String {
+                if (n < 10) { return NumberWords.ones(n); }
+                if (n < 20) { return NumberWords.teens(n); }
+                int t = n / 10;
+                int o = n % 10;
+                if (o == 0) { return NumberWords.tens(t); }
+                return NumberWords.tens(t).concat(" ").concat(NumberWords.ones(o));
+            }
+            private static method under1000(int n) returns String {
+                if (n < 100) { return NumberWords.under100(n); }
+                int h = n / 100;
+                int r = n % 100;
+                mutable String s = NumberWords.ones(h).concat(" hundred");
+                if (r > 0) { s = s.concat(" ").concat(NumberWords.under100(r)); }
+                return s;
+            }
+            public static method toWords(int num) returns String {
+                if (num == 0) { return "zero"; }
+                mutable int n = num;
+                mutable String sign = "";
+                if (n < 0) { sign = "minus "; n = 0 - n; }
+                mutable String[] scale = new String[4]();
+                scale[0]=""; scale[1]=" thousand"; scale[2]=" million"; scale[3]=" billion";
+                mutable int[] grp = new int[4]();
+                mutable int g = 0;
+                mutable int m = n;
+                while (m > 0) { grp[g] = m % 1000; m = m / 1000; g = g + 1; }
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = g - 1; i >= 0; i = i - 1) {
+                    if (grp[i] > 0) {
+                        if (sb.length() > 0) { sb.appendChar(' '); }
+                        sb.append(NumberWords.under1000(grp[i]));
+                        sb.append(scale[i]);
+                    }
+                }
+                return sign.concat(sb.toString());
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so

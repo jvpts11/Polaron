@@ -1,0 +1,22 @@
+import System.IO.Console;
+import System.Text.NumberWords;
+program NumberWordsDemo;
+
+// Spell integers in English words (spec 34) in pure LDP3. Prints:
+//   a=zero
+//   b=forty two
+//   c=one thousand two hundred thirty four
+//   d=one million two hundred thirty four thousand five hundred sixty seven
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("a=%s\n", NumberWords.toWords(0));
+                System.IO.Console.printf("b=%s\n", NumberWords.toWords(42));
+                System.IO.Console.printf("c=%s\n", NumberWords.toWords(1234));
+                System.IO.Console.printf("d=%s\n", NumberWords.toWords(1234567));
+                return;
+            }
+        }
+    }
+}
