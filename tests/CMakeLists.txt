@@ -1100,6 +1100,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Classic algorithms (spec 34.1): 0/1 knapsack, longest common subsequence, interval scheduling.
+        add_test(NAME codegen_algorithms_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/algorithms.ldp3"
+            "-DCONTAINS=knap=9 lcs=4 sched=4"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Pointer-linked binary search tree (spec 34.1): insert/contains/size + sorted in-order traversal.
         add_test(NAME codegen_bst_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

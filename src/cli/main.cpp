@@ -1816,6 +1816,66 @@ R"LDP3(
             }
             public method count() returns int { return this.size; }
         }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Collections namespace.
+R"LDP3(
+        // 0/1 knapsack (spec 34.1): maximum total value of items fitting in a capacity, via the classic
+        // one-dimensional DP swept from high capacity to low so each item is used at most once.
+        public class Knapsack {
+            public static method maxValue(int[] weights, int[] values, int n, int capacity) returns int {
+                mutable int[] dp = new int[capacity + 1]();
+                for (mutable int i = 0; i < n; i++) {
+                    for (mutable int c = capacity; c >= weights[i]; c = c - 1) {
+                        int cand = dp[c - weights[i]] + values[i];
+                        if (cand > dp[c]) { dp[c] = cand; }
+                    }
+                }
+                return dp[capacity];
+            }
+        }
+        // Longest common subsequence length (spec 34.1) of two strings via a flat DP table.
+        public class Lcs {
+            public static method length(String a, String b) returns int {
+                int m = a.length();
+                int n = b.length();
+                mutable int[] dp = new int[(m + 1) * (n + 1)]();
+                int w = n + 1;
+                for (mutable int i = 1; i <= m; i++) {
+                    for (mutable int j = 1; j <= n; j++) {
+                        if (a.charAt(i - 1) == b.charAt(j - 1)) {
+                            dp[i*w + j] = dp[(i-1)*w + (j-1)] + 1;
+                        } else {
+                            int up = dp[(i-1)*w + j];
+                            int left = dp[i*w + (j-1)];
+                            if (up > left) { dp[i*w + j] = up; } else { dp[i*w + j] = left; }
+                        }
+                    }
+                }
+                return dp[m*w + n];
+            }
+        }
+        // Activity selection (spec 34.1): the maximum number of mutually non-overlapping intervals, by the
+        // greedy earliest-finishing-time rule (intervals are sorted by end time first). starts[i]/ends[i]
+        // describe interval i.
+        public class IntervalScheduler {
+            public static method maxNonOverlapping(int[] starts, int[] ends, int n) returns int {
+                mutable int[] s = new int[n]();
+                mutable int[] e = new int[n]();
+                for (mutable int i = 0; i < n; i++) { s[i] = starts[i]; e[i] = ends[i]; }
+                for (mutable int i = 1; i < n; i++) {
+                    int ke = e[i]; int ks = s[i];
+                    mutable int j = i - 1;
+                    while (j >= 0 && e[j] > ke) { e[j+1] = e[j]; s[j+1] = s[j]; j = j - 1; }
+                    e[j+1] = ke; s[j+1] = ks;
+                }
+                mutable int count = 0;
+                mutable int lastEnd = -2147483647;
+                for (mutable int i = 0; i < n; i++) {
+                    if (s[i] >= lastEnd) { count = count + 1; lastEnd = e[i]; }
+                }
+                return count;
+            }
+        }
     }
 )LDP3"
 // (split: System.Ecs in its own literal.)
