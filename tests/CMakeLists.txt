@@ -992,6 +992,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Base58 (Bitcoin alphabet, spec 4) in pure LDP3, encode/decode round-trip.
+        add_test(NAME codegen_base58_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/base58.ldp3"
+            "-DCONTAINS=enc=9Ajdvzr roundtrip=1 zeros=111"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # SHA-256 (FIPS 180-4) in pure LDP3: verified against the "abc" and "" reference vectors.
         add_test(NAME codegen_sha256_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

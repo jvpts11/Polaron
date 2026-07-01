@@ -2659,6 +2659,61 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Text namespace.
 R"LDP3(
+        // Base58 (the Bitcoin alphabet, spec 4): big-endian base-256 to base-58 with no 0/O/I/l, leading zero
+        // bytes preserved as leading '1's. encode takes the first n bytes of an int[]; decode returns the bytes.
+        public class Base58 {
+            private static method al() returns String { return "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"; }
+            private static method val(char c) returns int {
+                String a = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+                for (mutable int i = 0; i < a.length(); i++) { if (a.charAt(i) == c) { return i; } }
+                return 0;
+            }
+            public static method encode(int[] bytes, int n) returns String {
+                String a = Base58.al();
+                mutable int zeros = 0;
+                while (zeros < n && bytes[zeros] == 0) { zeros = zeros + 1; }
+                mutable int[] buf = new int[n + 1]();
+                for (mutable int i = 0; i < n; i++) { buf[i] = bytes[i] & 255; }
+                mutable StringBuilder rev = new StringBuilder() on heap;
+                mutable int start = zeros;
+                while (start < n) {
+                    mutable int rem = 0;
+                    for (mutable int i = start; i < n; i++) {
+                        int acc = rem * 256 + buf[i];
+                        buf[i] = acc / 58;
+                        rem = acc % 58;
+                    }
+                    rev.appendChar(a.charAt(rem));
+                    if (buf[start] == 0) { start = start + 1; }
+                }
+                mutable StringBuilder out = new StringBuilder() on heap;
+                for (mutable int i = 0; i < zeros; i++) { out.appendChar('1'); }
+                String r = rev.toString();
+                for (mutable int i = r.length() - 1; i >= 0; i = i - 1) { out.appendChar(r.charAt(i)); }
+                return out.toString();
+            }
+            public static method decode(String s) returns int[] {
+                mutable int zeros = 0;
+                while (zeros < s.length() && s.charAt(zeros) == '1') { zeros = zeros + 1; }
+                mutable int[] tmp = new int[s.length() + 1]();
+                mutable int blen = 0;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    mutable int carry = Base58.val(s.charAt(i));
+                    for (mutable int j = 0; j < blen; j++) {
+                        int acc = tmp[j] * 58 + carry;
+                        tmp[j] = acc & 255;
+                        carry = acc >> 8;
+                    }
+                    while (carry > 0) { tmp[blen] = carry & 255; blen = blen + 1; carry = carry >> 8; }
+                }
+                mutable int[] out = new int[zeros + blen]();
+                for (mutable int i = 0; i < blen; i++) { out[zeros + i] = tmp[blen - 1 - i]; }
+                return out;
+            }
+        }
+)LDP3"
+// Split only for the MSVC literal-size limit; still the same System.Text namespace.
+R"LDP3(
         // Non-cryptographic checksums and hashes over a string's bytes (spec 4): CRC-32 (reflected, the
         // zip/png polynomial) and 32-bit FNV-1a. Uses unsigned 32-bit arithmetic, which wraps and shifts
         // logically. Returned as int (the same 32 bits reinterpreted).
