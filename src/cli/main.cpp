@@ -1735,6 +1735,51 @@ R"LDP3(
             public method total() returns int { return this.total; }
             public method distinct() returns int { return this.distinct; }
         }
+        // An immutable list (spec 34.1): copies the source array at construction and exposes only reads
+        // (get/size/isEmpty), so the contents can never change afterwards.
+        public class ImmutableList<T> {
+            private mutable T[] data;
+            private mutable int n;
+            public constructor ImmutableList(T[] src, int count) {
+                this.n = count;
+                this.data = new T[count]();
+                for (mutable int i = 0; i < count; i++) { this.data[i] = src[i]; }
+            }
+            public method get(int i) returns T { return this.data[i]; }
+            public method size() returns int { return this.n; }
+            public method isEmpty() returns boolean { return this.n == 0; }
+        }
+        // A dense map keyed by enum ordinal (spec 34.1): since LDP3 enums are int ordinals, values live in a
+        // flat array of the enum's size, with a parallel presence flag. O(1) put/get/containsKey.
+        public class EnumMap<V> {
+            private mutable V[] values;
+            private mutable boolean[] present;
+            private mutable int count;
+            public constructor EnumMap(int size) {
+                this.values = new V[size]();
+                this.present = new boolean[size]();
+                this.count = 0;
+            }
+            public method put(int ord, V v) returns void {
+                if (!this.present[ord]) { this.count = this.count + 1; this.present[ord] = true; }
+                this.values[ord] = v;
+                return;
+            }
+            public method get(int ord) returns V { return this.values[ord]; }
+            public method containsKey(int ord) returns boolean { return this.present[ord]; }
+            public method size() returns int { return this.count; }
+        }
+        // A dense set of enum ordinals (spec 34.1): a fixed-size flag array over the enum's constants, with
+        // O(1) add/remove/contains and a maintained count.
+        public class EnumSet {
+            private mutable boolean[] bits;
+            private mutable int count;
+            public constructor EnumSet(int size) { this.bits = new boolean[size](); this.count = 0; }
+            public method add(int ord) returns void { if (!this.bits[ord]) { this.bits[ord] = true; this.count = this.count + 1; } return; }
+            public method remove(int ord) returns void { if (this.bits[ord]) { this.bits[ord] = false; this.count = this.count - 1; } return; }
+            public method contains(int ord) returns boolean { return this.bits[ord]; }
+            public method size() returns int { return this.count; }
+        }
         // A Fenwick tree / binary indexed tree (spec 34.1): O(log n) point updates and prefix/range sums over
         // int values. Indices are 0-based at the public API; the lowest-set-bit trick (x & -x) walks the tree.
         public class Fenwick {

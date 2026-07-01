@@ -1,0 +1,34 @@
+import System.IO.Console;
+import System.Collections.ImmutableList;
+import System.Collections.EnumMap;
+import System.Collections.EnumSet;
+program EnumCollections;
+
+// Immutable list plus enum-ordinal-keyed map/set (spec 34.1) in pure LDP3. Prints:
+//   il1=20 ilsize=3
+//   em0=red has1=0 emsize=2
+//   c1=1 c1after=0 c2=0 essize=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] src = new int[3]();
+                src[0]=10; src[1]=20; src[2]=30;
+                mutable ImmutableList<int> il = new ImmutableList<int>(src, 3) on heap;
+                System.IO.Console.printf("il1=%d ilsize=%d\n", il.get(1), il.size());
+
+                mutable EnumMap<String> em = new EnumMap<String>(3) on heap;
+                em.put(0, "red"); em.put(2, "blue");
+                System.IO.Console.printf("em0=%s has1=%d emsize=%d\n", em.get(0), em.containsKey(1), em.size());
+
+                mutable EnumSet es = new EnumSet(5) on heap;
+                es.add(1); es.add(3); es.add(1);
+                boolean c1 = es.contains(1);
+                es.remove(1);
+                System.IO.Console.printf("c1=%d c1after=%d c2=%d essize=%d\n",
+                    c1, es.contains(1), es.contains(2), es.size());
+                return;
+            }
+        }
+    }
+}

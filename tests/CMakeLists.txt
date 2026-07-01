@@ -1073,6 +1073,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Immutable list and enum-ordinal-keyed map/set (spec 34.1), pure LDP3.
+        add_test(NAME codegen_enum_collections_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/enum_collections.ldp3"
+            "-DCONTAINS=em0=red has1=0 emsize=2"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Frequency counter / multiset of ints (spec 34.1): count/mostCommon/total, pure LDP3.
         add_test(NAME codegen_int_counter_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
