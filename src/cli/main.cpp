@@ -6386,6 +6386,29 @@ R"LDP3(
             }
             public method inUse() returns int { return this.nextId - this.freeCount; }
         }
+        // Fixed-point money as integer cents (spec 34), avoiding floating-point rounding. plus/minus/times
+        // return new amounts; format renders a signed dollar string like "$12.34".
+        public class Money {
+            private mutable long cents;
+            public constructor Money(long cents) { this.cents = cents; }
+            public method getCents() returns long { return this.cents; }
+            public method plus(Money o) returns Money { return new Money(this.cents + o.getCents()) on heap; }
+            public method minus(Money o) returns Money { return new Money(this.cents - o.getCents()) on heap; }
+            public method times(int factor) returns Money { return new Money(this.cents * cast<long>(factor)) on heap; }
+            public method format() returns String {
+                mutable long c = this.cents;
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                if (c < 0) { sb.appendChar('-'); c = 0 - c; }
+                sb.appendChar('$');
+                long dollars = c / 100;
+                long rem = c % 100;
+                sb.appendInt(cast<int>(dollars));
+                sb.appendChar('.');
+                if (rem < 10) { sb.appendChar('0'); }
+                sb.appendInt(cast<int>(rem));
+                return sb.toString();
+            }
+        }
     }
 }
 )LDP3";
