@@ -4187,6 +4187,59 @@ R"LDP3(
                 return w.concat("s");
             }
         }
+        // Jaro-Winkler string similarity (spec 34) in [0,1]: the Jaro score adjusted upward for a common
+        // prefix (up to 4 chars, factor 0.1). Good for fuzzy matching short strings like names.
+        public class JaroWinkler {
+            public static method jaro(String s1, String s2) returns double {
+                int n1 = s1.length();
+                int n2 = s2.length();
+                if (n1 == 0 && n2 == 0) { return 1.0; }
+                if (n1 == 0 || n2 == 0) { return 0.0; }
+                mutable int window = n1;
+                if (n2 > window) { window = n2; }
+                window = window / 2 - 1;
+                if (window < 0) { window = 0; }
+                mutable boolean[] m1 = new boolean[n1]();
+                mutable boolean[] m2 = new boolean[n2]();
+                mutable int matches = 0;
+                for (mutable int i = 0; i < n1; i++) {
+                    mutable int lo = i - window;
+                    if (lo < 0) { lo = 0; }
+                    mutable int hi = i + window;
+                    if (hi > n2 - 1) { hi = n2 - 1; }
+                    mutable int j = lo;
+                    mutable boolean done = false;
+                    while (j <= hi && !done) {
+                        if (!m2[j] && s1.charAt(i) == s2.charAt(j)) {
+                            m1[i] = true; m2[j] = true; matches = matches + 1; done = true;
+                        }
+                        j = j + 1;
+                    }
+                }
+                if (matches == 0) { return 0.0; }
+                mutable int k = 0;
+                mutable int trans = 0;
+                for (mutable int i = 0; i < n1; i++) {
+                    if (m1[i]) {
+                        while (!m2[k]) { k = k + 1; }
+                        if (s1.charAt(i) != s2.charAt(k)) { trans = trans + 1; }
+                        k = k + 1;
+                    }
+                }
+                double mt = cast<double>(matches);
+                double t = cast<double>(trans) / 2.0;
+                return (mt / cast<double>(n1) + mt / cast<double>(n2) + (mt - t) / mt) / 3.0;
+            }
+            public static method similarity(String s1, String s2) returns double {
+                double j = JaroWinkler.jaro(s1, s2);
+                mutable int prefix = 0;
+                mutable int i = 0;
+                while (i < s1.length() && i < s2.length() && i < 4 && s1.charAt(i) == s2.charAt(i)) {
+                    prefix = prefix + 1; i = i + 1;
+                }
+                return j + cast<double>(prefix) * 0.1 * (1.0 - j);
+            }
+        }
     }
     public namespace System.Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
