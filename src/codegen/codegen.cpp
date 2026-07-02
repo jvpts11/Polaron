@@ -3915,6 +3915,13 @@ struct CodeGenerator::Impl {
                     args.push_back(builder.CreateLoad(reg, ptr, "ffi.byval"));
                     continue;
                 }
+                // A String maps to a C char*: pass the NUL-terminated data pointer (spec 26).
+                if (at == "String" || at == "string") {
+                    llvm::Value* sv = emitExpr(*call.args[i]);
+                    if (sv == nullptr) return nullptr;
+                    args.push_back(stringData(sv));
+                    continue;
+                }
                 llvm::Value* v = emitExpr(*call.args[i]);
                 if (v == nullptr) return nullptr;
                 if (i < fn->getFunctionType()->getNumParams())
@@ -5022,6 +5029,15 @@ struct CodeGenerator::Impl {
                                 llvm::Value* ptr = emitExpr(*call.args[i]);
                                 if (ptr == nullptr) return nullptr;
                                 args.push_back(builder.CreateLoad(reg, ptr, "ffi.byval"));
+                                continue;
+                            }
+                            // A String maps to a C char*: pass the NUL-terminated data pointer, not the
+                            // {len,data} object (spec 26).
+                            if (const std::string at = typeName(*call.args[i]);
+                                at == "String" || at == "string") {
+                                llvm::Value* sv = emitExpr(*call.args[i]);
+                                if (sv == nullptr) return nullptr;
+                                args.push_back(stringData(sv));
                                 continue;
                             }
                         }
