@@ -1588,9 +1588,21 @@ ast::StmtPtr Parser::parseStatement() {
         u->isReimport = match(TokenKind::KwReimport);
         if (!u->isReimport) advance();  // 'unimport'
         u->target = expect(TokenKind::Identifier, "a type name to (un)import").lexeme;
-        // Accept (and ignore) extra modifiers/granularity: `force`, `namespace`, dotted names.
+        // Accept (and ignore) trailing modifiers (spec 30.6): a bare `force`, or `timeout(<duration>)`
+        // whose argument is parsed and discarded (unimport/reimport is in-process, so the timeout is a
+        // no-op). Dotted names extend the target.
         while (match(TokenKind::Dot)) u->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
-        while (check(TokenKind::Identifier)) advance();  // e.g. `force`
+        while (check(TokenKind::Identifier)) {
+            advance();  // modifier name, e.g. `force` or `timeout`
+            if (match(TokenKind::LParen)) {  // e.g. timeout(milliseconds(5000)) -- skip balanced parens
+                int depth = 1;
+                while (depth > 0 && !check(TokenKind::EndOfFile)) {
+                    if (match(TokenKind::LParen)) { depth++; }
+                    else if (match(TokenKind::RParen)) { depth--; }
+                    else { advance(); }
+                }
+            }
+        }
         expect(TokenKind::Semicolon, "';'");
         return u;
     }

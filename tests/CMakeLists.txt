@@ -1287,6 +1287,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # unimport with a timeout(...) modifier (spec 30.6): parses; the timeout is a no-op in-process.
+        add_test(NAME codegen_unimport_timeout_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/unimport_timeout.ldp3"
+            "-DCONTAINS=new caught"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # operator ++/-- overload dispatch (spec 6.5): c++ reassigns c to the operator's result.
         add_test(NAME codegen_operator_incr_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
