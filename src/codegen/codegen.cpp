@@ -7004,6 +7004,10 @@ struct CodeGenerator::Impl {
     void emitSwitch(const ast::SwitchStmt& s) {
         llvm::Value* subj = emitExpr(*s.subject);
         if (subj == nullptr) return;
+        // A String subject compares by value (content), not by pointer identity, so a string case
+        // literal actually matches (spec 7.3 extension). Other subjects compare as integers.
+        const std::string subjType = typeName(*s.subject);
+        const bool isStr = (subjType == "String" || subjType == "string");
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "switch.end", fn);
         const std::size_t n = s.cases.size();
@@ -7015,7 +7019,13 @@ struct CodeGenerator::Impl {
         // Dispatch chain: compare the subject against each case value.
         for (std::size_t i = 0; i < n; ++i) {
             llvm::Value* cv = emitExpr(*s.cases[i].value);
-            llvm::Value* eq = builder.CreateICmpEQ(subj, cv, "switch.is");
+            llvm::Value* eq;
+            if (isStr) {
+                llvm::Value* cmp = builder.CreateCall(strcmpFn(), {stringData(subj), stringData(cv)});
+                eq = builder.CreateICmpEQ(cmp, builder.getInt32(0), "switch.streq");
+            } else {
+                eq = builder.CreateICmpEQ(subj, cv, "switch.is");
+            }
             llvm::BasicBlock* nextTest = llvm::BasicBlock::Create(context, "switch.test", fn);
             builder.CreateCondBr(eq, bodyBBs[i], nextTest);
             builder.SetInsertPoint(nextTest);

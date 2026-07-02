@@ -1,0 +1,31 @@
+import System.IO.Console;
+program SwitchString;
+
+// switch on a String matches by value, not pointer identity (spec 7.3 extension). Prints:
+//   HELLO
+//   two
+public bundle main {
+    public namespace app {
+        public class Main {
+            private static method classify(String s) returns void {
+                switch (s) {
+                    case "hi" { System.IO.Console.println("HI"); break; }
+                    case "hello" { System.IO.Console.println("HELLO"); break; }
+                    default { System.IO.Console.println("DEFAULT"); }
+                }
+                return;
+            }
+            public static method main(string[] args) returns void {
+                String a = "he".concat("llo");   // built at runtime -> distinct pointer, same value
+                Main.classify(a);                // HELLO (value match, not pointer)
+                mutable int n = 2;
+                switch (n) {
+                    case 1 { System.IO.Console.println("one"); break; }
+                    case 2 { System.IO.Console.println("two"); break; }
+                    default { System.IO.Console.println("many"); }
+                }
+                return;
+            }
+        }
+    }
+}
