@@ -639,6 +639,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                                       m->isAbstract, m->isProperty,
                                       m->params.size(), m->isFinal, m->isAsync};
                         for (const ast::Param& p : m->params) mi.paramTypes.push_back(typeRefStr(p.type));
+                        for (const ast::Param& p : m->params) mi.comptimeParams.push_back(p.isComptime);
                         mi.isVariadic = m->isVariadic;
                         info.methods[m->name] = std::move(mi);
                     } else if (const auto* c =
@@ -2319,6 +2320,31 @@ void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
     }
 }
 
+// A compile-time constant argument (spec 32.4): a literal, or a numeric expression the comptime
+// evaluator can fold (a const or a `comptime` method call over constants).
+bool SemanticAnalyzer::isConstArg(const ast::Expr& e) {
+    if (dynamic_cast<const ast::StringLiteralExpr*>(&e) ||
+        dynamic_cast<const ast::IntLiteralExpr*>(&e) ||
+        dynamic_cast<const ast::CharLiteralExpr*>(&e) ||
+        dynamic_cast<const ast::BoolLiteralExpr*>(&e) ||
+        dynamic_cast<const ast::FloatLiteralExpr*>(&e))
+        return true;
+    long long i;
+    double d;
+    return evalConstInt(e, i, &constInts_, &comptimeMethods_, &constDoubles_) ||
+           evalConstDouble(e, d, &constDoubles_, &constInts_, &comptimeMethods_);
+}
+
+void SemanticAnalyzer::checkComptimeArgs(const std::vector<ast::ExprPtr>& args,
+                                         const std::vector<bool>& comptimeParams,
+                                         const std::string& desc) {
+    for (std::size_t i = 0; i < args.size() && i < comptimeParams.size(); ++i)
+        if (comptimeParams[i] && !isConstArg(*args[i]))
+            error("argument " + std::to_string(i + 1) + " to " + desc +
+                      " must be a compile-time constant ('comptime' parameter, spec 32.4)",
+                  args[i]->loc);
+}
+
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (dynamic_cast<const ast::IntLiteralExpr*>(&expr) != nullptr) return "int";
     if (const auto* fl = dynamic_cast<const ast::FloatLiteralExpr*>(&expr))
@@ -3163,6 +3189,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                             for (const auto& a : call->args) typeOf(*a);
                         } else {
                             checkCallArgs(call->args, mit->second.paramTypes, "'" + mem->member + "'");
+                            checkComptimeArgs(call->args, mit->second.comptimeParams,
+                                              "'" + mem->member + "'");
                             if (call->args.size() != mit->second.paramCount) {
                                 error("method '" + mem->member + "' expects " +
                                           std::to_string(mit->second.paramCount) + " argument(s) but got " +
@@ -3403,6 +3431,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 return "";
             }
             checkCallArgs(call->args, m->paramTypes, "'" + mem->member + "'");
+            checkComptimeArgs(call->args, m->comptimeParams, "'" + mem->member + "'");
             if (!m->isProperty && call->args.size() != m->paramCount) {
                 error("method '" + mem->member + "' expects " + std::to_string(m->paramCount) +
                           " argument(s) but got " + std::to_string(call->args.size()),

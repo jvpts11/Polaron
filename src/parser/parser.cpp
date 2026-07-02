@@ -1449,6 +1449,7 @@ std::vector<ast::Param> Parser::parseParams(bool* variadic) {
         }
         ast::Param p;
         p.loc = current().loc;
+        p.isComptime = match(TokenKind::KwComptime);  // spec 32.4: `comptime T p` -- const argument
         p.type = parseTypeRef();
         p.name = expect(TokenKind::Identifier, "a parameter name").lexeme;
         params.push_back(std::move(p));

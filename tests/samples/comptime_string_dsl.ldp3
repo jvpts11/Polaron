@@ -1,0 +1,29 @@
+import System.IO.Console;
+program ComptimeStringDsl;
+
+// A compile-time string DSL (spec 32.4): a `comptime` method receiving a `comptime string` parses it
+// at compile time and folds to a constant -- no runtime parser. Here it counts CSV columns. Prints:
+//   cols=4
+public bundle main {
+    public namespace app {
+        public class Sql {
+            public static comptime method colCount(comptime string s) returns int {
+                mutable int n = 1;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    if (s.charAt(i) == ',') { n = n + 1; }
+                    i = i + 1;
+                }
+                return n;
+            }
+            public static fixed int COLS = Sql.colCount("id,name,email,age");   // folds to 4
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                static_assert(Sql.colCount("a,b,c") == 3, "colCount must fold at compile time");
+                System.IO.Console.printf("cols=%d\n", Sql.COLS);
+                return;
+            }
+        }
+    }
+}

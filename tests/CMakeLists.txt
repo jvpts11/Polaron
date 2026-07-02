@@ -56,6 +56,21 @@ add_test(NAME sema_rejects_nonconst_const
 set_tests_properties(sema_rejects_nonconst_const PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
 
+# A compile-time string DSL (spec 32.4): a comptime method folds a comptime string arg at compile time.
+add_test(NAME codegen_comptime_string_dsl_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/comptime_string_dsl.ldp3"
+    "-DCONTAINS=cols=4"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# The argument to a comptime parameter must be a compile-time constant (spec 32.4).
+add_test(NAME sema_rejects_comptime_arg
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/comptime_arg_bad.ldp3")
+set_tests_properties(sema_rejects_comptime_arg PROPERTIES
+    PASS_REGULAR_EXPRESSION "must be a compile-time constant")
+
 # a switch without a default case is a compile error (spec 7.3: default is mandatory).
 add_test(NAME sema_rejects_switch_no_default
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/switch_no_default_bad.ldp3")

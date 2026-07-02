@@ -6,18 +6,51 @@ namespace ldp3::comptime {
 
 namespace {
 
-// A compile-time number: either an integer or a double (tagged). Comparisons and
+// A compile-time value: an integer, a double, or a string (tagged). Comparisons and
 // logical/bitwise ops produce integers; `/` and arithmetic promote to double when
-// either operand is double.
+// either operand is double. Strings enable compile-time string DSLs (spec 32.4): a
+// `comptime` method can process a `comptime string` and fold to a numeric result.
 struct Num {
     bool isDouble = false;
+    bool isStr = false;  // when set, `i` is an index into Context::strings (kept small on purpose)
     long long i = 0;
     double d = 0.0;
-    static Num I(long long v) { return {false, v, 0.0}; }
-    static Num D(double v) { return {true, 0, v}; }
+    static Num I(long long v) { return {false, false, v, 0.0}; }
+    static Num D(double v) { return {true, false, 0, v}; }
+    static Num Sidx(long long idx) { return {false, true, idx, 0.0}; }
     double dbl() const { return isDouble ? d : static_cast<double>(i); }
-    bool truth() const { return isDouble ? (d != 0.0) : (i != 0); }
+    bool truth() const { return isDouble ? (d != 0.0) : (i != 0); }  // a string index is truthy
 };
+
+// Interns a string into the context pool and returns a string-valued Num pointing at it.
+Num internStr(Context& ctx, std::string v) {
+    ctx.strings.push_back(std::move(v));
+    return Num::Sidx(static_cast<long long>(ctx.strings.size()) - 1);
+}
+// The interned text of a string-valued Num.
+const std::string& strOf(const Context& ctx, const Num& n) { return ctx.strings[n.i]; }
+
+// Resolves the backslash escapes in a string literal (spec 4.1) for compile-time processing.
+std::string unescape(const std::string& raw) {
+    std::string out;
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] == '\\' && i + 1 < raw.size()) {
+            switch (raw[++i]) {
+                case 'n': out += '\n'; break;
+                case 't': out += '\t'; break;
+                case 'r': out += '\r'; break;
+                case '0': out += '\0'; break;
+                case '\\': out += '\\'; break;
+                case '\'': out += '\''; break;
+                case '"': out += '"'; break;
+                default: out += raw[i]; break;
+            }
+        } else {
+            out += raw[i];
+        }
+    }
+    return out;
+}
 
 using Env = std::unordered_map<std::string, Num>;
 
@@ -66,6 +99,10 @@ long long charValue(const std::string& s) {
 }
 
 bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env);
+
+// Evaluates a compile-time string builtin call (spec 32.4). Returns 1 if handled (out set), -1 if it
+// is a string-receiver call that failed, 0 if it is not a string builtin (caller falls through).
+int evalStringBuiltin(const ast::CallExpr& call, Num& out, Context& ctx, const Env& env);
 
 bool exec(const ast::Stmt& st, Context& ctx, Env& env, Num& ret, bool& returned);
 
@@ -125,6 +162,7 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
     }
     if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(&e)) { out = Num::I(b->value ? 1 : 0); return true; }
     if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(&e)) { out = Num::I(charValue(c->value)); return true; }
+    if (const auto* s = dynamic_cast<const ast::StringLiteralExpr*>(&e)) { out = internStr(ctx, unescape(s->value)); return true; }
 
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
         if (auto it = env.find(id->name); it != env.end()) { out = it->second; return true; }
@@ -171,6 +209,14 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
         Num l, r;
         if (!eval(*bin->lhs, l, ctx, env) || !eval(*bin->rhs, r, ctx, env)) return false;
         const std::string& op = bin->op;
+        // String operands (spec 32.4 compile-time DSLs): equality and concatenation.
+        if (l.isStr || r.isStr) {
+            if (!l.isStr || !r.isStr) return false;
+            if (op == "==") { out = Num::I(strOf(ctx, l) == strOf(ctx, r) ? 1 : 0); return true; }
+            if (op == "!=") { out = Num::I(strOf(ctx, l) != strOf(ctx, r) ? 1 : 0); return true; }
+            if (op == "+") { out = internStr(ctx, strOf(ctx, l) + strOf(ctx, r)); return true; }
+            return false;
+        }
         const bool fp = l.isDouble || r.isDouble;
         // Comparisons and logical operators yield an integer (boolean) result.
         if (op == "==") { out = Num::I((fp ? l.dbl() == r.dbl() : l.i == r.i) ? 1 : 0); return true; }
@@ -204,6 +250,15 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
     }
 
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&e)) {
+        // Compile-time string builtins (spec 32.4), handled in a separate function so eval's stack
+        // frame stays small on the recursive comptime hot path. Only entered when the receiver is a
+        // value (a bound local/param, or a nested expression) -- never for a bare `Class.method(...)`
+        // user call, so it adds no native-stack depth to deep numeric recursion.
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+            const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+            if (oid == nullptr || env.count(oid->name) > 0)
+                if (int r = evalStringBuiltin(*call, out, ctx, env); r != 0) return r == 1;
+        }
         if (ctx.methods == nullptr) return false;
         std::string name;
         if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get()))
@@ -225,6 +280,44 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
     }
 
     return false;
+}
+
+int evalStringBuiltin(const ast::CallExpr& call, Num& out, Context& ctx, const Env& env) {
+    const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
+    if (mem == nullptr) return 0;
+    Num recv;
+    if (!eval(*mem->object, recv, ctx, env) || !recv.isStr) return 0;  // not a string receiver
+    std::vector<Num> a;
+    for (const ast::ExprPtr& arg : call.args) {
+        Num v;
+        if (!eval(*arg, v, ctx, env)) return -1;
+        a.push_back(v);
+    }
+    const std::string& s = strOf(ctx, recv);
+    const std::string& m = mem->member;
+    const long long len = static_cast<long long>(s.size());
+    if (m == "length" && a.empty()) { out = Num::I(len); return 1; }
+    if (m == "isEmpty" && a.empty()) { out = Num::I(s.empty() ? 1 : 0); return 1; }
+    if (m == "charAt" && a.size() == 1 && !a[0].isStr && !a[0].isDouble) {
+        if (a[0].i < 0 || a[0].i >= len) return -1;
+        out = Num::I(static_cast<unsigned char>(s[a[0].i]));
+        return 1;
+    }
+    if (m == "equals" && a.size() == 1 && a[0].isStr) {
+        out = Num::I(s == strOf(ctx, a[0]) ? 1 : 0);
+        return 1;
+    }
+    if (m == "substring" && a.size() == 2 && !a[0].isStr && !a[1].isStr) {
+        if (a[0].i < 0 || a[1].i > len || a[0].i > a[1].i) return -1;
+        out = internStr(ctx, s.substr(a[0].i, a[1].i - a[0].i));
+        return 1;
+    }
+    if (m == "indexOf" && a.size() == 1 && a[0].isStr) {
+        const auto p = s.find(strOf(ctx, a[0]));
+        out = Num::I(p == std::string::npos ? -1 : static_cast<long long>(p));
+        return 1;
+    }
+    return -1;  // a string receiver but an unsupported builtin
 }
 
 bool exec(const ast::Stmt& st, Context& ctx, Env& env, Num& ret, bool& returned) {
@@ -313,7 +406,7 @@ bool exec(const ast::Stmt& st, Context& ctx, Env& env, Num& ret, bool& returned)
 bool evalInt(const ast::Expr& e, long long& out, Context& ctx) {
     Num n;
     if (!eval(e, n, ctx, Env{})) return false;
-    if (n.isDouble) return false;  // an integer context rejects a double result
+    if (n.isDouble || n.isStr) return false;  // an integer context rejects a double/string result
     out = n.i;
     return true;
 }
@@ -321,6 +414,7 @@ bool evalInt(const ast::Expr& e, long long& out, Context& ctx) {
 bool evalDouble(const ast::Expr& e, double& out, Context& ctx) {
     Num n;
     if (!eval(e, n, ctx, Env{})) return false;
+    if (n.isStr) return false;
     out = n.dbl();
     return true;
 }

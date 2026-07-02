@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "parser/ast.h"
 
@@ -22,7 +23,13 @@ struct Context {
     long long steps = 0;                 // work done so far (bounds total loop/recursion work)
     long long stepLimit = 5'000'000;     // hard cap: past this, evaluation fails
     int depth = 0;                       // current comptime-call nesting (bounds native stack)
-    int depthLimit = 128;                // hard cap on recursion depth (avoids stack overflow)
+    int depthLimit = 64;                 // hard cap on recursion depth (avoids stack overflow); kept
+                                         // well under the native stack so a runaway is reported, not
+                                         // crashed (comptime recursion in practice is shallow)
+    // Interned compile-time strings (spec 32.4 string DSLs). A string value is a small index into
+    // this pool, so the value type stays register-small and deep comptime recursion does not enlarge
+    // the native stack frame.
+    std::vector<std::string> strings;
 };
 
 // Evaluates `e` to a compile-time integer (the result must be int-valued; a

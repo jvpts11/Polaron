@@ -48,6 +48,7 @@ struct MethodInfo {
     bool isAsync = false;     // spec 20.2: the call site yields a Task<returnType>
     bool isVariadic = false;  // spec 26: an extern C function with a trailing `...` (arg count is open)
     std::vector<std::string> paramTypes;  // declared parameter types (for methodref's function type)
+    std::vector<bool> comptimeParams;     // spec 32.4: which params are `comptime` (arg must be const)
 };
 struct ClassInfo {
     std::string name;
@@ -177,6 +178,10 @@ private:
     // per-argument subtype compatibility and null-safety. `desc` names the callee for messages.
     void checkCallArgs(const std::vector<ast::ExprPtr>& args,
                        const std::vector<std::string>& paramTypes, const std::string& desc);
+    // spec 32.4: the argument to a `comptime` parameter must be a compile-time constant.
+    bool isConstArg(const ast::Expr& e);
+    void checkComptimeArgs(const std::vector<ast::ExprPtr>& args,
+                           const std::vector<bool>& comptimeParams, const std::string& desc);
     std::string flattenCallee(const ast::Expr& expr) const;
     const ClassInfo* lookupClass(const std::string& name) const;
     void validateHierarchy();

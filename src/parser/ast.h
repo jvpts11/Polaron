@@ -488,6 +488,7 @@ struct Param {
     TypeRef type;
     std::string name;
     SourceLocation loc;
+    bool isComptime = false;  // spec 32.4: `comptime T p` -- the argument must be a compile-time constant
 };
 
 // A lambda value: `lambda(params) returns T { body }`. Its type is function<T, Params...>.

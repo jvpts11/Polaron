@@ -1,0 +1,18 @@
+program ComptimeArgBad;
+
+// The argument to a `comptime` parameter must be a compile-time constant (spec 32.4): passing a
+// runtime value is a compile error.
+public bundle main {
+    public namespace app {
+        public class Sql {
+            public static comptime method len(comptime string s) returns int { return s.length(); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable string r = "hello";     // a runtime variable, not a constant
+                int n = Sql.len(r);             // error: comptime argument must be constant
+                return;
+            }
+        }
+    }
+}
