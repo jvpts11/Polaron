@@ -94,6 +94,49 @@ ast::MemberPtr buildRecordHashCode(const std::string& typeName,
     return m;
 }
 
+// Builds `public method toString() returns String { return "Name(" + this.f0.toString() + ", " + ...
+// + ")"; }` for a record's fields (spec 10: auto-generated toString). Each field is rendered via its
+// own toString(); a field type without toString() is a compile error in the generated method.
+ast::MemberPtr buildRecordToString(const std::string& typeName,
+                                   const std::vector<ast::Param>& fields, SourceLocation loc) {
+    auto m = std::make_unique<ast::MethodDecl>();
+    m->loc = loc;
+    m->visibility = "public";
+    m->name = "toString";
+    m->returnType.name = "String";
+    auto makeStr = [&](const std::string& s) {
+        auto lit = std::make_unique<ast::StringLiteralExpr>();
+        lit->loc = loc;
+        lit->value = s;
+        return lit;
+    };
+    auto concat = [&](ast::ExprPtr a, ast::ExprPtr b) -> ast::ExprPtr {
+        auto bin = std::make_unique<ast::BinaryExpr>();
+        bin->loc = loc;
+        bin->op = "+";
+        bin->lhs = std::move(a);
+        bin->rhs = std::move(b);
+        return bin;
+    };
+    auto fieldStr = [&](const ast::Param& f) -> ast::ExprPtr {
+        auto call = std::make_unique<ast::CallExpr>();
+        call->loc = loc;
+        call->callee = makeMember(makeMember(makeIdent("this", loc), f.name, loc), "toString", loc);
+        return call;
+    };
+    ast::ExprPtr expr = makeStr(typeName + "(");
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        if (i > 0) expr = concat(std::move(expr), makeStr(", "));
+        expr = concat(std::move(expr), fieldStr(fields[i]));
+    }
+    expr = concat(std::move(expr), makeStr(")"));
+    auto ret = std::make_unique<ast::ReturnStmt>();
+    ret->loc = loc;
+    ret->value = std::move(expr);
+    m->body.statements.push_back(std::move(ret));
+    return m;
+}
+
 // Builds `public method equals(Name other) returns boolean { return this.f0 ==
 // other.f0 && ...; }` for a record's fields (spec 10: auto-generated equals).
 ast::MemberPtr buildRecordEquals(const std::string& typeName,
@@ -911,6 +954,7 @@ ast::ClassDecl Parser::parseRecord() {
     }
     c.members.push_back(buildRecordEquals(c.name, fields, c.loc));
     c.members.push_back(buildRecordHashCode(c.name, fields, c.loc));
+    c.members.push_back(buildRecordToString(c.name, fields, c.loc));
 
     // Body: methods and constants only -- no extra fields (spec 10).
     expect(TokenKind::LBrace, "'{'");

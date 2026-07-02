@@ -1,0 +1,18 @@
+import System.IO.Console;
+program RecordToString;
+
+// A record auto-generates toString (spec 10): "Name(f0, f1, ...)". Prints:
+//   Point(3, 4)
+public bundle main {
+    public namespace app {
+        public record Point(int x, int y) {
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Point p = new Point(3, 4);
+                System.IO.Console.println(p.toString());
+                return;
+            }
+        }
+    }
+}
