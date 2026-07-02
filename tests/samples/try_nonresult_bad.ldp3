@@ -1,0 +1,21 @@
+import System.IO.Console;
+import System.Errors.Result;
+program TryNonResultBad;
+
+// `try?` propagates the Err/None to the enclosing method, so that method must return Result/Option
+// (spec 21.2). Here main returns void, so `try?` must be a clean compile error -- not a codegen crash.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method parse(int x) returns Result<int, int> {
+                if (x < 0) { return Err(x); }
+                return Ok(x);
+            }
+            public static method main(string[] args) returns void {
+                int v = try? Main.parse(5);
+                System.IO.Console.printf("v=%d\n", v);
+                return;
+            }
+        }
+    }
+}

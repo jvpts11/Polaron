@@ -2501,6 +2501,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
         // try? Result<T,E>/Option<T> yields T (the first type arg of the operand's instantiation).
         const std::string ot = baseType(typeOf(*tx->operand));
+        // try? early-returns the Err/None to the ENCLOSING method, so that method must itself return a
+        // Result/Option (spec 21.2). Otherwise codegen would emit a type-mismatched `return`.
+        const std::string rb = baseType(currentReturnType_);
+        if (!currentReturnType_.empty() && rb != "Result" && rb != "Option") {
+            error("'try?' can only be used inside a method that returns Result or Option, but this "
+                  "method returns '" + currentReturnType_ + "' (spec 21.2)",
+                  tx->loc);
+        }
         const auto p = ot.find('$');
         if (p == std::string::npos) return "";
         const std::string rest = ot.substr(p + 1);

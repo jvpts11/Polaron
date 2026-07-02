@@ -56,6 +56,13 @@ add_test(NAME sema_rejects_nonconst_const
 set_tests_properties(sema_rejects_nonconst_const PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
 
+# `try?` in a method that does not return Result/Option is a clean compile error (spec 21.2), not a
+# codegen type-mismatch crash.
+add_test(NAME sema_rejects_try_nonresult
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/try_nonresult_bad.ldp3")
+set_tests_properties(sema_rejects_try_nonresult PROPERTIES
+    PASS_REGULAR_EXPRESSION "can only be used inside a method that returns Result or Option")
+
 # a non-terminating comptime evaluation hits the step/recursion budget and is
 # rejected gracefully (spec 28.3), not a hang or crash.
 add_test(NAME sema_rejects_comptime_runaway
