@@ -456,6 +456,30 @@ long long __ldp3_tcp_recv(long long sock, char* buf, long long cap) {
 }
 void __ldp3_tcp_close(long long sock) { closesocket((SOCKET)sock); }
 
+// ---- Subprocess (spec 34): run a command line through the shell, capturing its stdout and exit
+// code. Returns a malloc'd NUL-terminated buffer of the captured output; *outLen is its length and
+// *outExit the process exit code (-1 if the process could not be started). ----
+char* __ldp3_process_run(const char* cmd, long long* outLen, int* outExit) {
+    FILE* p = _popen(cmd, "r");
+    if (p == NULL) { *outLen = 0; *outExit = -1; char* e = (char*)malloc(1); e[0] = 0; return e; }
+    size_t cap = 4096, len = 0;
+    char* buf = (char*)malloc(cap);
+    char chunk[4096];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof(chunk), p)) > 0) {
+        if (len + n + 1 > cap) {
+            while (len + n + 1 > cap) cap *= 2;
+            buf = (char*)realloc(buf, cap);
+        }
+        memcpy(buf + len, chunk, n);
+        len += n;
+    }
+    buf[len] = 0;
+    *outExit = _pclose(p);
+    *outLen = (long long)len;
+    return buf;
+}
+
 // ---- File I/O (spec 34.4): whole-file read/write over C stdio. ----
 char* __ldp3_file_read_all(const char* path, long long* outLen) {
     FILE* f = fopen(path, "rb");

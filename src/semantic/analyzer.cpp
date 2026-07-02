@@ -1120,6 +1120,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode) {
     typeNamespace_["Time"] = "System.Time";
     // Net (spec 34): TCP builtins lowering to runtime winsock calls; register for the import.
     typeNamespace_["Net"] = "System.Net";
+    // Process (spec 34): subprocess builtin (Process.run) lowering to a runtime shell call; register
+    // so `import System.OS.Process;` resolves. ProcessResult is a real prelude class.
+    typeNamespace_["Process"] = "System.OS";
     // reflect (spec 31) is a builtin namespace, not a prelude class; register it so `import reflect;`
     // resolves. Reflection use is gated on this import at the reflect.typeOf call site.
     typeNamespace_["reflect"] = "reflect";
@@ -3089,6 +3092,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (fn == "send") return "long";      // (sock, data) -> bytes sent
                 if (fn == "recv") return "String";    // (sock, max) -> received bytes
                 return "void";                        // close(sock)
+            }
+        }
+        // Process (spec 34): Process.run(cmd) runs a shell command, returning a ProcessResult with its
+        // captured stdout and exit code. Require `import System.OS.Process;`.
+        if (name.rfind("Process.", 0) == 0) {
+            const std::string fn = name.substr(8);
+            if (fn == "run") {
+                checkTypeAccessible("Process", call->loc);
+                if (call->args.size() != 1) error("Process.run takes a command string", call->loc);
+                else typeOf(*call->args[0]);
+                return "ProcessResult";
             }
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio. Require `import System.IO.File;`.

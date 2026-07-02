@@ -7227,8 +7227,21 @@ R"LDP3(
         }
     }
 )LDP3"
-// (split: System.Net in its own literal.)
+// (split: System.OS + System.Net in their own literal.)
 R"LDP3(
+    public namespace System.OS {
+        // The result of running a subprocess (spec 34): its captured stdout and exit code. Built by
+        // the `Process.run(cmd)` builtin, which runs the command through the shell.
+        public class ProcessResult {
+            public String output;
+            public int exitCode;
+            public constructor ProcessResult(String output, int exitCode) {
+                this.output = output;
+                this.exitCode = exitCode;
+            }
+            public method success() returns boolean { return this.exitCode == 0; }
+        }
+    }
     public namespace System.Net {
         // A blocking TCP client socket (spec 34). The connect happens in the constructor; the handle
         // is the OS socket (or -1 on failure). send/receive/close lower to runtime winsock helpers.

@@ -1,0 +1,20 @@
+import System.IO.Console;
+import System.OS.Process;
+import System.OS.ProcessResult;
+program ProcessRun;
+
+// Process.run (spec 34): runs a command through the shell and returns a ProcessResult with its
+// captured stdout and exit code. Prints:
+//   out=hello123
+//   exit=0 ok=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ProcessResult r = Process.run("echo hello123");
+                System.IO.Console.printf("out=%sexit=%d ok=%d\n", r.output, r.exitCode, r.success());
+                return;
+            }
+        }
+    }
+}

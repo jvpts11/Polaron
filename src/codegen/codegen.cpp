@@ -1661,6 +1661,7 @@ struct CodeGenerator::Impl {
                 if (fc == "Net.connect" || fc == "Net.send") return "long";
                 if (fc == "Net.close") return "void";
             }
+            if (flattenCallee(*call->callee) == "Process.run") return "ProcessResult";  // spec 34
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("File.", 0) == 0) {
                 if (fc == "File.readAll") return "String";  // spec 34.4
                 if (fc == "File.writeAll" || fc == "File.appendAll" || fc == "File.exists" ||
@@ -4397,6 +4398,28 @@ struct CodeGenerator::Impl {
                 builder.CreateCall(module.getOrInsertFunction("__ldp3_tcp_close", ft), {fitInt(sock, 64)});
                 return nullptr;
             }
+        }
+        // Process (spec 34): Process.run(cmd) runs the command through the shell, captures its stdout
+        // and exit code, and returns a ProcessResult built from them.
+        if (name == "Process.run") {
+            llvm::Value* cmd = emitExpr(*call.args[0]);
+            if (cmd == nullptr) return nullptr;
+            llvm::Type* p = builder.getPtrTy();
+            llvm::Value* lenSlot = createEntryAlloca("pr.len", builder.getInt64Ty());
+            llvm::Value* exitSlot = createEntryAlloca("pr.exit", builder.getInt32Ty());
+            llvm::FunctionType* ft = llvm::FunctionType::get(p, {p, p, p}, false);
+            llvm::Value* buf = builder.CreateCall(module.getOrInsertFunction("__ldp3_process_run", ft),
+                                                  {stringData(cmd), lenSlot, exitSlot});
+            llvm::Value* output = emitStringFromParts(
+                builder.CreateLoad(builder.getInt64Ty(), lenSlot, "pr.n"), buf);
+            llvm::Value* code = builder.CreateLoad(builder.getInt32Ty(), exitSlot, "pr.rc");
+            auto cit = classes.find("ProcessResult");
+            if (cit == classes.end()) { error("ProcessResult is unavailable", call.loc); return nullptr; }
+            llvm::Function* ctorFn = functions["ProcessResult.ProcessResult"];
+            llvm::Value* obj = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "procres");
+            builder.CreateCall(ctorFn, {obj, coerceToType(output, ctorFn->getArg(1)->getType()),
+                                        coerceToType(code, ctorFn->getArg(2)->getType())});
+            return obj;
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio helpers.
         if (name.rfind("File.", 0) == 0) {
