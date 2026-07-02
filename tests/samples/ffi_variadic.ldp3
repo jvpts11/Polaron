@@ -1,0 +1,18 @@
+program FfiVariadic;
+
+// A variadic extern C function (spec 26): a trailing `...` in a class-member extern declaration. Calls
+// libc printf with a format String (marshalled to char*) plus a variadic int. Prints:
+//   x=42
+public bundle main {
+    public namespace app {
+        public class LibC {
+            public extern cdecl static method printf(String format, ...) returns int;
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                LibC.printf("x=%d\n", 42);
+                return;
+            }
+        }
+    }
+}

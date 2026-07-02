@@ -46,6 +46,7 @@ struct MethodInfo {
     std::size_t paramCount = 0;  // declared parameter count (for arg-count checking)
     bool isFinal = false;     // `final` method -- cannot be overridden
     bool isAsync = false;     // spec 20.2: the call site yields a Task<returnType>
+    bool isVariadic = false;  // spec 26: an extern C function with a trailing `...` (arg count is open)
     std::vector<std::string> paramTypes;  // declared parameter types (for methodref's function type)
 };
 struct ClassInfo {

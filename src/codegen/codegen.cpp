@@ -7624,7 +7624,7 @@ struct CodeGenerator::Impl {
                             if (m->isAbstract) continue;  // no body to declare
                             if (m->isExtern) {  // spec 26: links to a C symbol (the simple name)
                                 llvm::FunctionType* ety =
-                                    externFnType(m->params, m->returnType, false, m->loc);
+                                    externFnType(m->params, m->returnType, m->isVariadic, m->loc);
                                 llvm::Function* f = module.getFunction(m->name);
                                 if (f == nullptr)
                                     f = llvm::Function::Create(ety, llvm::Function::ExternalLinkage,

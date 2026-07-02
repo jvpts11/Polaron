@@ -639,6 +639,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                                       m->isAbstract, m->isProperty,
                                       m->params.size(), m->isFinal, m->isAsync};
                         for (const ast::Param& p : m->params) mi.paramTypes.push_back(typeRefStr(p.type));
+                        mi.isVariadic = m->isVariadic;
                         info.methods[m->name] = std::move(mi);
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
@@ -3113,12 +3114,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                                   call->loc);
                             return "";
                         }
-                        checkCallArgs(call->args, mit->second.paramTypes, "'" + mem->member + "'");
-                        if (call->args.size() != mit->second.paramCount) {
-                            error("method '" + mem->member + "' expects " +
-                                      std::to_string(mit->second.paramCount) + " argument(s) but got " +
-                                      std::to_string(call->args.size()),
-                                  call->loc);
+                        if (mit->second.isVariadic) {
+                            // A variadic extern (spec 26): the fixed params are checked, extra args are
+                            // the `...` and pass through.
+                            for (const auto& a : call->args) typeOf(*a);
+                        } else {
+                            checkCallArgs(call->args, mit->second.paramTypes, "'" + mem->member + "'");
+                            if (call->args.size() != mit->second.paramCount) {
+                                error("method '" + mem->member + "' expects " +
+                                          std::to_string(mit->second.paramCount) + " argument(s) but got " +
+                                          std::to_string(call->args.size()),
+                                      call->loc);
+                            }
                         }
                         // An async static method yields a Task<returnType> (spec 20.2).
                         if (mit->second.isAsync)

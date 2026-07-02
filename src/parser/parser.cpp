@@ -1134,7 +1134,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
         expect(TokenKind::Gt, "'>' to close type parameters");
     }
     expect(TokenKind::LParen, "'('");
-    m->params = parseParams();
+    m->params = parseParams(m->isExtern ? &m->isVariadic : nullptr);
     expect(TokenKind::RParen, "')'");
     // `throws(T1, T2)` clause (spec 21.1), between the signature and `returns`.
     if (match(TokenKind::KwThrows)) {
@@ -1357,10 +1357,18 @@ std::unique_ptr<ast::DestructorDecl> Parser::parseDestructor(std::string visibil
     return d;
 }
 
-std::vector<ast::Param> Parser::parseParams() {
+std::vector<ast::Param> Parser::parseParams(bool* variadic) {
     std::vector<ast::Param> params;
     if (check(TokenKind::RParen)) return params;
     do {
+        // A trailing `...` (lexed as '..' then '.') marks a variadic extern (spec 26); only accepted
+        // when the caller opts in via `variadic`.
+        if (variadic != nullptr && check(TokenKind::DotDot)) {
+            advance();
+            match(TokenKind::Dot);  // the third '.'
+            *variadic = true;
+            break;
+        }
         ast::Param p;
         p.loc = current().loc;
         p.type = parseTypeRef();

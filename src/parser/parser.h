@@ -95,7 +95,7 @@ private:
     ast::ExprPtr parseUnimportExpr();  // `unimport X expecting [using ...] { ... }` (spec 30.18)
     // Parses `[using a, b] { ... }` after `expecting`; fills usingVars and returns the block.
     std::unique_ptr<ast::Block> parseExpectingTail(std::vector<std::string>& usingVars);
-    std::vector<ast::Param> parseParams();
+    std::vector<ast::Param> parseParams(bool* variadic = nullptr);
     ast::TypeRef parseTypeRef();
     ast::Block parseBlock();
     ast::StmtPtr parseStatement();
