@@ -310,7 +310,7 @@ std::string baseType(const std::string& t) {
 // Generic arguments are mangled into the name (Box<int> -> "Box$int").
 std::string typeRefName(const ast::TypeRef& t) {
     return ast::mangleGeneric(t.name, t.typeArgs) + ast::arrayDimsSuffix(t.arrayDims) +
-           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
+           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 
 // Layout of a class: its LLVM struct, field indices/types, and method returns.
@@ -559,8 +559,14 @@ struct CodeGenerator::Impl {
     // opaque pointer; int/boolean/char/enum -> iN; tuple -> anonymous struct.
     llvm::Type* llvmType(const std::string& t) {
         if (t == "void") return builder.getVoidTy();
-        // `nullable T` (spec 3.7) lowers exactly like T -- it is a compile-time-only marker.
-        if (!t.empty() && t.back() == '?') return llvmType(t.substr(0, t.size() - 1));
+        // `nullable T` (spec 3.7): a nullable REFERENCE (class/String/array) already lowers to a
+        // pointer, so the marker is a no-op there. A nullable PRIMITIVE has no in-band null, so it is
+        // boxed as a null-capable pointer to a heap cell (null = the null pointer).
+        if (!t.empty() && t.back() == '?') {
+            const std::string inner = t.substr(0, t.size() - 1);
+            if (isBoxablePrimitive(inner)) return builder.getPtrTy();
+            return llvmType(inner);
+        }
         if (isTupleType(t)) return tupleStructType(t);
         if (isFloatType(t)) {
             switch (floatBits(t)) {
@@ -600,6 +606,16 @@ struct CodeGenerator::Impl {
         // the source (value semantics; spec 4). The data pointer is shared until an append replaces it.
         if (to == "string" && (from == "string" || from == "String"))
             return emitStringFromParts(stringLen(v), stringData(v));
+        // Boxing a nullable primitive (spec 3.7): a primitive value flowing into `T?` is stored in a
+        // heap cell so the pointer can be null. A null literal or an already-boxed nullable passes
+        // through as the pointer. (Unboxing happens only via `??` / an explicit null check.)
+        if (!to.empty() && to.back() == '?' && isBoxablePrimitive(to.substr(0, to.size() - 1))) {
+            if (from == "null" || v->getType()->isPointerTy()) return v;
+            const std::string inner = to.substr(0, to.size() - 1);
+            llvm::Value* cell = builder.CreateCall(mallocFn(), {builder.getInt64(8)}, "nbox");
+            builder.CreateStore(coerce(v, from, inner), cell);
+            return cell;
+        }
         // Catalog tag (spec 12.4 multi-implementer dispatch): pack an implementing enum's ordinal into a
         // tagged catalog value as (enumTypeId << 32 | ordinal). catalog->catalog is identity; the reverse
         // catalog->int is a plain truncation to the low 32 bits (the ordinal), handled by the integer
@@ -3248,23 +3264,36 @@ struct CodeGenerator::Impl {
     // `a ?? b` (spec 3.7): yields a when non-null, else b. b is only evaluated when a is null.
     // Operates on reference values (ptr), so the result is a pointer.
     llvm::Value* emitNullCoalesce(const ast::NullCoalesceExpr& nc) {
+        // For a nullable primitive `x ?? d`, x is a boxed pointer: unbox it on the non-null branch and
+        // yield the inner primitive (matching d's type). For a nullable reference, the value is the
+        // pointer itself and passes through.
+        const std::string lt = typeName(*nc.lhs);
+        const bool nullablePrim =
+            !lt.empty() && lt.back() == '?' && isBoxablePrimitive(lt.substr(0, lt.size() - 1));
+        const std::string inner = nullablePrim ? lt.substr(0, lt.size() - 1) : std::string();
         llvm::Value* a = emitExpr(*nc.lhs);
         if (a == nullptr) return nullptr;
         llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
         llvm::Function* fn = currentFn;
-        llvm::BasicBlock* aBB = builder.GetInsertBlock();
+        auto* thenBB = llvm::BasicBlock::Create(context, "coalesce.then", fn);
         auto* elseBB = llvm::BasicBlock::Create(context, "coalesce.else", fn);
         auto* contBB = llvm::BasicBlock::Create(context, "coalesce.cont", fn);
-        builder.CreateCondBr(builder.CreateICmpNE(a, nullp), contBB, elseBB);
+        builder.CreateCondBr(builder.CreateICmpNE(a, nullp), thenBB, elseBB);
+        builder.SetInsertPoint(thenBB);
+        llvm::Value* aVal = nullablePrim ? builder.CreateLoad(llvmType(inner), a, "nunbox") : a;
+        llvm::BasicBlock* thenEnd = builder.GetInsertBlock();
+        builder.CreateBr(contBB);
         builder.SetInsertPoint(elseBB);
         llvm::Value* b = emitExpr(*nc.rhs);
         if (b == nullptr) b = nullp;
-        llvm::BasicBlock* bBB = builder.GetInsertBlock();
+        if (nullablePrim) b = coerce(b, typeName(*nc.rhs), inner);
+        llvm::BasicBlock* elseEnd = builder.GetInsertBlock();
         builder.CreateBr(contBB);
         builder.SetInsertPoint(contBB);
-        llvm::PHINode* phi = builder.CreatePHI(builder.getPtrTy(), 2, "coalesce");
-        phi->addIncoming(a, aBB);
-        phi->addIncoming(b, bBB);
+        llvm::PHINode* phi =
+            builder.CreatePHI(nullablePrim ? llvmType(inner) : builder.getPtrTy(), 2, "coalesce");
+        phi->addIncoming(aVal, thenEnd);
+        phi->addIncoming(b, elseEnd);
         return phi;
     }
 
@@ -3397,9 +3426,13 @@ struct CodeGenerator::Impl {
         // enum value is a pointer to its singleton, so identity comparison is its equality.
         auto isPtrish = [this](const std::string& t) {
             // A class instance is a pointer in codegen, so == / != on class references is identity
-            // comparison (the basis of Object.equals). Pointers, refs, null and java-enums too.
-            return t == "null" || (!t.empty() && (t.back() == '*' || t.back() == '&')) ||
-                   javaEnums.count(baseType(t)) > 0 || classes.count(baseType(t)) > 0;
+            // comparison (the basis of Object.equals). Pointers, refs, null and java-enums too. A
+            // nullable primitive is boxed as a pointer (spec 3.7), so it compares as a pointer as well
+            // (this is what makes `nullable int x = ...; x == null` work).
+            if (t == "null" || (!t.empty() && (t.back() == '*' || t.back() == '&'))) return true;
+            if (!t.empty() && t.back() == '?' && isBoxablePrimitive(t.substr(0, t.size() - 1)))
+                return true;
+            return javaEnums.count(baseType(t)) > 0 || classes.count(baseType(t)) > 0;
         };
         const bool javaEnumCmp = javaEnums.count(baseType(lt)) > 0 || javaEnums.count(baseType(rt)) > 0;
         if (javaEnumCmp && op != "==" && op != "!=") {
@@ -7227,13 +7260,9 @@ struct CodeGenerator::Impl {
                     layout.isUnique = cls.isUnique;
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
-                            // A generic field type must mangle its args (Node<int>* -> Node$int*).
-                            const std::string base = f->type.typeArgs.empty()
-                                ? f->type.name
-                                : ast::mangleGeneric(f->type.name, f->type.typeArgs);
-                            const std::string ftype = base + ast::arrayDimsSuffix(f->type.arrayDims) +
-                                                      (f->type.isPointer ? "*" : "") +
-                                                      (f->type.isRef ? "&" : "");
+                            // Mangle generic args (Node<int>* -> Node$int*) and keep the pointer/ref and
+                            // nullable markers, so a `nullable int` field is boxed as a pointer.
+                            const std::string ftype = typeRefName(f->type);
                             // Static fields live in a single LLVM global, not in each
                             // instance, so they are excluded from the struct layout.
                             if (f->isStatic) {

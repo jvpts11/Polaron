@@ -1,0 +1,31 @@
+import System.IO.Console;
+program NullablePrimitive;
+
+// A nullable primitive (spec 3.7) is boxed as a null-capable pointer, so it can actually hold null:
+// `== null` tests it and `??` supplies a fallback. Works as a local and as a field. Prints:
+//   xnull=1 ynull=0 z=5 w=99
+//   f1=1 fv=7
+public bundle main {
+    public namespace app {
+        public class Box {
+            public mutable nullable int slot;
+            public constructor Box() { this.slot = null; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                nullable int x = null;
+                nullable int y = 5;
+                int z = y ?? 99;      // 5  (y holds 5)
+                int w = x ?? 99;      // 99 (x is null)
+                System.IO.Console.printf("xnull=%d ynull=%d z=%d w=%d\n",
+                    x == null, y == null, z, w);
+                mutable Box b = new Box() on heap;
+                boolean f1 = b.slot == null;      // 1 (constructor set it null)
+                b.slot = 7;
+                int fv = b.slot ?? 0;             // 7
+                System.IO.Console.printf("f1=%d fv=%d\n", f1, fv);
+                return;
+            }
+        }
+    }
+}
