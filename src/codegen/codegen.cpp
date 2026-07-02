@@ -775,9 +775,27 @@ struct CodeGenerator::Impl {
             }
             return builder.CreateTrunc(builder.CreateSDiv(v, decimalScale()), llvmType(to));
         }
-        // Reference cast (class/Object/reflection token): a pointer reinterpret -- a no-op
-        // with opaque pointers. No runtime type check yet (spec 31 downcasts).
-        if (llvmType(to)->isPointerTy() && v->getType()->isPointerTy()) return v;
+        // Reference cast (class/Object/reflection token): a pointer reinterpret -- a no-op with opaque
+        // pointers. A class DOWNCAST is checked at runtime (spec 6.3): if the object is non-null and not
+        // actually the target type, throw ClassCastException instead of silently corrupting memory
+        // (no-UB). Upcasts, identity and non-class reinterprets pass through unchecked.
+        if (llvmType(to)->isPointerTy() && v->getType()->isPointerTy()) {
+            const std::string bf = baseType(from), bt = baseType(to);
+            if (classes.count(bf) > 0 && classes.count(bt) > 0 && bf != bt &&
+                classIsSubtypeOf(bt, bf) && classes[bt].vtable != nullptr) {
+                llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
+                llvm::Value* notNull = builder.CreateICmpNE(v, nullp, "cast.nn");
+                llvm::Value* bad = builder.CreateAnd(notNull, builder.CreateNot(emitIsa(v, bt)));
+                llvm::Function* fn = currentFn;
+                auto* badBB = llvm::BasicBlock::Create(context, "cast.bad", fn);
+                auto* okBB = llvm::BasicBlock::Create(context, "cast.ok", fn);
+                builder.CreateCondBr(bad, badBB, okBB);
+                builder.SetInsertPoint(badBB);
+                emitThrowNamed("ClassCastException");  // terminates this block (throw)
+                builder.SetInsertPoint(okBB);
+            }
+            return v;
+        }
         // Raw int/address <-> pointer (low-level / freestanding, spec 17.8): a `cast<T*>(addr)`
         // or `cast<address>(ptr)` reinterprets between an integer address and a pointer.
         if (llvmType(to)->isPointerTy() && v->getType()->isIntegerTy())
@@ -1764,7 +1782,10 @@ struct CodeGenerator::Impl {
             }
             return "int";
         }
-        if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) return cst->targetType;
+        if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr))
+            return cst->op == 1 ? std::string("boolean")
+                   : cst->op == 2 ? cst->targetType + "?"
+                                  : cst->targetType;
         if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr))
             return mv->castType.empty() ? typeName(*mv->operand) : mv->castType;
         if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
@@ -3086,6 +3107,15 @@ struct CodeGenerator::Impl {
             return emitRegionAllocate(ri->size.get(), ri->atAddress.get());
         }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
+            // `x is T` (op 1) / `x as? T` (op 2), spec 6.4: a runtime is-a test on a class value.
+            if (cst->op == 1 || cst->op == 2) {
+                llvm::Value* obj = emitExpr(*cst->operand);
+                if (obj == nullptr) return nullptr;
+                llvm::Value* isa = emitIsa(obj, baseType(cst->targetType));  // i1, null-safe
+                if (cst->op == 1) return builder.CreateZExt(isa, builder.getInt32Ty());  // boolean = i32
+                return builder.CreateSelect(isa, obj,
+                                            llvm::ConstantPointerNull::get(builder.getPtrTy()));
+            }
             // User-defined conversion operator (spec 6.6): cast<T>(obj) where obj's class declares
             // `operator cast<T>` calls it instead of a primitive cast.
             const std::string srcCls = baseType(typeName(*cst->operand));
@@ -5749,6 +5779,49 @@ struct CodeGenerator::Impl {
             }
         }
         return out;
+    }
+
+    // True if class `cn` is `t`, or (transitively) extends or implements `t` -- the subtype relation
+    // used for runtime `is`/`as`/`cast` checks (spec 6.3/6.4). Unlike subtypeVtables it also follows
+    // interfaces, so `x is SomeInterface` works.
+    bool classIsSubtypeOf(const std::string& cn, const std::string& t) {
+        if (cn == t) return true;
+        auto it = classes.find(cn);
+        if (it == classes.end()) return false;
+        if (!it->second.superclass.empty() && classIsSubtypeOf(it->second.superclass, t)) return true;
+        for (const std::string& i : it->second.interfaces)
+            if (classIsSubtypeOf(i, t)) return true;
+        return false;
+    }
+    // Vtables of every concrete class that is a subtype of `t` (extends or implements it).
+    std::vector<llvm::Constant*> subtypeVtablesInc(const std::string& t) {
+        std::vector<llvm::Constant*> out;
+        for (const auto& [cn, cl] : classes)
+            if (cl.vtable != nullptr && classIsSubtypeOf(cn, t)) out.push_back(cl.vtable);
+        return out;
+    }
+    // Runtime is-a test (spec 6.4): true iff `objPtr` is non-null and its concrete type (identified by
+    // the vtable pointer at field 0) is a subtype of `targetClass`. Null-safe: null yields false.
+    llvm::Value* emitIsa(llvm::Value* objPtr, const std::string& targetClass) {
+        llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        llvm::Value* isNull = builder.CreateICmpEQ(objPtr, nullp, "isa.null");
+        llvm::Function* fn = currentFn;
+        llvm::BasicBlock* entryBB = builder.GetInsertBlock();
+        auto* chkBB = llvm::BasicBlock::Create(context, "isa.chk", fn);
+        auto* contBB = llvm::BasicBlock::Create(context, "isa.cont", fn);
+        builder.CreateCondBr(isNull, contBB, chkBB);
+        builder.SetInsertPoint(chkBB);
+        llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), objPtr, "isa.vtbl");  // field 0
+        llvm::Value* match = builder.getFalse();
+        for (llvm::Constant* vt : subtypeVtablesInc(targetClass))
+            match = builder.CreateOr(match, builder.CreateICmpEQ(vtbl, vt));
+        llvm::BasicBlock* chkEnd = builder.GetInsertBlock();
+        builder.CreateBr(contBB);
+        builder.SetInsertPoint(contBB);
+        llvm::PHINode* phi = builder.CreatePHI(builder.getInt1Ty(), 2, "isa");
+        phi->addIncoming(builder.getFalse(), entryBB);
+        phi->addIncoming(match, chkEnd);
+        return phi;
     }
 
     // try { body } catch (T e) { ... } ... [finally { ... }] (spec 21.1). One catchpad catches the

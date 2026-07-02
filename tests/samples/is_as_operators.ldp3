@@ -1,0 +1,27 @@
+import System.IO.Console;
+program IsAsOperators;
+
+// The type operators `is` / `as` / `as?` (spec 6.4): `is` tests, `as` is a checked cast, `as?` yields
+// the value or null. Prints:
+//   adog=1 cdog=0 okNull=0 noNull=1
+public bundle main {
+    public namespace app {
+        public class Animal { public constructor Animal() {} public method speak() returns void { return; } }
+        public class Dog extends Animal { public constructor Dog() {} }
+        public class Cat extends Animal { public constructor Cat() {} }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Animal* a = new Dog() on heap;
+                Animal* c = new Cat() on heap;
+                boolean adog = a is Dog;
+                boolean cdog = c is Dog;
+                nullable Dog ok = a as? Dog;    // non-null
+                nullable Dog no = c as? Dog;    // null (c is a Cat)
+                Dog* viaAs = a as Dog;          // checked cast, valid
+                System.IO.Console.printf("adog=%d cdog=%d okNull=%d noNull=%d\n",
+                    adog, cdog, ok == null, no == null);
+                return;
+            }
+        }
+    }
+}

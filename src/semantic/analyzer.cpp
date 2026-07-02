@@ -2578,7 +2578,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         } else {
             error("cast<" + dst + "> is not supported here", cst->loc);
         }
-        return dst;
+        if (cst->op == 1) return "boolean";        // `x is T` -> boolean test
+        if (cst->op == 2) return dst + "?";        // `x as? T` -> the value or null
+        return dst;                                // cast<T> / `x as T` (checked)
     }
 
     if (const auto* tern = dynamic_cast<const ast::TernaryExpr*>(&expr)) {

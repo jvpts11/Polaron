@@ -344,6 +344,12 @@ public bundle std {
             public constructor BundleAbiMismatchException() {}
             public override method message() returns String { return "bundle ABI mismatch"; }
         }
+        // Thrown by an invalid class downcast: `cast<Dog>(animal)` / `animal as Dog` when the object is
+        // not a Dog (spec 6.3). Catch it, or use `animal as? Dog` (yields null) / `animal is Dog`.
+        public class ClassCastException extends Exception {
+            public constructor ClassCastException() {}
+            public override method message() returns String { return "invalid cast"; }
+        }
     }
 )LDP3"
 // (split 0: keep each literal under MSVC's ~16KB cap.)

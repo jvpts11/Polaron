@@ -212,9 +212,13 @@ struct RegionInitExpr : Expr {
 
 // cast<T>(expr) -- explicit conversion. Release 0.1 handles numeric casts
 // (int<->int of any width, int<->float); class casts arrive with exceptions.
+// Also carries the postfix type operators `x is T` / `x as T` / `x as? T` (spec 6.4) via `op`:
+// 0 = cast<T>/`as T` (checked conversion, throws on a bad class downcast); 1 = `is` (boolean test);
+// 2 = `as?` (nullable: the value if it is a T, else null).
 struct CastExpr : Expr {
     std::string targetType;  // simple type name, e.g. "int", "int64", "float"
     ExprPtr operand;
+    int op = 0;  // 0 = cast/as, 1 = is, 2 = as?
     void dump(std::string& out, int indent) const override;
 };
 

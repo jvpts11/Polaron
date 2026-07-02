@@ -2530,6 +2530,25 @@ ast::ExprPtr Parser::parseInterpolation(const std::string& raw, SourceLocation l
 
 ast::ExprPtr Parser::parseBinary(int minPrec) {
     ast::ExprPtr left = parseUnary();
+    // Postfix type operators (spec 6.4): `x is T`, `x as T`, `x as? T`. They bind tighter than the
+    // comparison operators (so `a as T == b` groups as `(a as T) == b`) and reuse CastExpr with `op`.
+    while (check(TokenKind::KwIs) || check(TokenKind::KwAs)) {
+        const Token kw = advance();
+        auto ce = std::make_unique<ast::CastExpr>();
+        ce->loc = kw.loc;
+        ce->operand = std::move(left);
+        if (kw.kind == TokenKind::KwIs) ce->op = 1;                       // `is`  -> boolean
+        else ce->op = match(TokenKind::Question) ? 2 : 0;                 // `as?` -> nullable, `as` -> checked
+        const Token& tt = current();
+        if (isTypeKeyword(tt.kind) || tt.kind == TokenKind::Identifier) {
+            ce->targetType = tt.lexeme;
+            advance();
+            if (match(TokenKind::Star)) ce->targetType += "*";
+        } else {
+            fail("expected a type after 'is'/'as'", tt.loc);
+        }
+        left = std::move(ce);
+    }
     for (;;) {
         const int prec = binaryPrec(current().kind);
         if (prec == 0 || prec < minPrec) break;

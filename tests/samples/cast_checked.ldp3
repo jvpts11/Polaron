@@ -1,0 +1,33 @@
+import System.IO.Console;
+import System.Runtime.ClassCastException;
+program CastChecked;
+
+// A class downcast is checked at runtime (spec 6.3, no-UB): an invalid cast<T>/`as T` throws
+// ClassCastException instead of silently corrupting memory; a valid downcast passes. Prints:
+//   caught
+//   valid ok
+public bundle main {
+    public namespace app {
+        public class Animal {
+            public constructor Animal() {}
+            public method speak() returns void { return; }
+        }
+        public class Dog extends Animal { public constructor Dog() {} }
+        public class Cat extends Animal { public constructor Cat() {} }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Animal* a = new Cat() on heap;
+                try {
+                    Dog* d = cast<Dog>(a);          // invalid: a is a Cat
+                    System.IO.Console.println("no exception");
+                } catch (ClassCastException e) {
+                    System.IO.Console.println("caught");
+                }
+                Animal* a2 = new Dog() on heap;
+                Dog* d2 = cast<Dog>(a2);            // valid downcast
+                System.IO.Console.println("valid ok");
+                return;
+            }
+        }
+    }
+}
