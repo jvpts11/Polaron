@@ -1663,9 +1663,11 @@ struct CodeGenerator::Impl {
             }
             if (flattenCallee(*call->callee) == "Process.run") return "ProcessResult";  // spec 34
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("File.", 0) == 0) {
-                if (fc == "File.readAll") return "String";  // spec 34.4
+                if (fc == "File.readAll" || fc == "File.list") return "String";  // spec 34.4
+                if (fc == "File.size") return "long";
                 if (fc == "File.writeAll" || fc == "File.appendAll" || fc == "File.exists" ||
-                    fc == "File.remove")
+                    fc == "File.remove" || fc == "File.mkdir" || fc == "File.rename" ||
+                    fc == "File.isDir")
                     return "boolean";
             }
             if (const std::string mc = flattenCallee(*call->callee); mc.rfind("Math.", 0) == 0) {
@@ -4452,6 +4454,38 @@ struct CodeGenerator::Impl {
                 llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt32Ty(), {p}, false);
                 const char* rfn = fn == "exists" ? "__ldp3_file_exists" : "__ldp3_file_delete";
                 return builder.CreateCall(module.getOrInsertFunction(rfn, ft), {stringData(path)});
+            }
+            // Directory / filesystem metadata (spec 34.4).
+            if (fn == "list") {  // newline-separated directory entries
+                llvm::Value* path = emitExpr(*call.args[0]);
+                if (path == nullptr) return nullptr;
+                llvm::Value* lenSlot = createEntryAlloca("dl.len", builder.getInt64Ty());
+                llvm::FunctionType* ft = llvm::FunctionType::get(p, {p, p}, false);
+                llvm::Value* buf = builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_dir_list", ft), {stringData(path), lenSlot});
+                return emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot, "dl.n"), buf);
+            }
+            if (fn == "size") {
+                llvm::Value* path = emitExpr(*call.args[0]);
+                if (path == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt64Ty(), {p}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_file_size", ft),
+                                          {stringData(path)});
+            }
+            if (fn == "mkdir" || fn == "isDir") {
+                llvm::Value* path = emitExpr(*call.args[0]);
+                if (path == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt32Ty(), {p}, false);
+                const char* rfn = fn == "mkdir" ? "__ldp3_mkdir" : "__ldp3_is_dir";
+                return builder.CreateCall(module.getOrInsertFunction(rfn, ft), {stringData(path)});
+            }
+            if (fn == "rename") {
+                llvm::Value* from = emitExpr(*call.args[0]);
+                llvm::Value* to = emitExpr(*call.args[1]);
+                if (from == nullptr || to == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt32Ty(), {p, p}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_rename", ft),
+                                          {stringData(from), stringData(to)});
             }
         }
         // Memory.readString(address, len): build a String by copying `len` bytes from a raw buffer

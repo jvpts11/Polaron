@@ -509,6 +509,43 @@ int __ldp3_file_exists(const char* path) {
 }
 int __ldp3_file_delete(const char* path) { return remove(path) == 0 ? 1 : 0; }
 
+// ---- Directory / filesystem metadata (spec 34.4). ----
+// The directory's entries as a NUL-terminated, newline-separated string ("" if not a directory or
+// empty). *outLen is the byte length. "." and ".." are skipped.
+char* __ldp3_dir_list(const char* path, long long* outLen) {
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof(pattern), "%s\\*", path);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    size_t cap = 256, len = 0;
+    char* buf = (char*)malloc(cap);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+            size_t nl = strlen(fd.cFileName);
+            if (len + nl + 2 > cap) { while (len + nl + 2 > cap) cap *= 2; buf = (char*)realloc(buf, cap); }
+            memcpy(buf + len, fd.cFileName, nl);
+            len += nl;
+            buf[len++] = '\n';
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    buf[len] = 0;
+    *outLen = (long long)len;
+    return buf;
+}
+int __ldp3_mkdir(const char* path) { return CreateDirectoryA(path, NULL) ? 1 : 0; }
+int __ldp3_rename(const char* from, const char* to) { return MoveFileA(from, to) ? 1 : 0; }
+int __ldp3_is_dir(const char* path) {
+    DWORD a = GetFileAttributesA(path);
+    return (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) ? 1 : 0;
+}
+long long __ldp3_file_size(const char* path) {
+    WIN32_FILE_ATTRIBUTE_DATA d;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &d)) return -1;
+    return ((long long)d.nFileSizeHigh << 32) | (long long)d.nFileSizeLow;
+}
+
 // Decimal text of `n` into `buf` (signed, no NUL needed), returns the digit count. For int.toString().
 long long __ldp3_itoa(long long n, char* buf) {
     char tmp[24];

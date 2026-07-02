@@ -187,6 +187,15 @@ public bundle std {
                 File.appendAll(path, line.concat("\n"));
                 return;
             }
+            // The entries of a directory (spec 34.4), one per element. Empty if the path is not a
+            // directory. Wraps the newline-separated File.list.
+            public static method listDir(String path) returns ArrayList<String> {
+                mutable ArrayList<String> entries = Strings.split(File.list(path), "\n");
+                if (entries.size() > 0 && entries.get(entries.size() - 1).length() == 0) {
+                    entries.removeAt(entries.size() - 1);
+                }
+                return entries;
+            }
         }
         // Path-string manipulation (spec 34.4): join segments, and pull apart a path into its directory,
         // final component, and extension. Pure string work over "/" -- it does not touch the filesystem.

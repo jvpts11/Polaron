@@ -56,6 +56,15 @@ add_test(NAME sema_rejects_nonconst_const
 set_tests_properties(sema_rejects_nonconst_const PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
 
+# Directory / filesystem metadata (spec 34.4): mkdir/isDir/size/listDir.
+add_test(NAME codegen_fs_directory_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/fs_directory.ldp3"
+    "-DCONTAINS=n=1 first=a.txt isd=1 sz=2"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Process.run (spec 34): runs a subprocess and returns its captured stdout + exit code.
 add_test(NAME codegen_process_run_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"

@@ -3117,6 +3117,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     error("File." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
                 return fn == "readAll" ? "String" : "boolean";
             }
+            // Directory / filesystem metadata (spec 34.4): list, mkdir, rename, size, isDir.
+            if (fn == "list" || fn == "mkdir" || fn == "rename" || fn == "size" || fn == "isDir") {
+                checkTypeAccessible("File", call->loc);
+                for (const auto& a : call->args) typeOf(*a);
+                const std::size_t want = (fn == "rename") ? 2u : 1u;
+                if (call->args.size() != want)
+                    error("File." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
+                if (fn == "list") return "String";        // newline-separated entries
+                if (fn == "size") return "long";          // byte count (-1 if missing)
+                return "boolean";                          // mkdir / rename / isDir
+            }
         }
         // Time (spec 34): clock + sleep builtins. Require `import System.Time.Time;`.
         if (name.rfind("Time.", 0) == 0) {

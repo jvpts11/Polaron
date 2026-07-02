@@ -1,0 +1,25 @@
+import System.IO.Console;
+import System.IO.File;
+import System.IO.Files;
+import System.Collections.ArrayList;
+program FsDirectory;
+
+// Directory / filesystem metadata (spec 34.4): mkdir, isDir, size, and listDir (which wraps the
+// newline-separated File.list). Prints:
+//   n=1 first=a.txt isd=1 sz=2
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                File.mkdir("td_test");
+                File.writeAll("td_test/a.txt", "hi");
+                ArrayList<String> entries = Files.listDir("td_test");
+                int sz = cast<int>(File.size("td_test/a.txt"));
+                System.IO.Console.printf("n=%d first=%s isd=%d sz=%d\n",
+                    entries.size(), entries.get(0), File.isDir("td_test"), sz);
+                File.remove("td_test/a.txt");
+                return;
+            }
+        }
+    }
+}
