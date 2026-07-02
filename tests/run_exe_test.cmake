@@ -51,7 +51,11 @@ if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})")
 endif()
 
-if(DEFINED INPUT_FILE)
+if(DEFINED RUNARGS)
+    # RUNARGS is optional: command-line arguments to pass to the program (for testing main's args).
+    separate_arguments(_runargs UNIX_COMMAND "${RUNARGS}")
+    execute_process(COMMAND "${exe}" ${_runargs} OUTPUT_VARIABLE out RESULT_VARIABLE rc)
+elseif(DEFINED INPUT_FILE)
     execute_process(COMMAND "${exe}" INPUT_FILE "${INPUT_FILE}"
         OUTPUT_VARIABLE out RESULT_VARIABLE rc)
 else()

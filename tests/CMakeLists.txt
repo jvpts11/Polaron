@@ -56,6 +56,16 @@ add_test(NAME sema_rejects_nonconst_const
 set_tests_properties(sema_rejects_nonconst_const PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
 
+# main receives the real command-line arguments (spec 2.9): string[] args from argv.
+add_test(NAME codegen_main_args_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/main_args.ldp3"
+    "-DRUNARGS=foo bar baz"
+    "-DCONTAINS=n=3 [foo][bar][baz]"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Environment variables (spec 34): Env.get / Env.set.
 add_test(NAME codegen_env_vars_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"

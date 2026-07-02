@@ -1,0 +1,21 @@
+import System.IO.Console;
+program MainArgs;
+
+// main receives the real command-line arguments (spec 2.9): `string[] args` is built from argv,
+// skipping the program name. Run with `foo bar baz`, prints:
+//   n=3
+//   [foo][bar][baz]
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("n=%d\n", args.length());
+                for (mutable int i = 0; i < args.length(); i++) {
+                    System.IO.Console.printf("[%s]", args[i]);
+                }
+                System.IO.Console.println("");
+                return;
+            }
+        }
+    }
+}

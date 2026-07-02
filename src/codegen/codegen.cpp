@@ -2170,6 +2170,42 @@ struct CodeGenerator::Impl {
         return block;
     }
 
+    // Builds the String[] handed to main(string[] args) from the process argv, skipping argv[0] (the
+    // program name). Matches the array layout [i64 length][String* elements]; each String points at the
+    // argv string (NUL-terminated, valid for the whole run).
+    llvm::Value* emitArgvArray(llvm::Value* argc, llvm::Value* argv) {
+        llvm::Type* i64 = builder.getInt64Ty();
+        llvm::Type* p = builder.getPtrTy();
+        llvm::Value* n = builder.CreateSub(builder.CreateSExt(argc, i64), builder.getInt64(1));
+        n = builder.CreateSelect(builder.CreateICmpSLT(n, builder.getInt64(0)), builder.getInt64(0), n);
+        llvm::Value* total =
+            builder.CreateAdd(builder.getInt64(8), builder.CreateMul(n, builder.getInt64(8)));
+        llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "argv.arr");
+        builder.CreateStore(n, block);
+        llvm::Value* data = arrayData(block);
+        llvm::FunctionCallee strlenFn =
+            module.getOrInsertFunction("strlen", llvm::FunctionType::get(i64, {p}, false));
+        llvm::Value* iSlot = createEntryAlloca("argv.i", i64);
+        builder.CreateStore(builder.getInt64(0), iSlot);
+        llvm::Function* fn = currentFn;
+        auto* condBB = llvm::BasicBlock::Create(context, "argv.cond", fn);
+        auto* bodyBB = llvm::BasicBlock::Create(context, "argv.body", fn);
+        auto* endBB = llvm::BasicBlock::Create(context, "argv.end", fn);
+        builder.CreateBr(condBB);
+        builder.SetInsertPoint(condBB);
+        llvm::Value* i = builder.CreateLoad(i64, iSlot, "argv.iv");
+        builder.CreateCondBr(builder.CreateICmpSLT(i, n), bodyBB, endBB);
+        builder.SetInsertPoint(bodyBB);
+        llvm::Value* src = builder.CreateLoad(
+            p, builder.CreateGEP(p, argv, builder.CreateAdd(i, builder.getInt64(1))), "argv.s");
+        llvm::Value* str = emitStringFromParts(builder.CreateCall(strlenFn, {src}, "argv.len"), src);
+        builder.CreateStore(str, builder.CreateGEP(p, data, i));
+        builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
+        builder.CreateBr(condBB);
+        builder.SetInsertPoint(endBB);
+        return block;
+    }
+
     // `[a, b, c]` (spec 25): allocate an array block of n elements and store each. Same layout as
     // emitNewArray ([i64 length][elements]); stores bypass the bounds check (indices are known).
     llvm::Value* emitArrayLiteral(const ast::ArrayLiteralExpr& al) {
@@ -8027,8 +8063,11 @@ struct CodeGenerator::Impl {
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             if (m == entry.method) {
-                                llvm::FunctionType* ty =
-                                    llvm::FunctionType::get(builder.getInt32Ty(), false);
+                                // int main(int argc, char** argv): the real C entry, so main's
+                                // `string[] args` can be filled from the command line.
+                                llvm::FunctionType* ty = llvm::FunctionType::get(
+                                    builder.getInt32Ty(),
+                                    {builder.getInt32Ty(), builder.getPtrTy()}, false);
                                 functions["@entry"] = llvm::Function::Create(
                                     ty, llvm::Function::ExternalLinkage, "main", module);
                                 continue;
@@ -8242,7 +8281,7 @@ struct CodeGenerator::Impl {
                   bool hasEnv = false, const std::vector<ast::Capture>* caps = nullptr,
                   const std::vector<std::string>* capTypes = nullptr,
                   const std::string& dtorChainBase = "", const ast::ClassDecl* dtorOf = nullptr,
-                  bool asyncResume = false) {
+                  bool asyncResume = false, bool argvEntry = false) {
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
@@ -8280,12 +8319,20 @@ struct CodeGenerator::Impl {
             currentThis = fn->getArg(0);
             argIdx = 1;
         }
-        for (const ast::Param& p : params) {
-            const std::string pt = typeRefName(p.type);
-            llvm::Value* slot = createEntryAlloca(p.name, llvmType(pt));
-            builder.CreateStore(fn->getArg(argIdx), slot);
-            locals[p.name] = LocalSlot{slot, pt};
-            ++argIdx;
+        if (argvEntry && !params.empty()) {
+            // int main(int argc, char** argv): build main's `string[] args` from the C argv.
+            llvm::Value* arr = emitArgvArray(fn->getArg(0), fn->getArg(1));
+            llvm::Value* slot = createEntryAlloca(params[0].name, builder.getPtrTy());
+            builder.CreateStore(arr, slot);
+            locals[params[0].name] = LocalSlot{slot, typeRefName(params[0].type)};
+        } else {
+            for (const ast::Param& p : params) {
+                const std::string pt = typeRefName(p.type);
+                llvm::Value* slot = createEntryAlloca(p.name, llvmType(pt));
+                builder.CreateStore(fn->getArg(argIdx), slot);
+                locals[p.name] = LocalSlot{slot, pt};
+                ++argIdx;
+            }
         }
         // Captured variables: env (arg 0) is an array of pointers, one per capture. Each slot
         // holds a pointer to the captured variable's storage (a private copy for byvalue, or the
@@ -8717,8 +8764,9 @@ struct CodeGenerator::Impl {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             enclosingMethod_ = m->name;
                             if (m == entry.method) {
-                                emitBody(functions["@entry"], m->body, {}, "",
-                                         builder.getInt32Ty());
+                                emitBody(functions["@entry"], m->body, m->params, "",
+                                         builder.getInt32Ty(), nullptr, nullptr, nullptr, nullptr, false,
+                                         nullptr, nullptr, "", nullptr, false, /*argvEntry=*/true);
                             } else if (m->isAsync && !m->isAbstract) {
                                 emitAsyncMethod(cls, *m);
                             } else if (!m->isAbstract && !m->isExtern) {  // extern: no LDP3 body
