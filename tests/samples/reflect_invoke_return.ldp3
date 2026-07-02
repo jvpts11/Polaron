@@ -1,0 +1,27 @@
+import System.IO.Console;
+import System.Runtime.Object;
+import reflect;
+program ReflectInvokeReturn;
+
+// Method.invoke now returns the method's result, boxed as Object (spec 31); the caller unboxes with a
+// cast. Prints:
+//   v=49
+public bundle main {
+    public namespace app {
+        public class Calc {
+            public constructor Calc() {}
+            public method square(int x) returns int { return x * x; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Calc c = new Calc() on heap;
+                Type t = reflect.typeOf<Calc>();
+                Method m = t.method("square");
+                Object r = m.invoke(c, 7);          // -> boxed 49
+                int v = cast<int>(r);
+                System.IO.Console.printf("v=%d\n", v);
+                return;
+            }
+        }
+    }
+}

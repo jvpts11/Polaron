@@ -1718,7 +1718,7 @@ struct CodeGenerator::Impl {
                 if (typeName(*mem->object) == "Annotation" && mem->member == "name") return "String";
                 if (typeName(*mem->object) == "Method") {
                     if (mem->member == "name") return "String";
-                    if (mem->member == "invoke") return "void";
+                    if (mem->member == "invoke") return "Object";  // boxed result (spec 31)
                     if (mem->member == "firstByte") return "int";
                     if (mem->member == "annotations") return "ArrayList$Annotation";
                 }
@@ -2418,9 +2418,9 @@ struct CodeGenerator::Impl {
                 {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(),
                  builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
                  builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(),
-                 builder.getPtrTy(), builder.getPtrTy()},
+                 builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()},
                 "ReflectType");  // ..., ptr fieldGetters, ptr fieldSetters, ptr methodAnnCounts(i64[]),
-                                 // ptr methodAnnNames(ptr[] -> String[])
+                                 // ptr methodAnnNames(ptr[] -> String[]), ptr methodRetTags(i64[])
         return typeStructTy;
     }
     // The reflection Annotation token layout: { ptr name }. Lazily created.
@@ -2430,15 +2430,57 @@ struct CodeGenerator::Impl {
                 llvm::StructType::create(context, {builder.getPtrTy()}, "ReflectAnnotation");
         return annotationStructTy;
     }
-    // The reflection Method token layout: { ptr name, ptr fn, i64 annCount, ptr annNames(String[]) }.
-    // The annotation slots let a Method report its own applied annotations (spec 31). Lazily created.
+    // The reflection Method token layout: { ptr name, ptr fn, i64 annCount, ptr annNames(String[]),
+    // i64 retTag }. retTag encodes the return type for invoke (see returnTag): 0=void, 1=i32, 2=i64,
+    // 3=f64, 4=f32, 5=pointer. The annotation slots let a Method report its applied annotations (spec
+    // 31). Lazily created.
     llvm::StructType* methodTokenType() {
         if (methodStructTy == nullptr)
             methodStructTy = llvm::StructType::create(
                 context,
-                {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy()},
+                {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
+                 builder.getInt64Ty()},
                 "ReflectMethod");
         return methodStructTy;
+    }
+    // Encodes a method's return type as a tag for reflective invoke (Method token field 4). Distinct
+    // widths get distinct tags so the call uses the correct ABI (no-UB): 0=void, 1=i32, 2=i64, 3=f64,
+    // 4=f32, 5=pointer, 6=i8, 7=i16.
+    long long returnTag(const std::string& rt) {
+        const std::string b = baseType(rt);
+        if (b.empty() || b == "void") return 0;
+        if (b == "long" || b == "int64" || b == "uint64" || b == "ulong") return 2;
+        if (b == "double" || b == "float64") return 3;
+        if (b == "float" || b == "float32" || b == "smallfloat") return 4;
+        if (b == "byte" || b == "int8" || b == "ubyte" || b == "uint8") return 6;
+        if (b == "short" || b == "int16" || b == "ushort" || b == "uint16") return 7;
+        if (isBoxablePrimitive(b)) return 1;  // int/boolean/char/int32/uint32 (i32)
+        return 5;  // a reference (class/String/array/enum/Object)
+    }
+    // The boxed-primitive type name for a return tag (for emitBox); "" means a pointer/void (no box).
+    std::string tagBoxType(long long tag) {
+        switch (tag) {
+            case 1: return "int";
+            case 2: return "long";
+            case 3: return "double";
+            case 4: return "float";
+            case 6: return "byte";
+            case 7: return "short";
+            default: return "";  // 0 void, 5 pointer
+        }
+    }
+    // The LLVM return type for a return tag.
+    llvm::Type* tagRetType(long long tag) {
+        switch (tag) {
+            case 1: return builder.getInt32Ty();
+            case 2: return builder.getInt64Ty();
+            case 3: return builder.getDoubleTy();
+            case 4: return builder.getFloatTy();
+            case 6: return builder.getInt8Ty();
+            case 7: return builder.getInt16Ty();
+            case 5: return builder.getPtrTy();
+            default: return builder.getVoidTy();  // 0
+        }
     }
     // The reflection Field token layout: { ptr name, ptr getFn, ptr setFn }. The accessors box/unbox
     // the field value, so get/set work through Object (spec 31). Lazily created.
@@ -2504,11 +2546,14 @@ struct CodeGenerator::Impl {
         auto it = typeGlobals.find(className);
         if (it != typeGlobals.end()) return it->second;
         std::vector<std::string> methodNames, fieldNames, annotationNames;
+        std::vector<llvm::Constant*> methodRetTags;  // parallel to methodNames (for invoke, spec 31)
         if (auto cit = classes.find(className); cit != classes.end() && cit->second.decl != nullptr) {
             for (const ast::MemberPtr& m : cit->second.decl->members) {
-                if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()))
+                if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get())) {
                     methodNames.push_back(md->name);
-                else if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()))
+                    methodRetTags.push_back(
+                        builder.getInt64(returnTag(typeRefName(md->returnType))));
+                } else if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()))
                     fieldNames.push_back(fd->name);
             }
             for (const ast::AnnotationUse& a : cit->second.decl->annotations)
@@ -2569,6 +2614,11 @@ struct CodeGenerator::Impl {
         auto* mAnnPtrsG = new llvm::GlobalVariable(
             module, mAnnPtrArrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
             llvm::ConstantArray::get(mAnnPtrArrTy, mAnnPtrs), "methodannptrs." + className);
+        // Parallel array of method return-type tags, for reflective invoke (spec 31).
+        llvm::ArrayType* retTagArrTy = llvm::ArrayType::get(builder.getInt64Ty(), methodRetTags.size());
+        auto* retTagsG = new llvm::GlobalVariable(
+            module, retTagArrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantArray::get(retTagArrTy, methodRetTags), "methodrettags." + className);
         // size of an instance + the (no-arg) constructor, for Type.instantiate().
         llvm::Constant* size = llvm::ConstantInt::get(builder.getInt64Ty(), 8);
         if (auto cit = classes.find(className); cit != classes.end())
@@ -2579,7 +2629,7 @@ struct CodeGenerator::Impl {
                                      : llvm::ConstantPointerNull::get(builder.getPtrTy());
         llvm::Constant* obj = llvm::ConstantStruct::get(
             typeTokenType(), {nameStr, mcount, mnames, fnsG, fcount, fnames, size, ctorFn, acount,
-                              anames, fGetG, fSetG, mAnnCountsG, mAnnPtrsG});
+                              anames, fGetG, fSetG, mAnnCountsG, mAnnPtrsG, retTagsG});
         auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
                                            llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
         typeGlobals[className] = g;
@@ -4740,12 +4790,16 @@ struct CodeGenerator::Impl {
                         builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 2));
                     llvm::Value* mfnsArr = builder.CreateLoad(
                         builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 3));
+                    llvm::Value* mRetTagsArr = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 14));
                     llvm::Value* want = stringData(emitExpr(*call.args[0]));
                     llvm::Value* result =
                         builder.CreateCall(mallocFn(), {sizeOf(methodTokenType())}, "method");
                     llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
                     builder.CreateStore(nullp, builder.CreateStructGEP(methodTokenType(), result, 0));
                     builder.CreateStore(nullp, builder.CreateStructGEP(methodTokenType(), result, 1));
+                    builder.CreateStore(builder.getInt64(0),
+                                        builder.CreateStructGEP(methodTokenType(), result, 4));
                     llvm::Function* fn = currentFn;
                     llvm::Value* iSlot = createEntryAlloca("mi", builder.getInt64Ty());
                     builder.CreateStore(builder.getInt64(0), iSlot);
@@ -4771,6 +4825,10 @@ struct CodeGenerator::Impl {
                         builder.CreateLoad(builder.getPtrTy(),
                                            builder.CreateGEP(builder.getPtrTy(), mfnsArr, i)),
                         builder.CreateStructGEP(methodTokenType(), result, 1));
+                    builder.CreateStore(
+                        builder.CreateLoad(builder.getInt64Ty(),
+                                           builder.CreateGEP(builder.getInt64Ty(), mRetTagsArr, i)),
+                        builder.CreateStructGEP(methodTokenType(), result, 4));
                     builder.CreateBr(end);
                     builder.SetInsertPoint(nxt);
                     builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
@@ -5002,10 +5060,11 @@ struct CodeGenerator::Impl {
                 if (mem->member == "invoke") {
                     llvm::Value* fnPtr = builder.CreateLoad(
                         builder.getPtrTy(), builder.CreateStructGEP(methodTokenType(), m, 1), "m.fn");
+                    llvm::Value* tag = builder.CreateLoad(
+                        builder.getInt64Ty(), builder.CreateStructGEP(methodTokenType(), m, 4), "m.tag");
                     llvm::Value* recv = emitExpr(*call.args[0]);  // first arg is the receiver
                     if (recv == nullptr) return nullptr;
-                    // Forward the remaining arguments to the method (spec 31). The result type is
-                    // not carried by the Method token, so invoke is typed void for now.
+                    // Forward the remaining arguments to the method (spec 31).
                     std::vector<llvm::Type*> pts = {builder.getPtrTy()};
                     std::vector<llvm::Value*> cargs = {recv};
                     for (std::size_t i = 1; i < call.args.size(); ++i) {
@@ -5014,10 +5073,41 @@ struct CodeGenerator::Impl {
                         pts.push_back(av->getType());
                         cargs.push_back(av);
                     }
-                    llvm::FunctionType* ft =
-                        llvm::FunctionType::get(builder.getVoidTy(), pts, false);
-                    builder.CreateCall(ft, fnPtr, cargs);
-                    return nullptr;
+                    // The result type is carried as a tag (Method token field 4). Switch on it so the
+                    // call uses the right ABI, then box the result to Object (a pointer return, or void,
+                    // passes through as-is / null). See returnTag/tagRetType/tagBoxType.
+                    llvm::Value* nullObj = llvm::ConstantPointerNull::get(builder.getPtrTy());
+                    llvm::Function* fn = currentFn;
+                    auto* defBB = llvm::BasicBlock::Create(context, "invoke.def", fn);
+                    auto* contBB = llvm::BasicBlock::Create(context, "invoke.cont", fn);
+                    llvm::SwitchInst* sw = builder.CreateSwitch(tag, defBB, 8);
+                    std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> incoming;
+                    for (long long tg = 0; tg <= 7; ++tg) {
+                        auto* caseBB =
+                            llvm::BasicBlock::Create(context, "invoke.t" + std::to_string(tg), fn);
+                        sw->addCase(builder.getInt64(tg), caseBB);
+                        builder.SetInsertPoint(caseBB);
+                        llvm::FunctionType* ft =
+                            llvm::FunctionType::get(tagRetType(tg), pts, false);
+                        llvm::Value* res;
+                        if (tg == 0) {  // void
+                            builder.CreateCall(ft, fnPtr, cargs);
+                            res = nullObj;
+                        } else if (tg == 5) {  // a reference: already an Object pointer
+                            res = builder.CreateCall(ft, fnPtr, cargs);
+                        } else {  // a primitive: box it
+                            res = emitBox(builder.CreateCall(ft, fnPtr, cargs), tagBoxType(tg));
+                        }
+                        incoming.emplace_back(builder.GetInsertBlock(), res);
+                        builder.CreateBr(contBB);
+                    }
+                    builder.SetInsertPoint(defBB);
+                    builder.CreateBr(contBB);
+                    incoming.emplace_back(defBB, nullObj);
+                    builder.SetInsertPoint(contBB);
+                    llvm::PHINode* phi = builder.CreatePHI(builder.getPtrTy(), incoming.size(), "invoke.r");
+                    for (auto& [bb, v] : incoming) phi->addIncoming(v, bb);
+                    return phi;
                 }
             }
             // Enum built-ins (spec 12.5): EnumName.count() / EnumName.values().

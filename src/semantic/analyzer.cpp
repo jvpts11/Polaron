@@ -3304,7 +3304,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 for (const auto& arg : call->args) typeOf(*arg);
                 if (mem->member == "name" && call->args.empty()) return "String";
                 if (mem->member == "firstByte" && call->args.empty()) return "int";
-                if (mem->member == "invoke") return "void";  // invoke(receiver [, args])
+                if (mem->member == "invoke") return "Object";  // invoke(receiver [, args]) -> boxed result
                 if (mem->member == "annotations" && call->args.empty())
                     return "ArrayList$Annotation";  // the method's own applied annotations (spec 31)
                 if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";  // identity
