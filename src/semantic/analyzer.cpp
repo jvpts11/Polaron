@@ -2081,13 +2081,19 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* um = dynamic_cast<const ast::UnimportStmt*>(&stmt)) {
         if (freestanding_)
             error("unimport/reimport is not available in freestanding mode (spec 36.3)", um->loc);
-        if (lookupClass(baseType(um->target)) == nullptr)
-            error("cannot " + std::string(um->isReimport ? "reimport" : "unimport") + " '" +
-                      um->target + "': not a known class",
-                  um->loc);
-        else if (!um->isReimport && finalImports_.count(baseType(um->target)) > 0)
-            error("cannot unimport '" + um->target + "': it was brought in by 'final import' (spec 37.6)",
-                  um->loc);
+        // Namespace / bundle granularity (spec 30.1) is accepted as-is; the codegen expands it to the
+        // contained types. An individual target must be a known class, interface or enum.
+        if (um->granularity == 0) {
+            const std::string bt = baseType(um->target);
+            if (lookupClass(bt) == nullptr && enums_.count(bt) == 0)
+                error("cannot " + std::string(um->isReimport ? "reimport" : "unimport") + " '" +
+                          um->target + "': not a known type",
+                      um->loc);
+            else if (!um->isReimport && finalImports_.count(bt) > 0)
+                error("cannot unimport '" + um->target +
+                          "': it was brought in by 'final import' (spec 37.6)",
+                      um->loc);
+        }
         return;
     }
     if (const auto* rv = dynamic_cast<const ast::ReimportValidateStmt*>(&stmt)) {

@@ -1673,11 +1673,23 @@ ast::StmtPtr Parser::parseStatement() {
         u->loc = current().loc;
         u->isReimport = match(TokenKind::KwReimport);
         if (!u->isReimport) advance();  // 'unimport'
-        u->target = expect(TokenKind::Identifier, "a type name to (un)import").lexeme;
+        // Granularity (spec 30.1): `namespace N` / `bundle B` unimport a whole namespace or bundle;
+        // `interface`/`enum` just name an individual type (unimported like a class).
+        if (match(TokenKind::KwNamespace)) u->granularity = 1;
+        else if (match(TokenKind::KwBundle)) u->granularity = 2;
+        else { match(TokenKind::KwInterface); match(TokenKind::KwEnum); }  // optional type-kind keyword
+        u->target = expect(TokenKind::Identifier, "a type/namespace/bundle name to (un)import").lexeme;
         // Accept (and ignore) trailing modifiers (spec 30.6): a bare `force`, or `timeout(<duration>)`
         // whose argument is parsed and discarded (unimport/reimport is in-process, so the timeout is a
         // no-op). Dotted names extend the target.
         while (match(TokenKind::Dot)) u->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
+        // `unimport bundle B from program P` (spec 30.1): the program name is accepted (the bundle is
+        // resolved locally). `from` is a soft keyword.
+        if (u->granularity == 2 && check(TokenKind::Identifier) && current().lexeme == "from") {
+            advance();  // 'from'
+            expect(TokenKind::KwProgram, "'program' after 'from'");
+            expect(TokenKind::Identifier, "the program name");
+        }
         while (check(TokenKind::Identifier)) {
             advance();  // modifier name, e.g. `force` or `timeout`
             if (match(TokenKind::LParen)) {  // e.g. timeout(milliseconds(5000)) -- skip balanced parens

@@ -332,8 +332,9 @@ struct ReleaseStmt : Stmt {
 // `unimport X;` / `reimport X;` (spec 30): logically remove a class at runtime (and
 // physically overwrite its code), or re-enable it.
 struct UnimportStmt : Stmt {
-    std::string target;          // the class name
+    std::string target;          // the type / namespace / bundle name
     bool isReimport = false;     // `reimport` re-enables; `unimport` removes
+    int granularity = 0;         // spec 30.1: 0 = individual type, 1 = namespace, 2 = bundle
     void dump(std::string& out, int /*indent*/) const override {
         out += (isReimport ? "reimport " : "unimport ") + target;
     }

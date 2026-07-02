@@ -1,0 +1,33 @@
+import System.IO.Console;
+import System.Runtime.UnimportedTypeException;
+program UnimportGranularity;
+
+// unimport granularities (spec 30.1): `unimport enum X` unimports an individual enum; `unimport
+// namespace N` unimports every type in a namespace. A use after unimport throws. Prints:
+//   enum caught
+//   ns caught
+public bundle main {
+    public namespace app {
+        public enum Color { RED, GREEN, BLUE }
+        public class Dog { public constructor Dog() {} }
+        public class Main {
+            public static method main(string[] args) returns void {
+                unimport enum Color;
+                try {
+                    Color c = Color.GREEN;
+                    System.IO.Console.println("no");
+                } catch (UnimportedTypeException e) {
+                    System.IO.Console.println("enum caught");
+                }
+                unimport namespace app;          // unimports Dog (and Main, already running)
+                try {
+                    Dog d = new Dog() on heap;
+                    System.IO.Console.println("no2");
+                } catch (UnimportedTypeException e) {
+                    System.IO.Console.println("ns caught");
+                }
+                return;
+            }
+        }
+    }
+}

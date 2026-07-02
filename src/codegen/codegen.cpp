@@ -2988,6 +2988,9 @@ struct CodeGenerator::Impl {
                     // Int-style enum constant -> its ordinal (i32).
                     auto eit = enums.find(objId->name);
                     if (eit != enums.end()) {
+                        // If the enum can be unimported (spec 30), guard the access: a use after
+                        // `unimport enum X` throws UnimportedTypeException.
+                        emitAliveGuard(objId->name);
                         auto pos = std::find(eit->second.begin(), eit->second.end(), mem->member);
                         const int ord = pos == eit->second.end()
                                             ? 0
@@ -5519,6 +5522,22 @@ struct CodeGenerator::Impl {
         emitPhysicalUnload(cn);
     }
 
+    // The individual types named by an unimport (spec 30.1): the target itself for a plain type, or
+    // every class/interface/enum in a namespace (granularity 1) or bundle (granularity 2).
+    std::vector<std::string> unimportGroupTargets(const ast::UnimportStmt& u) {
+        std::vector<std::string> out;
+        if (u.granularity == 0) { out.push_back(baseType(u.target)); return out; }
+        for (const ast::Bundle& b : program.bundles) {
+            if (u.granularity == 2 && b.name != u.target) continue;
+            for (const ast::Namespace& ns : b.namespaces) {
+                if (u.granularity == 1 && ns.name != u.target) continue;
+                for (const ast::ClassDecl& c : ns.classes) out.push_back(c.name);
+                for (const ast::EnumDecl& e : ns.enums) out.push_back(e.name);
+            }
+        }
+        return out;
+    }
+
     // `cascade unimport X` (spec 37.1): X plus every subclass and every monomorphization (X$args).
     std::vector<std::string> cascadeUnimportTargets(const std::string& x) {
         std::vector<std::string> out;
@@ -5649,7 +5668,7 @@ struct CodeGenerator::Impl {
             abstainedLabels.insert(scanClass_ + "." + scanMethod_ + "." + a->name);
             return;
         }
-        if (const auto* u = dynamic_cast<const ast::UnimportStmt*>(st)) { unimportableClasses.insert(baseType(u->target)); return; }
+        if (const auto* u = dynamic_cast<const ast::UnimportStmt*>(st)) { for (const std::string& t : unimportGroupTargets(*u)) unimportableClasses.insert(t); return; }
         if (const auto* rv = dynamic_cast<const ast::ReimportValidateStmt*>(st)) {  // spec 30.18
             unimportableClasses.insert(baseType(rv->target));
             if (rv->expecting) for (const auto& s : rv->expecting->statements) scanAbstained(s.get());
@@ -6515,14 +6534,17 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* um = dynamic_cast<const ast::UnimportStmt*>(&stmt)) {
-            const std::string cn = baseType(um->target);
-            if (!um->isReimport) {
-                emitUnimportClass(cn);
-            } else {
-                // reimport (spec 30.3): restore the ripped-out code from the .exe on disk,
-                // then re-enable the class.
-                emitPhysicalReload(cn);
-                builder.CreateStore(builder.getInt32(1), aliveFlag(cn));
+            // A namespace/bundle target (spec 30.1) expands to every type it contains; an individual
+            // target is just itself.
+            for (const std::string& cn : unimportGroupTargets(*um)) {
+                if (!um->isReimport) {
+                    emitUnimportClass(cn);
+                } else {
+                    // reimport (spec 30.3): restore the ripped-out code from the .exe on disk,
+                    // then re-enable the class.
+                    emitPhysicalReload(cn);
+                    builder.CreateStore(builder.getInt32(1), aliveFlag(cn));
+                }
             }
             return;
         }
