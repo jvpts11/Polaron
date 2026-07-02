@@ -1123,6 +1123,8 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode) {
     // Process (spec 34): subprocess builtin (Process.run) lowering to a runtime shell call; register
     // so `import System.OS.Process;` resolves. ProcessResult is a real prelude class.
     typeNamespace_["Process"] = "System.OS";
+    // Env (spec 34): environment-variable builtins (Env.get/set); register for `import System.OS.Env;`.
+    typeNamespace_["Env"] = "System.OS";
     // reflect (spec 31) is a builtin namespace, not a prelude class; register it so `import reflect;`
     // resolves. Reflection use is gated on this import at the reflect.typeOf call site.
     typeNamespace_["reflect"] = "reflect";
@@ -3106,6 +3108,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (call->args.size() != 1) error("Process.run takes a command string", call->loc);
                 else typeOf(*call->args[0]);
                 return "ProcessResult";
+            }
+        }
+        // Env (spec 34): environment variables. Env.get(name) -> String (empty if unset); Env.set(name,
+        // value) -> boolean. Require `import System.OS.Env;`.
+        if (name.rfind("Env.", 0) == 0) {
+            const std::string fn = name.substr(4);
+            if (fn == "get" || fn == "set") {
+                checkTypeAccessible("Env", call->loc);
+                for (const auto& a : call->args) typeOf(*a);
+                const std::size_t want = (fn == "set") ? 2u : 1u;
+                if (call->args.size() != want)
+                    error("Env." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
+                return fn == "get" ? "String" : "boolean";
             }
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio. Require `import System.IO.File;`.

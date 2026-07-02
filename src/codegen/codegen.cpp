@@ -1663,6 +1663,10 @@ struct CodeGenerator::Impl {
                 if (fc == "Net.close") return "void";
             }
             if (flattenCallee(*call->callee) == "Process.run") return "ProcessResult";  // spec 34
+            if (const std::string ec = flattenCallee(*call->callee); ec.rfind("Env.", 0) == 0) {
+                if (ec == "Env.get") return "String";  // spec 34
+                if (ec == "Env.set") return "boolean";
+            }
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("File.", 0) == 0) {
                 if (fc == "File.readAll" || fc == "File.list") return "String";  // spec 34.4
                 if (fc == "File.size") return "long";
@@ -4437,6 +4441,26 @@ struct CodeGenerator::Impl {
             builder.CreateCall(ctorFn, {obj, coerceToType(output, ctorFn->getArg(1)->getType()),
                                         coerceToType(code, ctorFn->getArg(2)->getType())});
             return obj;
+        }
+        // Env (spec 34): environment variables.
+        if (name == "Env.get") {
+            llvm::Value* nm = emitExpr(*call.args[0]);
+            if (nm == nullptr) return nullptr;
+            llvm::Type* p = builder.getPtrTy();
+            llvm::Value* lenSlot = createEntryAlloca("ev.len", builder.getInt64Ty());
+            llvm::FunctionType* ft = llvm::FunctionType::get(p, {p, p}, false);
+            llvm::Value* buf = builder.CreateCall(module.getOrInsertFunction("__ldp3_env_get", ft),
+                                                  {stringData(nm), lenSlot});
+            return emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot, "ev.n"), buf);
+        }
+        if (name == "Env.set") {
+            llvm::Value* nm = emitExpr(*call.args[0]);
+            llvm::Value* val = emitExpr(*call.args[1]);
+            if (nm == nullptr || val == nullptr) return nullptr;
+            llvm::Type* p = builder.getPtrTy();
+            llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt32Ty(), {p, p}, false);
+            return builder.CreateCall(module.getOrInsertFunction("__ldp3_env_set", ft),
+                                      {stringData(nm), stringData(val)});
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio helpers.
         if (name.rfind("File.", 0) == 0) {

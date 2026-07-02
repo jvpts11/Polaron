@@ -503,6 +503,20 @@ char* __ldp3_process_run(const char* cmd, long long* outLen, int* outExit) {
     return buf;
 }
 
+// ---- Environment variables (spec 34). ----
+char* __ldp3_env_get(const char* name, long long* outLen) {
+    const char* v = getenv(name);
+    if (v == NULL) { *outLen = 0; char* e = (char*)malloc(1); e[0] = 0; return e; }
+    size_t n = strlen(v);
+    char* buf = (char*)malloc(n + 1);
+    memcpy(buf, v, n + 1);
+    *outLen = (long long)n;
+    return buf;
+}
+int __ldp3_env_set(const char* name, const char* value) {
+    return _putenv_s(name, value) == 0 ? 1 : 0;
+}
+
 // ---- File I/O (spec 34.4): whole-file read/write over C stdio. ----
 char* __ldp3_file_read_all(const char* path, long long* outLen) {
     FILE* f = fopen(path, "rb");

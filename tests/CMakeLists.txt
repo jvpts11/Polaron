@@ -56,6 +56,15 @@ add_test(NAME sema_rejects_nonconst_const
 set_tests_properties(sema_rejects_nonconst_const PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
 
+# Environment variables (spec 34): Env.get / Env.set.
+add_test(NAME codegen_env_vars_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/env_vars.ldp3"
+    "-DCONTAINS=v=hello42 missing_len=0"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Stopwatch (spec 34): a monotonic elapsed-time timer over the high-resolution clock.
 add_test(NAME codegen_stopwatch_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
