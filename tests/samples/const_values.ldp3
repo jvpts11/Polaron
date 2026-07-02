@@ -1,7 +1,7 @@
 import System.IO.Console;
 program ConstValues;
 
-// Class-level compile-time constants (spec 28.1): `static const T NAME = expr;`.
+// Class-level compile-time constants (spec 28.1): `static fixed T NAME = expr;`.
 // The initializer is a constant expression -- literals, arithmetic (including
 // bitwise and the magic-constant bases), and references to sibling consts through
 // the owner. Folded at compile time; the constants carry no runtime storage.
@@ -9,14 +9,14 @@ program ConstValues;
 public bundle main {
     public namespace app {
         public class Cfg {
-            public static const int MAX = 100;
-            public static const int DOUBLED = Cfg.MAX * 2;     // reference + arithmetic
-            public static const int SHIFT = 1 << 4;            // bitwise shift
-            public static const int MASKED = 0xFF & 0x0F;      // hex literals + bitwise
-            public static const boolean ENABLED = true;
-            public static const char GRADE = 'A';
-            public static const double RATIO = 1.5;
-            public static const double SCALED = Cfg.RATIO * 100.0;  // double reference + arithmetic
+            public static fixed int MAX = 100;
+            public static fixed int DOUBLED = Cfg.MAX * 2;     // reference + arithmetic
+            public static fixed int SHIFT = 1 << 4;            // bitwise shift
+            public static fixed int MASKED = 0xFF & 0x0F;      // hex literals + bitwise
+            public static fixed boolean ENABLED = true;
+            public static fixed char GRADE = 'A';
+            public static fixed double RATIO = 1.5;
+            public static fixed double SCALED = Cfg.RATIO * 100.0;  // double reference + arithmetic
         }
 
         public class Main {

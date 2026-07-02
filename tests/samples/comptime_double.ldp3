@@ -17,8 +17,8 @@ public bundle main {
             }
             public static comptime method half(int x) returns double { return x * 0.5; }
 
-            public static const double TOTAL = Math.scale(3, 1.5);   // 4.5
-            public static const double H = Math.half(7);             // 3.5
+            public static fixed double TOTAL = Math.scale(3, 1.5);   // 4.5
+            public static fixed double H = Math.half(7);             // 3.5
         }
 
         public class Main {

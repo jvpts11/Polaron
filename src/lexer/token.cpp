@@ -81,7 +81,7 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwComptime:      return "KwComptime";
         case TokenKind::KwLiteral:       return "KwLiteral";
         case TokenKind::KwImport:        return "KwImport";
-        case TokenKind::KwConst:         return "KwConst";
+        case TokenKind::KwFixed:         return "KwFixed";
         case TokenKind::KwVolatile:      return "KwVolatile";
         case TokenKind::KwCascade:       return "KwCascade";
         case TokenKind::KwLazy:          return "KwLazy";

@@ -7,8 +7,8 @@ program ConstNonConstBad;
 public bundle main {
     public namespace app {
         public class Cfg {
-            public static const int OK = 10;
-            public static const int BAD = Cfg.OK + mystery;   // 'mystery' is not a constant
+            public static fixed int OK = 10;
+            public static fixed int BAD = Cfg.OK + mystery;   // 'mystery' is not a constant
         }
 
         public class Main {

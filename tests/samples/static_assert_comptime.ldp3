@@ -13,8 +13,8 @@ public bundle main {
                 return Math.fib(n - 1) + Math.fib(n - 2);
             }
 
-            public static const int N = 10;
-            public static const int LIMIT = 1 << 16;   // 65536
+            public static fixed int N = 10;
+            public static fixed int LIMIT = 1 << 16;   // 65536
         }
 
         public class Main {

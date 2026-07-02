@@ -22,9 +22,9 @@ public bundle main {
                 return acc;
             }
 
-            public static const int FIB10 = Math.fib(10);          // 55
-            public static const int FACT5 = Math.factorial(5);     // 120
-            public static const int COMBINED = Math.FIB10 + Math.FACT5;  // const referencing consts
+            public static fixed int FIB10 = Math.fib(10);          // 55
+            public static fixed int FACT5 = Math.factorial(5);     // 120
+            public static fixed int COMBINED = Math.FIB10 + Math.FACT5;  // const referencing consts
         }
 
         public class Main {

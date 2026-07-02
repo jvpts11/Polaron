@@ -114,7 +114,7 @@ TokenKind keywordKind(std::string_view text) {
         {"comptime", TokenKind::KwComptime},
         {"literal", TokenKind::KwLiteral},
         {"import", TokenKind::KwImport},
-        {"const", TokenKind::KwConst},
+        {"fixed", TokenKind::KwFixed},
         {"volatile", TokenKind::KwVolatile},
         {"cascade", TokenKind::KwCascade},
         {"lazy", TokenKind::KwLazy},

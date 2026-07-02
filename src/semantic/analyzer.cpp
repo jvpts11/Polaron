@@ -1205,12 +1205,12 @@ void SemanticAnalyzer::registerConsts(const ast::Program& program) {
     auto reg = [&](const ast::ConstDecl& c, const std::string& owner) {
         const std::string type = typeRefStr(c.type);
         if (!isNumeric(type) && type != "boolean" && type != "char") {
-            error("a 'const' must have a numeric, boolean, or char type, got '" + type + "'", c.loc);
+            error("a 'fixed' must have a numeric, boolean, or char type, got '" + type + "'", c.loc);
             return;
         }
         const std::string key = owner.empty() ? c.name : owner + "." + c.name;
         if (constTypes_.count(key) > 0) {
-            error("const '" + key + "' is already defined", c.loc);
+            error("fixed '" + key + "' is already defined", c.loc);
             return;
         }
         constTypes_[key] = type;
@@ -1221,7 +1221,7 @@ void SemanticAnalyzer::registerConsts(const ast::Program& program) {
             // so a const must be a static class/struct member (spec 28.1). Still registered so its
             // references resolve and do not cascade into spurious errors.
             for (const ast::ConstDecl& c : ns.consts) {
-                error("a 'const' must be a static class or struct member; declare it inside a class",
+                error("a 'fixed' must be a static class or struct member; declare it inside a class",
                       c.loc);
                 reg(c, "");
             }
@@ -1316,19 +1316,19 @@ void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
         if (constTypes_.count(key) == 0) return;  // rejected in pass 1
         const std::string type = constTypes_[key];
         if (c.init == nullptr) {
-            error("const '" + key + "' must have an initializer", c.loc);
+            error("fixed '" + key + "' must have an initializer", c.loc);
             return;
         }
         if (isFloatType(type)) {
             double d;
             if (!evalConstDouble(*c.init, d, &constDoubles_, &constInts_, &comptimeMethods_))
-                error("const '" + key + "' initializer must be a compile-time constant", c.loc);
+                error("fixed '" + key + "' initializer must be a compile-time constant", c.loc);
             else
                 constDoubles_[key] = d;
         } else {
             long long v;
             if (!evalConstInt(*c.init, v, &constInts_, &comptimeMethods_, &constDoubles_))
-                error("const '" + key + "' initializer must be a compile-time constant", c.loc);
+                error("fixed '" + key + "' initializer must be a compile-time constant", c.loc);
             else
                 constInts_[key] = v;
         }

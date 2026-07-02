@@ -7,9 +7,9 @@ program ConstInClass;
 public bundle main {
     public namespace app {
         public class Limits {
-            public static const int MAX = 100;
-            public static const int DOUBLED = 200;
-            public static const double RATIO = 1.5;
+            public static fixed int MAX = 100;
+            public static fixed int DOUBLED = 200;
+            public static fixed double RATIO = 1.5;
         }
         public class Main {
             public static method main(string[] args) returns void {

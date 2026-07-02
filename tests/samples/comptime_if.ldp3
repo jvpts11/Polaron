@@ -8,8 +8,8 @@ program ComptimeIf;
 public bundle main {
     public namespace app {
         public class Cfg {
-            public static const boolean DEBUG = false;
-            public static const int LEVEL = 2;
+            public static fixed boolean DEBUG = false;
+            public static fixed int LEVEL = 2;
         }
 
         public class Main {

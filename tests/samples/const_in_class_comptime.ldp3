@@ -7,8 +7,8 @@ program ConstInClassComptime;
 public bundle main {
     public namespace app {
         public class Cfg {
-            public static const int MAX = 100;
-            public static const int DOUBLED = Cfg.MAX * 2;
+            public static fixed int MAX = 100;
+            public static fixed int DOUBLED = Cfg.MAX * 2;
         }
         public class Main {
             public static method main(string[] args) returns void {

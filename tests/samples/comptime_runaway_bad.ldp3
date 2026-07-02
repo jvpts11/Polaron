@@ -10,7 +10,7 @@ public bundle main {
             public static comptime method spin(int n) returns int {
                 return M.spin(n) + 1;   // unbounded recursion
             }
-            public static const int BAD = M.spin(1);
+            public static fixed int BAD = M.spin(1);
         }
 
         public class Main {

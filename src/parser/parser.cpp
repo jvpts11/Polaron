@@ -413,7 +413,7 @@ ast::Namespace Parser::parseNamespace() {
             ns.catalogs.push_back(parseCatalog());
         } else if (kind == TokenKind::KwComptime || kind == TokenKind::KwLiteral) {
             ns.literals.push_back(parseLiteral());
-        } else if (kind == TokenKind::KwConst) {
+        } else if (kind == TokenKind::KwFixed) {
             ns.consts.push_back(parseConstDecl());
         } else if (kind == TokenKind::KwRecord) {
             ast::ClassDecl rec = parseRecord();
@@ -594,7 +594,7 @@ std::unique_ptr<ast::ConstDecl> Parser::parseConstMember(std::string visibility)
     auto c = std::make_unique<ast::ConstDecl>();
     c->loc = current().loc;
     c->visibility = std::move(visibility);
-    expect(TokenKind::KwConst, "'const'");
+    expect(TokenKind::KwFixed, "'fixed'");
     c->type = parseTypeRef();
     c->name = expect(TokenKind::Identifier, "the constant name").lexeme;
     expect(TokenKind::Assign, "'='");
@@ -1035,7 +1035,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         member = parseOperator(std::move(visibility));
     } else if (check(TokenKind::KwLiteral)) {  // a literal suffix is a member of its result type's class
         member = parseLiteralMember(std::move(visibility), isComptime);
-    } else if (check(TokenKind::KwConst)) {  // a compile-time constant as a static class member
+    } else if (check(TokenKind::KwFixed)) {  // a compile-time constant as a static class member
         member = parseConstMember(std::move(visibility));
     } else {
         // Otherwise it is a field:  <type> <name> ;
