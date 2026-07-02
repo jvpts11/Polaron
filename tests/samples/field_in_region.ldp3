@@ -1,0 +1,21 @@
+import System.IO.Console;
+program FieldInRegion;
+
+// `in region X` field placement (spec 18.7): a field can be declared to live in a region. It is
+// accepted and the field works normally (its storage is a lifetime optimization). Prints:
+//   v=5
+public bundle main {
+    public namespace app {
+        public class Box {
+            public in region Fast int value = 5;
+            public constructor Box() {}
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box b = new Box() on heap;
+                System.IO.Console.printf("v=%d\n", b.value);
+                return;
+            }
+        }
+    }
+}

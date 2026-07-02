@@ -1030,6 +1030,15 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isTransient = true;
             continue;
         }
+        // `in region X` field placement (spec 18.7): places the field's storage in a region. Accepted;
+        // the field keeps its normal (longer-lived) storage, which is safe for an in-process persistent
+        // -- the region placement is a lifetime optimization, not a correctness requirement.
+        if (check(TokenKind::KwIn) && peek(1).kind == TokenKind::KwRegion) {
+            advance();  // 'in'
+            advance();  // 'region'
+            expect(TokenKind::Identifier, "the region name after 'in region'");
+            continue;
+        }
         if (!isVolatile && check(TokenKind::KwVolatile)) {
             advance();
             isVolatile = true;
