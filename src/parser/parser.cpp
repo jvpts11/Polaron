@@ -1303,14 +1303,39 @@ ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast:
     }
     expect(TokenKind::RBrace, "'}'");
 
+    // A property with BOTH a custom get and a custom set (spec 8.4): the property has no backing field
+    // of its own (the accessors manage their own storage). Emit a computed getter method `name` and a
+    // setter method `name$set`; reads call the getter, `obj.name = v` routes to the setter.
+    if (setHasBody && getHasBody) {
+        auto setter = std::make_unique<ast::MethodDecl>();
+        setter->loc = loc;
+        setter->visibility = visibility;
+        setter->isStatic = isStatic;
+        setter->name = name + "$set";
+        ast::Param sp;
+        sp.loc = loc;
+        sp.type = type;
+        sp.name = "value";
+        setter->params.push_back(std::move(sp));
+        setter->returnType = ast::TypeRef{};
+        setter->returnType.name = "void";
+        setter->body = std::move(setBody);
+        extraMembers_.push_back(std::move(setter));
+
+        auto getter = std::make_unique<ast::MethodDecl>();
+        getter->loc = loc;
+        getter->visibility = std::move(visibility);
+        getter->isStatic = isStatic;
+        getter->isProperty = true;
+        getter->name = name;
+        getter->returnType = std::move(type);
+        getter->body = std::move(getBody);
+        getter->propertySetter = name + "$set";  // assignment to the property routes here
+        return getter;
+    }
     // A custom set body (spec 8.4): the field is the backing store; `obj.name` reads it directly and
-    // `obj.name = v` runs the setter, which sees `value` and writes `this.name`. A custom get *and* a
-    // custom set together would need a distinct backing field; that combination is not yet supported.
+    // `obj.name = v` runs the setter, which sees `value` and writes `this.name`.
     if (setHasBody) {
-        if (getHasBody) {
-            fail("a property with both a custom 'get' body and a custom 'set' body is not yet "
-                 "supported; use an auto 'get;' with the custom 'set { }'", loc);
-        }
         auto setter = std::make_unique<ast::MethodDecl>();
         setter->loc = loc;
         setter->visibility = visibility;

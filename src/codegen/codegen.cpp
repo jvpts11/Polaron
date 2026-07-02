@@ -7305,6 +7305,9 @@ struct CodeGenerator::Impl {
                                        dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             layout.methodReturnType[m->name] = ast::canonicalType(m->returnType);
                             layout.ownMethods[m->name] = m;
+                            // A computed property with a custom setter routes `obj.name = v` here.
+                            if (!m->propertySetter.empty())
+                                layout.propertySetters[m->name] = m->propertySetter;
                         } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) !=
                                    nullptr) {
                             layout.hasDestructor = true;

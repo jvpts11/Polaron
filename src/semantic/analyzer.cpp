@@ -1580,6 +1580,15 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         if (objType.empty()) return;
         const FieldInfo* f = findField(objType, mem->member);
         if (f == nullptr) {
+            // A computed property with a custom setter (spec 8.4): `obj.prop = v` routes to prop$set.
+            if (findMethod(objType, mem->member + "$set") != nullptr) {
+                if (const MethodInfo* getter = findMethod(objType, mem->member);
+                    getter != nullptr && !valueType.empty() && !isSubtype(valueType, getter->returnType))
+                    error("cannot assign a value of type '" + valueType + "' to property '" +
+                              mem->member + "'",
+                          loc);
+                return;
+            }
             error("class '" + objType + "' has no field '" + mem->member + "'", loc);
             return;
         }

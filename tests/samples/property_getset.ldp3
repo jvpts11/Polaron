@@ -1,0 +1,26 @@
+import System.IO.Console;
+program PropertyGetSet;
+
+// A property with both a custom get and a custom set (spec 8.4): reads call the getter, `obj.p = v`
+// routes to the setter; both manage a separate backing field. Prints:
+//   f=212
+public bundle main {
+    public namespace app {
+        public class Temp {
+            private mutable int celsius;
+            public constructor Temp() { this.celsius = 0; }
+            public int fahrenheit {
+                get { return this.celsius * 9 / 5 + 32; }
+                set { this.celsius = (value - 32) * 5 / 9; }
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Temp t = new Temp() on heap;
+                t.fahrenheit = 212;                          // -> celsius = 100
+                System.IO.Console.printf("f=%d\n", t.fahrenheit);   // 212
+                return;
+            }
+        }
+    }
+}
