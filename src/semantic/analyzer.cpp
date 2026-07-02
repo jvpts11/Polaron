@@ -3085,12 +3085,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // Net (spec 34): TCP client builtins. Require `import System.Net.Net;` (used by Socket).
         if (name.rfind("Net.", 0) == 0) {
             const std::string fn = name.substr(4);
-            if (fn == "connect" || fn == "send" || fn == "recv" || fn == "close") {
+            if (fn == "connect" || fn == "send" || fn == "recv" || fn == "close" ||
+                fn == "listen" || fn == "accept") {
                 checkTypeAccessible("Net", call->loc);
                 for (const auto& a : call->args) typeOf(*a);
                 if (fn == "connect") return "long";   // (host, port) -> socket handle (or -1)
                 if (fn == "send") return "long";      // (sock, data) -> bytes sent
                 if (fn == "recv") return "String";    // (sock, max) -> received bytes
+                if (fn == "listen") return "long";    // (port) -> listening socket (or -1)
+                if (fn == "accept") return "long";    // (server) -> connection socket (or -1)
                 return "void";                        // close(sock)
             }
         }

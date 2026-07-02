@@ -7252,14 +7252,27 @@ R"LDP3(
         }
     }
     public namespace System.Net {
-        // A blocking TCP client socket (spec 34). The connect happens in the constructor; the handle
-        // is the OS socket (or -1 on failure). send/receive/close lower to runtime winsock helpers.
+        // A blocking TCP socket (spec 34) wrapping an OS handle (or -1 on failure). Build a client with
+        // Socket.connect(host, port); a ServerSocket.accept() also hands back a Socket. send/receive/
+        // close lower to runtime winsock helpers.
         public class Socket {
             private mutable long handle;
-            public constructor Socket(String host, int port) { this.handle = Net.connect(host, port); }
+            public constructor Socket(long handle) { this.handle = handle; }
+            public static method connect(String host, int port) returns Socket {
+                return new Socket(Net.connect(host, port)) on heap;
+            }
             public method isOpen() returns boolean { return this.handle >= cast<long>(0); }
             public method send(String data) returns long { return Net.send(this.handle, data); }
             public method receive(int max) returns String { return Net.recv(this.handle, max); }
+            public method close() returns void { Net.close(this.handle); }
+        }
+        // A listening TCP server socket (spec 34): bind+listen on a port, then accept() blocks for the
+        // next connection and returns a Socket for it.
+        public class ServerSocket {
+            private mutable long handle;
+            public constructor ServerSocket(int port) { this.handle = Net.listen(port); }
+            public method isOpen() returns boolean { return this.handle >= cast<long>(0); }
+            public method accept() returns Socket { return new Socket(Net.accept(this.handle)) on heap; }
             public method close() returns void { Net.close(this.handle); }
         }
 )LDP3"
@@ -7312,7 +7325,7 @@ R"LDP3(
                 return sb.toString();
             }
             public static method get(String host, int port, String path) returns HttpResponse {
-                mutable Socket s = new Socket(host, port) on heap;
+                mutable Socket s = new Socket(Net.connect(host, port)) on heap;
                 s.send(Http.buildRequest("GET", host, path));
                 mutable StringBuilder sb = new StringBuilder() on heap;
                 mutable boolean more = true;

@@ -455,6 +455,29 @@ long long __ldp3_tcp_recv(long long sock, char* buf, long long cap) {
     return (long long)recv((SOCKET)sock, buf, (int)cap, 0);
 }
 void __ldp3_tcp_close(long long sock) { closesocket((SOCKET)sock); }
+// Server side (spec 34): bind + listen on a port, returning a listening socket (-1 on failure).
+long long __ldp3_tcp_listen(int port) {
+    ldp3_net_init();
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return -1;
+    BOOL yes = TRUE;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof yes);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons((unsigned short)port);
+    if (bind(s, (struct sockaddr*)&addr, sizeof addr) != 0 || listen(s, SOMAXCONN) != 0) {
+        closesocket(s);
+        return -1;
+    }
+    return (long long)s;
+}
+// Accepts the next incoming connection, returning a socket for it (-1 on failure). Blocks.
+long long __ldp3_tcp_accept(long long server) {
+    SOCKET c = accept((SOCKET)server, NULL, NULL);
+    return c == INVALID_SOCKET ? -1 : (long long)c;
+}
 
 // ---- Subprocess (spec 34): run a command line through the shell, capturing its stdout and exit
 // code. Returns a malloc'd NUL-terminated buffer of the captured output; *outLen is its length and

@@ -10,7 +10,7 @@ public bundle main {
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
-                Socket s = new Socket("127.0.0.1", 1) on heap;
+                Socket s = Socket.connect("127.0.0.1", 1);
                 System.IO.Console.printf("open=%d\n", s.isOpen());
                 return;
             }

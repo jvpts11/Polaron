@@ -1,0 +1,38 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
+import System.Net.Net;
+import System.Net.Socket;
+import System.Net.ServerSocket;
+import System.Time.Time;
+program TcpServer;
+
+// TCP server (spec 34): ServerSocket binds+listens; accept() returns a Socket for each connection. A
+// server thread echoes "pong"; the main thread connects over loopback and exchanges a message. The
+// listen happens in the constructor (before connect), so the connection queues in the backlog. Prints:
+//   reply=pong
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ServerSocket server = new ServerSocket(54545) on heap;
+                function<void> serverFn = lambda[captures: byvalue server]() returns void {
+                    Socket conn = server.accept();
+                    String msg = conn.receive(64);
+                    conn.send("pong");
+                    conn.close();
+                };
+                Thread t = new Thread(serverFn) on heap;
+                t.start();
+                Time.sleep(50);
+                Socket client = Socket.connect("127.0.0.1", 54545);
+                client.send("ping");
+                String reply = client.receive(64);
+                client.close();
+                t.join();
+                server.close();
+                System.IO.Console.printf("reply=%s\n", reply);
+                return;
+            }
+        }
+    }
+}

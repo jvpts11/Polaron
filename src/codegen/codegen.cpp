@@ -1658,7 +1658,8 @@ struct CodeGenerator::Impl {
             }
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("Net.", 0) == 0) {
                 if (fc == "Net.recv") return "String";  // spec 34
-                if (fc == "Net.connect" || fc == "Net.send") return "long";
+                if (fc == "Net.connect" || fc == "Net.send" || fc == "Net.listen" || fc == "Net.accept")
+                    return "long";
                 if (fc == "Net.close") return "void";
             }
             if (flattenCallee(*call->callee) == "Process.run") return "ProcessResult";  // spec 34
@@ -4399,6 +4400,20 @@ struct CodeGenerator::Impl {
                 llvm::FunctionType* ft = llvm::FunctionType::get(builder.getVoidTy(), {i64}, false);
                 builder.CreateCall(module.getOrInsertFunction("__ldp3_tcp_close", ft), {fitInt(sock, 64)});
                 return nullptr;
+            }
+            if (fn == "listen") {  // (port) -> listening socket
+                llvm::Value* port = emitExpr(*call.args[0]);
+                if (port == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {builder.getInt32Ty()}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_tcp_listen", ft),
+                                          {fitInt(port, 32)});
+            }
+            if (fn == "accept") {  // (server) -> connection socket
+                llvm::Value* server = emitExpr(*call.args[0]);
+                if (server == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_tcp_accept", ft),
+                                          {fitInt(server, 64)});
             }
         }
         // Process (spec 34): Process.run(cmd) runs the command through the shell, captures its stdout
