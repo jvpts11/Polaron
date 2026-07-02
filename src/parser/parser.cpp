@@ -1930,9 +1930,21 @@ ast::StmtPtr Parser::parseStatement() {
         auto del = std::make_unique<ast::DeleteStmt>();
         del->loc = current().loc;
         expect(TokenKind::KwDelete, "'delete'");
-        del->target = parseExpression();
+        // Parse a delete target plus an optional `of region X` suffix (spec 17.6): X disambiguates
+        // same-named variables across regions. A region-allocated object is destroyed in place (its
+        // destructor runs; the region reclaims the memory on release), so this behaves like
+        // `from region` -- set fromRegion so codegen runs the destructor without free()ing the arena.
+        auto parseDeleteTarget = [&]() -> ast::ExprPtr {
+            ast::ExprPtr t = parseExpression();
+            if (match(TokenKind::KwOf)) {
+                expect(TokenKind::KwRegion, "'region' after 'of'");
+                del->fromRegion = expect(TokenKind::Identifier, "the region name").lexeme;
+            }
+            return t;
+        };
+        del->target = parseDeleteTarget();
         // `delete a, b, c;` frees several objects in one statement; any placement suffix applies to all.
-        while (match(TokenKind::Comma)) del->moreTargets.push_back(parseExpression());
+        while (match(TokenKind::Comma)) del->moreTargets.push_back(parseDeleteTarget());
         // Optional placement suffix (spec 17.7 / 12.x): `from heap` is explicit; `from region R`
         // runs the destructor but leaves the memory for the region to reclaim on release. `from`
         // and `heap` are soft keywords (identifiers); only `region` is reserved.

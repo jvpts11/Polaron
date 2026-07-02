@@ -1,0 +1,29 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program DeleteOfRegion;
+
+// `delete a of region X` (spec 17.6): the `of region` suffix disambiguates and destroys the object in
+// place (destructor runs; the region owns the arena). Combined with a multi-delete. Prints:
+//   ~Dog 1
+//   ~Dog 2
+//   after
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int id;
+            public constructor Dog(int id) { this.id = id; }
+            public destructor ~Dog() returns void { System.IO.Console.printf("~Dog %d\n", this.id); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                region pen = itself.allocate(1 kilobytes);
+                Dog* a = new Dog(1) in region pen;
+                Dog* b = new Dog(2) in region pen;
+                delete a of region pen, b of region pen;   // both destructors run now
+                release region pen;                        // nothing left to destroy
+                System.IO.Console.println("after");
+                return;
+            }
+        }
+    }
+}
