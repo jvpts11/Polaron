@@ -1818,6 +1818,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             analyzeBlock(c.body);
         }
         if (sw->defaultBody) analyzeBlock(*sw->defaultBody);
+        else error("a 'switch' must have a 'default' case (spec 7.3)", sw->loc);
         return;
     }
     if (const auto* td = dynamic_cast<const ast::TupleDeclStmt*>(&stmt)) {

@@ -56,6 +56,12 @@ add_test(NAME sema_rejects_nonconst_const
 set_tests_properties(sema_rejects_nonconst_const PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
 
+# a switch without a default case is a compile error (spec 7.3: default is mandatory).
+add_test(NAME sema_rejects_switch_no_default
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/switch_no_default_bad.ldp3")
+set_tests_properties(sema_rejects_switch_no_default PROPERTIES
+    PASS_REGULAR_EXPRESSION "must have a 'default' case")
+
 # `try?` in a method that does not return Result/Option is a clean compile error (spec 21.2), not a
 # codegen type-mismatch crash.
 add_test(NAME sema_rejects_try_nonresult

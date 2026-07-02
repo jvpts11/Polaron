@@ -1,0 +1,18 @@
+import System.IO.Console;
+program SwitchNoDefaultBad;
+
+// A switch without a default is a compile error (spec 7.3: default is mandatory).
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int n = 1;
+                switch (n) {
+                    case 1 { System.IO.Console.println("one"); break; }
+                    case 2 { System.IO.Console.println("two"); break; }
+                }
+                return;
+            }
+        }
+    }
+}
