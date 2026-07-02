@@ -56,6 +56,15 @@ add_test(NAME sema_rejects_nonconst_const
 set_tests_properties(sema_rejects_nonconst_const PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
 
+# Stopwatch (spec 34): a monotonic elapsed-time timer over the high-resolution clock.
+add_test(NAME codegen_stopwatch_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/stopwatch.ldp3"
+    "-DCONTAINS=ok=1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # TCP server (spec 34): ServerSocket listen/accept + a client over loopback.
 add_test(NAME codegen_tcp_server_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"

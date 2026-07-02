@@ -5465,6 +5465,43 @@ R"LDP3(
                 return new Duration(this.epochMs - earlier.toEpochMillis()) on heap;
             }
         }
+        // A monotonic elapsed-time timer (spec 34): start/stop/reset accumulate high-resolution
+        // nanoseconds from the monotonic clock (Time.nanos), unaffected by wall-clock changes.
+        public class Stopwatch {
+            private mutable long startNs;
+            private mutable long accumNs;
+            private mutable boolean running;
+            public constructor Stopwatch() {
+                this.startNs = 0;
+                this.accumNs = 0;
+                this.running = false;
+            }
+            public static method startNew() returns Stopwatch {
+                mutable Stopwatch s = new Stopwatch() on heap;
+                s.start();
+                return s;
+            }
+            public method start() returns void {
+                if (this.running) { return; }
+                this.startNs = Time.nanos();
+                this.running = true;
+            }
+            public method stop() returns void {
+                if (this.running) {
+                    this.accumNs = this.accumNs + (Time.nanos() - this.startNs);
+                    this.running = false;
+                }
+            }
+            public method reset() returns void {
+                this.accumNs = 0;
+                this.running = false;
+            }
+            public method elapsedNanos() returns long {
+                if (this.running) { return this.accumNs + (Time.nanos() - this.startNs); }
+                return this.accumNs;
+            }
+            public method elapsedMillis() returns long { return this.elapsedNanos() / 1000000; }
+        }
         // A calendar date as year/month/day (spec 34): leap-year and month-length rules, conversion to and
         // from a day number counted from 1970-01-01, day of week (0=Sunday), and date arithmetic via
         // addDays. The civil<->days conversions are the standard proleptic-Gregorian algorithm.

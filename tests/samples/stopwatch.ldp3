@@ -1,0 +1,21 @@
+import System.IO.Console;
+import System.Time.Stopwatch;
+import System.Time.Time;
+program StopwatchDemo;
+
+// Stopwatch (spec 34): a monotonic elapsed-time timer over the high-resolution clock. Times a 30ms
+// sleep and confirms at least ~10ms elapsed. Prints:
+//   ok=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Stopwatch sw = Stopwatch.startNew();
+                Time.sleep(30);
+                sw.stop();
+                System.IO.Console.printf("ok=%d\n", sw.elapsedMillis() >= cast<long>(10));
+                return;
+            }
+        }
+    }
+}
