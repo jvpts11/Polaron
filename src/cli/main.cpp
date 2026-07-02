@@ -7288,6 +7288,32 @@ R"LDP3(
             public method success() returns boolean { return this.exitCode == 0; }
         }
     }
+    public namespace System.Security {
+        // A cryptographically secure random source (spec 34): 64 bits per draw from the OS CSPRNG,
+        // suitable for keys, tokens and nonces (unlike System.Math.Random, which is a fast PRNG). The
+        // extern method links directly to the runtime helper.
+        public class SecureRandom {
+            private extern cdecl static method __ldp3_secure_random() returns long;
+            public constructor SecureRandom() {}
+            public method nextLong() returns long { return SecureRandom.__ldp3_secure_random(); }
+            public method nextInt() returns int {
+                return cast<int>((this.nextLong() >> 33) & cast<long>(2147483647));  // non-negative 31-bit
+            }
+            public method nextIntMax(int max) returns int { return this.nextInt() % max; }  // [0, max)
+            public method nextBool() returns boolean { return (this.nextLong() & cast<long>(1)) == cast<long>(1); }
+            public method nextDouble() returns double {
+                mutable long bits = this.nextLong() & cast<long>(4503599627370495);  // low 52 bits
+                return cast<double>(bits) / 4503599627370496.0;  // [0, 1)
+            }
+            public method nextBytes(int n) returns int[] {
+                mutable int[] out = new int[n]();
+                for (mutable int i = 0; i < n; i++) {
+                    out[i] = cast<int>(this.nextLong() & cast<long>(255));
+                }
+                return out;
+            }
+        }
+    }
     public namespace System.Net {
         // A blocking TCP socket (spec 34) wrapping an OS handle (or -1 on failure). Build a client with
         // Socket.connect(host, port); a ServerSocket.accept() also hands back a Socket. send/receive/

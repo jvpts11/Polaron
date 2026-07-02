@@ -1,0 +1,22 @@
+import System.IO.Console;
+import System.Security.SecureRandom;
+program SecureRandomDemo;
+
+// SecureRandom (spec 34): a cryptographically secure random source from the OS CSPRNG. Draws are in
+// range and non-negative where asked. Prints:
+//   inRange=1 nonneg=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                SecureRandom r = new SecureRandom() on heap;
+                int a = r.nextIntMax(100);
+                int b = r.nextIntMax(100);
+                boolean inRange = a >= 0 && a < 100 && b >= 0 && b < 100;
+                boolean nonneg = r.nextInt() >= 0;
+                System.IO.Console.printf("inRange=%d nonneg=%d\n", inRange, nonneg);
+                return;
+            }
+        }
+    }
+}

@@ -66,6 +66,15 @@ add_test(NAME codegen_main_args_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# SecureRandom (spec 34): cryptographically secure randomness from the OS CSPRNG.
+add_test(NAME codegen_secure_random_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/secure_random.ldp3"
+    "-DCONTAINS=inRange=1 nonneg=1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Environment variables (spec 34): Env.get / Env.set.
 add_test(NAME codegen_env_vars_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"

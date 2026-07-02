@@ -2,6 +2,7 @@
 // physical code unload/reload behind unimport/reimport (spec 30). Linked into every exe.
 
 #define _CRT_SECURE_NO_WARNINGS  // fopen/remove etc. are used deliberately (File I/O, spec 34.4)
+#define _CRT_RAND_S              // enables rand_s (cryptographically secure RNG, spec 34)
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>   // must precede <windows.h>
 #include <ws2tcpip.h>
@@ -501,6 +502,14 @@ char* __ldp3_process_run(const char* cmd, long long* outLen, int* outExit) {
     *outExit = _pclose(p);
     *outLen = (long long)len;
     return buf;
+}
+
+// ---- Cryptographically secure randomness (spec 34): 64 bits from the OS CSPRNG (rand_s -> RtlGenRandom). ----
+long long __ldp3_secure_random(void) {
+    unsigned int hi = 0, lo = 0;
+    rand_s(&hi);
+    rand_s(&lo);
+    return ((long long)(unsigned long long)hi << 32) | (long long)lo;
 }
 
 // ---- Environment variables (spec 34). ----
