@@ -1,0 +1,27 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program MoveRegion;
+
+// Move qualifiers (spec 19.3): `move x from region R0 to region R [carrying persistents]` relocates the
+// object into R's arena (shallow copy), so it survives R0's release. The source is invalidated. Prints:
+//   id=7
+public bundle main {
+    public namespace app {
+        public class Car {
+            public mutable int id;
+            public constructor Car(int id) { this.id = id; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                region staging = itself.allocate(1 kilobytes);
+                region production = itself.allocate(1 kilobytes);
+                Car* c1 = new Car(7) in region staging;
+                Car* c2 = move c1 from region staging to region production carrying persistents;
+                release region staging;                       // c1's arena freed; c2 survives
+                System.IO.Console.printf("id=%d\n", c2.id);   // 7
+                release region production;
+                return;
+            }
+        }
+    }
+}

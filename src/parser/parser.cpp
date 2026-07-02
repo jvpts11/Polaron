@@ -2693,6 +2693,28 @@ ast::ExprPtr Parser::parseUnary() {
         advance();
         mv->operand = parseUnary();
         if (match(TokenKind::KwAs)) mv->castType = parseTypeRef().name;
+        // Optional move qualifiers (spec 19.3), in any order: `from region R0`, `to`/`into region R`,
+        // and `carrying`/`leaving`/`releasing persistents`. `from`/`to`/`into`/`carrying`/`leaving`/
+        // `releasing`/`persistents` are soft keywords.
+        for (;;) {
+            if (check(TokenKind::Identifier) &&
+                (current().lexeme == "from" || current().lexeme == "to" || current().lexeme == "into") &&
+                peek(1).kind == TokenKind::KwRegion) {
+                const std::string kw = advance().lexeme;  // from / to / into
+                advance();                                // 'region'
+                const std::string rgn = expect(TokenKind::Identifier, "the region name").lexeme;
+                if (kw == "from") mv->fromRegion = rgn;
+                else mv->toRegion = rgn;  // to / into region: relocate here
+            } else if (check(TokenKind::Identifier) &&
+                       (current().lexeme == "carrying" || current().lexeme == "leaving" ||
+                        current().lexeme == "releasing")) {
+                const std::string kw = advance().lexeme;
+                if (check(TokenKind::Identifier) && current().lexeme == "persistents") advance();
+                mv->persistMode = kw == "leaving" ? 1 : kw == "releasing" ? 2 : 0;
+            } else {
+                break;
+            }
+        }
         return mv;
     }
     // Prefix '&' is address-of (share the object); '-' negation; '!' logical not; '~' bitwise not.

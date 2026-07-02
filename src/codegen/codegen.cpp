@@ -3155,7 +3155,22 @@ struct CodeGenerator::Impl {
             return obj;
         }
         if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) {
-            return emitExpr(*mv->operand);  // move transfers the pointer (no copy)
+            llvm::Value* src = emitExpr(*mv->operand);
+            if (src == nullptr) return nullptr;
+            // `move x into/to region R` (spec 19.3): physically relocate the object into R's arena
+            // (bump-allocate + shallow copy) so it outlives the source region's release. The analyzer
+            // invalidates the source, so the old storage is dead. Otherwise a move is a pointer transfer.
+            if (!mv->toRegion.empty()) {
+                const std::string cls = baseType(typeName(*mv->operand));
+                if (auto cit = classes.find(cls); cit != classes.end() && cit->second.type != nullptr) {
+                    llvm::Value* dst = emitRegionBumpAlloc(mv->toRegion, cit->second.type, mv->loc);
+                    if (dst != nullptr) {
+                        builder.CreateCall(memcpyFn(), {dst, src, sizeOf(cit->second.type)});
+                        return dst;
+                    }
+                }
+            }
+            return src;  // move transfers the pointer (no copy)
         }
         if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
             // try? expr (spec 21.2): if Ok/Some, yield the inner value; if Err/None, early-return the

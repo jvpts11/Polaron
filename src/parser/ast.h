@@ -189,6 +189,9 @@ struct NewExpr : Expr {
 struct MoveExpr : Expr {
     ExprPtr operand;
     std::string castType;  // `move x as T` (spec 19.3): transfer + reinterpret (e.g. movable->unique)
+    std::string fromRegion;  // `move x from region R0` (spec 19.3): the source region (informational)
+    std::string toRegion;    // `move x into/to region R`: relocate the object into region R
+    int persistMode = 0;     // 0 = carrying (default), 1 = leaving, 2 = releasing persistents
     void dump(std::string& out, int indent) const override;
 };
 
