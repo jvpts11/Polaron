@@ -110,7 +110,7 @@ void collectRefs(const ast::Stmt* s, std::set<std::string>& out) {
     if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(s)) { collectRefs(th->value.get(), out); return; }
     if (const auto* ts = dynamic_cast<const ast::TryStmt*>(s)) { collectRefs(ts->body, out); for (const auto& c : ts->catches) collectRefs(c.body, out); if (ts->finallyBlock) collectRefs(*ts->finallyBlock, out); return; }
     if (const auto* ls = dynamic_cast<const ast::LabeledStmt*>(s)) { collectRefs(ls->stmt.get(), out); return; }
-    if (const auto* dl = dynamic_cast<const ast::DeleteStmt*>(s)) { collectRefs(dl->target.get(), out); return; }
+    if (const auto* dl = dynamic_cast<const ast::DeleteStmt*>(s)) { collectRefs(dl->target.get(), out); for (const auto& mt : dl->moreTargets) collectRefs(mt.get(), out); return; }
     // leaf statements (break/continue/goto/label/asm/...) contribute no identifiers
 }
 
@@ -6457,58 +6457,64 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
-            const std::string t = typeName(*del->target);
-            if (isArrayType(t)) {
-                // An array is a single heap block: just free it.
-                llvm::Value* block = emitExpr(*del->target);
-                if (block != nullptr) builder.CreateCall(freeFn(), {block});
-                return;
-            }
-            llvm::Value* objPtr = emitObjectPtr(*del->target);
-            if (objPtr == nullptr) return;
-            const std::string cn = baseType(t);  // see through T*
-            auto cit = classes.find(cn);
-            // `delete X from region R` (spec 17.7): the region owns the memory and reclaims it on
-            // release, so run the destructor now and drop the object from RAII tracking (so the
-            // region release does not run it again), but never free() into the bump allocator.
-            if (!del->fromRegion.empty()) {
-                if (cit != classes.end() && cit->second.hasDestructor)
-                    builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
-                if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(del->target.get()))
-                    if (auto lit = locals.find(tid->name); lit != locals.end())
-                        for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so)
-                            if (so->slot == lit->second.storage) { scopeObjects.erase(so); break; }
-                return;
-            }
-            // `cascade delete` (spec 37.1): delete the object and everything it owns
-            // by composition. Heap-only (the spec's intent); no stack early-destruct.
-            if (del->isCascade) {
-                emitCascade(CascadeOp::Delete, objPtr, cn, cascadeCsid_++, del->cascade);
-                return;
-            }
-            // A stack-allocated owned object (tracked for RAII): `delete` is an early
-            // destruct -- run the destructor once and drop it from tracking, but never
-            // free() a stack pointer or let scope-exit destruct it again.
-            if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(del->target.get())) {
-                if (auto lit = locals.find(tid->name); lit != locals.end()) {
-                    for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so) {
-                        if (so->slot != lit->second.storage) continue;
-                        if (cit != classes.end() && cit->second.hasDestructor)
-                            builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
-                        scopeObjects.erase(so);
-                        return;
+            // One delete; called for `del->target` and each of `del->moreTargets`. The placement
+            // modifiers (from region / cascade) are shared and read from `del`.
+            auto deleteOne = [&](const ast::Expr& target) {
+                const std::string t = typeName(target);
+                if (isArrayType(t)) {
+                    // An array is a single heap block: just free it.
+                    llvm::Value* block = emitExpr(target);
+                    if (block != nullptr) builder.CreateCall(freeFn(), {block});
+                    return;
+                }
+                llvm::Value* objPtr = emitObjectPtr(target);
+                if (objPtr == nullptr) return;
+                const std::string cn = baseType(t);  // see through T*
+                auto cit = classes.find(cn);
+                // `delete X from region R` (spec 17.7): the region owns the memory and reclaims it on
+                // release, so run the destructor now and drop the object from RAII tracking (so the
+                // region release does not run it again), but never free() into the bump allocator.
+                if (!del->fromRegion.empty()) {
+                    if (cit != classes.end() && cit->second.hasDestructor)
+                        builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+                    if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(&target))
+                        if (auto lit = locals.find(tid->name); lit != locals.end())
+                            for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so)
+                                if (so->slot == lit->second.storage) { scopeObjects.erase(so); break; }
+                    return;
+                }
+                // `cascade delete` (spec 37.1): delete the object and everything it owns
+                // by composition. Heap-only (the spec's intent); no stack early-destruct.
+                if (del->isCascade) {
+                    emitCascade(CascadeOp::Delete, objPtr, cn, cascadeCsid_++, del->cascade);
+                    return;
+                }
+                // A stack-allocated owned object (tracked for RAII): `delete` is an early
+                // destruct -- run the destructor once and drop it from tracking, but never
+                // free() a stack pointer or let scope-exit destruct it again.
+                if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(&target)) {
+                    if (auto lit = locals.find(tid->name); lit != locals.end()) {
+                        for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so) {
+                            if (so->slot != lit->second.storage) continue;
+                            if (cit != classes.end() && cit->second.hasDestructor)
+                                builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+                            scopeObjects.erase(so);
+                            return;
+                        }
                     }
                 }
-            }
-            // An imported class is destroyed opaquely through the bundle's exported __delete (which
-            // runs the destructor and frees the real layout).
-            if (cit != classes.end() && cit->second.imported) {
-                builder.CreateCall(functions[cn + ".__delete"], {objPtr});
-                return;
-            }
-            // Polymorphic delete dispatches the destructor through the vtable; a plain
-            // class calls its destructor directly. Both then free (see emitDeleteObject).
-            emitDeleteObject(objPtr, cn);
+                // An imported class is destroyed opaquely through the bundle's exported __delete (which
+                // runs the destructor and frees the real layout).
+                if (cit != classes.end() && cit->second.imported) {
+                    builder.CreateCall(functions[cn + ".__delete"], {objPtr});
+                    return;
+                }
+                // Polymorphic delete dispatches the destructor through the vtable; a plain
+                // class calls its destructor directly. Both then free (see emitDeleteObject).
+                emitDeleteObject(objPtr, cn);
+            };
+            deleteOne(*del->target);
+            for (const auto& mt : del->moreTargets) deleteOne(*mt);
             return;
         }
         if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {

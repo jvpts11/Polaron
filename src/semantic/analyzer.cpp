@@ -2024,16 +2024,20 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;  // inline assembly (spec issue 1): a raw body, nothing to type-check
     }
     if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
-        const std::string t = typeOf(*del->target);
-        // `delete p` where p is a class, or a pointer/reference to one (see through T*/T&).
-        if (!t.empty() && lookupClass(baseType(t)) == nullptr && !isArrayType(t)) {
-            error("'delete' expects a heap object or array; got a value of type '" + t + "'",
-                  del->loc);
-        }
-        // A deleted variable may be redeclared with the same name, reattaching its persistents
-        // (spec 18.2). Record it so the redeclaration is allowed.
-        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(del->target.get()))
-            deleted_.insert(id->name);
+        auto checkTarget = [&](const ast::Expr& target) {
+            const std::string t = typeOf(target);
+            // `delete p` where p is a class, or a pointer/reference to one (see through T*/T&).
+            if (!t.empty() && lookupClass(baseType(t)) == nullptr && !isArrayType(t)) {
+                error("'delete' expects a heap object or array; got a value of type '" + t + "'",
+                      del->loc);
+            }
+            // A deleted variable may be redeclared with the same name, reattaching its persistents
+            // (spec 18.2). Record it so the redeclaration is allowed.
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&target))
+                deleted_.insert(id->name);
+        };
+        checkTarget(*del->target);
+        for (const auto& mt : del->moreTargets) checkTarget(*mt);
         return;
     }
     if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {

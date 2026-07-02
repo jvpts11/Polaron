@@ -1,0 +1,25 @@
+import System.IO.Console;
+program DeleteMulti;
+
+// `delete a, b;` frees several objects in one statement, running each destructor (spec 19.1). Prints:
+//   ~1
+//   ~2
+//   done
+public bundle main {
+    public namespace app {
+        public class Res {
+            public int id;
+            public constructor Res(int id) { this.id = id; }
+            public destructor ~Res() returns void { System.IO.Console.printf("~%d\n", this.id); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Res* a = new Res(1) on heap;
+                Res* b = new Res(2) on heap;
+                delete a, b;
+                System.IO.Console.println("done");
+                return;
+            }
+        }
+    }
+}

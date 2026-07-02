@@ -1862,6 +1862,8 @@ ast::StmtPtr Parser::parseStatement() {
         del->loc = current().loc;
         expect(TokenKind::KwDelete, "'delete'");
         del->target = parseExpression();
+        // `delete a, b, c;` frees several objects in one statement; any placement suffix applies to all.
+        while (match(TokenKind::Comma)) del->moreTargets.push_back(parseExpression());
         // Optional placement suffix (spec 17.7 / 12.x): `from heap` is explicit; `from region R`
         // runs the destructor but leaves the memory for the region to reclaim on release. `from`
         // and `heap` are soft keywords (identifiers); only `region` is reserved.

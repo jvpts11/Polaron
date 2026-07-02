@@ -308,6 +308,7 @@ struct CascadeParams {
 
 struct DeleteStmt : Stmt {
     ExprPtr target;  // a heap object or array to free
+    std::vector<ExprPtr> moreTargets;  // `delete a, b, c;` deletes each; modifiers apply to all
     bool isCascade = false;  // `cascade delete` (spec 37.1): also delete owned member objects
     CascadeParams cascade;   // propagation limits, when isCascade
     std::string fromRegion;  // `delete X from region R` (spec 17.7): run the dtor; region owns memory
