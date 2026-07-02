@@ -1,0 +1,22 @@
+import System.IO.Console;
+import System.Collections.Range;
+program RangeValue;
+
+// A first-class Range value (spec 7.5): a range can be stored, queried (size/contains) and iterated.
+// Prints:
+//   size=5 c6=1 c5=0
+//   sum=20
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                var r = 0..10 step 2;                    // 0, 2, 4, 6, 8
+                System.IO.Console.printf("size=%d c6=%d c5=%d\n", r.size(), r.contains(6), r.contains(5));
+                mutable int sum = 0;
+                for (var x in r) { sum = sum + x; }
+                System.IO.Console.printf("sum=%d\n", sum);
+                return;
+            }
+        }
+    }
+}

@@ -1625,6 +1625,7 @@ struct CodeGenerator::Impl {
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
             return ast::mangleGeneric(nw->className, nw->typeArgs);
         }
+        if (dynamic_cast<const ast::RangeExpr*>(&expr)) return "Range";  // first-class range value
         if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
             return na->elementType + "[]";
         }
@@ -3089,6 +3090,19 @@ struct CodeGenerator::Impl {
         }
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
             return emitNew(*nw);
+        }
+        if (const auto* rng = dynamic_cast<const ast::RangeExpr*>(&expr)) {
+            // A first-class range value (spec 7.5): new Range(start, end, step, inclusive) on the heap.
+            llvm::Value* startV = coerceToType(emitExpr(*rng->start), builder.getInt32Ty());
+            llvm::Value* endV = coerceToType(emitExpr(*rng->end), builder.getInt32Ty());
+            llvm::Value* stepV = rng->step ? coerceToType(emitExpr(*rng->step), builder.getInt32Ty())
+                                           : builder.getInt32(1);
+            llvm::Value* incV = builder.getInt32(rng->inclusive ? 1 : 0);
+            auto cit = classes.find("Range");
+            if (cit == classes.end()) { error("Range type is not available", rng->loc); return nullptr; }
+            llvm::Value* obj = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "range");
+            builder.CreateCall(functions["Range.Range"], {obj, startV, endV, stepV, incV});
+            return obj;
         }
         if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) {
             return emitExpr(*mv->operand);  // move transfers the pointer (no copy)

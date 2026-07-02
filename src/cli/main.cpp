@@ -1286,6 +1286,46 @@ R"LDP3(
         // Builds lists of integers over a range (spec 34.1): upTo(n) is 0..n-1, between(a,b) is a..b-1, and
         // step(a,b,s) walks a..b in increments of s. A convenience for counting loops expressed as data.
         public class Range {
+            // A first-class range value (spec 7.5): `start..end`, `start..=end`, and `step`. Built by the
+            // range operator (e.g. `var r = 0..10 step 2;`), iterable with foreach, and queryable.
+            public int start;
+            public int end;
+            public int stride;   // the step increment (`step` is a reserved keyword)
+            public boolean inclusive;
+            public constructor Range(int start, int end, int stride, boolean inclusive) {
+                this.start = start;
+                this.end = end;
+                this.stride = stride;
+                this.inclusive = inclusive;
+            }
+            // Whether `i` is still within the range, honoring the step direction and inclusivity.
+            private method inRange(int i) returns boolean {
+                if (this.stride >= 0) {
+                    if (this.inclusive) { return i <= this.end; }
+                    return i < this.end;
+                }
+                if (this.inclusive) { return i >= this.end; }
+                return i > this.end;
+            }
+            public method size() returns int {
+                mutable int n = 0;
+                mutable int i = this.start;
+                while (this.inRange(i)) { n = n + 1; i = i + this.stride; }
+                return n;
+            }
+            public method contains(int v) returns boolean {
+                mutable int i = this.start;
+                while (this.inRange(i)) { if (i == v) { return true; } i = i + this.stride; }
+                return false;
+            }
+            public method toArray() returns int[] {
+                mutable int n = this.size();
+                mutable int[] a = new int[n]();
+                mutable int idx = 0;
+                mutable int i = this.start;
+                while (this.inRange(i)) { a[idx] = i; idx = idx + 1; i = i + this.stride; }
+                return a;
+            }
             public static method upTo(int n) returns ArrayList<int> {
                 mutable ArrayList<int> out = new ArrayList<int>() on heap;
                 for (mutable int i = 0; i < n; i++) { out.add(i); }

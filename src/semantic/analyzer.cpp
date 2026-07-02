@@ -1790,11 +1790,14 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const bool isColl =
             !it.empty() && !isArrayType(it) &&
             (it.find('<') != std::string::npos || it.find('$') != std::string::npos);
-        if (!it.empty() && !isArrayType(it) && !isColl)
+        const bool isRange = baseType(it) == "Range";  // a first-class Range value (spec 7.5), over int
+        if (!it.empty() && !isArrayType(it) && !isColl && !isRange)
             error("foreach requires an array, a collection or a range, got '" + it + "'", fe->loc);
         std::string et;
         if (!fe->isVar) {
             et = typeRefStr(fe->elemType);
+        } else if (isRange) {
+            et = "int";
         } else if (isColl) {  // var x: take the single type argument (ArrayList<int> -> int)
             const std::size_t lt = it.find('<');
             const std::string args = lt != std::string::npos
@@ -2408,10 +2411,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         return analyzeExpectingBlock(ue->expecting.get());  // value type = expecting block's return
     }
     if (const auto* rng = dynamic_cast<const ast::RangeExpr*>(&expr)) {
-        const std::string st = typeOf(*rng->start);  // a range over int (spec 7.5)
+        typeOf(*rng->start);  // a range over int (spec 7.5)
         typeOf(*rng->end);
         if (rng->step) typeOf(*rng->step);
-        return st.empty() ? std::string("int") : st;
+        return "Range";  // a first-class Range value; foreach over a literal range is handled separately
     }
     if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
         const std::string t = typeOf(*un->operand);
