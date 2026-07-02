@@ -2986,6 +2986,10 @@ struct CodeGenerator::Impl {
                                       mem->member);
         }
         if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
+            // await on a non-Task (a channel receive, spec 20.7) is a passthrough: the operand already
+            // produces the value by blocking, so just evaluate it (the analyzer restricts this form).
+            if (baseType(typeName(*aw->operand)).rfind("Task$", 0) != 0)
+                return emitExpr(*aw->operand);
             llvm::Value* taskObj = emitExpr(*aw->operand);
             if (taskObj == nullptr) return nullptr;
             const std::string taskCls = baseType(typeName(*aw->operand));  // Task$X

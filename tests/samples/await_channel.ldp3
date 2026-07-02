@@ -1,0 +1,31 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
+import System.Concurrency.Channel;
+program AwaitChannel;
+
+// `await ch.receive()` (spec 20.7): a channel receive already blocks for the value, so await is a
+// passthrough. A producer thread sends 1..5; the main thread awaits each receive and sums. Prints:
+//   sum=15
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Channel<int> ch = new Channel<int>(4) on heap;
+                function<void> producer = lambda[captures: byvalue ch]() returns void {
+                    for (mutable int i = 1; i <= 5; i++) {
+                        ch.send(i);
+                    }
+                };
+                Thread t = new Thread(producer) on heap;
+                t.start();
+                mutable int sum = 0;
+                for (mutable int i = 0; i < 5; i++) {
+                    sum = sum + await ch.receive();
+                }
+                t.join();
+                System.IO.Console.printf("sum=%d\n", sum);
+                return;
+            }
+        }
+    }
+}

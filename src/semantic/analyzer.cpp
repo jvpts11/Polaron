@@ -2381,6 +2381,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
         if (freestanding_)
             error("async/await is not available in freestanding mode (spec 36.3)", aw->loc);
+        // await ch.receive() (spec 20.7): a channel receive already blocks for the value, so `await`
+        // is a passthrough and yields the element type.
+        if (const auto* call = dynamic_cast<const ast::CallExpr*>(aw->operand.get()))
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get()))
+                if (mem->member == "receive" && call->args.empty() &&
+                    baseType(typeOf(*mem->object)).rfind("Channel$", 0) == 0)
+                    return typeOf(*aw->operand);
         // await Task<T> -> T (spec 20.2).
         const std::string t = baseType(typeOf(*aw->operand));
         if (!t.empty() && t.rfind("Task$", 0) != 0) {
