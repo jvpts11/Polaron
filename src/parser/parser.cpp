@@ -2845,14 +2845,40 @@ ast::ExprPtr Parser::parseRegionInit() {
     e->loc = current().loc;
     expect(TokenKind::KwItself, "'itself'");
     expect(TokenKind::Dot, "'.' after 'itself'");
-    const Token method = expect(TokenKind::Identifier, "'allocate' or 'at'");
-    if (method.lexeme != "allocate" && method.lexeme != "at") {
-        fail("only itself.allocate(...) / itself.at(addr, size) are supported, not 'itself." +
-                 method.lexeme + "'",
+    const Token method = expect(TokenKind::Identifier, "'allocate', 'at' or 'atMultiple'");
+    if (method.lexeme != "allocate" && method.lexeme != "at" && method.lexeme != "atMultiple") {
+        fail("only itself.allocate(...) / itself.at(addr, size) / itself.atMultiple({...}) are "
+             "supported, not 'itself." + method.lexeme + "'",
              method.loc);
     }
     expect(TokenKind::LParen, "'('");
-    if (method.lexeme == "at") {
+    if (method.lexeme == "atMultiple") {
+        // itself.atMultiple({ addr accepts {T}, addr rejects {T}, ... }) (spec 17.4): a region over
+        // several fixed address ranges, each type-constrained; `new T in R` routes to the match.
+        // A brace type-set `{A, B.C}` (no parens, unlike the chained `.accepts({...})`).
+        auto braceTypeSet = [&](std::vector<std::string>& out) {
+            expect(TokenKind::LBrace, "'{' after accepts/rejects");
+            if (!check(TokenKind::RBrace)) {
+                do {
+                    std::string name = expect(TokenKind::Identifier, "a type name").lexeme;
+                    while (match(TokenKind::Dot))
+                        name += "." + expect(TokenKind::Identifier, "a name after '.'").lexeme;
+                    out.push_back(std::move(name));
+                } while (match(TokenKind::Comma));
+            }
+            expect(TokenKind::RBrace, "'}'");
+        };
+        expect(TokenKind::LBrace, "'{' after atMultiple(");
+        do {
+            ast::RegionInitExpr::Range r;
+            r.address = parseExpression();
+            if (match(TokenKind::KwAccepts)) braceTypeSet(r.accepts);
+            else if (match(TokenKind::KwRejects)) braceTypeSet(r.rejects);
+            else fail("expected 'accepts' or 'rejects' after a range address", current().loc);
+            e->ranges.push_back(std::move(r));
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::RBrace, "'}' to close atMultiple");
+    } else if (method.lexeme == "at") {
         // itself.at(addr, size): a region over fixed memory (spec 17.8 / 36.9).
         e->atAddress = parseExpression();
         expect(TokenKind::Comma, "',' between address and size in itself.at(addr, size)");

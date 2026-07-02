@@ -1,0 +1,29 @@
+import System.IO.Console;
+program RegionAtMultiple;
+
+// itself.atMultiple (spec 17.4): a region over several fixed address ranges, each type-constrained.
+// `new T in R` routes to the range whose accepts/rejects matches T (compile-time). Heap blocks stand
+// in for the fixed addresses so the test is safe. Prints:
+//   d=7 c=9
+public bundle main {
+    public namespace app {
+        public class Dog { public mutable int id; public constructor Dog(int id) { this.id = id; } }
+        public class Cat { public mutable int id; public constructor Cat(int id) { this.id = id; } }
+        public class Main {
+            public static method main(string[] args) returns void {
+                address a0 = Memory.alloc(256);
+                address a1 = Memory.alloc(256);
+                region zoo = itself.atMultiple({
+                    a0 accepts {Dog},
+                    a1 accepts {Cat}
+                });
+                Dog* d = new Dog(7) in region zoo;    // routes to a0 (accepts Dog)
+                Cat* c = new Cat(9) in region zoo;    // routes to a1 (accepts Cat)
+                System.IO.Console.printf("d=%d c=%d\n", d.id, c.id);
+                Memory.free(a0);
+                Memory.free(a1);
+                return;
+            }
+        }
+    }
+}

@@ -964,6 +964,11 @@ struct CodeGenerator::Impl {
     std::unordered_set<std::string> lazyRegions_;
     std::unordered_map<std::string, const ast::Expr*> lazyRegionSize_;
     std::unordered_map<std::string, const ast::Expr*> lazyRegionAt_;
+    // `itself.atMultiple({...})` (spec 17.4): a multi-range region. Per region variable, its ranges
+    // (fixed address + accepts/rejects, from the AST) and one bump used-counter alloca per range.
+    // `new T in R` routes to the range whose accepts/rejects matches T (compile-time).
+    std::unordered_map<std::string, const std::vector<ast::RegionInitExpr::Range>*> multiRegionRanges_;
+    std::unordered_map<std::string, std::vector<llvm::Value*>> multiRegionUsed_;
     // `volatile region` (spec 37.5, MMIO): region locals whose objects must be accessed volatilely,
     // and the object locals bound from `new ... in` such a region (their field accesses are volatile).
     std::unordered_set<std::string> volatileRegions_;
@@ -3617,6 +3622,42 @@ struct CodeGenerator::Impl {
         return objPtr;
     }
 
+    // Allocate a `className` object in a multi-range region (spec 17.4): pick the range whose
+    // accepts/rejects matches the type at compile time, then bump-allocate at that range's fixed
+    // address using its per-range used-counter.
+    llvm::Value* emitMultiRegionAlloc(const std::string& region, const std::string& className,
+                                      llvm::StructType* objType, SourceLocation loc) {
+        const std::vector<ast::RegionInitExpr::Range>& ranges = *multiRegionRanges_[region];
+        const std::vector<llvm::Value*>& useds = multiRegionUsed_[region];
+        int idx = -1;
+        for (std::size_t i = 0; i < ranges.size(); ++i) {
+            bool ok;
+            if (!ranges[i].accepts.empty()) {  // accepts-list: T must be one of them (or a subtype)
+                ok = false;
+                for (const std::string& a : ranges[i].accepts)
+                    if (classIsSubtypeOf(className, baseType(a))) { ok = true; break; }
+            } else {  // rejects-only (or open): accept unless T is rejected
+                ok = true;
+                for (const std::string& rj : ranges[i].rejects)
+                    if (classIsSubtypeOf(className, baseType(rj))) { ok = false; break; }
+            }
+            if (ok) { idx = static_cast<int>(i); break; }
+        }
+        if (idx < 0) {
+            error("no range in this region accepts a '" + className + "' (spec 17.4)", loc);
+            return nullptr;
+        }
+        llvm::Value* addr = emitExpr(*ranges[idx].address);
+        if (addr == nullptr) return nullptr;
+        llvm::Value* base = builder.CreateIntCast(addr, builder.getInt64Ty(), false);
+        llvm::Value* used = builder.CreateLoad(builder.getInt64Ty(), useds[idx], "mr.used");
+        llvm::Value* objAddr = builder.CreateAdd(base, used);
+        llvm::Value* aligned = builder.CreateAnd(builder.CreateAdd(sizeOf(objType), builder.getInt64(7)),
+                                                 builder.getInt64(~static_cast<std::uint64_t>(7)));
+        builder.CreateStore(builder.CreateAdd(used, aligned), useds[idx]);  // bump this range
+        return builder.CreateIntToPtr(objAddr, builder.getPtrTy(), "mr.obj");
+    }
+
     // itself.allocate(size) / itself.at(addr, size): create a region. The block header is
     // [i64 used][i64 cap][ptr dataBase] (24 bytes). For allocate, dataBase points just past the
     // header in the same malloc'd block; for `at`, the header is malloc'd but dataBase is the fixed
@@ -3703,7 +3744,9 @@ struct CodeGenerator::Impl {
         }
         llvm::Value* objPtr = nullptr;
         if (!nw.region.empty()) {
-            objPtr = emitRegionBumpAlloc(nw.region, cit->second.type, nw.loc);
+            objPtr = multiRegionRanges_.count(nw.region) > 0
+                         ? emitMultiRegionAlloc(nw.region, cn, cit->second.type, nw.loc)
+                         : emitRegionBumpAlloc(nw.region, cit->second.type, nw.loc);
             if (objPtr == nullptr) return nullptr;
         } else if (nw.location == "stack") {
             objPtr = createEntryAlloca(cn + ".obj", cit->second.type);
@@ -6292,6 +6335,23 @@ struct CodeGenerator::Impl {
             // enters. Store null now and remember the size/address to replay on first use.
             if (declType == "region" && vd->isLazy) {
                 if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get())) {
+                    // atMultiple (spec 17.4): a multi-range region over fixed addresses. Record the
+                    // ranges + one bump used-counter per range; there is no malloc'd block to free.
+                    if (!ri->ranges.empty()) {
+                        llvm::Value* slot = createEntryAlloca(vd->name, builder.getPtrTy());
+                        builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
+                        locals[vd->name] = LocalSlot{slot, "region"};
+                        multiRegionRanges_[vd->name] = &ri->ranges;
+                        std::vector<llvm::Value*> useds;
+                        for (std::size_t i = 0; i < ri->ranges.size(); ++i) {
+                            llvm::Value* u = createEntryAlloca(
+                                vd->name + "#used" + std::to_string(i), builder.getInt64Ty());
+                            builder.CreateStore(builder.getInt64(0), u);
+                            useds.push_back(u);
+                        }
+                        multiRegionUsed_[vd->name] = std::move(useds);
+                        return;
+                    }
                     llvm::Value* slot = createEntryAlloca(vd->name, builder.getPtrTy());
                     builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
                     locals[vd->name] = LocalSlot{slot, "region"};

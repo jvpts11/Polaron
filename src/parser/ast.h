@@ -210,6 +210,14 @@ struct RegionInitExpr : Expr {
     ExprPtr atAddress;                 // itself.at(addr, size): a region over fixed memory (null = allocate)
     std::vector<std::string> accepts;  // empty = accepts anything
     std::vector<std::string> rejects;
+    // itself.atMultiple({ addr accepts {T}, addr rejects {T}, ... }) (spec 17.4): a region over several
+    // fixed address ranges, each with its own accepts/rejects. `new T in R` routes to the matching range.
+    struct Range {
+        ExprPtr address;
+        std::vector<std::string> accepts;
+        std::vector<std::string> rejects;
+    };
+    std::vector<Range> ranges;         // non-empty => atMultiple
     void dump(std::string& out, int indent) const override;
 };
 

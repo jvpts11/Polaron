@@ -2568,6 +2568,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
             }
         }
+        // atMultiple ranges (spec 17.4): each range address must be numeric; its accepts/rejects types
+        // must exist.
+        for (const auto& r : ri->ranges) {
+            const std::string at = typeOf(*r.address);
+            if (!at.empty() && !isNumeric(at))
+                error("region range address must be a number or address, got '" + at + "'", ri->loc);
+            for (const auto& list : {r.accepts, r.rejects})
+                for (const std::string& t : list)
+                    if (t.find('.') == std::string::npos && lookupClass(t) == nullptr)
+                        error("region range accepts/rejects references unknown type '" + t + "'", ri->loc);
+        }
         return "region";
     }
 
