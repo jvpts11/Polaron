@@ -6257,6 +6257,24 @@ struct CodeGenerator::Impl {
                     llvm::AtomicOrdering::SequentiallyConsistent);
                 return;
             }
+            // operator ++ / -- overload (spec 6.5): the user's operator returns the new value; store it
+            // back into the target. A unary operator takes only `this` (arg_size 1).
+            {
+                const std::string tt = baseType(typeName(*incdec->target));
+                const std::string opName = incdec->isIncrement ? "operator++" : "operator--";
+                const std::string owner = methodOwner(tt, opName);
+                if (!owner.empty()) {
+                    auto fnit = functions.find(owner + "." + opName);
+                    if (fnit != functions.end() && fnit->second->arg_size() == 1) {
+                        llvm::Value* recv = emitExpr(*incdec->target);
+                        if (recv == nullptr) return;
+                        llvm::Value* res = builder.CreateCall(fnit->second, {recv});
+                        llvm::Value* dst = emitLValue(*incdec->target);
+                        if (dst != nullptr) builder.CreateStore(res, dst);
+                        return;
+                    }
+                }
+            }
             llvm::Type* ty = llvmType(typeName(*incdec->target));
             llvm::Value* slot = emitLValue(*incdec->target);
             if (slot == nullptr) return;

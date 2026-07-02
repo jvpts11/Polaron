@@ -170,7 +170,7 @@ private:
     // monomorphized generic). Errors otherwise (namespace visibility).
     void checkTypeAccessible(const std::string& typeName, SourceLocation loc);
     void checkBitCounted(const std::string& typeName, SourceLocation loc);
-    void checkIncDecTarget(const ast::Expr& target, SourceLocation loc);
+    void checkIncDecTarget(const ast::Expr& target, bool isIncrement, SourceLocation loc);
     std::string typeOf(const ast::Expr& expr);  // "" on error
     // Type-check call/constructor arguments against declared parameter types (spec 6.4, 3.7):
     // per-argument subtype compatibility and null-safety. `desc` names the callee for messages.

@@ -1691,7 +1691,7 @@ void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const
     }
 }
 
-void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, SourceLocation loc) {
+void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, bool isIncrement, SourceLocation loc) {
     std::string type;
     bool mutableTarget = false;
     bool resolved = false;
@@ -1724,6 +1724,9 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, SourceLocation
     // so the reference need not be `mutable` (spec 20.6).
     if (baseType(type).rfind("atomic$", 0) == 0) return;
     if (!mutableTarget) error("cannot modify an immutable target (declare it 'mutable')", loc);
+    // A class with an operator ++/-- overload is a valid target (spec 6.5): `c++` reassigns c to the
+    // operator's result.
+    if (findMethod(baseType(type), isIncrement ? "operator++" : "operator--") != nullptr) return;
     if (type != "int") error("'++'/'--' requires an int target", loc);
 }
 
@@ -1907,7 +1910,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* incdec = dynamic_cast<const ast::IncDecStmt*>(&stmt)) {
-        checkIncDecTarget(*incdec->target, incdec->loc);
+        checkIncDecTarget(*incdec->target, incdec->isIncrement, incdec->loc);
         return;
     }
     if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(&stmt)) {
@@ -2502,8 +2505,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // try? Result<T,E>/Option<T> yields T (the first type arg of the operand's instantiation).
         const std::string ot = baseType(typeOf(*tx->operand));
         // try? early-returns the Err/None to the ENCLOSING method, so that method must itself return a
-        // Result/Option (spec 21.2). Otherwise codegen would emit a type-mismatched `return`.
-        const std::string rb = baseType(currentReturnType_);
+        // Result/Option (spec 21.2). Otherwise codegen would emit a type-mismatched `return`. Take the
+        // bare type name (before generic args and any pointer marker), e.g. "Result$int$int*" -> "Result".
+        std::string rb = baseType(currentReturnType_);
+        if (const auto d = rb.find('$'); d != std::string::npos) rb = rb.substr(0, d);
         if (!currentReturnType_.empty() && rb != "Result" && rb != "Option") {
             error("'try?' can only be used inside a method that returns Result or Option, but this "
                   "method returns '" + currentReturnType_ + "' (spec 21.2)",

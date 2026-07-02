@@ -1,0 +1,25 @@
+import System.IO.Console;
+program OperatorIncr;
+
+// operator ++/-- overload (spec 6.5): `c++` reassigns c to the operator's result. Prints:
+//   n=6
+public bundle main {
+    public namespace app {
+        public class Counter {
+            public mutable int n;
+            public constructor Counter(int n) { this.n = n; }
+            public operator ++ () returns Counter { return new Counter(this.n + 1) on heap; }
+            public operator -- () returns Counter { return new Counter(this.n - 1) on heap; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Counter c = new Counter(5) on heap;
+                c++;
+                c++;
+                c--;
+                System.IO.Console.printf("n=%d\n", c.n);   // 5 + 1 + 1 - 1 = 6
+                return;
+            }
+        }
+    }
+}
