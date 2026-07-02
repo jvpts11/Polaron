@@ -870,6 +870,17 @@ ast::ClassDecl Parser::parseRecord() {
     if (match(TokenKind::KwImplements)) {
         do {
             c.interfaces.push_back(expect(TokenKind::Identifier, "an interface name").lexeme);
+            std::vector<std::string> args;  // generic interface args: implements Comparable<Point3D>
+            if (match(TokenKind::Lt)) {
+                do {
+                    if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier)
+                        fail("expected a type argument but found '" + current().lexeme + "'", current().loc);
+                    args.push_back(current().lexeme);
+                    advance();
+                } while (match(TokenKind::Comma));
+                expect(TokenKind::Gt, "'>' to close type arguments");
+            }
+            c.interfaceTypeArgs.push_back(std::move(args));
         } while (match(TokenKind::Comma));
     }
 

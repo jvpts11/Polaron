@@ -1,0 +1,26 @@
+import System.IO.Console;
+program RecordGenericIface;
+
+// A record may implement a generic interface (spec 10, e.g. record Point3D implements Comparable<Point3D>).
+// Prints:
+//   cmp=-4
+public bundle main {
+    public namespace app {
+        public interface Ordered<T> {
+            method compareTo(T other) returns int;
+        }
+        public record Point3D(int x, int y, int z) implements Ordered<Point3D> {
+            public override method compareTo(Point3D other) returns int {
+                return this.x - other.x;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Point3D a = new Point3D(1, 2, 3);
+                Point3D b = new Point3D(5, 2, 3);
+                System.IO.Console.printf("cmp=%d\n", a.compareTo(b));
+                return;
+            }
+        }
+    }
+}
