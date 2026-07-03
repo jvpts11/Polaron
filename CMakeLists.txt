@@ -24,6 +24,7 @@ set(LDP3_CORE_SOURCES
     src/semantic/comptime.cpp
     src/bundle/ldh.cpp  # public-API header (.ldh) generation; AST-only, no LLVM
     src/bundle/ldb.cpp  # .ldb container read/write + SHA-256 fingerprint; self-contained, no LLVM
+    src/doc/htmldoc.cpp # `ldp3 doc`: HTML API docs from /// comments; AST-only, no LLVM
 )
 
 # The codegen backend needs the LLVM dev SDK (vcpkg: llvm:x64-windows).

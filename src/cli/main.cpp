@@ -29,6 +29,7 @@
 #include "semantic/analyzer.h"
 
 #include "bundle/ldh.h"
+#include "doc/htmldoc.h"
 
 #ifdef LDP3_WITH_LLVM
 #include "bundle/ldb.h"
@@ -8080,6 +8081,34 @@ int dumpTokens(const std::string& path) {
     return reportLexErrors(path, lexer) ? 1 : 0;
 }
 
+// `ldp3c --doc <file> [-o out.html]`: parse a file and render its public API to HTML from /// comments.
+int dumpDoc(const std::string& path, const std::string& outPath) {
+    auto source = readFile(path);
+    if (!source) {
+        std::fprintf(stderr, "error: cannot open input file '%s'\n", path.c_str());
+        return 1;
+    }
+    ldp3::Lexer lexer(*source, path);
+    std::vector<ldp3::Token> tokens = lexer.tokenize();
+    if (reportLexErrors(path, lexer)) return 1;
+    ldp3::Parser parser(std::move(tokens), path);
+    const ldp3::ast::Program program = parser.parse();
+    if (reportParseErrors(path, parser)) return 1;
+    const std::string html = ldp3::doc::generateHtml(program, lexer.docComments());
+    if (outPath.empty()) {
+        std::fputs(html.c_str(), stdout);
+        return 0;
+    }
+    std::ofstream out(outPath, std::ios::binary);
+    if (!out) {
+        std::fprintf(stderr, "error: cannot write '%s'\n", outPath.c_str());
+        return 1;
+    }
+    out << html;
+    std::printf("wrote %s\n", outPath.c_str());
+    return 0;
+}
+
 int dumpAst(const std::string& path) {
     auto source = readFile(path);
     if (!source) {
@@ -8458,6 +8487,17 @@ int main(int argc, char** argv) {
         if (args[0] == "--dump-tokens") return dumpTokens(path);
         if (args[0] == "--dump-ast") return dumpAst(path);
         return checkProgram(path);
+    }
+
+    if (args[0] == "--doc") {  // render a file's public API to HTML from its /// comments
+        if (args.size() < 2) {
+            std::fprintf(stderr, "error: --doc requires an input file\n");
+            return printUsage(argv[0]);
+        }
+        std::string output;
+        for (std::size_t i = 2; i + 1 < args.size(); ++i)
+            if (args[i] == "-o") output = std::string(args[i + 1]);
+        return dumpDoc(std::string(args[1]), output);
     }
 
     if (args[0] == "--dump-ldb") {  // inspect a .ldb: print its header + embedded .ldh
