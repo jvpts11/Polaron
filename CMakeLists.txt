@@ -52,5 +52,26 @@ endif()
 add_executable(ldp3c src/cli/main.cpp)
 target_link_libraries(ldp3c PRIVATE ldp3_core)
 
+# Prebuilt runtime linked into every LDP3 program, placed next to the binaries so the driver finds it
+# as a sibling of ldp3.exe.
+add_library(ldp3_rt STATIC runtime/ldp3_rt.cpp)
+set_target_properties(ldp3_rt PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+
+# Locate clang for the driver's compile-time default (same lookup the tests use).
+find_program(LDP3_CLANG clang HINTS "C:/Program Files/LLVM/bin")
+if(NOT LDP3_CLANG)
+    set(LDP3_CLANG "clang")  # fall back to a PATH lookup at run time
+endif()
+configure_file(src/driver/config.h.in "${CMAKE_BINARY_DIR}/ldp3_config.h" @ONLY)
+
+# The lightweight toolchain driver: spawns ldp3c + clang. No LLVM. Logic lives in a static lib so both
+# the ldp3 binary and the unit tests can link it (modules are added task by task).
+add_library(ldp3_driver STATIC src/driver/dummy.cpp)
+target_include_directories(ldp3_driver PUBLIC src "${CMAKE_BINARY_DIR}")
+
+add_executable(ldp3 src/driver/ldp3_main.cpp)
+target_link_libraries(ldp3 PRIVATE ldp3_driver)
+
 enable_testing()
 add_subdirectory(tests)

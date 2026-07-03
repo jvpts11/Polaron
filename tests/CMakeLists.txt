@@ -8,6 +8,11 @@ add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
     PASS_REGULAR_EXPRESSION "ldp3c 0\\.1\\.0-dev")
 
+# ---- ldp3 driver (unified toolchain) integration tests ----
+add_test(NAME ldp3_version COMMAND ldp3 --version)
+set_tests_properties(ldp3_version PROPERTIES
+    PASS_REGULAR_EXPRESSION "ldp3 0\\.1\\.0-dev")
+
 add_test(NAME lexer_dumps_tokens
     COMMAND ldp3c --dump-tokens "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3")
 set_tests_properties(lexer_dumps_tokens PROPERTIES
@@ -275,7 +280,7 @@ if(LDP3_WITH_LLVM)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_conflict_test.cmake")
 
     # Full pipeline: compile to .exe with clang and check it prints correctly.
-    find_program(LDP3_CLANG clang HINTS "C:/Program Files/LLVM/bin")
+    # (LDP3_CLANG is resolved once at the top level; see the root CMakeLists.txt.)
     if(LDP3_CLANG)
         # F9 phase 2: a consumer imports a separately-compiled bundle via --use, links its .ldb CODE,
         # and calls a static method across the bundle boundary -> Calc.square(7) = 49.
