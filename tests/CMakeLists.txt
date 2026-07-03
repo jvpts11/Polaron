@@ -38,6 +38,19 @@ if(LDP3_CLANG)
     set_tests_properties(ldp3_build_project PROPERTIES
         DEPENDS ldp3_new_scaffolds
         PASS_REGULAR_EXPRESSION "wrote .*demoproj.exe")
+
+    add_test(NAME ldp3_run_bare_file
+        COMMAND ldp3 run "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(ldp3_run_bare_file PROPERTIES
+        PASS_REGULAR_EXPRESSION "Resultado: 42")
+
+    add_test(NAME ldp3_clean_removes_output
+        COMMAND ldp3 clean
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/demoproj")
+    set_tests_properties(ldp3_clean_removes_output PROPERTIES
+        DEPENDS ldp3_build_project
+        PASS_REGULAR_EXPRESSION "cleaned")
 endif()
 
 add_test(NAME lexer_dumps_tokens

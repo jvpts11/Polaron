@@ -74,6 +74,42 @@ int main(int argc, char** argv) {
         ldp3::driver::BuildOptions opts;
         return ldp3::driver::buildProgram(m, manifestPath->parent_path(), opts);
     }
+    if (cmd == "run") {
+        ldp3::driver::BuildOptions opts;
+        opts.run = true;
+        std::size_t sep = args.size();  // index of a "--" run-args separator, if present
+        for (std::size_t i = 1; i < args.size(); ++i) if (args[i] == "--") { sep = i; break; }
+
+        ldp3::driver::Manifest m;
+        std::filesystem::path projectDir = std::filesystem::current_path();
+        if (args.size() >= 2 && args[1] != "--") {
+            // bare file: ldp3 run file.ldp3 -- args...
+            m = ldp3::driver::ephemeralManifest(std::filesystem::path(args[1]));
+            m.outputDir = "build-output/";
+        } else {
+            const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());
+            if (!manifestPath) {
+                std::fprintf(stderr, "ldp3: no ldp3.toml found; run 'ldp3 init' or 'ldp3 run <file>'\n");
+                return 1;
+            }
+            std::ifstream f(*manifestPath);
+            std::stringstream ss;
+            ss << f.rdbuf();
+            m = ldp3::driver::parseManifestText(ss.str());
+            projectDir = manifestPath->parent_path();
+        }
+        for (std::size_t i = sep + 1; i < args.size(); ++i) opts.runArgs.push_back(args[i]);
+        return ldp3::driver::buildProgram(m, projectDir, opts);
+    }
+    if (cmd == "clean") {
+        const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());
+        const std::filesystem::path base =
+            manifestPath ? manifestPath->parent_path() : std::filesystem::current_path();
+        std::error_code ec;
+        std::filesystem::remove_all(base / "build-output", ec);
+        std::printf("cleaned %s\n", (base / "build-output").string().c_str());
+        return 0;
+    }
 
     std::fprintf(stderr, "ldp3: unknown command '%s'\n", cmd.c_str());
     printHelp();
