@@ -125,6 +125,86 @@ public bundle std {
                 this.lock = System.Concurrency.__lockCreate();
             }
         }
+        // A counting semaphore (spec 20): `n` permits over a bounded channel. acquire() blocks until a
+        // permit is free; release() returns one. The channel's blocking send/receive do the waiting.
+        public class Semaphore {
+            private mutable Channel<int> tokens;   // 'permits' is a reserved word
+            public constructor Semaphore(int n) {
+                this.tokens = new Channel<int>(n) on heap;
+                for (mutable int i = 0; i < n; i++) { this.tokens.send(1); }
+            }
+            public method acquire() returns void { int t = this.tokens.receive(); }
+            public method signal() returns void { this.tokens.send(1); }   // 'release' is a reserved word
+        }
+        // A one-shot latch (spec 20): threads await() until `n` countDown() calls have happened. Once the
+        // count reaches zero a token is placed in the gate and every waiter passes (take-then-return).
+        public class CountdownLatch {
+            private mutable atomic<int> count;
+            private mutable Channel<int> gate;
+            public constructor CountdownLatch(int n) {
+                this.count = new atomic<int>(n) on heap;
+                this.gate = new Channel<int>(1) on heap;
+                if (n <= 0) { this.gate.send(1); }   // already open
+            }
+            public method countDown() returns void {
+                int now = this.count.add(cast<int>(0 - 1));
+                if (now == 0) { this.gate.send(1); }
+            }
+            public method waitFor() returns void {   // 'await' is a keyword
+                int t = this.gate.receive();
+                this.gate.send(t);   // leave the token so later/other waiters also pass
+            }
+            public method getCount() returns int { return this.count.get(); }
+        }
+)LDP3"
+// (split: keep each literal under MSVC's ~16KB cap; still the same System.Concurrency namespace.)
+R"LDP3(
+        // A cyclic-style barrier (spec 20): `n` threads await() until all have arrived, then all proceed.
+        // The n-th arrival releases n tokens; each thread (including it) takes one. Single use.
+        public class Barrier {
+            private mutable int parties;
+            private mutable atomic<int> arrived;
+            private mutable Channel<int> gate;
+            public constructor Barrier(int n) {
+                this.parties = n;
+                this.arrived = new atomic<int>(0) on heap;
+                this.gate = new Channel<int>(n) on heap;
+            }
+            public method arrive() returns void {   // block until all parties arrive ('await' is a keyword)
+                int a = this.arrived.add(1);
+                if (a == this.parties) {
+                    for (mutable int i = 0; i < this.parties; i++) { this.gate.send(1); }
+                }
+                int t = this.gate.receive();
+            }
+        }
+        // A reader/writer lock (spec 20), reader-preference: any number of readers, or one writer. Built
+        // from two semaphores plus a reader counter (the first reader takes the write lock, the last frees
+        // it).
+        public class ReadWriteLock {
+            private mutable Semaphore readerMutex;
+            private mutable Semaphore writeSem;
+            private mutable atomic<int> readers;
+            public constructor ReadWriteLock() {
+                this.readerMutex = new Semaphore(1) on heap;
+                this.writeSem = new Semaphore(1) on heap;
+                this.readers = new atomic<int>(0) on heap;
+            }
+            public method readLock() returns void {
+                this.readerMutex.acquire();
+                int r = this.readers.add(1);
+                if (r == 1) { this.writeSem.acquire(); }
+                this.readerMutex.signal();
+            }
+            public method readUnlock() returns void {
+                this.readerMutex.acquire();
+                int r = this.readers.add(cast<int>(0 - 1));
+                if (r == 0) { this.writeSem.signal(); }
+                this.readerMutex.signal();
+            }
+            public method writeLock() returns void { this.writeSem.acquire(); }
+            public method writeUnlock() returns void { this.writeSem.signal(); }
+        }
     }
     public namespace System.Errors {
         // Result<T,E> / Option<T> (spec 21.2-21.3): sealed sum types matched with `match`. Ok/Err/

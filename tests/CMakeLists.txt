@@ -66,6 +66,15 @@ add_test(NAME codegen_main_args_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# Named concurrency primitives (spec 20): Semaphore + CountdownLatch across worker threads.
+add_test(NAME codegen_concurrency_primitives_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/concurrency_primitives.ldp3"
+    "-DCONTAINS=count=6"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # SecureRandom (spec 34): cryptographically secure randomness from the OS CSPRNG.
 add_test(NAME codegen_secure_random_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"

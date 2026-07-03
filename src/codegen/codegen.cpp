@@ -6594,8 +6594,11 @@ struct CodeGenerator::Impl {
             }
             const std::string targetType = typeName(*assign->target);
             // atomic<T> assignment (spec 20.6): `counter = counter +/- n` -> atomicrmw add/sub;
-            // any other `counter = v` -> atomic store.
-            if (baseType(targetType).rfind("atomic$", 0) == 0) {
+            // any other `counter = v` -> atomic store of the value cell. But binding the atomic object
+            // itself (`field = new atomic<int>(n)`, or `a = b` between two atomics) is a plain reference
+            // store, not a value write -- so only take this path when the value is NOT an atomic object.
+            if (baseType(targetType).rfind("atomic$", 0) == 0 &&
+                baseType(typeName(*assign->value)).rfind("atomic$", 0) != 0) {
                 llvm::Value* obj = emitObjectPtr(*assign->target);
                 if (obj == nullptr) return;
                 auto cit = classes.find(clsKey(targetType));

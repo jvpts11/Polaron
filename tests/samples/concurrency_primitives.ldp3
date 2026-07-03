@@ -1,0 +1,38 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
+import System.Concurrency.Semaphore;
+import System.Concurrency.CountdownLatch;
+import System.Concurrency.atomic;
+import System.Collections.ArrayList;
+program ConcurrencyPrimitives;
+
+// Named concurrency primitives (spec 20): a Semaphore caps concurrency at 2, a CountdownLatch lets the
+// main thread wait for all 6 workers, each bumping a shared atomic. Prints:
+//   count=6
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                atomic<int> counter = new atomic<int>(0) on heap;
+                Semaphore sem = new Semaphore(2) on heap;
+                CountdownLatch latch = new CountdownLatch(6) on heap;
+                ArrayList<Thread> threads = new ArrayList<Thread>() on heap;
+                for (mutable int i = 0; i < 6; i++) {
+                    function<void> w = lambda[captures: byvalue sem, byvalue counter, byvalue latch]() returns void {
+                        sem.acquire();
+                        counter.increment();
+                        sem.signal();
+                        latch.countDown();
+                    };
+                    Thread t = new Thread(w) on heap;
+                    t.start();
+                    threads.add(t);
+                }
+                latch.waitFor();
+                for (mutable int i = 0; i < threads.size(); i++) { threads.get(i).join(); }
+                System.IO.Console.printf("count=%d\n", counter.get());
+                return;
+            }
+        }
+    }
+}
