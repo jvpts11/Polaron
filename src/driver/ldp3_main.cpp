@@ -26,6 +26,7 @@ int printHelp() {
         "  ldp3 build                          build the current project to build-output/\n"
         "  ldp3 test                           build and run the project's [Test] methods\n"
         "  ldp3 doc                            render the public API to HTML from /// comments\n"
+        "  ldp3 fmt [file.ldp3]                format the project's source (or one file) in place\n"
         "  ldp3 compile <file.ldp3>            compile one file to an .exe (no run)\n"
         "  ldp3 plug [<url|name>[@version]] [-e] download a dependency (or all of them if none named)\n"
         "  ldp3 unplug <name> [-e]             remove a dependency\n"
@@ -82,6 +83,35 @@ int main(int argc, char** argv) {
         if (m.entry.empty()) { std::fprintf(stderr, "ldp3: manifest has no [program] entry\n"); return 1; }
         ldp3::driver::BuildOptions opts;
         return ldp3::driver::buildProgram(m, manifestPath->parent_path(), opts);
+    }
+    if (cmd == "fmt") {
+        namespace fs = std::filesystem;
+        std::vector<fs::path> files;
+        if (args.size() >= 2 && !args[1].empty() && args[1][0] != '-') {
+            files.emplace_back(args[1]);  // a specific file
+        } else {  // every .ldp3 under the project, skipping packages/ and build-output/
+            const auto manifestPath = ldp3::driver::findManifest(fs::current_path());
+            const fs::path base = manifestPath ? manifestPath->parent_path() : fs::current_path();
+            std::error_code ec;
+            for (fs::recursive_directory_iterator it(base, ec), end; it != end; it.increment(ec)) {
+                if (it->is_directory()) {
+                    const std::string n = it->path().filename().string();
+                    if (n == "packages" || n == "build-output" || n == ".git") it.disable_recursion_pending();
+                    continue;
+                }
+                if (it->path().extension() == ".ldp3") files.push_back(it->path());
+            }
+        }
+        if (files.empty()) {
+            std::printf("no .ldp3 files to format\n");
+            return 0;
+        }
+        const ldp3::driver::Toolchain tc = ldp3::driver::locateToolchain();
+        int failures = 0;
+        for (const fs::path& f : files)
+            if (ldp3::driver::runProcess(tc.ldp3c, {"--fmt", f.string()}) != 0) ++failures;
+        std::printf("formatted %zu file(s)\n", files.size() - static_cast<std::size_t>(failures));
+        return failures > 0 ? 1 : 0;
     }
     if (cmd == "doc") {
         const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());

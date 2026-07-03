@@ -43,12 +43,17 @@ bool hadSpaceBetween(const Token& prev, const Token& cur) {
 
 // Should a space separate `prev` (was it unary?) from `cur` on one line? Defaults to yes (extra space never
 // changes tokens); only well-known unambiguous cases omit it.
+bool ambiguous(const Token& t) {  // single-char operators whose type-vs-value meaning we cannot infer
+    return is(t, "<") || is(t, ">") || is(t, "*") || is(t, "&") || is(t, "[") || is(t, "]");
+}
+
 bool needsSpace(const Token& prev, bool prevUnary, const Token& cur) {
-    // Angle brackets: keep whatever the source had (avoids mangling Box<int> or a < b).
-    if (is(cur, "<") || is(cur, ">") || is(prev, "<") || is(prev, ">")) return hadSpaceBetween(prev, cur);
-    if (is(cur, ";") || is(cur, ",") || is(cur, ")") || is(cur, "]") || is(cur, ".")) return false;
-    if (is(prev, ".") || is(prev, "(") || is(prev, "[")) return false;
-    if ((is(cur, "(") || is(cur, "[")) && isValueEnd(prev)) return false;  // call / index
+    // For the type-ambiguous operators (< > * & [ ]) keep the source's spacing: this avoids mangling
+    // Box<int>, int*, T[] and array indexing, while `a < b` / `6 * 7` etc. stay however the user wrote them.
+    if (ambiguous(prev) || ambiguous(cur)) return hadSpaceBetween(prev, cur);
+    if (is(cur, ";") || is(cur, ",") || is(cur, ")") || is(cur, ".")) return false;
+    if (is(prev, ".") || is(prev, "(")) return false;
+    if (is(cur, "(") && isValueEnd(prev)) return false;  // call
     if (prevUnary) return false;
     return true;
 }

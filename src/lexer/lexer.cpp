@@ -294,12 +294,18 @@ std::vector<Token> Lexer::tokenize() {
                 tokens.push_back(std::move(comment));
                 continue;
             }
-        } else {
-            skipWhitespaceAndComments();
-            if (atEnd()) {
-                tokens.push_back(make(TokenKind::EndOfFile, "", here()));
-                break;
-            }
+            // Keep the RAW source text of the token (quotes, escapes) so the formatter re-emits it exactly;
+            // the decoded lexeme of a string/char literal drops its quotes.
+            const std::size_t startPos = pos_;
+            Token t = scanToken();
+            t.lexeme = std::string(source_.substr(startPos, pos_ - startPos));
+            tokens.push_back(std::move(t));
+            continue;
+        }
+        skipWhitespaceAndComments();
+        if (atEnd()) {
+            tokens.push_back(make(TokenKind::EndOfFile, "", here()));
+            break;
         }
         tokens.push_back(scanToken());
     }

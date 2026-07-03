@@ -30,6 +30,7 @@
 
 #include "bundle/ldh.h"
 #include "doc/htmldoc.h"
+#include "fmt/formatter.h"
 
 #ifdef LDP3_WITH_LLVM
 #include "bundle/ldb.h"
@@ -8081,6 +8082,29 @@ int dumpTokens(const std::string& path) {
     return reportLexErrors(path, lexer) ? 1 : 0;
 }
 
+// `ldp3c --fmt <file> [-o out]`: re-format a file's whitespace, in place by default.
+int fmtFile(const std::string& path, const std::string& outPath) {
+    auto source = readFile(path);
+    if (!source) {
+        std::fprintf(stderr, "error: cannot open input file '%s'\n", path.c_str());
+        return 1;
+    }
+    bool ok = false;
+    const std::string formatted = ldp3::fmt::format(*source, path, &ok);
+    if (!ok) {
+        std::fprintf(stderr, "error: cannot format '%s' (it does not lex)\n", path.c_str());
+        return 1;
+    }
+    const std::string& target = outPath.empty() ? path : outPath;
+    std::ofstream out(target, std::ios::binary);
+    if (!out) {
+        std::fprintf(stderr, "error: cannot write '%s'\n", target.c_str());
+        return 1;
+    }
+    out << formatted;
+    return 0;
+}
+
 // `ldp3c --doc <file> [-o out.html]`: parse a file and render its public API to HTML from /// comments.
 int dumpDoc(const std::string& path, const std::string& outPath) {
     auto source = readFile(path);
@@ -8487,6 +8511,17 @@ int main(int argc, char** argv) {
         if (args[0] == "--dump-tokens") return dumpTokens(path);
         if (args[0] == "--dump-ast") return dumpAst(path);
         return checkProgram(path);
+    }
+
+    if (args[0] == "--fmt") {  // re-format a file's whitespace (in place, or to -o)
+        if (args.size() < 2) {
+            std::fprintf(stderr, "error: --fmt requires an input file\n");
+            return printUsage(argv[0]);
+        }
+        std::string output;
+        for (std::size_t i = 2; i + 1 < args.size(); ++i)
+            if (args[i] == "-o") output = std::string(args[i + 1]);
+        return fmtFile(std::string(args[1]), output);
     }
 
     if (args[0] == "--doc") {  // render a file's public API to HTML from its /// comments
