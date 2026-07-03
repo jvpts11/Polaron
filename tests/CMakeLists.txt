@@ -66,6 +66,15 @@ add_test(NAME codegen_main_args_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# ZonedDateTime (spec 34): an Instant read at a fixed UTC offset, with ISO-8601 formatting.
+add_test(NAME codegen_zoned_datetime_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/zoned_datetime.ldp3"
+    "-DCONTAINS=1969-12-31T21:00:00-03:00"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # UDP datagrams (spec 34): loopback send/receive round-trip with sender address.
 add_test(NAME codegen_udp_socket_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"

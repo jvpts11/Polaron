@@ -5545,6 +5545,113 @@ R"LDP3(
                 return new Duration(this.epochMs - earlier.toEpochMillis()) on heap;
             }
         }
+        // A fixed offset from UTC (spec 34), in seconds east of Greenwich (e.g. -3h for BRT). A pure offset,
+        // not a named zone with a DST rule table; systemDefault() reads the machine's current offset
+        // (including any active daylight saving) from the OS.
+        public class ZoneOffset {
+            private mutable int secs;
+            private extern cdecl static method __ldp3_local_utc_offset_seconds() returns int;
+            public constructor ZoneOffset(int totalSeconds) { this.secs = totalSeconds; }
+            public static method ofSeconds(int s) returns ZoneOffset { return new ZoneOffset(s) on heap; }
+            public static method ofHours(int h) returns ZoneOffset { return new ZoneOffset(h * 3600) on heap; }
+            public static method ofHoursMinutes(int h, int m) returns ZoneOffset {
+                mutable int sign = 1;
+                if (h < 0) { sign = 0 - 1; }
+                return new ZoneOffset(h * 3600 + sign * m * 60) on heap;
+            }
+            public static method utc() returns ZoneOffset { return new ZoneOffset(0) on heap; }
+            public static method systemDefault() returns ZoneOffset {
+                return new ZoneOffset(ZoneOffset.__ldp3_local_utc_offset_seconds()) on heap;
+            }
+            public method totalSeconds() returns int { return this.secs; }
+            public method id() returns String {   // "Z" or "+HH:MM" / "-HH:MM"
+                if (this.secs == 0) { return "Z"; }
+                mutable int t = this.secs;
+                mutable String sign = "+";
+                if (t < 0) { sign = "-"; t = 0 - t; }
+                int hh = t / 3600;
+                int mm = (t / 60) % 60;
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.append(sign);
+                if (hh < 10) { sb.append("0"); }
+                sb.appendInt(hh);
+                sb.append(":");
+                if (mm < 10) { sb.append("0"); }
+                sb.appendInt(mm);
+                return sb.toString();
+            }
+        }
+        // A date-time at a fixed UTC offset (spec 34): an Instant paired with a ZoneOffset. The wall-clock
+        // fields are the instant shifted by the offset; toInstant recovers the underlying UTC point.
+        public class ZonedDateTime {
+            private mutable Instant point;
+            private mutable ZoneOffset zone;
+            public constructor ZonedDateTime(Instant instant, ZoneOffset offset) {
+                this.point = instant;
+                this.zone = offset;
+            }
+            public static method now() returns ZonedDateTime {
+                return new ZonedDateTime(Instant.now(), ZoneOffset.systemDefault()) on heap;
+            }
+            public static method ofInstant(Instant i, ZoneOffset off) returns ZonedDateTime {
+                return new ZonedDateTime(i, off) on heap;
+            }
+            public method toInstant() returns Instant { return this.point; }
+            public method offset() returns ZoneOffset { return this.zone; }
+            private method localSecs() returns long {
+                return this.point.toEpochMillis() / cast<long>(1000)
+                     + cast<long>(this.zone.totalSeconds());
+            }
+            private method epochDay() returns long {
+                mutable long ls = this.localSecs();
+                mutable long day = ls / cast<long>(86400);
+                mutable long sod = ls - day * cast<long>(86400);
+                if (sod < cast<long>(0)) { day = day - cast<long>(1); }
+                return day;
+            }
+            private method secondOfDay() returns int {
+                mutable long ls = this.localSecs();
+                mutable long day = ls / cast<long>(86400);
+                mutable long sod = ls - day * cast<long>(86400);
+                if (sod < cast<long>(0)) { sod = sod + cast<long>(86400); }
+                return cast<int>(sod);
+            }
+            public method year() returns int { return Date.fromEpochDay(cast<int>(this.epochDay())).year(); }
+            public method month() returns int { return Date.fromEpochDay(cast<int>(this.epochDay())).month(); }
+            public method day() returns int { return Date.fromEpochDay(cast<int>(this.epochDay())).day(); }
+            public method hour() returns int { return this.secondOfDay() / 3600; }
+            public method minute() returns int { return (this.secondOfDay() / 60) % 60; }
+            public method second() returns int { return this.secondOfDay() % 60; }
+            public method toString() returns String {   // ISO-8601, e.g. 2026-07-03T14:05:09-03:00
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendInt(this.year());
+                sb.append("-");
+                int mo = this.month();
+                if (mo < 10) { sb.append("0"); }
+                sb.appendInt(mo);
+                sb.append("-");
+                int dd = this.day();
+                if (dd < 10) { sb.append("0"); }
+                sb.appendInt(dd);
+                sb.append("T");
+                int hh = this.hour();
+                if (hh < 10) { sb.append("0"); }
+                sb.appendInt(hh);
+                sb.append(":");
+                int mi = this.minute();
+                if (mi < 10) { sb.append("0"); }
+                sb.appendInt(mi);
+                sb.append(":");
+                int ss = this.second();
+                if (ss < 10) { sb.append("0"); }
+                sb.appendInt(ss);
+                sb.append(this.zone.id());
+                return sb.toString();
+            }
+        }
+)LDP3"
+// (split: keep each literal under MSVC's ~16KB cap; still the same System.Time namespace.)
+R"LDP3(
         // A monotonic elapsed-time timer (spec 34): start/stop/reset accumulate high-resolution
         // nanoseconds from the monotonic clock (Time.nanos), unaffected by wall-clock changes.
         public class Stopwatch {

@@ -550,6 +550,18 @@ char* __ldp3_process_run(const char* cmd, long long* outLen, int* outExit) {
     return buf;
 }
 
+// ---- Local time zone (spec 34): the system's current UTC offset in seconds (east positive), including
+// any active daylight-saving adjustment. Windows' Bias is UTC = local + Bias (minutes), so the offset is
+// its negation. ----
+int __ldp3_local_utc_offset_seconds(void) {
+    TIME_ZONE_INFORMATION tz;
+    DWORD r = GetTimeZoneInformation(&tz);
+    long bias = tz.Bias;
+    if (r == TIME_ZONE_ID_DAYLIGHT) bias += tz.DaylightBias;
+    else if (r == TIME_ZONE_ID_STANDARD) bias += tz.StandardBias;
+    return (int)(-bias * 60);
+}
+
 // ---- Cryptographically secure randomness (spec 34): 64 bits from the OS CSPRNG (rand_s -> RtlGenRandom). ----
 long long __ldp3_secure_random(void) {
     unsigned int hi = 0, lo = 0;
