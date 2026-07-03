@@ -2,6 +2,8 @@
 // the low-level compiler (ldp3c) and linker (clang). Carries no LLVM itself.
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -55,6 +57,22 @@ int main(int argc, char** argv) {
         ldp3::driver::BuildOptions opts;
         for (std::size_t i = 2; i < args.size(); ++i) opts.passthrough.push_back(args[i]);
         return ldp3::driver::buildProgram(m, std::filesystem::current_path(), opts);
+    }
+    if (cmd == "build") {
+        const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());
+        if (!manifestPath) {
+            std::fprintf(stderr,
+                "ldp3: no ldp3.toml found in this directory or any parent; "
+                "run 'ldp3 init' or 'ldp3 run <file>'\n");
+            return 1;
+        }
+        std::ifstream f(*manifestPath);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        ldp3::driver::Manifest m = ldp3::driver::parseManifestText(ss.str());
+        if (m.entry.empty()) { std::fprintf(stderr, "ldp3: manifest has no [program] entry\n"); return 1; }
+        ldp3::driver::BuildOptions opts;
+        return ldp3::driver::buildProgram(m, manifestPath->parent_path(), opts);
     }
 
     std::fprintf(stderr, "ldp3: unknown command '%s'\n", cmd.c_str());

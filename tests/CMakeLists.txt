@@ -31,6 +31,13 @@ if(LDP3_CLANG)
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(ldp3_compile_produces_exe PROPERTIES
         PASS_REGULAR_EXPRESSION "wrote .*hello_world.exe")
+
+    add_test(NAME ldp3_build_project
+        COMMAND ldp3 build
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/demoproj")
+    set_tests_properties(ldp3_build_project PROPERTIES
+        DEPENDS ldp3_new_scaffolds
+        PASS_REGULAR_EXPRESSION "wrote .*demoproj.exe")
 endif()
 
 add_test(NAME lexer_dumps_tokens
