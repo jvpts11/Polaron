@@ -8,8 +8,10 @@
 #include <vector>
 
 #include "driver/build.h"
+#include "driver/deps.h"
 #include "driver/manifest.h"
 #include "driver/scaffold.h"
+#include "driver/toolchain.h"
 
 namespace {
 constexpr const char* kVersion = "ldp3 0.1.0-dev";
@@ -21,6 +23,8 @@ int printHelp() {
         "  ldp3 run [file.ldp3] [-- args...]   build and run (current project, or a bare file)\n"
         "  ldp3 build                          build the current project to build-output/\n"
         "  ldp3 compile <file.ldp3>            compile one file to an .exe (no run)\n"
+        "  ldp3 plug <url|name>[@version]      download a dependency into packages/\n"
+        "  ldp3 unplug <name>                  remove a dependency\n"
         "  ldp3 new <name>                     scaffold a new project\n"
         "  ldp3 init                           scaffold in the current directory\n"
         "  ldp3 clean                          remove build-output/\n"
@@ -100,6 +104,34 @@ int main(int argc, char** argv) {
         }
         for (std::size_t i = sep + 1; i < args.size(); ++i) opts.runArgs.push_back(args[i]);
         return ldp3::driver::buildProgram(m, projectDir, opts);
+    }
+    if (cmd == "plug") {
+        if (args.size() < 2) {
+            std::fprintf(stderr, "ldp3: 'plug' requires a package (name or Git URL)\n");
+            return 2;
+        }
+        const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());
+        if (!manifestPath) {
+            std::fprintf(stderr, "ldp3: no ldp3.toml found; run 'ldp3 init' first\n");
+            return 1;
+        }
+        const std::filesystem::path packagesDir = manifestPath->parent_path() / "packages";
+        const std::filesystem::path sourcesToml = ldp3::driver::ldp3HomeDir() / "sources.toml";
+        const ldp3::driver::Toolchain tc = ldp3::driver::locateToolchain();
+        return ldp3::driver::plug(*manifestPath, packagesDir, sourcesToml, args[1], tc.ldp3c);
+    }
+    if (cmd == "unplug") {
+        if (args.size() < 2) {
+            std::fprintf(stderr, "ldp3: 'unplug' requires a package name\n");
+            return 2;
+        }
+        const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());
+        if (!manifestPath) {
+            std::fprintf(stderr, "ldp3: no ldp3.toml found\n");
+            return 1;
+        }
+        const std::filesystem::path packagesDir = manifestPath->parent_path() / "packages";
+        return ldp3::driver::unplug(*manifestPath, packagesDir, args[1]);
     }
     if (cmd == "clean") {
         const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());

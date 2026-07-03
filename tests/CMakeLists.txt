@@ -25,6 +25,13 @@ set_tests_properties(ldp3_new_wrote_manifest PROPERTIES
     DEPENDS ldp3_new_scaffolds
     PASS_REGULAR_EXPRESSION "\\[ldp3_project\\]")
 
+# plug/unplug: hermetic local-git fixture, cloned + compiled to a .ldb (needs ldp3c + git, not clang).
+add_test(NAME ldp3_plug_unplug COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3=$<TARGET_FILE:ldp3>"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_plug_test.cmake")
+set_tests_properties(ldp3_plug_unplug PROPERTIES TIMEOUT 90)
+
 if(LDP3_CLANG)
     add_test(NAME ldp3_compile_produces_exe
         COMMAND ldp3 compile "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3"

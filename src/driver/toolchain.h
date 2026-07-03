@@ -13,6 +13,9 @@ struct Toolchain {
 // Directory containing the running ldp3 executable.
 std::filesystem::path exeDir();
 
+// The ~/.ldp3 directory (global config: sources.toml, environments/). Not created here.
+std::filesystem::path ldp3HomeDir();
+
 // Resolve the tools the driver needs.
 Toolchain locateToolchain();
 

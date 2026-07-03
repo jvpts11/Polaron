@@ -19,6 +19,13 @@ fs::path exeDir() {
     return fs::path(std::string(buf, n)).parent_path();
 }
 
+fs::path ldp3HomeDir() {
+    const char* home = std::getenv("USERPROFILE");
+    if (!home || !*home) home = std::getenv("HOME");
+    const fs::path base = (home && *home) ? fs::path(home) : fs::current_path();
+    return base / ".ldp3";
+}
+
 Toolchain locateToolchain() {
     const fs::path dir = exeDir();
     Toolchain t;
