@@ -17,6 +17,20 @@ std::vector<TokenKind> kindsOf(std::string_view src) {
 }
 }  // namespace
 
+TEST_CASE("lexer captures /// doc comments but not ordinary comments") {
+    Lexer lexer("/// hello docs\n// not a doc\n/// second line\nclass X", "test");
+    const std::vector<Token> toks = lexer.tokenize();
+    // The doc comments are not tokens: only `class X` plus EOF remain.
+    REQUIRE(toks.size() == 3);
+    CHECK(toks[0].kind == TokenKind::KwClass);
+    const std::vector<DocComment>& docs = lexer.docComments();
+    REQUIRE(docs.size() == 2);
+    CHECK(docs[0].text == "hello docs");
+    CHECK(docs[0].line == 1);
+    CHECK(docs[1].text == "second line");
+    CHECK(docs[1].line == 3);
+}
+
 TEST_CASE("lexer distinguishes keywords from identifiers") {
     Lexer lexer("class classy", "test");
     const std::vector<Token> toks = lexer.tokenize();

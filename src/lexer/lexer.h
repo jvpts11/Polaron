@@ -15,6 +15,14 @@ struct LexError {
     SourceLocation loc;
 };
 
+// One `///` documentation comment line: its line number and text (with the `///` and one leading space
+// stripped). Consecutive lines form a doc block for the declaration that follows. Collected but not
+// emitted as tokens, so parsing is unaffected; used by `ldp3 doc`.
+struct DocComment {
+    int line;
+    std::string text;
+};
+
 // Turns LDP3 source text into a flat list of tokens.
 //
 //   Lexer lexer(source, "file.ldp3");
@@ -31,6 +39,9 @@ public:
 
     bool hasErrors() const { return !errors_.empty(); }
     const std::vector<LexError>& errors() const { return errors_; }
+
+    // The `///` doc comments collected during tokenize(), in source order.
+    const std::vector<DocComment>& docComments() const { return docComments_; }
 
 private:
     bool atEnd() const;
@@ -56,6 +67,7 @@ private:
     int line_ = 1;
     int col_ = 1;
     std::vector<LexError> errors_;
+    std::vector<DocComment> docComments_;
 };
 
 }  // namespace ldp3

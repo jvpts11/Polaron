@@ -207,7 +207,19 @@ void Lexer::skipWhitespaceAndComments() {
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
             advance();
         } else if (c == '/' && peek(1) == '/') {
-            while (!atEnd() && peek() != '\n') advance();
+            if (peek(2) == '/') {  // /// documentation comment: capture the text
+                const int line = line_;
+                advance();  // '/'
+                advance();  // '/'
+                advance();  // '/'
+                if (peek() == ' ') advance();  // drop one conventional leading space
+                std::string text;
+                while (!atEnd() && peek() != '\n') text += advance();
+                while (!text.empty() && (text.back() == '\r' || text.back() == ' ')) text.pop_back();
+                docComments_.push_back({line, std::move(text)});
+            } else {
+                while (!atEnd() && peek() != '\n') advance();  // ordinary line comment
+            }
         } else if (c == '/' && peek(1) == '*') {
             SourceLocation start = here();
             advance();  // '/'
