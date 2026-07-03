@@ -14,4 +14,9 @@ int plug(const std::filesystem::path& manifestPath, const std::filesystem::path&
 int unplug(const std::filesystem::path& manifestPath, const std::filesystem::path& packagesDir,
            const std::string& name);
 
+// Install every dependency listed in `manifestPath` (and, transitively, theirs) into `packagesDir`,
+// skipping ones already present. Used by `ldp3 plug` with no arguments.
+int plugAll(const std::filesystem::path& manifestPath, const std::filesystem::path& packagesDir,
+            const std::filesystem::path& sourcesToml, const std::string& ldp3c);
+
 }  // namespace ldp3::driver
