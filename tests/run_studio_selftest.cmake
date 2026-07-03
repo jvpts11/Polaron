@@ -14,4 +14,16 @@ foreach(needle "ldp3 studio" "Projects" "MANAGE" "SYSTEM" "navigate" "ALL PROJEC
         message(FATAL_ERROR "shell frame is missing '${needle}'")
     endif()
 endforeach()
-message(STATUS "OK: ldp3-studio shell")
+
+# The project-detail screen: actions, dependencies and the console with the last action's output.
+execute_process(COMMAND "${STUDIO}" --selftest-detail OUTPUT_VARIABLE detail RESULT_VARIABLE drc)
+if(NOT drc EQUAL 0)
+    message(FATAL_ERROR "ldp3-studio --selftest-detail exited ${drc}")
+endif()
+foreach(needle "ACTIONS" "CONSOLE" "ldp3 test" "PASS" "tests: 7 passed" "run action")
+    if(NOT detail MATCHES "${needle}")
+        message(FATAL_ERROR "detail frame is missing '${needle}'")
+    endif()
+endforeach()
+
+message(STATUS "OK: ldp3-studio shell + detail")

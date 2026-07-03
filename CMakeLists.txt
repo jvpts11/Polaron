@@ -96,7 +96,7 @@ set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 set(FTXUI_QUIET ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/ftxui)
 
-add_executable(ldp3-studio src/studio/main.cpp src/studio/screens.cpp)
+add_executable(ldp3-studio src/studio/main.cpp src/studio/screens.cpp src/studio/engine.cpp)
 target_link_libraries(ldp3-studio PRIVATE ldp3_driver ftxui::component)
 if(MSVC)
   target_compile_options(ldp3-studio PRIVATE /utf-8)  # keep the box-drawing/UTF-8 string literals intact

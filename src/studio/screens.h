@@ -4,8 +4,8 @@
 
 namespace ldp3::studio {
 
-// The Projects screen: the discovered-project list (with the selected row highlighted) beside a detail pane
-// for the selected project.
-ftxui::Element renderProjects(const AppState& state);
+// Render the active screen's main-area content: the Projects list, or the open project's detail (actions +
+// dependencies + console).
+ftxui::Element renderContent(const AppState& state);
 
 }  // namespace ldp3::studio

@@ -31,7 +31,8 @@ int runProcess(const std::string& exe, const std::vector<std::string>& args) {
     return static_cast<int>(rc);
 }
 
-int runProcessCapture(const std::string& exe, const std::vector<std::string>& args, std::string& output) {
+int runProcessCapture(const std::string& exe, const std::vector<std::string>& args, std::string& output,
+                      const std::string& cwd, bool mergeStderr) {
     std::string cmd = quoteArg(exe);
     for (const auto& a : args) cmd += " " + quoteArg(a);
 
@@ -46,12 +47,13 @@ int runProcessCapture(const std::string& exe, const std::vector<std::string>& ar
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = wr;
-    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    si.hStdError = mergeStderr ? wr : GetStdHandle(STD_ERROR_HANDLE);
     si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION pi{};
     std::vector<char> buf(cmd.begin(), cmd.end());
     buf.push_back('\0');
-    if (!CreateProcessA(nullptr, buf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+    const char* workDir = cwd.empty() ? nullptr : cwd.c_str();
+    if (!CreateProcessA(nullptr, buf.data(), nullptr, nullptr, TRUE, 0, nullptr, workDir, &si, &pi)) {
         CloseHandle(rd);
         CloseHandle(wr);
         return -1;

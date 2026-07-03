@@ -34,7 +34,7 @@ Element kv(const std::string& k, Element v) {
     return hbox({text(" " + k) | color(theme::faint) | size(WIDTH, EQUAL, 15), std::move(v)});
 }
 
-Element detailPane(const ldp3::driver::DiscoveredProject& p) {
+Element detailFacts(const ldp3::driver::DiscoveredProject& p) {
     const ldp3::driver::Manifest& m = p.manifest;
     const std::string lang = m.languageVersion.empty() ? "—" : m.languageVersion;
     return vbox({
@@ -50,8 +50,6 @@ Element detailPane(const ldp3::driver::DiscoveredProject& p) {
         filler(),
     });
 }
-
-}  // namespace
 
 Element renderProjects(const AppState& s) {
     Elements rows;
@@ -70,7 +68,7 @@ Element renderProjects(const AppState& s) {
                    }) |
                    borderStyled(ROUNDED, theme::amber);
 
-    Element right = s.selected() ? detailPane(*s.selected()) : Element{filler()};
+    Element right = s.selected() ? detailFacts(*s.selected()) : Element{filler()};
     Element detail = vbox({
                          hbox({text(" DETAIL") | color(theme::faint), filler()}),
                          separator() | color(theme::line),
@@ -79,6 +77,90 @@ Element renderProjects(const AppState& s) {
                      borderStyled(ROUNDED, theme::line);
 
     return hbox({list | flex, std::move(detail) | size(WIDTH, EQUAL, 42)});
+}
+
+// Colour a console line by what it reports.
+Element consoleLine(const std::string& l) {
+    if (l.rfind(" PASS", 0) == 0) return text(l) | color(theme::green);
+    if (l.rfind(" FAIL", 0) == 0) return text(l) | color(theme::red);
+    if (l.find("passed,") != std::string::npos) return text(l) | color(theme::amber);
+    if (l.find("error") != std::string::npos || l.find("failed") != std::string::npos)
+        return text(l) | color(theme::red);
+    if (l.find("wrote ") != std::string::npos || l.find("built ") != std::string::npos)
+        return text(l) | color(theme::teal);
+    return text(l) | color(theme::muted);
+}
+
+Element renderProjectDetail(const AppState& s) {
+    const ldp3::driver::DiscoveredProject* p = s.selected();
+    if (p == nullptr) return text("  No project selected.") | color(theme::muted);
+    const ldp3::driver::Manifest& m = p->manifest;
+
+    // Actions + dependencies + facts, left column.
+    Elements acts;
+    const auto& list = projectActions();
+    for (int i = 0; i < static_cast<int>(list.size()); ++i) {
+        const bool sel = i == s.selectedAction;
+        Element a = text((sel ? " ▸ " : "   ") + list[static_cast<std::size_t>(i)].first);
+        a = sel ? (a | color(theme::amber) | bold | bgcolor(theme::sel)) : (a | color(theme::muted));
+        acts.push_back(std::move(a));
+    }
+    Elements deps;
+    if (m.dependencies.empty()) {
+        deps.push_back(text("  none") | color(theme::faint));
+    } else {
+        for (const ldp3::driver::Dependency& d : m.dependencies)
+            deps.push_back(hbox({text("  " + d.name) | color(theme::ink), filler(),
+                                 text(d.version + " ") | color(theme::muted)}));
+    }
+    Element left = vbox({
+                       hbox({text(" ACTIONS") | color(theme::faint), filler()}),
+                       separator() | color(theme::line),
+                       vbox(std::move(acts)),
+                       text(""),
+                       hbox({text(" DEPENDENCIES") | color(theme::faint), filler()}),
+                       separator() | color(theme::line),
+                       vbox(std::move(deps)),
+                       filler(),
+                       kv("entry", text(m.entry) | color(theme::muted)),
+                   }) |
+                   borderStyled(ROUNDED, theme::line) | size(WIDTH, EQUAL, 30);
+
+    // Console, right column.
+    Elements clines;
+    std::string status;
+    Color statusColor = theme::faint;
+    switch (s.console.status) {
+        case Console::Status::Idle:
+            clines.push_back(text("  Select an action and press Enter.") | color(theme::faint));
+            break;
+        case Console::Status::Running:
+            clines.push_back(text("  ▸ " + s.console.title + " — running…") | color(theme::teal));
+            status = "● running";
+            statusColor = theme::teal;
+            break;
+        case Console::Status::Done:
+            for (const std::string& l : s.console.lines) clines.push_back(consoleLine(" " + l));
+            status = s.console.exitCode == 0 ? "● ok" : "● failed";
+            statusColor = s.console.exitCode == 0 ? theme::green : theme::red;
+            break;
+    }
+    Element title = s.console.title.empty() ? text("") : text(" · " + s.console.title) | color(theme::muted);
+    Element console = vbox({
+                          hbox({text(" CONSOLE") | color(theme::faint), std::move(title), filler(),
+                                text(status + " ") | color(statusColor)}),
+                          separator() | color(theme::line),
+                          vbox(std::move(clines)) | flex,
+                      }) |
+                      borderStyled(ROUNDED, theme::amber) | flex;
+
+    return hbox({std::move(left), std::move(console)});
+}
+
+}  // namespace
+
+Element renderContent(const AppState& state) {
+    return state.screen == Screen::ProjectDetail ? renderProjectDetail(state) : renderProjects(state);
 }
 
 }  // namespace ldp3::studio
