@@ -13,6 +13,12 @@ add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
     PASS_REGULAR_EXPRESSION "ldp3 0\\.1\\.0-dev")
 
+# ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
+add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
+    "-DSTUDIO=$<TARGET_FILE:ldp3-studio>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_studio_selftest.cmake")
+set_tests_properties(ldp3_studio_shell PROPERTIES TIMEOUT 30)
+
 add_test(NAME ldp3_new_scaffolds
     COMMAND ldp3 new demoproj
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")

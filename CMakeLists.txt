@@ -86,5 +86,20 @@ target_include_directories(ldp3_driver PUBLIC src "${CMAKE_BINARY_DIR}")
 add_executable(ldp3 src/driver/ldp3_main.cpp)
 target_link_libraries(ldp3 PRIVATE ldp3_driver)
 
+# --- ldp3-studio: the TUI project/environment manager (toolchain sub-project 4) ---
+# FTXUI is vendored in-tree (third_party/ftxui); build only the library, not its examples/docs/tests.
+set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(FTXUI_QUIET ON CACHE BOOL "" FORCE)
+add_subdirectory(third_party/ftxui)
+
+add_executable(ldp3-studio src/studio/main.cpp)
+target_link_libraries(ldp3-studio PRIVATE ldp3_driver ftxui::component)
+if(MSVC)
+  target_compile_options(ldp3-studio PRIVATE /utf-8)  # keep the box-drawing/UTF-8 string literals intact
+endif()
+
 enable_testing()
 add_subdirectory(tests)
