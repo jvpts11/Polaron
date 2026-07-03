@@ -13,6 +13,18 @@ add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
     PASS_REGULAR_EXPRESSION "ldp3 0\\.1\\.0-dev")
 
+add_test(NAME ldp3_new_scaffolds
+    COMMAND ldp3 new demoproj
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+set_tests_properties(ldp3_new_scaffolds PROPERTIES
+    PASS_REGULAR_EXPRESSION "created project 'demoproj'")
+
+add_test(NAME ldp3_new_wrote_manifest
+    COMMAND "${CMAKE_COMMAND}" -E cat "${CMAKE_CURRENT_BINARY_DIR}/demoproj/ldp3.toml")
+set_tests_properties(ldp3_new_wrote_manifest PROPERTIES
+    DEPENDS ldp3_new_scaffolds
+    PASS_REGULAR_EXPRESSION "\\[ldp3_project\\]")
+
 add_test(NAME lexer_dumps_tokens
     COMMAND ldp3c --dump-tokens "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3")
 set_tests_properties(lexer_dumps_tokens PROPERTIES
