@@ -975,7 +975,7 @@ void SemanticAnalyzer::findEntryPoint(const ast::Program& program) {
         }
     }
     if (candidates.empty()) {
-        if (libraryMode_) return;  // a library (.ldb) has no entry point
+        if (libraryMode_ || testMode_) return;  // a library (.ldb) or a --test run needs no entry point
         error("program '" + program.name +
                   "' has no entry point. Provide a public bundle with a public namespace "
                   "containing 'public class Main' with 'public static method "
@@ -1103,8 +1103,9 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
     }
 }
 
-bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode) {
+bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bool testMode) {
     libraryMode_ = libraryMode;
+    testMode_ = testMode;
     // Freestanding mode (spec 36): the whole program, or any bundle, may opt out of the managed
     // runtime; here we treat the program as freestanding if it or any bundle declares it.
     freestanding_ = program.isFreestanding;

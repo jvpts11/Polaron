@@ -7961,6 +7961,10 @@ R"LDP3(
 // System.Test in its own literal (the unit-test framework, spec 34).
 R"LDP3(
     public namespace System.Test {
+        // Marker annotation (spec 32.11): a public static method returning boolean tagged [Test] is an
+        // inline test, discovered and run by `ldp3 test`. (The spec writes @Test, but LDP3 annotations use
+        // [Name] brackets.)
+        public annotation Test {}
         // Boolean assertion helpers (spec 34): each returns whether the check holds, to be fed to
         // TestRunner.check. near compares doubles within an epsilon.
         public class Assert {
@@ -8207,7 +8211,7 @@ std::string ldhPathFor(const std::string& ldbPath) {
 int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             const std::string& target = "", int optLevel = 0, bool libraryMode = false,
             const std::vector<std::string>& deps = {},
-            const std::vector<std::string>& dynDeps = {}) {
+            const std::vector<std::string>& dynDeps = {}, bool testMode = false) {
     ldp3::ast::Program program;
     std::string programName;
     // Keep each file's source alive only within its iteration: the AST copies
@@ -8350,7 +8354,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     if (optLevel > 0) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
     ldp3::SemanticAnalyzer sema;
-    const bool semaOk = sema.analyze(program, libraryMode);
+    const bool semaOk = sema.analyze(program, libraryMode, testMode);
     for (const ldp3::SemaError& w : sema.warnings()) {
         std::fprintf(stderr, "%.*s:%d:%d: warning: %s\n", static_cast<int>(w.loc.file.size()),
                      w.loc.file.data(), w.loc.line, w.loc.col, w.message.c_str());
@@ -8367,6 +8371,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     ldp3::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
     if (!target.empty()) codegen.setTargetTriple(target);  // e.g. --target=x86_64-unknown-none
     codegen.setLibrary(libraryMode);  // a .ldb has no entry point / `main`
+    codegen.setTestMode(testMode);    // --test: synthetic [Test] runner as the entry
     codegen.seedVtableSlots(seedSlots);  // adopt imported bundles' vtable slot layout
     for (const auto& [name, path, fp] : dynBundleInfo)
         codegen.addDynamicBundle(name, path, fp);  // runtime-resolving thunks for --use-dynamic
@@ -8472,6 +8477,7 @@ int main(int argc, char** argv) {
     std::string target;  // --target=<triple>, e.g. x86_64-unknown-none for freestanding/bare metal
     int optLevel = 0;    // -O0..-O3: run ldp3c's own optimization pipeline before emitting IR
     bool libraryMode = false;  // --lib: compile a bundle to a .ldb (+ .ldh), no entry point required
+    bool testMode = false;     // --test: emit a synthetic runner over the [Test] methods, not main
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "-o") {
             if (i + 1 >= args.size()) {
@@ -8482,6 +8488,8 @@ int main(int argc, char** argv) {
             ++i;
         } else if (args[i] == "--lib") {
             libraryMode = true;
+        } else if (args[i] == "--test") {
+            testMode = true;
         } else if (args[i] == "--use") {
             if (i + 1 >= args.size()) {
                 std::fprintf(stderr, "error: --use requires a .ldb file\n");
@@ -8522,5 +8530,5 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: no input files\n");
         return printUsage(argv[0]);
     }
-    return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps);
+    return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps, testMode);
 }

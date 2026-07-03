@@ -377,6 +377,8 @@ struct CodeGenerator::Impl {
     const ast::Program& program;
     const EntryPoint& entry;
     bool libraryMode = false;  // compiling a bundle to a .ldb: no entry point / `main` wrapper
+    bool testMode = false;     // `ldp3c --test`: the entry is a synthetic [Test] runner
+    std::vector<std::pair<std::string, std::string>> testMethods;  // {symbol "Class.method", display name}
     std::vector<CodegenError>& errors;
     llvm::LLVMContext context;
     llvm::Module module;
@@ -8126,7 +8128,7 @@ struct CodeGenerator::Impl {
                     bool hasCtor = false;
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                            if (m == entry.method) {
+                            if (m == entry.method && !testMode) {
                                 // int main(int argc, char** argv): the real C entry, so main's
                                 // `string[] args` can be filled from the command line.
                                 llvm::FunctionType* ty = llvm::FunctionType::get(
@@ -8817,6 +8819,81 @@ struct CodeGenerator::Impl {
         emitAsyncWrapper(stateTy, m, mangled);
     }
 
+    // Collect [Test]-annotated methods (public static, returning boolean) from the user's own code, for the
+    // --test runner. A malformed [Test] method is a compile error.
+    void collectTests() {
+        for (const ast::Bundle& bundle : program.bundles) {
+            if (bundle.isImported || bundle.isPrelude) continue;
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ClassDecl& cls : ns.classes) {
+                    for (const ast::MemberPtr& member : cls.members) {
+                        const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                        if (m == nullptr) continue;
+                        bool isTest = false;
+                        for (const ast::AnnotationUse& a : m->annotations)
+                            if (a.name == "Test") isTest = true;
+                        if (!isTest) continue;
+                        if (!m->isStatic || typeRefName(m->returnType) != "boolean") {
+                            errors.push_back(CodegenError{
+                                "[Test] method '" + cls.name + "." + m->name +
+                                    "' must be a public static method returning boolean",
+                                m->loc});
+                            continue;
+                        }
+                        testMethods.push_back({cls.name + "." + m->name, m->name});
+                    }
+                }
+            }
+        }
+    }
+
+    // Emit `int main()` as a runner that calls every collected [Test] method, prints PASS/FAIL per test and
+    // a summary, and returns non-zero if any failed. Called after emitFunctions so the test bodies exist.
+    void emitTestRunner() {
+        llvm::FunctionType* mainTy = llvm::FunctionType::get(builder.getInt32Ty(), {}, false);
+        llvm::Function* mainFn =
+            llvm::Function::Create(mainTy, llvm::Function::ExternalLinkage, "main", module);
+        functions["@entry"] = mainFn;
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", mainFn));
+
+        llvm::Type* i32 = builder.getInt32Ty();
+        llvm::Value* passed = builder.CreateAlloca(i32, nullptr, "passed");
+        llvm::Value* failed = builder.CreateAlloca(i32, nullptr, "failed");
+        builder.CreateStore(builder.getInt32(0), passed);
+        builder.CreateStore(builder.getInt32(0), failed);
+        llvm::Value* passFmt = builder.CreateGlobalStringPtr("PASS %s\n", ".test.pass");
+        llvm::Value* failFmt = builder.CreateGlobalStringPtr("FAIL %s\n", ".test.fail");
+
+        for (const auto& [sym, name] : testMethods) {
+            const auto it = functions.find(sym);
+            if (it == functions.end()) continue;
+            llvm::Value* r = builder.CreateCall(it->second, {}, "t");
+            llvm::Value* ok = builder.CreateICmpNE(r, builder.getInt32(0), "ok");
+            llvm::Value* nameStr = builder.CreateGlobalStringPtr(name, ".test.name");
+            llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context, "pass", mainFn);
+            llvm::BasicBlock* elseBB = llvm::BasicBlock::Create(context, "fail", mainFn);
+            llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "cont", mainFn);
+            builder.CreateCondBr(ok, thenBB, elseBB);
+            builder.SetInsertPoint(thenBB);
+            builder.CreateCall(printf(), {passFmt, nameStr});
+            builder.CreateStore(builder.CreateAdd(builder.CreateLoad(i32, passed), builder.getInt32(1)),
+                                passed);
+            builder.CreateBr(contBB);
+            builder.SetInsertPoint(elseBB);
+            builder.CreateCall(printf(), {failFmt, nameStr});
+            builder.CreateStore(builder.CreateAdd(builder.CreateLoad(i32, failed), builder.getInt32(1)),
+                                failed);
+            builder.CreateBr(contBB);
+            builder.SetInsertPoint(contBB);
+        }
+        llvm::Value* sumFmt = builder.CreateGlobalStringPtr("tests: %d passed, %d failed\n", ".test.sum");
+        llvm::Value* pv = builder.CreateLoad(i32, passed);
+        llvm::Value* fv = builder.CreateLoad(i32, failed);
+        builder.CreateCall(printf(), {sumFmt, pv, fv});
+        builder.CreateRet(builder.CreateSelect(builder.CreateICmpNE(fv, builder.getInt32(0)),
+                                               builder.getInt32(1), builder.getInt32(0)));
+    }
+
     void emitFunctions() {
         for (const ast::Bundle& bundle : program.bundles) {
             if (bundle.isImported) continue;  // bodies live in the depended-on .ldb (declared external)
@@ -8827,7 +8904,7 @@ struct CodeGenerator::Impl {
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             enclosingMethod_ = m->name;
-                            if (m == entry.method) {
+                            if (m == entry.method && !testMode) {
                                 emitBody(functions["@entry"], m->body, m->params, "",
                                          builder.getInt32Ty(), nullptr, nullptr, nullptr, nullptr, false,
                                          nullptr, nullptr, "", nullptr, false, /*argvEntry=*/true);
@@ -8938,6 +9015,7 @@ void CodeGenerator::setTargetTriple(const std::string& triple) {
 }
 
 void CodeGenerator::setLibrary(bool library) { impl_->libraryMode = library; }
+void CodeGenerator::setTestMode(bool test) { impl_->testMode = test; }
 
 void CodeGenerator::seedVtableSlots(const std::vector<std::string>& slotNames) {
     impl_->seededSlots = slotNames;
@@ -8953,10 +9031,11 @@ const std::vector<std::string>& CodeGenerator::vtableSlotNames() const {
 }
 
 bool CodeGenerator::generate() {
-    if (impl_->entry.method == nullptr && !impl_->libraryMode) {
+    if (impl_->entry.method == nullptr && !impl_->libraryMode && !impl_->testMode) {
         errors_.push_back(CodegenError{"no entry point to generate", {}});
         return false;
     }
+    if (impl_->testMode) impl_->collectTests();
     impl_->declareClasses();
     impl_->collectAbstainedLabels();
     impl_->emitNamespaceConsts();
@@ -8969,6 +9048,7 @@ bool CodeGenerator::generate() {
         impl_->buildFunctionTable();  // address table for physical unimport (spec 30)
     impl_->emitVtables();
     impl_->emitFunctions();
+    if (impl_->testMode) impl_->emitTestRunner();  // synthetic @entry that runs the [Test] methods
     impl_->emitDynamicThunks();  // runtime-resolving thunks for --use-dynamic bundles
     if (impl_->libraryMode) impl_->exportBundleSymbols();  // make the .ldb's functions DLL-loadable
     if (!errors_.empty()) return false;

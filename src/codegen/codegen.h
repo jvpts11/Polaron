@@ -36,6 +36,10 @@ public:
     // emitted. Call before generate().
     void setLibrary(bool library);
 
+    // Test mode (`ldp3c --test`): the entry point is a synthetic runner that calls every [Test] method and
+    // reports pass/fail, instead of the program's own `main`. Call before generate().
+    void setTestMode(bool test);
+
     // Seeds the global vtable slot numbering from depended-on bundles (their vtableSlotNames), so a
     // virtual call on an imported object hits the slot its baked-in vtable uses. Call before generate().
     void seedVtableSlots(const std::vector<std::string>& slotNames);
