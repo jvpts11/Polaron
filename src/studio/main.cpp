@@ -83,6 +83,12 @@ Element renderShell(const AppState& s) {
            bgcolor(theme::ground) | color(theme::ink);
 }
 
+// FTXUI erases lines with the terminal's *default* background when it repaints on a resize; if that default
+// is darker than our ground, the screen visibly flashes darker before repainting. Setting the terminal
+// background to the ground colour (OSC 11) for the duration makes that erase blend in; OSC 111 restores it.
+constexpr const char* kSetGroundBg = "\x1b]11;#0d1417\x1b\\";  // must match theme::ground
+constexpr const char* kResetBg = "\x1b]111\x1b\\";
+
 // A fixed, deterministic state so `--selftest` renders a stable frame regardless of the working directory.
 AppState demoState() {
     using ldp3::driver::DiscoveredProject;
@@ -125,6 +131,7 @@ int main(int argc, char** argv) {
     std::error_code ec;
     state.projects = ldp3::driver::discoverProjects(std::filesystem::current_path(ec));
 
+    std::cout << kSetGroundBg << std::flush;
     ScreenInteractive screen = ScreenInteractive::Fullscreen();
     Component root = Renderer([&] { return renderShell(state); });
     root |= CatchEvent([&](const Event& e) {
@@ -144,5 +151,6 @@ int main(int argc, char** argv) {
         return false;
     });
     screen.Loop(root);
+    std::cout << kResetBg << std::flush;  // restore the terminal's default background on exit
     return 0;
 }
