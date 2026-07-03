@@ -33,7 +33,9 @@ struct DocComment {
 // (tokens keep a string_view to `file` in their SourceLocation).
 class Lexer {
 public:
-    Lexer(std::string_view source, std::string_view file);
+    // keepComments: emit `//`, `///` and `/* */` as TokenKind::Comment tokens (for `ldp3 fmt`) instead of
+    // discarding them. The parser uses the default (comments skipped).
+    Lexer(std::string_view source, std::string_view file, bool keepComments = false);
 
     std::vector<Token> tokenize();
 
@@ -51,6 +53,8 @@ private:
     SourceLocation here() const;
 
     void skipWhitespaceAndComments();
+    void skipWhitespace();          // whitespace only, for keep-comments mode
+    bool tryComment(Token& out);    // consume a comment as a token; true if one was found
     Token scanToken();
     Token scanIdentifierOrKeyword();
     Token scanNumber();
@@ -68,6 +72,7 @@ private:
     int col_ = 1;
     std::vector<LexError> errors_;
     std::vector<DocComment> docComments_;
+    bool keepComments_ = false;
 };
 
 }  // namespace ldp3

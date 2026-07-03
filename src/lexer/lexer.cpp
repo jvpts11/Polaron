@@ -164,8 +164,48 @@ TokenKind keywordKind(std::string_view text) {
 
 }  // namespace
 
-Lexer::Lexer(std::string_view source, std::string_view file)
-    : source_(source), file_(file) {}
+Lexer::Lexer(std::string_view source, std::string_view file, bool keepComments)
+    : source_(source), file_(file), keepComments_(keepComments) {}
+
+void Lexer::skipWhitespace() {
+    while (!atEnd()) {
+        const char c = peek();
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') advance();
+        else break;
+    }
+}
+
+bool Lexer::tryComment(Token& out) {
+    const char c = peek();
+    if (c == '/' && peek(1) == '/') {  // // or /// line comment: keep the whole line's text
+        const SourceLocation loc = here();
+        std::string text;
+        while (!atEnd() && peek() != '\n') text += advance();
+        while (!text.empty() && text.back() == '\r') text.pop_back();
+        out = make(TokenKind::Comment, std::move(text), loc);
+        return true;
+    }
+    if (c == '/' && peek(1) == '*') {  // /* ... */ block comment
+        const SourceLocation loc = here();
+        std::string text;
+        text += advance();  // '/'
+        text += advance();  // '*'
+        bool closed = false;
+        while (!atEnd()) {
+            if (peek() == '*' && peek(1) == '/') {
+                text += advance();
+                text += advance();
+                closed = true;
+                break;
+            }
+            text += advance();
+        }
+        if (!closed) error("unterminated block comment", loc);
+        out = make(TokenKind::Comment, std::move(text), loc);
+        return true;
+    }
+    return false;
+}
 
 bool Lexer::atEnd() const { return pos_ >= source_.size(); }
 
@@ -244,10 +284,22 @@ void Lexer::skipWhitespaceAndComments() {
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> tokens;
     for (;;) {
-        skipWhitespaceAndComments();
-        if (atEnd()) {
-            tokens.push_back(make(TokenKind::EndOfFile, "", here()));
-            break;
+        if (keepComments_) {
+            skipWhitespace();
+            if (atEnd()) {
+                tokens.push_back(make(TokenKind::EndOfFile, "", here()));
+                break;
+            }
+            if (Token comment; tryComment(comment)) {
+                tokens.push_back(std::move(comment));
+                continue;
+            }
+        } else {
+            skipWhitespaceAndComments();
+            if (atEnd()) {
+                tokens.push_back(make(TokenKind::EndOfFile, "", here()));
+                break;
+            }
         }
         tokens.push_back(scanToken());
     }

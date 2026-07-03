@@ -21,6 +21,7 @@ enum class TokenKind : std::uint8_t {
     // Special
     EndOfFile,
     Unknown,  // a character the lexer could not classify
+    Comment,  // a //, /// or /* */ comment (only emitted in keep-comments mode, for `ldp3 fmt`)
 
     // Identifiers and literals
     Identifier,
