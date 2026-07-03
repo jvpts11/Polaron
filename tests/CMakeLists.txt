@@ -87,6 +87,13 @@ if(LDP3_CLANG)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/run_env_test.cmake")
     set_tests_properties(ldp3_environments PROPERTIES TIMEOUT 90)
 
+    # `ldp3 test`: discover and run [Test] methods, failing the command when a test fails.
+    add_test(NAME ldp3_test_command COMMAND "${CMAKE_COMMAND}"
+        "-DLDP3=$<TARGET_FILE:ldp3>"
+        "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_test_cmd_test.cmake")
+    set_tests_properties(ldp3_test_command PROPERTIES TIMEOUT 90)
+
     # Transitive deps: plug xlib (which depends on ylib); build a consumer that links the whole closure.
     add_test(NAME ldp3_transitive_deps COMMAND "${CMAKE_COMMAND}"
         "-DLDP3=$<TARGET_FILE:ldp3>"

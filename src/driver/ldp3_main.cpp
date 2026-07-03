@@ -23,6 +23,7 @@ int printHelp() {
         "usage:\n"
         "  ldp3 run [file.ldp3] [-- args...]   build and run (current project, or a bare file)\n"
         "  ldp3 build                          build the current project to build-output/\n"
+        "  ldp3 test                           build and run the project's [Test] methods\n"
         "  ldp3 compile <file.ldp3>            compile one file to an .exe (no run)\n"
         "  ldp3 plug [<url|name>[@version]] [-e] download a dependency (or all of them if none named)\n"
         "  ldp3 unplug <name> [-e]             remove a dependency\n"
@@ -78,6 +79,23 @@ int main(int argc, char** argv) {
         ldp3::driver::Manifest m = ldp3::driver::parseManifestText(ss.str());
         if (m.entry.empty()) { std::fprintf(stderr, "ldp3: manifest has no [program] entry\n"); return 1; }
         ldp3::driver::BuildOptions opts;
+        return ldp3::driver::buildProgram(m, manifestPath->parent_path(), opts);
+    }
+    if (cmd == "test") {
+        const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());
+        if (!manifestPath) {
+            std::fprintf(stderr, "ldp3: no ldp3.toml found; run 'ldp3 init' first\n");
+            return 1;
+        }
+        std::ifstream f(*manifestPath);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        ldp3::driver::Manifest m = ldp3::driver::parseManifestText(ss.str());
+        if (m.entry.empty()) { std::fprintf(stderr, "ldp3: manifest has no [program] entry\n"); return 1; }
+        m.name = m.name + "-test";  // keep the test binary separate from the normal build
+        ldp3::driver::BuildOptions opts;
+        opts.run = true;
+        opts.passthrough = {"--test"};
         return ldp3::driver::buildProgram(m, manifestPath->parent_path(), opts);
     }
     if (cmd == "run") {
