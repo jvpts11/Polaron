@@ -67,7 +67,12 @@ configure_file(src/driver/config.h.in "${CMAKE_BINARY_DIR}/ldp3_config.h" @ONLY)
 
 # The lightweight toolchain driver: spawns ldp3c + clang. No LLVM. Logic lives in a static lib so both
 # the ldp3 binary and the unit tests can link it (modules are added task by task).
-add_library(ldp3_driver STATIC src/driver/manifest.cpp src/driver/scaffold.cpp)
+add_library(ldp3_driver STATIC
+    src/driver/manifest.cpp
+    src/driver/scaffold.cpp
+    src/driver/process.cpp
+    src/driver/toolchain.cpp
+    src/driver/build.cpp)
 target_include_directories(ldp3_driver PUBLIC src "${CMAKE_BINARY_DIR}")
 
 add_executable(ldp3 src/driver/ldp3_main.cpp)

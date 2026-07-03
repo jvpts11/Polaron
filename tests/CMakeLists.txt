@@ -25,6 +25,14 @@ set_tests_properties(ldp3_new_wrote_manifest PROPERTIES
     DEPENDS ldp3_new_scaffolds
     PASS_REGULAR_EXPRESSION "\\[ldp3_project\\]")
 
+if(LDP3_CLANG)
+    add_test(NAME ldp3_compile_produces_exe
+        COMMAND ldp3 compile "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(ldp3_compile_produces_exe PROPERTIES
+        PASS_REGULAR_EXPRESSION "wrote .*hello_world.exe")
+endif()
+
 add_test(NAME lexer_dumps_tokens
     COMMAND ldp3c --dump-tokens "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3")
 set_tests_properties(lexer_dumps_tokens PROPERTIES

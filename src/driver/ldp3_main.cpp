@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "driver/build.h"
+#include "driver/manifest.h"
 #include "driver/scaffold.h"
 
 namespace {
@@ -44,6 +46,15 @@ int main(int argc, char** argv) {
     if (cmd == "init") {
         const std::filesystem::path cwd = std::filesystem::current_path();
         return ldp3::driver::scaffold(cwd, cwd.filename().string());
+    }
+    if (cmd == "compile") {
+        if (args.size() < 2) { std::fprintf(stderr, "ldp3: 'compile' requires a file\n"); return 2; }
+        const std::filesystem::path file(args[1]);
+        ldp3::driver::Manifest m = ldp3::driver::ephemeralManifest(file);
+        m.outputDir = "build-output/";
+        ldp3::driver::BuildOptions opts;
+        for (std::size_t i = 2; i < args.size(); ++i) opts.passthrough.push_back(args[i]);
+        return ldp3::driver::buildProgram(m, std::filesystem::current_path(), opts);
     }
 
     std::fprintf(stderr, "ldp3: unknown command '%s'\n", cmd.c_str());
