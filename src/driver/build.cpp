@@ -7,10 +7,6 @@ namespace ldp3::driver {
 namespace fs = std::filesystem;
 
 int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptions& opts) {
-    if (m.hasDependencies) {
-        std::fprintf(stderr, "ldp3: dependencies are not supported yet (coming in a later release)\n");
-        return 1;
-    }
     const Toolchain tc = locateToolchain();
 
     const fs::path entry = projectDir / m.entry;
@@ -25,25 +21,68 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     const fs::path ll = outDir / (m.name + ".ll");
     const fs::path exe = outDir / (m.name + ".exe");
 
-    // 1) Compile: ldp3c <entry> -o <ll> [passthrough]
-    std::vector<std::string> compileArgs = {entry.string(), "-o", ll.string()};
+    // Resolve each dependency's compiled bundle (currently from the project's packages/; the shared
+    // environment is added in a later slice). Every declared dependency must be installed.
+    std::vector<fs::path> ldbs;
+    for (const auto& d : m.dependencies) {
+        const fs::path ldb = projectDir / "packages" / d.name / (d.name + ".ldb");
+        if (!fs::is_regular_file(ldb)) {
+            std::fprintf(stderr, "ldp3: dependency '%s' is not installed; run 'ldp3 plug'\n", d.name.c_str());
+            return 1;
+        }
+        ldbs.push_back(ldb);
+    }
+
+    // 1) Compile: ldp3c <entry> [--use <dep.ldb>...] -o <ll> [passthrough]
+    std::vector<std::string> compileArgs = {entry.string()};
+    for (const auto& ldb : ldbs) {
+        compileArgs.push_back("--use");
+        compileArgs.push_back(ldb.string());
+    }
+    compileArgs.push_back("-o");
+    compileArgs.push_back(ll.string());
     for (const auto& p : opts.passthrough) compileArgs.push_back(p);
     if (int rc = runProcess(tc.ldp3c, compileArgs); rc != 0) {
         std::fprintf(stderr, "ldp3: compilation failed\n");
         return rc == -1 ? 1 : rc;
     }
 
-    // 2) Link: clang <ll> <runtimeLib> -llegacy_stdio_definitions -lws2_32 -o <exe>
-    std::vector<std::string> linkArgs = {
-        "-Wno-override-module", ll.string(), tc.runtimeLib,
-        "-llegacy_stdio_definitions", "-lws2_32", "-o", exe.string()};
+    // 2) Extract each dependency's bitcode and compile it to a native object. (Handing raw bitcode to the
+    // linker alongside the MSVC-built runtime lib pushes lld-link into an LTO path that drops the CRT
+    // imports; a plain object sidesteps that.)
+    std::vector<std::string> depObjects;
+    for (const auto& ldb : ldbs) {
+        const fs::path bc = outDir / (ldb.stem().string() + ".bc");
+        if (int rc = runProcess(tc.ldp3c, {"--extract-code", ldb.string(), "-o", bc.string()}); rc != 0) {
+            std::fprintf(stderr, "ldp3: extracting code from '%s' failed\n", ldb.string().c_str());
+            return rc == -1 ? 1 : rc;
+        }
+        const fs::path obj = outDir / (ldb.stem().string() + ".obj");
+        if (int rc = runProcess(tc.clang, {"-Wno-override-module", "-c", bc.string(), "-o", obj.string()});
+            rc != 0) {
+            std::fprintf(stderr, "ldp3: compiling dependency object from '%s' failed\n", ldb.string().c_str());
+            return rc == -1 ? 1 : rc;
+        }
+        depObjects.push_back(obj.string());
+    }
+
+    // 3) Link: clang <ll> <dep.obj...> <runtimeLib> -llegacy_stdio_definitions -lws2_32 -o <exe>.
+    // Force lld as the linker so the choice is deterministic -- a native object input can otherwise flip
+    // clang to the MSVC link.exe, which does not pull in the UCRT the runtime needs.
+    std::vector<std::string> linkArgs = {"-fuse-ld=lld", "-Wno-override-module", ll.string()};
+    for (const auto& obj : depObjects) linkArgs.push_back(obj);
+    linkArgs.push_back(tc.runtimeLib);
+    linkArgs.push_back("-llegacy_stdio_definitions");
+    linkArgs.push_back("-lws2_32");
+    linkArgs.push_back("-o");
+    linkArgs.push_back(exe.string());
     if (int rc = runProcess(tc.clang, linkArgs); rc != 0) {
         std::fprintf(stderr, "ldp3: link failed\n");
         return rc == -1 ? 1 : rc;
     }
     std::printf("wrote %s\n", exe.string().c_str());
 
-    // 3) Optionally run.
+    // 4) Optionally run.
     if (opts.run) return runProcess(exe.string(), opts.runArgs);
     return 0;
 }

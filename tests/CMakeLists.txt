@@ -58,6 +58,13 @@ if(LDP3_CLANG)
     set_tests_properties(ldp3_clean_removes_output PROPERTIES
         DEPENDS ldp3_build_project
         PASS_REGULAR_EXPRESSION "cleaned")
+
+    # End to end: plug a local library and build+run a consumer that calls into it.
+    add_test(NAME ldp3_dep_build COMMAND "${CMAKE_COMMAND}"
+        "-DLDP3=$<TARGET_FILE:ldp3>"
+        "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_dep_build_test.cmake")
+    set_tests_properties(ldp3_dep_build PROPERTIES TIMEOUT 90)
 endif()
 
 add_test(NAME lexer_dumps_tokens
