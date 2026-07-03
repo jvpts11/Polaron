@@ -1,5 +1,6 @@
 #include "driver/deps.h"
 #include "driver/git.h"
+#include "driver/lockfile.h"
 #include "driver/manifest.h"
 #include "driver/process.h"
 #include "driver/semver.h"
@@ -63,7 +64,8 @@ Manifest readManifest(const fs::path& mf) {
 // nullopt on failure.
 std::optional<std::string> installDep(const fs::path& packagesDir, const fs::path& sourcesToml,
                                       const std::string& spec, const std::string& ldp3c,
-                                      std::set<std::string>& visited, std::string* recordedSource) {
+                                      std::set<std::string>& visited, std::string* recordedSource,
+                                      LockMap* installedExact) {
     std::string source, version;
     splitVersion(spec, source, version);
     const auto url = resolveSource(source, sourcesToml);
@@ -114,7 +116,8 @@ std::optional<std::string> installDep(const fs::path& packagesDir, const fs::pat
     // compiled against them. Their manifest values are themselves source specs.
     std::vector<std::string> useArgs;
     for (const auto& d : readManifest(dest / "ldp3.toml").dependencies) {
-        const auto depName = installDep(packagesDir, sourcesToml, d.version, ldp3c, visited, nullptr);
+        const auto depName =
+            installDep(packagesDir, sourcesToml, d.version, ldp3c, visited, nullptr, installedExact);
         if (!depName) {
             fs::remove_all(dest, ec);
             return std::nullopt;
@@ -133,6 +136,7 @@ std::optional<std::string> installDep(const fs::path& packagesDir, const fs::pat
         fs::remove_all(dest, ec);
         return std::nullopt;
     }
+    if (installedExact) (*installedExact)[name] = cloneVersion.empty() ? *url : (*url + "@" + cloneVersion);
     return name;
 }
 
@@ -142,9 +146,16 @@ int plug(const fs::path& manifestPath, const fs::path& packagesDir, const fs::pa
          const std::string& spec, const std::string& ldp3c) {
     std::set<std::string> visited;
     std::string recordedSource;
-    const auto name = installDep(packagesDir, sourcesToml, spec, ldp3c, visited, &recordedSource);
+    LockMap installed;
+    const auto name = installDep(packagesDir, sourcesToml, spec, ldp3c, visited, &recordedSource, &installed);
     if (!name) return 1;
     addDependency(manifestPath, *name, recordedSource);
+
+    const fs::path lockPath = manifestPath.parent_path() / "ldp3.lock";
+    LockMap lock = readLock(lockPath);
+    for (const auto& [n, s] : installed) lock[n] = s;  // pin the exact resolved versions
+    writeLock(lockPath, lock);
+
     std::printf("plugged '%s'\n", name->c_str());
     return 0;
 }
@@ -162,21 +173,32 @@ int unplug(const fs::path& manifestPath, const fs::path& packagesDir, const std:
 
 int plugAll(const fs::path& manifestPath, const fs::path& packagesDir, const fs::path& sourcesToml,
             const std::string& ldp3c) {
-    const Manifest m = readManifest(manifestPath);
-    if (m.dependencies.empty()) {
-        std::printf("no dependencies to install\n");
-        return 0;
-    }
+    const fs::path lockPath = manifestPath.parent_path() / "ldp3.lock";
+    const LockMap lock = readLock(lockPath);
     std::set<std::string> visited;
+    LockMap installed;
     int failures = 0;
-    for (const auto& d : m.dependencies) {
-        if (!installDep(packagesDir, sourcesToml, d.version, ldp3c, visited, nullptr)) ++failures;
+
+    if (!lock.empty()) {  // reproduce the pinned install exactly
+        for (const auto& [n, source] : lock) {
+            if (!installDep(packagesDir, sourcesToml, source, ldp3c, visited, nullptr, &installed)) ++failures;
+        }
+    } else {  // resolve the manifest's declared dependencies and write a fresh lock
+        const Manifest m = readManifest(manifestPath);
+        for (const auto& d : m.dependencies) {
+            if (!installDep(packagesDir, sourcesToml, d.version, ldp3c, visited, nullptr, &installed)) ++failures;
+        }
     }
     if (failures > 0) {
         std::fprintf(stderr, "ldp3: %d dependency(ies) failed to install\n", failures);
         return 1;
     }
-    std::printf("installed %zu dependency(ies)\n", visited.size());
+    if (installed.empty()) {
+        std::printf("no dependencies to install\n");
+        return 0;
+    }
+    writeLock(lockPath, installed);
+    std::printf("installed %zu dependency(ies)\n", installed.size());
     return 0;
 }
 

@@ -24,7 +24,7 @@ int printHelp() {
         "  ldp3 run [file.ldp3] [-- args...]   build and run (current project, or a bare file)\n"
         "  ldp3 build                          build the current project to build-output/\n"
         "  ldp3 compile <file.ldp3>            compile one file to an .exe (no run)\n"
-        "  ldp3 plug <url|name>[@version] [-e]  download a dependency (into packages/, or -e the env)\n"
+        "  ldp3 plug [<url|name>[@version]] [-e] download a dependency (or all of them if none named)\n"
         "  ldp3 unplug <name> [-e]             remove a dependency\n"
         "  ldp3 env new|list|remove [<name>]   manage shared environments\n"
         "  ldp3 new <name>                     scaffold a new project\n"
@@ -114,10 +114,6 @@ int main(int argc, char** argv) {
             if (args[i] == "-e" || args[i] == "--env") toEnv = true;
             else if (pkg.empty()) pkg = args[i];
         }
-        if (pkg.empty()) {
-            std::fprintf(stderr, "ldp3: '%s' requires a package\n", cmd.c_str());
-            return 2;
-        }
         const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());
         if (!manifestPath) {
             std::fprintf(stderr, "ldp3: no ldp3.toml found; run 'ldp3 init' first\n");
@@ -144,9 +140,16 @@ int main(int argc, char** argv) {
             recordManifest = ldp3::driver::environmentManifest(m.environment);
             packagesDir = ldp3::driver::environmentPackagesDir(m.environment);
         }
-        if (cmd == "unplug") return ldp3::driver::unplug(recordManifest, packagesDir, pkg);
         const std::filesystem::path sourcesToml = ldp3::driver::ldp3HomeDir() / "sources.toml";
         const ldp3::driver::Toolchain tc = ldp3::driver::locateToolchain();
+        if (cmd == "plug" && pkg.empty()) {  // no package: install everything the manifest declares
+            return ldp3::driver::plugAll(recordManifest, packagesDir, sourcesToml, tc.ldp3c);
+        }
+        if (pkg.empty()) {
+            std::fprintf(stderr, "ldp3: 'unplug' requires a package\n");
+            return 2;
+        }
+        if (cmd == "unplug") return ldp3::driver::unplug(recordManifest, packagesDir, pkg);
         return ldp3::driver::plug(recordManifest, packagesDir, sourcesToml, pkg, tc.ldp3c);
     }
     if (cmd == "env") {

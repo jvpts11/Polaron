@@ -39,6 +39,13 @@ add_test(NAME ldp3_version_range COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_range_test.cmake")
 set_tests_properties(ldp3_version_range PROPERTIES TIMEOUT 90)
 
+# plug (no args) + lockfile: a fresh clone installs its declared deps and reproduces from the lock.
+add_test(NAME ldp3_plug_all COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3=$<TARGET_FILE:ldp3>"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_plugall_test.cmake")
+set_tests_properties(ldp3_plug_all PROPERTIES TIMEOUT 90)
+
 if(LDP3_CLANG)
     add_test(NAME ldp3_compile_produces_exe
         COMMAND ldp3 compile "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3"
