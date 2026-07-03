@@ -4262,6 +4262,7 @@ add_executable(ldp3_unit_tests
     unit/test_sources.cpp   # toolchain driver: dependency source resolution
     unit/test_semver.cpp    # toolchain driver: semver parsing + range matching
     unit/test_formatter.cpp # ldp3 fmt: token-reflow formatting
+    unit/test_discovery.cpp # toolchain driver: project discovery
 )
 target_link_libraries(ldp3_unit_tests PRIVATE ldp3_core ldp3_driver doctest::doctest)
 add_test(NAME unit_tests COMMAND ldp3_unit_tests)

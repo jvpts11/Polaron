@@ -80,7 +80,8 @@ add_library(ldp3_driver STATIC
     src/driver/deps.cpp
     src/driver/environs.cpp
     src/driver/semver.cpp
-    src/driver/lockfile.cpp)
+    src/driver/lockfile.cpp
+    src/driver/discovery.cpp)
 target_include_directories(ldp3_driver PUBLIC src "${CMAKE_BINARY_DIR}")
 
 add_executable(ldp3 src/driver/ldp3_main.cpp)
@@ -95,7 +96,7 @@ set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 set(FTXUI_QUIET ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/ftxui)
 
-add_executable(ldp3-studio src/studio/main.cpp)
+add_executable(ldp3-studio src/studio/main.cpp src/studio/screens.cpp)
 target_link_libraries(ldp3-studio PRIVATE ldp3_driver ftxui::component)
 if(MSVC)
   target_compile_options(ldp3-studio PRIVATE /utf-8)  # keep the box-drawing/UTF-8 string literals intact

@@ -9,7 +9,7 @@ execute_process(COMMAND "${STUDIO}" --selftest OUTPUT_VARIABLE out RESULT_VARIAB
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "ldp3-studio --selftest exited ${rc}")
 endif()
-foreach(needle "ldp3 studio" "Projetos" "GERENCIAR" "SISTEMA" "navegar" "Bem-vindo")
+foreach(needle "ldp3 studio" "Projetos" "GERENCIAR" "SISTEMA" "navegar" "TODOS OS PROJETOS" "tic_tac_toe")
     if(NOT out MATCHES "${needle}")
         message(FATAL_ERROR "shell frame is missing '${needle}'")
     endif()
