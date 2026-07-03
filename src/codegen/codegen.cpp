@@ -4276,7 +4276,7 @@ struct CodeGenerator::Impl {
             }
         }
         // Low-level thread builtins (used by the System.Concurrency.Thread prelude class) ->
-        // runtime CreateThread/WaitForSingleObject (runtime/ldp3_rt.c).
+        // runtime CreateThread/WaitForSingleObject (runtime/ldp3_rt.cpp).
         if (name == "System.Concurrency.__threadStart") {
             llvm::Value* clos = emitExpr(*call.args[0]);  // the function<void> closure pointer
             if (clos == nullptr) return nullptr;

@@ -32,7 +32,7 @@ endif()
 
 # Link the consumer with the C++ runtime loader and the .ldb container library.
 execute_process(COMMAND "${CLANGPP}" -std=c++20 -Wno-override-module -Wno-deprecated "${ll}"
-    "${ROOT}/runtime/ldp3_rt.c" "${ROOT}/runtime/ldp3_bundle.cpp" "${ROOT}/src/bundle/ldb.cpp"
+    "${ROOT}/runtime/ldp3_rt.cpp" "${ROOT}/runtime/ldp3_bundle.cpp" "${ROOT}/src/bundle/ldb.cpp"
     -I "${ROOT}/src" -o "${exe}" -llegacy_stdio_definitions RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang++ link failed (exit ${rc})")

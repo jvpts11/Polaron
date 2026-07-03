@@ -292,7 +292,7 @@ static void __ldp3_pool_start(void) {
 void __ldp3_schedule(ldp3_resume_fn fn, void* state) {
     __ldp3_pool_start();
     EnterCriticalSection(&g_qlock);
-    g_queue[g_qtail] = (ldp3_work){fn, state};
+    g_queue[g_qtail] = ldp3_work{fn, state};  // C++ braced temporary (not a C compound literal)
     g_qtail = (g_qtail + 1) % LDP3_QCAP;
     LeaveCriticalSection(&g_qlock);
     WakeConditionVariable(&g_qcond);

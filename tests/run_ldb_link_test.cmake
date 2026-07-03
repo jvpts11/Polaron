@@ -27,7 +27,7 @@ if(NOT rc EQUAL 0)
 endif()
 
 execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}" "${bc}"
-    "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.c" -o "${exe}"
+    "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp" -o "${exe}"
     -llegacy_stdio_definitions RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})")
