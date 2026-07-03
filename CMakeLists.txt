@@ -72,7 +72,9 @@ add_library(ldp3_driver STATIC
     src/driver/scaffold.cpp
     src/driver/process.cpp
     src/driver/toolchain.cpp
-    src/driver/build.cpp)
+    src/driver/build.cpp
+    src/driver/sources.cpp
+    src/driver/git.cpp)
 target_include_directories(ldp3_driver PUBLIC src "${CMAKE_BINARY_DIR}")
 
 add_executable(ldp3 src/driver/ldp3_main.cpp)
