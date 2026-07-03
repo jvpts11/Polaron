@@ -32,6 +32,13 @@ add_test(NAME ldp3_plug_unplug COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_plug_test.cmake")
 set_tests_properties(ldp3_plug_unplug PROPERTIES TIMEOUT 90)
 
+# Version ranges: several tags, plug ^1.0.0 resolves to the highest 1.x (needs ldp3c + git, not clang).
+add_test(NAME ldp3_version_range COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3=$<TARGET_FILE:ldp3>"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_range_test.cmake")
+set_tests_properties(ldp3_version_range PROPERTIES TIMEOUT 90)
+
 if(LDP3_CLANG)
     add_test(NAME ldp3_compile_produces_exe
         COMMAND ldp3 compile "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3"
@@ -4212,6 +4219,7 @@ add_executable(ldp3_unit_tests
     unit/test_ldb.cpp  # .ldb container read/write + fingerprint (self-contained)
     unit/test_manifest.cpp  # toolchain driver: manifest TOML-subset parser
     unit/test_sources.cpp   # toolchain driver: dependency source resolution
+    unit/test_semver.cpp    # toolchain driver: semver parsing + range matching
 )
 target_link_libraries(ldp3_unit_tests PRIVATE ldp3_core ldp3_driver doctest::doctest)
 add_test(NAME unit_tests COMMAND ldp3_unit_tests)

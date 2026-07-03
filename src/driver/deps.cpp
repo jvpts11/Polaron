@@ -2,6 +2,7 @@
 #include "driver/git.h"
 #include "driver/manifest.h"
 #include "driver/process.h"
+#include "driver/semver.h"
 #include "driver/sources.h"
 #include <cstdio>
 #include <fstream>
@@ -66,12 +67,26 @@ int plug(const fs::path& manifestPath, const fs::path& packagesDir, const fs::pa
         return 1;
     }
 
+    // Resolve a semver range/constraint to a concrete tag by listing the remote's tags; a plain branch
+    // name or an empty version is cloned directly.
+    std::string cloneVersion = version;
+    if (!version.empty() && isVersionConstraint(version)) {
+        const std::vector<std::string> tags = gitListTags(*url);
+        const auto resolved = highestMatching(tags, version);
+        if (!resolved) {
+            std::fprintf(stderr, "ldp3: no tag of '%s' matches version '%s'\n", name.c_str(),
+                         version.c_str());
+            return 1;
+        }
+        cloneVersion = *resolved;
+    }
+
     std::error_code ec;
     fs::create_directories(packagesDir, ec);
     const fs::path dest = packagesDir / name;
     fs::remove_all(dest, ec);  // re-install cleanly
 
-    if (gitClone(*url, version, dest) != 0) {
+    if (gitClone(*url, cloneVersion, dest) != 0) {
         std::fprintf(stderr, "ldp3: git clone failed for '%s'\n", url->c_str());
         fs::remove_all(dest, ec);
         return 1;
