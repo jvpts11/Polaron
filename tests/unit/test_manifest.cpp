@@ -1,7 +1,25 @@
 #include <doctest/doctest.h>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include "driver/manifest.h"
 
 using namespace ldp3::driver;
+
+namespace {
+std::filesystem::path writeTemp(const std::string& content) {
+    const auto p = std::filesystem::temp_directory_path() / "ldp3_test_manifest.toml";
+    std::ofstream f(p, std::ios::binary);
+    f << content;
+    return p;
+}
+Manifest reparse(const std::filesystem::path& p) {
+    std::ifstream in(p);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    return parseManifestText(ss.str());
+}
+}  // namespace
 
 TEST_CASE("parseManifestText reads program fields") {
     const std::string toml =
@@ -45,4 +63,47 @@ TEST_CASE("ephemeralManifest uses the file stem and its path") {
     CHECK(m.entry == "samples/hello_world.ldp3");
     CHECK(m.version == "0.0.0");
     CHECK(m.hasDependencies == false);
+}
+
+TEST_CASE("parseManifestText reads the environment field and the dependency list") {
+    const std::string toml =
+        "[program]\nname = \"x\"\nentry = \"m.ldp3\"\n"
+        "[build]\nenvironment = \"gamedev\"\n"
+        "[dependencies]\naudio = \"1.2.0\"\nmath = \"2.0.0\"\n";
+    Manifest m = parseManifestText(toml);
+    CHECK(m.environment == "gamedev");
+    REQUIRE(m.dependencies.size() == 2);
+    CHECK(m.dependencies[0].name == "audio");
+    CHECK(m.dependencies[0].version == "1.2.0");
+    CHECK(m.dependencies[1].name == "math");
+}
+
+TEST_CASE("addDependency inserts into an existing section and updates in place") {
+    const auto p = writeTemp(
+        "[ldp3_project]\n\n[program]\nname = \"x\"\n\n[dependencies]\n\n[build]\noutput = \"o/\"\n");
+    CHECK(addDependency(p, "audio", "1.0.0"));
+    Manifest m1 = reparse(p);
+    REQUIRE(m1.dependencies.size() == 1);
+    CHECK(m1.dependencies[0].name == "audio");
+    CHECK(m1.dependencies[0].version == "1.0.0");
+    CHECK(m1.outputDir == "o/");  // the [build] section is preserved
+
+    CHECK(addDependency(p, "audio", "2.0.0"));  // same name updates, not duplicates
+    Manifest m2 = reparse(p);
+    REQUIRE(m2.dependencies.size() == 1);
+    CHECK(m2.dependencies[0].version == "2.0.0");
+    std::filesystem::remove(p);
+}
+
+TEST_CASE("addDependency creates a section when absent and removeDependency drops the entry") {
+    const auto p = writeTemp("[program]\nname = \"x\"\n");
+    CHECK(addDependency(p, "net", "3.1.0"));
+    Manifest m1 = reparse(p);
+    REQUIRE(m1.dependencies.size() == 1);
+    CHECK(m1.dependencies[0].name == "net");
+
+    CHECK(removeDependency(p, "net"));
+    Manifest m2 = reparse(p);
+    CHECK(m2.dependencies.empty());
+    std::filesystem::remove(p);
 }

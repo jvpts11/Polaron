@@ -28,6 +28,24 @@ std::string unquote(const std::string& s) {
     return s;
 }
 
+std::vector<std::string> readLines(const std::filesystem::path& p) {
+    std::vector<std::string> lines;
+    std::ifstream in(p);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+bool writeLines(const std::filesystem::path& p, const std::vector<std::string>& lines) {
+    std::ofstream out(p, std::ios::binary);
+    if (!out) return false;
+    for (const auto& l : lines) out << l << "\n";
+    return static_cast<bool>(out);
+}
+
 }  // namespace
 
 Manifest parseManifestText(const std::string& text) {
@@ -54,8 +72,10 @@ Manifest parseManifestText(const std::string& text) {
         } else if (section == "build") {
             if (key == "output") m.outputDir = val;
             else if (key == "target") m.target = val;
+            else if (key == "environment") m.environment = val;
             else if (key == "freestanding") m.freestanding = (val == "true");
         } else if (section == "dependencies") {
+            m.dependencies.push_back({key, val});
             m.hasDependencies = true;
         }
     }
@@ -89,6 +109,57 @@ Manifest ephemeralManifest(const std::filesystem::path& file) {
     m.entry = file.string();
     m.version = "0.0.0";
     return m;
+}
+
+bool addDependency(const std::filesystem::path& manifestPath, const std::string& name,
+                   const std::string& version) {
+    std::vector<std::string> lines = readLines(manifestPath);
+    const std::string newLine = name + " = \"" + version + "\"";
+
+    int header = -1;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (trim(lines[i]) == "[dependencies]") { header = static_cast<int>(i); break; }
+    }
+    if (header < 0) {  // no section yet: append one
+        if (!lines.empty() && !trim(lines.back()).empty()) lines.push_back("");
+        lines.push_back("[dependencies]");
+        lines.push_back(newLine);
+        return writeLines(manifestPath, lines);
+    }
+
+    int sectionEnd = static_cast<int>(lines.size());
+    for (int i = header + 1; i < static_cast<int>(lines.size()); ++i) {
+        const std::string t = trim(lines[i]);
+        if (!t.empty() && t.front() == '[') { sectionEnd = i; break; }
+    }
+    int insertAt = header + 1;
+    for (int i = header + 1; i < sectionEnd; ++i) {
+        const std::string t = trim(lines[i]);
+        const auto eq = t.find('=');
+        if (eq != std::string::npos && trim(t.substr(0, eq)) == name) {
+            lines[i] = newLine;  // update in place
+            return writeLines(manifestPath, lines);
+        }
+        if (!t.empty()) insertAt = i + 1;
+    }
+    lines.insert(lines.begin() + insertAt, newLine);
+    return writeLines(manifestPath, lines);
+}
+
+bool removeDependency(const std::filesystem::path& manifestPath, const std::string& name) {
+    std::vector<std::string> lines = readLines(manifestPath);
+    bool inDeps = false;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string t = trim(lines[i]);
+        if (!t.empty() && t.front() == '[') { inDeps = (t == "[dependencies]"); continue; }
+        if (!inDeps) continue;
+        const auto eq = t.find('=');
+        if (eq != std::string::npos && trim(t.substr(0, eq)) == name) {
+            lines.erase(lines.begin() + i);
+            break;
+        }
+    }
+    return writeLines(manifestPath, lines);
 }
 
 }  // namespace ldp3::driver
