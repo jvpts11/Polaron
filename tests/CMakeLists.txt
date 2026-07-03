@@ -4149,8 +4149,9 @@ add_executable(ldp3_unit_tests
     unit/test_parser.cpp
     unit/test_semantic.cpp
     unit/test_ldb.cpp  # .ldb container read/write + fingerprint (self-contained)
+    unit/test_manifest.cpp  # toolchain driver: manifest TOML-subset parser
 )
-target_link_libraries(ldp3_unit_tests PRIVATE ldp3_core doctest::doctest)
+target_link_libraries(ldp3_unit_tests PRIVATE ldp3_core ldp3_driver doctest::doctest)
 add_test(NAME unit_tests COMMAND ldp3_unit_tests)
 
 # The bundle tests build fixed-name .ldb/.ldh artifacts in a shared directory, so they cannot run
