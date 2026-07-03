@@ -42,7 +42,7 @@ Element detailPane(const ldp3::driver::DiscoveredProject& p) {
         text(" " + p.dir.string()) | color(theme::faint),
         separator() | color(theme::line),
         kv("entry", text(m.entry) | color(theme::ink)),
-        kv("versão", text(m.version + "  · lang " + lang) | color(theme::ink)),
+        kv("version", text(m.version + "  · lang " + lang) | color(theme::ink)),
         m.environment.empty() ? kv("environment", text("—") | color(theme::muted))
                               : kv("environment", text(m.environment) | color(theme::violet)),
         kv("deps", text(std::to_string(m.dependencies.size())) | color(theme::ink)),
@@ -56,15 +56,15 @@ Element detailPane(const ldp3::driver::DiscoveredProject& p) {
 Element renderProjects(const AppState& s) {
     Elements rows;
     if (s.projects.empty()) {
-        rows.push_back(text("  Nenhum projeto LDP3 nesta pasta.") | color(theme::muted));
-        rows.push_back(text("  Pressione s para escanear o computador.") | color(theme::faint));
+        rows.push_back(text("  No LDP3 projects in this folder.") | color(theme::muted));
+        rows.push_back(text("  Press s to scan the computer.") | color(theme::faint));
     }
     for (int i = 0; i < static_cast<int>(s.projects.size()); ++i)
         rows.push_back(projectRow(s.projects[static_cast<std::size_t>(i)], i == s.selectedProject));
 
     Element list = vbox({
-                       hbox({text(" TODOS OS PROJETOS") | color(theme::faint), filler(),
-                             text("/ buscar ") | color(theme::faint)}),
+                       hbox({text(" ALL PROJECTS") | color(theme::faint), filler(),
+                             text("/ search ") | color(theme::faint)}),
                        separator() | color(theme::line),
                        vbox(std::move(rows)) | flex,
                    }) |
@@ -72,7 +72,7 @@ Element renderProjects(const AppState& s) {
 
     Element right = s.selected() ? detailPane(*s.selected()) : Element{filler()};
     Element detail = vbox({
-                         hbox({text(" DETALHE") | color(theme::faint), filler()}),
+                         hbox({text(" DETAIL") | color(theme::faint), filler()}),
                          separator() | color(theme::line),
                          std::move(right) | flex,
                      }) |

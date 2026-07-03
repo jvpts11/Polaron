@@ -28,10 +28,10 @@ using ldp3::studio::AppState;
 namespace {
 
 Element topBar(const AppState& s) {
-    const std::string count = std::to_string(s.projects.size()) + " projetos";
+    const std::string count = std::to_string(s.projects.size()) + " projects";
     return hbox({
                text(" ▲ ldp3 studio ") | color(theme::amber) | bold,
-               text(" Projetos") | color(theme::muted),
+               text(" Projects") | color(theme::muted),
                filler(),
                text(count + " ") | color(theme::faint),
            }) |
@@ -46,12 +46,12 @@ Element navItem(const std::string& icon, const std::string& label, bool on) {
 
 Element rail() {
     return vbox({
-               text(" GERENCIAR") | color(theme::faint),
-               navItem("◈", "Projetos", true),
+               text(" MANAGE") | color(theme::faint),
+               navItem("◈", "Projects", true),
                navItem("❏", "Environments", false),
-               navItem("⬡", "Bibliotecas", false),
+               navItem("⬡", "Libraries", false),
                text(""),
-               text(" SISTEMA") | color(theme::faint),
+               text(" SYSTEM") | color(theme::faint),
                navItem("⚙", "Toolchain", false),
                filler(),
                text(" ldp3c 0.1.0") | color(theme::faint),
@@ -64,12 +64,12 @@ Element keyBar() {
         return hbox({text(" " + k + " ") | color(theme::amber) | bold, text(label + "  ") | color(theme::muted)});
     };
     return hbox({
-               key("↑↓", "navegar"),
-               key("⏎", "abrir"),
-               key("n", "novo projeto"),
-               key("s", "escanear"),
+               key("↑↓", "navigate"),
+               key("⏎", "open"),
+               key("n", "new project"),
+               key("s", "scan"),
                key("e", "environments"),
-               key("q", "sair"),
+               key("q", "quit"),
            }) |
            bgcolor(theme::panel);
 }
