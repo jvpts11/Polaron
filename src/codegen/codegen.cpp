@@ -7982,10 +7982,15 @@ struct CodeGenerator::Impl {
             const bool weak =
                 name.starts_with("literal.") || preludeClasses.count(owner) > 0 ||
                 owner.find('$') != std::string::npos;
-            if (weak)
+            if (weak) {
                 f.setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
-            else
+                // A COMDAT keyed on the symbol makes clang emit a real COFF COMDAT (SELECT_ANY) that the
+                // linker deduplicates across objects. Without it, linkonce_odr lowers to a per-object
+                // ".weak.<name>.default.<tu>" symbol that collides when two dependency objects are linked.
+                f.setComdat(module.getOrInsertComdat(f.getName()));
+            } else {
                 f.setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+            }
         }
     }
 

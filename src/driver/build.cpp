@@ -133,13 +133,9 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
 
     // 3) Link: clang <ll> <dep.obj...> <runtimeLib> -llegacy_stdio_definitions -lws2_32 -o <exe>.
     // Force lld as the linker so the choice is deterministic -- a native object input can otherwise flip
-    // clang to the MSVC link.exe, which does not pull in the UCRT the runtime needs.
-    // /force:multiple: each bundle's object embeds the (identical) stdlib prelude, so linking two or more
-    // dependency objects produces duplicate prelude symbols; taking the first copy is correct. (A cleaner
-    // fix would emit the prelude with linkonce_odr linkage in --lib mode; deferred to the compiler.)
-    std::vector<std::string> linkArgs = {"-fuse-ld=lld", "-Wno-override-module"};
-    if (!depObjects.empty()) linkArgs.push_back("-Wl,/force:multiple");
-    linkArgs.push_back(ll.string());
+    // clang to the MSVC link.exe, which does not pull in the UCRT the runtime needs. (Each bundle embeds
+    // the stdlib prelude, but ldp3c emits those symbols in COMDATs, so the linker deduplicates them.)
+    std::vector<std::string> linkArgs = {"-fuse-ld=lld", "-Wno-override-module", ll.string()};
     for (const auto& obj : depObjects) linkArgs.push_back(obj);
     linkArgs.push_back(tc.runtimeLib);
     linkArgs.push_back("-llegacy_stdio_definitions");
