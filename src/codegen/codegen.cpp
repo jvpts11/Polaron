@@ -1657,10 +1657,12 @@ struct CodeGenerator::Impl {
                 if (fc == "Time.sleep") return "void";
             }
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("Net.", 0) == 0) {
-                if (fc == "Net.recv") return "String";  // spec 34
-                if (fc == "Net.connect" || fc == "Net.send" || fc == "Net.listen" || fc == "Net.accept")
+                if (fc == "Net.recv" || fc == "Net.udpRecv" || fc == "Net.udpPeerHost") return "String";  // spec 34
+                if (fc == "Net.connect" || fc == "Net.send" || fc == "Net.listen" || fc == "Net.accept" ||
+                    fc == "Net.udpOpen" || fc == "Net.udpSend")
                     return "long";
-                if (fc == "Net.close") return "void";
+                if (fc == "Net.udpPeerPort") return "int";
+                if (fc == "Net.close" || fc == "Net.udpClose") return "void";
             }
             if (flattenCallee(*call->callee) == "Process.run") return "ProcessResult";  // spec 34
             if (const std::string ec = flattenCallee(*call->callee); ec.rfind("Env.", 0) == 0) {
@@ -4454,6 +4456,60 @@ struct CodeGenerator::Impl {
                 llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64}, false);
                 return builder.CreateCall(module.getOrInsertFunction("__ldp3_tcp_accept", ft),
                                           {fitInt(server, 64)});
+            }
+            if (fn == "udpOpen") {  // (port) -> UDP socket (port 0 = ephemeral)
+                llvm::Value* port = emitExpr(*call.args[0]);
+                if (port == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {builder.getInt32Ty()}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_udp_open", ft),
+                                          {fitInt(port, 32)});
+            }
+            if (fn == "udpSend") {  // (sock, host, port, data) -> bytes sent
+                llvm::Value* sock = emitExpr(*call.args[0]);
+                llvm::Value* host = emitExpr(*call.args[1]);
+                llvm::Value* port = emitExpr(*call.args[2]);
+                llvm::Value* data = emitExpr(*call.args[3]);
+                if (sock == nullptr || host == nullptr || port == nullptr || data == nullptr) return nullptr;
+                llvm::FunctionType* ft =
+                    llvm::FunctionType::get(i64, {i64, p, builder.getInt32Ty(), p, i64}, false);
+                return builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_udp_sendto", ft),
+                    {fitInt(sock, 64), stringData(host), fitInt(port, 32), stringData(data), stringLen(data)});
+            }
+            if (fn == "udpRecv") {  // (sock, max) -> datagram payload
+                llvm::Value* sock = emitExpr(*call.args[0]);
+                llvm::Value* max = emitExpr(*call.args[1]);
+                if (sock == nullptr || max == nullptr) return nullptr;
+                llvm::Value* cap = fitInt(max, 64);
+                llvm::Value* buf = builder.CreateCall(
+                    mallocFn(), {builder.CreateAdd(cap, builder.getInt64(1))}, "urc.buf");
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64, p, i64}, false);
+                llvm::Value* n = builder.CreateCall(module.getOrInsertFunction("__ldp3_udp_recvfrom", ft),
+                                                    {fitInt(sock, 64), buf, cap});
+                llvm::Value* len = builder.CreateSelect(
+                    builder.CreateICmpSLT(n, builder.getInt64(0)), builder.getInt64(0), n);
+                builder.CreateStore(builder.getInt8(0),
+                                    builder.CreateGEP(builder.getInt8Ty(), buf, len));  // NUL
+                return emitStringFromParts(len, buf);
+            }
+            if (fn == "udpPeerHost") {  // () -> last datagram's sender IP
+                llvm::FunctionType* ft = llvm::FunctionType::get(p, {}, false);
+                llvm::Value* cstr =
+                    builder.CreateCall(module.getOrInsertFunction("__ldp3_udp_peer_host", ft), {});
+                llvm::FunctionCallee strlenFn =
+                    module.getOrInsertFunction("strlen", llvm::FunctionType::get(i64, {p}, false));
+                return emitStringFromParts(builder.CreateCall(strlenFn, {cstr}, "ph.len"), cstr);
+            }
+            if (fn == "udpPeerPort") {  // () -> last datagram's sender port
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt32Ty(), {}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_udp_peer_port", ft), {});
+            }
+            if (fn == "udpClose") {
+                llvm::Value* sock = emitExpr(*call.args[0]);
+                if (sock == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getVoidTy(), {i64}, false);
+                builder.CreateCall(module.getOrInsertFunction("__ldp3_udp_close", ft), {fitInt(sock, 64)});
+                return nullptr;
             }
         }
         // Process (spec 34): Process.run(cmd) runs the command through the shell, captures its stdout

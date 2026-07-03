@@ -1,0 +1,26 @@
+import System.IO.Console;
+import System.Net.UdpSocket;
+import System.Net.Datagram;
+program UdpDemo;
+
+// UDP datagrams (spec 34): a receiver binds a port, a client sends a datagram to it over loopback, and the
+// receiver reads the payload plus the sender's address. Prints:
+//   ok=1 from=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                UdpSocket server = new UdpSocket(38714) on heap;   // bind to receive
+                UdpSocket client = new UdpSocket(0) on heap;       // ephemeral client port
+                long sent = client.send("127.0.0.1", 38714, "ping");
+                Datagram d = server.receive(64);
+                boolean ok = d.data.equals("ping");
+                boolean from = d.host.equals("127.0.0.1");
+                System.IO.Console.printf("ok=%d from=%d\n", ok, from);
+                server.close();
+                client.close();
+                return;
+            }
+        }
+    }
+}

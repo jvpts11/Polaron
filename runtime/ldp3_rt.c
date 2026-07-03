@@ -480,6 +480,52 @@ long long __ldp3_tcp_accept(long long server) {
     return c == INVALID_SOCKET ? -1 : (long long)c;
 }
 
+// ---- UDP datagrams (spec 34): connectionless send/receive over winsock. Open a socket (port 0 for an
+// ephemeral client port, or a fixed port to receive on); sendto resolves the destination; recvfrom
+// records the sender in globals readable via peer_host/peer_port for the request/reply pattern. ----
+static char g_udp_peer_host[64] = {0};
+static int g_udp_peer_port = 0;
+long long __ldp3_udp_open(int port) {
+    ldp3_net_init();
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return -1;
+    if (port != 0) {
+        struct sockaddr_in a;
+        memset(&a, 0, sizeof a);
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = INADDR_ANY;
+        a.sin_port = htons((unsigned short)port);
+        if (bind(s, (struct sockaddr*)&a, sizeof a) != 0) { closesocket(s); return -1; }
+    }
+    return (long long)s;
+}
+long long __ldp3_udp_sendto(long long sock, const char* host, int port, const char* data, long long len) {
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    char ports[16];
+    sprintf(ports, "%d", port);
+    if (getaddrinfo(host, ports, &hints, &res) != 0 || res == NULL) return -1;
+    int n = sendto((SOCKET)sock, data, (int)len, 0, res->ai_addr, (int)res->ai_addrlen);
+    freeaddrinfo(res);
+    return (long long)n;
+}
+long long __ldp3_udp_recvfrom(long long sock, char* buf, long long cap) {
+    struct sockaddr_in a;
+    int alen = (int)sizeof a;
+    memset(&a, 0, sizeof a);
+    int n = recvfrom((SOCKET)sock, buf, (int)cap, 0, (struct sockaddr*)&a, &alen);
+    if (n >= 0) {
+        inet_ntop(AF_INET, &a.sin_addr, g_udp_peer_host, sizeof g_udp_peer_host);
+        g_udp_peer_port = ntohs(a.sin_port);
+    }
+    return (long long)n;
+}
+const char* __ldp3_udp_peer_host(void) { return g_udp_peer_host; }
+int __ldp3_udp_peer_port(void) { return g_udp_peer_port; }
+void __ldp3_udp_close(long long sock) { closesocket((SOCKET)sock); }
+
 // ---- Subprocess (spec 34): run a command line through the shell, capturing its stdout and exit
 // code. Returns a malloc'd NUL-terminated buffer of the captured output; *outLen is its length and
 // *outExit the process exit code (-1 if the process could not be started). ----

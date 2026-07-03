@@ -7421,6 +7421,33 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; still the same System.Net namespace.
 R"LDP3(
+        // A received datagram (spec 34): its payload plus the sender's address, so a server can reply.
+        public class Datagram {
+            public String data;
+            public String host;
+            public int port;
+            public constructor Datagram(String data, String host, int port) {
+                this.data = data;
+                this.host = host;
+                this.port = port;
+            }
+        }
+        // A UDP socket (spec 34): connectionless datagrams. Open with port 0 for an ephemeral client port,
+        // or a fixed port to receive on. send addresses each datagram; receive returns the payload together
+        // with the sender's address (via the runtime's last-sender record) for request/reply exchanges.
+        public class UdpSocket {
+            private mutable long handle;
+            public constructor UdpSocket(int port) { this.handle = Net.udpOpen(port); }
+            public method isOpen() returns boolean { return this.handle >= cast<long>(0); }
+            public method send(String host, int port, String data) returns long {
+                return Net.udpSend(this.handle, host, port, data);
+            }
+            public method receive(int max) returns Datagram {
+                String payload = Net.udpRecv(this.handle, max);
+                return new Datagram(payload, Net.udpPeerHost(), Net.udpPeerPort()) on heap;
+            }
+            public method close() returns void { Net.udpClose(this.handle); }
+        }
         // A parsed HTTP response (spec 34): the raw text is kept and queried lazily. status reads the code
         // from the start line, header returns a field's value, and body is everything after the blank line.
         public class HttpResponse {
