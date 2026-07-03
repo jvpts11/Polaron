@@ -7500,6 +7500,198 @@ R"LDP3(
                 return out;
             }
         }
+)LDP3"
+// (split: keep each literal under MSVC's ~16KB cap; still the same System.Security namespace.)
+R"LDP3(
+        // AES block cipher (spec 34; FIPS-197), pure LDP3. Supports 128- and 256-bit keys (16 or 32 bytes).
+        // The S-boxes are generated from the GF(2^8) multiplicative inverse plus the affine transform (so no
+        // 256-entry literal tables). encryptBlock/decryptBlock are the raw 16-byte ECB primitive; ctr() is
+        // the recommended stream mode (a keystream XORed with the data, so encryption and decryption are the
+        // same call). Verified against the FIPS-197 test vector. Bytes are carried as ints in 0..255.
+        public class Aes {
+            private mutable int[] sbox;
+            private mutable int[] invSbox;
+            private mutable int[] rk;      // expanded round-key bytes: (rounds+1)*16
+            private mutable int rounds;
+            public constructor Aes(int[] key) {
+                this.initTables();
+                this.expandKey(key);
+            }
+            private method xtime(int x) returns int {
+                mutable int r = (x << 1) & 255;
+                if ((x & 128) != 0) { r = r ^ 27; }   // reduce by 0x11b
+                return r;
+            }
+            private method rotl8(int b, int n) returns int {
+                return ((b << n) | (b >> (8 - n))) & 255;
+            }
+            private method initTables() returns void {
+                mutable int[] expt = new int[256]();   // powers of the generator 3
+                mutable int[] logt = new int[256]();
+                mutable int x = 1;
+                for (mutable int i = 0; i < 255; i++) {
+                    expt[i] = x;
+                    logt[x] = i;
+                    x = x ^ this.xtime(x);   // x *= 3 in GF(2^8)
+                }
+                this.sbox = new int[256]();
+                this.invSbox = new int[256]();
+                for (mutable int a = 0; a < 256; a++) {
+                    mutable int inv = 0;
+                    if (a != 0) { inv = expt[(255 - logt[a]) % 255]; }
+                    mutable int s = inv ^ this.rotl8(inv, 1) ^ this.rotl8(inv, 2)
+                                  ^ this.rotl8(inv, 3) ^ this.rotl8(inv, 4) ^ 99;   // affine, +0x63
+                    s = s & 255;
+                    this.sbox[a] = s;
+                    this.invSbox[s] = a;
+                }
+            }
+            private method gmul(int a, int b) returns int {
+                mutable int p = 0;
+                mutable int aa = a & 255;
+                mutable int bb = b & 255;
+                for (mutable int i = 0; i < 8; i++) {
+                    if ((bb & 1) != 0) { p = p ^ aa; }
+                    aa = this.xtime(aa);
+                    bb = bb >> 1;
+                }
+                return p & 255;
+            }
+            private method expandKey(int[] key) returns void {
+                int nk = key.length() / 4;          // 4 (AES-128) or 8 (AES-256)
+                this.rounds = nk + 6;               // 10 or 14
+                int nw = (this.rounds + 1) * 4;      // total 32-bit words
+                this.rk = new int[nw * 4]();
+                for (mutable int i = 0; i < nk * 4; i++) { this.rk[i] = key[i] & 255; }
+                mutable int rcon = 1;
+                mutable int w = nk;
+                while (w < nw) {
+                    mutable int t0 = this.rk[(w - 1) * 4 + 0];
+                    mutable int t1 = this.rk[(w - 1) * 4 + 1];
+                    mutable int t2 = this.rk[(w - 1) * 4 + 2];
+                    mutable int t3 = this.rk[(w - 1) * 4 + 3];
+                    if (w % nk == 0) {
+                        int r0 = this.sbox[t1] ^ rcon;   // RotWord + SubWord + Rcon
+                        int r1 = this.sbox[t2];
+                        int r2 = this.sbox[t3];
+                        int r3 = this.sbox[t0];
+                        t0 = r0; t1 = r1; t2 = r2; t3 = r3;
+                        rcon = this.xtime(rcon);
+                    } else if (nk > 6 && (w % nk) == 4) {
+                        t0 = this.sbox[t0]; t1 = this.sbox[t1];   // SubWord (AES-256)
+                        t2 = this.sbox[t2]; t3 = this.sbox[t3];
+                    }
+                    this.rk[w * 4 + 0] = this.rk[(w - nk) * 4 + 0] ^ t0;
+                    this.rk[w * 4 + 1] = this.rk[(w - nk) * 4 + 1] ^ t1;
+                    this.rk[w * 4 + 2] = this.rk[(w - nk) * 4 + 2] ^ t2;
+                    this.rk[w * 4 + 3] = this.rk[(w - nk) * 4 + 3] ^ t3;
+                    w = w + 1;
+                }
+            }
+            private method addRoundKey(int[] s, int round) returns void {
+                for (mutable int i = 0; i < 16; i++) { s[i] = s[i] ^ this.rk[round * 16 + i]; }
+            }
+            private method subBytes(int[] s) returns void {
+                for (mutable int i = 0; i < 16; i++) { s[i] = this.sbox[s[i]]; }
+            }
+            private method invSubBytes(int[] s) returns void {
+                for (mutable int i = 0; i < 16; i++) { s[i] = this.invSbox[s[i]]; }
+            }
+            private method shiftRows(int[] s) returns void {   // state index = row + 4*col
+                mutable int[] t = new int[16]();
+                for (mutable int r = 0; r < 4; r++) {
+                    for (mutable int c = 0; c < 4; c++) { t[r + 4 * c] = s[r + 4 * ((c + r) % 4)]; }
+                }
+                for (mutable int i = 0; i < 16; i++) { s[i] = t[i]; }
+            }
+            private method invShiftRows(int[] s) returns void {
+                mutable int[] t = new int[16]();
+                for (mutable int r = 0; r < 4; r++) {
+                    for (mutable int c = 0; c < 4; c++) { t[r + 4 * c] = s[r + 4 * ((c - r + 4) % 4)]; }
+                }
+                for (mutable int i = 0; i < 16; i++) { s[i] = t[i]; }
+            }
+            private method mixColumns(int[] s) returns void {
+                for (mutable int c = 0; c < 4; c++) {
+                    int a0 = s[4 * c + 0];
+                    int a1 = s[4 * c + 1];
+                    int a2 = s[4 * c + 2];
+                    int a3 = s[4 * c + 3];
+                    s[4 * c + 0] = this.gmul(a0, 2) ^ this.gmul(a1, 3) ^ a2 ^ a3;
+                    s[4 * c + 1] = a0 ^ this.gmul(a1, 2) ^ this.gmul(a2, 3) ^ a3;
+                    s[4 * c + 2] = a0 ^ a1 ^ this.gmul(a2, 2) ^ this.gmul(a3, 3);
+                    s[4 * c + 3] = this.gmul(a0, 3) ^ a1 ^ a2 ^ this.gmul(a3, 2);
+                }
+            }
+            private method invMixColumns(int[] s) returns void {
+                for (mutable int c = 0; c < 4; c++) {
+                    int a0 = s[4 * c + 0];
+                    int a1 = s[4 * c + 1];
+                    int a2 = s[4 * c + 2];
+                    int a3 = s[4 * c + 3];
+                    s[4 * c + 0] = this.gmul(a0, 14) ^ this.gmul(a1, 11) ^ this.gmul(a2, 13) ^ this.gmul(a3, 9);
+                    s[4 * c + 1] = this.gmul(a0, 9) ^ this.gmul(a1, 14) ^ this.gmul(a2, 11) ^ this.gmul(a3, 13);
+                    s[4 * c + 2] = this.gmul(a0, 13) ^ this.gmul(a1, 9) ^ this.gmul(a2, 14) ^ this.gmul(a3, 11);
+                    s[4 * c + 3] = this.gmul(a0, 11) ^ this.gmul(a1, 13) ^ this.gmul(a2, 9) ^ this.gmul(a3, 14);
+                }
+            }
+            public method encryptBlock(int[] input) returns int[] {
+                mutable int[] s = new int[16]();
+                for (mutable int i = 0; i < 16; i++) { s[i] = input[i] & 255; }
+                this.addRoundKey(s, 0);
+                for (mutable int r = 1; r < this.rounds; r++) {
+                    this.subBytes(s);
+                    this.shiftRows(s);
+                    this.mixColumns(s);
+                    this.addRoundKey(s, r);
+                }
+                this.subBytes(s);
+                this.shiftRows(s);
+                this.addRoundKey(s, this.rounds);
+                return s;
+            }
+            public method decryptBlock(int[] input) returns int[] {
+                mutable int[] s = new int[16]();
+                for (mutable int i = 0; i < 16; i++) { s[i] = input[i] & 255; }
+                this.addRoundKey(s, this.rounds);
+                for (mutable int r = this.rounds - 1; r > 0; r = r - 1) {
+                    this.invShiftRows(s);
+                    this.invSubBytes(s);
+                    this.addRoundKey(s, r);
+                    this.invMixColumns(s);
+                }
+                this.invShiftRows(s);
+                this.invSubBytes(s);
+                this.addRoundKey(s, 0);
+                return s;
+            }
+            // CTR mode (spec 34): keystream = encryptBlock(counter) XOR data; symmetric, no padding. iv is a
+            // 16-byte nonce/counter start; the counter increments big-endian per block.
+            public method ctr(int[] data, int[] iv) returns int[] {
+                int n = data.length();
+                mutable int[] out = new int[n]();
+                mutable int[] counter = new int[16]();
+                for (mutable int i = 0; i < 16; i++) { counter[i] = iv[i] & 255; }
+                mutable int off = 0;
+                while (off < n) {
+                    mutable int[] ks = this.encryptBlock(counter);
+                    mutable int j = 0;
+                    while (j < 16 && off + j < n) {
+                        out[off + j] = (data[off + j] ^ ks[j]) & 255;
+                        j = j + 1;
+                    }
+                    mutable int c = 15;
+                    mutable boolean carry = true;
+                    while (c >= 0 && carry) {
+                        counter[c] = (counter[c] + 1) & 255;
+                        if (counter[c] != 0) { carry = false; }
+                        c = c - 1;
+                    }
+                    off = off + 16;
+                }
+                return out;
+            }
+        }
     }
     public namespace System.Net {
         // A blocking TCP socket (spec 34) wrapping an OS handle (or -1 on failure). Build a client with

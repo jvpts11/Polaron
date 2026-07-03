@@ -1,0 +1,71 @@
+import System.IO.Console;
+import System.Security.Aes;
+program AesDemo;
+
+// AES (spec 34, FIPS-197): verify the standard AES-128 test vector (key 000102..0f, plaintext 0011..ff ->
+// ciphertext 69c4e0d86a7b0430d8cdb78070b4c55a), the ECB round-trip, and the CTR stream round-trip. Prints:
+//   vec=1 ecb=1 ctr=1 changed=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] key = new int[16]();
+                mutable int[] pt = new int[16]();
+                for (mutable int i = 0; i < 16; i++) {
+                    key[i] = i;
+                    pt[i] = i * 17;   // 0x00, 0x11, ... 0xff
+                }
+                Aes aes = new Aes(key) on heap;
+                int[] ct = aes.encryptBlock(pt);
+
+                mutable int[] want = new int[16]();
+                want[0] = 105;  want[1] = 196;  want[2] = 224;  want[3] = 216;
+                want[4] = 106;  want[5] = 123;  want[6] = 4;    want[7] = 48;
+                want[8] = 216;  want[9] = 205;  want[10] = 183; want[11] = 128;
+                want[12] = 112; want[13] = 180; want[14] = 197; want[15] = 90;
+                mutable boolean vec = true;
+                for (mutable int i = 0; i < 16; i++) {
+                    if (ct[i] != want[i]) { vec = false; }
+                }
+
+                int[] rt = aes.decryptBlock(ct);
+                mutable boolean ecb = true;
+                for (mutable int i = 0; i < 16; i++) {
+                    if (rt[i] != pt[i]) { ecb = false; }
+                }
+
+                mutable int[] msg = new int[20]();
+                for (mutable int i = 0; i < 20; i++) { msg[i] = (i * 7 + 3) & 255; }
+                mutable int[] iv = new int[16]();
+                for (mutable int i = 0; i < 16; i++) { iv[i] = 0; }
+                int[] enc = aes.ctr(msg, iv);
+                int[] dec = aes.ctr(enc, iv);
+                mutable boolean ctrok = true;
+                mutable boolean changed = false;
+                for (mutable int i = 0; i < 20; i++) {
+                    if (dec[i] != msg[i]) { ctrok = false; }
+                    if (enc[i] != msg[i]) { changed = true; }
+                }
+
+                // AES-256 (FIPS-197): key 0001..1f, same plaintext -> 8ea2b7ca516745bfeafc49904b496089.
+                mutable int[] key256 = new int[32]();
+                for (mutable int i = 0; i < 32; i++) { key256[i] = i; }
+                Aes aes256 = new Aes(key256) on heap;
+                int[] ct256 = aes256.encryptBlock(pt);
+                mutable int[] want256 = new int[16]();
+                want256[0] = 142;  want256[1] = 162;  want256[2] = 183;  want256[3] = 202;
+                want256[4] = 81;   want256[5] = 103;  want256[6] = 69;   want256[7] = 191;
+                want256[8] = 234;  want256[9] = 252;  want256[10] = 73;  want256[11] = 144;
+                want256[12] = 75;  want256[13] = 73;  want256[14] = 96;  want256[15] = 137;
+                mutable boolean vec256 = true;
+                for (mutable int i = 0; i < 16; i++) {
+                    if (ct256[i] != want256[i]) { vec256 = false; }
+                }
+
+                System.IO.Console.printf("vec=%d ecb=%d ctr=%d changed=%d vec256=%d\n",
+                    vec, ecb, ctrok, changed, vec256);
+                return;
+            }
+        }
+    }
+}

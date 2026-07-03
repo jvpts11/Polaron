@@ -66,6 +66,15 @@ add_test(NAME codegen_main_args_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# AES (spec 34, FIPS-197): AES-128/256 test vectors + ECB and CTR round-trips.
+add_test(NAME codegen_aes_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/aes.ldp3"
+    "-DCONTAINS=vec=1 ecb=1 ctr=1 changed=1 vec256=1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # ZonedDateTime (spec 34): an Instant read at a fixed UTC offset, with ISO-8601 formatting.
 add_test(NAME codegen_zoned_datetime_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
