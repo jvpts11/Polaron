@@ -65,6 +65,13 @@ if(LDP3_CLANG)
         "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/run_dep_build_test.cmake")
     set_tests_properties(ldp3_dep_build PROPERTIES TIMEOUT 90)
+
+    # Environments: env new, plug -e into it, build a consumer that declares it, list, remove.
+    add_test(NAME ldp3_environments COMMAND "${CMAKE_COMMAND}"
+        "-DLDP3=$<TARGET_FILE:ldp3>"
+        "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_env_test.cmake")
+    set_tests_properties(ldp3_environments PROPERTIES TIMEOUT 90)
 endif()
 
 add_test(NAME lexer_dumps_tokens

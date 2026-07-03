@@ -2,6 +2,8 @@
 #include "driver/process.h"
 #include "driver/toolchain.h"
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 
 namespace ldp3::driver {
 namespace fs = std::filesystem;
@@ -31,6 +33,33 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
             return 1;
         }
         ldbs.push_back(ldb);
+    }
+
+    // Additionally resolve the shared environment's dependencies, if the project declares one (a project
+    // may use its own packages/ and an environment at the same time -- the resolution is their union).
+    if (!m.environment.empty()) {
+        const fs::path envDir = ldp3HomeDir() / "environments" / m.environment;
+        const fs::path envManifest = envDir / "ldp3.toml";
+        if (fs::is_regular_file(envManifest)) {
+            std::ifstream in(envManifest);
+            std::stringstream ss;
+            ss << in.rdbuf();
+            const Manifest em = parseManifestText(ss.str());
+            for (const auto& d : em.dependencies) {
+                const fs::path ldb = envDir / "packages" / d.name / (d.name + ".ldb");
+                if (!fs::is_regular_file(ldb)) {
+                    std::fprintf(stderr,
+                                 "ldp3: environment dependency '%s' is not installed; run 'ldp3 plug -e'\n",
+                                 d.name.c_str());
+                    return 1;
+                }
+                ldbs.push_back(ldb);
+            }
+        } else {
+            std::fprintf(stderr, "ldp3: environment '%s' does not exist; run 'ldp3 env new %s'\n",
+                         m.environment.c_str(), m.environment.c_str());
+            return 1;
+        }
     }
 
     // 1) Compile: ldp3c <entry> [--use <dep.ldb>...] -o <ll> [passthrough]

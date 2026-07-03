@@ -9,6 +9,7 @@
 
 #include "driver/build.h"
 #include "driver/deps.h"
+#include "driver/environs.h"
 #include "driver/manifest.h"
 #include "driver/scaffold.h"
 #include "driver/toolchain.h"
@@ -23,8 +24,9 @@ int printHelp() {
         "  ldp3 run [file.ldp3] [-- args...]   build and run (current project, or a bare file)\n"
         "  ldp3 build                          build the current project to build-output/\n"
         "  ldp3 compile <file.ldp3>            compile one file to an .exe (no run)\n"
-        "  ldp3 plug <url|name>[@version]      download a dependency into packages/\n"
-        "  ldp3 unplug <name>                  remove a dependency\n"
+        "  ldp3 plug <url|name>[@version] [-e]  download a dependency (into packages/, or -e the env)\n"
+        "  ldp3 unplug <name> [-e]             remove a dependency\n"
+        "  ldp3 env new|list|remove [<name>]   manage shared environments\n"
         "  ldp3 new <name>                     scaffold a new project\n"
         "  ldp3 init                           scaffold in the current directory\n"
         "  ldp3 clean                          remove build-output/\n"
@@ -105,9 +107,15 @@ int main(int argc, char** argv) {
         for (std::size_t i = sep + 1; i < args.size(); ++i) opts.runArgs.push_back(args[i]);
         return ldp3::driver::buildProgram(m, projectDir, opts);
     }
-    if (cmd == "plug") {
-        if (args.size() < 2) {
-            std::fprintf(stderr, "ldp3: 'plug' requires a package (name or Git URL)\n");
+    if (cmd == "plug" || cmd == "unplug") {
+        bool toEnv = false;
+        std::string pkg;
+        for (std::size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "-e" || args[i] == "--env") toEnv = true;
+            else if (pkg.empty()) pkg = args[i];
+        }
+        if (pkg.empty()) {
+            std::fprintf(stderr, "ldp3: '%s' requires a package\n", cmd.c_str());
             return 2;
         }
         const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());
@@ -115,23 +123,45 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "ldp3: no ldp3.toml found; run 'ldp3 init' first\n");
             return 1;
         }
-        const std::filesystem::path packagesDir = manifestPath->parent_path() / "packages";
+        // Resolve the target: the project's packages/, or its declared environment (with -e).
+        std::filesystem::path recordManifest = *manifestPath;
+        std::filesystem::path packagesDir = manifestPath->parent_path() / "packages";
+        if (toEnv) {
+            std::ifstream f(*manifestPath);
+            std::stringstream ss;
+            ss << f.rdbuf();
+            const ldp3::driver::Manifest m = ldp3::driver::parseManifestText(ss.str());
+            if (m.environment.empty()) {
+                std::fprintf(stderr,
+                    "ldp3: no environment declared ([build] environment); declare one or drop -e\n");
+                return 1;
+            }
+            if (!std::filesystem::exists(ldp3::driver::environmentsDir() / m.environment)) {
+                std::fprintf(stderr, "ldp3: environment '%s' does not exist; run 'ldp3 env new %s'\n",
+                             m.environment.c_str(), m.environment.c_str());
+                return 1;
+            }
+            recordManifest = ldp3::driver::environmentManifest(m.environment);
+            packagesDir = ldp3::driver::environmentPackagesDir(m.environment);
+        }
+        if (cmd == "unplug") return ldp3::driver::unplug(recordManifest, packagesDir, pkg);
         const std::filesystem::path sourcesToml = ldp3::driver::ldp3HomeDir() / "sources.toml";
         const ldp3::driver::Toolchain tc = ldp3::driver::locateToolchain();
-        return ldp3::driver::plug(*manifestPath, packagesDir, sourcesToml, args[1], tc.ldp3c);
+        return ldp3::driver::plug(recordManifest, packagesDir, sourcesToml, pkg, tc.ldp3c);
     }
-    if (cmd == "unplug") {
+    if (cmd == "env") {
         if (args.size() < 2) {
-            std::fprintf(stderr, "ldp3: 'unplug' requires a package name\n");
+            std::fprintf(stderr, "ldp3: 'env' requires a subcommand (new|list|remove)\n");
             return 2;
         }
-        const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());
-        if (!manifestPath) {
-            std::fprintf(stderr, "ldp3: no ldp3.toml found\n");
-            return 1;
+        const std::string& sub = args[1];
+        if (sub == "list") return ldp3::driver::envList();
+        if (sub == "new" || sub == "remove") {
+            if (args.size() < 3) { std::fprintf(stderr, "ldp3: 'env %s' requires a name\n", sub.c_str()); return 2; }
+            return sub == "new" ? ldp3::driver::envNew(args[2]) : ldp3::driver::envRemove(args[2]);
         }
-        const std::filesystem::path packagesDir = manifestPath->parent_path() / "packages";
-        return ldp3::driver::unplug(*manifestPath, packagesDir, args[1]);
+        std::fprintf(stderr, "ldp3: unknown 'env' subcommand '%s'\n", sub.c_str());
+        return 2;
     }
     if (cmd == "clean") {
         const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());

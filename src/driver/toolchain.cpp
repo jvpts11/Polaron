@@ -20,6 +20,7 @@ fs::path exeDir() {
 }
 
 fs::path ldp3HomeDir() {
+    if (const char* over = std::getenv("LDP3_HOME"); over && *over) return fs::path(over);
     const char* home = std::getenv("USERPROFILE");
     if (!home || !*home) home = std::getenv("HOME");
     const fs::path base = (home && *home) ? fs::path(home) : fs::current_path();

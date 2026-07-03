@@ -1,0 +1,55 @@
+#include "driver/environs.h"
+#include "driver/toolchain.h"
+#include <cstdio>
+#include <fstream>
+
+namespace ldp3::driver {
+namespace fs = std::filesystem;
+
+fs::path environmentsDir() { return ldp3HomeDir() / "environments"; }
+fs::path environmentPackagesDir(const std::string& name) { return environmentsDir() / name / "packages"; }
+fs::path environmentManifest(const std::string& name) { return environmentsDir() / name / "ldp3.toml"; }
+
+int envNew(const std::string& name) {
+    const fs::path dir = environmentsDir() / name;
+    if (fs::exists(dir)) {
+        std::fprintf(stderr, "ldp3: environment '%s' already exists\n", name.c_str());
+        return 1;
+    }
+    std::error_code ec;
+    fs::create_directories(dir / "packages", ec);
+    if (ec) {
+        std::fprintf(stderr, "ldp3: cannot create environment '%s': %s\n", name.c_str(), ec.message().c_str());
+        return 1;
+    }
+    std::ofstream mf(environmentManifest(name), std::ios::binary);
+    mf << "[ldp3_project]\n[program]\nname = \"" << name << "\"\nversion = \"0.0.0\"\n\n[dependencies]\n";
+    std::printf("created environment '%s'\n", name.c_str());
+    return 0;
+}
+
+int envList() {
+    const fs::path dir = environmentsDir();
+    std::error_code ec;
+    bool any = false;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        if (e.is_directory()) {
+            std::printf("%s\n", e.path().filename().string().c_str());
+            any = true;
+        }
+    }
+    if (!any) std::printf("(no environments)\n");
+    return 0;
+}
+
+int envRemove(const std::string& name) {
+    const fs::path dir = environmentsDir() / name;
+    std::error_code ec;
+    const bool existed = fs::exists(dir);
+    fs::remove_all(dir, ec);
+    if (existed) std::printf("removed environment '%s'\n", name.c_str());
+    else std::printf("environment '%s' does not exist\n", name.c_str());
+    return 0;
+}
+
+}  // namespace ldp3::driver
