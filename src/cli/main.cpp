@@ -896,6 +896,26 @@ R"LDP3(
             public method containsKey(K key) returns boolean {
                 return this.used[this.slotFor(key)];
             }
+            // Single-lookup helpers so callers avoid re-hashing the key. getOrDefault reads with one probe;
+            // merge inserts `value` or replaces the existing value with combine(old, value) -- the efficient
+            // way to tally (counts.merge(k, 1, add)) instead of containsKey + get + put (three probes).
+            public method getOrDefault(K key, V defaultValue) returns V {
+                int i = this.slotFor(key);
+                if (this.used[i]) { return this.values[i]; }
+                return defaultValue;
+            }
+            public method merge(K key, V value, function<V, V, V> combine) returns void {
+                if ((this.count + 1) * 4 >= this.cap * 3) { this.grow(); }
+                int i = this.slotFor(key);
+                if (!this.used[i]) {
+                    this.used[i] = true;
+                    this.count = this.count + 1;
+                    this.keys[i] = key;
+                    this.values[i] = value;
+                } else {
+                    this.values[i] = combine(this.values[i], value);
+                }
+            }
             public method remove(K key) returns boolean {  // backward-shift: reinsert the cluster after i
                 int i = this.slotFor(key);
                 if (!this.used[i]) { return false; }
@@ -1281,19 +1301,19 @@ R"LDP3(
                 this.words = new int[(size + 31) / 32]();
             }
             public method set(int i) returns void {
-                this.words[i / 32] = this.words[i / 32] | (1 << (i % 32));
+                this.words[i >> 5] = this.words[i >> 5] | (1 << (i & 31));
                 return;
             }
             public method clear(int i) returns void {
-                this.words[i / 32] = this.words[i / 32] & (~(1 << (i % 32)));
+                this.words[i >> 5] = this.words[i >> 5] & (~(1 << (i & 31)));
                 return;
             }
             public method flip(int i) returns void {
-                this.words[i / 32] = this.words[i / 32] ^ (1 << (i % 32));
+                this.words[i >> 5] = this.words[i >> 5] ^ (1 << (i & 31));
                 return;
             }
             public method get(int i) returns boolean {
-                return (this.words[i / 32] & (1 << (i % 32))) != 0;
+                return (this.words[i >> 5] & (1 << (i & 31))) != 0;
             }
             public method count() returns int {
                 mutable int total = 0;
