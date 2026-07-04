@@ -1900,12 +1900,12 @@ struct CodeGenerator::Impl {
     llvm::FunctionCallee mallocFn() {
         llvm::FunctionType* ty =
             llvm::FunctionType::get(builder.getPtrTy(), {builder.getInt64Ty()}, false);
-        return module.getOrInsertFunction("malloc", ty);
+        return module.getOrInsertFunction("__ldp3_malloc", ty);  // pooled allocator (runtime)
     }
     llvm::FunctionCallee reallocFn() {  // realloc(ptr, size) -> ptr (for array resize, spec 25)
         llvm::FunctionType* ty = llvm::FunctionType::get(
             builder.getPtrTy(), {builder.getPtrTy(), builder.getInt64Ty()}, false);
-        return module.getOrInsertFunction("realloc", ty);
+        return module.getOrInsertFunction("__ldp3_realloc", ty);  // pooled allocator (runtime)
     }
     // __ldp3_persist_slot(key, index, size) -> block: the in-process registry for index-keyed
     // persistent reattach (spec 18.5). Returns the surviving block for (key, index) or a fresh zeroed
@@ -1920,7 +1920,7 @@ struct CodeGenerator::Impl {
     llvm::FunctionCallee freeFn() {
         llvm::FunctionType* ty =
             llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
-        return module.getOrInsertFunction("free", ty);
+        return module.getOrInsertFunction("__ldp3_free", ty);  // pooled allocator (runtime)
     }
 
     // sizeof(type) in bytes, the target-portable way: gep null + 1, then

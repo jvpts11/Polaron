@@ -28,6 +28,98 @@ void __ldp3_panic(const char* msg) {
     exit(70);
 }
 
+// Pooled allocator for LDP3 objects/arrays/strings. The Windows system malloc is slow for the
+// allocate-many-small-and-free-them pattern (trees, temporaries); a per-thread segregated free-list
+// makes new/delete of small blocks O(1) with no lock, closing the gap to hand-tuned allocators.
+//
+// Layout: [16-byte header][payload]. The header carries a 64-bit magic so __ldp3_free / __ldp3_realloc
+// can tell a pool block from any foreign (libc) pointer that reaches them -- foreign pointers (e.g. a
+// calloc'd persistent slot) are forwarded to libc, so mixing is always safe. Large requests bypass the
+// pool. Thread-local free-lists need no lock; a block freed on any thread is simply reused there.
+#define LDP3_MAGIC 0x4C44503341313142ULL  // arbitrary 64-bit tag; collision with libc data ~2^-64
+#define LDP3_POOL_MAX 512u                 // requests above this go straight to libc malloc
+#define LDP3_NCLASSES 32                   // size classes 16,32,...,512 (step 16)
+#define LDP3_SLAB (1u << 20)               // 1 MiB slabs, bump-allocated then recycled via free-list
+#define LDP3_LARGE 0xFFFFFFFFu
+
+typedef struct Ldp3Hdr {
+    unsigned long long magic;
+    unsigned int cls;
+    unsigned int pad;
+} Ldp3Hdr;
+typedef struct Ldp3FreeNode {
+    struct Ldp3FreeNode* next;
+} Ldp3FreeNode;
+
+static thread_local Ldp3FreeNode* g_ldp3_free[LDP3_NCLASSES];
+static thread_local char* g_ldp3_slab_cur;
+static thread_local char* g_ldp3_slab_end;
+
+void* __ldp3_malloc(size_t size) {
+    if (size == 0) size = 1;
+    if (size > LDP3_POOL_MAX) {  // large: a plain libc block tagged so free/realloc recognise it
+        char* p = (char*)malloc(size + 16);
+        if (p == NULL) return NULL;
+        ((Ldp3Hdr*)p)->magic = LDP3_MAGIC;
+        ((Ldp3Hdr*)p)->cls = LDP3_LARGE;
+        return p + 16;
+    }
+    unsigned cls = (unsigned)((size + 15) / 16) - 1;  // 0..31
+    Ldp3FreeNode* n = g_ldp3_free[cls];
+    if (n != NULL) {  // reuse: the header (magic + class) is still intact just before the node
+        g_ldp3_free[cls] = n->next;
+        return (void*)n;
+    }
+    size_t need = 16 + (size_t)(cls + 1) * 16;
+    if (g_ldp3_slab_cur == NULL || g_ldp3_slab_cur + need > g_ldp3_slab_end) {
+        char* s = (char*)malloc(LDP3_SLAB);
+        if (s == NULL) return NULL;
+        g_ldp3_slab_cur = s;
+        g_ldp3_slab_end = s + LDP3_SLAB;
+    }
+    char* p = g_ldp3_slab_cur;
+    g_ldp3_slab_cur += need;
+    ((Ldp3Hdr*)p)->magic = LDP3_MAGIC;
+    ((Ldp3Hdr*)p)->cls = cls;
+    return p + 16;
+}
+
+void __ldp3_free(void* ptr) {
+    if (ptr == NULL) return;
+    Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
+    if (h->magic != LDP3_MAGIC) {  // foreign pointer (libc) -- forward
+        free(ptr);
+        return;
+    }
+    if (h->cls == LDP3_LARGE) {
+        free(h);
+        return;
+    }
+    Ldp3FreeNode* n = (Ldp3FreeNode*)ptr;  // recycle the payload as the free-list node
+    n->next = g_ldp3_free[h->cls];
+    g_ldp3_free[h->cls] = n;
+}
+
+void* __ldp3_realloc(void* ptr, size_t size) {
+    if (ptr == NULL) return __ldp3_malloc(size);
+    Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
+    if (h->magic != LDP3_MAGIC) return realloc(ptr, size);  // foreign pointer
+    if (h->cls == LDP3_LARGE) {
+        char* np = (char*)realloc(h, size + 16);
+        if (np == NULL) return NULL;
+        ((Ldp3Hdr*)np)->magic = LDP3_MAGIC;
+        ((Ldp3Hdr*)np)->cls = LDP3_LARGE;
+        return np + 16;
+    }
+    size_t oldsz = (size_t)(h->cls + 1) * 16;
+    if (size <= oldsz) return ptr;  // still fits the current class
+    void* np = __ldp3_malloc(size);
+    if (np == NULL) return NULL;
+    memcpy(np, ptr, oldsz);
+    __ldp3_free(ptr);
+    return np;
+}
+
 // Index-keyed persistent registry (spec 18.5): the in-process store behind `arr[i] = new T()`
 // reattach. Each (key, index) pair maps to one zeroed persistent block that survives delete within a
 // run, so the same slot returns the same block and its persistent fields reattach across delete +

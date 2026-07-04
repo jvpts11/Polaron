@@ -366,7 +366,7 @@ if(LDP3_WITH_LLVM)
     add_test(NAME codegen_region_raii_frees
         COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_raii.ldp3")
     set_tests_properties(codegen_region_raii_frees PROPERTIES
-        PASS_REGULAR_EXPRESSION "call void @free")
+        PASS_REGULAR_EXPRESSION "call void @__ldp3_free")
 
     # F9: `--lib` compiles a bundle to a .ldb (+ .ldh). The round-trip (--lib then --dump-ldb) must
     # show the bundle name and the public method signature in the generated .ldh.
