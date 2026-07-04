@@ -106,6 +106,7 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     }
     compileArgs.push_back("-o");
     compileArgs.push_back(ll.string());
+    compileArgs.push_back("-O2");  // optimized by default (runs ldp3c's middle-end); a passthrough -O overrides
     for (const auto& p : opts.passthrough) compileArgs.push_back(p);
     if (int rc = runProcess(tc.ldp3c, compileArgs); rc != 0) {
         std::fprintf(stderr, "ldp3: compilation failed\n");
@@ -123,7 +124,7 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
             return rc == -1 ? 1 : rc;
         }
         const fs::path obj = outDir / (ldb.stem().string() + ".obj");
-        if (int rc = runProcess(tc.clang, {"-Wno-override-module", "-c", bc.string(), "-o", obj.string()});
+        if (int rc = runProcess(tc.clang, {"-O2", "-Wno-override-module", "-c", bc.string(), "-o", obj.string()});
             rc != 0) {
             std::fprintf(stderr, "ldp3: compiling dependency object from '%s' failed\n", ldb.string().c_str());
             return rc == -1 ? 1 : rc;
@@ -135,7 +136,7 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     // Force lld as the linker so the choice is deterministic -- a native object input can otherwise flip
     // clang to the MSVC link.exe, which does not pull in the UCRT the runtime needs. (Each bundle embeds
     // the stdlib prelude, but ldp3c emits those symbols in COMDATs, so the linker deduplicates them.)
-    std::vector<std::string> linkArgs = {"-fuse-ld=lld", "-Wno-override-module", ll.string()};
+    std::vector<std::string> linkArgs = {"-O2", "-fuse-ld=lld", "-Wno-override-module", ll.string()};
     for (const auto& obj : depObjects) linkArgs.push_back(obj);
     linkArgs.push_back(tc.runtimeLib);
     linkArgs.push_back("-llegacy_stdio_definitions");
