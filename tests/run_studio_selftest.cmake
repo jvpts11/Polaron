@@ -68,4 +68,15 @@ foreach(needle "New environment" "NAME" "create")
     endif()
 endforeach()
 
+# The Libraries inventory: libraries, versions and where each is used.
+execute_process(COMMAND "${STUDIO}" --selftest-lib OUTPUT_VARIABLE lib RESULT_VARIABLE lrc)
+if(NOT lrc EQUAL 0)
+    message(FATAL_ERROR "ldp3-studio --selftest-lib exited ${lrc}")
+endif()
+foreach(needle "LIBRARIES" "vec_simd" "USED BY PROJECTS" "gamedev")
+    if(NOT lib MATCHES "${needle}")
+        message(FATAL_ERROR "libraries frame is missing '${needle}'")
+    endif()
+endforeach()
+
 message(STATUS "OK: ldp3-studio all screens")

@@ -7,13 +7,21 @@
 namespace ldp3::studio {
 
 // Which screen the main area is showing.
-enum class Screen { Projects, ProjectDetail, Environments };
+enum class Screen { Projects, ProjectDetail, Environments, Libraries };
 
 // A shared environment: its libraries and the projects that use it.
 struct Environment {
     std::string name;
     std::vector<ldp3::driver::Dependency> libs;
     std::vector<std::string> usedBy;
+};
+
+// A library seen on the machine: the distinct versions referenced and where (projects and environments).
+struct Library {
+    std::string name;
+    std::vector<std::string> versions;
+    std::vector<std::string> usedByProjects;
+    std::vector<std::string> usedByEnvs;
 };
 
 // The new-project modal's state.
@@ -49,6 +57,8 @@ struct AppState {
     Console console;
     std::vector<Environment> environments;
     int selectedEnv = 0;
+    std::vector<Library> libraries;
+    int selectedLib = 0;
     NewProject newProject;
     NewEnv newEnv;
     bool scanning = false;   // a background computer-wide scan is running

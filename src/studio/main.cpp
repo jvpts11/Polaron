@@ -64,11 +64,12 @@ Element navItem(const std::string& icon, const std::string& label, bool on) {
 
 Element rail(const AppState& s) {
     const bool envOn = s.screen == studio::Screen::Environments;
+    const bool libOn = s.screen == studio::Screen::Libraries;
     return vbox({
                text(" MANAGE") | color(theme::faint),
-               navItem("◈", "Projects", !envOn),
+               navItem("◈", "Projects", !envOn && !libOn),
                navItem("❏", "Environments", envOn),
-               navItem("⬡", "Libraries", false),
+               navItem("⬡", "Libraries", libOn),
                text(""),
                text(" SYSTEM") | color(theme::faint),
                navItem("⚙", "Toolchain", false),
@@ -88,12 +89,16 @@ Element keyBar(const AppState& s) {
     if (s.screen == studio::Screen::Environments) {
         return hbox({key("↑↓", "navigate"), key("n", "new env"), key("esc", "back"), key("q", "quit")});
     }
+    if (s.screen == studio::Screen::Libraries) {
+        return hbox({key("↑↓", "navigate"), key("esc", "back"), key("q", "quit")});
+    }
     return hbox({
         key("↑↓", "navigate"),
         key("⏎", "open"),
         key("n", "new project"),
         key("s", "scan"),
         key("e", "environments"),
+        key("l", "libraries"),
         key("q", "quit"),
     });
 }
@@ -172,6 +177,18 @@ int selftest(const std::string& mode) {
         s.screen = studio::Screen::Environments;
         s.newEnv.open = true;
         s.newEnv.name = "gamedev";
+    } else if (mode == "lib") {
+        s.screen = studio::Screen::Libraries;
+        ldp3::studio::Library vec;
+        vec.name = "vec_simd";
+        vec.versions = {"2.1.0"};
+        vec.usedByProjects = {"tic_tac_toe"};
+        vec.usedByEnvs = {"gamedev"};
+        ldp3::studio::Library json;
+        json.name = "json";
+        json.versions = {"1.4.0"};
+        json.usedByEnvs = {"gamedev", "web"};
+        s.libraries = {json, vec};
     }
     ftxui::Screen screen = ftxui::Screen::Create(Dimension::Fixed(96), Dimension::Fixed(26));
     Render(screen, renderShell(s));
@@ -190,6 +207,7 @@ int main(int argc, char** argv) {
         if (arg == "--selftest-new") return selftest("new");
         if (arg == "--selftest-scan") return selftest("scan");
         if (arg == "--selftest-newenv") return selftest("newenv");
+        if (arg == "--selftest-lib") return selftest("lib");
     }
 
     AppState state;
@@ -370,6 +388,13 @@ int main(int argc, char** argv) {
             state.selectedEnv = 0;
             return true;
         }
+        if (e == Event::Character('l')) {  // jump to the Libraries inventory from anywhere
+            state.environments = ldp3::studio::loadEnvironments(state.projects);
+            state.libraries = ldp3::studio::loadLibraries(state.projects, state.environments);
+            state.screen = studio::Screen::Libraries;
+            state.selectedLib = 0;
+            return true;
+        }
         if (state.screen == studio::Screen::Projects) {
             const int last = static_cast<int>(state.projects.size()) - 1;
             if (e == Event::ArrowUp || e == Event::Character('k')) {
@@ -411,6 +436,22 @@ int main(int argc, char** argv) {
             if (e == Event::Character('n')) {  // open the new-environment modal
                 state.newEnv = ldp3::studio::NewEnv{};
                 state.newEnv.open = true;
+                return true;
+            }
+            if (e == Event::Escape) {
+                state.screen = studio::Screen::Projects;
+                return true;
+            }
+            return false;
+        }
+        if (state.screen == studio::Screen::Libraries) {
+            const int last = static_cast<int>(state.libraries.size()) - 1;
+            if (e == Event::ArrowUp || e == Event::Character('k')) {
+                state.selectedLib = std::max(0, state.selectedLib - 1);
+                return true;
+            }
+            if (e == Event::ArrowDown || e == Event::Character('j')) {
+                state.selectedLib = std::min(std::max(0, last), state.selectedLib + 1);
                 return true;
             }
             if (e == Event::Escape) {

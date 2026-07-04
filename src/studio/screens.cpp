@@ -203,6 +203,56 @@ Element renderEnvironments(const AppState& s) {
     return hbox({list | flex, std::move(detail)});
 }
 
+Element renderLibraries(const AppState& s) {
+    Elements rows;
+    if (s.libraries.empty()) {
+        rows.push_back(text("  No libraries installed.") | color(theme::muted));
+        rows.push_back(text("  Plug one into a project or environment.") | color(theme::faint));
+    }
+    for (int i = 0; i < static_cast<int>(s.libraries.size()); ++i) {
+        const Library& l = s.libraries[static_cast<std::size_t>(i)];
+        const bool sel = i == s.selectedLib;
+        const std::size_t uses = l.usedByProjects.size() + l.usedByEnvs.size();
+        Element nm = text((sel ? " ▸ " : "   ") + l.name);
+        nm = sel ? (nm | color(theme::amber) | bold) : (nm | color(theme::ink));
+        Element row = hbox({nm, filler(),
+                            text((l.versions.empty() ? "" : l.versions.front()) + "  ") | color(theme::muted),
+                            text(std::to_string(uses) + " uses ") | color(theme::faint)});
+        rows.push_back(std::move(row));
+    }
+    Element list = vbox({
+                       hbox({text(" LIBRARIES") | color(theme::faint), filler(),
+                             text(std::to_string(s.libraries.size()) + " ") | color(theme::faint)}),
+                       separator() | color(theme::line),
+                       vbox(std::move(rows)) | flex,
+                   }) |
+                   borderStyled(ROUNDED, theme::amber);
+
+    Elements right;
+    if (s.selectedLib >= 0 && s.selectedLib < static_cast<int>(s.libraries.size())) {
+        const Library& l = s.libraries[static_cast<std::size_t>(s.selectedLib)];
+        std::string versions;
+        for (std::size_t i = 0; i < l.versions.size(); ++i) {
+            if (i != 0) versions += ", ";
+            versions += l.versions[i];
+        }
+        right.push_back(text(" " + l.name) | color(theme::amber) | bold);
+        right.push_back(separator() | color(theme::line));
+        right.push_back(kv("versions", text(versions.empty() ? "—" : versions) | color(theme::ink)));
+        right.push_back(text(""));
+        right.push_back(hbox({text(" USED BY PROJECTS") | color(theme::faint), filler()}));
+        if (l.usedByProjects.empty()) right.push_back(text("  none") | color(theme::faint));
+        for (const std::string& u : l.usedByProjects) right.push_back(text("  ◈ " + u) | color(theme::ink));
+        right.push_back(text(""));
+        right.push_back(hbox({text(" USED BY ENVIRONMENTS") | color(theme::faint), filler()}));
+        if (l.usedByEnvs.empty()) right.push_back(text("  none") | color(theme::faint));
+        for (const std::string& u : l.usedByEnvs) right.push_back(text("  ❏ " + u) | color(theme::violet));
+    }
+    right.push_back(filler());
+    Element detailPane = vbox(std::move(right)) | borderStyled(ROUNDED, theme::line) | size(WIDTH, EQUAL, 46);
+    return hbox({list | flex, std::move(detailPane)});
+}
+
 }  // namespace
 
 Element renderNewProjectModal(const AppState& s) {
@@ -263,6 +313,8 @@ Element renderContent(const AppState& state) {
             return renderProjectDetail(state);
         case Screen::Environments:
             return renderEnvironments(state);
+        case Screen::Libraries:
+            return renderLibraries(state);
         default:
             return renderProjects(state);
     }

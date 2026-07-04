@@ -21,6 +21,11 @@ std::vector<Environment> loadEnvironments(const std::vector<ldp3::driver::Discov
 // Returns true on success.
 bool createProject(const std::string& name, const std::filesystem::path& parentDir, const std::string& env);
 
+// Aggregate the libraries referenced across `projects` and `environments` into a sorted inventory: each
+// library with its distinct versions and where it is used.
+std::vector<Library> loadLibraries(const std::vector<ldp3::driver::DiscoveredProject>& projects,
+                                   const std::vector<Environment>& environments);
+
 // The ldp3 CLI executable -- a sibling of ldp3-studio.
 std::filesystem::path ldp3Cli();
 
