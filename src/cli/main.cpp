@@ -294,12 +294,12 @@ R"LDP3(
             public static method dirname(String path) returns String {
                 mutable ArrayList<String> parts = Strings.split(path, "/");
                 if (parts.size() <= 1) { return ""; }
-                mutable String result = "";
+                StringBuilder sb = new StringBuilder() on heap;  // O(n); repeated concat was O(n^2)
                 for (mutable int i = 0; i < parts.size() - 1; i++) {
-                    if (i > 0) { result = result.concat("/"); }
-                    result = result.concat(parts.get(i));
+                    if (i > 0) { sb.append("/"); }
+                    sb.append(parts.get(i));
                 }
-                return result;
+                return sb.toString();
             }
             public static method extension(String path) returns String {
                 String base = Paths.basename(path);
@@ -2850,30 +2850,35 @@ R"LDP3(
                 return out;
             }
             public static method join(ArrayList<String> parts, String separator) returns String {
-                mutable String result = "";
+                StringBuilder sb = new StringBuilder() on heap;  // O(n); repeated concat was O(n^2)
                 for (mutable int i = 0; i < parts.size(); i++) {
-                    if (i > 0) { result = result.concat(separator); }
-                    result = result.concat(parts.get(i));
+                    if (i > 0) { sb.append(separator); }
+                    sb.append(parts.get(i));
                 }
-                return result;
+                return sb.toString();
             }
             public static method replace(String text, String target, String replacement) returns String {
-                if (target.length() == 0) { return text; }
-                mutable String result = "";
-                mutable String rest = text;
-                mutable boolean more = true;
-                while (more) {
-                    int at = rest.indexOf(target);
-                    if (at < 0) {
-                        result = result.concat(rest);
-                        more = false;
+                int tlen = target.length();
+                if (tlen == 0) { return text; }
+                int n = text.length();
+                StringBuilder sb = new StringBuilder() on heap;  // O(n*m); the old concat+substring was O(n^2)
+                mutable int i = 0;
+                while (i < n) {
+                    mutable boolean hit = i + tlen <= n;
+                    mutable int j = 0;
+                    while (hit && j < tlen) {
+                        if (text.charAt(i + j) != target.charAt(j)) { hit = false; }
+                        j = j + 1;
+                    }
+                    if (hit) {
+                        sb.append(replacement);
+                        i = i + tlen;
                     } else {
-                        result = result.concat(rest.substring(0, at));
-                        result = result.concat(replacement);
-                        rest = rest.substring(at + target.length(), rest.length());
+                        sb.appendChar(text.charAt(i));
+                        i = i + 1;
                     }
                 }
-                return result;
+                return sb.toString();
             }
             public static method padLeft(String text, int width, String pad) returns String {
                 if (text.length() >= width) { return text; }
@@ -2887,25 +2892,23 @@ R"LDP3(
             // arguments are ignored; a {} with no argument left is dropped. Arguments are already strings,
             // so callers stringify with toString() first.
             public static method format(String template, ArrayList<String> args) returns String {
-                mutable String result = "";
-                mutable String rest = template;
+                int n = template.length();
+                StringBuilder sb = new StringBuilder() on heap;  // O(n); the old concat+substring was O(n^2)
+                mutable int i = 0;
                 mutable int next = 0;
-                mutable boolean more = true;
-                while (more) {
-                    int at = rest.indexOf("{}");
-                    if (at < 0) {
-                        result = result.concat(rest);
-                        more = false;
-                    } else {
-                        result = result.concat(rest.substring(0, at));
+                while (i < n) {
+                    if (i + 1 < n && template.charAt(i) == 123 && template.charAt(i + 1) == 125) {
                         if (next < args.size()) {
-                            result = result.concat(args.get(next));
+                            sb.append(args.get(next));
                             next = next + 1;
                         }
-                        rest = rest.substring(at + 2, rest.length());
+                        i = i + 2;
+                    } else {
+                        sb.appendChar(template.charAt(i));
+                        i = i + 1;
                     }
                 }
-                return result;
+                return sb.toString();
             }
             // Counts the non-overlapping occurrences of a substring (spec 4).
             public static method count(String text, String sub) returns int {
@@ -8051,6 +8054,8 @@ void appendPrelude(ldp3::ast::Program& prog) {
     ldp3::ast::Program prelude = parser.parse();
     if (parser.hasErrors()) {
         std::fprintf(stderr, "internal error: the embedded prelude failed to parse\n");
+        for (const ldp3::ParseError& e : parser.errors())
+            std::fprintf(stderr, "  <prelude>:%d:%d: %s\n", e.loc.line, e.loc.col, e.message.c_str());
         return;
     }
     for (auto& bundle : prelude.bundles) {
