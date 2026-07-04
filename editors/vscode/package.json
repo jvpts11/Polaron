@@ -13,7 +13,8 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onLanguage:ldp3"
+    "onLanguage:ldp3",
+    "onView:ldp3Projects"
   ],
   "contributes": {
     "languages": [
@@ -42,8 +43,38 @@
       { "command": "ldp3.test", "title": "LDP3: Test", "category": "LDP3" },
       { "command": "ldp3.doc", "title": "LDP3: Generate Docs", "category": "LDP3" },
       { "command": "ldp3.fmt", "title": "LDP3: Format Project", "category": "LDP3" },
-      { "command": "ldp3.new", "title": "LDP3: New Project", "category": "LDP3" }
+      { "command": "ldp3.new", "title": "LDP3: New Project", "category": "LDP3" },
+      { "command": "ldp3.refresh", "title": "Refresh", "category": "LDP3", "icon": "$(refresh)" },
+      { "command": "ldp3.tree.build", "title": "Build", "category": "LDP3", "icon": "$(tools)" },
+      { "command": "ldp3.tree.run", "title": "Run", "category": "LDP3", "icon": "$(play)" },
+      { "command": "ldp3.tree.test", "title": "Test", "category": "LDP3", "icon": "$(beaker)" }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ldp3",
+          "title": "LDP3",
+          "icon": "media/ldp3.svg"
+        }
+      ]
+    },
+    "views": {
+      "ldp3": [
+        { "id": "ldp3Projects", "name": "Projects" },
+        { "id": "ldp3Environments", "name": "Environments" },
+        { "id": "ldp3Libraries", "name": "Libraries" }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "ldp3.refresh", "when": "view == ldp3Projects", "group": "navigation" }
+      ],
+      "view/item/context": [
+        { "command": "ldp3.tree.run", "when": "view == ldp3Projects && viewItem == ldp3Project", "group": "inline@1" },
+        { "command": "ldp3.tree.build", "when": "view == ldp3Projects && viewItem == ldp3Project", "group": "inline@2" },
+        { "command": "ldp3.tree.test", "when": "view == ldp3Projects && viewItem == ldp3Project", "group": "1_run@1" }
+      ]
+    },
     "configuration": {
       "title": "LDP3",
       "properties": {
