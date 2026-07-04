@@ -1306,6 +1306,19 @@ bool monomorphize(ast::Program& program) {
         for (auto& ns : b.namespaces)
             for (auto& c : ns.classes) collectClass(c, generics, insts);
 
+    // Generic-method call instantiations (name, type-args) gathered from every call site. A generic
+    // method body can instantiate another generic using its OWN type parameter -- `make<R>()` doing
+    // `new Pair2<int, R>` -- which is concrete only once R is bound (in expandGenericMethods, run after
+    // class generation). We use these to pre-seed those class instantiations in the worklist below, so
+    // the classes exist before the expanded method bodies reference them.
+    MethInsts methInsts;
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes)
+                for (auto& m : c.members)
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
+                        collectMethBlock(meth->body, methInsts);
+
     // Generate a concrete class per instantiation (worklist for transitive ones).
     std::vector<ast::ClassDecl> generated;
     std::set<std::string> done;
@@ -1373,6 +1386,20 @@ bool monomorphize(ast::Program& program) {
         }
         InstMap more;
         collectClass(concrete, generics, more);
+        // A generic method on this concrete class may instantiate other generics using its own type
+        // parameters (e.g. `make<R>()` doing `new Pair2<int, R>`); bind each with the known method
+        // instantiations and collect the resulting concrete class instantiations too.
+        for (const auto& mem : concrete.members) {
+            const auto* gm = dynamic_cast<const ast::MethodDecl*>(mem.get());
+            if (gm == nullptr || gm->typeParams.empty()) continue;
+            for (const MethInst& mi : methInsts) {
+                if (mi.first != gm->name || mi.second.size() != gm->typeParams.size()) continue;
+                Subst ms;
+                for (std::size_t i = 0; i < mi.second.size(); ++i) ms[gm->typeParams[i]] = mi.second[i];
+                ast::MemberPtr cm = cloneMember(gm, ms);
+                collectBlock(static_cast<const ast::MethodDecl*>(cm.get())->body, generics, more);
+            }
+        }
         for (const auto& [mm, pp] : more) {
             if (insts.find(mm) == insts.end()) insts[mm] = pp;
             if (done.count(mm) == 0) work.push_back(mm);
