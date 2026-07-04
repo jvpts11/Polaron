@@ -26,9 +26,15 @@ function locate(settingKey: string, exe: string): string {
 function findInWorkspace(exe: string): string | undefined {
   const suffix = process.platform === 'win32' ? '.exe' : '';
   const relatives = [`build/bin/Debug/${exe}${suffix}`, `build/bin/Release/${exe}${suffix}`];
-  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+  // Search each workspace folder, then the repository the extension itself lives in (out/ -> repo root),
+  // so running from source (editors/vscode) finds the build output without any configuration.
+  const roots = [
+    ...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
+    path.resolve(__dirname, '..', '..', '..'),
+  ];
+  for (const root of roots) {
     for (const rel of relatives) {
-      const candidate = path.join(folder.uri.fsPath, rel);
+      const candidate = path.join(root, rel);
       if (fs.existsSync(candidate)) {
         return candidate;
       }
