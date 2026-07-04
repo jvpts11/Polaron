@@ -7,7 +7,18 @@
 namespace ldp3::studio {
 
 // Which screen the main area is showing.
-enum class Screen { Projects, ProjectDetail, Environments, Libraries };
+enum class Screen { Projects, ProjectDetail, Environments, Libraries, Toolchain };
+
+// The resolved toolchain: tool paths, directories and the default build target.
+struct ToolchainInfo {
+    std::string version;
+    std::string ldp3c;
+    std::string clang;
+    std::string runtime;
+    std::string home;
+    std::string environments;
+    std::string target;
+};
 
 // A shared environment: its libraries and the projects that use it.
 struct Environment {
@@ -59,6 +70,7 @@ struct AppState {
     int selectedEnv = 0;
     std::vector<Library> libraries;
     int selectedLib = 0;
+    ToolchainInfo toolchain;
     NewProject newProject;
     NewEnv newEnv;
     bool scanning = false;   // a background computer-wide scan is running

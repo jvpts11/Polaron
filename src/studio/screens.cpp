@@ -253,6 +253,32 @@ Element renderLibraries(const AppState& s) {
     return hbox({list | flex, std::move(detailPane)});
 }
 
+Element renderToolchain(const AppState& s) {
+    const ToolchainInfo& t = s.toolchain;
+    auto row = [](const std::string& k, const std::string& v, Color c) {
+        return hbox({text(" " + k) | color(theme::faint) | size(WIDTH, EQUAL, 16), text(v) | color(c)});
+    };
+    return vbox({
+               hbox({text(" TOOLCHAIN") | color(theme::faint), filler(),
+                     text(t.version + " ") | color(theme::amber)}),
+               separator() | color(theme::line),
+               text(""),
+               text(" COMPILER") | color(theme::faint),
+               row("ldp3c", t.ldp3c, theme::ink),
+               row("clang", t.clang, theme::ink),
+               row("runtime", t.runtime, theme::muted),
+               text(""),
+               text(" PATHS") | color(theme::faint),
+               row("home", t.home, theme::ink),
+               row("environments", t.environments, theme::muted),
+               text(""),
+               text(" BUILD") | color(theme::faint),
+               row("default target", t.target, theme::teal),
+               filler(),
+           }) |
+           borderStyled(ROUNDED, theme::amber);
+}
+
 }  // namespace
 
 Element renderNewProjectModal(const AppState& s) {
@@ -315,6 +341,8 @@ Element renderContent(const AppState& state) {
             return renderEnvironments(state);
         case Screen::Libraries:
             return renderLibraries(state);
+        case Screen::Toolchain:
+            return renderToolchain(state);
         default:
             return renderProjects(state);
     }

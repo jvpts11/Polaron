@@ -65,14 +65,15 @@ Element navItem(const std::string& icon, const std::string& label, bool on) {
 Element rail(const AppState& s) {
     const bool envOn = s.screen == studio::Screen::Environments;
     const bool libOn = s.screen == studio::Screen::Libraries;
+    const bool toolOn = s.screen == studio::Screen::Toolchain;
     return vbox({
                text(" MANAGE") | color(theme::faint),
-               navItem("◈", "Projects", !envOn && !libOn),
+               navItem("◈", "Projects", !envOn && !libOn && !toolOn),
                navItem("❏", "Environments", envOn),
                navItem("⬡", "Libraries", libOn),
                text(""),
                text(" SYSTEM") | color(theme::faint),
-               navItem("⚙", "Toolchain", false),
+               navItem("⚙", "Toolchain", toolOn),
                filler(),
                text(" ldp3c 0.1.0") | color(theme::faint),
            }) |
@@ -89,16 +90,17 @@ Element keyBar(const AppState& s) {
     if (s.screen == studio::Screen::Environments) {
         return hbox({key("↑↓", "navigate"), key("n", "new env"), key("esc", "back"), key("q", "quit")});
     }
-    if (s.screen == studio::Screen::Libraries) {
+    if (s.screen == studio::Screen::Libraries || s.screen == studio::Screen::Toolchain) {
         return hbox({key("↑↓", "navigate"), key("esc", "back"), key("q", "quit")});
     }
     return hbox({
         key("↑↓", "navigate"),
         key("⏎", "open"),
-        key("n", "new project"),
+        key("n", "new"),
         key("s", "scan"),
-        key("e", "environments"),
-        key("l", "libraries"),
+        key("e", "env"),
+        key("l", "libs"),
+        key("t", "toolchain"),
         key("q", "quit"),
     });
 }
@@ -189,6 +191,15 @@ int selftest(const std::string& mode) {
         json.versions = {"1.4.0"};
         json.usedByEnvs = {"gamedev", "web"};
         s.libraries = {json, vec};
+    } else if (mode == "tool") {
+        s.screen = studio::Screen::Toolchain;
+        s.toolchain.version = "ldp3 0.1.0-dev";
+        s.toolchain.ldp3c = "C:/tools/ldp3/ldp3c.exe";
+        s.toolchain.clang = "C:/Program Files/LLVM/bin/clang.exe";
+        s.toolchain.runtime = "C:/tools/ldp3/ldp3_rt.lib";
+        s.toolchain.home = "C:/Users/jvpts/.ldp3";
+        s.toolchain.environments = "C:/Users/jvpts/.ldp3/environments";
+        s.toolchain.target = "x86_64-windows";
     }
     ftxui::Screen screen = ftxui::Screen::Create(Dimension::Fixed(96), Dimension::Fixed(26));
     Render(screen, renderShell(s));
@@ -208,6 +219,7 @@ int main(int argc, char** argv) {
         if (arg == "--selftest-scan") return selftest("scan");
         if (arg == "--selftest-newenv") return selftest("newenv");
         if (arg == "--selftest-lib") return selftest("lib");
+        if (arg == "--selftest-tool") return selftest("tool");
     }
 
     AppState state;
@@ -395,6 +407,11 @@ int main(int argc, char** argv) {
             state.selectedLib = 0;
             return true;
         }
+        if (e == Event::Character('t')) {  // jump to the Toolchain screen from anywhere
+            state.toolchain = ldp3::studio::loadToolchainInfo();
+            state.screen = studio::Screen::Toolchain;
+            return true;
+        }
         if (state.screen == studio::Screen::Projects) {
             const int last = static_cast<int>(state.projects.size()) - 1;
             if (e == Event::ArrowUp || e == Event::Character('k')) {
@@ -454,6 +471,13 @@ int main(int argc, char** argv) {
                 state.selectedLib = std::min(std::max(0, last), state.selectedLib + 1);
                 return true;
             }
+            if (e == Event::Escape) {
+                state.screen = studio::Screen::Projects;
+                return true;
+            }
+            return false;
+        }
+        if (state.screen == studio::Screen::Toolchain) {
             if (e == Event::Escape) {
                 state.screen = studio::Screen::Projects;
                 return true;

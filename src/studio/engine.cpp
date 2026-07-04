@@ -43,6 +43,19 @@ std::vector<Library> loadLibraries(const std::vector<ldp3::driver::DiscoveredPro
     return libs;
 }
 
+ToolchainInfo loadToolchainInfo() {
+    const ldp3::driver::Toolchain tc = ldp3::driver::locateToolchain();
+    ToolchainInfo i;
+    i.version = "ldp3 0.1.0-dev";
+    i.ldp3c = tc.ldp3c;
+    i.clang = tc.clang;
+    i.runtime = tc.runtimeLib;
+    i.home = ldp3::driver::ldp3HomeDir().string();
+    i.environments = ldp3::driver::environmentsDir().string();
+    i.target = "x86_64-windows";
+    return i;
+}
+
 bool createProject(const std::string& name, const std::filesystem::path& parentDir, const std::string& env) {
     const std::filesystem::path dir = parentDir / name;
     if (ldp3::driver::scaffold(dir, name) != 0) return false;

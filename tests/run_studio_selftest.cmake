@@ -79,4 +79,15 @@ foreach(needle "LIBRARIES" "vec_simd" "USED BY PROJECTS" "gamedev")
     endif()
 endforeach()
 
+# The Toolchain screen: tool paths and the default target.
+execute_process(COMMAND "${STUDIO}" --selftest-tool OUTPUT_VARIABLE tool RESULT_VARIABLE trc)
+if(NOT trc EQUAL 0)
+    message(FATAL_ERROR "ldp3-studio --selftest-tool exited ${trc}")
+endif()
+foreach(needle "TOOLCHAIN" "COMPILER" "ldp3c" "clang" "x86_64-windows")
+    if(NOT tool MATCHES "${needle}")
+        message(FATAL_ERROR "toolchain frame is missing '${needle}'")
+    endif()
+endforeach()
+
 message(STATUS "OK: ldp3-studio all screens")

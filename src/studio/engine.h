@@ -26,6 +26,9 @@ bool createProject(const std::string& name, const std::filesystem::path& parentD
 std::vector<Library> loadLibraries(const std::vector<ldp3::driver::DiscoveredProject>& projects,
                                    const std::vector<Environment>& environments);
 
+// Resolve the toolchain (tool paths, directories, default target) for the Toolchain screen.
+ToolchainInfo loadToolchainInfo();
+
 // The ldp3 CLI executable -- a sibling of ldp3-studio.
 std::filesystem::path ldp3Cli();
 
