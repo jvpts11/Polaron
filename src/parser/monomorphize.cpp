@@ -814,6 +814,10 @@ void collectClass(const ast::ClassDecl& c, const std::set<std::string>& g, InstM
         if (!args.empty() && g.count(c.interfaces[k]) > 0)
             out[ast::mangleGeneric(c.interfaces[k], args)] = {c.interfaces[k], args};
     }
+    // A generic superclass in `extends Base<Args>` is an instantiation too (`class X extends Seq<int>`
+    // needs Seq$int generated, else the codegen mangles the base to Seq$int and finds it missing).
+    if (!c.superclassTypeArgs.empty() && g.count(c.superclass) > 0)
+        out[ast::mangleGeneric(c.superclass, c.superclassTypeArgs)] = {c.superclass, c.superclassTypeArgs};
 }
 
 // ---- Generic methods (spec 15) ----
