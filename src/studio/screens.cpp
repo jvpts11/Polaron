@@ -157,10 +157,61 @@ Element renderProjectDetail(const AppState& s) {
     return hbox({std::move(left), std::move(console)});
 }
 
+Element renderEnvironments(const AppState& s) {
+    Elements rows;
+    if (s.environments.empty()) rows.push_back(text("  No environments yet.") | color(theme::muted));
+    for (int i = 0; i < static_cast<int>(s.environments.size()); ++i) {
+        const Environment& e = s.environments[static_cast<std::size_t>(i)];
+        const bool sel = i == s.selectedEnv;
+        const std::string meta =
+            std::to_string(e.libs.size()) + " libs · " + std::to_string(e.usedBy.size()) + " projects";
+        Element nm = text((sel ? " ▸ " : "   ") + e.name);
+        nm = sel ? (nm | color(theme::amber) | bold) : (nm | color(theme::violet));
+        Element row = hbox({nm, filler(), text(meta + " ") | color(theme::faint)});
+        rows.push_back(sel ? (row | bgcolor(theme::sel)) : row);
+    }
+    rows.push_back(text("  ＋ new environment…") | color(theme::teal));
+    Element list = vbox({
+                       hbox({text(" ENVIRONMENTS") | color(theme::faint), filler(),
+                             text("n new ") | color(theme::faint)}),
+                       separator() | color(theme::line),
+                       vbox(std::move(rows)) | flex,
+                   }) |
+                   borderStyled(ROUNDED, theme::amber);
+
+    Elements right;
+    if (s.selectedEnv >= 0 && s.selectedEnv < static_cast<int>(s.environments.size())) {
+        const Environment& e = s.environments[static_cast<std::size_t>(s.selectedEnv)];
+        right.push_back(text(" " + e.name) | color(theme::violet) | bold);
+        right.push_back(separator() | color(theme::line));
+        right.push_back(hbox({text(" LIBRARIES") | color(theme::faint), filler(),
+                              text(std::to_string(e.libs.size()) + " ") | color(theme::faint)}));
+        if (e.libs.empty()) right.push_back(text("  none") | color(theme::faint));
+        for (const ldp3::driver::Dependency& d : e.libs)
+            right.push_back(hbox({text("  " + d.name) | color(theme::ink), filler(),
+                                  text(d.version + " ") | color(theme::muted)}));
+        right.push_back(text(""));
+        right.push_back(hbox({text(" USED BY") | color(theme::faint), filler()}));
+        if (e.usedBy.empty()) right.push_back(text("  no projects") | color(theme::faint));
+        for (const std::string& u : e.usedBy) right.push_back(text("  ◈ " + u) | color(theme::ink));
+    }
+    right.push_back(filler());
+    Element detail = vbox(std::move(right)) | borderStyled(ROUNDED, theme::line) | size(WIDTH, EQUAL, 44);
+
+    return hbox({list | flex, std::move(detail)});
+}
+
 }  // namespace
 
 Element renderContent(const AppState& state) {
-    return state.screen == Screen::ProjectDetail ? renderProjectDetail(state) : renderProjects(state);
+    switch (state.screen) {
+        case Screen::ProjectDetail:
+            return renderProjectDetail(state);
+        case Screen::Environments:
+            return renderEnvironments(state);
+        default:
+            return renderProjects(state);
+    }
 }
 
 }  // namespace ldp3::studio

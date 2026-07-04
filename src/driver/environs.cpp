@@ -1,12 +1,25 @@
 #include "driver/environs.h"
 #include "driver/toolchain.h"
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <system_error>
 
 namespace ldp3::driver {
 namespace fs = std::filesystem;
 
 fs::path environmentsDir() { return ldp3HomeDir() / "environments"; }
+
+std::vector<std::string> listEnvironments() {
+    std::vector<std::string> names;
+    std::error_code ec;
+    const fs::path dir = environmentsDir();
+    if (!fs::exists(dir, ec)) return names;
+    for (const fs::directory_entry& e : fs::directory_iterator(dir, ec))
+        if (e.is_directory(ec)) names.push_back(e.path().filename().string());
+    std::sort(names.begin(), names.end());
+    return names;
+}
 fs::path environmentPackagesDir(const std::string& name) { return environmentsDir() / name / "packages"; }
 fs::path environmentManifest(const std::string& name) { return environmentsDir() / name / "ldp3.toml"; }
 

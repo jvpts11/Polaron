@@ -6,11 +6,15 @@
 
 namespace ldp3::studio {
 
-// Which section the navigation rail has active.
-enum class Section { Projects, Environments, Libraries, Toolchain };
-
 // Which screen the main area is showing.
-enum class Screen { Projects, ProjectDetail };
+enum class Screen { Projects, ProjectDetail, Environments };
+
+// A shared environment: its libraries and the projects that use it.
+struct Environment {
+    std::string name;
+    std::vector<ldp3::driver::Dependency> libs;
+    std::vector<std::string> usedBy;
+};
 
 // The console pane's state: the output of the last action run on the open project.
 struct Console {
@@ -24,10 +28,11 @@ struct Console {
 struct AppState {
     std::vector<ldp3::driver::DiscoveredProject> projects;
     int selectedProject = 0;
-    Section section = Section::Projects;
     Screen screen = Screen::Projects;
     int selectedAction = 0;  // index into the project-detail action list
     Console console;
+    std::vector<Environment> environments;
+    int selectedEnv = 0;
 
     const ldp3::driver::DiscoveredProject* selected() const {
         if (projects.empty()) return nullptr;

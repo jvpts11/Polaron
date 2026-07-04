@@ -26,4 +26,15 @@ foreach(needle "ACTIONS" "CONSOLE" "ldp3 test" "PASS" "tests: 7 passed" "run act
     endif()
 endforeach()
 
-message(STATUS "OK: ldp3-studio shell + detail")
+# The Environments screen: the environment list, the selected environment's libraries and its projects.
+execute_process(COMMAND "${STUDIO}" --selftest-env OUTPUT_VARIABLE env RESULT_VARIABLE erc)
+if(NOT erc EQUAL 0)
+    message(FATAL_ERROR "ldp3-studio --selftest-env exited ${erc}")
+endif()
+foreach(needle "ENVIRONMENTS" "gamedev" "LIBRARIES" "vec_simd" "USED BY" "new env")
+    if(NOT env MATCHES "${needle}")
+        message(FATAL_ERROR "environments frame is missing '${needle}'")
+    endif()
+endforeach()
+
+message(STATUS "OK: ldp3-studio shell + detail + environments")

@@ -1,13 +1,35 @@
 #include "studio/engine.h"
 
+#include <fstream>
 #include <sstream>
+#include <utility>
 
+#include "driver/environs.h"
+#include "driver/manifest.h"
 #include "driver/process.h"
 #include "driver/toolchain.h"
 
 namespace ldp3::studio {
 
 std::filesystem::path ldp3Cli() { return ldp3::driver::exeDir() / "ldp3.exe"; }
+
+std::vector<Environment> loadEnvironments(const std::vector<ldp3::driver::DiscoveredProject>& projects) {
+    std::vector<Environment> envs;
+    for (const std::string& name : ldp3::driver::listEnvironments()) {
+        Environment e;
+        e.name = name;
+        std::ifstream f(ldp3::driver::environmentManifest(name));
+        if (f) {
+            std::stringstream ss;
+            ss << f.rdbuf();
+            e.libs = ldp3::driver::parseManifestText(ss.str()).dependencies;
+        }
+        for (const ldp3::driver::DiscoveredProject& p : projects)
+            if (p.manifest.environment == name) e.usedBy.push_back(p.manifest.name);
+        envs.push_back(std::move(e));
+    }
+    return envs;
+}
 
 ActionResult runCaptured(const std::string& verb, const std::filesystem::path& projectDir) {
     std::string output;

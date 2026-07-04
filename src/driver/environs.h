@@ -1,11 +1,15 @@
 #pragma once
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace ldp3::driver {
 
 // The directory holding named environments (~/.ldp3/environments, or under $LDP3_HOME).
 std::filesystem::path environmentsDir();
+
+// The names of all environments, sorted. Reusable by the TUI and the CLI's `env list`.
+std::vector<std::string> listEnvironments();
 
 // The packages/ directory of a named environment.
 std::filesystem::path environmentPackagesDir(const std::string& name);

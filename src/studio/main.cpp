@@ -65,11 +65,12 @@ Element navItem(const std::string& icon, const std::string& label, bool on) {
     return e | color(theme::muted);
 }
 
-Element rail() {
+Element rail(const AppState& s) {
+    const bool envOn = s.screen == studio::Screen::Environments;
     return vbox({
                text(" MANAGE") | color(theme::faint),
-               navItem("◈", "Projects", true),
-               navItem("❏", "Environments", false),
+               navItem("◈", "Projects", !envOn),
+               navItem("❏", "Environments", envOn),
                navItem("⬡", "Libraries", false),
                text(""),
                text(" SYSTEM") | color(theme::faint),
@@ -88,6 +89,10 @@ Element keyBar(const AppState& s) {
         return hbox({key("↑↓", "action"), key("⏎", "run action"), key("esc", "back"), key("q", "quit")}) |
                bgcolor(theme::panel);
     }
+    if (s.screen == studio::Screen::Environments) {
+        return hbox({key("↑↓", "navigate"), key("n", "new env"), key("esc", "back"), key("q", "quit")}) |
+               bgcolor(theme::panel);
+    }
     return hbox({
                key("↑↓", "navigate"),
                key("⏎", "open"),
@@ -102,7 +107,7 @@ Element keyBar(const AppState& s) {
 Element renderShell(const AppState& s) {
     return vbox({
                topBar(s),
-               hbox({rail(), ldp3::studio::renderContent(s) | flex}) | flex,
+               hbox({rail(s), ldp3::studio::renderContent(s) | flex}) | flex,
                keyBar(s),
            }) |
            bgcolor(theme::ground) | color(theme::ink);
@@ -133,9 +138,9 @@ AppState demoState() {
     return s;
 }
 
-int selftest(bool detail) {
+int selftest(const std::string& mode) {
     AppState s = demoState();
-    if (detail) {
+    if (mode == "detail") {
         s.screen = studio::Screen::ProjectDetail;
         s.selectedProject = 3;  // tic_tac_toe
         s.console.title = "ldp3 test";
@@ -143,6 +148,17 @@ int selftest(bool detail) {
         s.console.exitCode = 0;
         s.console.lines = {"PASS board_places_mark", "PASS detects_row_win", "PASS full_board_is_draw",
                            "tests: 7 passed, 0 failed"};
+    } else if (mode == "env") {
+        s.screen = studio::Screen::Environments;
+        ldp3::studio::Environment gamedev;
+        gamedev.name = "gamedev";
+        gamedev.libs = {{"vec_simd", "2.1.0"}, {"json", "1.4.0"}, {"raylib_ldp3", "^5.0.0"}};
+        gamedev.usedBy = {"tic_tac_toe", "raytracer"};
+        ldp3::studio::Environment web;
+        web.name = "web";
+        web.libs = {{"http", "1.0.0"}};
+        web.usedBy = {"http_server"};
+        s.environments = {gamedev, web};
     }
     ftxui::Screen screen = ftxui::Screen::Create(Dimension::Fixed(96), Dimension::Fixed(26));
     Render(screen, renderShell(s));
@@ -155,8 +171,9 @@ int selftest(bool detail) {
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--selftest") return selftest(/*detail=*/false);
-        if (arg == "--selftest-detail") return selftest(/*detail=*/true);
+        if (arg == "--selftest") return selftest("projects");
+        if (arg == "--selftest-detail") return selftest("detail");
+        if (arg == "--selftest-env") return selftest("env");
     }
 
     AppState state;
@@ -207,6 +224,12 @@ int main(int argc, char** argv) {
             screen.Exit();
             return true;
         }
+        if (e == Event::Character('e')) {  // jump to the Environments screen from anywhere
+            state.environments = ldp3::studio::loadEnvironments(state.projects);
+            state.screen = studio::Screen::Environments;
+            state.selectedEnv = 0;
+            return true;
+        }
         if (state.screen == studio::Screen::Projects) {
             const int last = static_cast<int>(state.projects.size()) - 1;
             if (e == Event::ArrowUp || e == Event::Character('k')) {
@@ -221,6 +244,22 @@ int main(int argc, char** argv) {
                 state.screen = studio::Screen::ProjectDetail;
                 state.selectedAction = 0;
                 state.console = Console{};
+                return true;
+            }
+            return false;
+        }
+        if (state.screen == studio::Screen::Environments) {
+            const int last = static_cast<int>(state.environments.size()) - 1;
+            if (e == Event::ArrowUp || e == Event::Character('k')) {
+                state.selectedEnv = std::max(0, state.selectedEnv - 1);
+                return true;
+            }
+            if (e == Event::ArrowDown || e == Event::Character('j')) {
+                state.selectedEnv = std::min(std::max(0, last), state.selectedEnv + 1);
+                return true;
+            }
+            if (e == Event::Escape) {
+                state.screen = studio::Screen::Projects;
                 return true;
             }
             return false;

@@ -3,6 +3,9 @@
 #include <string>
 #include <vector>
 
+#include "driver/discovery.h"
+#include "studio/state.h"
+
 namespace ldp3::studio {
 
 // The result of running a captured toolchain action.
@@ -10,6 +13,9 @@ struct ActionResult {
     int exitCode = -1;
     std::vector<std::string> lines;  // stdout+stderr, split into lines
 };
+
+// Load the shared environments (their libraries, and which of `projects` use each).
+std::vector<Environment> loadEnvironments(const std::vector<ldp3::driver::DiscoveredProject>& projects);
 
 // The ldp3 CLI executable -- a sibling of ldp3-studio.
 std::filesystem::path ldp3Cli();
