@@ -1900,12 +1900,21 @@ struct CodeGenerator::Impl {
     llvm::FunctionCallee mallocFn() {
         llvm::FunctionType* ty =
             llvm::FunctionType::get(builder.getPtrTy(), {builder.getInt64Ty()}, false);
-        return module.getOrInsertFunction("__ldp3_malloc", ty);  // pooled allocator (runtime)
+        llvm::FunctionCallee c = module.getOrInsertFunction("__ldp3_malloc", ty);  // pooled (runtime)
+        // libc malloc carries `noalias` on its result; the pool also returns fresh non-aliasing memory,
+        // and clang needs the attribute to prove distinct arrays don't alias -- without it, it will not
+        // vectorize loops like matmul (c[j] += a_ik * b[j]). Restore the attribute the rename dropped.
+        if (auto* f = llvm::dyn_cast<llvm::Function>(c.getCallee()))
+            f->addRetAttr(llvm::Attribute::NoAlias);
+        return c;
     }
     llvm::FunctionCallee reallocFn() {  // realloc(ptr, size) -> ptr (for array resize, spec 25)
         llvm::FunctionType* ty = llvm::FunctionType::get(
             builder.getPtrTy(), {builder.getPtrTy(), builder.getInt64Ty()}, false);
-        return module.getOrInsertFunction("__ldp3_realloc", ty);  // pooled allocator (runtime)
+        llvm::FunctionCallee c = module.getOrInsertFunction("__ldp3_realloc", ty);  // pooled (runtime)
+        if (auto* f = llvm::dyn_cast<llvm::Function>(c.getCallee()))
+            f->addRetAttr(llvm::Attribute::NoAlias);
+        return c;
     }
     // __ldp3_persist_slot(key, index, size) -> block: the in-process registry for index-keyed
     // persistent reattach (spec 18.5). Returns the surviving block for (key, index) or a fresh zeroed
