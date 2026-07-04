@@ -10,6 +10,7 @@
 #include "driver/build.h"
 #include "driver/deps.h"
 #include "driver/environs.h"
+#include "driver/jsonout.h"
 #include "driver/manifest.h"
 #include "driver/process.h"
 #include "driver/scaffold.h"
@@ -50,6 +51,11 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (cmd == "--help" || cmd == "-h") return printHelp();
+
+    if (cmd == "json") {  // machine-readable workspace data for the VS Code extension's tree views
+        std::fputs(ldp3::driver::studioJson(std::filesystem::current_path()).c_str(), stdout);
+        return 0;
+    }
 
     if (cmd == "new") {
         if (args.size() < 2) { std::fprintf(stderr, "ldp3: 'new' requires a project name\n"); return 2; }

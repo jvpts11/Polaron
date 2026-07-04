@@ -81,7 +81,8 @@ add_library(ldp3_driver STATIC
     src/driver/environs.cpp
     src/driver/semver.cpp
     src/driver/lockfile.cpp
-    src/driver/discovery.cpp)
+    src/driver/discovery.cpp
+    src/driver/jsonout.cpp)
 target_include_directories(ldp3_driver PUBLIC src "${CMAKE_BINARY_DIR}")
 
 add_executable(ldp3 src/driver/ldp3_main.cpp)
