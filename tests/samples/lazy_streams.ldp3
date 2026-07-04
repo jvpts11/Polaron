@@ -18,7 +18,7 @@ public bundle main {
 
                 IteratorStream<int> base = new IteratorStream<int>(nums.iterator()) on heap;
                 Stream<int> evens = base.filter(lambda(int x) returns boolean { return x % 2 == 0; });
-                Stream<int> squares = evens.map(lambda(int x) returns int { return x * x; });
+                Stream<int> squares = evens.map<int>(lambda(int x) returns int { return x * x; });
                 int total = squares.fold<int>(0, lambda(int acc, int x) returns int { return acc + x; });
 
                 System.IO.Console.printf("total=%d\n", total);   // (2*2 + 4*4 + 6*6 + 8*8 + 10*10) = 220

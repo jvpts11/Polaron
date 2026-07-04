@@ -644,16 +644,15 @@ R"LDP3(
         // A lazy iterator pipeline (spec 25 / stdlib #25): a Stream is itself an Iterator, and each
         // transform (filter/map) wraps the previous stream and pulls elements on demand -- nothing runs
         // until a terminal op (fold/count/forEach) drives hasNext/next. Build one over any Iterator with
-        // `new IteratorStream<T>(collection.iterator())`, then chain. (A type-changing map<R> awaits a
-        // monomorphizer fix; map here transforms T -> T.)
+        // `new IteratorStream<T>(collection.iterator())`, then chain. map<R> may change the element type.
         public abstract class Stream<T> implements Iterator<T> {
             public abstract method hasNext() returns boolean;
             public abstract method next() returns T;
             public method filter(function<boolean, T> pred) returns Stream<T> {
                 return new FilterStream<T>(this, pred) on heap;
             }
-            public method map(function<T, T> fn) returns Stream<T> {
-                return new MapStream<T>(this, fn) on heap;
+            public method map<R>(function<R, T> fn) returns Stream<R> {
+                return new MapStream<T, R>(this, fn) on heap;
             }
             public method fold<R>(R init, function<R, R, T> combine) returns R {
                 mutable R acc = init;
@@ -699,15 +698,16 @@ R"LDP3(
                 return this.cached;
             }
         }
-        // Applies a transform to each upstream element as it is pulled.
-        public class MapStream<T> extends Stream<T> {
+        // Applies a transform to each upstream element as it is pulled, possibly changing the type
+        // (T -> R). Extends Stream<R>, so map may be chained with a different element type.
+        public class MapStream<T, R> extends Stream<R> {
             private Stream<T> src;
-            private function<T, T> fn;
-            public constructor MapStream(Stream<T> src, function<T, T> fn) {
+            private function<R, T> fn;
+            public constructor MapStream(Stream<T> src, function<R, T> fn) {
                 this.src = src; this.fn = fn;
             }
             public override method hasNext() returns boolean { return this.src.hasNext(); }
-            public override method next() returns T { return this.fn(this.src.next()); }
+            public override method next() returns R { return this.fn(this.src.next()); }
         }
         // A non-owning window over a [start, start+len) range of an array (spec 34): no copy, just a
         // backing array and an offset. Reads go through the array's own bounds check, so there is no UB;
