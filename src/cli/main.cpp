@@ -1210,7 +1210,8 @@ R"LDP3(
             public mutable T value;
             public mutable nullable TreeSetNode<T>* left;
             public mutable nullable TreeSetNode<T>* right;
-            public constructor TreeSetNode(T v) { this.value = v; this.left = null; this.right = null; }
+            public mutable int height;  // AVL subtree height
+            public constructor TreeSetNode(T v) { this.value = v; this.left = null; this.right = null; this.height = 1; }
         }
         // Ordered set backed by an (unbalanced) binary search tree (spec 34.1). Elements Comparable.
         public class TreeSet<T> {
@@ -1218,31 +1219,60 @@ R"LDP3(
             private mutable int count;
             public constructor TreeSet() { this.root = null; this.count = 0; }
             public method add(T value) returns void {
-                if (this.root == null) {
-                    this.root = new TreeSetNode<T>(value) on heap;
+                this.root = this.insertNode(this.root, value);
+            }
+            // AVL balancing (see TreeMap) so ordered inserts stay O(log n) instead of degenerating to O(n^2).
+            private method nodeHeight(nullable TreeSetNode<T>* n) returns int {
+                if (n == null) { return 0; }
+                return n.height;
+            }
+            private method fixHeight(nullable TreeSetNode<T>* n) returns void {
+                int lh = this.nodeHeight(n.left);
+                int rh = this.nodeHeight(n.right);
+                if (lh > rh) { n.height = lh + 1; } else { n.height = rh + 1; }
+            }
+            private method balance(nullable TreeSetNode<T>* n) returns int {
+                return this.nodeHeight(n.left) - this.nodeHeight(n.right);
+            }
+            private method rotateRight(nullable TreeSetNode<T>* y) returns nullable TreeSetNode<T>* {
+                nullable TreeSetNode<T>* x = y.left;
+                y.left = x.right;
+                x.right = y;
+                this.fixHeight(y);
+                this.fixHeight(x);
+                return x;
+            }
+            private method rotateLeft(nullable TreeSetNode<T>* x) returns nullable TreeSetNode<T>* {
+                nullable TreeSetNode<T>* y = x.right;
+                x.right = y.left;
+                y.left = x;
+                this.fixHeight(x);
+                this.fixHeight(y);
+                return y;
+            }
+            private method insertNode(nullable TreeSetNode<T>* node, T value) returns nullable TreeSetNode<T>* {
+                if (node == null) {
                     this.count = this.count + 1;
-                    return;
+                    return new TreeSetNode<T>(value) on heap;
                 }
-                mutable nullable TreeSetNode<T>* cur = this.root;
-                while (true) {
-                    int c = value.compareTo(cur.value);
-                    if (c == 0) { return; }
-                    if (c < 0) {
-                        if (cur.left == null) {
-                            cur.left = new TreeSetNode<T>(value) on heap;
-                            this.count = this.count + 1;
-                            return;
-                        }
-                        cur = cur.left;
-                    } else {
-                        if (cur.right == null) {
-                            cur.right = new TreeSetNode<T>(value) on heap;
-                            this.count = this.count + 1;
-                            return;
-                        }
-                        cur = cur.right;
-                    }
+                int c = value.compareTo(node.value);
+                if (c == 0) { return node; }
+                if (c < 0) {
+                    node.left = this.insertNode(node.left, value);
+                } else {
+                    node.right = this.insertNode(node.right, value);
                 }
+                this.fixHeight(node);
+                int bf = this.balance(node);
+                if (bf > 1) {
+                    if (this.balance(node.left) < 0) { node.left = this.rotateLeft(node.left); }
+                    return this.rotateRight(node);
+                }
+                if (bf < 0 - 1) {
+                    if (this.balance(node.right) > 0) { node.right = this.rotateRight(node.right); }
+                    return this.rotateLeft(node);
+                }
+                return node;
             }
             public method contains(T value) returns boolean {
                 mutable nullable TreeSetNode<T>* cur = this.root;
