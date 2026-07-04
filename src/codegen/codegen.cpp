@@ -9123,6 +9123,19 @@ struct RecursiveInlinePass : llvm::PassInfoMixin<RecursiveInlinePass> {
                     if (auto* cb = llvm::dyn_cast<llvm::CallBase>(&i))
                         if (cb->getCalledFunction() == &f) selfRec = true;
             if (!selfRec) continue;
+            // Skip NESTED self-recursion (e.g. ackermann's ack(m-1, ack(m,n-1)), where a self-call is an
+            // argument to another self-call). Its recursive calls take distinct, non-overlapping arguments,
+            // so deep inlining only bloats the body without the CSE collapse that makes fib fast -- and the
+            // bloat actually makes clang optimize it worse than the small original. Leave those to clang.
+            bool nested = false;
+            for (llvm::BasicBlock& bb : f)
+                for (llvm::Instruction& i : bb)
+                    if (auto* cb = llvm::dyn_cast<llvm::CallBase>(&i))
+                        if (cb->getCalledFunction() == &f)
+                            for (llvm::Value* arg : cb->args())
+                                if (auto* ac = llvm::dyn_cast<llvm::CallBase>(arg))
+                                    if (ac->getCalledFunction() == &f) nested = true;
+            if (nested) continue;
             // Inline self-calls round by round; a fixed instruction budget bounds total growth and
             // caps the effective depth (deeper for tinier bodies). Innermost self-calls stay as real
             // recursion.
