@@ -3085,6 +3085,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             for (const auto& a : call->args) typeOf(*a);
             return "void";
         }
+        // Memory.writeString(address, String): bulk-copy a String's bytes to a raw buffer (StringBuilder).
+        if (name == "Memory.writeString") {
+            if (call->args.size() != 2) error("Memory.writeString takes (address, String)", call->loc);
+            for (const auto& a : call->args) typeOf(*a);
+            return "void";
+        }
+        // Memory.copy(dst, src, n): raw memcpy of n bytes between two addresses (StringBuilder growth).
+        if (name == "Memory.copy") {
+            if (call->args.size() != 3) error("Memory.copy takes (dst, src, n)", call->loc);
+            for (const auto& a : call->args) typeOf(*a);
+            return "void";
+        }
         // Net (spec 34): TCP client builtins. Require `import System.Net.Net;` (used by Socket).
         if (name.rfind("Net.", 0) == 0) {
             const std::string fn = name.substr(4);

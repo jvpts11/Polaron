@@ -2861,9 +2861,7 @@ R"LDP3(
                 mutable int n = this.cap * 2;
                 while (n < this.count + extra) { n = n * 2; }
                 address nb = Memory.alloc(n);
-                for (mutable int i = 0; i < this.count; i++) {
-                    Memory.write(nb + cast<address>(i), Memory.read<byte>(this.buf + cast<address>(i)));
-                }
+                Memory.copy(nb, this.buf, this.count);  // bulk memcpy, not byte-by-byte
                 Memory.free(this.buf);
                 this.buf = nb;
                 this.cap = n;
@@ -2871,10 +2869,8 @@ R"LDP3(
             public method append(String s) returns StringBuilder {
                 int n = s.length();
                 this.ensure(n);
-                for (mutable int i = 0; i < n; i++) {
-                    Memory.write(this.buf + cast<address>(this.count), cast<byte>(s.charAt(i)));
-                    this.count = this.count + 1;
-                }
+                Memory.writeString(this.buf + cast<address>(this.count), s);  // bulk memcpy, not byte-by-byte
+                this.count = this.count + n;
                 return this;
             }
             public method appendChar(char c) returns StringBuilder {

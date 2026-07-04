@@ -4645,6 +4645,26 @@ struct CodeGenerator::Impl {
                                           {stringData(from), stringData(to)});
             }
         }
+        // Memory.writeString(address, src): bulk-copy src's bytes to a raw buffer via memcpy (used by
+        // StringBuilder.append, replacing a byte-at-a-time charAt/write loop).
+        if (name == "Memory.writeString") {
+            llvm::Value* dstAddr = emitExpr(*call.args[0]);
+            llvm::Value* srcStr = emitExpr(*call.args[1]);
+            if (dstAddr == nullptr || srcStr == nullptr) return nullptr;
+            llvm::Value* dst = builder.CreateIntToPtr(dstAddr, builder.getPtrTy());
+            builder.CreateCall(memcpyFn(), {dst, stringData(srcStr), stringLen(srcStr)});
+            return nullptr;
+        }
+        // Memory.copy(dst, src, n): raw memcpy of n bytes between two addresses.
+        if (name == "Memory.copy") {
+            llvm::Value* dstAddr = emitExpr(*call.args[0]);
+            llvm::Value* srcAddr = emitExpr(*call.args[1]);
+            llvm::Value* n = fitInt(emitExpr(*call.args[2]), 64);
+            if (dstAddr == nullptr || srcAddr == nullptr || n == nullptr) return nullptr;
+            builder.CreateCall(memcpyFn(), {builder.CreateIntToPtr(dstAddr, builder.getPtrTy()),
+                                            builder.CreateIntToPtr(srcAddr, builder.getPtrTy()), n});
+            return nullptr;
+        }
         // Memory.readString(address, len): build a String by copying `len` bytes from a raw buffer
         // (the new String owns its own copy). Used by StringBuilder.toString().
         if (name == "Memory.readString") {
