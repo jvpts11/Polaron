@@ -1028,8 +1028,9 @@ R"LDP3(
             public mutable V value;
             public mutable nullable TreeNode<K, V>* left;
             public mutable nullable TreeNode<K, V>* right;
+            public mutable int height;  // AVL subtree height, for O(log n) balancing
             public constructor TreeNode(K k, V v) {
-                this.key = k; this.value = v; this.left = null; this.right = null;
+                this.key = k; this.value = v; this.left = null; this.right = null; this.height = 1;
             }
         }
         // Ordered map backed by an (unbalanced) binary search tree (spec 34.1). Keys are Comparable.
@@ -1039,31 +1040,62 @@ R"LDP3(
             private mutable int count;
             public constructor TreeMap() { this.root = null; this.count = 0; }
             public method put(K key, V value) returns void {
-                if (this.root == null) {
-                    this.root = new TreeNode<K, V>(key, value) on heap;
+                this.root = this.insertNode(this.root, key, value);
+            }
+            // AVL balancing keeps height O(log n) so ordered/monotonic keys can't degenerate the tree into
+            // a list (which made insert O(n^2)). Nodes are typed nullable; callers only dereference on the
+            // non-null path, so the null branch is never taken where a deref would trap.
+            private method nodeHeight(nullable TreeNode<K, V>* n) returns int {
+                if (n == null) { return 0; }
+                return n.height;
+            }
+            private method fixHeight(nullable TreeNode<K, V>* n) returns void {
+                int lh = this.nodeHeight(n.left);
+                int rh = this.nodeHeight(n.right);
+                if (lh > rh) { n.height = lh + 1; } else { n.height = rh + 1; }
+            }
+            private method balance(nullable TreeNode<K, V>* n) returns int {
+                return this.nodeHeight(n.left) - this.nodeHeight(n.right);
+            }
+            private method rotateRight(nullable TreeNode<K, V>* y) returns nullable TreeNode<K, V>* {
+                nullable TreeNode<K, V>* x = y.left;
+                y.left = x.right;
+                x.right = y;
+                this.fixHeight(y);
+                this.fixHeight(x);
+                return x;
+            }
+            private method rotateLeft(nullable TreeNode<K, V>* x) returns nullable TreeNode<K, V>* {
+                nullable TreeNode<K, V>* y = x.right;
+                x.right = y.left;
+                y.left = x;
+                this.fixHeight(x);
+                this.fixHeight(y);
+                return y;
+            }
+            private method insertNode(nullable TreeNode<K, V>* node, K key, V value) returns nullable TreeNode<K, V>* {
+                if (node == null) {
                     this.count = this.count + 1;
-                    return;
+                    return new TreeNode<K, V>(key, value) on heap;
                 }
-                mutable nullable TreeNode<K, V>* cur = this.root;
-                while (true) {
-                    int c = key.compareTo(cur.key);
-                    if (c == 0) { cur.value = value; return; }
-                    if (c < 0) {
-                        if (cur.left == null) {
-                            cur.left = new TreeNode<K, V>(key, value) on heap;
-                            this.count = this.count + 1;
-                            return;
-                        }
-                        cur = cur.left;
-                    } else {
-                        if (cur.right == null) {
-                            cur.right = new TreeNode<K, V>(key, value) on heap;
-                            this.count = this.count + 1;
-                            return;
-                        }
-                        cur = cur.right;
-                    }
+                int c = key.compareTo(node.key);
+                if (c == 0) { node.value = value; return node; }
+                if (c < 0) {
+                    node.left = this.insertNode(node.left, key, value);
+                } else {
+                    node.right = this.insertNode(node.right, key, value);
                 }
+                this.fixHeight(node);
+                int bf = this.balance(node);
+                if (bf > 1) {
+                    if (this.balance(node.left) < 0) { node.left = this.rotateLeft(node.left); }
+                    return this.rotateRight(node);
+                }
+                if (bf < 0 - 1) {
+                    if (this.balance(node.right) > 0) { node.right = this.rotateRight(node.right); }
+                    return this.rotateLeft(node);
+                }
+                return node;
             }
             private method find(K key) returns nullable TreeNode<K, V>* {
                 mutable nullable TreeNode<K, V>* cur = this.root;
