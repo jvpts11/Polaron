@@ -3,11 +3,13 @@ import { registerCommands, runVerbIn, runInteractiveIn } from './commands';
 import { registerFormatter } from './format';
 import { registerDiagnostics } from './diagnostics';
 import { LdpTrees, nodeProject } from './trees';
+import { registerDashboard } from './webview';
 
 export function activate(context: vscode.ExtensionContext): void {
   registerCommands(context);
   registerFormatter(context);
   registerDiagnostics(context);
+  registerDashboard(context);
 
   const trees = new LdpTrees();
   context.subscriptions.push(

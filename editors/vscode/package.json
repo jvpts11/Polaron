@@ -44,6 +44,7 @@
       { "command": "ldp3.doc", "title": "LDP3: Generate Docs", "category": "LDP3" },
       { "command": "ldp3.fmt", "title": "LDP3: Format Project", "category": "LDP3" },
       { "command": "ldp3.new", "title": "LDP3: New Project", "category": "LDP3" },
+      { "command": "ldp3.dashboard", "title": "LDP3: Open Studio Dashboard", "category": "LDP3", "icon": "$(dashboard)" },
       { "command": "ldp3.refresh", "title": "Refresh", "category": "LDP3", "icon": "$(refresh)" },
       { "command": "ldp3.tree.build", "title": "Build", "category": "LDP3", "icon": "$(tools)" },
       { "command": "ldp3.tree.run", "title": "Run", "category": "LDP3", "icon": "$(play)" },
@@ -67,7 +68,8 @@
     },
     "menus": {
       "view/title": [
-        { "command": "ldp3.refresh", "when": "view == ldp3Projects", "group": "navigation" }
+        { "command": "ldp3.dashboard", "when": "view == ldp3Projects", "group": "navigation@1" },
+        { "command": "ldp3.refresh", "when": "view == ldp3Projects", "group": "navigation@2" }
       ],
       "view/item/context": [
         { "command": "ldp3.tree.run", "when": "view == ldp3Projects && viewItem == ldp3Project", "group": "inline@1" },
