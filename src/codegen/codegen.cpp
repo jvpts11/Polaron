@@ -2095,7 +2095,7 @@ struct CodeGenerator::Impl {
     llvm::Value* emitArrayDup(llvm::Value* srcBlock, const std::string& elemType) {
         llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), srcBlock, "arr.len");
         llvm::Value* total = builder.CreateAdd(
-            builder.getInt64(8), builder.CreateMul(len, builder.getInt64(byteSizeOf(elemType))));
+            builder.getInt64(8), builder.CreateMul(len, builder.getInt64(arrayElemBytes(elemType))));
         llvm::Value* newBlock = builder.CreateCall(mallocFn(), {total}, "arr.copy");
         builder.CreateCall(memcpyFn(), {newBlock, srcBlock, total});
         return newBlock;
@@ -2135,6 +2135,16 @@ struct CodeGenerator::Impl {
     llvm::Value* arrayData(llvm::Value* block) {
         return builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 8, "arr.data");
     }
+    // A boolean array element occupies 1 byte (i8), though a boolean *value* stays i32. Every other
+    // element stores at its natural width. The byte size (allocation/stride) and the LLVM storage type
+    // (load/store) MUST agree or indexing corrupts memory. char stays i32 -- a 32-bit Unicode scalar.
+    unsigned arrayElemBytes(const std::string& elemType) {
+        return elemType == "boolean" ? 1u : byteSizeOf(elemType);
+    }
+    llvm::Type* arrayStorageTy(const std::string& elemType) {
+        return elemType == "boolean" ? builder.getInt8Ty() : llvmType(elemType);
+    }
+
     llvm::Value* arrayElemPtr(llvm::Value* block, llvm::Value* index, llvm::Type* elemTy) {
         llvm::Value* idx = index->getType()->isIntegerTy(64)
                                ? index
@@ -2165,7 +2175,7 @@ struct CodeGenerator::Impl {
         llvm::Value* n = emitExpr(*na.size);
         if (n == nullptr) return nullptr;
         llvm::Value* n64 = builder.CreateSExt(n, builder.getInt64Ty());
-        const unsigned esz = byteSizeOf(na.elementType);  // real element width (1/2/4/8 bytes)
+        const unsigned esz = arrayElemBytes(na.elementType);  // real element width (boolean=1, else 1/2/4/8)
         llvm::Value* elemBytes = builder.CreateMul(n64, builder.getInt64(esz));
         llvm::Value* total = builder.CreateAdd(builder.getInt64(8), elemBytes);
         llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "arr");
@@ -2215,16 +2225,17 @@ struct CodeGenerator::Impl {
     llvm::Value* emitArrayLiteral(const ast::ArrayLiteralExpr& al) {
         const std::size_t n = al.elements.size();
         const std::string elemType = n > 0 ? typeName(*al.elements[0]) : "int";
-        const unsigned esz = byteSizeOf(elemType);
+        const unsigned esz = arrayElemBytes(elemType);
         llvm::Value* block = builder.CreateCall(
             mallocFn(), {builder.getInt64(8 + static_cast<std::uint64_t>(n) * esz)}, "arrlit");
         builder.CreateStore(builder.getInt64(static_cast<std::uint64_t>(n)), block);  // length header
-        llvm::Type* et = llvmType(elemType);
+        llvm::Type* et = arrayStorageTy(elemType);
         llvm::Value* data = arrayData(block);
         for (std::size_t i = 0; i < n; ++i) {
             llvm::Value* v = emitExpr(*al.elements[i]);
             if (v == nullptr) continue;
             v = coerce(v, typeName(*al.elements[i]), elemType);  // widen/convert to element type
+            if (elemType == "boolean") v = builder.CreateTrunc(v, builder.getInt8Ty());  // 1-byte slot
             builder.CreateStore(v, builder.CreateGEP(et, data, builder.getInt64(i)));
         }
         return block;
@@ -2398,7 +2409,7 @@ struct CodeGenerator::Impl {
                                      : builder.CreateSExt(index, builder.getInt64Ty());
                 return builder.CreateGEP(llvmType(baseType(at)), block, i, "ptr.elem");
             }
-            return arrayElemPtr(block, index, llvmType(elementOf(at)));
+            return arrayElemPtr(block, index, arrayStorageTy(elementOf(at)));
         }
         error("invalid assignment target", expr.loc);
         return nullptr;
@@ -3329,6 +3340,10 @@ struct CodeGenerator::Impl {
             llvm::Value* elemPtr = emitLValue(*ix);
             if (elemPtr == nullptr) return nullptr;
             const std::string et = isRefType(at) ? baseType(at) : elementOf(at);  // T* -> T
+            if (!isRefType(at) && et == "boolean") {  // boolean array element: 1-byte storage, i32 value
+                llvm::Value* raw = builder.CreateLoad(builder.getInt8Ty(), elemPtr, "elem");
+                return builder.CreateZExt(raw, builder.getInt32Ty());
+            }
             return builder.CreateLoad(llvmType(et), elemPtr, "elem");
         }
         if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(&expr)) {
@@ -6738,6 +6753,11 @@ struct CodeGenerator::Impl {
                 llvm::Value* sv = coerce(v, typeName(*assign->value), targetType);
                 if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
                     sv = maskBitField(sv, typeName(*mt->object), mt->member);  // bit-field (spec 11.1)
+                // A boolean array element occupies 1 byte; narrow the i32 boolean value before storing.
+                if (targetType == "boolean")
+                    if (const auto* tix = dynamic_cast<const ast::IndexExpr*>(assign->target.get()))
+                        if (!isRefType(typeName(*tix->array)))
+                            sv = builder.CreateTrunc(sv, builder.getInt8Ty());
                 builder.CreateStore(sv, slot, isVolatileAccess(*assign->target));  // spec 37.5
             }
             return;
@@ -7474,9 +7494,10 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(bodyBB);
         // The `index i` form (spec 7.6): expose the loop counter as an int local.
         if (!s.indexName.empty()) locals[s.indexName] = LocalSlot{iSlot, "int"};
-        llvm::Type* feElemTy = llvmType(et);
+        llvm::Type* feElemTy = arrayStorageTy(et);
         llvm::Value* elem =
             builder.CreateLoad(feElemTy, arrayElemPtr(block, i, feElemTy), "fe.el");
+        if (et == "boolean") elem = builder.CreateZExt(elem, builder.getInt32Ty());  // i8 slot -> i32 value
         builder.CreateStore(elem, vSlot);
         loopStack.push_back({endBB, updateBB, pendingLoopLabel, finallyStack.size(), scopeObjects.size(), deferred.size(), scopeRegions.size()});
         pendingLoopLabel.clear();
