@@ -1,0 +1,50 @@
+{
+  "name": "ldp3",
+  "displayName": "LDP3",
+  "description": "Language support and project tooling for LDP3.",
+  "version": "0.1.0",
+  "publisher": "ldp3",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "languages": [
+      {
+        "id": "ldp3",
+        "aliases": [
+          "LDP3",
+          "ldp3"
+        ],
+        "extensions": [
+          ".ldp3"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ldp3",
+        "scopeName": "source.ldp3",
+        "path": "./syntaxes/ldp3.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "npm run build -- --watch --sourcemap",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.0"
+  }
+}
