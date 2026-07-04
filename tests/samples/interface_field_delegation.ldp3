@@ -1,0 +1,33 @@
+// Decorator over an iterator: a class holds an interface-typed field and forwards to it.
+// Regression (2026-07): an interface-typed field must be stored by reference, not deep-copied.
+// A value copy sized by the field-less interface truncated the concrete object (ArrayListIterator),
+// so a later virtual call read past the allocation and crashed. Interfaces are reference types.
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.Iterator;
+
+program InterfaceFieldDelegation;
+
+public bundle main {
+    public namespace app {
+
+        public class DoublingIterator implements Iterator<int> {
+            private Iterator<int> src;
+            public constructor DoublingIterator(Iterator<int> src) { this.src = src; }
+            public override method hasNext() returns boolean { return this.src.hasNext(); }
+            public override method next() returns int { return this.src.next() * 2; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<int> nums = new ArrayList<int>() on heap;
+                for (mutable int i = 1; i <= 5; i++) { nums.add(i); }
+                DoublingIterator d = new DoublingIterator(nums.iterator()) on heap;
+                mutable int sum = 0;
+                while (d.hasNext()) { sum = sum + d.next(); }
+                System.IO.Console.printf("sum=%d\n", sum);   // (1+2+3+4+5)*2 = 30
+                return;
+            }
+        }
+    }
+}
