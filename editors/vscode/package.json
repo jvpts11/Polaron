@@ -89,6 +89,11 @@
           "type": "string",
           "default": "",
           "description": "Path to the ldp3c compiler. When empty, the extension uses the repo build output if present, otherwise 'ldp3c' from PATH."
+        },
+        "ldp3.lspPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ldp3-lsp language server. When empty, the extension uses the repo build output if present, otherwise 'ldp3-lsp' from PATH."
         }
       }
     },
@@ -103,6 +108,9 @@
     "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
     "watch": "npm run build -- --watch --sourcemap",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

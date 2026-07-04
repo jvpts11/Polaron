@@ -14,6 +14,11 @@ export function ldp3cPath(): string {
   return locate('compilerPath', 'ldp3c');
 }
 
+// Locate the ldp3-lsp language server, similarly.
+export function ldp3LspPath(): string {
+  return locate('lspPath', 'ldp3-lsp');
+}
+
 function locate(settingKey: string, exe: string): string {
   const configured = vscode.workspace.getConfiguration('ldp3').get<string>(settingKey);
   if (configured && configured.trim().length > 0) {

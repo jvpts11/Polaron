@@ -4,12 +4,18 @@ import { registerFormatter } from './format';
 import { registerDiagnostics } from './diagnostics';
 import { LdpTrees, nodeProject } from './trees';
 import { registerDashboard } from './webview';
+import { startLanguageServer } from './lsp';
 
 export function activate(context: vscode.ExtensionContext): void {
   registerCommands(context);
   registerFormatter(context);
-  registerDiagnostics(context);
   registerDashboard(context);
+
+  // The language server owns diagnostics (and the outline and completion). When it is unavailable, fall back
+  // to running the compiler in check mode on save.
+  if (!startLanguageServer(context)) {
+    registerDiagnostics(context);
+  }
 
   const trees = new LdpTrees();
   context.subscriptions.push(
