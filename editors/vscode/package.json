@@ -12,7 +12,9 @@
     "Programming Languages"
   ],
   "main": "./out/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:ldp3"
+  ],
   "contributes": {
     "languages": [
       {
@@ -33,7 +35,35 @@
         "scopeName": "source.ldp3",
         "path": "./syntaxes/ldp3.tmLanguage.json"
       }
-    ]
+    ],
+    "commands": [
+      { "command": "ldp3.build", "title": "LDP3: Build", "category": "LDP3" },
+      { "command": "ldp3.run", "title": "LDP3: Run", "category": "LDP3" },
+      { "command": "ldp3.test", "title": "LDP3: Test", "category": "LDP3" },
+      { "command": "ldp3.doc", "title": "LDP3: Generate Docs", "category": "LDP3" },
+      { "command": "ldp3.fmt", "title": "LDP3: Format Project", "category": "LDP3" },
+      { "command": "ldp3.new", "title": "LDP3: New Project", "category": "LDP3" }
+    ],
+    "configuration": {
+      "title": "LDP3",
+      "properties": {
+        "ldp3.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ldp3 CLI. When empty, the extension uses the repo build output if present, otherwise 'ldp3' from PATH."
+        },
+        "ldp3.compilerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ldp3c compiler. When empty, the extension uses the repo build output if present, otherwise 'ldp3c' from PATH."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "[ldp3]": {
+        "editor.formatOnSave": true
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
