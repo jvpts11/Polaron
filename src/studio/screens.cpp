@@ -60,9 +60,11 @@ Element renderProjects(const AppState& s) {
     for (int i = 0; i < static_cast<int>(s.projects.size()); ++i)
         rows.push_back(projectRow(s.projects[static_cast<std::size_t>(i)], i == s.selectedProject));
 
+    Element headerRight = s.scanning
+                              ? text("⟳ scanning… " + std::to_string(s.scanFound) + " ") | color(theme::teal)
+                              : text("/ search ") | color(theme::faint);
     Element list = vbox({
-                       hbox({text(" ALL PROJECTS") | color(theme::faint), filler(),
-                             text("/ search ") | color(theme::faint)}),
+                       hbox({text(" ALL PROJECTS") | color(theme::faint), filler(), std::move(headerRight)}),
                        separator() | color(theme::line),
                        vbox(std::move(rows)) | flex,
                    }) |

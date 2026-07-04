@@ -48,4 +48,13 @@ foreach(needle "New LDP3 project" "NAME" "pool_balls_3d" "ENVIRONMENT" "gamedev"
     endif()
 endforeach()
 
-message(STATUS "OK: ldp3-studio shell + detail + environments + new-project")
+# The background scan indicator.
+execute_process(COMMAND "${STUDIO}" --selftest-scan OUTPUT_VARIABLE scan RESULT_VARIABLE src)
+if(NOT src EQUAL 0)
+    message(FATAL_ERROR "ldp3-studio --selftest-scan exited ${src}")
+endif()
+if(NOT scan MATCHES "scanning")
+    message(FATAL_ERROR "scan frame is missing the scanning indicator")
+endif()
+
+message(STATUS "OK: ldp3-studio shell + detail + environments + new-project + scan")

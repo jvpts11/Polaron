@@ -13,6 +13,7 @@
 #include <ftxui/screen/screen.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <filesystem>
 #include <iostream>
@@ -22,6 +23,7 @@
 
 #include "driver/discovery.h"
 #include "driver/process.h"
+#include "driver/toolchain.h"
 #include "studio/engine.h"
 #include "studio/screens.h"
 #include "studio/state.h"
@@ -161,6 +163,9 @@ int selftest(const std::string& mode) {
         s.newProject.open = true;
         s.newProject.name = "pool_balls_3d";
         s.newProject.envChoice = 1;
+    } else if (mode == "scan") {
+        s.scanning = true;
+        s.scanFound = 42;
     }
     ftxui::Screen screen = ftxui::Screen::Create(Dimension::Fixed(96), Dimension::Fixed(26));
     Render(screen, renderShell(s));
@@ -177,6 +182,7 @@ int main(int argc, char** argv) {
         if (arg == "--selftest-detail") return selftest("detail");
         if (arg == "--selftest-env") return selftest("env");
         if (arg == "--selftest-new") return selftest("new");
+        if (arg == "--selftest-scan") return selftest("scan");
     }
 
     AppState state;
@@ -185,6 +191,35 @@ int main(int argc, char** argv) {
 
     ScreenInteractive screen = ScreenInteractive::Fullscreen();
     std::thread worker;
+    std::thread scanThread;
+    std::atomic<bool> scanStop{false};
+
+    // Start (or stop) a background computer-wide scan that streams found projects into the list.
+    auto toggleScan = [&] {
+        if (state.scanning) {  // a second press stops it
+            scanStop = true;
+            return;
+        }
+        if (scanThread.joinable()) scanThread.join();
+        state.scanning = true;
+        state.scanFound = static_cast<int>(state.projects.size());
+        scanStop = false;
+        const std::filesystem::path root = ldp3::driver::ldp3HomeDir().parent_path();  // the user's home
+        scanThread = std::thread([&screen, &state, &scanStop, root] {
+            ldp3::driver::discoverProjectsStreaming(
+                root,
+                [&screen, &state](ldp3::driver::DiscoveredProject p) {
+                    screen.Post([&state, p] {
+                        for (const ldp3::driver::DiscoveredProject& e : state.projects)
+                            if (e.dir == p.dir) return;  // already listed
+                        state.projects.push_back(p);
+                        state.scanFound = static_cast<int>(state.projects.size());
+                    });
+                },
+                [&scanStop] { return scanStop.load(); });
+            screen.Post([&state] { state.scanning = false; });
+        });
+    };
 
     // Run the given verb on the selected project. `run` is interactive (suspend the TUI); the others stream
     // their captured output into the console on a background thread.
@@ -311,6 +346,10 @@ int main(int argc, char** argv) {
                 state.environments = ldp3::studio::loadEnvironments(state.projects);
                 return true;
             }
+            if (e == Event::Character('s')) {  // start/stop the background computer-wide scan
+                toggleScan();
+                return true;
+            }
             return false;
         }
         if (state.screen == studio::Screen::Environments) {
@@ -351,6 +390,8 @@ int main(int argc, char** argv) {
     });
 
     screen.Loop(root);
+    scanStop = true;  // stop the scan thread if it is still running
     if (worker.joinable()) worker.join();
+    if (scanThread.joinable()) scanThread.join();
     return 0;
 }

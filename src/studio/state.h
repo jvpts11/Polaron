@@ -43,6 +43,8 @@ struct AppState {
     std::vector<Environment> environments;
     int selectedEnv = 0;
     NewProject newProject;
+    bool scanning = false;   // a background computer-wide scan is running
+    int scanFound = 0;       // projects known so far while scanning
 
     const ldp3::driver::DiscoveredProject* selected() const {
         if (projects.empty()) return nullptr;
