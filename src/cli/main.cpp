@@ -564,16 +564,36 @@ R"LDP3(
             public method sortedBy(function<int, T, T> compare) returns ArrayList<T> {
                 mutable ArrayList<T> out = new ArrayList<T>() on heap;
                 for (mutable int i = 0; i < this.count; i++) { out.add(this.data[i]); }
-                for (mutable int i = 1; i < out.size(); i++) {
-                    mutable T key = out.get(i);
-                    mutable int j = i - 1;
-                    while (j >= 0 && compare(out.get(j), key) > 0) {
-                        out.set(j + 1, out.get(j));
-                        j = j - 1;
-                    }
-                    out.set(j + 1, key);
+                if (out.size() > 1) {
+                    T[] scratch = new T[out.size()]();  // O(n) merge buffer, freed below
+                    out.mergeSortRange(scratch, 0, out.size() - 1, compare);
+                    delete scratch;
                 }
                 return out;
+            }
+            // Stable merge sort (O(n log n)) backing sortedBy; `tmp` is an n-element scratch array. Kept
+            // internal to the collection. (Replaced an O(n^2) insertion sort that made large sorts hang.)
+            private method mergeSortRange(T[] tmp, int lo, int hi, function<int, T, T> compare) returns void {
+                if (lo >= hi) { return; }
+                int mid = (lo + hi) / 2;
+                this.mergeSortRange(tmp, lo, mid, compare);
+                this.mergeSortRange(tmp, mid + 1, hi, compare);
+                mutable int i = lo;
+                mutable int j = mid + 1;
+                mutable int k = lo;
+                while (i <= mid && j <= hi) {
+                    if (compare(this.data[i], this.data[j]) <= 0) {
+                        tmp[k] = this.data[i];
+                        i = i + 1;
+                    } else {
+                        tmp[k] = this.data[j];
+                        j = j + 1;
+                    }
+                    k = k + 1;
+                }
+                while (i <= mid) { tmp[k] = this.data[i]; i = i + 1; k = k + 1; }
+                while (j <= hi) { tmp[k] = this.data[j]; j = j + 1; k = k + 1; }
+                for (mutable int t = lo; t <= hi; t = t + 1) { this.data[t] = tmp[t]; }
             }
             // Search terminals (spec 34): find returns the first element a predicate accepts, min/max the
             // smallest/largest by a comparator. Each returns Option<T> -- Some on a hit, None when the list
