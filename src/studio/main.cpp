@@ -35,12 +35,6 @@ using ldp3::studio::Console;
 
 namespace {
 
-// FTXUI erases lines with the terminal's *default* background when it repaints on a resize; if that default
-// is darker than our ground, the screen visibly flashes darker before repainting. Setting the terminal
-// background to the ground colour (OSC 11) for the duration makes that erase blend in; OSC 111 restores it.
-constexpr const char* kSetGroundBg = "\x1b]11;#0d1417\x1b\\";  // must match theme::ground
-constexpr const char* kResetBg = "\x1b]111\x1b\\";
-
 Element topBar(const AppState& s) {
     Element crumb;
     if (s.screen == studio::Screen::ProjectDetail && s.selected() != nullptr) {
@@ -55,13 +49,12 @@ Element topBar(const AppState& s) {
                crumb,
                filler(),
                text(count + " ") | color(theme::faint),
-           }) |
-           bgcolor(theme::panel);
+           });
 }
 
 Element navItem(const std::string& icon, const std::string& label, bool on) {
     Element e = hbox({text(" " + icon + "  "), text(label), filler()});
-    if (on) return e | color(theme::ink) | bgcolor(theme::sel) | bold;
+    if (on) return e | color(theme::amber) | bold;
     return e | color(theme::muted);
 }
 
@@ -78,7 +71,7 @@ Element rail(const AppState& s) {
                filler(),
                text(" ldp3c 0.1.0") | color(theme::faint),
            }) |
-           size(WIDTH, EQUAL, 22) | bgcolor(theme::panel);
+           size(WIDTH, EQUAL, 22);
 }
 
 Element keyBar(const AppState& s) {
@@ -86,22 +79,19 @@ Element keyBar(const AppState& s) {
         return hbox({text(" " + k + " ") | color(theme::amber) | bold, text(label + "  ") | color(theme::muted)});
     };
     if (s.screen == studio::Screen::ProjectDetail) {
-        return hbox({key("↑↓", "action"), key("⏎", "run action"), key("esc", "back"), key("q", "quit")}) |
-               bgcolor(theme::panel);
+        return hbox({key("↑↓", "action"), key("⏎", "run action"), key("esc", "back"), key("q", "quit")});
     }
     if (s.screen == studio::Screen::Environments) {
-        return hbox({key("↑↓", "navigate"), key("n", "new env"), key("esc", "back"), key("q", "quit")}) |
-               bgcolor(theme::panel);
+        return hbox({key("↑↓", "navigate"), key("n", "new env"), key("esc", "back"), key("q", "quit")});
     }
     return hbox({
-               key("↑↓", "navigate"),
-               key("⏎", "open"),
-               key("n", "new project"),
-               key("s", "scan"),
-               key("e", "environments"),
-               key("q", "quit"),
-           }) |
-           bgcolor(theme::panel);
+        key("↑↓", "navigate"),
+        key("⏎", "open"),
+        key("n", "new project"),
+        key("s", "scan"),
+        key("e", "environments"),
+        key("q", "quit"),
+    });
 }
 
 Element renderShell(const AppState& s) {
@@ -110,7 +100,7 @@ Element renderShell(const AppState& s) {
                hbox({rail(s), ldp3::studio::renderContent(s) | flex}) | flex,
                keyBar(s),
            }) |
-           bgcolor(theme::ground) | color(theme::ink);
+           color(theme::ink);  // default text colour; no background so we blend with the terminal
 }
 
 // A fixed, deterministic state so `--selftest` renders a stable frame regardless of the working directory.
@@ -180,7 +170,6 @@ int main(int argc, char** argv) {
     std::error_code ec;
     state.projects = ldp3::driver::discoverProjects(std::filesystem::current_path(ec));
 
-    std::cout << kSetGroundBg << std::flush;
     ScreenInteractive screen = ScreenInteractive::Fullscreen();
     std::thread worker;
 
@@ -287,6 +276,5 @@ int main(int argc, char** argv) {
 
     screen.Loop(root);
     if (worker.joinable()) worker.join();
-    std::cout << kResetBg << std::flush;  // restore the terminal's default background on exit
     return 0;
 }

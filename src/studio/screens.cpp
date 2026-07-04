@@ -11,9 +11,9 @@ using namespace ftxui;
 namespace ldp3::studio {
 namespace {
 
-// A small colored chip (environment badge / status).
+// A small colored label (environment badge / status). No background -- the TUI blends with the terminal.
 Element chip(const std::string& s, Color fg) {
-    return text(" " + s + " ") | color(fg) | bgcolor(theme::sel);
+    return text(" " + s) | color(fg);
 }
 
 Element projectRow(const ldp3::driver::DiscoveredProject& p, bool sel) {
@@ -25,9 +25,9 @@ Element projectRow(const ldp3::driver::DiscoveredProject& p, bool sel) {
         name,
         filler(),
         chip(hasEnv ? m.environment : "local", hasEnv ? theme::violet : theme::faint),
-        text(" v" + m.version + " ") | color(theme::muted),
+        text("  v" + m.version + " ") | color(theme::muted),
     });
-    return sel ? (row | bgcolor(theme::sel)) : row;
+    return row;
 }
 
 Element kv(const std::string& k, Element v) {
@@ -102,7 +102,7 @@ Element renderProjectDetail(const AppState& s) {
     for (int i = 0; i < static_cast<int>(list.size()); ++i) {
         const bool sel = i == s.selectedAction;
         Element a = text((sel ? " ▸ " : "   ") + list[static_cast<std::size_t>(i)].first);
-        a = sel ? (a | color(theme::amber) | bold | bgcolor(theme::sel)) : (a | color(theme::muted));
+        a = sel ? (a | color(theme::amber) | bold) : (a | color(theme::muted));
         acts.push_back(std::move(a));
     }
     Elements deps;
@@ -168,7 +168,7 @@ Element renderEnvironments(const AppState& s) {
         Element nm = text((sel ? " ▸ " : "   ") + e.name);
         nm = sel ? (nm | color(theme::amber) | bold) : (nm | color(theme::violet));
         Element row = hbox({nm, filler(), text(meta + " ") | color(theme::faint)});
-        rows.push_back(sel ? (row | bgcolor(theme::sel)) : row);
+        rows.push_back(std::move(row));
     }
     rows.push_back(text("  ＋ new environment…") | color(theme::teal));
     Element list = vbox({
