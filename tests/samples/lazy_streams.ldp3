@@ -1,0 +1,29 @@
+// Lazy iterator pipeline from the stdlib (stdlib #25): filter + map + fold over a Stream, evaluated
+// on demand. Exercises the interface/abstract reference-semantics fix (the stream wraps an Iterator
+// and a Stream field). Build a stream over any collection's iterator, then chain transforms.
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.Iterator;
+import System.Collections.Stream;
+import System.Collections.IteratorStream;
+
+program LazyStreams;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<int> nums = new ArrayList<int>() on heap;
+                for (mutable int i = 1; i <= 10; i++) { nums.add(i); }
+
+                IteratorStream<int> base = new IteratorStream<int>(nums.iterator()) on heap;
+                Stream<int> evens = base.filter(lambda(int x) returns boolean { return x % 2 == 0; });
+                Stream<int> squares = evens.map(lambda(int x) returns int { return x * x; });
+                int total = squares.fold<int>(0, lambda(int acc, int x) returns int { return acc + x; });
+
+                System.IO.Console.printf("total=%d\n", total);   // (2*2 + 4*4 + 6*6 + 8*8 + 10*10) = 220
+                return;
+            }
+        }
+    }
+}

@@ -641,6 +641,74 @@ R"LDP3(
                 return value;
             }
         }
+        // A lazy iterator pipeline (spec 25 / stdlib #25): a Stream is itself an Iterator, and each
+        // transform (filter/map) wraps the previous stream and pulls elements on demand -- nothing runs
+        // until a terminal op (fold/count/forEach) drives hasNext/next. Build one over any Iterator with
+        // `new IteratorStream<T>(collection.iterator())`, then chain. (A type-changing map<R> awaits a
+        // monomorphizer fix; map here transforms T -> T.)
+        public abstract class Stream<T> implements Iterator<T> {
+            public abstract method hasNext() returns boolean;
+            public abstract method next() returns T;
+            public method filter(function<boolean, T> pred) returns Stream<T> {
+                return new FilterStream<T>(this, pred) on heap;
+            }
+            public method map(function<T, T> fn) returns Stream<T> {
+                return new MapStream<T>(this, fn) on heap;
+            }
+            public method fold<R>(R init, function<R, R, T> combine) returns R {
+                mutable R acc = init;
+                while (this.hasNext()) { acc = combine(acc, this.next()); }
+                return acc;
+            }
+            public method forEach(function<void, T> action) returns void {
+                while (this.hasNext()) { action(this.next()); }
+            }
+            public method count() returns int {
+                mutable int c = 0;
+                while (this.hasNext()) { this.next(); c = c + 1; }
+                return c;
+            }
+        }
+        // Adapts a plain Iterator into a Stream (the head of a pipeline).
+        public class IteratorStream<T> extends Stream<T> {
+            private Iterator<T> src;
+            public constructor IteratorStream(Iterator<T> src) { this.src = src; }
+            public override method hasNext() returns boolean { return this.src.hasNext(); }
+            public override method next() returns T { return this.src.next(); }
+        }
+        // Yields only the upstream elements that satisfy the predicate; caches one look-ahead so hasNext
+        // can skip rejected elements without losing the accepted one.
+        public class FilterStream<T> extends Stream<T> {
+            private Stream<T> src;
+            private function<boolean, T> pred;
+            private mutable boolean hasCached;
+            private mutable T cached;
+            public constructor FilterStream(Stream<T> src, function<boolean, T> pred) {
+                this.src = src; this.pred = pred; this.hasCached = false;
+            }
+            public override method hasNext() returns boolean {
+                if (this.hasCached) { return true; }
+                while (this.src.hasNext()) {
+                    T v = this.src.next();
+                    if (this.pred(v)) { this.cached = v; this.hasCached = true; return true; }
+                }
+                return false;
+            }
+            public override method next() returns T {
+                this.hasCached = false;
+                return this.cached;
+            }
+        }
+        // Applies a transform to each upstream element as it is pulled.
+        public class MapStream<T> extends Stream<T> {
+            private Stream<T> src;
+            private function<T, T> fn;
+            public constructor MapStream(Stream<T> src, function<T, T> fn) {
+                this.src = src; this.fn = fn;
+            }
+            public override method hasNext() returns boolean { return this.src.hasNext(); }
+            public override method next() returns T { return this.fn(this.src.next()); }
+        }
         // A non-owning window over a [start, start+len) range of an array (spec 34): no copy, just a
         // backing array and an offset. Reads go through the array's own bounds check, so there is no UB;
         // sub returns a narrower window, toArray copies the window out into a fresh array.

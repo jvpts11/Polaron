@@ -289,6 +289,15 @@ add_test(NAME codegen_interface_field_delegation_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# Lazy iterator pipeline from the stdlib (#25): filter + map + fold over a Stream, evaluated on demand.
+add_test(NAME codegen_lazy_streams_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lazy_streams.ldp3"
+    "-DCONTAINS=total=220"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # The argument to a comptime parameter must be a compile-time constant (spec 32.4).
 add_test(NAME sema_rejects_comptime_arg
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/comptime_arg_bad.ldp3")
