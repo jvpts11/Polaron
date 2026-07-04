@@ -25,6 +25,13 @@ struct NewProject {
     std::string error;  // shown when creation fails
 };
 
+// The new-environment modal's state (name only).
+struct NewEnv {
+    bool open = false;
+    std::string name;
+    std::string error;
+};
+
 // The console pane's state: the output of the last action run on the open project.
 struct Console {
     std::string title;                 // e.g. "ldp3 test"
@@ -43,6 +50,7 @@ struct AppState {
     std::vector<Environment> environments;
     int selectedEnv = 0;
     NewProject newProject;
+    NewEnv newEnv;
     bool scanning = false;   // a background computer-wide scan is running
     int scanFound = 0;       // projects known so far while scanning
 

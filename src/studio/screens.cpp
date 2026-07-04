@@ -239,6 +239,24 @@ Element renderNewProjectModal(const AppState& s) {
     return vbox(std::move(body)) | borderStyled(ROUNDED, theme::amber) | size(WIDTH, EQUAL, 48);
 }
 
+Element renderNewEnvModal(const AppState& s) {
+    const NewEnv& ne = s.newEnv;
+    Elements body = {
+        text(" ＋ New environment") | color(theme::amber) | bold,
+        separator() | color(theme::line),
+        vbox({text(" NAME") | color(theme::faint),
+              hbox({text(" ▸ ") | color(theme::amber), text(ne.name + "_") | color(theme::ink)})}),
+    };
+    if (!ne.error.empty()) {
+        body.push_back(text(""));
+        body.push_back(text(" " + ne.error) | color(theme::red));
+    }
+    body.push_back(separator() | color(theme::line));
+    body.push_back(hbox({text(" ⏎") | color(theme::amber), text(" create   ") | color(theme::muted),
+                         text("esc") | color(theme::amber), text(" cancel") | color(theme::muted)}));
+    return vbox(std::move(body)) | borderStyled(ROUNDED, theme::amber) | size(WIDTH, EQUAL, 44);
+}
+
 Element renderContent(const AppState& state) {
     switch (state.screen) {
         case Screen::ProjectDetail:

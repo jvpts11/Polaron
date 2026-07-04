@@ -22,6 +22,7 @@
 #include <thread>
 
 #include "driver/discovery.h"
+#include "driver/environs.h"
 #include "driver/process.h"
 #include "driver/toolchain.h"
 #include "studio/engine.h"
@@ -104,9 +105,10 @@ Element renderShell(const AppState& s) {
                        keyBar(s),
                    }) |
                    color(theme::ink);  // default text colour; no background so we blend with the terminal
-    // With no background to occlude the content behind it, the modal is shown centered on an empty screen
+    // With no background to occlude the content behind it, a modal is shown centered on an empty screen
     // rather than overlaid -- so nothing bleeds through its (transparent) cells.
     if (s.newProject.open) return ldp3::studio::renderNewProjectModal(s) | center;
+    if (s.newEnv.open) return ldp3::studio::renderNewEnvModal(s) | center;
     return base;
 }
 
@@ -166,6 +168,10 @@ int selftest(const std::string& mode) {
     } else if (mode == "scan") {
         s.scanning = true;
         s.scanFound = 42;
+    } else if (mode == "newenv") {
+        s.screen = studio::Screen::Environments;
+        s.newEnv.open = true;
+        s.newEnv.name = "gamedev";
     }
     ftxui::Screen screen = ftxui::Screen::Create(Dimension::Fixed(96), Dimension::Fixed(26));
     Render(screen, renderShell(s));
@@ -183,6 +189,7 @@ int main(int argc, char** argv) {
         if (arg == "--selftest-env") return selftest("env");
         if (arg == "--selftest-new") return selftest("new");
         if (arg == "--selftest-scan") return selftest("scan");
+        if (arg == "--selftest-newenv") return selftest("newenv");
     }
 
     AppState state;
@@ -190,6 +197,9 @@ int main(int argc, char** argv) {
     state.projects = ldp3::driver::discoverProjects(std::filesystem::current_path(ec));
 
     ScreenInteractive screen = ScreenInteractive::Fullscreen();
+    // Hide the terminal cursor: the studio has no text-input caret of its own, so FTXUI would otherwise leave
+    // a blinking block in the corner. It stays hidden every frame since nothing requests a focus cursor.
+    screen.SetCursor(ftxui::Screen::Cursor{0, 0, ftxui::Screen::Cursor::Hidden});
     std::thread worker;
     std::thread scanThread;
     std::atomic<bool> scanStop{false};
@@ -314,6 +324,42 @@ int main(int argc, char** argv) {
             }
             return true;  // swallow anything else while the modal is open
         }
+        if (state.newEnv.open) {
+            ldp3::studio::NewEnv& ne = state.newEnv;
+            if (e == Event::Escape) {
+                ne.open = false;
+                return true;
+            }
+            if (e == Event::Return) {
+                if (ne.name.empty()) {
+                    ne.error = "Name cannot be empty.";
+                    return true;
+                }
+                if (ldp3::driver::envNew(ne.name) != 0) {
+                    ne.error = "Could not create the environment.";
+                    return true;
+                }
+                const std::string created = ne.name;
+                ne.open = false;
+                state.environments = ldp3::studio::loadEnvironments(state.projects);
+                for (int i = 0; i < static_cast<int>(state.environments.size()); ++i)
+                    if (state.environments[static_cast<std::size_t>(i)].name == created) {
+                        state.selectedEnv = i;
+                        break;
+                    }
+                return true;
+            }
+            if (e == Event::Backspace) {
+                if (!ne.name.empty()) ne.name.pop_back();
+                return true;
+            }
+            if (e.is_character() && e.character().size() == 1) {
+                const char c = e.character()[0];
+                if (std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '-') ne.name += c;
+                return true;
+            }
+            return true;  // swallow anything else while the modal is open
+        }
         if (e == Event::Character('q')) {
             screen.Exit();
             return true;
@@ -360,6 +406,11 @@ int main(int argc, char** argv) {
             }
             if (e == Event::ArrowDown || e == Event::Character('j')) {
                 state.selectedEnv = std::min(std::max(0, last), state.selectedEnv + 1);
+                return true;
+            }
+            if (e == Event::Character('n')) {  // open the new-environment modal
+                state.newEnv = ldp3::studio::NewEnv{};
+                state.newEnv.open = true;
                 return true;
             }
             if (e == Event::Escape) {

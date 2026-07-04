@@ -57,4 +57,15 @@ if(NOT scan MATCHES "scanning")
     message(FATAL_ERROR "scan frame is missing the scanning indicator")
 endif()
 
-message(STATUS "OK: ldp3-studio shell + detail + environments + new-project + scan")
+# The new-environment modal.
+execute_process(COMMAND "${STUDIO}" --selftest-newenv OUTPUT_VARIABLE newenv RESULT_VARIABLE nerc)
+if(NOT nerc EQUAL 0)
+    message(FATAL_ERROR "ldp3-studio --selftest-newenv exited ${nerc}")
+endif()
+foreach(needle "New environment" "NAME" "create")
+    if(NOT newenv MATCHES "${needle}")
+        message(FATAL_ERROR "new-environment modal is missing '${needle}'")
+    endif()
+endforeach()
+
+message(STATUS "OK: ldp3-studio all screens")
