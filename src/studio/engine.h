@@ -17,6 +17,10 @@ struct ActionResult {
 // Load the shared environments (their libraries, and which of `projects` use each).
 std::vector<Environment> loadEnvironments(const std::vector<ldp3::driver::DiscoveredProject>& projects);
 
+// Create a new app project `name` under parentDir (scaffold), optionally assigning it to environment `env`.
+// Returns true on success.
+bool createProject(const std::string& name, const std::filesystem::path& parentDir, const std::string& env);
+
 // The ldp3 CLI executable -- a sibling of ldp3-studio.
 std::filesystem::path ldp3Cli();
 

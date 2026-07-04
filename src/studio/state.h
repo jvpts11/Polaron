@@ -16,6 +16,15 @@ struct Environment {
     std::vector<std::string> usedBy;
 };
 
+// The new-project modal's state.
+struct NewProject {
+    bool open = false;
+    std::string name;
+    int field = 0;      // 0 = name, 1 = environment
+    int envChoice = 0;  // 0 = none; otherwise environments[envChoice - 1]
+    std::string error;  // shown when creation fails
+};
+
 // The console pane's state: the output of the last action run on the open project.
 struct Console {
     std::string title;                 // e.g. "ldp3 test"
@@ -33,6 +42,7 @@ struct AppState {
     Console console;
     std::vector<Environment> environments;
     int selectedEnv = 0;
+    NewProject newProject;
 
     const ldp3::driver::DiscoveredProject* selected() const {
         if (projects.empty()) return nullptr;

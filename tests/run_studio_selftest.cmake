@@ -37,4 +37,15 @@ foreach(needle "ENVIRONMENTS" "gamedev" "LIBRARIES" "vec_simd" "USED BY" "new en
     endif()
 endforeach()
 
-message(STATUS "OK: ldp3-studio shell + detail + environments")
+# The new-project modal: name and environment fields.
+execute_process(COMMAND "${STUDIO}" --selftest-new OUTPUT_VARIABLE modal RESULT_VARIABLE mrc)
+if(NOT mrc EQUAL 0)
+    message(FATAL_ERROR "ldp3-studio --selftest-new exited ${mrc}")
+endif()
+foreach(needle "New LDP3 project" "NAME" "pool_balls_3d" "ENVIRONMENT" "gamedev" "create")
+    if(NOT modal MATCHES "${needle}")
+        message(FATAL_ERROR "new-project modal is missing '${needle}'")
+    endif()
+endforeach()
+
+message(STATUS "OK: ldp3-studio shell + detail + environments + new-project")

@@ -13,6 +13,7 @@
 #include <ftxui/screen/screen.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -95,12 +96,16 @@ Element keyBar(const AppState& s) {
 }
 
 Element renderShell(const AppState& s) {
-    return vbox({
-               topBar(s),
-               hbox({rail(s), ldp3::studio::renderContent(s) | flex}) | flex,
-               keyBar(s),
-           }) |
-           color(theme::ink);  // default text colour; no background so we blend with the terminal
+    Element base = vbox({
+                       topBar(s),
+                       hbox({rail(s), ldp3::studio::renderContent(s) | flex}) | flex,
+                       keyBar(s),
+                   }) |
+                   color(theme::ink);  // default text colour; no background so we blend with the terminal
+    // With no background to occlude the content behind it, the modal is shown centered on an empty screen
+    // rather than overlaid -- so nothing bleeds through its (transparent) cells.
+    if (s.newProject.open) return ldp3::studio::renderNewProjectModal(s) | center;
+    return base;
 }
 
 // A fixed, deterministic state so `--selftest` renders a stable frame regardless of the working directory.
@@ -149,6 +154,13 @@ int selftest(const std::string& mode) {
         web.libs = {{"http", "1.0.0"}};
         web.usedBy = {"http_server"};
         s.environments = {gamedev, web};
+    } else if (mode == "new") {
+        ldp3::studio::Environment gamedev;
+        gamedev.name = "gamedev";
+        s.environments = {gamedev};
+        s.newProject.open = true;
+        s.newProject.name = "pool_balls_3d";
+        s.newProject.envChoice = 1;
     }
     ftxui::Screen screen = ftxui::Screen::Create(Dimension::Fixed(96), Dimension::Fixed(26));
     Render(screen, renderShell(s));
@@ -164,6 +176,7 @@ int main(int argc, char** argv) {
         if (arg == "--selftest") return selftest("projects");
         if (arg == "--selftest-detail") return selftest("detail");
         if (arg == "--selftest-env") return selftest("env");
+        if (arg == "--selftest-new") return selftest("new");
     }
 
     AppState state;
@@ -209,6 +222,63 @@ int main(int argc, char** argv) {
 
     Component root = Renderer([&] { return renderShell(state); });
     root |= CatchEvent([&](const Event& e) {
+        // The new-project modal captures all input while it is open.
+        if (state.newProject.open) {
+            ldp3::studio::NewProject& np = state.newProject;
+            if (e == Event::Escape) {
+                np.open = false;
+                return true;
+            }
+            if (e == Event::Tab || e == Event::TabReverse) {
+                np.field = (np.field + 1) % 2;
+                return true;
+            }
+            if (e == Event::Return) {
+                if (np.name.empty()) {
+                    np.error = "Name cannot be empty.";
+                    return true;
+                }
+                std::error_code e2;
+                const std::filesystem::path cwd = std::filesystem::current_path(e2);
+                const std::string env =
+                    np.envChoice > 0 ? state.environments[static_cast<std::size_t>(np.envChoice - 1)].name : "";
+                if (!ldp3::studio::createProject(np.name, cwd, env)) {
+                    np.error = "Could not create the project.";
+                    return true;
+                }
+                const std::string created = np.name;
+                np.open = false;
+                state.projects = ldp3::driver::discoverProjects(cwd);
+                for (int i = 0; i < static_cast<int>(state.projects.size()); ++i)
+                    if (state.projects[static_cast<std::size_t>(i)].manifest.name == created) {
+                        state.selectedProject = i;
+                        break;
+                    }
+                return true;
+            }
+            if (np.field == 0) {  // editing the name
+                if (e == Event::Backspace) {
+                    if (!np.name.empty()) np.name.pop_back();
+                    return true;
+                }
+                if (e.is_character() && e.character().size() == 1) {
+                    const char c = e.character()[0];
+                    if (std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '-') np.name += c;
+                    return true;
+                }
+            } else {  // choosing the environment
+                const int envCount = static_cast<int>(state.environments.size());
+                if (e == Event::ArrowLeft || e == Event::Character('h')) {
+                    np.envChoice = std::max(0, np.envChoice - 1);
+                    return true;
+                }
+                if (e == Event::ArrowRight || e == Event::Character('l')) {
+                    np.envChoice = std::min(envCount, np.envChoice + 1);
+                    return true;
+                }
+            }
+            return true;  // swallow anything else while the modal is open
+        }
         if (e == Event::Character('q')) {
             screen.Exit();
             return true;
@@ -233,6 +303,12 @@ int main(int argc, char** argv) {
                 state.screen = studio::Screen::ProjectDetail;
                 state.selectedAction = 0;
                 state.console = Console{};
+                return true;
+            }
+            if (e == Event::Character('n')) {  // open the new-project modal
+                state.newProject = ldp3::studio::NewProject{};
+                state.newProject.open = true;
+                state.environments = ldp3::studio::loadEnvironments(state.projects);
                 return true;
             }
             return false;

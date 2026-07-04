@@ -8,4 +8,7 @@ namespace ldp3::studio {
 // dependencies + console).
 ftxui::Element renderContent(const AppState& state);
 
+// Render the new-project modal (name + environment), to be overlaid on the dimmed screen.
+ftxui::Element renderNewProjectModal(const AppState& state);
+
 }  // namespace ldp3::studio

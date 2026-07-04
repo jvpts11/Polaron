@@ -203,6 +203,40 @@ Element renderEnvironments(const AppState& s) {
 
 }  // namespace
 
+Element renderNewProjectModal(const AppState& s) {
+    const NewProject& np = s.newProject;
+    auto modalField = [](const std::string& label, Element value, bool focused) {
+        Element marker = text(focused ? " ▸ " : "   ") | color(focused ? theme::amber : theme::faint);
+        return vbox({text(" " + label) | color(theme::faint), hbox({marker, std::move(value)})});
+    };
+
+    Element nameVal = text(np.name + (np.field == 0 ? "_" : "")) |
+                      color(np.field == 0 ? theme::ink : theme::muted);
+
+    const bool hasEnv = np.envChoice > 0 && np.envChoice - 1 < static_cast<int>(s.environments.size());
+    const std::string envName = hasEnv ? s.environments[static_cast<std::size_t>(np.envChoice - 1)].name : "none";
+    Element envVal = hbox({text("‹ ") | color(theme::faint),
+                           text(envName) | color(hasEnv ? theme::violet : theme::muted),
+                           text(" ›") | color(theme::faint)});
+
+    Elements body = {
+        text(" ＋ New LDP3 project") | color(theme::amber) | bold,
+        separator() | color(theme::line),
+        modalField("NAME", std::move(nameVal), np.field == 0),
+        text(""),
+        modalField("ENVIRONMENT", std::move(envVal), np.field == 1),
+    };
+    if (!np.error.empty()) {
+        body.push_back(text(""));
+        body.push_back(text(" " + np.error) | color(theme::red));
+    }
+    body.push_back(separator() | color(theme::line));
+    body.push_back(hbox({text(" tab") | color(theme::amber), text(" next   ") | color(theme::muted),
+                         text("⏎") | color(theme::amber), text(" create   ") | color(theme::muted),
+                         text("esc") | color(theme::amber), text(" cancel") | color(theme::muted)}));
+    return vbox(std::move(body)) | borderStyled(ROUNDED, theme::amber) | size(WIDTH, EQUAL, 48);
+}
+
 Element renderContent(const AppState& state) {
     switch (state.screen) {
         case Screen::ProjectDetail:

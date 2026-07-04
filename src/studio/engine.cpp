@@ -7,11 +7,22 @@
 #include "driver/environs.h"
 #include "driver/manifest.h"
 #include "driver/process.h"
+#include "driver/scaffold.h"
 #include "driver/toolchain.h"
 
 namespace ldp3::studio {
 
 std::filesystem::path ldp3Cli() { return ldp3::driver::exeDir() / "ldp3.exe"; }
+
+bool createProject(const std::string& name, const std::filesystem::path& parentDir, const std::string& env) {
+    const std::filesystem::path dir = parentDir / name;
+    if (ldp3::driver::scaffold(dir, name) != 0) return false;
+    if (!env.empty()) {
+        std::ofstream f(dir / "ldp3.toml", std::ios::app);
+        f << "\n[build]\nenvironment = \"" << env << "\"\n";
+    }
+    return true;
+}
 
 std::vector<Environment> loadEnvironments(const std::vector<ldp3::driver::DiscoveredProject>& projects) {
     std::vector<Environment> envs;
