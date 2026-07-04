@@ -4264,6 +4264,8 @@ add_executable(ldp3_unit_tests
     unit/test_formatter.cpp # ldp3 fmt: token-reflow formatting
     unit/test_discovery.cpp # toolchain driver: project discovery
     unit/test_jsonout.cpp   # toolchain driver: --json workspace output
+    unit/test_lsp_json.cpp  # language server: JSON-RPC value parse/dump
+    ${CMAKE_SOURCE_DIR}/src/lsp/json.cpp
 )
 target_link_libraries(ldp3_unit_tests PRIVATE ldp3_core ldp3_driver doctest::doctest)
 add_test(NAME unit_tests COMMAND ldp3_unit_tests)

@@ -103,5 +103,20 @@ if(MSVC)
   target_compile_options(ldp3-studio PRIVATE /utf-8)  # keep the box-drawing/UTF-8 string literals intact
 endif()
 
+# --- ldp3-lsp: the language server. Reuses only the compiler front-end (lexer/parser/ast) so it carries no
+# LLVM; it speaks LSP over stdio for the VS Code extension's language client. ---
+add_executable(ldp3-lsp
+    src/lsp/main.cpp
+    src/lsp/json.cpp
+    src/lsp/server.cpp
+    src/lexer/token.cpp
+    src/lexer/lexer.cpp
+    src/parser/ast.cpp
+    src/parser/parser.cpp)
+target_include_directories(ldp3-lsp PRIVATE src)
+if(MSVC)
+  target_compile_options(ldp3-lsp PRIVATE /utf-8)
+endif()
+
 enable_testing()
 add_subdirectory(tests)
