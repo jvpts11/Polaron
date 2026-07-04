@@ -2240,10 +2240,14 @@ ast::StmtPtr Parser::parseForStatement() {
         fe->body = parseBlock();
         return fe;
     }
-    // foreach over an array: `for (T name in iterable) { ... }` (spec 7).
+    // foreach over an array: `for (T name in iterable)`, or with a pointer element `for (T* name in ...)`
+    // (spec 7). The pointer form is `Ident Star Ident In`; without this case a pointer element type is
+    // mis-parsed as the multiplication `T * name`.
     if ((check(TokenKind::KwVar) || isTypeKeyword(current().kind) ||
          check(TokenKind::Identifier)) &&
-        peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::KwIn) {
+        ((peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::KwIn) ||
+         (peek(1).kind == TokenKind::Star && peek(2).kind == TokenKind::Identifier &&
+          peek(3).kind == TokenKind::KwIn))) {
         auto fe = std::make_unique<ast::ForeachStmt>();
         fe->loc = loc;
         if (match(TokenKind::KwVar)) {
