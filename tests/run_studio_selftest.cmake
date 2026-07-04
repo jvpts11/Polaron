@@ -90,4 +90,15 @@ foreach(needle "TOOLCHAIN" "COMPILER" "ldp3c" "clang" "x86_64-windows")
     endif()
 endforeach()
 
+# The plug-library modal.
+execute_process(COMMAND "${STUDIO}" --selftest-plug OUTPUT_VARIABLE plug RESULT_VARIABLE prc)
+if(NOT prc EQUAL 0)
+    message(FATAL_ERROR "ldp3-studio --selftest-plug exited ${prc}")
+endif()
+foreach(needle "Plug a library" "SOURCE" "ldp3/json" "plug")
+    if(NOT plug MATCHES "${needle}")
+        message(FATAL_ERROR "plug modal is missing '${needle}'")
+    endif()
+endforeach()
+
 message(STATUS "OK: ldp3-studio all screens")

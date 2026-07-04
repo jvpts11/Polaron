@@ -16,13 +16,16 @@
 #include <atomic>
 #include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <thread>
 
 #include "driver/discovery.h"
 #include "driver/environs.h"
+#include "driver/manifest.h"
 #include "driver/process.h"
 #include "driver/toolchain.h"
 #include "studio/engine.h"
@@ -85,7 +88,8 @@ Element keyBar(const AppState& s) {
         return hbox({text(" " + k + " ") | color(theme::amber) | bold, text(label + "  ") | color(theme::muted)});
     };
     if (s.screen == studio::Screen::ProjectDetail) {
-        return hbox({key("↑↓", "action"), key("⏎", "run action"), key("esc", "back"), key("q", "quit")});
+        return hbox({key("↑↓", "action"), key("⏎", "run action"), key("p", "plug lib"), key("esc", "back"),
+                     key("q", "quit")});
     }
     if (s.screen == studio::Screen::Environments) {
         return hbox({key("↑↓", "navigate"), key("n", "new env"), key("esc", "back"), key("q", "quit")});
@@ -116,6 +120,7 @@ Element renderShell(const AppState& s) {
     // rather than overlaid -- so nothing bleeds through its (transparent) cells.
     if (s.newProject.open) return ldp3::studio::renderNewProjectModal(s) | center;
     if (s.newEnv.open) return ldp3::studio::renderNewEnvModal(s) | center;
+    if (s.newPlug.open) return ldp3::studio::renderPlugModal(s) | center;
     return base;
 }
 
@@ -200,6 +205,11 @@ int selftest(const std::string& mode) {
         s.toolchain.home = "C:/Users/jvpts/.ldp3";
         s.toolchain.environments = "C:/Users/jvpts/.ldp3/environments";
         s.toolchain.target = "x86_64-windows";
+    } else if (mode == "plug") {
+        s.screen = studio::Screen::ProjectDetail;
+        s.selectedProject = 3;  // tic_tac_toe
+        s.newPlug.open = true;
+        s.newPlug.spec = "github.com/ldp3/json";
     }
     ftxui::Screen screen = ftxui::Screen::Create(Dimension::Fixed(96), Dimension::Fixed(26));
     Render(screen, renderShell(s));
@@ -220,6 +230,7 @@ int main(int argc, char** argv) {
         if (arg == "--selftest-newenv") return selftest("newenv");
         if (arg == "--selftest-lib") return selftest("lib");
         if (arg == "--selftest-tool") return selftest("tool");
+        if (arg == "--selftest-plug") return selftest("plug");
     }
 
     AppState state;
@@ -291,6 +302,36 @@ int main(int argc, char** argv) {
                 state.console.lines = r.lines;
                 state.console.exitCode = r.exitCode;
                 state.console.status = Console::Status::Done;
+            });
+        });
+    };
+
+    // Plug a library into the selected project: run `ldp3 plug <spec>` on a background thread, stream it into
+    // the console, and reload the project's manifest so the new dependency shows.
+    auto runPlug = [&](const std::string& spec) {
+        const ldp3::driver::DiscoveredProject* p = state.selected();
+        if (p == nullptr || state.console.status == Console::Status::Running) return;
+        if (worker.joinable()) worker.join();
+        const std::filesystem::path dir = p->dir;
+        const int idx = state.selectedProject;
+        state.console.title = "ldp3 plug " + spec;
+        state.console.lines.clear();
+        state.console.status = Console::Status::Running;
+        worker = std::thread([&screen, &state, spec, dir, idx] {
+            const ldp3::studio::ActionResult r = ldp3::studio::runCaptured({"plug", spec}, dir);
+            screen.Post([&state, r, idx] {
+                state.console.lines = r.lines;
+                state.console.exitCode = r.exitCode;
+                state.console.status = Console::Status::Done;
+                if (idx >= 0 && idx < static_cast<int>(state.projects.size())) {
+                    std::ifstream f(state.projects[static_cast<std::size_t>(idx)].dir / "ldp3.toml");
+                    if (f) {
+                        std::stringstream ss;
+                        ss << f.rdbuf();
+                        state.projects[static_cast<std::size_t>(idx)].manifest =
+                            ldp3::driver::parseManifestText(ss.str());
+                    }
+                }
             });
         });
     };
@@ -386,6 +427,36 @@ int main(int argc, char** argv) {
             if (e.is_character() && e.character().size() == 1) {
                 const char c = e.character()[0];
                 if (std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '-') ne.name += c;
+                return true;
+            }
+            return true;  // swallow anything else while the modal is open
+        }
+        if (state.newPlug.open) {
+            ldp3::studio::NewPlug& np = state.newPlug;
+            if (e == Event::Escape) {
+                np.open = false;
+                return true;
+            }
+            if (e == Event::Return) {
+                if (np.spec.empty()) {
+                    np.error = "Enter a library source.";
+                    return true;
+                }
+                const std::string spec = np.spec;
+                np.open = false;
+                runPlug(spec);
+                return true;
+            }
+            if (e == Event::Backspace) {
+                if (!np.spec.empty()) np.spec.pop_back();
+                return true;
+            }
+            if (e.is_character() && e.character().size() == 1) {
+                const char c = e.character()[0];
+                // Names, git URLs and url@version specs use these characters.
+                if (std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '-' || c == '.' ||
+                    c == '/' || c == ':' || c == '@' || c == '~')
+                    np.spec += c;
                 return true;
             }
             return true;  // swallow anything else while the modal is open
@@ -496,6 +567,11 @@ int main(int argc, char** argv) {
         }
         if (e == Event::Return) {
             runVerb(ldp3::studio::projectActions()[static_cast<std::size_t>(state.selectedAction)].second);
+            return true;
+        }
+        if (e == Event::Character('p')) {  // plug a library into this project
+            state.newPlug = ldp3::studio::NewPlug{};
+            state.newPlug.open = true;
             return true;
         }
         if (e == Event::Escape) {

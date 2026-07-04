@@ -84,10 +84,10 @@ std::vector<Environment> loadEnvironments(const std::vector<ldp3::driver::Discov
     return envs;
 }
 
-ActionResult runCaptured(const std::string& verb, const std::filesystem::path& projectDir) {
+ActionResult runCaptured(const std::vector<std::string>& args, const std::filesystem::path& projectDir) {
     std::string output;
     ActionResult r;
-    r.exitCode = ldp3::driver::runProcessCapture(ldp3Cli().string(), {verb}, output, projectDir.string(),
+    r.exitCode = ldp3::driver::runProcessCapture(ldp3Cli().string(), args, output, projectDir.string(),
                                                  /*mergeStderr=*/true);
     std::stringstream ss(output);
     std::string line;
@@ -97,6 +97,10 @@ ActionResult runCaptured(const std::string& verb, const std::filesystem::path& p
     }
     if (r.lines.empty()) r.lines.push_back("(no output)");
     return r;
+}
+
+ActionResult runCaptured(const std::string& verb, const std::filesystem::path& projectDir) {
+    return runCaptured(std::vector<std::string>{verb}, projectDir);
 }
 
 }  // namespace ldp3::studio

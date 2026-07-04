@@ -51,6 +51,13 @@ struct NewEnv {
     std::string error;
 };
 
+// The plug-library modal's state (a source/name to plug into the open project).
+struct NewPlug {
+    bool open = false;
+    std::string spec;
+    std::string error;
+};
+
 // The console pane's state: the output of the last action run on the open project.
 struct Console {
     std::string title;                 // e.g. "ldp3 test"
@@ -73,6 +80,7 @@ struct AppState {
     ToolchainInfo toolchain;
     NewProject newProject;
     NewEnv newEnv;
+    NewPlug newPlug;
     bool scanning = false;   // a background computer-wide scan is running
     int scanFound = 0;       // projects known so far while scanning
 

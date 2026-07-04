@@ -333,6 +333,26 @@ Element renderNewEnvModal(const AppState& s) {
     return vbox(std::move(body)) | borderStyled(ROUNDED, theme::amber) | size(WIDTH, EQUAL, 44);
 }
 
+Element renderPlugModal(const AppState& s) {
+    const NewPlug& np = s.newPlug;
+    Elements body = {
+        text(" ⬡ Plug a library") | color(theme::amber) | bold,
+        separator() | color(theme::line),
+        vbox({text(" SOURCE") | color(theme::faint),
+              hbox({text(" ▸ ") | color(theme::amber), text(np.spec + "_") | color(theme::ink)})}),
+        text(""),
+        text(" a name from sources.toml, a git URL, or url@version") | color(theme::faint),
+    };
+    if (!np.error.empty()) {
+        body.push_back(text(""));
+        body.push_back(text(" " + np.error) | color(theme::red));
+    }
+    body.push_back(separator() | color(theme::line));
+    body.push_back(hbox({text(" ⏎") | color(theme::amber), text(" plug   ") | color(theme::muted),
+                         text("esc") | color(theme::amber), text(" cancel") | color(theme::muted)}));
+    return vbox(std::move(body)) | borderStyled(ROUNDED, theme::amber) | size(WIDTH, EQUAL, 56);
+}
+
 Element renderContent(const AppState& state) {
     switch (state.screen) {
         case Screen::ProjectDetail:

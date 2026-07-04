@@ -32,7 +32,10 @@ ToolchainInfo loadToolchainInfo();
 // The ldp3 CLI executable -- a sibling of ldp3-studio.
 std::filesystem::path ldp3Cli();
 
-// Run `ldp3 <verb>` in projectDir, capturing stdout and stderr. Blocking: call it off the UI thread.
+// Run `ldp3 <args...>` in projectDir, capturing stdout and stderr. Blocking: call it off the UI thread.
+ActionResult runCaptured(const std::vector<std::string>& args, const std::filesystem::path& projectDir);
+
+// Convenience: run a single verb.
 ActionResult runCaptured(const std::string& verb, const std::filesystem::path& projectDir);
 
 }  // namespace ldp3::studio

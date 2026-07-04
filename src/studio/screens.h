@@ -14,4 +14,7 @@ ftxui::Element renderNewProjectModal(const AppState& state);
 // Render the new-environment modal (name only), shown centered on an empty screen.
 ftxui::Element renderNewEnvModal(const AppState& state);
 
+// Render the plug-library modal (a source to plug into the open project), centered on an empty screen.
+ftxui::Element renderPlugModal(const AppState& state);
+
 }  // namespace ldp3::studio
