@@ -2084,10 +2084,14 @@ struct CodeGenerator::Impl {
     bool isClassValue(const std::string& t) {
         // A Java-style enum value is a reference to a shared singleton (spec 12.2), not a value to
         // be copied -- copying it would break identity (== / !=).
-        // An interface-typed value is a reference to a concrete object whose real type (and size) is
-        // not statically known; deep-copying it by the interface's own (field-less, minimal) size
-        // would truncate the object and crash on later virtual calls. Interfaces are reference types.
-        if (auto it = classes.find(t); it != classes.end() && it->second.isInterface) return false;
+        // An interface- or abstract-typed value is a reference to a concrete object whose real type
+        // (and size) is not statically known -- an interface/abstract class cannot be instantiated
+        // directly, so the value is always a subclass instance. Deep-copying it by the base's own
+        // (often field-less, minimal) size would truncate the object and read past its allocation on
+        // a later virtual call. Interfaces and abstract classes are reference types.
+        if (auto it = classes.find(t);
+            it != classes.end() && (it->second.isInterface || it->second.isAbstract))
+            return false;
         return !isRefType(t) && !isArrayType(t) && classes.count(t) > 0 && javaEnums.count(t) == 0;
     }
 
