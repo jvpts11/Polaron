@@ -289,6 +289,15 @@ add_test(NAME codegen_interface_field_delegation_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# Parameter passing is by value for a plain class type (deep copy, like assignment); `&`/`*` share.
+add_test(NAME codegen_value_parameter_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/value_parameter.ldp3"
+    "-DCONTAINS=value=7 ref=99"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Returning a freshly-built object (operator overloading / factory) with a plain `return new X(...)`:
 # the escaping object is promoted to the heap instead of dangling into the freed frame.
 add_test(NAME codegen_return_new_object_runs COMMAND "${CMAKE_COMMAND}"

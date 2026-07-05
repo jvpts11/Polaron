@@ -8500,13 +8500,12 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
         builder.SetInsertPoint(block);
 
-        // Promote stack `new` objects that escape by being returned by name, before emitting the body.
-        {
-            std::set<std::string> escaping;
-            for (const auto& s : body.statements) collectReturnedNames(s.get(), escaping);
-            if (!escaping.empty())
-                for (const auto& s : body.statements) promoteEscapingNews(s.get(), escaping);
-        }
+        // Identifiers returned anywhere in the body. Used both to promote returned stack `new`s and to
+        // decide whether a copied class-value parameter must live on the heap (it escapes) or the frame.
+        std::set<std::string> escaping;
+        for (const auto& s : body.statements) collectReturnedNames(s.get(), escaping);
+        if (!escaping.empty())
+            for (const auto& s : body.statements) promoteEscapingNews(s.get(), escaping);
 
         unsigned argIdx = 0;
         if (hasEnv) {
@@ -8525,7 +8524,14 @@ struct CodeGenerator::Impl {
             for (const ast::Param& p : params) {
                 const std::string pt = typeRefName(p.type);
                 llvm::Value* slot = createEntryAlloca(p.name, llvmType(pt));
-                builder.CreateStore(fn->getArg(argIdx), slot);
+                llvm::Value* incoming = fn->getArg(argIdx);
+                // Value semantics (spec 3.4): a plain class parameter is an independent deep copy, like
+                // assignment -- mutating it must not affect the caller's object. Pointer/reference (T*/T&),
+                // interface and abstract parameters keep sharing (isClassValue excludes them). Copy onto
+                // the heap when the parameter is returned (escapes the frame), otherwise onto the frame.
+                if (incoming != nullptr && isClassValue(pt) && isCopyDiscipline(pt))
+                    incoming = emitClassCopy(pt, incoming, /*heap=*/escaping.count(p.name) > 0);
+                builder.CreateStore(incoming, slot);
                 locals[p.name] = LocalSlot{slot, pt};
                 ++argIdx;
             }

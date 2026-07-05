@@ -1,0 +1,30 @@
+// Parameter passing is by value for a plain class type (spec 3.4): a `Box` parameter is an independent
+// deep copy, exactly like assignment, so mutating it does NOT change the caller's object. To share and
+// mutate the caller's instance, take a reference (`Box&`) or pointer (`Box*`). Prints: value=7 ref=99.
+import System.IO.Console;
+
+program ValueParameter;
+
+public bundle main {
+    public namespace app {
+
+        public class Box {
+            public mutable int v;
+            public constructor Box(int v) { this.v = v; }
+        }
+
+        public class Main {
+            public static method byValue(Box b) returns void { b.v = 99; }   // mutates a copy
+            public static method byRef(Box& b) returns void { b.v = 99; }    // mutates the caller's box
+
+            public static method main(string[] args) returns void {
+                Box a = new Box(7) on heap;
+                Main.byValue(a);
+                Box c = new Box(7) on heap;
+                Main.byRef(c);
+                System.IO.Console.printf("value=%d ref=%d\n", a.v, c.v);   // value=7 ref=99
+                return;
+            }
+        }
+    }
+}

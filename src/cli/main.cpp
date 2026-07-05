@@ -1890,7 +1890,7 @@ R"LDP3(
                 this.left = null;
                 this.right = null;
             }
-            public method collect(ArrayList<int> out) returns void {
+            public method collect(ArrayList<int>& out) returns void {  // & : accumulate into the caller's list
                 if (this.left != null) { this.left.collect(out); }
                 out.add(this.key);
                 if (this.right != null) { this.right.collect(out); }
@@ -5987,12 +5987,12 @@ R"LDP3(
             }
             public static method array() returns Json { return new Json(4) on heap; }
             public static method object() returns Json { return new Json(5) on heap; }
-            public method add(Json v) returns void {  // append a child (array element / member)
+            public method add(Json* v) returns void {  // append a child (array element / member)
                 if (this.lastChild == null) { this.firstChild = v; } else { this.lastChild.nextSibling = v; }
                 this.lastChild = v;
                 this.childCount = this.childCount + 1;
             }
-            public method put(String key, Json v) returns void { v.memberKey = key; this.add(v); }
+            public method put(String key, Json* v) returns void { v.memberKey = key; this.add(v); }
             public method kindOf() returns int { return this.kind; }
             public method asBool() returns boolean { return this.b; }
             public method asNum() returns long { return this.num; }
@@ -6011,7 +6011,7 @@ R"LDP3(
                 }
                 return Json.ofNull();
             }
-            private method escapeInto(StringBuilder sb, String s) returns void {
+            private method escapeInto(StringBuilder& sb, String s) returns void {
                 sb.appendChar('"');
                 for (mutable int i = 0; i < s.length(); i++) {
                     char c = s.charAt(i);
@@ -6023,7 +6023,7 @@ R"LDP3(
                 }
                 sb.appendChar('"');
             }
-            private method writeInto(StringBuilder sb) returns void {
+            private method writeInto(StringBuilder& sb) returns void {
                 if (this.kind == 0) { sb.append("null"); return; }
                 if (this.kind == 1) {
                     if (this.b) { sb.append("true"); } else { sb.append("false"); }
@@ -6062,11 +6062,11 @@ R"LDP3(
                 this.writeInto(sb);
                 return sb.toString();
             }
-            private method pad(StringBuilder sb, int n) returns void {
+            private method pad(StringBuilder& sb, int n) returns void {
                 for (mutable int i = 0; i < n; i++) { sb.appendChar(' '); }
                 return;
             }
-            private method prettyInto(StringBuilder sb, int depth) returns void {
+            private method prettyInto(StringBuilder& sb, int depth) returns void {
                 if (this.kind == 0) { sb.append("null"); return; }
                 if (this.kind == 1) { if (this.b) { sb.append("true"); } else { sb.append("false"); } return; }
                 if (this.kind == 2) { sb.append(this.num.toString()); return; }
@@ -6125,7 +6125,7 @@ R"LDP3(
                 }
                 return v;
             }
-            public static method resolve(Json root, String ptr) returns nullable Json {
+            public static method resolve(Json* root, String ptr) returns nullable Json {
                 mutable nullable Json* cur = root;
                 if (ptr.length() == 0) { return cur; }
                 mutable int i = 0;
