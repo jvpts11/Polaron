@@ -1,0 +1,33 @@
+// Returning a freshly-built object from a method (operator overloading, factory/builder methods) with
+// the natural `return new X(...)` -- no explicit `on heap`. Regression (2026-07): a plain `new` defaults
+// to stack, so returning it handed back a dangling pointer into the freed frame and the caller read
+// garbage. A directly-returned object new is now promoted to the heap (it escapes; the caller owns it).
+import System.IO.Console;
+
+program ReturnNewObject;
+
+public bundle main {
+    public namespace app {
+
+        public class Vec {
+            public mutable int x;
+            public mutable int y;
+            public constructor Vec(int x, int y) { this.x = x; this.y = y; }
+            public operator + (Vec other) returns Vec {
+                return new Vec(this.x + other.x, this.y + other.y);
+            }
+            public method scaled(int k) returns Vec { return new Vec(this.x * k, this.y * k); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Vec a = new Vec(1, 2) on heap;
+                Vec b = new Vec(3, 4) on heap;
+                Vec sum = a + b;                 // operator returns new Vec (escapes -> heap)
+                Vec big = sum.scaled(10);        // builder method returns new Vec
+                System.IO.Console.printf("sum=%d,%d big=%d,%d\n", sum.x, sum.y, big.x, big.y);  // 4,6 40,60
+                return;
+            }
+        }
+    }
+}

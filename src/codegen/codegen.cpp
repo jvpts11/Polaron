@@ -7086,6 +7086,13 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
+            // Returning a stack-allocated object escapes the frame -- its pointer would dangle and the
+            // caller reads freed memory. Promote a directly-returned plain `new X() [on stack]` to the
+            // heap so the returned object stays live; a returned object is the caller's to own and free.
+            // (Arrays already default to heap; region-targeted news keep their region.)
+            if (const auto* cnw = dynamic_cast<const ast::NewExpr*>(rs->value.get());
+                cnw != nullptr && cnw->location == "stack" && cnw->region.empty())
+                const_cast<ast::NewExpr*>(cnw)->location = "heap";
             // Inside an `expecting { ... }` block (spec 30.18), `return X` is the block's value:
             // store it and jump to the block's end, rather than returning from the method.
             if (expectingSlot_ != nullptr) {
