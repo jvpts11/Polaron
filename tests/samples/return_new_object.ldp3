@@ -17,6 +17,8 @@ public bundle main {
                 return new Vec(this.x + other.x, this.y + other.y);
             }
             public method scaled(int k) returns Vec { return new Vec(this.x * k, this.y * k); }
+            // Indirect escape: the object is built into a local, then returned by name (builder style).
+            public static method make(int a, int b) returns Vec { Vec v = new Vec(a, b); return v; }
         }
 
         public class Main {
@@ -25,7 +27,9 @@ public bundle main {
                 Vec b = new Vec(3, 4) on heap;
                 Vec sum = a + b;                 // operator returns new Vec (escapes -> heap)
                 Vec big = sum.scaled(10);        // builder method returns new Vec
-                System.IO.Console.printf("sum=%d,%d big=%d,%d\n", sum.x, sum.y, big.x, big.y);  // 4,6 40,60
+                Vec made = Vec.make(7, 8);       // returned via a stack local (indirect escape)
+                System.IO.Console.printf("sum=%d,%d big=%d,%d made=%d,%d\n",
+                                         sum.x, sum.y, big.x, big.y, made.x, made.y);  // 4,6 40,60 7,8
                 return;
             }
         }

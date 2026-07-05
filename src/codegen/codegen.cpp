@@ -8412,6 +8412,54 @@ struct CodeGenerator::Impl {
         builder.CreateCall(module.getOrInsertFunction("__ldp3_task_complete", ft), {h, v});
     }
 
+    // Escape analysis for returned locals (mirrors the direct `return new X()` promotion). An object
+    // built on the stack and then returned by name -- `T v = new T(); ...; return v;` -- escapes the
+    // frame, so its pointer would dangle. Collect every identifier returned anywhere in a body, then
+    // promote any matching stack `new` local initializer to the heap. Conservative: over-promotion only
+    // moves a would-be-stack object to the heap, which is always safe.
+    void collectReturnedNames(const ast::Stmt* st, std::set<std::string>& out) {
+        if (st == nullptr) return;
+        if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(st)) {
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get()))
+                out.insert(id->name);
+            return;
+        }
+        auto blk = [&](const ast::Block& b) { for (const auto& s : b.statements) collectReturnedNames(s.get(), out); };
+        if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) { blk(i->thenBlock); if (i->elseBlock) blk(*i->elseBlock); return; }
+        if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
+        if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) { blk(d->body); return; }
+        if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) { blk(f->body); return; }
+        if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) { blk(fe->body); return; }
+        if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) { for (auto& c : sw->cases) blk(c.body); if (sw->defaultBody) blk(*sw->defaultBody); return; }
+        if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) { for (auto& c : ms->cases) blk(c.body); if (ms->defaultBody) blk(*ms->defaultBody); return; }
+        if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) { blk(tr->body); for (auto& c : tr->catches) blk(c.body); if (tr->finallyBlock) blk(*tr->finallyBlock); return; }
+        if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) { blk(df->body); return; }
+        if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) { blk(us->body); return; }
+        if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) { collectReturnedNames(lb->stmt.get(), out); return; }
+    }
+    void promoteEscapingNews(const ast::Stmt* st, const std::set<std::string>& returned) {
+        if (st == nullptr) return;
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st)) {
+            if (returned.count(vd->name) > 0)
+                if (const auto* cnw = dynamic_cast<const ast::NewExpr*>(vd->init.get()))
+                    if (cnw->location == "stack" && cnw->region.empty())
+                        const_cast<ast::NewExpr*>(cnw)->location = "heap";
+            return;
+        }
+        auto blk = [&](const ast::Block& b) { for (const auto& s : b.statements) promoteEscapingNews(s.get(), returned); };
+        if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) { blk(i->thenBlock); if (i->elseBlock) blk(*i->elseBlock); return; }
+        if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
+        if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) { blk(d->body); return; }
+        if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) { blk(f->body); return; }
+        if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) { blk(fe->body); return; }
+        if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) { for (auto& c : sw->cases) blk(c.body); if (sw->defaultBody) blk(*sw->defaultBody); return; }
+        if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) { for (auto& c : ms->cases) blk(c.body); if (ms->defaultBody) blk(*ms->defaultBody); return; }
+        if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) { blk(tr->body); for (auto& c : tr->catches) blk(c.body); if (tr->finallyBlock) blk(*tr->finallyBlock); return; }
+        if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) { blk(df->body); return; }
+        if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) { blk(us->body); return; }
+        if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) { promoteEscapingNews(lb->stmt.get(), returned); return; }
+    }
+
     void emitBody(llvm::Function* fn, const ast::Block& body,
                   const std::vector<ast::Param>& params, const std::string& thisClass,
                   llvm::Type* retType, const ast::ClassDecl* ctorOf = nullptr,
@@ -8451,6 +8499,14 @@ struct CodeGenerator::Impl {
         labelBlocks.clear();
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
         builder.SetInsertPoint(block);
+
+        // Promote stack `new` objects that escape by being returned by name, before emitting the body.
+        {
+            std::set<std::string> escaping;
+            for (const auto& s : body.statements) collectReturnedNames(s.get(), escaping);
+            if (!escaping.empty())
+                for (const auto& s : body.statements) promoteEscapingNews(s.get(), escaping);
+        }
 
         unsigned argIdx = 0;
         if (hasEnv) {

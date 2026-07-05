@@ -295,7 +295,7 @@ add_test(NAME codegen_return_new_object_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
     "-DCLANG=${LDP3_CLANG}"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/return_new_object.ldp3"
-    "-DCONTAINS=sum=4,6 big=40,60"
+    "-DCONTAINS=sum=4,6 big=40,60 made=7,8"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
