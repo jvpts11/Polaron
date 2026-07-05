@@ -289,6 +289,16 @@ add_test(NAME codegen_interface_field_delegation_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# A class-wrapped matrix multiply: the loop-interchange optimizer's OOP path must reorder the reduction
+# only when the fresh result field provably cannot alias the inputs, keeping the result identical.
+add_test(NAME codegen_matmul_class_interchange_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/matmul_class_interchange.ldp3"
+    "-DCONTAINS=total=49500"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Parameter passing is by value for a plain class type (deep copy, like assignment); `&`/`*` share.
 add_test(NAME codegen_value_parameter_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"

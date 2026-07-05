@@ -1,5 +1,7 @@
 #include "parser/loopopt.h"
 
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -224,11 +226,33 @@ bool isDistinctBuffer(const ast::Block& methodBody, const std::string& name) {
 
 // ---- The transform -------------------------------------------------------------------------------
 
-// Collect the distinct array base names indexed in `e`.
+// A canonical key for an array-base expression: a plain local `c` -> "c"; a field access `obj.data`
+// -> "obj.data" (obj a local or `this`). Empty for a base we do not model. Lets the interchange apply
+// to OOP code (Matrix.operator* streams this.data / o.data into a fresh r.data) as well as raw arrays.
+std::string arrayBaseKey(const Expr* e) {
+    if (e == nullptr) return "";
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) return id->name;
+    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) {
+        const std::string obj = arrayBaseKey(m->object.get());
+        return obj.empty() ? std::string() : obj + "." + m->member;
+    }
+    return "";
+}
+
+// Splits "obj.field" into (obj, field); false for a plain local (no dot) or a deeper path.
+bool splitFieldKey(const std::string& key, std::string& obj, std::string& field) {
+    const std::size_t dot = key.find('.');
+    if (dot == std::string::npos || key.find('.', dot + 1) != std::string::npos) return false;
+    obj = key.substr(0, dot);
+    field = key.substr(dot + 1);
+    return true;
+}
+
+// Collect the distinct array base keys indexed in `e`.
 void collectArrayBases(const Expr* e, std::vector<std::string>& out) {
     if (e == nullptr) return;
     if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
-        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(ix->array.get())) out.push_back(id->name);
+        if (std::string k = arrayBaseKey(ix->array.get()); !k.empty()) out.push_back(std::move(k));
         collectArrayBases(ix->array.get(), out);
         collectArrayBases(ix->index.get(), out);
         return;
@@ -298,13 +322,61 @@ std::unique_ptr<ast::ForStmt> makeJLoop(const ast::ForStmt& jSrc, ast::StmtPtr b
     return f;
 }
 
+// Context threaded to the transform: the program's classes (to inspect a fresh result object's
+// constructor) and the names that are pre-existing at method entry (`this` + parameters). A fresh
+// object's freshly-allocated field cannot alias a pre-existing array -- that is what makes the
+// interchange safe for OOP code (Matrix.operator* : r.data is new, this.data/o.data pre-date the call).
+struct LoopCtx {
+    const std::map<std::string, const ast::ClassDecl*>* classes = nullptr;
+    std::set<std::string> preExisting;  // "this" + parameter names
+};
+
+// If `obj` is a local in `body` declared exactly `Type obj = new ClassName(...)` and never reassigned,
+// returns its ClassDecl (so its constructor can be inspected); else nullptr. `obj.field` writes are
+// fine -- only reassigning the reference `obj` itself would break the freshness argument.
+const ast::ClassDecl* freshInstanceClass(const ast::Block& body, const std::string& obj,
+                                         const LoopCtx& ctx) {
+    if (ctx.classes == nullptr) return nullptr;
+    UseCounts c;
+    countBlock(body, obj, c);
+    if (c.unknown || c.assignTgt != 0) return nullptr;  // reassigned, or an unanalyzed statement kind
+    const ast::ClassDecl* cls = nullptr;
+    for (const auto& s : body.statements)
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s.get()); vd && vd->name == obj) {
+            const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+            if (nw == nullptr) return nullptr;  // not a `new ClassName(...)`
+            auto it = ctx.classes->find(nw->className);
+            cls = it == ctx.classes->end() ? nullptr : it->second;
+        }
+    return cls;
+}
+
+// True if `cls`'s constructor assigns `this.field = new T[...]` -- so the field is a fresh allocation
+// (not a shared array passed in). Then a fresh instance's field is a private buffer.
+bool ctorAllocatesFieldFresh(const ast::ClassDecl* cls, const std::string& field) {
+    if (cls == nullptr) return false;
+    for (const auto& m : cls->members)
+        if (const auto* ctor = dynamic_cast<const ast::ConstructorDecl*>(m.get()))
+            for (const auto& s : ctor->body.statements)
+                if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s.get())) {
+                    const auto* mem = dynamic_cast<const ast::MemberExpr*>(as->target.get());
+                    if (mem == nullptr || mem->member != field) continue;
+                    const auto* moid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                    if (moid != nullptr && moid->name == "this" &&
+                        dynamic_cast<const ast::NewArrayExpr*>(as->value.get()) != nullptr)
+                        return true;
+                }
+    return false;
+}
+
 // If `jLoop` is an interchangeable reduction nest, returns the replacement statements; else empty.
 // Two shapes are recognized:
 //   A) scalar accumulator:   for(j){ T acc = INIT; for(k) acc = acc OP EXPR; DEST = acc; }
 //   B) direct accumulation:  for(j){ for(k) DEST = DEST OP EXPR; }   (DEST k-independent)
 // Both interchange to `for(k) for(j) DEST = DEST OP EXPR` (A also emits a `for(j) DEST = INIT;`
 // prologue). OP is +, - or *; each DEST accumulates k in the same order, so results are identical.
-std::vector<ast::StmtPtr> tryTransform(const ast::ForStmt& jLoop, const ast::Block& methodBody) {
+std::vector<ast::StmtPtr> tryTransform(const ast::ForStmt& jLoop, const ast::Block& methodBody,
+                                       const LoopCtx& ctx) {
     std::vector<ast::StmtPtr> none;
     std::string j;
     const Expr* jBound = nullptr;
@@ -374,19 +446,37 @@ std::vector<ast::StmtPtr> tryTransform(const ast::ForStmt& jLoop, const ast::Blo
     // ---- Profitability: interchange must turn a strided-in-k access unit-stride in j ----
     if (!hasStridedKUnitJ(term, j, k)) return none;
 
-    // ---- Aliasing safety: DEST's buffer distinct from every read buffer; all distinct new[] ----
+    // ---- Aliasing safety: DEST's buffer distinct from every read buffer ----
     const auto* destIx = dynamic_cast<const ast::IndexExpr*>(dest);
     if (destIx == nullptr) return none;
-    const auto* destBaseId = dynamic_cast<const ast::IdentifierExpr*>(destIx->array.get());
-    if (destBaseId == nullptr) return none;
-    const std::string destBase = destBaseId->name;
+    const std::string destKey = arrayBaseKey(destIx->array.get());
+    if (destKey.empty()) return none;
     std::vector<std::string> readBases;
     collectArrayBases(term, readBases);
     if (readBases.empty()) return none;
-    if (!isDistinctBuffer(methodBody, destBase)) return none;
-    for (const std::string& rb : readBases) {
-        if (rb == destBase) return none;
-        if (!isDistinctBuffer(methodBody, rb)) return none;
+
+    std::string destObj, destField;
+    if (splitFieldKey(destKey, destObj, destField)) {
+        // OOP field arrays: DEST = destObj.destField, where destObj is a fresh instance whose ctor
+        // allocates destField, and every read comes from a pre-existing object (this / a parameter)
+        // that is not destObj. A field allocated *inside* this method cannot alias an array that
+        // existed before the method, so accumulating into DEST in interchanged order is safe.
+        if (!ctorAllocatesFieldFresh(freshInstanceClass(methodBody, destObj, ctx), destField))
+            return none;
+        for (const std::string& rk : readBases) {
+            std::string ro, rf;
+            if (!splitFieldKey(rk, ro, rf)) return none;    // a non-field (local) read mixed in
+            if (ro == destObj) return none;                 // reading the fresh dest object itself
+            if (ctx.preExisting.count(ro) == 0) return none;  // read object not provably pre-existing
+        }
+    } else {
+        // Raw local arrays: each buffer is a distinct `new T[]` local, never reassigned.
+        if (!isDistinctBuffer(methodBody, destKey)) return none;
+        for (const std::string& rb : readBases) {
+            if (rb.find('.') != std::string::npos) return none;  // a field read mixed with a local dest
+            if (rb == destKey) return none;
+            if (!isDistinctBuffer(methodBody, rb)) return none;
+        }
     }
 
     // ---- Build: for(k) for(j) DEST = DEST OP EXPR; (shape A prepends for(j) DEST = INIT;) ----
@@ -414,14 +504,14 @@ std::vector<ast::StmtPtr> tryTransform(const ast::ForStmt& jLoop, const ast::Blo
     return out;
 }
 
-void transformBlock(ast::Block& block, const ast::Block& methodBody) {
+void transformBlock(ast::Block& block, const ast::Block& methodBody, const LoopCtx& ctx) {
     // Recurse into nested blocks first.
     for (auto& s : block.statements) {
-        if (auto* f = dynamic_cast<ast::ForStmt*>(s.get())) transformBlock(f->body, methodBody);
-        else if (auto* w = dynamic_cast<ast::WhileStmt*>(s.get())) transformBlock(w->body, methodBody);
+        if (auto* f = dynamic_cast<ast::ForStmt*>(s.get())) transformBlock(f->body, methodBody, ctx);
+        else if (auto* w = dynamic_cast<ast::WhileStmt*>(s.get())) transformBlock(w->body, methodBody, ctx);
         else if (auto* i = dynamic_cast<ast::IfStmt*>(s.get())) {
-            transformBlock(i->thenBlock, methodBody);
-            if (i->elseBlock) transformBlock(*i->elseBlock, methodBody);
+            transformBlock(i->thenBlock, methodBody, ctx);
+            if (i->elseBlock) transformBlock(*i->elseBlock, methodBody, ctx);
         }
     }
     // Then rewrite matching reduction nests in this block. Always rebuild (moving every statement
@@ -430,7 +520,7 @@ void transformBlock(ast::Block& block, const ast::Block& methodBody) {
     std::vector<ast::StmtPtr> rebuilt;
     for (auto& s : block.statements) {
         if (auto* f = dynamic_cast<ast::ForStmt*>(s.get())) {
-            std::vector<ast::StmtPtr> repl = tryTransform(*f, methodBody);
+            std::vector<ast::StmtPtr> repl = tryTransform(*f, methodBody, ctx);
             if (!repl.empty()) {
                 for (auto& r : repl) rebuilt.push_back(std::move(r));
                 continue;
@@ -441,18 +531,34 @@ void transformBlock(ast::Block& block, const ast::Block& methodBody) {
     block.statements = std::move(rebuilt);
 }
 
-void transformMethodBody(ast::Block& body) { transformBlock(body, body); }
+void transformMethodBody(ast::Block& body, const LoopCtx& ctx) { transformBlock(body, body, ctx); }
 
 }  // namespace
 
 void interchangeReductionLoops(ast::Program& program) {
+    // Index classes so a reduction's fresh result object (e.g. `r = new Matrix(...)`) can have its
+    // constructor inspected for the field-array aliasing proof.
+    std::map<std::string, const ast::ClassDecl*> classes;
+    for (const ast::Bundle& b : program.bundles)
+        for (const ast::Namespace& ns : b.namespaces)
+            for (const ast::ClassDecl& c : ns.classes) classes[c.name] = &c;
+
     for (ast::Bundle& b : program.bundles)
         for (ast::Namespace& ns : b.namespaces)
             for (ast::ClassDecl& c : ns.classes)
                 for (ast::MemberPtr& m : c.members) {
-                    if (auto* md = dynamic_cast<ast::MethodDecl*>(m.get())) transformMethodBody(md->body);
-                    else if (auto* ctor = dynamic_cast<ast::ConstructorDecl*>(m.get())) transformMethodBody(ctor->body);
-                    else if (auto* dtor = dynamic_cast<ast::DestructorDecl*>(m.get())) transformMethodBody(dtor->body);
+                    LoopCtx ctx;
+                    ctx.classes = &classes;
+                    ctx.preExisting.insert("this");  // the receiver and the parameters pre-date the call
+                    if (auto* md = dynamic_cast<ast::MethodDecl*>(m.get())) {
+                        for (const auto& p : md->params) ctx.preExisting.insert(p.name);
+                        transformMethodBody(md->body, ctx);
+                    } else if (auto* ctor = dynamic_cast<ast::ConstructorDecl*>(m.get())) {
+                        for (const auto& p : ctor->params) ctx.preExisting.insert(p.name);
+                        transformMethodBody(ctor->body, ctx);
+                    } else if (auto* dtor = dynamic_cast<ast::DestructorDecl*>(m.get())) {
+                        transformMethodBody(dtor->body, ctx);
+                    }
                 }
 }
 

@@ -1,0 +1,57 @@
+// A matrix multiply wrapped in a class (operator*), streaming this.data/o.data into a fresh r.data.
+// Exercises the loop-interchange optimizer's OOP path: it reorders the ijk reduction to ikj only after
+// proving r.data (a fresh instance's constructor-allocated field) cannot alias the pre-existing inputs.
+// The result must be identical to the un-interchanged multiply. a[i][j]=i*10+j, b all ones ->
+// c[i][j] = sum_k a[i][k] = 100*i + 45; total = 10 * sum_i(100*i+45) = 49500.
+import System.IO.Console;
+
+program MatmulClassInterchange;
+
+public bundle main {
+    public namespace app {
+        public class Matrix {
+            public int n;
+            public double[] data;
+            public constructor Matrix(int n) {
+                this.n = n;
+                this.data = new double[n * n]();
+            }
+            public method setAt(int i, int j, double v) returns void { this.data[i * this.n + j] = v; }
+            public operator * (Matrix o) returns Matrix {
+                Matrix r = new Matrix(this.n) on heap;
+                for (mutable int i = 0; i < this.n; i++) {
+                    for (mutable int j = 0; j < this.n; j++) {
+                        mutable double sum = 0.0;
+                        for (mutable int k = 0; k < this.n; k++) {
+                            sum = sum + this.data[i * this.n + k] * o.data[k * this.n + j];
+                        }
+                        r.data[i * this.n + j] = sum;
+                    }
+                }
+                return r;
+            }
+            public destructor ~Matrix() returns void { delete this.data; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                int n = 10;
+                Matrix a = new Matrix(n) on heap;
+                Matrix b = new Matrix(n) on heap;
+                for (mutable int i = 0; i < n; i++) {
+                    for (mutable int j = 0; j < n; j++) {
+                        a.setAt(i, j, cast<double>(i * 10 + j));
+                        b.setAt(i, j, 1.0);
+                    }
+                }
+                Matrix c = a * b;
+                mutable int total = 0;
+                for (mutable int i = 0; i < n * n; i++) { total = total + cast<int>(c.data[i]); }
+                System.IO.Console.printf("total=%d\n", total);   // 49500
+                delete a;
+                delete b;
+                delete c;
+                return;
+            }
+        }
+    }
+}
