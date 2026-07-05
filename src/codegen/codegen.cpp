@@ -2101,6 +2101,9 @@ struct CodeGenerator::Impl {
         if (auto it = classes.find(t);
             it != classes.end() && (it->second.isInterface || it->second.isAbstract))
             return false;
+        // String is immutable (spec 4), so a copy is observationally identical to sharing the buffer --
+        // skip the copy on assignment and parameter passing. (The mutable `string` still copies.)
+        if (baseType(t) == "String") return false;
         return !isRefType(t) && !isArrayType(t) && classes.count(t) > 0 && javaEnums.count(t) == 0;
     }
 
