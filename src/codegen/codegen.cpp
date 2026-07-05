@@ -1478,6 +1478,15 @@ struct CodeGenerator::Impl {
             }
             c = it->second.superclass;
         }
+        // Every object is-a Object, so Object's universal methods (equals/hashCode/equalsKey/...) resolve
+        // on any receiver, including an interface-typed one (which has no superclass chain to Object).
+        // Mirrors the analyzer's findMethod fallback so dispatch agrees with type checking.
+        if (baseType(className) != "Object") {
+            if (auto it = classes.find("Object"); it != classes.end()) {
+                auto mit = it->second.ownMethods.find(method);
+                if (mit != it->second.ownMethods.end()) return mit->second;
+            }
+        }
         return nullptr;
     }
 

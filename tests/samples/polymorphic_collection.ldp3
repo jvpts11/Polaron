@@ -1,0 +1,42 @@
+// A collection of interface-typed elements: ArrayList<Shape> holds different implementers and virtual
+// calls dispatch per element. Regression (2026-07): ArrayList uses equalsKey (an Object method) on its
+// elements; an interface has no superclass chain to Object, so the call did not resolve and an interface
+// value was not accepted where Object was expected. Object's universal methods now resolve on any
+// receiver and every class/interface is an Object.
+import System.IO.Console;
+import System.Collections.ArrayList;
+
+program PolymorphicCollection;
+
+public bundle main {
+    public namespace app {
+
+        public interface Shape {
+            method area() returns int;
+        }
+        public class Sq implements Shape {
+            private mutable int s;
+            public constructor Sq(int s) { this.s = s; }
+            public override method area() returns int { return this.s * this.s; }
+        }
+        public class Rect implements Shape {
+            private mutable int w;
+            private mutable int h;
+            public constructor Rect(int w, int h) { this.w = w; this.h = h; }
+            public override method area() returns int { return this.w * this.h; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<Shape> shapes = new ArrayList<Shape>() on heap;
+                shapes.add(new Sq(3));
+                shapes.add(new Rect(2, 5));
+                shapes.add(new Sq(4));
+                mutable int total = 0;
+                for (Shape s in shapes.toArray()) { total = total + s.area(); }
+                System.IO.Console.printf("total=%d\n", total);   // 9 + 10 + 16 = 35
+                return;
+            }
+        }
+    }
+}

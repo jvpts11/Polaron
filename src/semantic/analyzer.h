@@ -189,7 +189,8 @@ private:
     void collectMethodNamesInto(const std::string& className, std::vector<std::string>& out) const;
     // Resolve a member by walking the class, its superclasses and interfaces.
     const FieldInfo* findField(const std::string& className, const std::string& field) const;
-    const MethodInfo* findMethod(const std::string& className, const std::string& method) const;
+    const MethodInfo* findMethod(const std::string& className, const std::string& method,
+                                 bool objectFallback = false) const;
     std::vector<std::string> catalogImplementers(const std::string& catalog) const;  // enums of (spec 12.4)
     // True if `sub` is `super` or transitively extends/implements it. `depth`
     // bounds the recursion so a malformed (cyclic) type graph can't overflow.

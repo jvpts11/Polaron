@@ -304,7 +304,8 @@ const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
 }
 
 const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
-                                               const std::string& method) const {
+                                               const std::string& method,
+                                               bool objectFallback) const {
     // Exact name first (a generic instance's trailing '*' may belong to a type argument, e.g.
     // HashMap$int$Node*); only then strip an outer pointer/reference marker.
     const ClassInfo* c = lookupClass(className);
@@ -318,6 +319,18 @@ const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
         }
         if (c->superclass.empty()) break;
         c = lookupClass(c->superclass);
+    }
+    // Every object is-a Object at runtime, so Object's universal methods (equals/hashCode/equalsKey/...)
+    // resolve on any receiver -- including one whose static type is an interface, which has no superclass
+    // chain to Object. Fall back to Object for anything the hierarchy walk did not find; a type's own
+    // member always wins because it is checked first. This lets ArrayList<Iface>/HashMap<Iface,V> work.
+    // Gated: only call resolution wants this, not the override/hiding check (else a record's generated
+    // equals/hashCode would look like it overrides an interface method).
+    if (objectFallback && className != "Object" && baseType(className) != "Object") {
+        if (const ClassInfo* obj = lookupClass("Object")) {
+            auto it = obj->methods.find(method);
+            if (it != obj->methods.end()) return &it->second;
+        }
     }
     return nullptr;
 }
@@ -353,6 +366,9 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     // Every value is an Object (spec 3.4): a primitive becomes one by boxing, a class by inheritance
     // (every class now extends Object, handled by the hierarchy walk below).
     if (super == "Object" && (isNumeric(sub) || sub == "boolean" || sub == "char")) return true;
+    // An interface (and any class) is an Object too. Interfaces have no superclass chain to Object, so
+    // the hierarchy walk below never reaches it; accept any known class/interface type directly.
+    if (super == "Object" && lookupClass(baseType(sub)) != nullptr) return true;
     // int and float both widen to a float type (no implicit narrowing).
     if (isFloatType(super) && isNumeric(sub)) return true;
     // Integers widen to a wider integer (no implicit narrowing).
@@ -3488,7 +3504,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
                 return ok ? retType : std::string();
             }
-            const MethodInfo* m = findMethod(objType, mem->member);
+            const MethodInfo* m = findMethod(objType, mem->member, /*objectFallback=*/true);
             if (m == nullptr) {
                 error("class '" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";

@@ -289,6 +289,16 @@ add_test(NAME codegen_interface_field_delegation_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# A collection of interface-typed elements: ArrayList<Shape> with per-element virtual dispatch. Needs
+# Object's methods (equalsKey) to resolve on an interface receiver and interfaces to count as Objects.
+add_test(NAME codegen_polymorphic_collection_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/polymorphic_collection.ldp3"
+    "-DCONTAINS=total=35"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Lazy iterator pipeline from the stdlib (#25): filter + map + fold over a Stream, evaluated on demand.
 add_test(NAME codegen_lazy_streams_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
