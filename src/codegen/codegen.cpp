@@ -2033,11 +2033,13 @@ struct CodeGenerator::Impl {
             builder.getInt32Ty(), {builder.getPtrTy(), builder.getPtrTy()}, false);
         return module.getOrInsertFunction("strcmp", ty);
     }
-    // FNV-1a hash of a string's bytes (runtime helper), for Hashable<String>.
+    // Cached FNV-1a hash of a String object (runtime helper reads/fills the object's hash field), for
+    // Hashable<String>. Takes the String object pointer so repeated hashing of the same immutable String
+    // (the HashMap<String,...> hot path) is a single field read after the first call.
     llvm::FunctionCallee strHashFn() {
-        llvm::FunctionType* ty = llvm::FunctionType::get(
-            builder.getInt64Ty(), {builder.getPtrTy(), builder.getInt64Ty()}, false);
-        return module.getOrInsertFunction("__ldp3_str_hash", ty);
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getInt64Ty(), {builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_str_hash_obj", ty);
     }
     // itoa runtime helper (writes decimal digits to a buffer, returns length), for int.toString().
     llvm::FunctionCallee itoaFn() {
@@ -2051,6 +2053,7 @@ struct CodeGenerator::Impl {
         llvm::Value* obj = builder.CreateCall(mallocFn(), {sizeOf(stringType())}, "newstr");
         builder.CreateStore(len, builder.CreateStructGEP(stringType(), obj, 0));
         builder.CreateStore(data, builder.CreateStructGEP(stringType(), obj, 1));
+        builder.CreateStore(builder.getInt64(0), builder.CreateStructGEP(stringType(), obj, 2));  // hash uncomputed
         return obj;
     }
     // The Decimal scale (10^18) as an i128 constant.
@@ -2447,8 +2450,10 @@ struct CodeGenerator::Impl {
     // The String object layout: { i64 length, ptr data }. Lazily created.
     llvm::StructType* stringType() {
         if (stringStructTy == nullptr)
-            stringStructTy =
-                llvm::StructType::create(context, {builder.getInt64Ty(), builder.getPtrTy()}, "String");
+            stringStructTy = llvm::StructType::create(
+                context, {builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty()}, "String");
+            // Layout: { i64 length, ptr data, i64 hash }. The trailing hash is a lazily-cached FNV-1a of
+            // the bytes (0 = not yet computed); a String being immutable, it is computed at most once.
         return stringStructTy;
     }
 
@@ -2459,8 +2464,9 @@ struct CodeGenerator::Impl {
         auto* dataG = new llvm::GlobalVariable(module, dataArr->getType(), /*isConstant=*/true,
                                                llvm::GlobalValue::PrivateLinkage, dataArr, ".strdata");
         llvm::Constant* obj = llvm::ConstantStruct::get(
-            stringType(), {builder.getInt64(bytes.size()), dataG});
-        auto* objG = new llvm::GlobalVariable(module, stringType(), /*isConstant=*/true,
+            stringType(), {builder.getInt64(bytes.size()), dataG, builder.getInt64(0)});
+        // Not constant: the hash field (0) is filled in on first hash(). The bytes it points to stay const.
+        auto* objG = new llvm::GlobalVariable(module, stringType(), /*isConstant=*/false,
                                               llvm::GlobalValue::PrivateLinkage, obj, ".strobj");
         return objG;
     }
@@ -4937,6 +4943,8 @@ struct CodeGenerator::Impl {
                     llvm::Value* cat = emitStringConcat(s, o);
                     builder.CreateStore(stringLen(cat), builder.CreateStructGEP(stringType(), s, 0));
                     builder.CreateStore(stringData(cat), builder.CreateStructGEP(stringType(), s, 1));
+                    builder.CreateStore(builder.getInt64(0),
+                                        builder.CreateStructGEP(stringType(), s, 2));  // content changed: drop cached hash
                     return s;
                 }
                 if (mem->member == "substring") {
@@ -5015,7 +5023,7 @@ struct CodeGenerator::Impl {
                 if (mem->member == "toString") return s;  // identity
                 // String satisfies Hashable<String>/Comparable<String> (collections).
                 if (mem->member == "hash")
-                    return builder.CreateCall(strHashFn(), {stringData(s), stringLen(s)});
+                    return builder.CreateCall(strHashFn(), {s});  // s is the String object; hash cached in it
                 if (mem->member == "equalsKey") {
                     llvm::Value* o = emitExpr(*call.args[0]);
                     if (o == nullptr) return nullptr;

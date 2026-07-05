@@ -815,6 +815,20 @@ long long __ldp3_str_hash(const char* data, long long len) {
     return (long long)h;
 }
 
+// Cached String hash. A String object is laid out { i64 length, char* data, i64 hash } by the codegen;
+// the trailing hash is a lazily-filled FNV-1a of the bytes (0 = not computed). Since a String is
+// immutable, it is hashed at most once -- the hot path (HashMap<String,...>) then just reads the field.
+// A genuine hash of 0 is stored as 1 so a populated cache always reads non-zero.
+long long __ldp3_str_hash_obj(void* obj) {
+    struct Ldp3Str { long long len; char* data; long long hash; };
+    Ldp3Str* s = (Ldp3Str*)obj;
+    if (s->hash != 0) return s->hash;
+    long long h = __ldp3_str_hash(s->data, s->len);
+    if (h == 0) h = 1;
+    s->hash = h;
+    return h;
+}
+
 // await from non-async code (e.g. main): block the calling thread until the task completes.
 long long __ldp3_task_wait(long long handle) {
     ldp3_task* t = (ldp3_task*)handle;
