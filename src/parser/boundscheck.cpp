@@ -1,6 +1,7 @@
 #include "parser/boundscheck.h"
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -179,6 +180,30 @@ bool arrayInvariant(const std::string& key, const Block& body) {
 // A pure, side-effect-free, call-free expression safe to clone and re-evaluate in the guard.
 bool pureSimple(const Expr* e) { return !exprUnsafe(e); }
 
+// Collect every identifier read in `e` (for invariance checks on a bound / step expression).
+void collectIdents(const Expr* e, std::set<std::string>& out) {
+    if (e == nullptr) return;
+    if (const auto* id = dynamic_cast<const IdentifierExpr*>(e)) { out.insert(id->name); return; }
+    if (const auto* b = dynamic_cast<const BinaryExpr*>(e)) { collectIdents(b->lhs.get(), out); collectIdents(b->rhs.get(), out); return; }
+    if (const auto* u = dynamic_cast<const UnaryExpr*>(e)) { collectIdents(u->operand.get(), out); return; }
+    if (const auto* ix = dynamic_cast<const IndexExpr*>(e)) { collectIdents(ix->array.get(), out); collectIdents(ix->index.get(), out); return; }
+    if (const auto* m = dynamic_cast<const MemberExpr*>(e)) { collectIdents(m->object.get(), out); return; }
+    if (const auto* c = dynamic_cast<const CastExpr*>(e)) { collectIdents(c->operand.get(), out); return; }
+    if (const auto* t = dynamic_cast<const TernaryExpr*>(e)) { collectIdents(t->cond.get(), out); collectIdents(t->thenExpr.get(), out); collectIdents(t->elseExpr.get(), out); return; }
+}
+
+bool identWrittenInBlock(const Block& b, const std::string& name);
+
+// True if `e` is loop-invariant over `body`: none of the identifiers it reads is written in the body.
+// (The body is already call/alloc-free when this is asked, so a plain identifier scan suffices.)
+bool exprInvariant(const Expr* e, const Block& body) {
+    std::set<std::string> ids;
+    collectIdents(e, ids);
+    for (const auto& id : ids)
+        if (identWrittenInBlock(body, id)) return false;
+    return true;
+}
+
 // ---------- collect `array[var]` accesses (bare induction index) ----------
 
 void collectBareAccessesExpr(Expr* e, const std::string& var, std::vector<IndexExpr*>& out);
@@ -223,9 +248,12 @@ void collectBareAccessesBlock(Block& b, const std::string& var, std::vector<Inde
 
 struct ForInfo {
     std::string var;
-    const Expr* lo = nullptr;  // init value (owned by the ForStmt)
-    const Expr* hi = nullptr;  // condition bound (owned by the ForStmt)
-    bool inclusive = false;    // `i <= hi` vs `i < hi`
+    const Expr* lo = nullptr;    // init value (owned by the ForStmt)
+    const Expr* hi = nullptr;    // condition bound (owned by the ForStmt)
+    bool inclusive = false;      // `i <= hi` vs `i < hi`
+    const Expr* step = nullptr;  // non-null only for a variable step `var = var + S`: needs an `S >= 1`
+                                 // guard clause and S must be loop-invariant. A `var++` or literal step
+                                 // is left null (constant and positive, so no extra guard is needed).
 };
 
 // Recognize `for (int var = LO; var </<= HI; var++/var = var + posConst)` with LO/HI pure-simple.
@@ -243,7 +271,9 @@ bool analyzeFor(const ForStmt& f, ForInfo& info) {
     if (lhs == nullptr || lhs->name != info.var) return false;
     info.hi = cond->rhs.get();
     info.inclusive = (cond->op == "<=");
-    // update: `var++` or `var = var + posConst` (monotonically increasing, so var stays >= LO)
+    // update: `var++`, `var = var + posConst`, or `var = var + S` (monotonically increasing, so var
+    // stays >= LO). A variable step S records itself in info.step so tryVersion can guard `S >= 1` and
+    // require S loop-invariant; a `++` or positive literal step needs neither.
     bool okUpdate = false;
     if (const auto* id = dynamic_cast<const IncDecStmt*>(f.update.get())) {
         const auto* t = dynamic_cast<const IdentifierExpr*>(id->target.get());
@@ -253,9 +283,15 @@ bool analyzeFor(const ForStmt& f, ForInfo& info) {
         const auto* add = dynamic_cast<const BinaryExpr*>(as->value.get());
         if (t != nullptr && t->name == info.var && add != nullptr && add->op == "+") {
             const auto* al = dynamic_cast<const IdentifierExpr*>(add->lhs.get());
-            const auto* ar = dynamic_cast<const IntLiteralExpr*>(add->rhs.get());
-            // `var = var + <positive int literal>`
-            okUpdate = (al != nullptr && al->name == info.var && ar != nullptr && !ar->text.empty() && ar->text[0] != '-' && ar->text != "0");
+            if (al != nullptr && al->name == info.var) {
+                const auto* ar = dynamic_cast<const IntLiteralExpr*>(add->rhs.get());
+                if (ar != nullptr) {  // `var = var + <positive int literal>`: constant step, no guard
+                    okUpdate = (!ar->text.empty() && ar->text[0] != '-' && ar->text != "0");
+                } else if (pureSimple(add->rhs.get())) {  // `var = var + S`: variable step, guard S >= 1
+                    okUpdate = true;
+                    info.step = add->rhs.get();
+                }
+            }
         }
     }
     if (!okUpdate) return false;
@@ -265,12 +301,32 @@ bool analyzeFor(const ForStmt& f, ForInfo& info) {
 
 // ---------- the transform ----------
 
+bool containsLoop(const Block& b);
+
+// True if `s` is, or contains, a loop. Used to restrict versioning to innermost loops.
+bool stmtContainsLoop(const Stmt* s) {
+    if (dynamic_cast<const ForStmt*>(s) || dynamic_cast<const WhileStmt*>(s) || dynamic_cast<const DoWhileStmt*>(s))
+        return true;
+    if (const auto* i = dynamic_cast<const IfStmt*>(s))
+        return containsLoop(i->thenBlock) || (i->elseBlock && containsLoop(*i->elseBlock));
+    if (const auto* blk = dynamic_cast<const Block*>(s)) return containsLoop(*blk);
+    return false;
+}
+bool containsLoop(const Block& b) {
+    for (const auto& s : b.statements)
+        if (stmtContainsLoop(s.get())) return true;
+    return false;
+}
+
 // Try to version the for-loop held in `slot`. On success `slot` becomes an IfStmt (guard ? fast : slow).
 void tryVersion(StmtPtr& slot) {
     auto* f = dynamic_cast<ForStmt*>(slot.get());
     if (f == nullptr) return;
     ForInfo info;
     if (!analyzeFor(*f, info)) return;
+    // Only version innermost loops: versioning a loop whose body holds another (already-versioned) loop
+    // would duplicate that inner loop into both copies, multiplying code size with each nesting level.
+    if (containsLoop(f->body)) return;
     // The induction variable must not be reassigned inside the body (only the header update moves it).
     if (identWrittenInBlock(f->body, info.var)) return;
     // No calls / allocations / frees in the body -- otherwise the array could be reallocated or freed.
@@ -291,15 +347,23 @@ void tryVersion(StmtPtr& slot) {
     // Every touched array must be provably unchanged across the loop.
     for (const auto& k : keys)
         if (!arrayInvariant(k, f->body)) return;
+    // The bound must be loop-invariant: the guard is evaluated once, but the condition re-reads `hi`
+    // every iteration, so a `hi` that grows in the body would let the fast copy run past it. Likewise a
+    // variable step must be invariant (else it could flip sign and drive the index below lo).
+    if (!exprInvariant(info.hi, f->body)) return;
+    if (info.step != nullptr && !exprInvariant(info.step, f->body)) return;
 
-    // Build the guard: lo >= 0  &&  (hi <= arr.length())[for `<`] / (hi < arr.length())[for `<=`] per array.
-    // For `i < hi` the max index is hi-1, so `hi <= length`; for `i <= hi` it is hi, so `hi < length`.
+    // Build the guard: lo >= 0  &&  (hi <= arr.length())[for `<`] / (hi < arr.length())[for `<=`] per
+    // array  &&  (step >= 1)[only for a variable step]. For `i < hi` the max index is hi-1, so
+    // `hi <= length`; for `i <= hi` it is hi, so `hi < length`.
     const std::string upperOp = info.inclusive ? "<" : "<=";
     ExprPtr guard = mkBin(">=", cloneExprDeep(info.lo), mkInt("0"));
     for (auto* arr : arrays) {
         ExprPtr clause = mkBin(upperOp, cloneExprDeep(info.hi), mkLength(cloneExprDeep(arr)));
         guard = mkBin("&&", std::move(guard), std::move(clause));
     }
+    if (info.step != nullptr)  // ensure the index actually increases, so it stays in [lo, hi)
+        guard = mkBin("&&", std::move(guard), mkBin(">=", cloneExprDeep(info.step), mkInt("1")));
 
     // Fast copy: clone the whole loop, then mark exactly the same accesses unchecked in the clone.
     StmtPtr fast = cloneStmtDeep(f);
