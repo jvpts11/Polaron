@@ -477,6 +477,17 @@ R"LDP3(
                 this.data[this.count] = item;
                 this.count = this.count + 1;
             }
+            // Grow the backing store to hold at least n elements up front, so a known-size fill (a copy,
+            // a filter/map/sort output) does not pay repeated doubling reallocations. A no-op when the
+            // capacity already suffices; never shrinks.
+            public method ensureCapacity(int n) returns void {
+                if (n > this.data.length()) {
+                    mutable T[] bigger = new T[n]();
+                    for (mutable int i = 0; i < this.count; i++) { bigger[i] = this.data[i]; }
+                    delete this.data;
+                    this.data = bigger;
+                }
+            }
             public method get(int i) returns T {
                 return this.data[i];
             }
@@ -524,6 +535,7 @@ R"LDP3(
             }
             public method filter(function<boolean, T> keep) returns ArrayList<T> {
                 mutable ArrayList<T> out = new ArrayList<T>() on heap;
+                out.ensureCapacity(this.count);  // at most `count` kept; size once instead of growing
                 for (mutable int i = 0; i < this.count; i++) {
                     if (keep(this.data[i])) { out.add(this.data[i]); }
                 }
@@ -531,6 +543,7 @@ R"LDP3(
             }
             public method map<R>(function<R, T> transform) returns ArrayList<R> {
                 mutable ArrayList<R> out = new ArrayList<R>() on heap;
+                out.ensureCapacity(this.count);  // output is exactly `count`; size once, no growth
                 for (mutable int i = 0; i < this.count; i++) { out.add(transform(this.data[i])); }
                 return out;
             }
@@ -559,10 +572,11 @@ R"LDP3(
                 return hits;
             }
             // Returns a new list with the elements ordered by a comparator (spec 34): compare(a, b) is
-            // negative when a comes first, positive when b does. Stable insertion sort, leaves this list
+            // negative when a comes first, positive when b does. Stable merge sort, leaves this list
             // untouched. The comparator keeps it generic -- the element type needs no ordering of its own.
             public method sortedBy(function<int, T, T> compare) returns ArrayList<T> {
                 mutable ArrayList<T> out = new ArrayList<T>() on heap;
+                out.ensureCapacity(this.count);  // the copy is known-size; fill without reallocating
                 for (mutable int i = 0; i < this.count; i++) { out.add(this.data[i]); }
                 if (out.size() > 1) {
                     T[] scratch = new T[out.size()]();  // O(n) merge buffer, freed below
@@ -572,12 +586,27 @@ R"LDP3(
                 return out;
             }
             // Stable merge sort (O(n log n)) backing sortedBy; `tmp` is an n-element scratch array. Kept
-            // internal to the collection. (Replaced an O(n^2) insertion sort that made large sorts hang.)
+            // internal to the collection. Two standard refinements over the textbook version: small ranges
+            // fall back to an in-place insertion sort (no recursion/merge overhead, cache-friendly), and a
+            // range whose two sorted halves are already in order skips the merge and its copy-back entirely.
             private method mergeSortRange(T[] tmp, int lo, int hi, function<int, T, T> compare) returns void {
                 if (lo >= hi) { return; }
+                if (hi - lo < 16) {  // insertion sort; stable -- only shifts strictly-greater elements
+                    for (mutable int p = lo + 1; p <= hi; p = p + 1) {
+                        T key = this.data[p];
+                        mutable int q = p - 1;
+                        while (q >= lo && compare(this.data[q], key) > 0) {
+                            this.data[q + 1] = this.data[q];
+                            q = q - 1;
+                        }
+                        this.data[q + 1] = key;
+                    }
+                    return;
+                }
                 int mid = (lo + hi) / 2;
                 this.mergeSortRange(tmp, lo, mid, compare);
                 this.mergeSortRange(tmp, mid + 1, hi, compare);
+                if (compare(this.data[mid], this.data[mid + 1]) <= 0) { return; }  // already ordered
                 mutable int i = lo;
                 mutable int j = mid + 1;
                 mutable int k = lo;
@@ -595,6 +624,8 @@ R"LDP3(
                 while (j <= hi) { tmp[k] = this.data[j]; j = j + 1; k = k + 1; }
                 for (mutable int t = lo; t <= hi; t = t + 1) { this.data[t] = tmp[t]; }
             }
+)LDP3"
+R"LDP3(
             // Search terminals (spec 34): find returns the first element a predicate accepts, min/max the
             // smallest/largest by a comparator. Each returns Option<T> -- Some on a hit, None when the list
             // is empty or nothing matches -- so the empty case is in the type, not a sentinel.
