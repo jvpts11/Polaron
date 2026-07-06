@@ -23,6 +23,7 @@
 #include "lexer/lexer.h"
 #include "lexer/token.h"
 #include "parser/ast.h"
+#include "parser/boundscheck.h"
 #include "parser/loopopt.h"
 #include "parser/monomorphize.h"
 #include "parser/parser.h"
@@ -8608,6 +8609,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     assignObjectRoot(program);                   // a class with no `extends` implicitly extends Object
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     if (optLevel > 0) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
+    if (optLevel > 0) ldp3::hoistBoundsChecks(program);          // bounds-check hoisting (sema re-checks it)
     ldp3::SemanticAnalyzer sema;
     const bool semaOk = sema.analyze(program, libraryMode, testMode);
     for (const ldp3::SemaError& w : sema.warnings()) {

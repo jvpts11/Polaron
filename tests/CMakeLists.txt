@@ -299,6 +299,16 @@ add_test(NAME codegen_matmul_class_interchange_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# Bounds-check hoisting (loop versioning): clean for-loops over arrays run an unchecked fast copy under a
+# proven guard. The versioned result must equal the checked one (fill by param bound, copy, inclusive sum).
+add_test(NAME codegen_bce_hoist_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bce_hoist.ldp3"
+    "-DCONTAINS=sum=1498500"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Parameter passing is by value for a plain class type (deep copy, like assignment); `&`/`*` share.
 add_test(NAME codegen_value_parameter_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"

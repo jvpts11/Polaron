@@ -251,6 +251,10 @@ struct NewArrayExpr : Expr {
 struct IndexExpr : Expr {
     ExprPtr array;
     ExprPtr index;
+    // Set by the bounds-check hoisting pass on accesses it has proven in-range for the whole loop
+    // (the pass emits one guard covering exactly these, then runs an unchecked copy of the loop). The
+    // codegen skips the per-access bounds check when true. Off by default -- every access is checked.
+    bool unchecked = false;
     void dump(std::string& out, int indent) const override;
 };
 

@@ -20,6 +20,7 @@ set(LDP3_CORE_SOURCES
     src/parser/parser.cpp
     src/parser/monomorphize.cpp
     src/parser/loopopt.cpp
+    src/parser/boundscheck.cpp
     src/semantic/analyzer.cpp
     src/semantic/comptime.cpp
     src/bundle/ldh.cpp  # public-API header (.ldh) generation; AST-only, no LLVM

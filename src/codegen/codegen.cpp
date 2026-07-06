@@ -2180,22 +2180,27 @@ struct CodeGenerator::Impl {
         return elemType == "boolean" ? builder.getInt8Ty() : llvmType(elemType);
     }
 
-    llvm::Value* arrayElemPtr(llvm::Value* block, llvm::Value* index, llvm::Type* elemTy) {
+    llvm::Value* arrayElemPtr(llvm::Value* block, llvm::Value* index, llvm::Type* elemTy,
+                              bool checked = true) {
         llvm::Value* idx = index->getType()->isIntegerTy(64)
                                ? index
                                : builder.CreateSExt(index, builder.getInt64Ty());
         // Bounds check (no UB): one unsigned compare catches both index < 0 and index >= length.
         // The length load and data base are loop-invariant, so LICM hoists them; LLVM elides the
-        // compare itself where it can prove the index in range.
-        llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "arr.len");
-        llvm::Value* oob = builder.CreateICmpUGE(idx, len, "arr.oob");
-        llvm::Function* f = currentFn;
-        auto* badBB = llvm::BasicBlock::Create(context, "idx.bad", f);
-        auto* okBB = llvm::BasicBlock::Create(context, "idx.ok", f);
-        builder.CreateCondBr(oob, badBB, okBB, coldBranchWeights());
-        builder.SetInsertPoint(badBB);
-        emitPanic("array index out of bounds");
-        builder.SetInsertPoint(okBB);
+        // compare itself where it can prove the index in range. `checked` is false only for accesses the
+        // bounds-check hoisting pass has proven in-range under a guard it already emitted (loop
+        // versioning), so the check is skipped without ever admitting an unchecked access to user code.
+        if (checked) {
+            llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "arr.len");
+            llvm::Value* oob = builder.CreateICmpUGE(idx, len, "arr.oob");
+            llvm::Function* f = currentFn;
+            auto* badBB = llvm::BasicBlock::Create(context, "idx.bad", f);
+            auto* okBB = llvm::BasicBlock::Create(context, "idx.ok", f);
+            builder.CreateCondBr(oob, badBB, okBB, coldBranchWeights());
+            builder.SetInsertPoint(badBB);
+            emitPanic("array index out of bounds");
+            builder.SetInsertPoint(okBB);
+        }
         return builder.CreateGEP(elemTy, arrayData(block), idx, "arr.elem");
     }
 
@@ -2444,7 +2449,7 @@ struct CodeGenerator::Impl {
                                      : builder.CreateSExt(index, builder.getInt64Ty());
                 return builder.CreateGEP(llvmType(baseType(at)), block, i, "ptr.elem");
             }
-            return arrayElemPtr(block, index, arrayStorageTy(elementOf(at)));
+            return arrayElemPtr(block, index, arrayStorageTy(elementOf(at)), /*checked=*/!ix->unchecked);
         }
         error("invalid assignment target", expr.loc);
         return nullptr;

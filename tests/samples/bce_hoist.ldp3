@@ -1,0 +1,32 @@
+import System.IO.Console;
+
+// Bounds-check hoisting by loop versioning. Each clean for-loop below indexes an array by its induction
+// variable, so the optimizer versions it: a guard (lo >= 0 && hi </<= arr.length()) is proven once, then
+// an unchecked copy of the loop runs; an out-of-range case would fall to the original checked copy. The
+// point of the test is that the versioned result is identical to the checked one. `fill` takes the bound
+// as a parameter (not the array's own length), the case LLVM cannot elide on its own, so it exercises the
+// generated guard directly.
+program BceHoist;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method fill(int[] a, int n) returns void {
+                for (mutable int i = 0; i < n; i++) { a[i] = i * 3; }
+            }
+            public static method main(string[] args) returns void {
+                int cap = 1000;
+                mutable int[] a = new int[cap]();
+                Main.fill(a, cap);                                      // versioned: i in [0, cap)
+                mutable int[] b = new int[cap]();
+                for (mutable int i = 0; i < cap; i++) { b[i] = a[i]; }  // versioned: two arrays
+                mutable int sum = 0;
+                for (mutable int i = 0; i <= cap - 1; i++) { sum = sum + b[i]; }  // versioned: inclusive bound
+                System.IO.Console.printf("sum=%d\n", sum);             // 3 * (0+...+999) = 1498500
+                delete a;
+                delete b;
+                return;
+            }
+        }
+    }
+}
