@@ -2891,24 +2891,37 @@ struct CodeGenerator::Impl {
             locals = sLoc; scopeObjects = sScope; deferred = sDef;
             scopeRegions = sRegions;
             builder.restoreIP(sIP);
-            // Build the environment: one pointer slot per capture. byvalue copies the value into a
-            // fresh heap slot; byref shares the variable's own storage.
-            llvm::Value* envPtr = llvm::ConstantPointerNull::get(builder.getPtrTy());
-            if (!eff.empty()) {
-                envPtr = builder.CreateCall(
-                    mallocFn(), {builder.getInt64(8 * (std::int64_t)eff.size())}, "env");
-                for (std::size_t i = 0; i < eff.size(); i++) {
-                    llvm::Value* dst =
-                        builder.CreateGEP(builder.getPtrTy(), envPtr, builder.getInt32(i));
-                    if (eff[i].byRef) {
-                        builder.CreateStore(capStorages[i], dst);  // share the original storage
-                    } else {
-                        llvm::Type* vt = llvmType(capTypes[i]);
-                        llvm::Value* copy =
-                            builder.CreateCall(mallocFn(), {builder.getInt64(8)}, "cap");
-                        builder.CreateStore(builder.CreateLoad(vt, capStorages[i]), copy);
-                        builder.CreateStore(copy, dst);
-                    }
+            // No captures: the closure {code, null} is a compile-time constant. Emit it as a private
+            // unnamed constant global instead of a heap allocation. Two wins: a no-capture lambda never
+            // allocates, and -- because the code pointer is now a constant the optimizer can see through --
+            // LLVM (IPSCCP) can propagate this closure into the higher-order method that receives it,
+            // turning the per-element indirect call through the function value into a direct, inlinable one.
+            if (eff.empty()) {
+                auto* pairTy = llvm::ArrayType::get(builder.getPtrTy(), 2);
+                std::vector<llvm::Constant*> fields = {
+                    llvm::cast<llvm::Constant>(fn),
+                    llvm::ConstantPointerNull::get(builder.getPtrTy())};
+                auto* gv = new llvm::GlobalVariable(
+                    module, pairTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+                    llvm::ConstantArray::get(pairTy, fields), "__ldp3_closure");
+                gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+                return gv;
+            }
+            // Captures: build the environment (one pointer slot per capture; byvalue copies the value into
+            // a fresh heap slot, byref shares the variable's own storage) and wrap {code, env} on the heap.
+            llvm::Value* envPtr = builder.CreateCall(
+                mallocFn(), {builder.getInt64(8 * (std::int64_t)eff.size())}, "env");
+            for (std::size_t i = 0; i < eff.size(); i++) {
+                llvm::Value* dst =
+                    builder.CreateGEP(builder.getPtrTy(), envPtr, builder.getInt32(i));
+                if (eff[i].byRef) {
+                    builder.CreateStore(capStorages[i], dst);  // share the original storage
+                } else {
+                    llvm::Type* vt = llvmType(capTypes[i]);
+                    llvm::Value* copy =
+                        builder.CreateCall(mallocFn(), {builder.getInt64(8)}, "cap");
+                    builder.CreateStore(builder.CreateLoad(vt, capStorages[i]), copy);
+                    builder.CreateStore(copy, dst);
                 }
             }
             llvm::Value* clos = builder.CreateCall(mallocFn(), {builder.getInt64(16)}, "closure");
