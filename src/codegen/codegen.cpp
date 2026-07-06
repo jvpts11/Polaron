@@ -397,6 +397,9 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, int> methodSlots;  // virtual method name -> global slot
     std::vector<std::string> methodSlotNames;          // global slot -> method name
     std::vector<std::string> seededSlots;              // slot layout adopted from imported bundles
+    std::unordered_set<std::string> subclassed_;       // classes/interfaces that something extends or
+                                                       // implements; a type NOT here has no subtype, so
+                                                       // a call on it devirtualizes to a direct call
     // Dynamic bundles (--use-dynamic), keyed by AST bundle name: the .ldb path and the ABI
     // fingerprint the program compiled against. Their functions become runtime-resolving thunks.
     std::unordered_map<std::string, std::pair<std::string, std::array<std::uint8_t, 32>>> dynamicBundles;
@@ -5638,11 +5641,22 @@ struct CodeGenerator::Impl {
             // spec 30: calling a method on an unimported type throws (rather than branching
             // into the int3-overwritten code).
             emitAliveGuard(baseType(typeName(*mem->object)));
-            // Virtual dispatch: if the static type is polymorphic and the method
-            // has a vtable slot, call indirectly through the object's vtable.
+            // Virtual dispatch: if the static type is polymorphic and the method has a vtable slot, call
+            // indirectly through the object's vtable. Devirtualize when the static type is a concrete
+            // class that nothing extends/implements (not in `subclassed_`): its instances are exactly
+            // that type, so the call is direct and inlinable -- a plain-class method call then costs
+            // nothing over a free function (e.g. Bitset.set in a tight sieve loop).
             const std::string st = baseType(typeName(*mem->object));  // see through T* / T&
             auto stit = classes.find(st);
-            if (stit != classes.end() && stit->second.hasVtable) {
+            // Keep the virtual call whenever the runtime type may differ from the static type: the type
+            // is extended/implemented (`subclassed_`), is an interface or abstract class (the value is
+            // always some concrete subtype -- including via generic variance, e.g. Producer<out T>), or
+            // is imported from a dynamically-loaded bundle (the plugin supplies the body). Only a
+            // concrete, un-subclassed, local class has instances of exactly its own type -> devirtualize.
+            const bool mayBeSubtype = stit != classes.end() &&
+                                      (subclassed_.count(st) > 0 || stit->second.isInterface ||
+                                       stit->second.isAbstract || stit->second.imported);
+            if (stit != classes.end() && stit->second.hasVtable && mayBeSubtype) {
                 const int slot = slotIndex(st, mem->member);
                 const ast::MethodDecl* mdecl = findMethodDecl(st, mem->member);
                 if (slot >= 0 && mdecl != nullptr) {
@@ -7793,6 +7807,7 @@ struct CodeGenerator::Impl {
             l.hasVtable = !l.superclass.empty() || !l.interfaces.empty() || l.isAbstract ||
                           l.isInterface || bases.count(name) > 0;
         }
+        subclassed_ = bases;  // remember which types have a subtype, for devirtualization at call sites
         // Adopt the slot layout of imported bundles first, so a virtual call on an imported object
         // hits the slot its baked-in vtable (in the .ldb) uses (spec 2.5 ABI). Fresh local methods
         // then take the slots after these.
