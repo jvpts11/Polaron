@@ -11,6 +11,7 @@
   "categories": [
     "Programming Languages"
   ],
+  "icon": "media/icon.png",
   "main": "./out/extension.js",
   "activationEvents": [
     "onLanguage:ldp3",
@@ -27,6 +28,10 @@
         "extensions": [
           ".ldp3"
         ],
+        "icon": {
+          "light": "./media/file-icon-light.svg",
+          "dark": "./media/file-icon.svg"
+        },
         "configuration": "./language-configuration.json"
       }
     ],

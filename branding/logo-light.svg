@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 100">
+  <!-- The LDP3 horizontal logo, light-ground variant: deeper ambers so the wordmark keeps contrast
+       on white/cream. Use logo.svg on dark grounds. -->
+  <g transform="translate(2,2) scale(0.96)">
+    <path fill="#d9952e" d="M50 4
+      C 52 14, 60 22, 68 32
+      C 76 42, 82 52, 82 64
+      C 82 83, 68 96, 50 96
+      C 32 96, 18 83, 18 64
+      C 18 52, 24 42, 31 33
+      C 36 27, 40 20, 40 12
+      C 44 18, 46 24, 45 30
+      C 49 26, 50 14, 50 4 Z"/>
+    <path fill="#eab464" d="M50 44
+      C 54 52, 64 56, 64 68
+      C 64 79, 58 86, 50 86
+      C 42 86, 36 79, 36 68
+      C 36 58, 44 54, 46 46
+      C 47 50, 49 52, 50 48 Z"/>
+    <ellipse cx="43" cy="66" rx="3.4" ry="5.2" fill="#1a1208"/>
+    <ellipse cx="57" cy="66" rx="3.4" ry="5.2" fill="#1a1208"/>
+  </g>
+  <text x="104" y="72" font-family="'Segoe UI', 'Inter', system-ui, sans-serif" font-size="58"
+        font-weight="800" letter-spacing="2" fill="#b47417">LDP<tspan fill="#d9952e">3</tspan></text>
+</svg>

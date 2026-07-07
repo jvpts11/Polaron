@@ -35,3 +35,7 @@ kernel/*.ll
 kernel/kernel.elf
 kernel/*.dump
 kernel/qemu.log
+
+# branding intermediates
+branding/preview-*.png
+branding/_render.html
