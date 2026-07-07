@@ -27,3 +27,4 @@ CMakeUserPresets.json
 
 # Note: CLAUDE.md and docs/ are intentionally NOT ignored here; they are simply
 # never added to commits.
+dist/
