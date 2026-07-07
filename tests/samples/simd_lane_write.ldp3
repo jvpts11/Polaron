@@ -1,0 +1,18 @@
+import System.IO.Console;
+
+// SIMD lane write: assign to a single lane of a vector, by swizzle name (v.y) or by index (v[i]).
+program SimdLaneWrite;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable vec3 v = vec3(1.0, 2.0, 3.0);
+                v.y = 20.0;      // write lane 1 by name
+                v[2] = 30.0;     // write lane 2 by index
+                System.IO.Console.printf("x=%d y=%d z=%d\n", cast<int>(v.x), cast<int>(v.y), cast<int>(v.z));
+                return;
+            }
+        }
+    }
+}

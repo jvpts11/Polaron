@@ -1601,6 +1601,16 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         }
         const std::string objType = typeOf(*mem->object);
         if (objType.empty()) return;
+        if (vecWidth(objType) > 0 && vecLane(mem->member) >= 0) {  // SIMD lane write: v.x = f
+            if (const auto* bid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
+                if (const LocalVar* lv = lookupLocal(bid->name); lv != nullptr && !lv->isMutable)
+                    error("cannot modify a lane of immutable vector '" + bid->name +
+                              "' (declare it 'mutable')",
+                          loc);
+            if (!valueType.empty() && !isNumeric(valueType))
+                error("a vector lane takes a numeric value, not '" + valueType + "'", loc);
+            return;
+        }
         const FieldInfo* f = findField(objType, mem->member);
         if (f == nullptr) {
             // A computed property with a custom setter (spec 8.4): `obj.prop = v` routes to prop$set.
@@ -1634,6 +1644,16 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
     if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&target)) {
         const std::string at = typeOf(*ix->array);
         typeOf(*ix->index);
+        if (vecWidth(at) > 0) {  // SIMD lane write: v[i] = f
+            if (const auto* bid = dynamic_cast<const ast::IdentifierExpr*>(ix->array.get()))
+                if (const LocalVar* lv = lookupLocal(bid->name); lv != nullptr && !lv->isMutable)
+                    error("cannot modify a lane of immutable vector '" + bid->name +
+                              "' (declare it 'mutable')",
+                          loc);
+            if (!valueType.empty() && !isNumeric(valueType))
+                error("a vector lane takes a numeric value, not '" + valueType + "'", loc);
+            return;
+        }
         if (findMethod(baseType(at), "operator[]=")) return;  // operator[]= overload (spec 6.5)
         if (!at.empty() && !isArrayType(at) && !isRefType(at)) {
             error("cannot index a value of non-array type '" + at + "'", loc);

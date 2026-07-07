@@ -6904,6 +6904,33 @@ struct CodeGenerator::Impl {
                 }
             }
             const std::string targetType = typeName(*assign->target);
+            // SIMD lane write: v[i] = x or v.x = 5 mutate one lane of a vector value in place -- load the
+            // vector from its storage, insert the element at the lane, and store it back.
+            {
+                const ast::Expr* vecObj = nullptr;
+                llvm::Value* laneIdx = nullptr;
+                if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(assign->target.get())) {
+                    if (vecWidth(typeName(*ix->array)) > 0) {
+                        vecObj = ix->array.get();
+                        laneIdx = emitExpr(*ix->index);
+                    }
+                } else if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
+                    if (int lane = vecLane(mt->member); vecWidth(typeName(*mt->object)) > 0 && lane >= 0) {
+                        vecObj = mt->object.get();
+                        laneIdx = builder.getInt32(lane);
+                    }
+                }
+                if (vecObj != nullptr && laneIdx != nullptr) {
+                    llvm::Value* slot = emitLValue(*vecObj);
+                    llvm::Value* val = emitExpr(*assign->value);
+                    if (slot == nullptr || val == nullptr) return;
+                    llvm::Value* cur = builder.CreateLoad(llvmType(typeName(*vecObj)), slot, "vec.cur");
+                    val = coerceToType(val, builder.getFloatTy());
+                    laneIdx = builder.CreateSExtOrTrunc(laneIdx, builder.getInt32Ty());
+                    builder.CreateStore(builder.CreateInsertElement(cur, val, laneIdx), slot);
+                    return;
+                }
+            }
             // atomic<T> assignment (spec 20.6): `counter = counter +/- n` -> atomicrmw add/sub;
             // any other `counter = v` -> atomic store of the value cell. But binding the atomic object
             // itself (`field = new atomic<int>(n)`, or `a = b` between two atomics) is a plain reference
