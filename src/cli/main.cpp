@@ -6356,6 +6356,43 @@ R"LDP3(
                 this.dig = nd;
             }
             public method isZero() returns boolean { return this.len == 1 && this.dig[0] == 0; }
+            private method cmpMag(BigInteger o) returns int {  // compare magnitudes, ignoring sign
+                if (this.len != o.len) { return this.len < o.len ? -1 : 1; }
+                for (mutable int i = this.len - 1; i >= 0; i--) {
+                    if (this.dig[i] != o.dig[i]) { return this.dig[i] < o.dig[i] ? -1 : 1; }
+                }
+                return 0;
+            }
+            private method copyMag() returns BigInteger {  // a fresh non-negative copy of this magnitude
+                BigInteger r = new BigInteger(cast<long>(0)) on heap;
+                r.ensure(this.len + 1);
+                r.len = this.len;
+                for (mutable int i = 0; i < this.len; i++) { r.dig[i] = this.dig[i]; }
+                r.neg = false;
+                return r;
+            }
+            private method subInPlace(BigInteger o) returns void {  // this.mag -= o.mag; assumes this.mag >= o.mag
+                mutable int borrow = 0;
+                mutable int i = 0;
+                while (i < this.len) {
+                    mutable int s = this.dig[i] - borrow;
+                    if (i < o.len) { s = s - o.dig[i]; }
+                    if (s < 0) { s = s + 10; borrow = 1; } else { borrow = 0; }
+                    this.dig[i] = s;
+                    i = i + 1;
+                }
+                while (this.len > 1 && this.dig[this.len - 1] == 0) { this.len = this.len - 1; }
+            }
+            private method mulTenAddInPlace(int d) returns void {  // this.mag = this.mag * 10 + d
+                if (this.len == 1 && this.dig[0] == 0) { this.dig[0] = d; return; }
+                this.ensure(this.len + 1);
+                for (mutable int i = this.len; i > 0; i--) { this.dig[i] = this.dig[i - 1]; }
+                this.dig[0] = d;
+                this.len = this.len + 1;
+            }
+            private static method normSign(BigInteger r) returns void {  // -0 -> +0
+                if (r.len == 1 && r.dig[0] == 0) { r.neg = false; }
+            }
             private static method addMag(BigInteger a, BigInteger b) returns BigInteger {
                 BigInteger r = new BigInteger(cast<long>(0)) on heap;
                 int n = a.len > b.len ? a.len : b.len;
@@ -6374,10 +6411,32 @@ R"LDP3(
                 }
                 return r;
             }
-            public method add(BigInteger other) returns BigInteger {  // same-sign add (draft)
-                BigInteger r = BigInteger.addMag(this, other);
-                r.neg = this.neg;
-                return r;
+            private method addSigned(BigInteger other, boolean otherNeg) returns BigInteger {
+                if (this.neg == otherNeg) {   // like signs: add magnitudes, keep the sign
+                    BigInteger r = BigInteger.addMag(this, other);
+                    r.neg = this.neg;
+                    BigInteger.normSign(r);
+                    return r;
+                }
+                int c = this.cmpMag(other);   // unlike signs: the larger magnitude decides the sign
+                if (c == 0) { return new BigInteger(cast<long>(0)) on heap; }
+                if (c > 0) {
+                    BigInteger r = this.copyMag();
+                    r.subInPlace(other);
+                    r.neg = this.neg;
+                    BigInteger.normSign(r);
+                    return r;
+                }
+                BigInteger r2 = other.copyMag();
+                r2.subInPlace(this);
+                r2.neg = otherNeg;
+                BigInteger.normSign(r2);
+                return r2;
+            }
+            public method add(BigInteger other) returns BigInteger { return this.addSigned(other, other.neg); }
+            public method subtract(BigInteger other) returns BigInteger {
+                boolean flipped = other.isZero() ? false : (other.neg == false);  // this - other = this + (-other)
+                return this.addSigned(other, flipped);
             }
             public method multiply(BigInteger other) returns BigInteger {
                 BigInteger r = new BigInteger(cast<long>(0)) on heap;
@@ -6400,12 +6459,42 @@ R"LDP3(
                 r.neg = this.neg != other.neg;
                 return r;
             }
-            public method compareTo(BigInteger other) returns int {
-                if (this.len != other.len) { return this.len < other.len ? -1 : 1; }
+            public method compareTo(BigInteger other) returns int {  // sign-aware
+                boolean nt = this.neg && (this.isZero() == false);
+                boolean no = other.neg && (other.isZero() == false);
+                if (nt && (no == false)) { return -1; }
+                if ((nt == false) && no) { return 1; }
+                if (nt && no) { return 0 - this.cmpMag(other); }   // both negative: order reverses
+                return this.cmpMag(other);
+            }
+            public method divide(BigInteger other) returns BigInteger {   // truncated toward zero
+                if (other.isZero()) { return new BigInteger(cast<long>(0)) on heap; }
+                BigInteger q = new BigInteger(cast<long>(0)) on heap;
+                q.ensure(this.len + 1);
+                q.len = this.len;
+                for (mutable int z = 0; z < q.len; z++) { q.dig[z] = 0; }
+                BigInteger rem = new BigInteger(cast<long>(0)) on heap;   // running remainder magnitude
                 for (mutable int i = this.len - 1; i >= 0; i--) {
-                    if (this.dig[i] != other.dig[i]) { return this.dig[i] < other.dig[i] ? -1 : 1; }
+                    rem.mulTenAddInPlace(this.dig[i]);                    // bring down the next digit
+                    mutable int d = 0;
+                    while (rem.cmpMag(other) >= 0) { rem.subInPlace(other); d = d + 1; }
+                    q.dig[i] = d;
                 }
-                return 0;
+                while (q.len > 1 && q.dig[q.len - 1] == 0) { q.len = q.len - 1; }
+                q.neg = this.neg != other.neg;
+                BigInteger.normSign(q);
+                return q;
+            }
+            public method remainder(BigInteger other) returns BigInteger {   // sign follows the dividend
+                if (other.isZero()) { return new BigInteger(cast<long>(0)) on heap; }
+                BigInteger rem = new BigInteger(cast<long>(0)) on heap;
+                for (mutable int i = this.len - 1; i >= 0; i--) {
+                    rem.mulTenAddInPlace(this.dig[i]);
+                    while (rem.cmpMag(other) >= 0) { rem.subInPlace(other); }
+                }
+                rem.neg = this.neg;
+                BigInteger.normSign(rem);
+                return rem;
             }
             public method toString() returns String {
                 StringBuilder sb = new StringBuilder() on heap;
@@ -6416,6 +6505,8 @@ R"LDP3(
                 return sb.toString();
             }
         }
+)LDP3"
+R"LDP3(
         // Integer math helpers (spec 34.6): gcd/lcm (Euclid), factorial, primality by trial division,
         // integer power and integer square root. All operate on plain ints, no floating point. (Named
         // IntMath, not MathX, to avoid shadowing a user class.)

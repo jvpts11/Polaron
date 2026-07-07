@@ -1,0 +1,31 @@
+import System.IO.Console;
+import System.Math.BigInteger;
+
+// Full signed arbitrary-precision arithmetic: mixed-sign add/subtract, truncated-toward-zero division,
+// remainder (sign follows the dividend), and a wide multiply. Results printed on one line for checking.
+program BigIntArith;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                BigInteger a = new BigInteger(cast<long>(1000000)) on heap;
+                BigInteger b = new BigInteger(cast<long>(7)) on heap;
+                System.IO.Console.print(a.divide(b).toString());     System.IO.Console.print(" ");  // 142857
+                System.IO.Console.print(a.remainder(b).toString());  System.IO.Console.print(" ");  // 1
+                BigInteger na = new BigInteger(cast<long>(0) - cast<long>(1000000)) on heap;
+                System.IO.Console.print(na.divide(b).toString());    System.IO.Console.print(" ");  // -142857
+                System.IO.Console.print(na.remainder(b).toString()); System.IO.Console.print(" ");  // -1
+                BigInteger p = new BigInteger(cast<long>(0) - cast<long>(100)) on heap;
+                BigInteger q = new BigInteger(cast<long>(30)) on heap;
+                System.IO.Console.print(p.add(q).toString());        System.IO.Console.print(" ");  // -70
+                BigInteger h = new BigInteger(cast<long>(100)) on heap;
+                BigInteger k = new BigInteger(cast<long>(250)) on heap;
+                System.IO.Console.print(h.subtract(k).toString());   System.IO.Console.print(" ");  // -150
+                BigInteger big = new BigInteger(cast<long>(999999)) on heap;
+                System.IO.Console.println(big.multiply(big).toString());                            // 999998000001
+                return;
+            }
+        }
+    }
+}
