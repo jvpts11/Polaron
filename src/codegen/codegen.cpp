@@ -266,6 +266,7 @@ int vecLane(const std::string& m) {
 unsigned byteSizeOf(const std::string& t) {
     if (isFloatType(t)) return floatBits(t) / 8;  // smallfloat=2 float=4 double=8 quadruple=16
     if (int w = vecWidth(t)) return static_cast<unsigned>(4 * w);  // vecN: N float32 elements
+    if (t == "mat4") return 64;  // <16 x float>
     if (!t.empty() && (t.back() == '*' || t.back() == '&' ||
                        (t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0)))
         return 8;  // pointer-sized (pointer / reference / array)
@@ -590,6 +591,7 @@ struct CodeGenerator::Impl {
         }
         if (int w = vecWidth(t))  // SIMD vec2/3/4 -> <N x float>
             return llvm::FixedVectorType::get(builder.getFloatTy(), static_cast<unsigned>(w));
+        if (t == "mat4") return llvm::FixedVectorType::get(builder.getFloatTy(), 16);  // SIMD 4x4 matrix
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
         if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
@@ -1660,7 +1662,7 @@ struct CodeGenerator::Impl {
         }
         if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
             const std::string at = typeName(*ix->array);
-            if (vecWidth(at) > 0) return "float";  // v[i] on a SIMD vector
+            if (vecWidth(at) > 0 || at == "mat4") return "float";  // v[i] / m[i] element read
             const std::string owner = methodOwner(baseType(at), "operator[]");
             if (!owner.empty()) return classes[owner].methodReturnType["operator[]"];
             if (isRefType(at)) return baseType(at);  // p[i] on a raw pointer T* -> T
@@ -1669,6 +1671,13 @@ struct CodeGenerator::Impl {
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
             if (int w = vecWidth(flattenCallee(*call->callee)); w > 0)
                 return flattenCallee(*call->callee);  // vec2/3/4 construction
+            if (const std::string mc = flattenCallee(*call->callee); mc == "mat4" || mc == "mat4.identity")
+                return "mat4";  // mat4(...16 floats) construction and the mat4.identity() factory
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+                mem != nullptr && typeName(*mem->object) == "mat4") {
+                if (mem->member == "multiply") return "mat4";
+                if (mem->member == "transform") return "vec4";
+            }
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
             if (flattenCallee(*call->callee) == "System.IO.Console.read") return "String";  // reads a line
             if (flattenCallee(*call->callee) == "Memory.readString") return "String";  // StringBuilder
@@ -3447,8 +3456,8 @@ struct CodeGenerator::Impl {
                     idx = coerceToType(idx, fnit->second->getArg(1)->getType());
                 return builder.CreateCall(fnit->second, {recv, idx});
             }
-            // SIMD vector index: v[i] -> extractelement, bounds-checked (no UB).
-            if (int w = vecWidth(at); w > 0) {
+            // SIMD vector/matrix index: v[i] / m[i] -> extractelement, bounds-checked (no UB).
+            if (int w = (at == "mat4" ? 16 : vecWidth(at)); w > 0) {
                 llvm::Value* v = emitExpr(*ix->array);
                 llvm::Value* idx = emitExpr(*ix->index);
                 if (v == nullptr || idx == nullptr) return nullptr;
@@ -4281,6 +4290,40 @@ struct CodeGenerator::Impl {
         return r;
     }
 
+    // A mat4 is a <16 x float> in row-major order: element (row, col) lives at index row*4 + col.
+    llvm::Value* mat4Zero() { return llvm::ConstantAggregateZero::get(llvmType("mat4")); }
+    llvm::Value* mat4Identity() {
+        llvm::Value* m = mat4Zero();
+        for (int i = 0; i < 4; i++)  // 1.0 on the diagonal (indices 0, 5, 10, 15)
+            m = builder.CreateInsertElement(m, llvm::ConstantFP::get(builder.getFloatTy(), 1.0),
+                                            builder.getInt32(i * 5));
+        return m;
+    }
+    llvm::Value* mat4Mul(llvm::Value* a, llvm::Value* b) {
+        auto el = [&](llvm::Value* m, int i) { return builder.CreateExtractElement(m, builder.getInt32(i)); };
+        llvm::Value* r = mat4Zero();
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < 4; j++) {
+                llvm::Value* sum = llvm::ConstantFP::get(builder.getFloatTy(), 0.0);
+                for (int k = 0; k < 4; k++)
+                    sum = builder.CreateFAdd(sum, builder.CreateFMul(el(a, i * 4 + k), el(b, k * 4 + j)));
+                r = builder.CreateInsertElement(r, sum, builder.getInt32(i * 4 + j));
+            }
+        return r;
+    }
+    llvm::Value* mat4Transform(llvm::Value* m, llvm::Value* v) {  // m * v -> vec4
+        auto me = [&](int i) { return builder.CreateExtractElement(m, builder.getInt32(i)); };
+        auto ve = [&](int i) { return builder.CreateExtractElement(v, builder.getInt32(i)); };
+        llvm::Value* r = llvm::ConstantAggregateZero::get(llvmType("vec4"));
+        for (int i = 0; i < 4; i++) {
+            llvm::Value* sum = llvm::ConstantFP::get(builder.getFloatTy(), 0.0);
+            for (int k = 0; k < 4; k++)
+                sum = builder.CreateFAdd(sum, builder.CreateFMul(me(i * 4 + k), ve(k)));
+            r = builder.CreateInsertElement(r, sum, builder.getInt32(i));
+        }
+        return r;
+    }
+
     llvm::Value* emitCall(const ast::CallExpr& call) {
         if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
             cm != nullptr && cm->safe && &call != safeGuardNode_) {  // obj?.method(...) (spec 3.7)
@@ -4296,6 +4339,21 @@ struct CodeGenerator::Impl {
             checkedArith_ = saved;
             return v;
         }
+        // mat4: a.multiply(b) -> mat4, a.transform(v) -> vec4, plus the mat4.identity() factory.
+        if (const auto* mm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
+            mm != nullptr && typeName(*mm->object) == "mat4") {
+            if (mm->member == "multiply" && call.args.size() == 1) {
+                llvm::Value* a = emitExpr(*mm->object);
+                llvm::Value* b = emitExpr(*call.args[0]);
+                return (a == nullptr || b == nullptr) ? nullptr : mat4Mul(a, b);
+            }
+            if (mm->member == "transform" && call.args.size() == 1) {
+                llvm::Value* a = emitExpr(*mm->object);
+                llvm::Value* v = emitExpr(*call.args[0]);
+                return (a == nullptr || v == nullptr) ? nullptr : mat4Transform(a, v);
+            }
+        }
+        if (name == "mat4.identity" && call.args.empty()) return mat4Identity();
         // Decimal.toString(): format the i128 fixed-point mantissa (scale 10^18) as a decimal String.
         if (const auto* dm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
             dm != nullptr && dm->member == "toString" && call.args.empty() &&
@@ -4413,6 +4471,16 @@ struct CodeGenerator::Impl {
                                                   builder.getInt32(i));
             }
             return vec;
+        }
+        // mat4 construction: mat4(m0, ..., m15) -> a <16 x float> in row-major order.
+        if (name == "mat4" && call.args.size() == 16) {
+            llvm::Value* m = mat4Zero();
+            for (int i = 0; i < 16; i++) {
+                llvm::Value* c = emitExpr(*call.args[i]);
+                if (c == nullptr) return nullptr;
+                m = builder.CreateInsertElement(m, coerceToType(c, builder.getFloatTy()), builder.getInt32(i));
+            }
+            return m;
         }
         // Calling a function value: a local of type function<Ret, Params...> -> indirect call.
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(call.callee.get())) {

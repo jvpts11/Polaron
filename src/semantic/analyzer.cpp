@@ -2886,7 +2886,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (const MethodInfo* om = findMethod(baseType(at), "operator[]")) {
             return om->returnType;
         }
-        if (vecWidth(at) > 0) {  // SIMD vector: v[i] -> float
+        if (vecWidth(at) > 0 || at == "mat4") {  // SIMD vector/matrix: v[i] / m[i] -> float
             if (!it.empty() && it != "int") error("vector index must be an int", ix->loc);
             return "float";
         }
@@ -2916,8 +2916,22 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+        // mat4.identity(): the identity-matrix factory.
+        if (const auto* mc = dynamic_cast<const ast::MemberExpr*>(call->callee.get()))
+            if (const auto* mo = dynamic_cast<const ast::IdentifierExpr*>(mc->object.get());
+                mo != nullptr && mo->name == "mat4" && mc->member == "identity" && call->args.empty())
+                return "mat4";
         // SIMD vector construction: vec4(x,y,z,w) etc. -- N numeric args -> vecN.
         if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
+            if (cid->name == "mat4") {  // mat4(m0..m15) construction
+                if (call->args.size() != 16) error("mat4 takes 16 components", call->loc);
+                for (const auto& arg : call->args) {
+                    const std::string at = typeOf(*arg);
+                    if (!at.empty() && !isNumeric(at))
+                        error("mat4 components must be numeric, got '" + at + "'", arg->loc);
+                }
+                return "mat4";
+            }
             if (int w = vecWidth(cid->name); w > 0) {
                 if (static_cast<int>(call->args.size()) != w)
                     error(cid->name + " takes " + std::to_string(w) + " components", call->loc);
@@ -3353,6 +3367,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                           (vw == 3 ? std::string("/cross") : std::string("")) + "; '" +
                           mem->member + "' is not one",
                       call->loc);
+                return "";
+            }
+            if (objType == "mat4") {  // SIMD matrix methods
+                for (const auto& arg : call->args) typeOf(*arg);
+                if (mem->member == "multiply" && call->args.size() == 1) return "mat4";
+                if (mem->member == "transform" && call->args.size() == 1) return "vec4";
+                error("mat4 has multiply/transform; '" + mem->member + "' is not one", call->loc);
                 return "";
             }
             if (isArrayType(objType)) {
