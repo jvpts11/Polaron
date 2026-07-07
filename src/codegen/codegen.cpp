@@ -454,6 +454,23 @@ struct CodeGenerator::Impl {
     std::vector<RegionLocal> scopeRegions;
     std::vector<const ast::Block*> deferred;  // defer blocks, run at scope end (LIFO)
     bool checkedArith_ = false;      // inside checked(...): signed +/-/* trap on overflow (spec 3.6)
+    // Function specialization over no-capture lambda arguments (perf). When a method that takes a
+    // function<> parameter is called with a known constant lambda, a specialized copy of the method is
+    // emitted whose calls to that parameter are DIRECT (so LLVM inlines the lambda instead of an indirect
+    // call). This is monomorphization-over-lambdas -- what C++ templates / Rust generics do for a
+    // comparator. `boundLambdas_` maps a bound parameter name to its lambda function during a specialized
+    // body's codegen; the worklist defers body generation to after the main pass (no re-entrant codegen);
+    // the cache de-duplicates and terminates the recursive/transitive case.
+    struct Specialization {
+        llvm::Function* fn;
+        const ast::MethodDecl* decl;
+        std::string owner;                              // "" for a static method
+        std::string returnType;
+        std::unordered_map<std::string, llvm::Function*> bound;
+    };
+    std::unordered_map<std::string, llvm::Function*> boundLambdas_;
+    std::unordered_map<std::string, llvm::Function*> specCache_;
+    std::vector<Specialization> specWorklist_;
     std::string currentClass;        // "" inside a static method / the entry point
     std::string currentDtorChain;    // base destructor to chain to (set only in a destructor body)
     llvm::Value* currentThis = nullptr;
@@ -4290,6 +4307,59 @@ struct CodeGenerator::Impl {
         return r;
     }
 
+    // --- Function specialization over no-capture lambda arguments (see boundLambdas_) ---
+    // If argExpr is a known constant lambda -- a no-capture lambda literal (its emitted value is a
+    // constant global {code, null} closure) or a bound parameter forwarded transitively -- return its
+    // underlying function; else null.
+    llvm::Function* knownLambdaFor(const ast::Expr& argExpr, llvm::Value* argValue) {
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&argExpr))
+            if (auto it = boundLambdas_.find(id->name); it != boundLambdas_.end()) return it->second;
+        if (auto* gv = llvm::dyn_cast_or_null<llvm::GlobalVariable>(argValue);
+            gv != nullptr && gv->isConstant() && gv->hasInitializer())
+            if (auto* init = llvm::dyn_cast<llvm::ConstantArray>(gv->getInitializer());
+                init != nullptr && init->getNumOperands() >= 1)
+                return llvm::dyn_cast<llvm::Function>(init->getOperand(0));
+        return nullptr;
+    }
+    // Get (or schedule) a specialized copy of `orig` in which the given function<> parameters are the
+    // given lambdas. Same signature (the closures are still passed, just bypassed for the call); the body
+    // is generated later from the worklist with boundLambdas_ set, so its calls to those params are direct.
+    llvm::Function* specializeMethod(const ast::MethodDecl* decl, const std::string& definingClass,
+                                     const std::string& method, llvm::Function* orig,
+                                     const std::map<int, llvm::Function*>& specParams) {
+        std::string key = definingClass + "." + method;
+        for (const auto& [idx, fn] : specParams)
+            key += "#" + std::to_string(idx) + "=" + fn->getName().str();
+        if (auto it = specCache_.find(key); it != specCache_.end()) return it->second;
+        auto* spec = llvm::Function::Create(orig->getFunctionType(), llvm::Function::InternalLinkage,
+                                            key + "$fs", module);
+        specCache_[key] = spec;
+        Specialization req;
+        req.fn = spec;
+        req.decl = decl;
+        req.owner = definingClass;
+        req.returnType = typeRefName(decl->returnType);
+        for (const auto& [idx, fn] : specParams)
+            if (idx >= 0 && idx < static_cast<int>(decl->params.size()))
+                req.bound[decl->params[idx].name] = fn;
+        specWorklist_.push_back(std::move(req));
+        return spec;
+    }
+    // Emit the deferred specialized bodies. Each may schedule more (transitive specialization); the cache
+    // terminates the recursion. Run after the normal function pass, before dead-code stripping.
+    void emitSpecializations() {
+        while (!specWorklist_.empty()) {
+            Specialization req = specWorklist_.back();
+            specWorklist_.pop_back();
+            boundLambdas_ = req.bound;
+            const std::string thisClass = req.decl->isStatic ? std::string() : req.owner;
+            emitBody(req.fn, req.decl->body, req.decl->params, thisClass, llvmType(req.returnType),
+                     nullptr, &req.decl->requiresClauses, &req.decl->ensuresClauses,
+                     req.decl->isStatic ? nullptr : &classInvariants(req.owner));
+            boundLambdas_.clear();
+        }
+    }
+
     // A mat4 is a <16 x float> in row-major order: element (row, col) lives at index row*4 + col.
     llvm::Value* mat4Zero() { return llvm::ConstantAggregateZero::get(llvmType("mat4")); }
     llvm::Value* mat4Identity() {
@@ -4506,7 +4576,12 @@ struct CodeGenerator::Impl {
                 auto* fty = llvm::FunctionType::get(llvmType(parts[0]), pts, false);
                 llvm::Value* closPtr =
                     builder.CreateLoad(builder.getPtrTy(), lit->second.storage, id->name);
-                llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), closPtr, "code");
+                // In a specialized copy this param is a known lambda: call it directly so LLVM inlines it.
+                llvm::Value* fnPtr;
+                if (auto bit = boundLambdas_.find(id->name); bit != boundLambdas_.end())
+                    fnPtr = bit->second;
+                else
+                    fnPtr = builder.CreateLoad(builder.getPtrTy(), closPtr, "code");
                 llvm::Value* envSlot =
                     builder.CreateGEP(builder.getPtrTy(), closPtr, builder.getInt32(1));
                 llvm::Value* env = builder.CreateLoad(builder.getPtrTy(), envSlot, "env");
@@ -5960,7 +6035,20 @@ struct CodeGenerator::Impl {
             for (std::size_t i = call.args.size(); i-- > 0;)
                 if (atk[i].active) args[1 + i] = reloadSpill(atk[i], args[1 + i]);
             if (recvTk.active) args[0] = reloadSpill(recvTk, args[0]);
-            return emitMaybeInvoke(fnit->second, args);
+            // Function specialization: if a function<> parameter was given a known lambda (a no-capture
+            // constant, or a bound param forwarded here), call a specialized copy whose calls to it are
+            // direct so LLVM inlines the lambda -- what makes sortedBy/filter/map/reduce competitive.
+            llvm::Function* callee = fnit->second;
+            if (const ast::MethodDecl* mdecl = findMethodDecl(owner, mem->member); mdecl != nullptr) {
+                std::map<int, llvm::Function*> specParams;
+                for (std::size_t i = 0; i < call.args.size() && i < mdecl->params.size(); ++i)
+                    if (typeRefName(mdecl->params[i].type).rfind("function<", 0) == 0)
+                        if (llvm::Function* lam = knownLambdaFor(*call.args[i], args[i + 1]))
+                            specParams[static_cast<int>(i)] = lam;
+                if (!specParams.empty())
+                    callee = specializeMethod(mdecl, owner, mem->member, fnit->second, specParams);
+            }
+            return emitMaybeInvoke(callee, args);
         }
         error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call.loc);
         return nullptr;
@@ -9496,6 +9584,7 @@ bool CodeGenerator::generate() {
     impl_->emitFunctions();
     if (impl_->testMode) impl_->emitTestRunner();  // synthetic @entry that runs the [Test] methods
     impl_->emitDynamicThunks();  // runtime-resolving thunks for --use-dynamic bundles
+    impl_->emitSpecializations();  // deferred lambda-specialized method copies (inlinable direct calls)
     if (impl_->libraryMode) impl_->exportBundleSymbols();  // make the .ldb's functions DLL-loadable
     if (!errors_.empty()) return false;
     impl_->stripDeadCode();  // drop unreferenced prelude/user code from executables
