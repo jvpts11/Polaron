@@ -60,7 +60,10 @@ int main(int argc, char** argv) {
 
     if (cmd == "new") {
         if (args.size() < 2) { std::fprintf(stderr, "ldp3: 'new' requires a project name\n"); return 2; }
-        return ldp3::driver::scaffold(std::filesystem::path(args[1]), args[1]);
+        // The argument may be a path ("C:/dev/game" or "projects/game"): the project is created there,
+        // but its NAME is the last path component, not the whole path.
+        const std::filesystem::path dir(args[1]);
+        return ldp3::driver::scaffold(dir, dir.filename().string());
     }
     if (cmd == "init") {
         const std::filesystem::path cwd = std::filesystem::current_path();
