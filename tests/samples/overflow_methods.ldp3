@@ -1,0 +1,21 @@
+import System.IO.Console;
+
+// The explicit overflow-mode integer methods (spec 3.6). wrapping/unchecked wrap modularly (the default
+// behaviour, spelled out); saturating clamps to the type's range. Here 2000000000 + 2000000000 overflows
+// a signed 32-bit int, so wrapping goes negative while saturating pins to INT_MAX.
+program OverflowMethods;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int big = args.length() + 2000000000;   // 2000000000 at runtime (opaque)
+                int wrapped = big.wrappingAdd(big);      // overflows -> wraps to a negative value
+                int saturated = big.saturatingAdd(big);  // overflows -> clamps to 2147483647
+                boolean wrappedNeg = wrapped < 0;
+                System.IO.Console.printf("sat=%d wrapNeg=%d\n", saturated, wrappedNeg);   // sat=2147483647 wrapNeg=1
+                return;
+            }
+        }
+    }
+}

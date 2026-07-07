@@ -3390,6 +3390,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "toString" && call->args.empty()) return "String";
                 if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";
                 if (mem->member == "compareTo" && call->args.size() == 1) return "int";
+                // Overflow-mode arithmetic (spec 3.6): wrapping/saturating/unchecked, same int type.
+                static const std::set<std::string> kOverflowMethods = {
+                    "wrappingAdd",   "wrappingSub",   "wrappingMul",
+                    "saturatingAdd", "saturatingSub", "saturatingMul",
+                    "uncheckedAdd",  "uncheckedSub",  "uncheckedMul"};
+                if (kOverflowMethods.count(mem->member) > 0 && call->args.size() == 1) return objType;
                 error("'" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";
             }

@@ -246,6 +246,12 @@ int vecWidth(const std::string& t) {
     if (t == "vec4") return 4;
     return 0;
 }
+// The explicit overflow-mode integer methods (spec 3.6): wrapping/unchecked wrap, saturating clamps.
+bool isIntOverflowMethod(const std::string& m) {
+    return m == "wrappingAdd" || m == "wrappingSub" || m == "wrappingMul" ||
+           m == "saturatingAdd" || m == "saturatingSub" || m == "saturatingMul" ||
+           m == "uncheckedAdd" || m == "uncheckedSub" || m == "uncheckedMul";
+}
 // Named vector lane accessor: .x/.y/.z/.w (or .r/.g/.b/.a). Returns the index, or -1.
 int vecLane(const std::string& m) {
     if (m == "x" || m == "r") return 0;
@@ -2243,6 +2249,33 @@ struct CodeGenerator::Impl {
         emitPanic("integer overflow");
         builder.SetInsertPoint(okBB);
         return res;
+    }
+
+    // Saturating arithmetic (spec 3.6): clamp to the type's min/max on overflow instead of wrapping.
+    // Add/sub have direct intrinsics; multiply detects overflow and clamps by the operand signs.
+    llvm::Value* emitSaturatingArith(const std::string& m, llvm::Value* a, llvm::Value* b, bool uns) {
+        if (m == "saturatingAdd")
+            return builder.CreateBinaryIntrinsic(
+                uns ? llvm::Intrinsic::uadd_sat : llvm::Intrinsic::sadd_sat, a, b);
+        if (m == "saturatingSub")
+            return builder.CreateBinaryIntrinsic(
+                uns ? llvm::Intrinsic::usub_sat : llvm::Intrinsic::ssub_sat, a, b);
+        const unsigned bits = a->getType()->getIntegerBitWidth();
+        llvm::Value* pair = builder.CreateBinaryIntrinsic(
+            uns ? llvm::Intrinsic::umul_with_overflow : llvm::Intrinsic::smul_with_overflow, a, b);
+        llvm::Value* res = builder.CreateExtractValue(pair, 0);
+        llvm::Value* ovf = builder.CreateExtractValue(pair, 1);
+        llvm::Value* clamp;
+        if (uns) {
+            clamp = llvm::ConstantInt::get(a->getType(), llvm::APInt::getMaxValue(bits));
+        } else {  // overflow clamps to MAX when the operands share a sign, MIN otherwise
+            llvm::Value* zero = llvm::ConstantInt::get(a->getType(), 0);
+            llvm::Value* sameSign = builder.CreateICmpSGE(builder.CreateXor(a, b), zero);
+            clamp = builder.CreateSelect(
+                sameSign, llvm::ConstantInt::get(a->getType(), llvm::APInt::getSignedMaxValue(bits)),
+                llvm::ConstantInt::get(a->getType(), llvm::APInt::getSignedMinValue(bits)));
+        }
+        return builder.CreateSelect(ovf, clamp, res);
     }
 
     // Branch weights marking the true (panic) edge as cold, so the optimizer keeps the hot
@@ -5169,7 +5202,8 @@ struct CodeGenerator::Impl {
             // typeName falls back to "int").
             if (const std::string ot = typeName(*mem->object);
                 isIntName(ot) && (mem->member == "hash" || mem->member == "toString" ||
-                                  mem->member == "equalsKey" || mem->member == "compareTo")) {
+                                  mem->member == "equalsKey" || mem->member == "compareTo" ||
+                                  isIntOverflowMethod(mem->member))) {
                 llvm::Value* a = emitExpr(*mem->object);
                 if (a == nullptr) return nullptr;
                 if (mem->member == "hash") return fitInt(a, 64);
@@ -5182,6 +5216,13 @@ struct CodeGenerator::Impl {
                 llvm::Value* b = emitExpr(*call.args[0]);
                 if (b == nullptr) return nullptr;
                 b = builder.CreateSExtOrTrunc(b, a->getType());
+                if (isIntOverflowMethod(mem->member)) {
+                    const std::string& mm = mem->member;
+                    if (mm == "wrappingAdd" || mm == "uncheckedAdd") return builder.CreateAdd(a, b);
+                    if (mm == "wrappingSub" || mm == "uncheckedSub") return builder.CreateSub(a, b);
+                    if (mm == "wrappingMul" || mm == "uncheckedMul") return builder.CreateMul(a, b);
+                    return emitSaturatingArith(mm, a, b, isUnsigned(ot));  // saturating add/sub/mul
+                }
                 if (mem->member == "equalsKey")
                     return builder.CreateZExt(builder.CreateICmpEQ(a, b), builder.getInt32Ty());
                 if (mem->member == "compareTo") {

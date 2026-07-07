@@ -355,6 +355,15 @@ add_test(NAME codegen_checked_overflow_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# Explicit overflow-mode integer methods: wrapping (modular) vs saturating (clamp to range).
+add_test(NAME codegen_overflow_methods_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/overflow_methods.ldp3"
+    "-DCONTAINS=sat=2147483647 wrapNeg=1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Parameter passing is by value for a plain class type (deep copy, like assignment); `&`/`*` share.
 add_test(NAME codegen_value_parameter_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
