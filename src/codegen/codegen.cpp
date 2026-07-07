@@ -6449,8 +6449,9 @@ struct CodeGenerator::Impl {
     // of EH tables serves all types; catch clauses match on the LDP3 runtime type, not on RTTI. ---
     void ensurePersonality() {
         if (currentFn != nullptr && !currentFn->hasPersonalityFn()) {
-            llvm::FunctionCallee p = module.getOrInsertFunction(
-                "__CxxFrameHandler3", llvm::FunctionType::get(builder.getInt32Ty(), true));
+            const char* name = isItaniumEH() ? "__gxx_personality_v0" : "__CxxFrameHandler3";
+            llvm::FunctionCallee p =
+                module.getOrInsertFunction(name, llvm::FunctionType::get(builder.getInt32Ty(), true));
             currentFn->setPersonalityFn(llvm::cast<llvm::Constant>(p.getCallee()));
         }
     }
@@ -6524,6 +6525,58 @@ struct CodeGenerator::Impl {
                                     false));
     }
 
+    // --- Itanium / DWARF exceptions (Linux and other ELF/Mach-O targets) ---
+    // The same LDP3 model as WinEH: one canonical carrier (the object pointer, thrown as void*) and
+    // manual, subtype-aware type matching in the handler. On these targets the Windows funclet
+    // primitives (catchswitch/catchpad/cleanuppad, image-relative EH tables) do not exist; instead a
+    // faulting call is an `invoke` to a `landingpad`, throwing goes through __cxa_throw, and cleanups
+    // end in `resume`. Because we match types ourselves, every throw uses one type (void* / _ZTIPv) and
+    // every catch is `catch _ZTIPv`, so the C++ personality always routes an LDP3 exception into the
+    // handler where the real matching happens.
+    bool isItaniumEH() {
+        const std::string t = moduleTripleStr(module);
+        // An explicit target triple decides; an empty one (the common `ldp3c foo.ldp3` with no --target)
+        // means the native host, so fall back to which platform ldp3c itself was built for. Without this,
+        // a Windows build leaves the triple empty and would wrongly pick the Itanium path.
+        if (!t.empty()) return t.find("windows") == std::string::npos;
+#ifdef _WIN32
+        return false;
+#else
+        return true;
+#endif
+    }
+    // typeinfo for void* (_ZTIPv), supplied by the C++ runtime (libstdc++ / libc++abi).
+    llvm::Constant* itaniumVoidPtrTypeInfo() {
+        llvm::GlobalVariable* g = module.getNamedGlobal("_ZTIPv");
+        if (g == nullptr)
+            g = new llvm::GlobalVariable(module, builder.getPtrTy(), true,
+                                         llvm::GlobalValue::ExternalLinkage, nullptr, "_ZTIPv");
+        return g;
+    }
+    llvm::FunctionCallee cxaAllocateException() {
+        return module.getOrInsertFunction(
+            "__cxa_allocate_exception",
+            llvm::FunctionType::get(builder.getPtrTy(), {builder.getInt64Ty()}, false));
+    }
+    llvm::FunctionCallee cxaThrowFn() {
+        return module.getOrInsertFunction(
+            "__cxa_throw", llvm::FunctionType::get(
+                               builder.getVoidTy(),
+                               {builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()}, false));
+    }
+    llvm::FunctionCallee cxaBeginCatch() {
+        return module.getOrInsertFunction(
+            "__cxa_begin_catch",
+            llvm::FunctionType::get(builder.getPtrTy(), {builder.getPtrTy()}, false));
+    }
+    llvm::FunctionCallee cxaEndCatch() {
+        return module.getOrInsertFunction("__cxa_end_catch",
+                                          llvm::FunctionType::get(builder.getVoidTy(), false));
+    }
+    llvm::StructType* landingPadType() {
+        return llvm::StructType::get(context, {builder.getPtrTy(), builder.getInt32Ty()});
+    }
+
     // S4 RAII-on-unwind: build a fresh chain of cleanuppads that destruct the live stack objects in
     // reverse declaration order, then unwind to finalUnwind (null = to the caller). Returns the
     // innermost pad (the unwind target for a faulting call), or finalUnwind if no live object has a
@@ -6531,7 +6584,30 @@ struct CodeGenerator::Impl {
     // lazily -- only when an exception is actually propagating out of the function -- so no orphan
     // pads are emitted. The normal-path destructors (emitScopeCleanup) are emitted separately and
     // are mutually exclusive with these pads (a cleanuppad is only reached via unwind).
+    // Itanium counterpart: one `landingpad cleanup` block that runs the live destructors in reverse
+    // declaration order, then `resume`s to keep unwinding toward the caller. (Only ever called to
+    // propagate to the caller, so there is no chained successor to thread through.)
+    llvm::BasicBlock* buildCleanupChainItanium() {
+        std::vector<const ScopeObject*> withDtor;
+        for (const ScopeObject& so : scopeObjects)
+            if (functions.count(so.className + ".~" + so.className) > 0) withDtor.push_back(&so);
+        if (withDtor.empty()) return nullptr;
+        llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
+        ensurePersonality();
+        llvm::BasicBlock* pad = llvm::BasicBlock::Create(context, "cleanup", currentFn);
+        builder.SetInsertPoint(pad);
+        llvm::LandingPadInst* lp = builder.CreateLandingPad(landingPadType(), 0);
+        lp->setCleanup(true);
+        for (auto it = withDtor.rbegin(); it != withDtor.rend(); ++it) {
+            llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), (*it)->slot);
+            builder.CreateCall(functions[(*it)->className + ".~" + (*it)->className], {objPtr});
+        }
+        builder.CreateResume(lp);
+        builder.restoreIP(saved);
+        return pad;
+    }
     llvm::BasicBlock* buildCleanupChain(llvm::BasicBlock* finalUnwind) {
+        if (isItaniumEH()) return buildCleanupChainItanium();
         llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
         llvm::BasicBlock* succ = finalUnwind;
         for (const ScopeObject& so : scopeObjects) {
@@ -6595,7 +6671,30 @@ struct CodeGenerator::Impl {
     // Throws (or re-throws) the object `obj` as the canonical void* carrier, unwinding
     // through live destructors into an enclosing try (if any) or to the caller. Ends
     // the current block with unreachable. Shared by `throw` and the uncaught-rethrow path.
+    void emitThrowObjectItanium(llvm::Value* obj) {
+        ensurePersonality();
+        llvm::PointerType* ptrTy = builder.getPtrTy();
+        // Allocate an exception whose 8-byte payload is the carrier (the object pointer), then throw it
+        // typed as void*. Every LDP3 throw uses this one type; matching happens in the handler.
+        llvm::Value* exc = builder.CreateCall(cxaAllocateException(),
+                                              {llvm::ConstantInt::get(builder.getInt64Ty(), 8)});
+        builder.CreateStore(obj, exc);
+        std::vector<llvm::Value*> args = {exc, itaniumVoidPtrTypeInfo(),
+                                          llvm::ConstantPointerNull::get(ptrTy)};
+        if (llvm::BasicBlock* ud = computeUnwindDest(); ud != nullptr) {
+            llvm::BasicBlock* cont = llvm::BasicBlock::Create(context, "throw.cont", currentFn);
+            builder.CreateInvoke(cxaThrowFn(), cont, ud, args);
+            builder.SetInsertPoint(cont);
+        } else {
+            builder.CreateCall(cxaThrowFn(), args);  // propagates to the caller
+        }
+        builder.CreateUnreachable();  // __cxa_throw does not return
+    }
     void emitThrowObject(llvm::Value* obj) {
+        if (isItaniumEH()) {
+            emitThrowObjectItanium(obj);
+            return;
+        }
         ensurePersonality();
         llvm::Value* slot = createEntryAlloca("exc.thrown", builder.getPtrTy());
         builder.CreateStore(obj, slot);  // carrier: the object pointer, thrown as void*
@@ -6673,7 +6772,68 @@ struct CodeGenerator::Impl {
     // canonical carrier; the clauses are matched in order against the exception's LDP3 runtime type
     // (subtype-aware via vtables). If none match, the current exception is rethrown. finally runs on
     // the normal and caught paths (the uncaught-propagation finally is a later slice).
+    // Itanium counterpart of emitTry. Same LDP3 semantics and the same subtype-aware vtable matching;
+    // only the pad mechanics differ. The landing pad catches the single carrier type, copies the object
+    // out (begin/end_catch), and then dispatches in ordinary context -- so handlers, finally and the
+    // unmatched rethrow are all normal code, with none of WinEH's funclet restrictions.
+    void emitTryItanium(const ast::TryStmt& s) {
+        ensurePersonality();
+        llvm::PointerType* ptrTy = builder.getPtrTy();
+        llvm::BasicBlock* ehpad = llvm::BasicBlock::Create(context, "ehpad", currentFn);
+        llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "try.cont", currentFn);
+        ehPadStack.push_back(ehpad);
+        if (s.finallyBlock != nullptr) finallyStack.push_back(s.finallyBlock.get());
+        emitBlock(s.body);
+        ehPadStack.pop_back();
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(contBB);
+
+        builder.SetInsertPoint(ehpad);
+        llvm::LandingPadInst* lp = builder.CreateLandingPad(landingPadType(), 1);
+        lp->addClause(itaniumVoidPtrTypeInfo());
+        llvm::Value* excPtr = builder.CreateExtractValue(lp, 0, "exc");
+        // __cxa_begin_catch on a pointer-typed exception (_ZTIPv) returns the thrown pointer value -- our
+        // carrier -- directly, so it is used as-is with no extra load. end_catch then releases the
+        // exception; the carrier points at the LDP3 object, which lives on its own, so it stays valid.
+        llvm::Value* obj = builder.CreateCall(cxaBeginCatch(), {excPtr}, "caught");
+        builder.CreateCall(cxaEndCatch(), {});
+        llvm::Value* objVtbl = builder.CreateLoad(ptrTy, obj, "exc.vtbl");  // field 0 (polymorphic)
+        for (const ast::CatchClause& cc : s.catches) {
+            const std::string cty = baseType(typeRefName(cc.type));
+            llvm::Value* match = nullptr;
+            for (llvm::Constant* vt : subtypeVtables(cty)) {
+                llvm::Value* eq = builder.CreateICmpEQ(objVtbl, vt, "is");
+                match = (match == nullptr) ? eq : builder.CreateOr(match, eq, "or");
+            }
+            if (match == nullptr) match = builder.getInt1(true);  // non-polymorphic: catch-all
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "catch.body", currentFn);
+            llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(context, "catch.next", currentFn);
+            builder.CreateCondBr(match, bodyBB, nextBB);
+            builder.SetInsertPoint(bodyBB);
+            llvm::Value* eSlot = createEntryAlloca(cc.name, ptrTy);
+            builder.CreateStore(obj, eSlot);
+            const bool had = locals.count(cc.name) > 0;
+            LocalSlot saved = had ? locals[cc.name] : LocalSlot{};
+            locals[cc.name] = LocalSlot{eSlot, cty};
+            emitBlock(cc.body);
+            if (had) locals[cc.name] = saved; else locals.erase(cc.name);
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(contBB);
+            builder.SetInsertPoint(nextBB);
+        }
+        // No clause matched: run finally (uncaught path) then re-raise the same carrier to the
+        // enclosing try or the caller. A fresh throw avoids __cxa_rethrow's begin/end-catch bookkeeping.
+        if (s.finallyBlock != nullptr) finallyStack.pop_back();
+        if (s.finallyBlock != nullptr) emitBlock(*s.finallyBlock);
+        emitThrowObject(obj);
+        // Normal / caught fall-through: the finally runs once here too.
+        builder.SetInsertPoint(contBB);
+        if (s.finallyBlock != nullptr) emitBlock(*s.finallyBlock);
+    }
+
     void emitTry(const ast::TryStmt& s) {
+        if (isItaniumEH()) {
+            emitTryItanium(s);
+            return;
+        }
         ensurePersonality();
         llvm::PointerType* ptrTy = builder.getPtrTy();
         llvm::BasicBlock* ehpad = llvm::BasicBlock::Create(context, "ehpad", currentFn);

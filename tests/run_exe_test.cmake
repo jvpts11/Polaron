@@ -49,7 +49,9 @@ endif()
 if(CMAKE_HOST_WIN32)
     set(_platlibs -llegacy_stdio_definitions ${_builtinslib})
 else()
-    set(_platlibs -lpthread -ldl -lm)
+    # -lstdc++ supplies the Itanium EH runtime (__cxa_*, __gxx_personality_v0, _ZTIPv) that exceptions
+    # lower to; _Unwind_* comes from libgcc, which clang links by default.
+    set(_platlibs -lpthread -ldl -lm -lstdc++)
 endif()
 execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}"
     "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp" -o "${exe}"

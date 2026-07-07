@@ -31,7 +31,7 @@ endif()
 if(CMAKE_HOST_WIN32)
     set(_platlibs -llegacy_stdio_definitions)
 else()
-    set(_platlibs -lpthread -ldl -lm)
+    set(_platlibs -lpthread -ldl -lm -lstdc++)  # -lstdc++: Itanium EH runtime for exceptions
 endif()
 execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}" "${bc}"
     "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp" -o "${exe}"

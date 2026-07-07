@@ -197,6 +197,8 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         linkArgs.push_back("-lpthread");  // Thread/async runtime
         linkArgs.push_back("-ldl");       // dl_iterate_phdr, used by reimport
         linkArgs.push_back("-lm");        // libm for the math builtins
+        linkArgs.push_back("-lstdc++");   // Itanium EH runtime (__cxa_*, personality, _ZTIPv)
+        linkArgs.push_back("-rdynamic");  // export symbols so a dlopened bundle resolves them
 #endif
         linkArgs.push_back("-o");
         linkArgs.push_back(exe.string());
