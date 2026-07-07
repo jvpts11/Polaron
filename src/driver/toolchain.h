@@ -18,6 +18,9 @@ struct Toolchain {
 // Directory containing the running ldp3 executable.
 std::filesystem::path exeDir();
 
+// Platform executable suffix: ".exe" on Windows, "" elsewhere. Used to name sibling tools portably.
+std::string exeSuffix();
+
 // The ~/.ldp3 directory (global config: sources.toml, environments/). Not created here.
 std::filesystem::path ldp3HomeDir();
 

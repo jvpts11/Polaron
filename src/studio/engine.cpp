@@ -13,7 +13,9 @@
 
 namespace ldp3::studio {
 
-std::filesystem::path ldp3Cli() { return ldp3::driver::exeDir() / "ldp3.exe"; }
+std::filesystem::path ldp3Cli() {
+    return ldp3::driver::exeDir() / ("ldp3" + ldp3::driver::exeSuffix());
+}
 
 std::vector<Library> loadLibraries(const std::vector<ldp3::driver::DiscoveredProject>& projects,
                                    const std::vector<Environment>& environments) {

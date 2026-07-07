@@ -1,8 +1,15 @@
 #include "driver/process.h"
+#ifdef _WIN32
 #include <process.h>
 #include <windows.h>
+#else
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace ldp3::driver {
+
+#ifdef _WIN32
 namespace {
 
 // Quote an argument for a Windows command line if it contains whitespace or quotes.
@@ -70,5 +77,67 @@ int runProcessCapture(const std::string& exe, const std::vector<std::string>& ar
     CloseHandle(pi.hThread);
     return static_cast<int>(code);
 }
+
+#else  // POSIX
+
+namespace {
+// Build a NULL-terminated argv from (exe, args...). The vector's strings must outlive the argv use.
+std::vector<char*> buildArgv(const std::string& exe, const std::vector<std::string>& args) {
+    std::vector<char*> argv;
+    argv.push_back(const_cast<char*>(exe.c_str()));
+    for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+    argv.push_back(nullptr);
+    return argv;
+}
+}  // namespace
+
+int runProcess(const std::string& exe, const std::vector<std::string>& args) {
+    std::vector<char*> argv = buildArgv(exe, args);
+    const pid_t pid = ::fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        // execvp searches PATH when `exe` has no slash (so a bare "git" resolves) and uses a full path
+        // as-is. No shell is involved, so paths with spaces are safe.
+        ::execvp(exe.c_str(), argv.data());
+        ::_exit(127);  // exec failed: the file was not found or is not executable
+    }
+    int status = 0;
+    if (::waitpid(pid, &status, 0) < 0) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+int runProcessCapture(const std::string& exe, const std::vector<std::string>& args, std::string& output,
+                      const std::string& cwd, bool mergeStderr) {
+    int fds[2];
+    if (::pipe(fds) != 0) return -1;
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+        ::close(fds[0]);
+        ::close(fds[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        ::close(fds[0]);  // the child does not read from the pipe
+        ::dup2(fds[1], STDOUT_FILENO);
+        // Without mergeStderr the child's stderr keeps the parent's (goes to the console), matching the
+        // Windows path.
+        if (mergeStderr) ::dup2(fds[1], STDERR_FILENO);
+        ::close(fds[1]);
+        if (!cwd.empty() && ::chdir(cwd.c_str()) != 0) ::_exit(127);
+        std::vector<char*> argv = buildArgv(exe, args);
+        ::execvp(exe.c_str(), argv.data());
+        ::_exit(127);
+    }
+    ::close(fds[1]);  // the parent does not write to the pipe
+    char chunk[4096];
+    ssize_t n = 0;
+    while ((n = ::read(fds[0], chunk, sizeof(chunk))) > 0) output.append(chunk, static_cast<size_t>(n));
+    ::close(fds[0]);
+    int status = 0;
+    if (::waitpid(pid, &status, 0) < 0) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+#endif
 
 }  // namespace ldp3::driver

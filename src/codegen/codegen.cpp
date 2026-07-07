@@ -13,6 +13,7 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
+#include <llvm/TargetParser/Triple.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Passes/PassBuilder.h>
@@ -37,6 +38,30 @@
 namespace ldp3 {
 
 namespace {
+
+// The module's target triple as a string. LLVM 21 changed Module::get/setTargetTriple to traffic in a
+// llvm::Triple object instead of a std::string; older LLVM (the Windows build targets 17/18) uses strings.
+// This keeps the call sites version-agnostic.
+std::string moduleTripleStr(const llvm::Module& m) {
+#if LLVM_VERSION_MAJOR >= 21
+    return m.getTargetTriple().str();
+#else
+    return m.getTargetTriple();
+#endif
+}
+
+// A pointer to a private, null-terminated constant string. LLVM 21 removed IRBuilder::CreateGlobalStringPtr
+// and made CreateGlobalString return the pointer directly; older LLVM (17/18, the Windows build) keeps the
+// *Ptr spelling (there CreateGlobalString returns a GlobalVariable*, not a usable pointer). Templated on the
+// builder type so it works with any IRBuilder folder/inserter.
+template <typename B>
+llvm::Value* createGlobalStringPtr(B& b, llvm::StringRef s, const llvm::Twine& name = "") {
+#if LLVM_VERSION_MAJOR >= 21
+    return b.CreateGlobalString(s, name);
+#else
+    return b.CreateGlobalStringPtr(s, name);
+#endif
+}
 
 // ---- Free-variable collection for lambda auto-capture ----
 // Walk a lambda body and gather every identifier it references (as a value or a call target),
@@ -752,7 +777,7 @@ struct CodeGenerator::Impl {
         llvm::FunctionType* ft =
             llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
         builder.CreateCall(module.getOrInsertFunction("__ldp3_panic", ft),
-                           {builder.CreateGlobalStringPtr(msg, ".panic")});
+                           {createGlobalStringPtr(builder,msg, ".panic")});
         builder.CreateUnreachable();
     }
 
@@ -1937,7 +1962,7 @@ struct CodeGenerator::Impl {
         builder.CreateCondBr(ok, contBB, failBB);
         builder.SetInsertPoint(failBB);
         const std::string msg = std::string("contract violated: ") + kind + "\n";
-        builder.CreateCall(printf(), {builder.CreateGlobalStringPtr(msg, ".contract")});
+        builder.CreateCall(printf(), {createGlobalStringPtr(builder,msg, ".contract")});
         builder.CreateCall(exitFn(), {builder.getInt32(1)});
         builder.CreateUnreachable();
         builder.SetInsertPoint(contBB);
@@ -3985,7 +4010,7 @@ struct CodeGenerator::Impl {
                 // Index-keyed reattach (spec 18.5): `arr[i] = new T()`. A runtime registry keyed by
                 // (array identity, index) returns the same block for the same slot across a delete, so
                 // the object's persistent fields survive delete+recreate at that index.
-                llvm::Value* keyStr = builder.CreateGlobalStringPtr(pendingPersistKey, "pkey");
+                llvm::Value* keyStr = createGlobalStringPtr(builder,pendingPersistKey, "pkey");
                 llvm::Value* idx64 =
                     builder.CreateSExtOrTrunc(pendingPersistIndex, builder.getInt64Ty(), "pidx");
                 persistBlockRef = builder.CreateCall(
@@ -4152,7 +4177,7 @@ struct CodeGenerator::Impl {
         // As a String value (spec 4.1): snprintf measures the length, then formats into a fresh
         // buffer, producing a String object instead of printing.
         if (asString) {
-            llvm::Value* fmtG = builder.CreateGlobalStringPtr(fmt, ".ifmt");
+            llvm::Value* fmtG = createGlobalStringPtr(builder,fmt, ".ifmt");
             llvm::FunctionType* snTy = llvm::FunctionType::get(
                 builder.getInt32Ty(), {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy()},
                 /*isVarArg=*/true);
@@ -4171,7 +4196,7 @@ struct CodeGenerator::Impl {
         }
         if (addNewline) fmt += "\n";
         std::vector<llvm::Value*> args;
-        args.push_back(builder.CreateGlobalStringPtr(fmt, ".str"));
+        args.push_back(createGlobalStringPtr(builder,fmt, ".str"));
         for (llvm::Value* v : values) args.push_back(v);
         return builder.CreateCall(printf(), args);
     }
@@ -5056,7 +5081,7 @@ struct CodeGenerator::Impl {
                         return emitInterp(*is, nl);
                 if (call.args.empty()) {
                     if (nl)
-                        builder.CreateCall(printf(), {builder.CreateGlobalStringPtr("\n", ".str")});
+                        builder.CreateCall(printf(), {createGlobalStringPtr(builder,"\n", ".str")});
                     return nullptr;
                 }
                 std::vector<llvm::Value*> args;
@@ -5064,7 +5089,7 @@ struct CodeGenerator::Impl {
                 // String value, printed with %s.
                 if (const auto* lit =
                         dynamic_cast<const ast::StringLiteralExpr*>(call.args.front().get())) {
-                    args.push_back(builder.CreateGlobalStringPtr(
+                    args.push_back(createGlobalStringPtr(builder,
                         resolveEscapes(lit->value) + (nl ? "\n" : ""), ".str"));
                     for (std::size_t i = 1; i < call.args.size(); ++i) {
                         llvm::Value* v = emitExpr(*call.args[i]);
@@ -5074,7 +5099,7 @@ struct CodeGenerator::Impl {
                 } else {
                     llvm::Value* s = emitExpr(*call.args.front());
                     if (s == nullptr) return nullptr;
-                    args.push_back(builder.CreateGlobalStringPtr(nl ? "%s\n" : "%s", ".str"));
+                    args.push_back(createGlobalStringPtr(builder,nl ? "%s\n" : "%s", ".str"));
                     args.push_back(asCStr(*call.args.front(), s));
                 }
                 return builder.CreateCall(printf(), args);
@@ -8498,7 +8523,7 @@ struct CodeGenerator::Impl {
                 builder.CreateCondBr(builder.CreateICmpEQ(cur, nullp), loadBB, contBB);
 
                 builder.SetInsertPoint(loadBB);
-                llvm::Value* pathS = builder.CreateGlobalStringPtr(ldbPath, ".dynpath");
+                llvm::Value* pathS = createGlobalStringPtr(builder,ldbPath, ".dynpath");
                 llvm::Constant* fpArr =
                     llvm::ConstantDataArray::get(context, llvm::ArrayRef<std::uint8_t>(fp.data(), 32));
                 auto* fpG = new llvm::GlobalVariable(module, fpArr->getType(), true,
@@ -8509,7 +8534,7 @@ struct CodeGenerator::Impl {
 
                 builder.SetInsertPoint(contBB);
                 llvm::Value* h = builder.CreateLoad(ptrTy, hg, "bundle");
-                llvm::Value* nameS = builder.CreateGlobalStringPtr(name, ".dynsym");
+                llvm::Value* nameS = createGlobalStringPtr(builder,name, ".dynsym");
                 llvm::Value* sym = builder.CreateCall(symFn, {h, nameS}, "sym");
                 llvm::BasicBlock* failBB = llvm::BasicBlock::Create(context, "dyn.fail", f);
                 llvm::BasicBlock* callBB = llvm::BasicBlock::Create(context, "dyn.call", f);
@@ -8586,7 +8611,7 @@ struct CodeGenerator::Impl {
                                 // a C runtime: emit `kmain(args)` that the stub calls with null -- no
                                 // argc/argv and no argv-array construction, so nothing needs libc. A hosted
                                 // freestanding program still gets the ordinary `main` (its C runtime calls it).
-                                if (module.getTargetTriple().find("none") != std::string::npos) {
+                                if (moduleTripleStr(module).find("none") != std::string::npos) {
                                     llvm::FunctionType* ty = llvm::FunctionType::get(
                                         builder.getInt32Ty(), {builder.getPtrTy()}, false);
                                     functions["@entry"] = llvm::Function::Create(
@@ -9393,15 +9418,15 @@ struct CodeGenerator::Impl {
         llvm::Value* failed = builder.CreateAlloca(i32, nullptr, "failed");
         builder.CreateStore(builder.getInt32(0), passed);
         builder.CreateStore(builder.getInt32(0), failed);
-        llvm::Value* passFmt = builder.CreateGlobalStringPtr("PASS %s\n", ".test.pass");
-        llvm::Value* failFmt = builder.CreateGlobalStringPtr("FAIL %s\n", ".test.fail");
+        llvm::Value* passFmt = createGlobalStringPtr(builder,"PASS %s\n", ".test.pass");
+        llvm::Value* failFmt = createGlobalStringPtr(builder,"FAIL %s\n", ".test.fail");
 
         for (const auto& [sym, name] : testMethods) {
             const auto it = functions.find(sym);
             if (it == functions.end()) continue;
             llvm::Value* r = builder.CreateCall(it->second, {}, "t");
             llvm::Value* ok = builder.CreateICmpNE(r, builder.getInt32(0), "ok");
-            llvm::Value* nameStr = builder.CreateGlobalStringPtr(name, ".test.name");
+            llvm::Value* nameStr = createGlobalStringPtr(builder,name, ".test.name");
             llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context, "pass", mainFn);
             llvm::BasicBlock* elseBB = llvm::BasicBlock::Create(context, "fail", mainFn);
             llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "cont", mainFn);
@@ -9418,7 +9443,7 @@ struct CodeGenerator::Impl {
             builder.CreateBr(contBB);
             builder.SetInsertPoint(contBB);
         }
-        llvm::Value* sumFmt = builder.CreateGlobalStringPtr("tests: %d passed, %d failed\n", ".test.sum");
+        llvm::Value* sumFmt = createGlobalStringPtr(builder,"tests: %d passed, %d failed\n", ".test.sum");
         llvm::Value* pv = builder.CreateLoad(i32, passed);
         llvm::Value* fv = builder.CreateLoad(i32, failed);
         builder.CreateCall(printf(), {sumFmt, pv, fv});
@@ -9440,7 +9465,7 @@ struct CodeGenerator::Impl {
                                 emitBody(functions["@entry"], m->body, m->params, "",
                                          builder.getInt32Ty(), nullptr, nullptr, nullptr, nullptr, false,
                                          nullptr, nullptr, "", nullptr, false,
-                                         /*argvEntry=*/module.getTargetTriple().find("none") ==
+                                         /*argvEntry=*/moduleTripleStr(module).find("none") ==
                                              std::string::npos);
                             } else if (m->isAsync && !m->isAbstract) {
                                 emitAsyncMethod(cls, *m);
@@ -9545,7 +9570,11 @@ CodeGenerator::CodeGenerator(const ast::Program& program, const EntryPoint& entr
 CodeGenerator::~CodeGenerator() = default;
 
 void CodeGenerator::setTargetTriple(const std::string& triple) {
+#if LLVM_VERSION_MAJOR >= 21
+    impl_->module.setTargetTriple(llvm::Triple(triple));
+#else
     impl_->module.setTargetTriple(triple);
+#endif
 }
 
 void CodeGenerator::setLibrary(bool library) { impl_->libraryMode = library; }

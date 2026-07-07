@@ -54,7 +54,10 @@ std::optional<std::string> readFile(const std::string& path) {
 // `import System.Memory.Units.kilobytes;` resolves without a stdlib on disk
 // (spec 17.10). The unit literals return a heap-allocated ByteSize; the spec
 // makes them comptime, so the allocation vanishes once comptime eval lands (F6).
-constexpr std::string_view kPreludeSource = R"LDP3(
+// Not constexpr: the concatenated literal is ~400 KB, past the 64 KB that a standard C++ compiler must
+// accept in a constant expression (clang enforces this; MSVC is lenient). It is only parsed at run time,
+// so a plain const string_view over the static literal is all that is needed.
+const std::string_view kPreludeSource = R"LDP3(
 program __prelude;
 public bundle std {
     public namespace System.Memory.Units {

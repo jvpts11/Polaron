@@ -256,9 +256,10 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (cmd == "studio") {  // launch the TUI project manager, a sibling binary
-        const std::filesystem::path studio = ldp3::driver::exeDir() / "ldp3-studio.exe";
+        const std::string studioName = "ldp3-studio" + ldp3::driver::exeSuffix();
+        const std::filesystem::path studio = ldp3::driver::exeDir() / studioName;
         if (!std::filesystem::exists(studio)) {
-            std::fprintf(stderr, "ldp3: ldp3-studio.exe was not found next to ldp3.exe\n");
+            std::fprintf(stderr, "ldp3: %s was not found next to ldp3\n", studioName.c_str());
             return 1;
         }
         const std::vector<std::string> passthrough(args.begin() + 1, args.end());

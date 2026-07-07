@@ -53,7 +53,7 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     std::error_code ec;
     fs::create_directories(outDir, ec);
     const fs::path ll = outDir / (m.name + ".ll");
-    const fs::path exe = outDir / (m.name + ".exe");
+    const fs::path exe = outDir / (m.name + exeSuffix());
 
     // Resolve dependency bundles. The consumer compiles against its *direct* dependencies only (a bundle's
     // .ldh already embeds its own transitive dependencies, so re-using them would redeclare types), but
@@ -180,13 +180,24 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
             return rc == -1 ? 1 : rc;
         }
     } else {
+        std::vector<std::string> linkArgs = {"-O2"};
+#ifdef _WIN32
         // Force lld as the linker so the choice is deterministic -- a native object input can otherwise
         // flip clang to the MSVC link.exe, which does not pull in the UCRT the runtime needs.
-        std::vector<std::string> linkArgs = {"-O2", "-fuse-ld=lld", "-Wno-override-module", ll.string()};
+        linkArgs.push_back("-fuse-ld=lld");
+#endif
+        linkArgs.push_back("-Wno-override-module");
+        linkArgs.push_back(ll.string());
         for (const auto& obj : depObjects) linkArgs.push_back(obj);
         linkArgs.push_back(tc.runtimeLib);
-        linkArgs.push_back("-llegacy_stdio_definitions");
-        linkArgs.push_back("-lws2_32");
+#ifdef _WIN32
+        linkArgs.push_back("-llegacy_stdio_definitions");  // UCRT printf/scanf as real symbols
+        linkArgs.push_back("-lws2_32");                    // Winsock, used by the runtime's net layer
+#else
+        linkArgs.push_back("-lpthread");  // Thread/async runtime
+        linkArgs.push_back("-ldl");       // dl_iterate_phdr, used by reimport
+        linkArgs.push_back("-lm");        // libm for the math builtins
+#endif
         linkArgs.push_back("-o");
         linkArgs.push_back(exe.string());
         if (int rc = runProcess(tc.clang, linkArgs); rc != 0) {
