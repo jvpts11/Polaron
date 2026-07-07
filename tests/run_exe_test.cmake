@@ -41,12 +41,19 @@ if(_builtins)
     list(GET _builtins 0 _builtinslib)
 endif()
 
-# legacy_stdio_definitions.lib resolves the bare printf/scanf symbols (UCRT
-# defines them inline in the headers, which our emitted IR doesn't use). The minimal runtime is
-# linked in too: the prelude's System.Concurrency.Thread always emits calls to __ldp3_thread_*.
+# Platform link libraries. On Windows, legacy_stdio_definitions.lib resolves the bare printf/scanf symbols
+# (UCRT defines them inline in the headers, which our emitted IR doesn't use), and the compiler-rt builtins
+# lib supplies 128-bit division; Winsock is pulled in by a pragma in the runtime. On POSIX, printf/sockets
+# live in libc and clang links its own builtins, so we only add the runtime's own needs: pthreads for the
+# Thread/async layer, dl for reimport's dl_iterate_phdr, and libm for the math builtins.
+if(CMAKE_HOST_WIN32)
+    set(_platlibs -llegacy_stdio_definitions ${_builtinslib})
+else()
+    set(_platlibs -lpthread -ldl -lm)
+endif()
 execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}"
     "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp" -o "${exe}"
-    -llegacy_stdio_definitions ${_builtinslib} RESULT_VARIABLE rc)
+    ${_platlibs} RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})")
 endif()

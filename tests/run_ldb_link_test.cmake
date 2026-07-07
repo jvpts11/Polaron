@@ -26,9 +26,16 @@ if(NOT rc EQUAL 0)
     message(FATAL_ERROR "ldp3c (consumer) failed (exit ${rc})")
 endif()
 
+# Platform link libraries: Windows needs legacy_stdio_definitions for the bare printf/scanf symbols;
+# POSIX gets the runtime's own needs (pthreads/dl/libm). See run_exe_test.cmake for the rationale.
+if(CMAKE_HOST_WIN32)
+    set(_platlibs -llegacy_stdio_definitions)
+else()
+    set(_platlibs -lpthread -ldl -lm)
+endif()
 execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}" "${bc}"
     "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp" -o "${exe}"
-    -llegacy_stdio_definitions RESULT_VARIABLE rc)
+    ${_platlibs} RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})")
 endif()

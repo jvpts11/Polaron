@@ -14,16 +14,66 @@
 #include <sstream>
 #include <string>
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#include <unistd.h>
+#endif
 
 #include "bundle/ldb.h"
+
+// Platform naming for the AOT-compiled bundle image and the dynamic-loader API. Windows produces a .dll
+// loaded with LoadLibrary/GetProcAddress; POSIX produces a .so loaded with dlopen/dlsym. The clang command
+// differs only in the platform link needs (legacy_stdio on Windows; nothing extra on POSIX -- the bundle's
+// undefined runtime symbols resolve from the host program at load time, which needs the program linked
+// with -rdynamic).
+#ifdef _WIN32
+#define LDP3_BUNDLE_EXT ".dll"
+#define LDP3_BUNDLE_LINK " -llegacy_stdio_definitions"
+#else
+#define LDP3_BUNDLE_EXT ".so"
+#define LDP3_BUNDLE_LINK " -fPIC"  // the bundle bitcode must be PIC to link into a .so
+#endif
 
 namespace {
 
 std::string tempDir() {
+#ifdef _WIN32
     const char* t = std::getenv("TEMP");
     if (t == nullptr) t = std::getenv("TMP");
     return t != nullptr ? std::string(t) : std::string(".");
+#else
+    const char* t = std::getenv("TMPDIR");
+    return t != nullptr ? std::string(t) : std::string("/tmp");
+#endif
+}
+
+// Whether a file exists at `path`.
+bool fileExists(const std::string& path) {
+#ifdef _WIN32
+    return GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+#else
+    return ::access(path.c_str(), F_OK) == 0;
+#endif
+}
+
+// Loads a shared library, returning an opaque handle or null.
+void* loadLibrary(const std::string& path) {
+#ifdef _WIN32
+    return reinterpret_cast<void*>(LoadLibraryA(path.c_str()));
+#else
+    return ::dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+#endif
+}
+
+// Resolves an exported symbol in a loaded library. Null if absent.
+void* librarySymbol(void* handle, const char* name) {
+#ifdef _WIN32
+    return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(handle), name));
+#else
+    return ::dlsym(handle, name);
+#endif
 }
 
 std::string hex8(const std::array<std::uint8_t, 32>& fp) {
@@ -60,30 +110,30 @@ void* ldp3_bundle_load(const char* ldbPath, const unsigned char* expectedFp, int
     if (std::memcmp(b.fingerprint.data(), expectedFp, 32) != 0)
         return fail(LDP3_BUNDLE_ABI, "ABI fingerprint mismatch");
 
-    // Build (or reuse) a DLL from the bundle's bitcode, keyed by fingerprint so an unchanged bundle
-    // is compiled only once.
-    const std::string dll = tempDir() + "/ldp3_" + b.name + "_" + hex8(b.fingerprint) + ".dll";
-    if (GetFileAttributesA(dll.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    // Build (or reuse) a shared library from the bundle's bitcode, keyed by fingerprint so an unchanged
+    // bundle is compiled only once.
+    const std::string dll = tempDir() + "/ldp3_" + b.name + "_" + hex8(b.fingerprint) + LDP3_BUNDLE_EXT;
+    if (!fileExists(dll)) {
         const std::string bc = dll + ".bc";
         std::ofstream out(bc, std::ios::binary);
         out.write(b.code.data(), static_cast<std::streamsize>(b.code.size()));
         out.close();
-        // -O1 dead-strips the weak prelude functions the bundle does not use, so the DLL only keeps
+        // -O1 dead-strips the weak prelude functions the bundle does not use, so the image only keeps
         // what it references (e.g. Object) and stays self-contained.
         const std::string cmd = "clang -shared -O1 -Wno-override-module \"" + bc + "\" -o \"" + dll +
-                                "\" -llegacy_stdio_definitions";
+                                "\"" LDP3_BUNDLE_LINK;
         if (std::system(cmd.c_str()) != 0) return fail(LDP3_BUNDLE_MISSING, "could not be compiled");
     }
-    HMODULE h = LoadLibraryA(dll.c_str());
+    void* h = loadLibrary(dll);
     if (h == nullptr) return fail(LDP3_BUNDLE_MISSING, "could not be loaded");
     if (status != nullptr) *status = LDP3_BUNDLE_OK;
-    return reinterpret_cast<void*>(h);
+    return h;
 }
 
 // Resolves an exported symbol in a loaded bundle. Null if absent.
 void* ldp3_bundle_sym(void* handle, const char* name) {
     if (handle == nullptr) return nullptr;
-    return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(handle), name));
+    return librarySymbol(handle, name);
 }
 
 // Aborts when a dynamic bundle call cannot be resolved (the bundle is missing, its ABI does not match,

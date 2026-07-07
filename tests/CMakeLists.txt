@@ -56,15 +56,16 @@ if(LDP3_CLANG)
     add_test(NAME ldp3_compile_produces_exe
         COMMAND ldp3 compile "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3"
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    # No .exe in the regex: the driver names the binary hello_world.exe on Windows, hello_world on POSIX.
     set_tests_properties(ldp3_compile_produces_exe PROPERTIES
-        PASS_REGULAR_EXPRESSION "wrote .*hello_world.exe")
+        PASS_REGULAR_EXPRESSION "wrote .*hello_world")
 
     add_test(NAME ldp3_build_project
         COMMAND ldp3 build
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/demoproj")
     set_tests_properties(ldp3_build_project PROPERTIES
         DEPENDS ldp3_new_scaffolds
-        PASS_REGULAR_EXPRESSION "wrote .*demoproj.exe")
+        PASS_REGULAR_EXPRESSION "wrote .*demoproj")
 
     add_test(NAME ldp3_run_bare_file
         COMMAND ldp3 run "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3"
