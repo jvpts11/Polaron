@@ -1,17 +1,62 @@
 // LDP3 minimal runtime: thread support (spec 20.1), defined-behaviour panic, and the
 // physical code unload/reload behind unimport/reimport (spec 30). Linked into every exe.
+// Portable across Windows and Linux: OS-specific pieces live behind _WIN32, and the concurrency
+// and socket code is single-source over a small POSIX shim that spells the Win32 primitive names.
 
+#ifdef _WIN32
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS  // fopen/remove etc. are used deliberately (File I/O, spec 34.4)
+#endif
 #define _CRT_RAND_S              // enables rand_s (cryptographically secure RNG, spec 34)
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>   // must precede <windows.h>
 #include <ws2tcpip.h>
 #include <windows.h>
 #pragma comment(lib, "ws2_32.lib")
+#else
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <elf.h>           // ElfW, Elf*_Ehdr/Phdr (reimport reads the on-disk ELF)
+#include <fcntl.h>
+#include <link.h>          // dl_iterate_phdr (reimport's module base)
+#include <netdb.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <sched.h>
+#include <sys/mman.h>
+#include <sys/random.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <time.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+#ifndef _WIN32
+// POSIX shim spelling the Win32 primitives the concurrency/socket code below uses, so that code
+// stays single-source. Only what the runtime actually calls; not a general compatibility layer.
+typedef pthread_mutex_t CRITICAL_SECTION;
+typedef pthread_cond_t CONDITION_VARIABLE;
+typedef int SOCKET;
+typedef int BOOL;
+#define TRUE 1
+#define INVALID_SOCKET (-1)
+#define INFINITE 0xFFFFFFFFu
+#define closesocket close
+static void InitializeCriticalSection(CRITICAL_SECTION* m) { pthread_mutex_init(m, NULL); }
+static void EnterCriticalSection(CRITICAL_SECTION* m) { pthread_mutex_lock(m); }
+static void LeaveCriticalSection(CRITICAL_SECTION* m) { pthread_mutex_unlock(m); }
+static void InitializeConditionVariable(CONDITION_VARIABLE* c) { pthread_cond_init(c, NULL); }
+static void SleepConditionVariableCS(CONDITION_VARIABLE* c, CRITICAL_SECTION* m, unsigned) {
+    pthread_cond_wait(c, m);
+}
+static void WakeConditionVariable(CONDITION_VARIABLE* c) { pthread_cond_signal(c); }
+static void WakeAllConditionVariable(CONDITION_VARIABLE* c) { pthread_cond_broadcast(c); }
+#endif
 
 // The IR calls these by their plain C names. Keep C linkage even when this file is compiled as part
 // of a C++ link (e.g. alongside the dynamic-bundle loader), so the names are not mangled.
@@ -312,6 +357,7 @@ void __ldp3_ptrmap_put(ldp3_ptrmap* m, void* key, void* val) {
 
 // OS threads (spec 20.1 Thread). A function value is a pointer to a closure {code, env};
 // the trampoline loads code/env and calls code(env) (env is the first argument).
+#ifdef _WIN32
 static DWORD WINAPI __ldp3_thread_trampoline(LPVOID closure) {
     void** c = (void**)closure;
     void (*code)(void*) = (void (*)(void*))c[0];
@@ -328,6 +374,31 @@ void __ldp3_thread_join(long long handle) {
     WaitForSingleObject((HANDLE)handle, INFINITE);
     CloseHandle((HANDLE)handle);
 }
+#else
+static void* __ldp3_thread_trampoline(void* closure) {
+    void** c = (void**)closure;
+    void (*code)(void*) = (void (*)(void*))c[0];
+    code(c[1]);
+    return NULL;
+}
+
+// The handle is a heap pthread_t (opaque and possibly wider than a register on some libcs).
+long long __ldp3_thread_spawn(void* closure) {
+    pthread_t* t = (pthread_t*)malloc(sizeof(pthread_t));
+    if (t == NULL || pthread_create(t, NULL, __ldp3_thread_trampoline, closure) != 0) {
+        free(t);
+        return 0;
+    }
+    return (long long)t;
+}
+
+void __ldp3_thread_join(long long handle) {
+    pthread_t* t = (pthread_t*)handle;
+    if (t == NULL) return;
+    pthread_join(*t, NULL);
+    free(t);
+}
+#endif
 
 // Mutex (spec 20.5): a heap CRITICAL_SECTION whose pointer the Mutex<T> object stores as an
 // int64. create/acquire/release back the `synchronized` statement.
@@ -346,6 +417,7 @@ void __ldp3_lock_release(long long h) {
 // Process-wide mutex guarding `lazy` initialization (spec 37.3: lazy is thread-safe by default).
 // A double-checked guard in the generated code takes this lock only on the first initialization,
 // so concurrent first-accesses initialize a lazy value exactly once.
+#ifdef _WIN32
 static CRITICAL_SECTION __ldp3_lazy_cs;
 static INIT_ONCE __ldp3_lazy_once = INIT_ONCE_STATIC_INIT;
 static BOOL CALLBACK __ldp3_lazy_init_cb(PINIT_ONCE o, PVOID p, PVOID* c) {
@@ -360,6 +432,11 @@ void __ldp3_lazy_lock(void) {
     EnterCriticalSection(&__ldp3_lazy_cs);
 }
 void __ldp3_lazy_unlock(void) { LeaveCriticalSection(&__ldp3_lazy_cs); }
+#else
+static pthread_mutex_t __ldp3_lazy_cs = PTHREAD_MUTEX_INITIALIZER;  // static init: no once dance
+void __ldp3_lazy_lock(void) { pthread_mutex_lock(&__ldp3_lazy_cs); }
+void __ldp3_lazy_unlock(void) { pthread_mutex_unlock(&__ldp3_lazy_cs); }
+#endif
 
 // ---- async/await: tasks + worker pool (spec 20.2) -----------------------------------------
 // A task is the handle to an async computation. `resume`/`state` are the state machine to run;
@@ -382,8 +459,7 @@ static CONDITION_VARIABLE g_qcond;   // signalled when work is enqueued
 static CONDITION_VARIABLE g_donecond;  // signalled when any task completes (for __ldp3_task_wait)
 static int g_pool_started = 0;
 
-static DWORD WINAPI __ldp3_worker(LPVOID unused) {
-    (void)unused;
+static void __ldp3_worker_body(void) {
     for (;;) {
         EnterCriticalSection(&g_qlock);
         while (g_qhead == g_qtail) SleepConditionVariableCS(&g_qcond, &g_qlock, INFINITE);
@@ -394,18 +470,41 @@ static DWORD WINAPI __ldp3_worker(LPVOID unused) {
     }
 }
 
+#ifdef _WIN32
+static DWORD WINAPI __ldp3_worker(LPVOID unused) {
+    (void)unused;
+    __ldp3_worker_body();
+    return 0;
+}
+static int __ldp3_cpu_count(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (int)si.dwNumberOfProcessors;
+}
+static void __ldp3_spawn_worker(void) { CloseHandle(CreateThread(NULL, 0, __ldp3_worker, NULL, 0, NULL)); }
+#else
+static void* __ldp3_worker(void* unused) {
+    (void)unused;
+    __ldp3_worker_body();
+    return NULL;
+}
+static int __ldp3_cpu_count(void) { return (int)sysconf(_SC_NPROCESSORS_ONLN); }
+static void __ldp3_spawn_worker(void) {
+    pthread_t t;
+    if (pthread_create(&t, NULL, __ldp3_worker, NULL) == 0) pthread_detach(t);
+}
+#endif
+
 static void __ldp3_pool_start(void) {
     if (g_pool_started) return;
     g_pool_started = 1;
     InitializeCriticalSection(&g_qlock);
     InitializeConditionVariable(&g_qcond);
     InitializeConditionVariable(&g_donecond);
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    int n = (int)si.dwNumberOfProcessors;
+    int n = __ldp3_cpu_count();
     if (n < 2) n = 2;
     if (n > 16) n = 16;
-    for (int i = 0; i < n; i++) CloseHandle(CreateThread(NULL, 0, __ldp3_worker, NULL, 0, NULL));
+    for (int i = 0; i < n; i++) __ldp3_spawn_worker();
 }
 
 void __ldp3_schedule(ldp3_resume_fn fn, void* state) {
@@ -521,6 +620,7 @@ int __ldp3_chan_try_receive(long long handle, long long* out) {
     return 1;
 }
 
+#ifdef _WIN32
 long long __ldp3_now_ms(void) { return (long long)GetTickCount64(); }
 void __ldp3_yield(void) { Sleep(0); }  // hand off the rest of the time slice while polling
 
@@ -542,12 +642,39 @@ long long __ldp3_unix_ms(void) {
     return (long long)((t - 116444736000000000ULL) / 10000ULL);  // 100-ns since 1601 -> ms since 1970
 }
 void __ldp3_sleep(long long ms) { Sleep((DWORD)ms); }
+#else
+void __ldp3_yield(void) { sched_yield(); }
 
-// ---- Networking (spec 34): minimal TCP client over winsock. ----
+// ---- Time (spec 34): monotonic + wall-clock + sleep, over clock_gettime (POSIX everywhere). ----
+long long __ldp3_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+long long __ldp3_now_ms(void) { return __ldp3_now_ns() / 1000000LL; }
+long long __ldp3_unix_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+void __ldp3_sleep(long long ms) {
+    struct timespec ts;
+    ts.tv_sec = (time_t)(ms / 1000);
+    ts.tv_nsec = (long)((ms % 1000) * 1000000LL);
+    nanosleep(&ts, NULL);
+}
+#endif
+
+// ---- Networking (spec 34): minimal TCP client. The BSD socket API is the same on both OSes
+// (via the shim's SOCKET/closesocket); only winsock's startup call is Windows-specific. ----
+#ifdef _WIN32
 static int g_net_inited = 0;
 static void ldp3_net_init(void) {
     if (!g_net_inited) { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); g_net_inited = 1; }
 }
+#else
+static void ldp3_net_init(void) {}  // POSIX sockets need no process-wide startup
+#endif
 long long __ldp3_tcp_connect(const char* host, int port) {
     ldp3_net_init();
     struct addrinfo hints;
@@ -632,7 +759,11 @@ long long __ldp3_udp_sendto(long long sock, const char* host, int port, const ch
 }
 long long __ldp3_udp_recvfrom(long long sock, char* buf, long long cap) {
     struct sockaddr_in a;
+#ifdef _WIN32
     int alen = (int)sizeof a;
+#else
+    socklen_t alen = (socklen_t)sizeof a;
+#endif
     memset(&a, 0, sizeof a);
     int n = recvfrom((SOCKET)sock, buf, (int)cap, 0, (struct sockaddr*)&a, &alen);
     if (n >= 0) {
@@ -648,6 +779,10 @@ void __ldp3_udp_close(long long sock) { closesocket((SOCKET)sock); }
 // ---- Subprocess (spec 34): run a command line through the shell, capturing its stdout and exit
 // code. Returns a malloc'd NUL-terminated buffer of the captured output; *outLen is its length and
 // *outExit the process exit code (-1 if the process could not be started). ----
+#ifndef _WIN32
+#define _popen popen    // the POSIX spelling of the same pipe-to-shell primitive
+#define _pclose pclose
+#endif
 char* __ldp3_process_run(const char* cmd, long long* outLen, int* outExit) {
     FILE* p = _popen(cmd, "r");
     if (p == NULL) { *outLen = 0; *outExit = -1; char* e = (char*)malloc(1); e[0] = 0; return e; }
@@ -672,6 +807,7 @@ char* __ldp3_process_run(const char* cmd, long long* outLen, int* outExit) {
 // ---- Local time zone (spec 34): the system's current UTC offset in seconds (east positive), including
 // any active daylight-saving adjustment. Windows' Bias is UTC = local + Bias (minutes), so the offset is
 // its negation. ----
+#ifdef _WIN32
 int __ldp3_local_utc_offset_seconds(void) {
     TIME_ZONE_INFORMATION tz;
     DWORD r = GetTimeZoneInformation(&tz);
@@ -680,14 +816,38 @@ int __ldp3_local_utc_offset_seconds(void) {
     else if (r == TIME_ZONE_ID_STANDARD) bias += tz.StandardBias;
     return (int)(-bias * 60);
 }
+#else
+// tm_gmtoff carries the effective offset (DST included); glibc, musl and the BSDs all provide it.
+int __ldp3_local_utc_offset_seconds(void) {
+    time_t now = time(NULL);
+    struct tm lt;
+    localtime_r(&now, &lt);
+    return (int)lt.tm_gmtoff;
+}
+#endif
 
-// ---- Cryptographically secure randomness (spec 34): 64 bits from the OS CSPRNG (rand_s -> RtlGenRandom). ----
-long long __ldp3_secure_random(void) {
+// ---- Cryptographically secure randomness (spec 34): 64 bits from the OS CSPRNG. ----
+#ifdef _WIN32
+long long __ldp3_secure_random(void) {  // rand_s -> RtlGenRandom
     unsigned int hi = 0, lo = 0;
     rand_s(&hi);
     rand_s(&lo);
     return ((long long)(unsigned long long)hi << 32) | (long long)lo;
 }
+#else
+long long __ldp3_secure_random(void) {  // getrandom(2), with /dev/urandom as the fallback
+    unsigned long long v = 0;
+    if (getrandom(&v, sizeof v, 0) != (ssize_t)sizeof v) {
+        int fd = open("/dev/urandom", O_RDONLY);
+        if (fd >= 0) {
+            ssize_t r = read(fd, &v, sizeof v);
+            (void)r;
+            close(fd);
+        }
+    }
+    return (long long)v;
+}
+#endif
 
 // ---- Environment variables (spec 34). ----
 char* __ldp3_env_get(const char* name, long long* outLen) {
@@ -700,7 +860,11 @@ char* __ldp3_env_get(const char* name, long long* outLen) {
     return buf;
 }
 int __ldp3_env_set(const char* name, const char* value) {
+#ifdef _WIN32
     return _putenv_s(name, value) == 0 ? 1 : 0;
+#else
+    return setenv(name, value, 1) == 0 ? 1 : 0;
+#endif
 }
 
 // ---- File I/O (spec 34.4): whole-file read/write over C stdio. ----
@@ -735,6 +899,7 @@ int __ldp3_file_delete(const char* path) { return remove(path) == 0 ? 1 : 0; }
 // ---- Directory / filesystem metadata (spec 34.4). ----
 // The directory's entries as a NUL-terminated, newline-separated string ("" if not a directory or
 // empty). *outLen is the byte length. "." and ".." are skipped.
+#ifdef _WIN32
 char* __ldp3_dir_list(const char* path, long long* outLen) {
     char pattern[MAX_PATH];
     snprintf(pattern, sizeof(pattern), "%s\\*", path);
@@ -768,6 +933,39 @@ long long __ldp3_file_size(const char* path) {
     if (!GetFileAttributesExA(path, GetFileExInfoStandard, &d)) return -1;
     return ((long long)d.nFileSizeHigh << 32) | (long long)d.nFileSizeLow;
 }
+#else
+char* __ldp3_dir_list(const char* path, long long* outLen) {
+    DIR* d = opendir(path);
+    size_t cap = 256, len = 0;
+    char* buf = (char*)malloc(cap);
+    if (d != NULL) {
+        struct dirent* e;
+        while ((e = readdir(d)) != NULL) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            size_t nl = strlen(e->d_name);
+            if (len + nl + 2 > cap) { while (len + nl + 2 > cap) cap *= 2; buf = (char*)realloc(buf, cap); }
+            memcpy(buf + len, e->d_name, nl);
+            len += nl;
+            buf[len++] = '\n';
+        }
+        closedir(d);
+    }
+    buf[len] = 0;
+    *outLen = (long long)len;
+    return buf;
+}
+int __ldp3_mkdir(const char* path) { return mkdir(path, 0777) == 0 ? 1 : 0; }
+int __ldp3_rename(const char* from, const char* to) { return rename(from, to) == 0 ? 1 : 0; }
+int __ldp3_is_dir(const char* path) {
+    struct stat st;
+    return (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) ? 1 : 0;
+}
+long long __ldp3_file_size(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (long long)st.st_size;
+}
+#endif
 
 // Decimal text of `n` into `buf` (signed, no NUL needed), returns the digit count. For int.toString().
 long long __ldp3_itoa(long long n, char* buf) {
@@ -869,35 +1067,57 @@ long long __ldp3_task_wait(long long handle) {
 
 // The overwrite/restore length for a function: bounded by the next function's address in
 // the program-wide table, so a neighbour is never touched. Capped for safety.
-static SIZE_T __ldp3_fn_len(void* fn, void** table, long long count) {
+static size_t __ldp3_fn_len(void* fn, void** table, long long count) {
     unsigned long long base = (unsigned long long)fn, next = 0;
     for (long long i = 0; i < count; i++) {
         unsigned long long a = (unsigned long long)table[i];
         if (a > base && (next == 0 || a < next)) next = a;
     }
     unsigned long long len = next ? (next - base) : 64;
-    return (SIZE_T)(len > 4096 ? 4096 : len);
+    return (size_t)(len > 4096 ? 4096 : len);
+}
+
+// Make a function's code writable+executable. mprotect needs page-aligned bounds, so the POSIX
+// side rounds the range out to page boundaries.
+static int __ldp3_code_unprotect(void* fn, size_t len) {
+#ifdef _WIN32
+    DWORD old;
+    return VirtualProtect(fn, len, PAGE_EXECUTE_READWRITE, &old) ? 1 : 0;
+#else
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) page = 4096;
+    uintptr_t start = (uintptr_t)fn & ~((uintptr_t)page - 1);
+    uintptr_t end = ((uintptr_t)fn + len + (uintptr_t)page - 1) & ~((uintptr_t)page - 1);
+    return mprotect((void*)start, end - start, PROT_READ | PROT_WRITE | PROT_EXEC) == 0 ? 1 : 0;
+#endif
+}
+static void __ldp3_code_flush(void* fn, size_t len) {
+#ifdef _WIN32
+    FlushInstructionCache(GetCurrentProcess(), fn, len);
+#else
+    __builtin___clear_cache((char*)fn, (char*)fn + len);  // no-op on x86, required on ARM
+#endif
 }
 
 // Physical code unload (spec 30 "unloading agressivo"): overwrite a function's machine code
 // in RAM with int3 (0xCC), so the instructions are physically ripped from memory.
 void __ldp3_unload_fn(void* fn, void** table, long long count) {
     if (fn == 0) return;
-    SIZE_T len = __ldp3_fn_len(fn, table, count);
-    DWORD old;
-    if (VirtualProtect(fn, len, PAGE_EXECUTE_READWRITE, &old)) {
+    size_t len = __ldp3_fn_len(fn, table, count);
+    if (__ldp3_code_unprotect(fn, len)) {
         memset(fn, 0xCC, len);
-        FlushInstructionCache(GetCurrentProcess(), fn, len);
+        __ldp3_code_flush(fn, len);
     }
 }
 
 // Physical code reload for reimport (spec 30.3 "recarrega do disco"): read the function's
-// original bytes from the program's own .exe on disk (the image file still holds them) and
+// original bytes from the program's own executable on disk (the image file still holds them) and
 // write them back over the int3-overwritten RAM. x64 code is RIP-relative, so the .text
 // bytes are position-independent within the module and need no relocation fix-up.
+#ifdef _WIN32
 void __ldp3_reload_fn(void* fn, void** table, long long count) {
     if (fn == 0) return;
-    SIZE_T len = __ldp3_fn_len(fn, table, count);
+    size_t len = __ldp3_fn_len(fn, table, count);
     unsigned char* mbase = (unsigned char*)GetModuleHandleW(NULL);
     DWORD rva = (DWORD)((unsigned char*)fn - mbase);
     IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)mbase;
@@ -924,13 +1144,52 @@ void __ldp3_reload_fn(void* fn, void** table, long long count) {
     if (buf != NULL && SetFilePointerEx(h, off, NULL, FILE_BEGIN))
         ReadFile(h, buf, (DWORD)len, &got, NULL);
     CloseHandle(h);
-    DWORD old;
-    if (buf != NULL && got > 0 && VirtualProtect(fn, len, PAGE_EXECUTE_READWRITE, &old)) {
+    if (buf != NULL && got > 0 && __ldp3_code_unprotect(fn, len)) {
         memcpy(fn, buf, got);
-        FlushInstructionCache(GetCurrentProcess(), fn, len);
+        __ldp3_code_flush(fn, len);
     }
     free(buf);
 }
+#else
+// ELF mirror of the PE logic: the main module's load base comes from dl_iterate_phdr (the first
+// visited module -- the executable, PIE included), the vaddr->file-offset mapping from its PT_LOAD
+// program headers, and the bytes from /proc/self/exe.
+static int __ldp3_main_base_cb(struct dl_phdr_info* info, size_t, void* out) {
+    *(uintptr_t*)out = (uintptr_t)info->dlpi_addr;
+    return 1;  // stop after the first entry (the main executable)
+}
+void __ldp3_reload_fn(void* fn, void** table, long long count) {
+    if (fn == 0) return;
+    size_t len = __ldp3_fn_len(fn, table, count);
+    uintptr_t base = 0;
+    dl_iterate_phdr(__ldp3_main_base_cb, &base);
+    uintptr_t vaddr = (uintptr_t)fn - base;  // the link-time virtual address of the function
+    FILE* f = fopen("/proc/self/exe", "rb");
+    if (f == NULL) return;
+    ElfW(Ehdr) eh;
+    if (fread(&eh, 1, sizeof eh, f) != sizeof eh) { fclose(f); return; }
+    long long fileOff = -1;
+    for (int i = 0; i < eh.e_phnum; i++) {
+        ElfW(Phdr) ph;
+        if (fseek(f, (long)(eh.e_phoff + (unsigned long long)i * eh.e_phentsize), SEEK_SET) != 0) break;
+        if (fread(&ph, 1, sizeof ph, f) != sizeof ph) break;
+        if (ph.p_type == PT_LOAD && vaddr >= ph.p_vaddr && vaddr < ph.p_vaddr + ph.p_filesz) {
+            fileOff = (long long)(vaddr - ph.p_vaddr + ph.p_offset);
+            break;
+        }
+    }
+    if (fileOff < 0) { fclose(f); return; }
+    unsigned char* buf = (unsigned char*)malloc(len);
+    size_t got = 0;
+    if (buf != NULL && fseek(f, (long)fileOff, SEEK_SET) == 0) got = fread(buf, 1, len, f);
+    fclose(f);
+    if (buf != NULL && got > 0 && __ldp3_code_unprotect(fn, len)) {
+        memcpy(fn, buf, got);
+        __ldp3_code_flush(fn, len);
+    }
+    free(buf);
+}
+#endif
 
 // FFI by-value struct test helpers (spec 26): a small POD struct passed and returned by value,
 // matching the layout of an LDP3 `struct Point { int x; int y; }`.

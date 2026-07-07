@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Compile an LDP3 program to a native Linux x86-64 executable. LDP3's codegen is
+# portable -- the same IR targets Linux by triple -- and the runtime is single-source over POSIX, so a
+# Linux clang/gcc links a real ELF. Works on any glibc- or musl-based distro (Ubuntu, Gentoo, Arch,
+# Alpine, ...): the runtime uses only kernel + libc APIs, nothing distro-specific.
+#
+# Slice-1 cross flow (from WSL, ldp3c is still the Windows build reached over /mnt/c):
+#   scripts/build-linux.sh path/to/prog.ldp3 [-o out] [--ldp3c /mnt/c/.../ldp3c.exe]
+# Native flow (once ldp3c is built for Linux): pass --ldp3c to the Linux binary.
+set -euo pipefail
+
+src=""; out=""; ldp3c="${LDP3C:-ldp3c}"; cc="${CC:-clang}"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    --ldp3c) ldp3c="$2"; shift 2 ;;
+    --cc) cc="$2"; shift 2 ;;
+    *) src="$1"; shift ;;
+  esac
+done
+[ -n "$src" ] || { echo "usage: build-linux.sh <prog.ldp3> [-o out] [--ldp3c <path>] [--cc clang|gcc]"; exit 2; }
+[ -z "$out" ] && out="${src%.ldp3}"
+
+ll="$(mktemp --suffix=.ll)"
+trap 'rm -f "$ll"' EXIT
+
+# 1) LDP3 -> LLVM IR targeting Linux. The Windows ldp3c.exe runs fine under WSL interop.
+"$ldp3c" "$src" --target=x86_64-unknown-linux-gnu -O2 -o "$ll"
+
+# 2) IR + the single-source runtime -> ELF. -lpthread for the Thread/async runtime; -ldl for
+#    dl_iterate_phdr (reimport). The static libc bits are the platform's own -- nothing to bundle.
+"$cc" -O2 -w "$ll" "$root/runtime/ldp3_rt.cpp" -o "$out" -lpthread -ldl -lm
+
+echo "wrote $out"
