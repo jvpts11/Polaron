@@ -24,4 +24,10 @@ void discoverProjectsStreaming(const std::filesystem::path& root,
                                const std::function<void(DiscoveredProject)>& onFound,
                                const std::function<bool()>& shouldStop);
 
+// Projects the user has opened before, remembered across sessions in ~/.ldp3/registry.toml so the TUI can
+// surface them without a full disk scan. loadRememberedProjects returns the ones whose ldp3.toml still
+// reads (each manifest re-parsed); rememberProject records a directory, most-recent first and de-duplicated.
+std::vector<DiscoveredProject> loadRememberedProjects();
+void rememberProject(const std::filesystem::path& dir);
+
 }  // namespace ldp3::driver

@@ -235,7 +235,16 @@ int main(int argc, char** argv) {
 
     AppState state;
     std::error_code ec;
-    state.projects = ldp3::driver::discoverProjects(std::filesystem::current_path(ec));
+    const std::filesystem::path cwd = std::filesystem::current_path(ec);
+    state.projects = ldp3::driver::discoverProjects(cwd);
+    // Remember the current project so it resurfaces next session, and fold in previously-remembered
+    // projects that this scan did not already find.
+    if (std::filesystem::exists(cwd / "ldp3.toml", ec)) ldp3::driver::rememberProject(cwd);
+    for (auto& rp : ldp3::driver::loadRememberedProjects()) {
+        const bool have = std::any_of(state.projects.begin(), state.projects.end(),
+                                      [&](const ldp3::driver::DiscoveredProject& p) { return p.dir == rp.dir; });
+        if (!have) state.projects.push_back(std::move(rp));
+    }
 
     ScreenInteractive screen = ScreenInteractive::Fullscreen();
     // Hide the terminal cursor: the studio has no text-input caret of its own, so FTXUI would otherwise leave
