@@ -1,0 +1,30 @@
+import System.IO.Console;
+
+// A method that returns a class (a pointer) whose body ends in an unconditional loop: it only ever
+// leaves through the `return` inside the loop, so the fall-through after the loop is unreachable. The
+// codegen must still terminate that unreachable block with a well-typed return -- a null pointer here,
+// not the old `ret i32 0`, which is invalid IR on a pointer-returning function.
+program WhileTrueReturn;
+
+public bundle main {
+    public namespace app {
+        public class Box {
+            public int v;
+            public constructor Box(int v) { this.v = v; }
+        }
+        public class Main {
+            public static method make(int start) returns Box {
+                mutable int i = start;
+                while (true) {
+                    if (i >= 42) { return new Box(i) on heap; }
+                    i = i + 1;
+                }
+            }
+            public static method main(string[] args) returns void {
+                Box b = Main.make(40);
+                System.IO.Console.printf("v=%d\n", b.v);   // 42
+                return;
+            }
+        }
+    }
+}

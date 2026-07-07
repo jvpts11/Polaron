@@ -8698,12 +8698,18 @@ struct CodeGenerator::Impl {
                 builder.CreateRetVoid();
             } else if (retType->isVoidTy()) {
                 builder.CreateRetVoid();
-            } else if (retType->isDoubleTy()) {
+            } else if (retType->isFloatingPointTy()) {
                 builder.CreateRet(llvm::ConstantFP::get(retType, 0.0));
-            } else if (retType->isStructTy()) {
-                builder.CreateRet(llvm::UndefValue::get(retType));  // tuple: no implicit default
+            } else if (retType->isPointerTy()) {
+                // A class/pointer return: emit a null default. This fall-through is reached only when the
+                // body never returns on this path (e.g. a method whose body ends in while(true)); the value
+                // is never used, but it keeps the IR well-typed. The old i32-0 default produced an invalid
+                // `ret i32 0` on a ptr-returning function.
+                builder.CreateRet(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(retType)));
+            } else if (retType->isIntegerTy()) {
+                builder.CreateRet(llvm::ConstantInt::get(retType, 0));  // right width (i8/i16/i32/i64)
             } else {
-                builder.CreateRet(builder.getInt32(0));
+                builder.CreateRet(llvm::UndefValue::get(retType));  // struct (tuple) etc.: no implicit default
             }
         }
     }
