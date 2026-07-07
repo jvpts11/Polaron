@@ -98,6 +98,30 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     }
     const std::vector<fs::path>& ldbs = allLdbs;  // extracted + linked below (the full closure)
 
+    // Freestanding (spec 36): there is no hosted runtime to link and no C entry, so compile to a
+    // bare-metal object and stop. The user links that object with their own boot stub and linker script
+    // (see kernel/ for a worked example). Dependencies are not supported in this mode yet.
+    if (m.freestanding) {
+        const std::string tt = "x86_64-unknown-none-elf";
+        std::vector<std::string> ca = {entry.string(), "--target=" + tt, "-o", ll.string(), "-O2"};
+        for (const auto& p : opts.passthrough) ca.push_back(p);
+        if (int rc = runProcess(tc.ldp3c, ca); rc != 0) {
+            std::fprintf(stderr, "ldp3: compilation failed\n");
+            return rc == -1 ? 1 : rc;
+        }
+        const fs::path obj = outDir / (entry.stem().string() + ".o");
+        if (int rc = runProcess(tc.clang, {"--target=" + tt, "-ffreestanding", "-fno-exceptions",
+                                           "-fno-rtti", "-mno-red-zone", "-c", ll.string(), "-o",
+                                           obj.string()});
+            rc != 0) {
+            std::fprintf(stderr, "ldp3: bare-metal object compilation failed\n");
+            return rc == -1 ? 1 : rc;
+        }
+        std::printf("wrote %s (freestanding object; link it with your boot stub and linker script)\n",
+                    obj.string().c_str());
+        return 0;
+    }
+
     // 1) Compile: ldp3c <entry> [--use <direct-dep.ldb>...] -o <ll> [passthrough]
     std::vector<std::string> compileArgs = {entry.string()};
     for (const auto& ldb : directLdbs) {
