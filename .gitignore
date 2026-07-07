@@ -28,3 +28,10 @@ CMakeUserPresets.json
 # Note: CLAUDE.md and docs/ are intentionally NOT ignored here; they are simply
 # never added to commits.
 dist/
+
+# kernel build artifacts
+kernel/*.o
+kernel/*.ll
+kernel/kernel.elf
+kernel/*.dump
+kernel/qemu.log

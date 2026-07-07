@@ -1,0 +1,29 @@
+# Build the bootable LDP3 kernel: compile the freestanding kernel to a bare-metal object, assemble the
+# boot stub, and link them at 1 MiB with the kernel linker script into a Multiboot2 kernel.elf.
+param(
+    [string]$LDP3C = "$PSScriptRoot\..\build\bin\Debug\ldp3c.exe",
+    [string]$Clang = "C:\Program Files\LLVM\bin\clang.exe"
+)
+# Continue on native-command stderr (clang writes harmless warnings there); we gate on $LASTEXITCODE.
+$ErrorActionPreference = "Continue"
+$here = $PSScriptRoot
+$TT = "x86_64-unknown-none-elf"
+
+Write-Host "[1/4] kernel.ldp3 -> LLVM IR (freestanding)"
+& $LDP3C "$here\kernel.ldp3" "--target=$TT" -o "$here\kernel_ldp3.ll"
+if ($LASTEXITCODE -ne 0) { throw "ldp3c failed" }
+
+Write-Host "[2/4] IR -> object"
+& $Clang "--target=$TT" -ffreestanding -fno-exceptions -fno-rtti -mno-red-zone -c "$here\kernel_ldp3.ll" -o "$here\kernel_ldp3.o"
+if ($LASTEXITCODE -ne 0) { throw "clang (IR) failed" }
+
+Write-Host "[3/4] boot.s -> object"
+& $Clang "--target=$TT" -c "$here\boot.s" -o "$here\boot.o"
+if ($LASTEXITCODE -ne 0) { throw "clang (asm) failed" }
+
+Write-Host "[4/4] link -> kernel.elf"
+$LldDir = Split-Path $Clang
+& "$LldDir\ld.lld.exe" -m elf_x86_64 -T "$here\kernel.ld" --build-id=none -o "$here\kernel.elf" "$here\boot.o" "$here\kernel_ldp3.o"
+if ($LASTEXITCODE -ne 0) { throw "link failed" }
+
+Write-Host "OK -> $here\kernel.elf"

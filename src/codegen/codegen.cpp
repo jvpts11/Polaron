@@ -5923,8 +5923,10 @@ struct CodeGenerator::Impl {
         llvm::PassBuilder pb;
         pb.registerModuleAnalyses(mam);
         llvm::ModulePassManager mpm;
-        mpm.addPass(llvm::InternalizePass(
-            [](const llvm::GlobalValue& gv) { return gv.getName() == "main"; }));
+        mpm.addPass(llvm::InternalizePass(  // keep the entry (kmain is the freestanding entry, spec 36)
+            [](const llvm::GlobalValue& gv) {
+                return gv.getName() == "main" || gv.getName() == "kmain";
+            }));
         mpm.addPass(llvm::GlobalDCEPass());
         mpm.run(module, mam);
     }
@@ -8353,13 +8355,24 @@ struct CodeGenerator::Impl {
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             if (m == entry.method && !testMode) {
-                                // int main(int argc, char** argv): the real C entry, so main's
-                                // `string[] args` can be filled from the command line.
-                                llvm::FunctionType* ty = llvm::FunctionType::get(
-                                    builder.getInt32Ty(),
-                                    {builder.getInt32Ty(), builder.getPtrTy()}, false);
-                                functions["@entry"] = llvm::Function::Create(
-                                    ty, llvm::Function::ExternalLinkage, "main", module);
+                                // A bare-metal target (triple ...-none...) is booted by an assembly stub, not
+                                // a C runtime: emit `kmain(args)` that the stub calls with null -- no
+                                // argc/argv and no argv-array construction, so nothing needs libc. A hosted
+                                // freestanding program still gets the ordinary `main` (its C runtime calls it).
+                                if (module.getTargetTriple().find("none") != std::string::npos) {
+                                    llvm::FunctionType* ty = llvm::FunctionType::get(
+                                        builder.getInt32Ty(), {builder.getPtrTy()}, false);
+                                    functions["@entry"] = llvm::Function::Create(
+                                        ty, llvm::Function::ExternalLinkage, "kmain", module);
+                                } else {
+                                    // int main(int argc, char** argv): the real C entry, so main's
+                                    // `string[] args` can be filled from the command line.
+                                    llvm::FunctionType* ty = llvm::FunctionType::get(
+                                        builder.getInt32Ty(),
+                                        {builder.getInt32Ty(), builder.getPtrTy()}, false);
+                                    functions["@entry"] = llvm::Function::Create(
+                                        ty, llvm::Function::ExternalLinkage, "main", module);
+                                }
                                 continue;
                             }
                             if (m->isAbstract) continue;  // no body to declare
@@ -9199,7 +9212,9 @@ struct CodeGenerator::Impl {
                             if (m == entry.method && !testMode) {
                                 emitBody(functions["@entry"], m->body, m->params, "",
                                          builder.getInt32Ty(), nullptr, nullptr, nullptr, nullptr, false,
-                                         nullptr, nullptr, "", nullptr, false, /*argvEntry=*/true);
+                                         nullptr, nullptr, "", nullptr, false,
+                                         /*argvEntry=*/module.getTargetTriple().find("none") ==
+                                             std::string::npos);
                             } else if (m->isAsync && !m->isAbstract) {
                                 emitAsyncMethod(cls, *m);
                             } else if (!m->isAbstract && !m->isExtern) {  // extern: no LDP3 body

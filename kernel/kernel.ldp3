@@ -1,0 +1,33 @@
+// A minimal bootable LDP3 kernel (spec 36.9). Freestanding: no managed runtime, no heap -- it writes a
+// message straight to the VGA text buffer at 0xB8000 (each cell is a 16-bit value: low byte the ASCII
+// character, high byte the colour attribute) and then halts. The boot stub (boot.s) sets up long mode and
+// calls the entry; the codegen emits a no-argv `kmain` for a bare-metal target so nothing needs libc.
+program Kernel freestanding;
+
+public bundle main {
+    public namespace kernel {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int16* vga = cast<int16*>(0xB8000);
+                int attr = 3840;   // 0x0F00: bright white on black, in the high byte
+                // "LDP3 kernel OK"
+                vga[0]  = cast<int16>(76 + attr);   // L
+                vga[1]  = cast<int16>(68 + attr);   // D
+                vga[2]  = cast<int16>(80 + attr);   // P
+                vga[3]  = cast<int16>(51 + attr);   // 3
+                vga[4]  = cast<int16>(32 + attr);   // (space)
+                vga[5]  = cast<int16>(107 + attr);  // k
+                vga[6]  = cast<int16>(101 + attr);  // e
+                vga[7]  = cast<int16>(114 + attr);  // r
+                vga[8]  = cast<int16>(110 + attr);  // n
+                vga[9]  = cast<int16>(101 + attr);  // e
+                vga[10] = cast<int16>(108 + attr);  // l
+                vga[11] = cast<int16>(32 + attr);   // (space)
+                vga[12] = cast<int16>(79 + attr);   // O
+                vga[13] = cast<int16>(75 + attr);   // K
+                while (true) { }   // nothing more to do: spin forever
+                return;
+            }
+        }
+    }
+}
