@@ -32,6 +32,7 @@ int printHelp() {
         "  ldp3 plug [<url|name>[@version]] [-e] download a dependency (or all of them if none named)\n"
         "  ldp3 unplug <name> [-e]             remove a dependency\n"
         "  ldp3 env new|list|remove [<name>]   manage shared environments\n"
+        "  ldp3 studio                         open the TUI project manager\n"
         "  ldp3 new <name>                     scaffold a new project\n"
         "  ldp3 init                           scaffold in the current directory\n"
         "  ldp3 clean                          remove build-output/\n"
@@ -250,6 +251,15 @@ int main(int argc, char** argv) {
         std::filesystem::remove_all(base / "build-output", ec);
         std::printf("cleaned %s\n", (base / "build-output").string().c_str());
         return 0;
+    }
+    if (cmd == "studio") {  // launch the TUI project manager, a sibling binary
+        const std::filesystem::path studio = ldp3::driver::exeDir() / "ldp3-studio.exe";
+        if (!std::filesystem::exists(studio)) {
+            std::fprintf(stderr, "ldp3: ldp3-studio.exe was not found next to ldp3.exe\n");
+            return 1;
+        }
+        const std::vector<std::string> passthrough(args.begin() + 1, args.end());
+        return ldp3::driver::runProcess(studio.string(), passthrough);
     }
 
     std::fprintf(stderr, "ldp3: unknown command '%s'\n", cmd.c_str());
