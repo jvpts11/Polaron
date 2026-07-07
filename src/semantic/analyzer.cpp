@@ -2942,6 +2942,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // sizeof(Type) / sizeof(expr) (spec, issue #7): byte size as an int. The argument may name a
         // type, so it is not type-checked as an ordinary value here.
         if (name == "sizeof" && call->args.size() == 1) return "int";
+        if (name == "checked" && call->args.size() == 1)  // checked(expr): overflow-trapping, same type
+            return typeOf(*call->args[0]);
         // Type.sizeof() (spec issue #7): the member form on a class type.
         if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
             sm != nullptr && sm->member == "sizeof" && call->args.empty() &&

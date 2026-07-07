@@ -1,0 +1,19 @@
+import System.IO.Console;
+
+// Integer arithmetic wraps by default (zero-overhead, modular). checked(expr) opts into trapping on
+// signed overflow for that expression. Here the values are in range, so checked() just computes the
+// value; a genuinely overflowing checked(...) panics (exercised separately).
+program CheckedOverflow;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = args.length() + 5;          // 5 at runtime (opaque)
+                int s = checked(a * a + a);         // 30, no overflow -> just the value
+                System.IO.Console.printf("s=%d\n", s);   // s=30
+                return;
+            }
+        }
+    }
+}

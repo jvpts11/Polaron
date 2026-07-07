@@ -446,6 +446,7 @@ struct CodeGenerator::Impl {
     struct RegionLocal { llvm::Value* slot; bool isEternal; std::string name; };
     std::vector<RegionLocal> scopeRegions;
     std::vector<const ast::Block*> deferred;  // defer blocks, run at scope end (LIFO)
+    bool checkedArith_ = false;      // inside checked(...): signed +/-/* trap on overflow (spec 3.6)
     std::string currentClass;        // "" inside a static method / the entry point
     std::string currentDtorChain;    // base destructor to chain to (set only in a destructor body)
     llvm::Value* currentThis = nullptr;
@@ -2204,6 +2205,46 @@ struct CodeGenerator::Impl {
         return builder.CreateGEP(elemTy, arrayData(block), idx, "arr.elem");
     }
 
+    // Signed +/-/* with a trap on overflow (spec 3.6): the with.overflow intrinsic yields {result, ovf},
+    // and a cold branch to a deterministic panic -- like the bounds and division checks, not a catchable
+    // exception, so the hot path stays a single straight-line op and no invoke is introduced -- fires only
+    // on overflow. LLVM elides the whole check where it can prove the operation cannot overflow (loop
+    // counters, small constants). Unsigned arithmetic and freestanding mode never reach here (they wrap).
+    llvm::Value* emitCheckedIntArith(const std::string& op, llvm::Value* l, llvm::Value* r) {
+        llvm::Value* res = nullptr;
+        llvm::Value* ovf = nullptr;
+        if (op == "*") {
+            // Signed multiply: the intrinsic is the practical detector (a manual check needs a wider
+            // multiply). Multiplies are rarer than add/sub in hot arithmetic, so the intrinsic's cost is
+            // localized.
+            llvm::Value* pair = builder.CreateBinaryIntrinsic(llvm::Intrinsic::smul_with_overflow, l, r);
+            res = builder.CreateExtractValue(pair, 0, "ovf.res");
+            ovf = builder.CreateExtractValue(pair, 1, "ovf.bit");
+        } else {
+            // Add/sub: compute the plain wrapping result -- which inlines and vectorizes exactly like any
+            // arithmetic (no intrinsic call to block the recursive-inline / loop optimizers) -- then read
+            // overflow from the operand and result signs.
+            llvm::Value* zero = llvm::ConstantInt::get(l->getType(), 0);
+            if (op == "+") {
+                res = builder.CreateAdd(l, r, "sum");  // overflow iff l,r share a sign that res lacks
+                llvm::Value* t = builder.CreateAnd(builder.CreateXor(l, res), builder.CreateXor(r, res));
+                ovf = builder.CreateICmpSLT(t, zero);
+            } else {
+                res = builder.CreateSub(l, r, "dif");  // overflow iff l,r differ in sign and res differs from l
+                llvm::Value* t = builder.CreateAnd(builder.CreateXor(l, r), builder.CreateXor(l, res));
+                ovf = builder.CreateICmpSLT(t, zero);
+            }
+        }
+        llvm::Function* f = currentFn;
+        auto* badBB = llvm::BasicBlock::Create(context, "ovf.bad", f);
+        auto* okBB = llvm::BasicBlock::Create(context, "ovf.ok", f);
+        builder.CreateCondBr(ovf, badBB, okBB, coldBranchWeights());
+        builder.SetInsertPoint(badBB);
+        emitPanic("integer overflow");
+        builder.SetInsertPoint(okBB);
+        return res;
+    }
+
     // Branch weights marking the true (panic) edge as cold, so the optimizer keeps the hot
     // path straight-line and the predictor assumes in-bounds.
     llvm::MDNode* coldBranchWeights() {
@@ -3663,9 +3704,15 @@ struct CodeGenerator::Impl {
         const bool uns = isUnsigned(lt) || isUnsigned(rt);
         l = fitInt(l, w, uns);
         r = fitInt(r, w, uns);
-        if (op == "+") return builder.CreateAdd(l, r);
-        if (op == "-") return builder.CreateSub(l, r);
-        if (op == "*") return builder.CreateMul(l, r);
+        if (op == "+" || op == "-" || op == "*") {
+            // Integer arithmetic wraps by default (modular, zero-overhead -- overflow checking inhibits
+            // the recursive-inline and loop optimizers, ~10x on hot arithmetic). Opt into trap-on-overflow
+            // per expression with `checked(...)`; unsigned and freestanding always wrap.
+            if (checkedArith_ && !uns && !program.isFreestanding) return emitCheckedIntArith(op, l, r);
+            if (op == "+") return builder.CreateAdd(l, r);
+            if (op == "-") return builder.CreateSub(l, r);
+            return builder.CreateMul(l, r);
+        }
         if (op == "/") return emitIntDivRem(l, r, uns, /*rem=*/false);
         if (op == "%") return emitIntDivRem(l, r, uns, /*rem=*/true);
         if (op == "&") return builder.CreateAnd(l, r);
@@ -4211,6 +4258,15 @@ struct CodeGenerator::Impl {
             return emitSafeNav(call, *cm->object);
         }
         const std::string name = flattenCallee(*call.callee);
+        // checked(expr) (spec 3.6): evaluate expr with signed +/-/* trapping on overflow instead of
+        // wrapping. Opt-in, since the default is the zero-overhead wrap.
+        if (name == "checked" && call.args.size() == 1) {
+            const bool saved = checkedArith_;
+            checkedArith_ = true;
+            llvm::Value* v = emitExpr(*call.args[0]);
+            checkedArith_ = saved;
+            return v;
+        }
         // SIMD vector methods (GLSL-style): v.dot(o)/v.length() -> float, v.normalize() -> vecN,
         // v.cross(o) -> vec3. The element-wise math lowers to plain vector instructions.
         if (const auto* vm = dynamic_cast<const ast::MemberExpr*>(call.callee.get())) {
