@@ -3321,6 +3321,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     return mit->second.returnType;
                 }
             }
+            if (int vw = vecWidth(objType); vw > 0) {  // SIMD vector methods (GLSL-style)
+                for (const auto& arg : call->args) typeOf(*arg);
+                if (mem->member == "dot" && call->args.size() == 1) return "float";
+                if (mem->member == "length" && call->args.empty()) return "float";  // magnitude
+                if (mem->member == "normalize" && call->args.empty()) return objType;   // vecN
+                if (mem->member == "cross" && call->args.size() == 1 && vw == 3) return "vec3";
+                error("vec" + std::to_string(vw) + " has dot/length/normalize" +
+                          (vw == 3 ? std::string("/cross") : std::string("")) + "; '" +
+                          mem->member + "' is not one",
+                      call->loc);
+                return "";
+            }
             if (isArrayType(objType)) {
                 if (mem->member == "length" && call->args.empty()) return "int";  // read length
                 if (mem->member == "length" && call->args.size() == 1) {  // resize (spec 25)

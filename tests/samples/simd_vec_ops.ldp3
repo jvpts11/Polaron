@@ -1,0 +1,24 @@
+import System.IO.Console;
+
+// SIMD vector operations (GLSL-style): dot product, magnitude (length), normalize, and the 3D cross
+// product, all lowering to plain vector instructions. Values chosen so results are exact integers.
+program SimdVecOps;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                vec3 a = vec3(1.0, 2.0, 2.0);       // |a| = 3
+                vec3 b = vec3(3.0, 0.0, 0.0);
+                float d = a.dot(b);                  // 3
+                float len = a.length();              // 3
+                vec3 n = a.normalize();              // (1/3, 2/3, 2/3)
+                vec3 c = a.cross(b);                 // (0, 6, -6)
+                System.IO.Console.printf("dot=%d len=%d nx=%d cx=%d cy=%d cz=%d\n",
+                    cast<int>(d), cast<int>(len), cast<int>(n.x * 30.0),
+                    cast<int>(c.x), cast<int>(c.y), cast<int>(c.z));
+                return;
+            }
+        }
+    }
+}

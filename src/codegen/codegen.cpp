@@ -4183,12 +4183,62 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(doneBlk);
     }
 
+    // Sum the lanes of a <w x float> vector into a scalar float (used by dot/length).
+    llvm::Value* horizontalAddVec(llvm::Value* v, int w) {
+        llvm::Value* sum = builder.CreateExtractElement(v, builder.getInt32(0));
+        for (int i = 1; i < w; i++)
+            sum = builder.CreateFAdd(sum, builder.CreateExtractElement(v, builder.getInt32(i)));
+        return sum;
+    }
+    // The 3D cross product of two <3 x float> vectors.
+    llvm::Value* emitCross3(llvm::Value* a, llvm::Value* b) {
+        auto el = [&](llvm::Value* v, int i) { return builder.CreateExtractElement(v, builder.getInt32(i)); };
+        llvm::Value* ax = el(a, 0); llvm::Value* ay = el(a, 1); llvm::Value* az = el(a, 2);
+        llvm::Value* bx = el(b, 0); llvm::Value* by = el(b, 1); llvm::Value* bz = el(b, 2);
+        llvm::Value* cx = builder.CreateFSub(builder.CreateFMul(ay, bz), builder.CreateFMul(az, by));
+        llvm::Value* cy = builder.CreateFSub(builder.CreateFMul(az, bx), builder.CreateFMul(ax, bz));
+        llvm::Value* cz = builder.CreateFSub(builder.CreateFMul(ax, by), builder.CreateFMul(ay, bx));
+        llvm::Value* r = llvm::UndefValue::get(llvm::FixedVectorType::get(builder.getFloatTy(), 3));
+        r = builder.CreateInsertElement(r, cx, builder.getInt32(0));
+        r = builder.CreateInsertElement(r, cy, builder.getInt32(1));
+        r = builder.CreateInsertElement(r, cz, builder.getInt32(2));
+        return r;
+    }
+
     llvm::Value* emitCall(const ast::CallExpr& call) {
         if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
             cm != nullptr && cm->safe && &call != safeGuardNode_) {  // obj?.method(...) (spec 3.7)
             return emitSafeNav(call, *cm->object);
         }
         const std::string name = flattenCallee(*call.callee);
+        // SIMD vector methods (GLSL-style): v.dot(o)/v.length() -> float, v.normalize() -> vecN,
+        // v.cross(o) -> vec3. The element-wise math lowers to plain vector instructions.
+        if (const auto* vm = dynamic_cast<const ast::MemberExpr*>(call.callee.get())) {
+            const int vw = vecWidth(typeName(*vm->object));
+            if (vw > 0) {
+                const std::string& m = vm->member;
+                if (m == "dot" && call.args.size() == 1) {
+                    llvm::Value* a = emitExpr(*vm->object);
+                    llvm::Value* b = emitExpr(*call.args[0]);
+                    if (a == nullptr || b == nullptr) return nullptr;
+                    return horizontalAddVec(builder.CreateFMul(a, b), vw);
+                }
+                if ((m == "length" || m == "normalize") && call.args.empty()) {
+                    llvm::Value* a = emitExpr(*vm->object);
+                    if (a == nullptr) return nullptr;
+                    llvm::Value* len = builder.CreateUnaryIntrinsic(
+                        llvm::Intrinsic::sqrt, horizontalAddVec(builder.CreateFMul(a, a), vw));
+                    if (m == "length") return len;
+                    return builder.CreateFDiv(a, builder.CreateVectorSplat(vw, len));  // normalize
+                }
+                if (m == "cross" && call.args.size() == 1 && vw == 3) {
+                    llvm::Value* a = emitExpr(*vm->object);
+                    llvm::Value* b = emitExpr(*call.args[0]);
+                    if (a == nullptr || b == nullptr) return nullptr;
+                    return emitCross3(a, b);
+                }
+            }
+        }
         // Type.sizeof() (spec issue #7): the member form, equivalent to sizeof(Type) for a class type.
         if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
             sm != nullptr && sm->member == "sizeof" && call.args.empty()) {
