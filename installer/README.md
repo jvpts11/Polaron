@@ -1,49 +1,45 @@
-# LDP3 toolchain installer
+# LDP3 installer
 
-Two ways to package and install the LDP3 toolchain for Windows. Both ship the same set of binaries --
-the classic `ldp3` CLI, the `ldp3-studio` TUI, the `ldp3c` compiler, the `ldp3-lsp` language server, and
-the `ldp3_rt` runtime library. Neither bundles clang: LDP3 links final executables with an existing LLVM
-`clang`, found on `PATH` or via the `LDP3_CLANG` environment variable.
+## The .msi (recommended) — self-contained, works on any Windows 10/11 x64
 
-Build the toolchain in Release first:
+`LDP3-0.1.0.msi` installs a **self-contained** LDP3 toolchain: it bundles the compiler, a slim
+clang + lld-link, the CRT/Windows import libraries and the runtime, so LDP3 compiles `.ldp3` to a
+native `.exe` on a bare Windows 10/11 x64 machine — **no Visual Studio or Windows SDK required**.
+(The produced executables link the static CRT, so they depend only on `kernel32.dll` and
+`ws2_32.dll`, present on every Windows 10/11.)
 
-```
-cmake --build build --config Release --target ldp3 ldp3c ldp3-studio ldp3-lsp
-```
+The wizard offers three selectable features:
+- **Compiler and toolchain** (required) — `ldp3`, `ldp3c`, the language server and the self-contained
+  clang/lld/CRT.
+- **Project manager** (optional) — the `ldp3-studio` TUI (`ldp3 studio`).
+- **Install the VS Code extension** (optional) — registers the LDP3 extension in this machine's VS Code.
 
-## 1. Script + zip (no extra tools)
+It installs to `%ProgramFiles%\LDP3`, adds that to the system `PATH`, and can be removed from
+Add/Remove Programs.
 
-```
-powershell -File installer\pack.ps1 -Config Release -Version 0.1.0
-```
+### Building the .msi
 
-This writes `dist\ldp3-toolchain-<version>.zip` (and an unzipped `dist\ldp3-toolchain\`). The recipient
-unzips it and runs, from inside the folder:
-
-```
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
-
-`install.ps1` copies the binaries to `%LOCALAPPDATA%\Programs\ldp3` (no admin needed), adds that directory
-to the user `PATH`, and warns if clang is missing. `-Prefix <dir>` installs elsewhere; `-NoPath` skips the
-PATH change. `uninstall.ps1` reverses it.
-
-## 2. GUI installer (Inno Setup)
-
-Install the free Inno Setup compiler from <https://jrsoftware.org/isdl.php>, then:
-
-```
-ISCC installer\ldp3.iss
+```powershell
+cmake --build build --config Release                 # produce the Release binaries first
+dotnet tool install --global wix --version 5.0.2     # WiX 5 (free; v7 needs the paid OSMF EULA)
+installer\build-msi.ps1                              # stage + build -> installer\dist\LDP3-0.1.0.msi
 ```
 
-This produces `dist\ldp3-toolchain-setup.exe`, a standard Windows wizard that installs to Program Files,
-creates a Start-menu entry for LDP3 Studio, and optionally adds LDP3 to the user PATH.
+`build-msi.ps1` runs `pack-bundle.ps1` (which stages the LDP3 binaries, their DLLs, clang + lld-link,
+the runtime built against the static CRT, the CRT/Windows import libs, and the VS Code extension) and
+then compiles `ldp3.wxs`.
 
-## After installing
+### Files
 
-```
-ldp3 --version
-ldp3 new hello        # scaffold a project
-cd hello && ldp3 run  # build and run it
-ldp3-studio           # the TUI project manager
-```
+| File | Role |
+|------|------|
+| `ldp3.wxs`          | WiX package: the three features, the PATH entry, the VS Code custom action |
+| `pack-bundle.ps1`   | stages the self-contained bundle under `dist\stage` |
+| `build-msi.ps1`     | stage + `wix build` -> the `.msi` |
+| `install-vscode.cmd`| copies the extension into the user's VS Code (run by the optional feature) |
+
+## The script bundle (alternative) — requires an existing LLVM
+
+`pack.ps1` / `install.ps1` / `uninstall.ps1` and `ldp3.iss` (an Inno Setup GUI) install the LDP3
+binaries only and rely on a system `clang` for linking. Lighter, but not self-contained — prefer the
+`.msi` for the golden-rule guarantee.
