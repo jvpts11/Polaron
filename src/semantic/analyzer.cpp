@@ -3094,10 +3094,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         if (name == "Memory.read") {
             if (call->typeArgs.size() != 1) error("Memory.read<T> needs a type argument", call->loc);
+            else checkBitCounted(call->typeArgs[0], call->loc);  // int8/int16/... are freestanding-only
             for (const auto& a : call->args) typeOf(*a);
             return call->typeArgs.empty() ? "" : call->typeArgs[0];
         }
         if (name == "Memory.write") {
+            if (!call->typeArgs.empty()) checkBitCounted(call->typeArgs[0], call->loc);  // bit-counted: freestanding-only
             for (const auto& a : call->args) typeOf(*a);
             return "void";
         }
