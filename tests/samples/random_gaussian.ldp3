@@ -1,0 +1,32 @@
+import System.IO.Console;
+import System.Math.Random;
+
+// Box-Muller normal-distribution sampling. With a fixed seed the counts are deterministic; they should
+// track the empirical rule (~68% within one standard deviation, ~95% within two). seededNow() builds a
+// clock-seeded generator and must compile and run.
+program RandomGaussian;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Random r = new Random(cast<ulong>(12345)) on heap;
+                int n = 100000;
+                mutable int within1 = 0;
+                mutable int within2 = 0;
+                for (mutable int i = 0; i < n; i++) {
+                    double g = r.nextGaussian();
+                    if (g > -1.0) { if (g < 1.0) { within1 = within1 + 1; } }
+                    if (g > -2.0) { if (g < 2.0) { within2 = within2 + 1; } }
+                }
+                int pct1 = within1 / 1000;   // ~68 (empirical rule, deterministic for this seed)
+                int pct2 = within2 / 1000;   // ~95
+                System.IO.Console.printf("pct1=%d pct2=%d\n", pct1, pct2);
+                Random s = Random.seededNow();
+                double x = s.nextGaussianScaled(100.0, 15.0);
+                if (x > -1000.0) { System.IO.Console.println("seededNow ok"); }
+                return;
+            }
+        }
+    }
+}

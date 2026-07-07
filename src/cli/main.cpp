@@ -370,6 +370,8 @@ R"LDP3(
             public method get(int i) returns String { return this.argv[i]; }
         }
     }
+)LDP3"
+R"LDP3(
     public namespace System.Math {
         // Math (spec 34.6) is a compiler builtin (its functions lower to LLVM intrinsics), not a
         // real class -- a real `Math` class would clash with user classes named Math via namespace
@@ -401,6 +403,52 @@ R"LDP3(
             }
             public method nextBool() returns boolean {
                 return this.nextIntMax(2) == 0;
+            }
+            // sqrt/ln are kept private here so Random depends on no external class name -- the `Math`
+            // builtin name can be shadowed by a user class, and the prelude must never rely on it. The
+            // algorithms mirror System.Math.Math (Newton's method; atanh series after range reduction).
+            private method sqrtD(double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                mutable double g = x;
+                if (g > 1.0) { g = x / 2.0; }
+                for (mutable int i = 0; i < 40; i++) { g = 0.5 * (g + x / g); }
+                return g;
+            }
+            private method lnD(double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                mutable double v = x;
+                mutable int e = 0;
+                while (v >= 2.0) { v = v / 2.0; e = e + 1; }
+                while (v < 1.0) { v = v * 2.0; e = e - 1; }
+                double t = (v - 1.0) / (v + 1.0);
+                double t2 = t * t;
+                mutable double term = t;
+                mutable double sum = 0.0;
+                mutable int k = 1;
+                while (k <= 25) { sum = sum + term / cast<double>(k); term = term * t2; k = k + 2; }
+                return 2.0 * sum + cast<double>(e) * 0.6931471805599453;
+            }
+            // A standard-normal N(0, 1) sample via the Marsaglia polar method (spec 34.6): rejection
+            // sampling inside the unit disc, then a sqrt/ln scale. nextGaussianScaled shifts and scales it.
+            public method nextGaussian() returns double {
+                mutable double s = 0.0;
+                mutable double u = 0.0;
+                mutable boolean ok = false;
+                while (ok == false) {
+                    u = 2.0 * this.nextDouble() - 1.0;
+                    double v = 2.0 * this.nextDouble() - 1.0;
+                    s = u * u + v * v;
+                    if (s < 1.0) { if (s > 0.0) { ok = true; } }
+                }
+                return u * this.sqrtD(-2.0 * this.lnD(s) / s);
+            }
+            public method nextGaussianScaled(double mean, double stddev) returns double {
+                return mean + stddev * this.nextGaussian();
+            }
+            // A generator seeded from the monotonic clock -- a fresh, non-reproducible sequence per run,
+            // for when reproducibility is not wanted (the seeded constructor stays for deterministic runs).
+            public static method seededNow() returns Random {
+                return new Random(cast<ulong>(Time.nanos())) on heap;
             }
         }
     }

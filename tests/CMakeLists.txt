@@ -309,6 +309,25 @@ add_test(NAME codegen_bce_hoist_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# A class-returning method whose body ends in while(true): the unreachable fall-through must not emit an
+# i32 return on a pointer-returning function.
+add_test(NAME codegen_while_true_return_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/while_true_return.ldp3"
+    "-DCONTAINS=v=42"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# Box-Muller gaussian sampling tracks the empirical rule (68/95) for a fixed seed; seededNow() runs.
+add_test(NAME codegen_random_gaussian_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/random_gaussian.ldp3"
+    "-DCONTAINS=pct1=68 pct2=95"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Parameter passing is by value for a plain class type (deep copy, like assignment); `&`/`*` share.
 add_test(NAME codegen_value_parameter_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
