@@ -32,7 +32,18 @@ Toolchain locateToolchain() {
     Toolchain t;
     t.ldp3c = envOr("LDP3C", (dir / "ldp3c.exe").string());
     t.runtimeLib = envOr("LDP3_RUNTIME", (dir / "ldp3_rt.lib").string());
-    t.clang = envOr("LDP3_CLANG", LDP3_DEFAULT_CLANG);  // may be a bare "clang" resolved via PATH
+    // A bundled install ships clang + lld-link + a lib/ directory beside the driver. Prefer them so the
+    // toolchain is self-contained; fall back to a system clang otherwise.
+    std::error_code ec;
+    const fs::path bundledClang = dir / "clang.exe";
+    const fs::path bundledLld = dir / "lld-link.exe";
+    const fs::path bundledLib = dir / "lib";
+    t.clang = envOr("LDP3_CLANG",
+                    fs::exists(bundledClang, ec) ? bundledClang.string() : LDP3_DEFAULT_CLANG);
+    if (fs::is_directory(bundledLib, ec) && fs::exists(bundledLld, ec)) {
+        t.libDir = bundledLib.string();
+        t.lldLink = bundledLld.string();
+    }
     return t;
 }
 

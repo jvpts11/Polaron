@@ -156,20 +156,43 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         depObjects.push_back(obj.string());
     }
 
-    // 3) Link: clang <ll> <dep.obj...> <runtimeLib> -llegacy_stdio_definitions -lws2_32 -o <exe>.
-    // Force lld as the linker so the choice is deterministic -- a native object input can otherwise flip
-    // clang to the MSVC link.exe, which does not pull in the UCRT the runtime needs. (Each bundle embeds
-    // the stdlib prelude, but ldp3c emits those symbols in COMDATs, so the linker deduplicates them.)
-    std::vector<std::string> linkArgs = {"-O2", "-fuse-ld=lld", "-Wno-override-module", ll.string()};
-    for (const auto& obj : depObjects) linkArgs.push_back(obj);
-    linkArgs.push_back(tc.runtimeLib);
-    linkArgs.push_back("-llegacy_stdio_definitions");
-    linkArgs.push_back("-lws2_32");
-    linkArgs.push_back("-o");
-    linkArgs.push_back(exe.string());
-    if (int rc = runProcess(tc.clang, linkArgs); rc != 0) {
-        std::fprintf(stderr, "ldp3: link failed\n");
-        return rc == -1 ? 1 : rc;
+    // 3) Link. A self-contained bundle (tc.libDir set) compiles the IR to an object and links it with
+    // lld-link against its own CRT/import libs, needing no system Visual Studio or Windows SDK -- LDP3
+    // runs on a bare Windows 10/11 x64 machine. Otherwise clang drives the link against the system SDK.
+    if (!tc.libDir.empty()) {
+        const fs::path mainObj = outDir / (ll.stem().string() + ".main.obj");
+        if (int rc = runProcess(tc.clang, {"--target=x86_64-pc-windows-msvc", "-O2",
+                                           "-Wno-override-module", "-c", ll.string(), "-o",
+                                           mainObj.string()});
+            rc != 0) {
+            std::fprintf(stderr, "ldp3: compiling to object failed\n");
+            return rc == -1 ? 1 : rc;
+        }
+        std::vector<std::string> linkArgs = {"-out:" + exe.string(), "-nologo", "-defaultlib:libcmt",
+                                             "-defaultlib:oldnames", "-libpath:" + tc.libDir,
+                                             mainObj.string()};
+        for (const auto& obj : depObjects) linkArgs.push_back(obj);
+        linkArgs.push_back(tc.runtimeLib);
+        linkArgs.push_back("legacy_stdio_definitions.lib");
+        linkArgs.push_back("ws2_32.lib");
+        if (int rc = runProcess(tc.lldLink, linkArgs); rc != 0) {
+            std::fprintf(stderr, "ldp3: link failed\n");
+            return rc == -1 ? 1 : rc;
+        }
+    } else {
+        // Force lld as the linker so the choice is deterministic -- a native object input can otherwise
+        // flip clang to the MSVC link.exe, which does not pull in the UCRT the runtime needs.
+        std::vector<std::string> linkArgs = {"-O2", "-fuse-ld=lld", "-Wno-override-module", ll.string()};
+        for (const auto& obj : depObjects) linkArgs.push_back(obj);
+        linkArgs.push_back(tc.runtimeLib);
+        linkArgs.push_back("-llegacy_stdio_definitions");
+        linkArgs.push_back("-lws2_32");
+        linkArgs.push_back("-o");
+        linkArgs.push_back(exe.string());
+        if (int rc = runProcess(tc.clang, linkArgs); rc != 0) {
+            std::fprintf(stderr, "ldp3: link failed\n");
+            return rc == -1 ? 1 : rc;
+        }
     }
     std::printf("wrote %s\n", exe.string().c_str());
 
