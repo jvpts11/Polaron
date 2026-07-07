@@ -120,6 +120,33 @@ void* __ldp3_realloc(void* ptr, size_t size) {
     return np;
 }
 
+// Formats a Decimal (spec 34) into buf and returns its length. The compiler precomputes the sign, the
+// integer part and the 18-digit fraction via 128-bit division, so this only assembles them (no 128-bit
+// math -- MSVC has no __int128) and trims trailing zeros from the fraction for a clean "1.8" over
+// "1.800000000000000000". buf must hold at least 64 bytes.
+long long __ldp3_decimal_str(int neg, long long intPart, unsigned long long frac, char* buf) {
+    char frac18[18];
+    for (int i = 17; i >= 0; --i) { frac18[i] = (char)('0' + (int)(frac % 10)); frac /= 10; }
+    int flen = 18;
+    while (flen > 0 && frac18[flen - 1] == '0') --flen;  // trim trailing zeros
+    char* p = buf;
+    if (neg) *p++ = '-';
+    char tmp[24];
+    int ti = 0;
+    if (intPart == 0) {
+        tmp[ti++] = '0';
+    } else {
+        long long x = intPart;
+        while (x > 0) { tmp[ti++] = (char)('0' + (int)(x % 10)); x /= 10; }
+    }
+    while (ti > 0) *p++ = tmp[--ti];
+    if (flen > 0) {
+        *p++ = '.';
+        for (int i = 0; i < flen; ++i) *p++ = frac18[i];
+    }
+    return (long long)(p - buf);
+}
+
 // Index-keyed persistent registry (spec 18.5): the in-process store behind `arr[i] = new T()`
 // reattach. Each (key, index) pair maps to one zeroed persistent block that survives delete within a
 // run, so the same slot returns the same block and its persistent fields reattach across delete +

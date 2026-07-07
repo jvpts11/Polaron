@@ -3402,6 +3402,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("String has no method '" + mem->member + "'", call->loc);
                 return "";
             }
+            if (objType == "Decimal" && mem->member == "toString" && call->args.empty()) {
+                return "String";  // formats the i128 fixed-point value (codegen emitDecimalToString)
+            }
             // Integer types satisfy Hashable<T>/Comparable<T> via builtins, so they can be used as
             // map/set keys without boxing (collections, spec 34).
             if (isIntName(objType)) {

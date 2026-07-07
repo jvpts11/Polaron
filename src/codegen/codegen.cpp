@@ -1729,6 +1729,7 @@ struct CodeGenerator::Impl {
                     if (mem->member == "equalsKey") return "boolean";
                     if (mem->member == "compareTo") return "int";
                 }
+                if (typeName(*mem->object) == "Decimal" && mem->member == "toString") return "String";
                 // Integer keys: Hashable/Comparable builtins (collections) + toString (itoa).
                 if (const std::string ot = typeName(*mem->object); isIntName(ot)) {
                     if (mem->member == "hash") return "long";
@@ -2080,20 +2081,15 @@ struct CodeGenerator::Impl {
             builder.CreateTrunc(builder.CreateSDiv(absV, decimalScale()), builder.getInt64Ty());
         llvm::Value* frac =
             builder.CreateTrunc(builder.CreateSRem(absV, decimalScale()), builder.getInt64Ty());
-        llvm::Value* sign = builder.CreateSelect(neg, builder.CreateGlobalStringPtr("-", ".neg"),
-                                                 builder.CreateGlobalStringPtr("", ".pos"));
-        llvm::Value* fmt = builder.CreateGlobalStringPtr("%s%lld.%018llu", ".decfmt");
-        llvm::FunctionType* snTy = llvm::FunctionType::get(
-            builder.getInt32Ty(), {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy()},
-            /*isVarArg=*/true);
-        llvm::FunctionCallee sn = module.getOrInsertFunction("snprintf", snTy);
-        llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
-        llvm::Value* len = builder.CreateSExt(
-            builder.CreateCall(sn, {nullp, builder.getInt64(0), fmt, sign, intPart, frac}, "dlen"),
-            builder.getInt64Ty());
-        llvm::Value* cap = builder.CreateAdd(len, builder.getInt64(1));
-        llvm::Value* buf = builder.CreateCall(mallocFn(), {cap}, "dbuf");
-        builder.CreateCall(sn, {buf, cap, fmt, sign, intPart, frac});
+        // The 128-bit division is done here; the runtime helper (no __int128, so MSVC can compile it)
+        // just assembles the digits and trims trailing fraction zeros into a fresh 64-byte buffer.
+        llvm::Value* buf = builder.CreateCall(mallocFn(), {builder.getInt64(64)}, "dbuf");
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            builder.getInt64Ty(),
+            {builder.getInt32Ty(), builder.getInt64Ty(), builder.getInt64Ty(), builder.getPtrTy()}, false);
+        llvm::Value* len = builder.CreateCall(
+            module.getOrInsertFunction("__ldp3_decimal_str", ft),
+            {builder.CreateZExt(neg, builder.getInt32Ty()), intPart, frac, buf});
         return emitStringFromParts(len, buf);
     }
     // Loads the i64 length field of a String object.
@@ -4299,6 +4295,13 @@ struct CodeGenerator::Impl {
             llvm::Value* v = emitExpr(*call.args[0]);
             checkedArith_ = saved;
             return v;
+        }
+        // Decimal.toString(): format the i128 fixed-point mantissa (scale 10^18) as a decimal String.
+        if (const auto* dm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
+            dm != nullptr && dm->member == "toString" && call.args.empty() &&
+            typeName(*dm->object) == "Decimal") {
+            llvm::Value* v = emitExpr(*dm->object);
+            return v == nullptr ? nullptr : emitDecimalToString(v);
         }
         // SIMD vector methods (GLSL-style): v.dot(o)/v.length() -> float, v.normalize() -> vecN,
         // v.cross(o) -> vec3. The element-wise math lowers to plain vector instructions.

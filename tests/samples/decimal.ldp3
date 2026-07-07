@@ -3,8 +3,8 @@ program DecimalDemo;
 
 // The Decimal primitive (spec 34): exact fixed-point with 18 fraction digits, backed by a 128-bit
 // mantissa scaled by 10^18. Literals carry an `m` suffix. Arithmetic is exact (no binary rounding),
-// and a Decimal converts to/from the numeric types. Prints:
-// total=59.970000000000000000 / tax=4.797600000000000000 / expensive=1 whole=59 / half=2.500000000000000000
+// and a Decimal converts to/from the numeric types. toString/interpolation trim trailing fraction
+// zeros, so it prints: total=59.97 / tax=4.7976 / expensive=1 whole=59 / half=2.5
 public bundle main {
     public namespace app {
         public class Main {

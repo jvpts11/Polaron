@@ -373,6 +373,15 @@ add_test(NAME codegen_simd_lane_write_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# Decimal primitive: exact fixed-point arithmetic and trimmed toString.
+add_test(NAME codegen_decimal_math_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/decimal_math.ldp3"
+    "-DCONTAINS=1.8 0.45 1.2 5"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Parameter passing is by value for a plain class type (deep copy, like assignment); `&`/`*` share.
 add_test(NAME codegen_value_parameter_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
@@ -1119,7 +1128,7 @@ if(LDP3_WITH_LLVM)
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/decimal.ldp3"
-            "-DCONTAINS=total=59.970000000000000000 tax=4.797600000000000000 expensive=1 whole=59 half=2.500000000000000000"
+            "-DCONTAINS=total=59.97 tax=4.7976 expensive=1 whole=59 half=2.5"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

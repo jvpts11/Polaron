@@ -1,0 +1,25 @@
+import System.IO.Console;
+
+// The Decimal primitive (spec 34): exact base-10 fixed-point (i128 mantissa, scale 10^18), written with
+// the 'm' suffix. Arithmetic is exact -- 1.50 * 0.30 is precisely 0.45, not a binary-float approximation
+// -- and toString formats the value with trailing fraction zeros trimmed.
+program DecimalMath;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Decimal a = 1.50m;
+                Decimal b = 0.30m;
+                String out = (a + b).toString().concat(" ")
+                    .concat((a * b).toString()).concat(" ")
+                    .concat((a - b).toString()).concat(" ")
+                    .concat((a / b).toString());
+                System.IO.Console.println(out);            // 1.8 0.45 1.2 5
+                Decimal neg = 0.00m - 2.75m;
+                System.IO.Console.println(neg.toString());  // -2.75
+                return;
+            }
+        }
+    }
+}
