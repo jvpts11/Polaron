@@ -1,0 +1,125 @@
+import System.IO.Console;
+import System.IO.File;
+import System.Text.StringBuilder;
+
+// LDP3-OpenGL slice 2 -- a spinning triangle, rendered offscreen and written to PPM images.
+// Builds on the validated probe: same hidden-window GL context, now drawing a colored triangle
+// rotated by an angle with fixed-function GL 1.1, reading the framebuffer back pixel by pixel, and
+// writing an ASCII PPM (P6-free, text-safe) per angle. Rendering three angles demonstrates the spin.
+// No visible window; runs on the headless GDI generic software renderer.
+
+program GlTriangle;
+
+public bundle main {
+    public namespace gl {
+
+        public struct PixelFormatDescriptor {
+            public mutable short nSize;        public mutable short nVersion;
+            public mutable int dwFlags;
+            public mutable byte iPixelType;    public mutable byte cColorBits;
+            public mutable byte cRedBits;      public mutable byte cRedShift;
+            public mutable byte cGreenBits;    public mutable byte cGreenShift;
+            public mutable byte cBlueBits;     public mutable byte cBlueShift;
+            public mutable byte cAlphaBits;    public mutable byte cAlphaShift;
+            public mutable byte cAccumBits;    public mutable byte cAccumRedBits;
+            public mutable byte cAccumGreenBits; public mutable byte cAccumBlueBits;
+            public mutable byte cAccumAlphaBits; public mutable byte cDepthBits;
+            public mutable byte cStencilBits;  public mutable byte cAuxBuffers;
+            public mutable byte iLayerType;    public mutable byte bReserved;
+            public mutable int dwLayerMask;    public mutable int dwVisibleMask;
+            public mutable int dwDamageMask;
+        }
+        public struct Pixel {
+            public mutable byte r; public mutable byte g; public mutable byte b; public mutable byte a;
+        }
+
+        public class Win {
+            public extern stdcall static method CreateWindowExA(int exStyle, string cls, string name,
+                int style, int x, int y, int w, int h, long parent, long menu, long inst, long param)
+                returns long;
+            public extern stdcall static method GetDC(long hwnd) returns long;
+        }
+        public class Gdi {
+            public extern stdcall static method ChoosePixelFormat(long hdc, PixelFormatDescriptor* p)
+                returns int;
+            public extern stdcall static method SetPixelFormat(long hdc, int fmt,
+                PixelFormatDescriptor* p) returns int;
+        }
+        public class Gl {
+            public extern stdcall static method wglCreateContext(long hdc) returns long;
+            public extern stdcall static method wglMakeCurrent(long hdc, long ctx) returns int;
+            public extern stdcall static method glViewport(int x, int y, int w, int h) returns void;
+            public extern stdcall static method glClearColor(float r, float g, float b, float a)
+                returns void;
+            public extern stdcall static method glClear(int mask) returns void;
+            public extern stdcall static method glMatrixMode(int mode) returns void;
+            public extern stdcall static method glLoadIdentity() returns void;
+            public extern stdcall static method glRotatef(float a, float x, float y, float z)
+                returns void;
+            public extern stdcall static method glBegin(int mode) returns void;
+            public extern stdcall static method glEnd() returns void;
+            public extern stdcall static method glColor3f(float r, float g, float b) returns void;
+            public extern stdcall static method glVertex2f(float x, float y) returns void;
+            public extern stdcall static method glFinish() returns void;
+            public extern stdcall static method glReadPixels(int x, int y, int w, int h, int fmt,
+                int typ, Pixel* data) returns void;
+        }
+
+        public class Main {
+            // Render one frame at `angleDeg` and write it to `path` as an ASCII PPM.
+            public static method renderFrame(int size, float angleDeg, string path) returns void {
+                Gl.glViewport(0, 0, size, size);
+                Gl.glClearColor(0.10, 0.10, 0.13, 1.0);   // dark slate background
+                Gl.glClear(0x4000);                         // GL_COLOR_BUFFER_BIT
+                Gl.glMatrixMode(0x1700);                    // GL_MODELVIEW
+                Gl.glLoadIdentity();
+                Gl.glRotatef(angleDeg, 0.0, 0.0, 1.0);      // spin around Z
+                Gl.glBegin(0x0004);                         // GL_TRIANGLES
+                Gl.glColor3f(1.0, 0.25, 0.2);  Gl.glVertex2f(0.0, 0.8);
+                Gl.glColor3f(0.3, 1.0, 0.35);  Gl.glVertex2f(-0.8, -0.6);
+                Gl.glColor3f(0.3, 0.5, 1.0);   Gl.glVertex2f(0.8, -0.6);
+                Gl.glEnd();
+                Gl.glFinish();
+
+                StringBuilder sb = new StringBuilder() on heap;
+                sb.append("P3\n").appendInt(size).append(" ").appendInt(size).append("\n255\n");
+                Pixel* px = new Pixel() on heap;
+                // PPM is top-to-bottom; OpenGL's origin is bottom-left, so read rows top-down.
+                mutable int y = size - 1;
+                while (y >= 0) {
+                    mutable int x = 0;
+                    while (x < size) {
+                        Gl.glReadPixels(x, y, 1, 1, 0x1907, 0x1401, px);   // GL_RGB, GL_UNSIGNED_BYTE
+                        sb.appendInt(cast<int>(px.r) & 0xFF).append(" ")
+                          .appendInt(cast<int>(px.g) & 0xFF).append(" ")
+                          .appendInt(cast<int>(px.b) & 0xFF).append("\n");
+                        x = x + 1;
+                    }
+                    y = y - 1;
+                }
+                File.writeAll(path, sb.toString());
+                System.IO.Console.printf("wrote %s\n", path);
+            }
+
+            public static method main(string[] args) returns void {
+                // A generously sized hidden window; we render/read a smaller region well inside its client.
+                long hwnd = Win.CreateWindowExA(0, "STATIC", "gltri", 0, 0, 0, 300, 300, 0, 0, 0, 0);
+                long hdc = Win.GetDC(hwnd);
+                PixelFormatDescriptor* pfd = new PixelFormatDescriptor() on heap;
+                pfd.nSize = cast<short>(40);   pfd.nVersion = cast<short>(1);
+                pfd.dwFlags = 0x25;            pfd.iPixelType = cast<byte>(0);
+                pfd.cColorBits = cast<byte>(32); pfd.cDepthBits = cast<byte>(24);
+                int fmt = Gdi.ChoosePixelFormat(hdc, pfd);
+                Gdi.SetPixelFormat(hdc, fmt, pfd);
+                long ctx = Gl.wglCreateContext(hdc);
+                Gl.wglMakeCurrent(hdc, ctx);
+
+                int size = 96;
+                Main.renderFrame(size, 0.0, "triangle_000.ppm");
+                Main.renderFrame(size, 45.0, "triangle_045.ppm");
+                Main.renderFrame(size, 90.0, "triangle_090.ppm");
+                return;
+            }
+        }
+    }
+}

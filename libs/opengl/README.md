@@ -7,7 +7,11 @@ while it takes shape; the intent is to extract it to its own repository once the
 
 ## Status
 
-Bootstrapping. First slice in progress.
+Slices 1 and 2 done. A colored triangle is rendered offscreen from LDP3 and spun across angles,
+each frame written to a PPM. Below is the 45° frame (`triangle.ldp3`), rendered headlessly through
+the GDI generic software renderer:
+
+![Spinning triangle at 45°](demo.png)
 
 ## The plan (slices)
 
