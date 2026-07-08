@@ -485,6 +485,7 @@ struct CodeGenerator::Impl {
         llvm::Value* slot = nullptr;        // using: the resource's storage slot
         std::string className;              // using: its class (for the destructor)
         bool heap = false;                  // using: free it (a heap resource)
+        bool consumed = false;              // using: an explicit `delete r` already disposed it
     };
     std::vector<Cleanup> deferred;  // defer blocks + using disposals, run at scope end (LIFO)
     bool checkedArith_ = false;      // inside checked(...): signed +/-/* trap on overflow (spec 3.6)
@@ -6198,6 +6199,7 @@ struct CodeGenerator::Impl {
             emitBlock(*c.block);
             return;
         }
+        if (c.consumed) return;  // an explicit `delete r` inside the using block already disposed it
         llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), c.slot);
         auto cit = classes.find(c.className);
         if (cit != classes.end() && cit->second.hasDestructor)
@@ -7696,6 +7698,16 @@ struct CodeGenerator::Impl {
             // One delete; called for `del->target` and each of `del->moreTargets`. The placement
             // modifiers (from region / cascade) are shared and read from `del`.
             auto deleteOne = [&](const ast::Expr& target) {
+                // Deleting a `using` resource by name explicitly disposes it now, so mark its pending
+                // disposal consumed -- the using block must not destruct/free it a second time (that was
+                // a double free, now a hard panic via the allocator guard).
+                if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(&target))
+                    if (auto lit = locals.find(tid->name); lit != locals.end())
+                        for (auto dit = deferred.rbegin(); dit != deferred.rend(); ++dit)
+                            if (dit->block == nullptr && dit->slot == lit->second.storage) {
+                                dit->consumed = true;
+                                break;
+                            }
                 const std::string t = typeName(target);
                 if (isArrayType(t)) {
                     // An array is a single heap block: just free it.
