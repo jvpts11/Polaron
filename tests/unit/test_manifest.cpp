@@ -57,6 +57,26 @@ TEST_CASE("parseManifestText ignores comments and detects dependencies") {
     CHECK(m.hasDependencies == true);
 }
 
+TEST_CASE("parseManifestText reads native_libs as a comma-separated list") {
+    const std::string toml =
+        "[ldp3_project]\n"
+        "[program]\n"
+        "name = \"gl\"\n"
+        "entry = \"src/main.ldp3\"\n"
+        "[build]\n"
+        "native_libs = \"opengl32, user32 , gdi32\"\n";  // spaces around entries are trimmed
+    Manifest m = parseManifestText(toml);
+    REQUIRE(m.nativeLibs.size() == 3);
+    CHECK(m.nativeLibs[0] == "opengl32");
+    CHECK(m.nativeLibs[1] == "user32");
+    CHECK(m.nativeLibs[2] == "gdi32");
+}
+
+TEST_CASE("parseManifestText leaves native_libs empty when absent") {
+    Manifest m = parseManifestText("[ldp3_project]\n[program]\nentry = \"m.ldp3\"\n");
+    CHECK(m.nativeLibs.empty());
+}
+
 TEST_CASE("ephemeralManifest uses the file stem and its path") {
     Manifest m = ephemeralManifest("samples/hello_world.ldp3");
     CHECK(m.name == "hello_world");
