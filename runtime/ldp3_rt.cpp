@@ -545,14 +545,20 @@ void __ldp3_lazy_unlock(void) { pthread_mutex_unlock(&__ldp3_lazy_cs); }
 
 // ---- async/await: tasks + worker pool (spec 20.2) -----------------------------------------
 // A task is the handle to an async computation. `resume`/`state` are the state machine to run;
-// `waiter_*` is the continuation scheduled when this task completes (set by __ldp3_await).
+// A task's continuations: every awaiter suspended on it. A LIST, not one slot -- several async methods
+// may await the same task, and each must be resumed when it completes (a single slot let the last
+// awaiter clobber the others, so all but one deadlocked).
 typedef void (*ldp3_resume_fn)(void* state);
+typedef struct ldp3_waiter {
+    ldp3_resume_fn fn;
+    void* state;
+    struct ldp3_waiter* next;
+} ldp3_waiter;
 typedef struct ldp3_task {
     volatile long done;
     long long result;
-    ldp3_resume_fn waiter_fn;
-    void* waiter_state;
-    long long error;  // an exception carrier (object ptr) if the async body threw; 0 otherwise
+    ldp3_waiter* waiters;  // continuations to schedule on completion (LIFO; order among them is free)
+    long long error;       // an exception carrier (object ptr) if the async body threw; 0 otherwise
 } ldp3_task;
 
 // Ready queue of (resume, state) pairs run by a fixed pool of worker threads.
@@ -627,19 +633,30 @@ long long __ldp3_task_new(void) {
     return (long long)t;
 }
 
+// Detach the waiter list under the lock, then (outside it) schedule and free every continuation.
+// Shared by the value and error completion paths, so all awaiters are resumed exactly once.
+static void __ldp3_task_wake(ldp3_task* t) {
+    EnterCriticalSection(&g_qlock);
+    t->done = 1;
+    ldp3_waiter* w = t->waiters;
+    t->waiters = NULL;
+    LeaveCriticalSection(&g_qlock);
+    while (w != NULL) {
+        ldp3_waiter* next = w->next;
+        __ldp3_schedule(w->fn, w->state);
+        free(w);
+        w = next;
+    }
+    WakeAllConditionVariable(&g_donecond);
+}
+
 // Called by an async body when it produces its value: record the result, mark done, and
-// schedule the continuation (the task that awaited this one), if any.
+// schedule every continuation (each task that awaited this one).
 void __ldp3_task_complete(long long handle, long long value) {
     ldp3_task* t = (ldp3_task*)handle;
     if (t == NULL) return;
     t->result = value;
-    EnterCriticalSection(&g_qlock);
-    t->done = 1;
-    ldp3_resume_fn wf = t->waiter_fn;
-    void* ws = t->waiter_state;
-    LeaveCriticalSection(&g_qlock);
-    if (wf != NULL) __ldp3_schedule(wf, ws);
-    WakeAllConditionVariable(&g_donecond);
+    __ldp3_task_wake(t);
 }
 
 long long __ldp3_task_result(long long handle) {
@@ -653,13 +670,7 @@ void __ldp3_task_complete_error(long long handle, long long carrier) {
     ldp3_task* t = (ldp3_task*)handle;
     if (t == NULL) return;
     t->error = carrier;
-    EnterCriticalSection(&g_qlock);
-    t->done = 1;
-    ldp3_resume_fn wf = t->waiter_fn;
-    void* ws = t->waiter_state;
-    LeaveCriticalSection(&g_qlock);
-    if (wf != NULL) __ldp3_schedule(wf, ws);
-    WakeAllConditionVariable(&g_donecond);
+    __ldp3_task_wake(t);
 }
 
 // The exception carrier a completed task failed with, or 0 if it produced a value normally.
@@ -675,10 +686,14 @@ int __ldp3_await(long long awaited, ldp3_resume_fn resume, void* state) {
     ldp3_task* a = (ldp3_task*)awaited;
     if (a == NULL) return 0;
     if (a->done) return 0;  // synchronous fast path: a done task never un-dones, so skip the lock
+    ldp3_waiter* w = (ldp3_waiter*)malloc(sizeof(ldp3_waiter));
+    if (w == NULL) return 0;  // out of memory: fall through and read the (possibly not-yet-ready) result
+    w->fn = resume;
+    w->state = state;
     EnterCriticalSection(&g_qlock);
-    if (a->done) { LeaveCriticalSection(&g_qlock); return 0; }
-    a->waiter_fn = resume;
-    a->waiter_state = state;
+    if (a->done) { LeaveCriticalSection(&g_qlock); free(w); return 0; }
+    w->next = a->waiters;  // push onto the waiter list (several awaiters may suspend on one task)
+    a->waiters = w;
     LeaveCriticalSection(&g_qlock);
     return 1;
 }
