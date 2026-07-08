@@ -39,3 +39,4 @@ kernel/qemu.log
 # branding intermediates
 branding/preview-*.png
 branding/_render.html
+docs/reference/_reference.html
