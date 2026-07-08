@@ -19,7 +19,17 @@ namespace ldp3::ast {
 // Pair<int, double> -> "Pair$int$double". No args returns the base unchanged.
 inline std::string mangleGeneric(const std::string& base, const std::vector<std::string>& args) {
     std::string s = base;
-    for (const std::string& a : args) s += "$" + a;
+    for (const std::string& a : args) {
+        // Encode an array type-argument ("int[]") so it does not leave the mangled name ending in
+        // "[]": otherwise isArrayType would misclassify the whole instantiation as an array, and
+        // Box<int[]> would collide with the array type Box<int>[] (both would be "Box$int[]"). The
+        // token has no '$' (so the base-name split on the first '$' still works) and no trailing
+        // brackets. The real "int[]" argument is still used for type substitution; only the name changes.
+        std::string enc = a;
+        for (std::size_t p = enc.find("[]"); p != std::string::npos; p = enc.find("[]", p))
+            enc.replace(p, 2, "~arr");
+        s += "$" + enc;
+    }
     return s;
 }
 
