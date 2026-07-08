@@ -7454,6 +7454,32 @@ struct CodeGenerator::Impl {
                                 llvm::Value* recv = emitObjectPtr(*mt->object);
                                 llvm::Value* val = emitExpr(*assign->value);
                                 if (recv == nullptr || val == nullptr) return;
+                                // Dispatch through the vtable when a subtype may override the setter --
+                                // just like the getter and any method -- so `base.prop = v` runs the
+                                // most-derived setter; a concrete un-subclassed receiver stays a direct
+                                // call.
+                                const ast::MethodDecl* sdecl = findMethodDecl(oc, sit->second);
+                                const bool mayBeSubtype =
+                                    subclassed_.count(oc) > 0 || cit->second.isInterface ||
+                                    cit->second.isAbstract || cit->second.imported;
+                                const int slot = slotIndex(oc, sit->second);
+                                if (sdecl != nullptr && cit->second.hasVtable && mayBeSubtype && slot >= 0) {
+                                    llvm::Value* vtblField =
+                                        builder.CreateStructGEP(cit->second.type, recv, 0, "vtbl.addr");
+                                    llvm::Value* vtbl =
+                                        builder.CreateLoad(builder.getPtrTy(), vtblField, "vtbl");
+                                    llvm::Type* vtArrTy = llvm::ArrayType::get(
+                                        builder.getPtrTy(), cit->second.vtslots.size());
+                                    llvm::Value* slotPtr = builder.CreateConstGEP2_64(
+                                        vtArrTy, vtbl, 0, static_cast<std::uint64_t>(slot), "slot");
+                                    llvm::Value* fnPtr =
+                                        builder.CreateLoad(builder.getPtrTy(), slotPtr, "fn");
+                                    llvm::FunctionType* fty = methodFnType(sdecl);
+                                    if (fty->getNumParams() >= 2)
+                                        val = coerceToType(val, fty->getParamType(1));
+                                    builder.CreateCall(fty, fnPtr, {recv, val});
+                                    return;
+                                }
                                 if (fnit->second->arg_size() >= 2)
                                     val = coerceToType(val, fnit->second->getArg(1)->getType());
                                 builder.CreateCall(fnit->second, {recv, val});
@@ -7563,6 +7589,8 @@ struct CodeGenerator::Impl {
                     // A class-value field or array element is a pointer slot with no backing object
                     // (a fresh array's elements are null), so deep-copy into a fresh heap object and
                     // store the pointer rather than memcpy'ing into a (possibly null) existing object.
+                    // (Freeing the slot's previous value here is unsound without ownership tracking --
+                    // it may be shared or non-heap -- so the old value is left; see the M3 note.)
                     builder.CreateStore(emitClassCopy(targetType, v, /*heap=*/true), slot);
                 } else {
                     // A local already has a backing object (from its declaration). Free the storage it
