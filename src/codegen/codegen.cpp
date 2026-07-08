@@ -477,7 +477,16 @@ struct CodeGenerator::Impl {
     // `eternal` or already released. Mirrors scopeObjects.
     struct RegionLocal { llvm::Value* slot; bool isEternal; std::string name; };
     std::vector<RegionLocal> scopeRegions;
-    std::vector<const ast::Block*> deferred;  // defer blocks, run at scope end (LIFO)
+    // A pending scope-exit action, run in LIFO order at every exit (structured and unwind). Either a
+    // `defer` block, or a `using` resource's disposal (destructor if any, then free if heap). Unifying
+    // them lets both fire on the exception-unwind path, not only on structured exits (spec 23.1).
+    struct Cleanup {
+        const ast::Block* block = nullptr;  // a defer block (null => a using disposal)
+        llvm::Value* slot = nullptr;        // using: the resource's storage slot
+        std::string className;              // using: its class (for the destructor)
+        bool heap = false;                  // using: free it (a heap resource)
+    };
+    std::vector<Cleanup> deferred;  // defer blocks + using disposals, run at scope end (LIFO)
     bool checkedArith_ = false;      // inside checked(...): signed +/-/* trap on overflow (spec 3.6)
     // Function specialization over no-capture lambda arguments (perf). When a method that takes a
     // function<> parameter is called with a known constant lambda, a specialized copy of the method is
@@ -6183,16 +6192,28 @@ struct CodeGenerator::Impl {
     // order. Emitted before each `return` and at the function's fall-through end.
     // M4 tracks objects at function scope; per-block RAII comes with nested
     // scopes in a later phase.
+    // Runs one pending scope-exit action: a defer block, or a using resource's disposal.
+    void emitCleanupAction(const Cleanup& c) {
+        if (c.block != nullptr) {
+            emitBlock(*c.block);
+            return;
+        }
+        llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), c.slot);
+        auto cit = classes.find(c.className);
+        if (cit != classes.end() && cit->second.hasDestructor)
+            builder.CreateCall(functions[c.className + ".~" + c.className], {objPtr});
+        if (c.heap) builder.CreateCall(freeFn(), {objPtr});  // a heap resource is freed too
+    }
     void emitScopeCleanup() {
         // Contracts: postconditions run at each exit, before defers/destructors (spec 29).
         if (currentEnsures != nullptr)
             for (const ast::ExprPtr& e : *currentEnsures) emitContractCheck(*e, "ensures");
         if (currentInvariants != nullptr)
             for (const ast::Expr* inv : *currentInvariants) emitContractCheck(*inv, "invariant");
-        // Deferred blocks run first, in reverse (LIFO) order.
+        // Deferred actions run first, in reverse (LIFO) order.
         for (auto it = deferred.rbegin(); it != deferred.rend(); ++it) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
-            emitBlock(**it);
+            emitCleanupAction(*it);
         }
         for (auto it = scopeObjects.rbegin(); it != scopeObjects.rend(); ++it) {
             if (!it->region.empty()) continue;  // region objects are destructed when the region frees
@@ -6677,67 +6698,138 @@ struct CodeGenerator::Impl {
         return llvm::StructType::get(context, {builder.getPtrTy(), builder.getInt32Ty()});
     }
 
-    // S4 RAII-on-unwind: build a fresh chain of cleanuppads that destruct the live stack objects in
-    // reverse declaration order, then unwind to finalUnwind (null = to the caller). Returns the
-    // innermost pad (the unwind target for a faulting call), or finalUnwind if no live object has a
-    // destructor. Mirrors clang's WinEH pattern (pad_n -> ... -> pad_0 -> finalUnwind). Materialized
-    // lazily -- only when an exception is actually propagating out of the function -- so no orphan
-    // pads are emitted. The normal-path destructors (emitScopeCleanup) are emitted separately and
-    // are mutually exclusive with these pads (a cleanuppad is only reached via unwind).
-    // Itanium counterpart: one `landingpad cleanup` block that runs the live destructors in reverse
-    // declaration order, then `resume`s to keep unwinding toward the caller. (Only ever called to
-    // propagate to the caller, so there is no chained successor to thread through.)
-    llvm::BasicBlock* buildCleanupChainItanium() {
-        std::vector<const ScopeObject*> withDtor;
+    // Is there anything to run when an exception unwinds out of the current scope? -- a defer/using
+    // block, a live region, or a stack object with a destructor. (Region objects are destructed when the
+    // region frees, so they don't count on their own.)
+    bool hasUnwindCleanup() {
+        if (!deferred.empty() || !scopeRegions.empty()) return true;
         for (const ScopeObject& so : scopeObjects)
-            if (functions.count(so.className + ".~" + so.className) > 0) withDtor.push_back(&so);
-        if (withDtor.empty()) return nullptr;
+            if (so.region.empty() && functions.count(so.className + ".~" + so.className) > 0)
+                return true;
+        return false;
+    }
+    // Runs the full scope teardown -- defer/using blocks (LIFO), then stack-object destructors (reverse
+    // declaration order), then region frees -- as ordinary code, mirroring emitScopeCleanup. Used on the
+    // unwind path so `defer`/`using`/regions are honoured when an exception propagates (spec 23.1), not
+    // only on structured exits. The snapshots are passed in because the caller clears the live vectors
+    // first, so a call inside a cleanup action never recursively targets this same cleanup.
+    void emitUnwindCleanupBody(const std::vector<ScopeObject>& objs,
+                               const std::vector<Cleanup>& defs,
+                               const std::vector<RegionLocal>& regs) {
+        for (auto it = defs.rbegin(); it != defs.rend(); ++it) {
+            if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
+            emitCleanupAction(*it);
+        }
+        for (auto it = objs.rbegin(); it != objs.rend(); ++it) {
+            if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
+            if (!it->region.empty()) continue;  // destructed with the region
+            auto fnit = functions.find(it->className + ".~" + it->className);
+            if (fnit == functions.end()) continue;
+            builder.CreateCall(fnit->second, {builder.CreateLoad(builder.getPtrTy(), it->slot)});
+        }
+        if (builder.GetInsertBlock()->getTerminator() == nullptr && !regs.empty()) {
+            std::vector<RegionLocal> savedR = scopeRegions;  // freeRegionsFrom reads scopeRegions
+            scopeRegions = regs;
+            freeRegionsFrom(0);
+            scopeRegions = savedR;
+        }
+    }
+    // Itanium unwind cleanup: one `landingpad cleanup` block that runs the full scope teardown as
+    // ordinary code, then `resume`s to keep unwinding toward the caller. Materialized lazily and mutually
+    // exclusive with the normal-path emitScopeCleanup (a landing pad is only reached via unwind).
+    llvm::BasicBlock* buildCleanupChainItanium() {
+        if (!hasUnwindCleanup()) return nullptr;
         llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
         ensurePersonality();
+        auto objs = std::move(scopeObjects);  // snapshot + clear so cleanup actions don't re-target here
+        auto defs = std::move(deferred);
+        auto regs = std::move(scopeRegions);
+        scopeObjects.clear();
+        deferred.clear();
+        scopeRegions.clear();
         llvm::BasicBlock* pad = llvm::BasicBlock::Create(context, "cleanup", currentFn);
         builder.SetInsertPoint(pad);
         llvm::LandingPadInst* lp = builder.CreateLandingPad(landingPadType(), 0);
         lp->setCleanup(true);
-        for (auto it = withDtor.rbegin(); it != withDtor.rend(); ++it) {
-            llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), (*it)->slot);
-            builder.CreateCall(functions[(*it)->className + ".~" + (*it)->className], {objPtr});
-        }
-        builder.CreateResume(lp);
+        emitUnwindCleanupBody(objs, defs, regs);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateResume(lp);
+        scopeObjects = std::move(objs);  // restore for the normal path
+        deferred = std::move(defs);
+        scopeRegions = std::move(regs);
         builder.restoreIP(saved);
         return pad;
     }
+    // WinEH unwind cleanup. Pure stack-object destructors keep the original, tested cleanuppad-funclet
+    // chain (pad_n -> ... -> pad_0 -> finalUnwind), each destructor running under its funclet bundle.
+    // When defer/using blocks or live regions are also in scope -- arbitrary code that cannot easily run
+    // inside a funclet -- a catch-all pad catches the exception, `catchret`s to ordinary code that runs
+    // the full teardown, and re-throws the same carrier, exactly like the emitTry uncaught-with-finally
+    // path. Materialized lazily; mutually exclusive with emitScopeCleanup.
     llvm::BasicBlock* buildCleanupChain(llvm::BasicBlock* finalUnwind) {
         if (isItaniumEH()) return buildCleanupChainItanium();
-        llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
-        llvm::BasicBlock* succ = finalUnwind;
-        for (const ScopeObject& so : scopeObjects) {
-            auto fnit = functions.find(so.className + ".~" + so.className);
-            if (fnit == functions.end()) continue;  // no destructor: not part of the chain
-            ensurePersonality();
-            llvm::BasicBlock* pad =
-                llvm::BasicBlock::Create(context, "cleanup." + so.className, currentFn);
-            builder.SetInsertPoint(pad);
-            llvm::CleanupPadInst* cp =
-                builder.CreateCleanupPad(llvm::ConstantTokenNone::get(context), {});
-            llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
-            builder.CreateCall(
-                fnit->second, {objPtr},
-                {llvm::OperandBundleDef("funclet", llvm::ArrayRef<llvm::Value*>{cp})});
-            builder.CreateCleanupRet(cp, succ);
-            succ = pad;
+        if (deferred.empty() && scopeRegions.empty()) {  // pure destructors: unchanged funclet chain
+            llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
+            llvm::BasicBlock* succ = finalUnwind;
+            for (const ScopeObject& so : scopeObjects) {
+                auto fnit = functions.find(so.className + ".~" + so.className);
+                if (fnit == functions.end()) continue;  // no destructor: not part of the chain
+                ensurePersonality();
+                llvm::BasicBlock* pad =
+                    llvm::BasicBlock::Create(context, "cleanup." + so.className, currentFn);
+                builder.SetInsertPoint(pad);
+                llvm::CleanupPadInst* cp =
+                    builder.CreateCleanupPad(llvm::ConstantTokenNone::get(context), {});
+                llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
+                builder.CreateCall(
+                    fnit->second, {objPtr},
+                    {llvm::OperandBundleDef("funclet", llvm::ArrayRef<llvm::Value*>{cp})});
+                builder.CreateCleanupRet(cp, succ);
+                succ = pad;
+            }
+            builder.restoreIP(saved);
+            return succ;
         }
+        // Defer/using/regions present: catch-all -> run teardown in normal context -> re-throw.
+        llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
+        ensurePersonality();
+        auto objs = std::move(scopeObjects);  // snapshot + clear so teardown/rethrow don't re-target here
+        auto defs = std::move(deferred);
+        auto regs = std::move(scopeRegions);
+        scopeObjects.clear();
+        deferred.clear();
+        scopeRegions.clear();
+        llvm::PointerType* ptrTy = builder.getPtrTy();
+        llvm::BasicBlock* pad = llvm::BasicBlock::Create(context, "cleanup", currentFn);
+        builder.SetInsertPoint(pad);
+        llvm::Value* caughtSlot = createEntryAlloca("exc.cleanup", ptrTy);
+        llvm::CatchSwitchInst* cs =
+            builder.CreateCatchSwitch(llvm::ConstantTokenNone::get(context), nullptr, 1);  // unwind: caller
+        llvm::BasicBlock* dispatchBB = llvm::BasicBlock::Create(context, "cleanup.dispatch", currentFn);
+        cs->addHandler(dispatchBB);
+        builder.SetInsertPoint(dispatchBB);
+        llvm::CatchPadInst* cp =
+            builder.CreateCatchPad(cs, {ehTypeDesc(), builder.getInt32(0), caughtSlot});
+        llvm::BasicBlock* runBB = llvm::BasicBlock::Create(context, "cleanup.run", currentFn);
+        builder.CreateCatchRet(cp, runBB);
+        builder.SetInsertPoint(runBB);
+        llvm::Value* carrier = builder.CreateLoad(ptrTy, caughtSlot, "cleanup.obj");
+        emitUnwindCleanupBody(objs, defs, regs);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) emitThrowObject(carrier);
+        scopeObjects = std::move(objs);  // restore for the normal path
+        deferred = std::move(defs);
+        scopeRegions = std::move(regs);
         builder.restoreIP(saved);
-        return succ;
+        return pad;
     }
-    // Where a faulting call/throw at the current point must unwind to: the enclosing try's landing
-    // pad if inside a try (unchanged S1/S2); else, if stack objects are live, a fresh cleanup chain
-    // that runs their destructors before propagating to the caller; else null (an ordinary call).
-    // MVP note: inside a try we go straight to the catchswitch -- objects declared in the try body
-    // are cleaned only on the normal/return path (emitScopeCleanup), not on the caught-exception
-    // path. Full block-scoped unwind cleanup is a later slice.
+    // Where a faulting call/throw at the current point must unwind to: the enclosing try's landing pad
+    // if inside a try; else, if the scope has any teardown (defer/using, live region, or a stack object
+    // with a destructor), a fresh cleanup pad that runs it before propagating to the caller; else null.
+    // MVP note: inside a try we go straight to the catchswitch -- teardown declared in the try body is
+    // run only on the normal/return path (emitScopeCleanup) and on the try's own rethrow, not on the
+    // caught-exception path. Full block-scoped unwind cleanup within a try is a later slice.
     llvm::BasicBlock* computeUnwindDest() {
         if (!ehPadStack.empty()) return ehPadStack.back();
-        if (scopeObjects.empty()) return nullptr;
+        if (!hasUnwindCleanup()) return nullptr;
         return buildCleanupChain(nullptr);
     }
 
@@ -7683,33 +7775,36 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {
-            deferred.push_back(&def->body);  // runs at scope end (see emitScopeCleanup)
+            deferred.push_back(Cleanup{&def->body});  // runs at scope end (see emitScopeCleanup)
             return;
         }
         if (const auto* us = dynamic_cast<const ast::UsingStmt*>(&stmt)) {
             emitStatement(*us->decl);  // declare the resource
-            emitBlock(us->body);       // use it
-            // Dispose it at the block's end. A heap resource is freed; a stack
-            // resource is an alloca (never free it). Either way drop it from RAII
-            // tracking so scope-exit does not destruct it a second time.
+            // Register its disposal as a pending cleanup BEFORE the body, so it runs at every exit of the
+            // using block -- normal, return/break, and exception unwind alike (spec 23.1) -- not just the
+            // fall-through path. A stack resource is dropped from RAII tracking so the enclosing scope
+            // does not destruct it a second time; a heap resource is freed by the disposal.
             auto it = locals.find(us->varName);
-            if (it != locals.end() && builder.GetInsertBlock()->getTerminator() == nullptr) {
+            llvm::Value* dslot = (it != locals.end()) ? it->second.storage : nullptr;
+            if (dslot != nullptr) {
                 const std::string cn = baseType(it->second.type);
-                llvm::Value* objPtr =
-                    builder.CreateLoad(builder.getPtrTy(), it->second.storage);
-                auto cit = classes.find(cn);
-                if (cit != classes.end() && cit->second.hasDestructor) {
-                    builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
-                }
                 bool onStack = false;
                 for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so) {
-                    if (so->slot == it->second.storage) {
+                    if (so->slot == dslot) {
                         onStack = true;
                         scopeObjects.erase(so);
                         break;
                     }
                 }
-                if (!onStack) builder.CreateCall(freeFn(), {objPtr});
+                deferred.push_back(Cleanup{nullptr, dslot, cn, !onStack});
+            }
+            emitBlock(us->body);  // use it
+            if (dslot != nullptr) {
+                // Normal fall-through disposes here; a terminating exit already ran it via that path's
+                // cleanup. Either way drop the pending action.
+                if (builder.GetInsertBlock()->getTerminator() == nullptr)
+                    emitCleanupAction(deferred.back());
+                deferred.pop_back();
             }
             return;
         }
@@ -7885,7 +7980,7 @@ struct CodeGenerator::Impl {
     void emitBlockCleanup(std::size_t soBase, std::size_t dfBase, std::size_t regBase) {
         for (std::size_t i = deferred.size(); i > dfBase; --i) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
-            emitBlock(*deferred[i - 1]);
+            emitCleanupAction(deferred[i - 1]);
         }
         for (std::size_t i = scopeObjects.size(); i > soBase; --i) {
             const ScopeObject& so = scopeObjects[i - 1];
