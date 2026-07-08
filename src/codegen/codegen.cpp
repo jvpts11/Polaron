@@ -7423,6 +7423,16 @@ struct CodeGenerator::Impl {
                 // An object placed in a `volatile region` (MMIO): its field accesses are volatile.
                 if (!nw->region.empty() && volatileRegions_.count(nw->region) > 0)
                     volatileObjects_.insert(vd->name);
+            } else if (isClassValue(declType) && isCopyDiscipline(declType) &&
+                       isCopyableLValue(*vd->init) && !vd->isEternal &&
+                       escapingLocals_.count(vd->name) == 0) {
+                // A copy-initialized local (T b = a;) is a deep copy this frame uniquely owns -- it lives
+                // on the stack here (an escaping copy was promoted to the heap and is excluded). Register
+                // it for scope-exit destruction so it does not leak, exactly like a `new ... on stack`
+                // object; same ownership and same accepted this-escape risk as any stack object.
+                const std::string cn = baseType(declType);
+                if (auto cit = classes.find(cn); cit != classes.end() && cit->second.hasDestructor)
+                    scopeObjects.push_back(ScopeObject{slot, cn, ""});
             }
             // RAII for regions (spec 17.7): freed at the end of the lexical block
             // unless eternal. An explicit `release region` nulls the slot first, so
