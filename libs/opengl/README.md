@@ -13,6 +13,18 @@ the GDI generic software renderer:
 
 ![Spinning triangle at 45°](demo.png)
 
+There is also a **visible, live-animated** version, `triangle_window.ldp3`, that opens a real titled
+window and spins the triangle continuously (close the window to quit). It reuses the built-in
+"STATIC" window class — so still no `RegisterClass`/`WNDPROC` — pumps messages each frame to stay
+responsive, detects the close button via `IsWindow`, and presents with `SwapBuffers`. It needs a
+display session; on a machine with a GPU it is hardware-accelerated.
+
+```
+ldp3c triangle_window.ldp3 -o tw.ll
+clang tw.ll ldp3_rt.lib -lopengl32 -lgdi32 -luser32 -lkernel32 -o triangle_window.exe
+triangle_window.exe        # a window opens with the spinning triangle; close it to quit
+```
+
 ## The plan (slices)
 
 1. **Offscreen context probe** *(current)* — stand up a hidden-window OpenGL context and read back
