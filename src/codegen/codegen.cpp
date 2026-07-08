@@ -3321,17 +3321,35 @@ struct CodeGenerator::Impl {
                     }
                 }
             }
-            // Computed get-only property: obj.name calls the getter (no parens).
+            // Computed get-only property: obj.name calls the getter (no parens). Dispatch through the
+            // vtable when a subtype may override the getter -- exactly like a method call -- so an
+            // overridden property reads the most-derived value; a concrete, un-subclassed receiver
+            // devirtualizes to a direct call.
             const std::string ot = baseType(typeName(*mem->object));
             if (const ast::MethodDecl* pm = findMethodDecl(ot, mem->member);
                 pm != nullptr && pm->isProperty) {
+                llvm::Value* recv = emitObjectPtr(*mem->object);
+                if (recv == nullptr) return nullptr;
+                auto otit = classes.find(ot);
+                const bool mayBeSubtype =
+                    otit != classes.end() &&
+                    (subclassed_.count(ot) > 0 || otit->second.isInterface ||
+                     otit->second.isAbstract || otit->second.imported);
+                const int slot = slotIndex(ot, mem->member);
+                if (otit != classes.end() && otit->second.hasVtable && mayBeSubtype && slot >= 0) {
+                    llvm::Value* vtblField =
+                        builder.CreateStructGEP(otit->second.type, recv, 0, "vtbl.addr");
+                    llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblField, "vtbl");
+                    llvm::Type* vtArrTy =
+                        llvm::ArrayType::get(builder.getPtrTy(), otit->second.vtslots.size());
+                    llvm::Value* slotPtr = builder.CreateConstGEP2_64(
+                        vtArrTy, vtbl, 0, static_cast<std::uint64_t>(slot), "slot");
+                    llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), slotPtr, "fn");
+                    return builder.CreateCall(methodFnType(pm), fnPtr, {recv});
+                }
                 const std::string owner = methodOwner(ot, mem->member);
                 auto fnit = functions.find(owner + "." + mem->member);
-                if (fnit != functions.end()) {
-                    llvm::Value* recv = emitObjectPtr(*mem->object);
-                    if (recv == nullptr) return nullptr;
-                    return builder.CreateCall(fnit->second, {recv});
-                }
+                if (fnit != functions.end()) return builder.CreateCall(fnit->second, {recv});
             }
             llvm::Value* fieldPtr = emitLValue(*mem);
             if (fieldPtr == nullptr) return nullptr;

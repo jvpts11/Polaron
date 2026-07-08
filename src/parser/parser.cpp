@@ -1105,7 +1105,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         // Otherwise it is a field:  <type> <name> ;
         member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
                             isTransient, isVolatile, isLazy, isExternal, isMovableField,
-                            isUniqueField);
+                            isUniqueField, isAbstract, isOverride, isFinal);
     }
     if (!anns.empty()) {  // attach leading annotations to the declaration they precede
         if (auto* m = dynamic_cast<ast::MethodDecl*>(member.get())) m->annotations = std::move(anns);
@@ -1236,13 +1236,15 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
 ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable,
                                   bool isPersistent, bool isEternal, bool isTransient,
                                   bool isVolatile, bool isLazy, bool isExternal, bool isMovable,
-                                  bool isUnique) {
+                                  bool isUnique, bool isAbstract, bool isOverride, bool isFinal) {
     const SourceLocation loc = current().loc;
     ast::TypeRef type = parseTypeRef();
     const std::string name = expect(TokenKind::Identifier, "a field name").lexeme;
-    // A `{` here makes it a property (spec 8.4) rather than a plain field.
+    // A `{` here makes it a property (spec 8.4) rather than a plain field. Inheritance modifiers
+    // (override/abstract/final) apply to the property's synthesized accessors, not a plain field.
     if (check(TokenKind::LBrace)) {
-        return parseProperty(std::move(visibility), isStatic, std::move(type), name, loc);
+        return parseProperty(std::move(visibility), isStatic, std::move(type), name, loc, isAbstract,
+                             isOverride, isFinal);
     }
     auto f = std::make_unique<ast::FieldDecl>();
     f->loc = loc;
@@ -1276,7 +1278,8 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
 // property: it becomes a getter method read as `obj.name` (no parens).
 // set-with-body (backing-field properties) is a later refinement.
 ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
-                                     const std::string& name, SourceLocation loc) {
+                                     const std::string& name, SourceLocation loc, bool isAbstract,
+                                     bool isOverride, bool isFinal) {
     expect(TokenKind::LBrace, "'{'");
     bool hasSet = false;
     bool getHasBody = false;
@@ -1329,6 +1332,9 @@ ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast:
         setter->returnType = ast::TypeRef{};
         setter->returnType.name = "void";
         setter->body = std::move(setBody);
+        setter->isAbstract = isAbstract;
+        setter->isOverride = isOverride;
+        setter->isFinal = isFinal;
         extraMembers_.push_back(std::move(setter));
 
         auto getter = std::make_unique<ast::MethodDecl>();
@@ -1336,6 +1342,9 @@ ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast:
         getter->visibility = std::move(visibility);
         getter->isStatic = isStatic;
         getter->isProperty = true;
+        getter->isAbstract = isAbstract;
+        getter->isOverride = isOverride;  // an overridden property dispatches through the vtable
+        getter->isFinal = isFinal;
         getter->name = name;
         getter->returnType = std::move(type);
         getter->body = std::move(getBody);
@@ -1358,6 +1367,9 @@ ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast:
         setter->returnType = ast::TypeRef{};
         setter->returnType.name = "void";
         setter->body = std::move(setBody);
+        setter->isAbstract = isAbstract;
+        setter->isOverride = isOverride;
+        setter->isFinal = isFinal;
         extraMembers_.push_back(std::move(setter));
 
         auto f = std::make_unique<ast::FieldDecl>();
@@ -1377,6 +1389,9 @@ ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast:
         m->visibility = std::move(visibility);
         m->isStatic = isStatic;
         m->isProperty = true;
+        m->isAbstract = isAbstract;
+        m->isOverride = isOverride;  // an overridden property dispatches through the vtable
+        m->isFinal = isFinal;
         m->name = name;
         m->returnType = std::move(type);
         m->body = std::move(getBody);
