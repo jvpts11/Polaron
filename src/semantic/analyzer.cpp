@@ -2388,6 +2388,24 @@ void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
                       "' but the parameter type is '" + pt + "'",
                   args[i]->loc);
         }
+        // spec 19.2: passing an object that owns a `unique` field BY VALUE would copy it and alias the
+        // unique, breaking its single-owner guarantee (the same reason a value assignment is rejected --
+        // see checkOwnershipAssign). Reject it for a by-value parameter; a fresh temporary or an explicit
+        // `move` is fine, and a pointer/reference parameter shares rather than copies.
+        if (!isRefType(pt)) {
+            const ClassInfo* pci = lookupClass(baseType(pt));
+            const auto* argId = dynamic_cast<const ast::IdentifierExpr*>(args[i].get());
+            const bool argIsMove = dynamic_cast<const ast::MoveExpr*>(args[i].get()) != nullptr;
+            const bool argIsLValue =
+                argId != nullptr || dynamic_cast<const ast::MemberExpr*>(args[i].get()) != nullptr;
+            if (pci != nullptr && !pci->isMovable && !pci->isUnique && argIsLValue && !argIsMove &&
+                classHasUniqueField(baseType(pt))) {
+                error("cannot pass '" + pci->name + "' by value to " + desc +
+                          ": it owns a 'unique' field, which may not be duplicated (spec 19.2) -- "
+                          "pass it by pointer ('" + pci->name + "*') or reference",
+                      args[i]->loc);
+            }
+        }
     }
 }
 
