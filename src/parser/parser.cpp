@@ -2067,8 +2067,12 @@ bool Parser::looksLikeGenericVarDecl() const {
         } else if (k == TokenKind::Shr) {
             depth -= 2;  // '>>' closes two generic levels at once
             if (depth <= 0) break;
-        } else if (k != TokenKind::Identifier && k != TokenKind::Comma && !isTypeKeyword(k)) {
-            return false;  // not a pure type-argument list -> it's a comparison
+        } else if (k != TokenKind::Identifier && k != TokenKind::Comma && k != TokenKind::Star &&
+                   k != TokenKind::Amp && k != TokenKind::LBracket && k != TokenKind::RBracket &&
+                   k != TokenKind::Dot && !isTypeKeyword(k)) {
+            // A pure type-argument list may hold pointer/ref/array/qualified args (Box<Point*>,
+            // Box<int[]>, Box<app.Foo>); anything else means it's a comparison.
+            return false;
         }
         ++i;
     }
@@ -2116,8 +2120,12 @@ bool Parser::looksLikeGenericCall() const {
         } else if (k == TokenKind::Shr) {
             depth -= 2;  // '>>' closes two generic levels at once
             if (depth <= 0) break;
-        } else if (k != TokenKind::Identifier && k != TokenKind::Comma && !isTypeKeyword(k)) {
-            return false;  // not a pure type-argument list -> it's a comparison
+        } else if (k != TokenKind::Identifier && k != TokenKind::Comma && k != TokenKind::Star &&
+                   k != TokenKind::Amp && k != TokenKind::LBracket && k != TokenKind::RBracket &&
+                   k != TokenKind::Dot && !isTypeKeyword(k)) {
+            // A pure type-argument list may hold pointer/ref/array/qualified args (Box<Point*>,
+            // Box<int[]>, Box<app.Foo>); anything else means it's a comparison.
+            return false;
         }
         ++i;
     }
@@ -2148,8 +2156,10 @@ bool Parser::looksLikeTupleDestructuring() const {
                 if (k == TokenKind::Lt) ++depth;
                 else if (k == TokenKind::Gt) --depth;
                 else if (k == TokenKind::Shr) depth -= 2;  // '>>' closes two levels
-                else if (k != TokenKind::Identifier && k != TokenKind::Comma && !isTypeKeyword(k))
-                    return false;
+                else if (k != TokenKind::Identifier && k != TokenKind::Comma &&
+                         k != TokenKind::Star && k != TokenKind::Amp && k != TokenKind::LBracket &&
+                         k != TokenKind::RBracket && k != TokenKind::Dot && !isTypeKeyword(k))
+                    return false;  // pointer/ref/array/qualified type args are allowed
                 ++i;
             }
         }
