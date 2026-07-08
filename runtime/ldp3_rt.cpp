@@ -674,6 +674,7 @@ long long __ldp3_task_error(long long handle) {
 int __ldp3_await(long long awaited, ldp3_resume_fn resume, void* state) {
     ldp3_task* a = (ldp3_task*)awaited;
     if (a == NULL) return 0;
+    if (a->done) return 0;  // synchronous fast path: a done task never un-dones, so skip the lock
     EnterCriticalSection(&g_qlock);
     if (a->done) { LeaveCriticalSection(&g_qlock); return 0; }
     a->waiter_fn = resume;
