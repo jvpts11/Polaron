@@ -486,6 +486,7 @@ struct CodeGenerator::Impl {
         std::string className;              // using: its class (for the destructor)
         bool heap = false;                  // using: free it (a heap resource)
         bool consumed = false;              // using: an explicit `delete r` already disposed it
+        llvm::Value* lockRelease = nullptr; // synchronized: release this Mutex lock (block-scoped)
     };
     std::vector<Cleanup> deferred;  // defer blocks + using disposals, run at scope end (LIFO)
     // Locals returned from the current body: a class value copied into such a local escapes the frame,
@@ -6201,6 +6202,12 @@ struct CodeGenerator::Impl {
     // scopes in a later phase.
     // Runs one pending scope-exit action: a defer block, or a using resource's disposal.
     void emitCleanupAction(const Cleanup& c) {
+        if (c.lockRelease != nullptr) {  // synchronized: release the Mutex lock (on normal exit or unwind)
+            llvm::FunctionType* lf =
+                llvm::FunctionType::get(builder.getVoidTy(), {builder.getInt64Ty()}, false);
+            builder.CreateCall(module.getOrInsertFunction("__ldp3_lock_release", lf), {c.lockRelease});
+            return;
+        }
         if (c.block != nullptr) {
             emitBlock(*c.block);
             return;
@@ -6746,10 +6753,17 @@ struct CodeGenerator::Impl {
             builder.CreateCall(fnit->second, {builder.CreateLoad(builder.getPtrTy(), it->slot)});
         }
         if (builder.GetInsertBlock()->getTerminator() == nullptr && !regs.empty()) {
-            std::vector<RegionLocal> savedR = scopeRegions;  // freeRegionsFrom reads scopeRegions
+            // freeRegionsFrom reads scopeRegions, and runRegionObjectDtors (which it calls) reads
+            // scopeObjects to find each region's objects. On the unwind path both members were cleared
+            // into the local snapshots, so restore them here -- otherwise a region's object destructors
+            // were skipped while unwinding (they run only on the normal exit).
+            std::vector<RegionLocal> savedR = scopeRegions;
+            std::vector<ScopeObject> savedO = scopeObjects;
             scopeRegions = regs;
+            scopeObjects = objs;
             freeRegionsFrom(0);
             scopeRegions = savedR;
+            scopeObjects = savedO;
         }
     }
     // Itanium unwind cleanup: one `landingpad cleanup` block that runs the full scope teardown as
@@ -7894,6 +7908,12 @@ struct CodeGenerator::Impl {
                 builder.CreateStructGEP(cl.type, mptr, lockIt->second, "mtx.lock.addr");
             llvm::Value* lock = builder.CreateLoad(builder.getInt64Ty(), lockAddr, "mtx.lock");
             builder.CreateCall(module.getOrInsertFunction("__ldp3_lock_acquire", lf), {lock});
+            // Register the release as a block-scoped cleanup so it runs on BOTH the normal exit and an
+            // exception unwind out of the body -- a throw inside the block used to leave the mutex locked
+            // forever, deadlocking the next acquirer (spec 23.1: releases run while unwinding too).
+            std::size_t dfBase = deferred.size();
+            deferred.push_back(Cleanup{});
+            deferred.back().lockRelease = lock;
             // Bind the name to a reference to the protected value: the local's storage *is* the
             // address of the value field, so reads/writes of the binding hit the field directly.
             llvm::Value* valAddr =
@@ -7902,9 +7922,12 @@ struct CodeGenerator::Impl {
             LocalSlot saved = had ? locals[sy->bindName] : LocalSlot{};
             locals[sy->bindName] = LocalSlot{valAddr, sy->bindType.name};
             emitBlock(sy->body);
-            if (builder.GetInsertBlock()->getTerminator() == nullptr)
-                builder.CreateCall(module.getOrInsertFunction("__ldp3_lock_release", lf), {lock});
             if (had) locals[sy->bindName] = saved; else locals.erase(sy->bindName);
+            // Normal path: run the release we registered. The unwind path already ran it via the
+            // cleanup chain (which snapshotted `deferred` when the body threw). Pop it either way.
+            if (builder.GetInsertBlock()->getTerminator() == nullptr)
+                for (std::size_t i = deferred.size(); i > dfBase; --i) emitCleanupAction(deferred[i - 1]);
+            deferred.resize(dfBase);
             return;
         }
         if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
