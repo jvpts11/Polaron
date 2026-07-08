@@ -1,0 +1,729 @@
+# LDP3 Standard Library — Math / Numerics / Net / Misc
+
+Reference for the mathematics, numerics, cryptography, networking, and application-utility
+classes of the LDP3 standard library. Every type here is defined in the embedded prelude
+(the `kPreludeSource` raw string in `src/cli/main.cpp`, lines ~6340–8360) and is written in
+pure LDP3 over the compiler builtins, unless a member is noted as `extern` (linking to a
+runtime helper).
+
+All stdlib types require an **explicit import**. The import names the fully-qualified type,
+e.g. `import System.Math.BigInteger;` or `import System.Net.Http;`. Each type below lists its
+namespace and the exact import line.
+
+Signatures are reproduced verbatim from the source. Only **public** members are listed
+(constructors, public instance methods, public static methods, and public fields); private
+helpers are omitted.
+
+Namespaces covered:
+
+- `System.Math` — big integers, number theory, statistics, linear algebra, geometry,
+  transcendental functions, graphics/animation math, probabilistic sketches.
+- `System.OS` — process results.
+- `System.Security` — secure randomness and AES.
+- `System.Net` — TCP/UDP sockets and a minimal HTTP client.
+- `System.App` — resilience, rate limiting, a stack VM, feature flags, pooling, money.
+- `System.Test` — the inline unit-test framework.
+
+---
+
+# System.Math
+
+## BigInteger
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.BigInteger;`
+
+Arbitrary-precision signed integer (spec 34). Decimal digits (0..9) are stored
+least-significant-first in an `int[]` with a separate sign flag. Supports construction from
+`long`, sign-aware add/subtract/multiply/divide/remainder, comparison, and decimal rendering.
+
+- `public constructor BigInteger(long value)` — build from a signed 64-bit value.
+- `public method isZero() returns boolean` — whether the value is exactly zero.
+- `public method add(BigInteger other) returns BigInteger` — sign-aware sum (new value).
+- `public method subtract(BigInteger other) returns BigInteger` — sign-aware difference (new value).
+- `public method multiply(BigInteger other) returns BigInteger` — long multiplication with sign (new value).
+- `public method compareTo(BigInteger other) returns int` — sign-aware compare: -1, 0, or 1.
+- `public method divide(BigInteger other) returns BigInteger` — quotient truncated toward zero (zero on divide-by-zero).
+- `public method remainder(BigInteger other) returns BigInteger` — remainder whose sign follows the dividend (zero on divide-by-zero).
+- `public method toString() returns String` — decimal string, with a leading `-` when negative.
+
+## IntMath
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.IntMath;`
+
+Integer math helpers (spec 34.6) on plain `int`s, with no floating point: gcd/lcm, factorial,
+primality, integer power and square root, combinatorics, modular exponentiation, and digit
+utilities. (Named `IntMath` so it never shadows a user class called `Math`.)
+
+- `public static method gcd(int a, int b) returns int` — greatest common divisor via Euclid (handles negatives).
+- `public static method lcm(int a, int b) returns int` — least common multiple (0 when either input is 0).
+- `public static method factorial(int n) returns int` — n! computed in an `int`.
+- `public static method isPrime(int n) returns boolean` — primality by trial division.
+- `public static method ipow(int base, int exp) returns int` — integer base raised to exp.
+- `public static method isqrt(int n) returns int` — floor of the square root (0 for negative n).
+- `public static method nCr(int n, int r) returns int` — binomial coefficient, multiplying/dividing as it goes to stay exact.
+- `public static method nPr(int n, int r) returns int` — number of ordered r-arrangements of n items.
+- `public static method modpow(int base, int exp, int mod) returns int` — modular exponentiation by repeated squaring (64-bit intermediates).
+- `public static method digitSum(int n) returns int` — sum of the decimal digits of |n|.
+- `public static method reverseDigits(int n) returns int` — digits of |n| reversed as an integer.
+- `public static method isPalindrome(int n) returns boolean` — whether n is a non-negative decimal palindrome.
+
+## Rational
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Rational;`
+
+An exact fraction kept in lowest terms with a positive denominator (spec 34.6). The constructor
+divides out the gcd and normalizes the sign; arithmetic returns new reduced Rationals.
+
+- `public constructor Rational(int n, int d)` — build n/d, reduced and sign-normalized.
+- `public method numerator() returns int` — the reduced numerator.
+- `public method denominator() returns int` — the reduced (positive) denominator.
+- `public method add(Rational o) returns Rational` — sum, reduced (new value).
+- `public method sub(Rational o) returns Rational` — difference, reduced (new value).
+- `public method mul(Rational o) returns Rational` — product, reduced (new value).
+- `public method toDouble() returns double` — floating-point approximation num/den.
+
+## Complex
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Complex;`
+
+A complex number with `double` real and imaginary parts (spec 34.6).
+
+- `public constructor Complex(double re, double im)` — build re + im·i.
+- `public method real() returns double` — the real part.
+- `public method imag() returns double` — the imaginary part.
+- `public method add(Complex o) returns Complex` — complex sum (new value).
+- `public method sub(Complex o) returns Complex` — complex difference (new value).
+- `public method mul(Complex o) returns Complex` — complex product (new value).
+- `public method conjugate() returns Complex` — the complex conjugate (new value).
+
+## Stats
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Stats;`
+
+Summary statistics over an `int[]` (spec 34.6): totals, central tendency, spread, and order
+statistics on a sorted copy. All results are integer-valued.
+
+- `public static method sum(int[] xs) returns int` — sum of all values.
+- `public static method mean(int[] xs) returns int` — integer arithmetic mean (0 for empty).
+- `public static method min(int[] xs) returns int` — smallest value.
+- `public static method max(int[] xs) returns int` — largest value.
+- `public static method variance(int[] xs) returns int` — population variance about the integer mean (0 for empty).
+- `public static method stddev(int[] xs) returns int` — population standard deviation (isqrt of the variance).
+- `public static method median(int[] xs) returns int` — middle value of a sorted copy; upper-middle for an even count.
+- `public static method range(int[] xs) returns int` — max minus min (0 for empty).
+- `public static method mode(int[] xs) returns int` — most frequent value; ties resolve to the first to reach the top count.
+- `public static method percentile(int[] xs, int p) returns int` — value at percentile p in [0,100] by nearest-rank on a sorted copy.
+
+## Dual
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Dual;`
+
+Forward-mode automatic differentiation via dual numbers (spec 34.6): each value carries its
+derivative, and arithmetic propagates the chain rule. Evaluate a function with `variable(x)` and
+read `deriv()` for the exact derivative at x; `constant(c)` has derivative 0.
+
+- `public constructor Dual(double value, double deriv)` — build a dual number (value, derivative).
+- `public static method variable(double x) returns Dual` — a seed variable at x (derivative 1).
+- `public static method constant(double x) returns Dual` — a constant x (derivative 0).
+- `public method value() returns double` — the primal value.
+- `public method deriv() returns double` — the accumulated derivative.
+- `public method add(Dual o) returns Dual` — sum with chain rule (new value).
+- `public method sub(Dual o) returns Dual` — difference with chain rule (new value).
+- `public method mul(Dual o) returns Dual` — product with the product rule (new value).
+
+## Matrix
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Matrix;`
+
+A dense integer matrix stored row-major in one flat `int[]` (spec 34.6).
+
+- `public constructor Matrix(int rows, int cols)` — allocate a zero-filled rows×cols matrix.
+- `public method rows() returns int` — row count.
+- `public method cols() returns int` — column count.
+- `public method set(int r, int c, int value) returns void` — store value at (r, c).
+- `public method get(int r, int c) returns int` — read the element at (r, c).
+- `public method multiply(Matrix o) returns Matrix` — matrix product (new matrix).
+- `public method transpose() returns Matrix` — transpose (new matrix).
+- `public method add(Matrix o) returns Matrix` — elementwise sum (new matrix).
+- `public method determinant() returns int` — exact integer determinant via Bareiss fraction-free elimination (0 if singular; assumes square).
+
+## Polynomial
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Polynomial;`
+
+A polynomial with integer coefficients in ascending order, coeff i multiplying x^i (spec 34.6).
+
+- `public constructor Polynomial(int[] coeffs)` — build from ascending coefficients (index i is the x^i term).
+- `public method degree() returns int` — the polynomial degree (length − 1).
+- `public method coeff(int i) returns int` — the i-th coefficient (0 if out of range).
+- `public method evaluate(int x) returns int` — evaluate at x via Horner's method.
+- `public method derivative() returns Polynomial` — the differentiated polynomial (new value).
+
+## IntVector
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.IntVector;`
+
+A fixed-length integer vector (spec 34.6). For floating SIMD vectors use the built-in
+`vec2`/`vec3`/`vec4` types instead.
+
+- `public constructor IntVector(int[] elems)` — wrap the given elements.
+- `public method get(int i) returns int` — the i-th component.
+- `public method size() returns int` — component count.
+- `public method dot(IntVector o) returns int` — dot product.
+- `public method normSquared() returns int` — squared Euclidean length.
+
+## Sieve
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Sieve;`
+
+The sieve of Eratosthenes up to a limit (spec 34.6): the constructor marks composites once, then
+lookups are constant-time.
+
+- `public constructor Sieve(int limit)` — sieve all integers up to `limit` inclusive.
+- `public method isPrime(int n) returns boolean` — constant-time primality within the sieved range.
+- `public method count() returns int` — number of primes found up to the limit.
+
+## Xorshift
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Xorshift;`
+
+A fast deterministic pseudo-random generator (xorshift32, spec 34.6): the same seed always
+yields the same sequence, unlike the wall-clock-seeded `Random`.
+
+- `public constructor Xorshift(int seed)` — seed the generator (a 0 seed is bumped to 1).
+- `public method next() returns int` — the next raw 32-bit value.
+- `public method nextInRange(int n) returns int` — a non-negative value in [0, n).
+
+## GaussSolver
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.GaussSolver;`
+
+A dense linear-system solver (spec 34.6) via Gaussian elimination with partial pivoting, using
+`double` throughout.
+
+- `public static method solve(double[] aug, int n) returns double[]` — solve [A|b] given as a flat row-major n×(n+1) augmented matrix (overwritten in place); returns the solution vector x.
+
+## RunningStats
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.RunningStats;`
+
+Online mean and variance via Welford's algorithm (spec 34.6): add samples one at a time in O(1)
+space, then read the running statistics without keeping the data.
+
+- `public constructor RunningStats()` — start an empty accumulator.
+- `public method add(double x) returns void` — incorporate one sample.
+- `public method getMean() returns double` — the running mean.
+- `public method populationVariance() returns double` — population variance (0 with fewer than 1 sample).
+- `public method sampleVariance() returns double` — sample variance (0 with fewer than 2 samples).
+- `public method count() returns int` — number of samples seen.
+
+## NumberTheory
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.NumberTheory;`
+
+Number-theory toolkit (spec 34.6): gcd/lcm, fast modular exponentiation, deterministic
+Miller-Rabin primality for 32-bit ints (witnesses 2, 3, 5, 7), and modular inverse.
+
+- `public static method gcd(int a, int b) returns int` — greatest common divisor (handles negatives).
+- `public static method lcm(int a, int b) returns int` — least common multiple (0 when either is 0).
+- `public static method modpow(long base, long exp, long mod) returns long` — modular exponentiation by repeated squaring, in `long`.
+- `public static method isPrime(int num) returns boolean` — deterministic Miller-Rabin primality for 32-bit ints.
+- `public static method modInverse(int a, int m) returns int` — modular inverse via extended Euclid (−1 when a is not invertible mod m).
+
+## Crt
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Crt;`
+
+Chinese remainder theorem (spec 34.6): solve x ≡ a[i] (mod n[i]) for pairwise-coprime moduli.
+
+- `public static method solve(int[] a, int[] n, int k) returns long` — least non-negative x satisfying the first k congruences.
+
+## Factorize
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Factorize;`
+
+Integer factorization by trial division (spec 34.6).
+
+- `public static method largestPrimeFactor(int num) returns int` — the largest prime factor of num.
+- `public static method factorCount(int num) returns int` — count of prime factors with multiplicity.
+
+## Combinatorics
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Combinatorics;`
+
+Combinatorics (spec 34.6): factorials and binomials in `long`, Catalan numbers, and in-place
+permutation enumeration.
+
+- `public static method factorial(int n) returns long` — n! in a `long`.
+- `public static method choose(int n, int k) returns long` — binomial coefficient (0 when k out of range).
+- `public static method catalan(int n) returns long` — the nth Catalan number.
+- `public static method nextPermutation(int[] a, int n) returns boolean` — advance a[0..n) to the next lexicographic permutation in place; false past the last.
+
+## Polygon
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Polygon;`
+
+Planar geometry over integer coordinates given as parallel xs/ys arrays (spec 34.6).
+
+- `public static method area2(int[] xs, int[] ys, int n) returns int` — twice the shoelace area (doubled so integer inputs stay integer), always non-negative.
+- `public static method contains(int[] xs, int[] ys, int n, int px, int py) returns boolean` — point-in-polygon by ray casting.
+
+## ConvexHull
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.ConvexHull;`
+
+Convex hull of a point set (spec 34.6) by Andrew's monotone chain, given parallel xs/ys arrays.
+
+- `public static method size(int[] xs, int[] ys, int n) returns int` — number of hull vertices, dropping collinear points.
+
+## CountMinSketch
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.CountMinSketch;`
+
+Count-Min sketch (spec 34.1): a sub-linear frequency estimator over `depth` independent hash
+rows. Estimates never underestimate (and are exact when the width avoids collisions).
+
+- `public constructor CountMinSketch(int width, int depth)` — allocate a width×depth counter table.
+- `public method add(String key, int count) returns void` — accumulate count for a key across all rows.
+- `public method estimate(String key) returns int` — estimated frequency (the minimum matching row).
+
+## HyperLogLog
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.HyperLogLog;`
+
+HyperLogLog (spec 34.1): estimates distinct-element count in near-constant memory. Precision is
+log2 of the register count (e.g. 10 → 1024 registers, ~3% error).
+
+- `public constructor HyperLogLog(int precision)` — allocate 2^precision registers.
+- `public method add(String key) returns void` — record one observed key.
+- `public method estimate() returns int` — estimated cardinality, with linear counting in the small range.
+
+## Numerics
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Numerics;`
+
+Self-contained transcendental functions in pure LDP3 (spec 34.6), so scientific classes never
+depend on the `Math` builtin. sqrt is Newton's method; ln uses an atanh series; exp/sin/cos use
+range-reduction plus Taylor series; pow is exp(e·ln(b)) for positive b.
+
+- `public static method pi() returns double` — the constant π.
+- `public static method abs(double x) returns double` — absolute value.
+- `public static method sqrt(double x) returns double` — square root (0 for x ≤ 0).
+- `public static method ln(double x) returns double` — natural logarithm (0 for x ≤ 0).
+- `public static method exp(double x) returns double` — e^x.
+- `public static method sin(double x) returns double` — sine.
+- `public static method cos(double x) returns double` — cosine.
+- `public static method pow(double b, double e) returns double` — b^e for positive b (0 when b ≤ 0).
+
+## Interpolation
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Interpolation;`
+
+Interpolation helpers for animation and graphics (spec 34.6).
+
+- `public static method lerp(double a, double b, double t) returns double` — linear interpolation a→b by t.
+- `public static method inverseLerp(double a, double b, double v) returns double` — the t that maps to v (0 when a == b).
+- `public static method clamp(double v, double lo, double hi) returns double` — clamp v into [lo, hi].
+- `public static method smoothstep(double edge0, double edge1, double x) returns double` — Hermite smoothstep between the edges.
+- `public static method remap(double v, double inLo, double inHi, double outLo, double outHi) returns double` — remap v from one range to another.
+
+## Bits
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Bits;`
+
+Bit-twiddling helpers over 32-bit words (spec 34.6), using `uint` for logical (zero-fill) shifts.
+
+- `public static method popcount(int x) returns int` — number of set bits.
+- `public static method leadingZeros(int x) returns int` — count of leading zero bits (32 for 0).
+- `public static method trailingZeros(int x) returns int` — count of trailing zero bits (32 for 0).
+- `public static method isPow2(int n) returns boolean` — whether n is a positive power of two.
+- `public static method nextPow2(int n) returns int` — smallest power of two ≥ n (1 for n ≤ 1).
+- `public static method reverse(int x) returns int` — full 32-bit reversal.
+
+## Vector2
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Vector2;`
+
+A 2D vector of doubles (spec 34.6). The components are public mutable fields; arithmetic returns
+new heap vectors.
+
+- `public mutable double x` — the x component (public field).
+- `public mutable double y` — the y component (public field).
+- `public constructor Vector2(double x, double y)` — build (x, y).
+- `public method add(Vector2 o) returns Vector2` — vector sum (new value).
+- `public method sub(Vector2 o) returns Vector2` — vector difference (new value).
+- `public method scale(double s) returns Vector2` — scalar multiple (new value).
+- `public method dot(Vector2 o) returns double` — dot product.
+- `public method length() returns double` — Euclidean length (via Numerics.sqrt).
+
+## Vector4
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Vector4;`
+
+A 4D vector of doubles, e.g. homogeneous coordinates (spec 34.6). Components are public mutable
+fields.
+
+- `public mutable double x` — the x component (public field).
+- `public mutable double y` — the y component (public field).
+- `public mutable double z` — the z component (public field).
+- `public mutable double w` — the w component (public field).
+- `public constructor Vector4(double x, double y, double z, double w)` — build (x, y, z, w).
+- `public method add(Vector4 o) returns Vector4` — vector sum (new value).
+- `public method dot(Vector4 o) returns double` — dot product.
+- `public method length() returns double` — Euclidean length (via Numerics.sqrt).
+
+## Easing
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Easing;`
+
+Easing curves mapping t in [0,1] to [0,1] for animation (spec 34.6).
+
+- `public static method quadIn(double t) returns double` — quadratic ease-in.
+- `public static method quadOut(double t) returns double` — quadratic ease-out.
+- `public static method cubicIn(double t) returns double` — cubic ease-in.
+- `public static method cubicOut(double t) returns double` — cubic ease-out.
+
+## Angle
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Angle;`
+
+Angle conversions (spec 34.6).
+
+- `public static method toRadians(double deg) returns double` — degrees to radians.
+- `public static method toDegrees(double rad) returns double` — radians to degrees.
+
+## Mat4
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Mat4;`
+
+A 4×4 matrix in row-major storage for 3D transforms (spec 34.6). Pairs with Vector4; each
+operation returns a new matrix.
+
+- `public constructor Mat4()` — allocate a zero-filled 4×4 matrix.
+- `public static method identity() returns Mat4` — the identity matrix (new value).
+- `public method get(int r, int c) returns double` — read the element at (r, c).
+- `public method set(int r, int c, double v) returns void` — store v at (r, c).
+- `public method multiply(Mat4 o) returns Mat4` — matrix product (new value).
+- `public method transpose() returns Mat4` — transpose (new value).
+
+## Fft
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Fft;`
+
+Radix-2 fast Fourier transform (spec 34.6), iterative Cooley-Tukey over parallel real/imag arrays
+whose length is a power of two. `inverse(forward(x)) == x`.
+
+- `public static method forward(double[] re, double[] im, int n) returns void` — forward transform in place.
+- `public static method inverse(double[] re, double[] im, int n) returns void` — inverse transform in place, divided by n.
+
+## Regression
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Regression;`
+
+Ordinary least-squares linear regression (spec 34.6): fit y = slope·x + intercept from parallel
+arrays and report the coefficient of determination r².
+
+- `public constructor Regression(double[] x, double[] y, int n)` — fit the line over the first n points.
+- `public method getSlope() returns double` — the fitted slope.
+- `public method getIntercept() returns double` — the fitted intercept.
+- `public method getR2() returns double` — the coefficient of determination r².
+- `public method predict(double x) returns double` — the fitted value at x.
+
+## Correlation
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Correlation;`
+
+Pearson correlation coefficient (spec 34.6).
+
+- `public static method pearson(double[] x, double[] y, int n) returns double` — correlation in [−1, 1] over the first n pairs (0 when a spread is degenerate).
+
+## Quaternion
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Quaternion;`
+
+Quaternions for 3D rotation math (spec 34.6): Hamilton product, conjugate, magnitude and
+normalize. Immutable; operations return new heap quaternions.
+
+- `public constructor Quaternion(double w, double x, double y, double z)` — build (w, x, y, z).
+- `public method getW() returns double` — the scalar component w.
+- `public method getX() returns double` — the i component x.
+- `public method getY() returns double` — the j component y.
+- `public method getZ() returns double` — the k component z.
+- `public method magnitude() returns double` — Euclidean norm (via Numerics.sqrt).
+- `public method conjugate() returns Quaternion` — the conjugate (new value).
+- `public method mul(Quaternion o) returns Quaternion` — Hamilton product (new value).
+- `public method normalize() returns Quaternion` — unit quaternion (identity when magnitude is 0).
+
+## MatrixD
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.MatrixD;`
+
+A dense `double` matrix stored row-major (spec 34.6).
+
+- `public constructor MatrixD(int rows, int cols)` — allocate a zero-filled rows×cols matrix.
+- `public method set(int r, int c, double v) returns void` — store v at (r, c).
+- `public method get(int r, int c) returns double` — read the element at (r, c).
+- `public method rowCount() returns int` — row count.
+- `public method colCount() returns int` — column count.
+- `public method mul(MatrixD o) returns MatrixD` — matrix product (new value).
+- `public method transpose() returns MatrixD` — transpose (new value).
+- `public method determinant() returns double` — determinant by Gaussian elimination with partial pivoting (0 if singular).
+
+## Vector3
+
+**Namespace:** `System.Math` · **Import:** `import System.Math.Vector3;`
+
+A 3D vector of doubles (spec 34.6). Immutable; operations return new heap vectors.
+
+- `public constructor Vector3(double x, double y, double z)` — build (x, y, z).
+- `public method getX() returns double` — the x component.
+- `public method getY() returns double` — the y component.
+- `public method getZ() returns double` — the z component.
+- `public method add(Vector3 o) returns Vector3` — vector sum (new value).
+- `public method sub(Vector3 o) returns Vector3` — vector difference (new value).
+- `public method scale(double s) returns Vector3` — scalar multiple (new value).
+- `public method dot(Vector3 o) returns double` — dot product.
+- `public method cross(Vector3 o) returns Vector3` — cross product (new value).
+- `public method length() returns double` — Euclidean length (via Numerics.sqrt).
+- `public method normalize() returns Vector3` — unit vector (zero vector when length is 0).
+
+---
+
+# System.OS
+
+## ProcessResult
+
+**Namespace:** `System.OS` · **Import:** `import System.OS.ProcessResult;`
+
+The result of running a subprocess (spec 34): its captured stdout and exit code. Built by the
+`Process.run(cmd)` builtin, which runs the command through the shell.
+
+- `public String output` — the captured standard output (public field).
+- `public int exitCode` — the process exit code (public field).
+- `public constructor ProcessResult(String output, int exitCode)` — build from output and exit code.
+- `public method success() returns boolean` — whether the exit code is 0.
+
+---
+
+# System.Security
+
+## SecureRandom
+
+**Namespace:** `System.Security` · **Import:** `import System.Security.SecureRandom;`
+
+A cryptographically secure random source (spec 34): 64 bits per draw from the OS CSPRNG, suitable
+for keys, tokens and nonces (unlike `System.Math.Random`, which is a fast PRNG). The draw links to
+a runtime helper via `extern`.
+
+- `public constructor SecureRandom()` — open the secure source.
+- `public method nextLong() returns long` — 64 random bits.
+- `public method nextInt() returns int` — a non-negative 31-bit random int.
+- `public method nextIntMax(int max) returns int` — a random int in [0, max).
+- `public method nextBool() returns boolean` — a random boolean.
+- `public method nextDouble() returns double` — a random double in [0, 1) (52-bit mantissa).
+- `public method nextBytes(int n) returns int[]` — n random bytes as ints in 0..255.
+
+## Aes
+
+**Namespace:** `System.Security` · **Import:** `import System.Security.Aes;`
+
+AES block cipher (spec 34; FIPS-197), pure LDP3. Supports 128- and 256-bit keys (16 or 32 bytes);
+S-boxes are generated from the GF(2^8) inverse plus the affine transform. `encryptBlock`/
+`decryptBlock` are the raw 16-byte ECB primitive; `ctr()` is the recommended stream mode
+(encryption and decryption are the same call). Bytes are carried as ints in 0..255.
+
+- `public constructor Aes(int[] key)` — build a cipher from a 16- or 32-byte key (expands the round keys).
+- `public method encryptBlock(int[] input) returns int[]` — encrypt one 16-byte block (ECB).
+- `public method decryptBlock(int[] input) returns int[]` — decrypt one 16-byte block (ECB).
+- `public method ctr(int[] data, int[] iv) returns int[]` — CTR-mode keystream XORed with the data; symmetric, no padding. iv is a 16-byte nonce/counter start.
+
+---
+
+# System.Net
+
+## Socket
+
+**Namespace:** `System.Net` · **Import:** `import System.Net.Socket;`
+
+A blocking TCP socket (spec 34) wrapping an OS handle (or −1 on failure). Build a client with
+`Socket.connect`; `ServerSocket.accept()` also hands back a Socket. Send/receive/close lower to
+runtime winsock helpers.
+
+- `public constructor Socket(long handle)` — wrap an existing OS socket handle.
+- `public static method connect(String host, int port) returns Socket` — open a client connection.
+- `public method isOpen() returns boolean` — whether the handle is valid (≥ 0).
+- `public method send(String data) returns long` — send bytes; returns the count sent.
+- `public method receive(int max) returns String` — receive up to max bytes.
+- `public method close() returns void` — close the socket.
+
+## ServerSocket
+
+**Namespace:** `System.Net` · **Import:** `import System.Net.ServerSocket;`
+
+A listening TCP server socket (spec 34): bind+listen on a port, then accept the next connection.
+
+- `public constructor ServerSocket(int port)` — bind and listen on the given port.
+- `public method isOpen() returns boolean` — whether the listening handle is valid (≥ 0).
+- `public method accept() returns Socket` — block for the next connection and return its Socket.
+- `public method close() returns void` — close the listening socket.
+
+## Datagram
+
+**Namespace:** `System.Net` · **Import:** `import System.Net.Datagram;`
+
+A received datagram (spec 34): its payload plus the sender's address, so a server can reply.
+
+- `public String data` — the payload (public field).
+- `public String host` — the sender's host (public field).
+- `public int port` — the sender's port (public field).
+- `public constructor Datagram(String data, String host, int port)` — build from payload and sender address.
+
+## UdpSocket
+
+**Namespace:** `System.Net` · **Import:** `import System.Net.UdpSocket;`
+
+A UDP socket (spec 34): connectionless datagrams. Open with port 0 for an ephemeral client port,
+or a fixed port to receive on.
+
+- `public constructor UdpSocket(int port)` — open a UDP socket on the given port (0 = ephemeral).
+- `public method isOpen() returns boolean` — whether the handle is valid (≥ 0).
+- `public method send(String host, int port, String data) returns long` — send a datagram to an address; returns the count sent.
+- `public method receive(int max) returns Datagram` — receive a datagram (payload plus the sender's address).
+- `public method close() returns void` — close the socket.
+
+## HttpResponse
+
+**Namespace:** `System.Net` · **Import:** `import System.Net.HttpResponse;`
+
+A parsed HTTP response (spec 34): the raw text is kept and queried lazily.
+
+- `public constructor HttpResponse(String raw)` — wrap a raw response string.
+- `public method raw() returns String` — the full raw response text.
+- `public method status() returns int` — the status code from the start line (0 if unparseable).
+- `public method body() returns String` — everything after the blank line ("" if none).
+- `public method header(String name) returns String` — a header field's value ("" if absent).
+
+## Http
+
+**Namespace:** `System.Net` · **Import:** `import System.Net.Http;`
+
+A minimal HTTP/1.1 client over Socket (spec 34). Request building and response parsing are pure;
+`get` performs the network round-trip.
+
+- `public static method buildRequest(String verb, String host, String path) returns String` — format a request line with Host and Connection: close headers.
+- `public static method get(String host, int port, String path) returns HttpResponse` — open a socket, send a GET, drain the reply, and parse it.
+
+---
+
+# System.App
+
+## CircuitBreaker
+
+**Namespace:** `System.App` · **Import:** `import System.App.CircuitBreaker;`
+
+Circuit breaker (spec 34): trips open after `threshold` consecutive failures and rejects calls
+until a cooldown passes, then allows one trial (half-open); a success closes it, a failure reopens
+it. Time is passed in explicitly (milliseconds) so behavior is deterministic.
+
+- `public constructor CircuitBreaker(int threshold, long cooldownMs)` — build with a failure threshold and cooldown.
+- `public method allow(long now) returns boolean` — whether a call is permitted at time `now`.
+- `public method recordSuccess() returns void` — record a success (closes the breaker).
+- `public method recordFailure(long now) returns void` — record a failure (may open the breaker).
+- `public method getState() returns int` — current state: 0 closed, 1 open, 2 half-open.
+
+## TokenBucket
+
+**Namespace:** `System.App` · **Import:** `import System.App.TokenBucket;`
+
+Token-bucket rate limiter (spec 34): tokens refill continuously at `ratePerMs` up to capacity;
+each acquire spends tokens if enough are available. Time is passed in explicitly (milliseconds).
+
+- `public constructor TokenBucket(double capacity, double ratePerMs)` — build with a capacity and refill rate.
+- `public method tryAcquire(long now, int count) returns boolean` — refill to `now` and spend `count` tokens if available.
+
+## StackVm
+
+**Namespace:** `System.App` · **Import:** `import System.App.StackVm;`
+
+A tiny stack virtual machine (spec 34): executes a flat program of (opcode, operand) pairs against
+an operand stack and a small memory. Opcodes: 0 HALT, 1 PUSH v, 2 STORE a, 3 LOAD a, 4 MUL, 5 SUB,
+6 JZ t, 7 JMP t, 8 ADD (jump targets are instruction indices).
+
+- `public static method run(int[] prog, int plen, int memSize) returns int` — run the program (plen ints, memSize memory cells) and return the top of the stack.
+
+## FeatureFlags
+
+**Namespace:** `System.App` · **Import:** `import System.App.FeatureFlags;`
+
+Named feature flags (spec 34): enable/disable toggles by name, defaulting to off when unset.
+
+- `public constructor FeatureFlags()` — start with all flags off.
+- `public method enable(String name) returns void` — turn a flag on.
+- `public method disable(String name) returns void` — turn a flag off.
+- `public method isEnabled(String name) returns boolean` — whether a flag is on (false when unset).
+
+## ObjectPool
+
+**Namespace:** `System.App` · **Import:** `import System.App.ObjectPool;`
+
+A fixed-capacity pool of reusable integer ids (spec 34).
+
+- `public constructor ObjectPool(int capacity)` — build a pool of the given capacity.
+- `public method acquire() returns int` — hand out a fresh or recycled id (−1 when exhausted).
+- `public method recycle(int id) returns void` — return an id for reuse.
+- `public method inUse() returns int` — count of live (unrecycled) ids.
+
+## Money
+
+**Namespace:** `System.App` · **Import:** `import System.App.Money;`
+
+Fixed-point money as integer cents (spec 34), avoiding floating-point rounding.
+
+- `public constructor Money(long cents)` — build an amount in cents.
+- `public method getCents() returns long` — the amount in cents.
+- `public method plus(Money o) returns Money` — sum (new value).
+- `public method minus(Money o) returns Money` — difference (new value).
+- `public method times(int factor) returns Money` — scaled amount (new value).
+- `public method format() returns String` — a signed dollar string like "$12.34".
+
+---
+
+# System.Test
+
+## Test (annotation)
+
+**Namespace:** `System.Test` · **Import:** `import System.Test.Test;`
+
+Marker annotation (spec 32.11): a `public static method` returning `boolean` tagged `[Test]` is an
+inline test, discovered and run by `ldp3 test`. (The spec writes `@Test`, but LDP3 annotations use
+`[Name]` brackets.)
+
+- `public annotation Test {}` — the marker annotation, applied as `[Test]`.
+
+## Assert
+
+**Namespace:** `System.Test` · **Import:** `import System.Test.Assert;`
+
+Boolean assertion helpers (spec 34): each returns whether the check holds, to be fed to
+`TestRunner.check`.
+
+- `public static method eq(int a, int b) returns boolean` — int equality.
+- `public static method eqLong(long a, long b) returns boolean` — long equality.
+- `public static method eqStr(String a, String b) returns boolean` — string equality.
+- `public static method near(double a, double b, double eps) returns boolean` — doubles within an epsilon.
+- `public static method isTrue(boolean c) returns boolean` — passes through a true condition.
+- `public static method isFalse(boolean c) returns boolean` — negates a condition.
+
+## TestRunner
+
+**Namespace:** `System.Test` · **Import:** `import System.Test.TestRunner;`
+
+A minimal unit-test runner (spec 34): tally pass/fail, print each result and a summary. Lets LDP3
+code (and this stdlib) self-test.
+
+- `public constructor TestRunner()` — start with no results.
+- `public method check(String name, boolean cond) returns void` — tally a pass/fail for `name` and print a line.
+- `public method passed() returns int` — number of checks passed.
+- `public method failed() returns int` — number of checks failed.
+- `public method allPassed() returns boolean` — whether every check held.
+- `public method report() returns void` — print the "N passed, M failed" summary.
