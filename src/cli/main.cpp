@@ -262,11 +262,12 @@ R"LDP3(
                 return lines;
             }
             public static method writeLines(String path, ArrayList<String> lines) returns void {
-                mutable String content = "";
+                StringBuilder sb = new StringBuilder() on heap;  // concat in a loop was O(total^2)
                 for (mutable int i = 0; i < lines.size(); i++) {
-                    content = content.concat(lines.get(i)).concat("\n");
+                    sb.append(lines.get(i));
+                    sb.appendChar(cast<char>(10));  // '\n'
                 }
-                File.writeAll(path, content);
+                File.writeAll(path, sb.toString());
                 return;
             }
             public static method appendLine(String path, String line) returns void {
@@ -3043,19 +3044,28 @@ R"LDP3(
         // (indexOf/substring/concat/repeat), so they allocate fresh owned Strings and never mutate input.
         public class Strings {
             public static method split(String text, String separator) returns ArrayList<String> {
+                // Cursor scan over the original text (the old rest = rest.substring(...) resliced the
+                // whole remainder every step -> O(n^2)). Only the emitted pieces allocate -> O(n).
                 mutable ArrayList<String> out = new ArrayList<String>() on heap;
-                mutable String rest = text;
-                mutable boolean more = true;
-                while (more) {
-                    int at = rest.indexOf(separator);
-                    if (at < 0) {
-                        out.add(rest);
-                        more = false;
+                int n = text.length();
+                int m = separator.length();
+                if (m == 0) { out.add(text); return out; }  // empty separator: no split (avoids a stall)
+                mutable int start = 0;
+                mutable int i = 0;
+                while (i + m <= n) {
+                    mutable boolean hit = true;
+                    for (mutable int j = 0; j < m; j++) {
+                        if (text.charAt(i + j) != separator.charAt(j)) { hit = false; }
+                    }
+                    if (hit) {
+                        out.add(text.substring(start, i));
+                        i = i + m;
+                        start = i;
                     } else {
-                        out.add(rest.substring(0, at));
-                        rest = rest.substring(at + separator.length(), rest.length());
+                        i = i + 1;
                     }
                 }
+                out.add(text.substring(start, n));
                 return out;
             }
             public static method join(ArrayList<String> parts, String separator) returns String {
@@ -3121,28 +3131,30 @@ R"LDP3(
             }
             // Counts the non-overlapping occurrences of a substring (spec 4).
             public static method count(String text, String sub) returns int {
-                if (sub.length() == 0) { return 0; }
+                int m = sub.length();
+                if (m == 0) { return 0; }
+                // Cursor scan (the old rest = rest.substring(...) resliced the remainder each hit -> O(n^2)).
                 mutable int hits = 0;
-                mutable String rest = text;
-                mutable boolean more = true;
-                while (more) {
-                    int at = rest.indexOf(sub);
-                    if (at < 0) {
-                        more = false;
-                    } else {
-                        hits = hits + 1;
-                        rest = rest.substring(at + sub.length(), rest.length());
+                int n = text.length();
+                mutable int i = 0;
+                while (i + m <= n) {
+                    mutable boolean hit = true;
+                    for (mutable int j = 0; j < m; j++) {
+                        if (text.charAt(i + j) != sub.charAt(j)) { hit = false; }
                     }
+                    if (hit) { hits = hits + 1; i = i + m; } else { i = i + 1; }
                 }
                 return hits;
             }
             // Reverses the characters of a string (spec 4); substring(i, i+1) yields each one-char piece.
             public static method reverse(String text) returns String {
-                mutable String result = "";
+                // StringBuilder, not result = result.concat(...) which recopied the whole string each
+                // step (O(n^2)).
+                StringBuilder sb = new StringBuilder() on heap;
                 for (mutable int i = text.length() - 1; i >= 0; i--) {
-                    result = result.concat(text.substring(i, i + 1));
+                    sb.appendChar(text.charAt(i));
                 }
-                return result;
+                return sb.toString();
             }
             // Upper-cases the first character and leaves the rest unchanged (spec 4).
             public static method capitalize(String text) returns String {
