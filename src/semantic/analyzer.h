@@ -166,6 +166,9 @@ private:
     // Enforces move discipline when a class value is bound from `rhs`.
     void checkOwnershipAssign(const std::string& targetType, const ast::Expr& rhs,
                               SourceLocation loc);
+    // True if `className` owns a `unique` field, directly, through a superclass, or through a value
+    // sub-object -- such an object may not be value-copied (spec 19.2).
+    bool classHasUniqueField(const std::string& className);
     // Checks a type against a region's accepts/rejects constraints (spec 17.3).
     void checkRegionAccepts(const std::string& region, const std::string& type, SourceLocation loc);
     // A type from another namespace must be imported (or be a primitive / a

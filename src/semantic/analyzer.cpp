@@ -1741,7 +1741,32 @@ void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const
               loc);
     } else if (ci->isUnique && rhsId != nullptr) {
         moved_.insert(rhsId->name);  // unique: a plain assignment is an implicit move
+    } else if (classHasUniqueField(baseType(targetType))) {
+        // spec 19.2: a `unique` value may not be duplicated, so an object that owns a unique field
+        // cannot be value-copied -- the shallow copy would alias the unique and break its single-owner
+        // guarantee (a movable field is deep-copied, but a unique one has no valid copy). Share by
+        // pointer/reference instead.
+        error("cannot copy '" + ci->name + "': it owns a 'unique' field, which may not be duplicated "
+              "(spec 19.2) -- share it by pointer ('" + ci->name + "*') or reference",
+              loc);
     }
+}
+
+bool SemanticAnalyzer::classHasUniqueField(const std::string& className) {
+    const ClassInfo* ci = lookupClass(className);
+    if (ci == nullptr) return false;
+    for (const auto& [fname, fi] : ci->fields) {
+        (void)fname;
+        if (isRefType(fi.type)) continue;  // a pointer/ref field shares; the owner's copy doesn't dup it
+        const std::string ft = baseType(fi.type);
+        const ClassInfo* fci = lookupClass(ft);
+        // The field is marked `unique`, or its type is a `unique` class -- either way the value cannot
+        // be duplicated, so the owning object cannot be value-copied.
+        if (fi.isUnique || (fci != nullptr && fci->isUnique)) return true;
+        if (fci != nullptr && ft != className && classHasUniqueField(ft)) return true;  // recurse
+    }
+    if (!ci->superclass.empty()) return classHasUniqueField(baseType(ci->superclass));
+    return false;
 }
 
 void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, bool isIncrement, SourceLocation loc) {
