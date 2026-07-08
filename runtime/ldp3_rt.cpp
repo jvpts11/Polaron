@@ -243,23 +243,62 @@ long long __ldp3_decimal_str(int neg, long long intPart, unsigned long long frac
 // reattach. Each (key, index) pair maps to one zeroed persistent block that survives delete within a
 // run, so the same slot returns the same block and its persistent fields reattach across delete +
 // recreate. `key` is a static string constant emitted by the compiler (lives for the whole run).
-typedef struct Ldp3PSlot {
-    const char* key;
+// Open-addressing hash table over (key, index) -> block. The old singly-linked list walked every node
+// with a strcmp per lookup, so creating N persistent slots (arr[i] = new T() for i in 0..N) was O(N^2)
+// -- 20k slots took ~1.2s. Hashing makes each lookup O(1) amortized.
+typedef struct {
+    const char* key;  // NULL = empty slot
     long long index;
     void* block;
-    struct Ldp3PSlot* next;
 } Ldp3PSlot;
 static Ldp3PSlot* g_ldp3_pslots = NULL;
+static long long g_ldp3_pslots_cap = 0;    // power of two, or 0 before first insert
+static long long g_ldp3_pslots_count = 0;
+
+static unsigned long long __ldp3_pslot_hash(const char* key, long long index) {
+    unsigned long long h = 1469598103934665603ULL;  // FNV-1a over the key string, then the index
+    for (const char* p = key; *p != '\0'; ++p) {
+        h ^= (unsigned long long)(unsigned char)*p;
+        h *= 1099511628211ULL;
+    }
+    h ^= (unsigned long long)index;
+    h *= 1099511628211ULL;
+    return h;
+}
+static void __ldp3_pslots_grow(void) {
+    long long oldCap = g_ldp3_pslots_cap;
+    Ldp3PSlot* old = g_ldp3_pslots;
+    long long newCap = oldCap ? oldCap * 2 : 64;
+    Ldp3PSlot* ns = (Ldp3PSlot*)calloc((size_t)newCap, sizeof(Ldp3PSlot));
+    if (ns == NULL) __ldp3_panic("out of memory in persistent registry");
+    long long mask = newCap - 1;
+    for (long long i = 0; i < oldCap; ++i) {
+        if (old[i].key == NULL) continue;
+        long long j = (long long)(__ldp3_pslot_hash(old[i].key, old[i].index) & (unsigned long long)mask);
+        while (ns[j].key != NULL) j = (j + 1) & mask;
+        ns[j] = old[i];
+    }
+    free(old);
+    g_ldp3_pslots = ns;
+    g_ldp3_pslots_cap = newCap;
+}
 void* __ldp3_persist_slot(const char* key, long long index, long long size) {
-    for (Ldp3PSlot* p = g_ldp3_pslots; p != NULL; p = p->next)
-        if (p->index == index && strcmp(p->key, key) == 0) return p->block;
+    if (g_ldp3_pslots_cap == 0 || g_ldp3_pslots_count * 4 >= g_ldp3_pslots_cap * 3)
+        __ldp3_pslots_grow();  // keep load factor under 0.75
+    long long mask = g_ldp3_pslots_cap - 1;
+    long long j = (long long)(__ldp3_pslot_hash(key, index) & (unsigned long long)mask);
+    while (g_ldp3_pslots[j].key != NULL) {
+        // key is a per-array static constant, so the pointer usually matches; strcmp is the fallback.
+        if (g_ldp3_pslots[j].index == index &&
+            (g_ldp3_pslots[j].key == key || strcmp(g_ldp3_pslots[j].key, key) == 0))
+            return g_ldp3_pslots[j].block;
+        j = (j + 1) & mask;
+    }
     void* block = calloc(1, (size_t)size);
-    Ldp3PSlot* s = (Ldp3PSlot*)malloc(sizeof(Ldp3PSlot));
-    s->key = key;
-    s->index = index;
-    s->block = block;
-    s->next = g_ldp3_pslots;
-    g_ldp3_pslots = s;
+    g_ldp3_pslots[j].key = key;
+    g_ldp3_pslots[j].index = index;
+    g_ldp3_pslots[j].block = block;
+    ++g_ldp3_pslots_count;
     return block;
 }
 
