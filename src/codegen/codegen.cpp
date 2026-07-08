@@ -7879,8 +7879,12 @@ struct CodeGenerator::Impl {
         const std::string mSubjBase = baseType(typeName(*s.subject));
         const auto mDollar = mSubjBase.find('$');  // map bare case name to the subject instantiation
         for (const ast::MatchCase& c : s.cases) {
-            const std::string caseType = mDollar == std::string::npos
-                                             ? c.typeName : c.typeName + mSubjBase.substr(mDollar);
+            // Prefer the subject's instantiation (Ok -> Ok$int) but fall back to the bare name for a
+            // non-generic concrete subclass of a generic base (Leaf extends Base<int>).
+            std::string caseType = c.typeName;
+            if (mDollar != std::string::npos &&
+                classes.count(c.typeName + mSubjBase.substr(mDollar)) > 0)
+                caseType = c.typeName + mSubjBase.substr(mDollar);
             auto cit = classes.find(caseType);
             if (cit == classes.end() || cit->second.vtable == nullptr) continue;
             llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "match.case", fn);
@@ -7958,8 +7962,12 @@ struct CodeGenerator::Impl {
         const std::string mSubjBase = baseType(typeName(*s.subject));
         const auto mDollar = mSubjBase.find('$');  // map bare case name to the subject instantiation
         for (const ast::MatchCase& c : s.cases) {
-            const std::string caseType = mDollar == std::string::npos
-                                             ? c.typeName : c.typeName + mSubjBase.substr(mDollar);
+            // Prefer the subject's instantiation (Ok -> Ok$int), else the bare name (a non-generic
+            // concrete subclass of a generic base).
+            std::string caseType = c.typeName;
+            if (mDollar != std::string::npos &&
+                classes.count(c.typeName + mSubjBase.substr(mDollar)) > 0)
+                caseType = c.typeName + mSubjBase.substr(mDollar);
             auto cit = classes.find(caseType);
             if (cit == classes.end() || cit->second.vtable == nullptr) continue;
             llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "matchx.case", fn);

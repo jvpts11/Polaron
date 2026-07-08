@@ -1989,11 +1989,15 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const std::string subjBaseM = baseType(subjType);
         const auto subjDollarM = subjBaseM.find('$');
         for (const ast::MatchCase& c : ms->cases) {
-            // A bare case name (Ok) on a monomorphized sealed subject (Result$int$int) names the
-            // matching instantiation (Ok$int$int). Exhaustiveness below stays bare (permits are bare).
-            const std::string caseType = subjDollarM == std::string::npos
-                                             ? c.typeName
-                                             : c.typeName + subjBaseM.substr(subjDollarM);
+            // A bare case name (Ok) on a monomorphized sealed subject (Result$int$int) may name the
+            // matching instantiation (Ok$int$int) -- but a non-generic concrete subclass of a generic
+            // base (class Leaf extends Base<int>) is just `Leaf`, not `Leaf$int`. Prefer the suffixed
+            // instantiation when it exists, else fall back to the bare name.
+            std::string caseType = c.typeName;
+            if (subjDollarM != std::string::npos) {
+                const std::string suffixed = c.typeName + subjBaseM.substr(subjDollarM);
+                if (lookupClass(suffixed) != nullptr) caseType = suffixed;
+            }
             const ClassInfo* ci = lookupClass(caseType);
             if (ci == nullptr) {
                 error("unknown type '" + c.typeName + "' in match case", c.loc);
@@ -2530,10 +2534,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         std::string resultType;
         const auto subjDollarM = subjBase.find('$');
         for (const ast::MatchCase& c : me->cases) {
-            // Map a bare case name to the subject's instantiation (Ok -> Ok$int$int).
-            const std::string caseType = subjDollarM == std::string::npos
-                                             ? c.typeName
-                                             : c.typeName + subjBase.substr(subjDollarM);
+            // Map a bare case name to the subject's instantiation (Ok -> Ok$int$int) when that exists;
+            // fall back to the bare name for a non-generic concrete subclass (Leaf extends Base<int>).
+            std::string caseType = c.typeName;
+            if (subjDollarM != std::string::npos) {
+                const std::string suffixed = c.typeName + subjBase.substr(subjDollarM);
+                if (lookupClass(suffixed) != nullptr) caseType = suffixed;
+            }
             const ClassInfo* ci = lookupClass(caseType);
             if (ci == nullptr) {
                 error("unknown type '" + c.typeName + "' in match case", c.loc);
