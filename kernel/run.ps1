@@ -35,8 +35,13 @@ if ($Verify) {
     Start-Sleep -Milliseconds 200
     if (-not (Test-Path $vga)) { Write-Host "FAIL: no VGA dump"; exit 1 }
     $b = [System.IO.File]::ReadAllBytes($vga)
-    $text = -join (for ($i=0; $i -lt $b.Length; $i+=2) {
-        if ($b[$i] -ge 32 -and $b[$i] -lt 127) { [char]$b[$i] } else { '.' } })
+    # Decode the low byte of each 16-bit VGA cell into text. A plain for-statement building a
+    # StringBuilder, so this parses on stock Windows PowerShell 5.1 (not just pwsh 7).
+    $sb = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt $b.Length; $i += 2) {
+        if ($b[$i] -ge 32 -and $b[$i] -lt 127) { [void]$sb.Append([char]$b[$i]) } else { [void]$sb.Append('.') }
+    }
+    $text = $sb.ToString()
     Write-Host "VGA: '$text'"
     if ($text -like "LDP3 kernel OK*") { Write-Host "PASS"; exit 0 } else { Write-Host "FAIL"; exit 1 }
 } elseif ($Headless) {
