@@ -145,6 +145,53 @@ void __ldp3_free(void* ptr) {
     g_ldp3_free[h->cls] = n;
 }
 
+// Region backing-memory cache (hosted). A region's data block is often multi-megabyte, which libc
+// serves with mmap and reclaims with munmap -- plus the kernel zero-fills every page on first touch.
+// A hot `allocate ... release` loop (LDP3's arena idiom) pays that OS round-trip every iteration, which
+// dominates while the bump allocation itself is nearly free. Releasing a region keeps its block for the
+// next same-size allocate on this thread, turning the round-trip into an O(1) pointer swap. Thread-local
+// so it needs no lock (the LARGE blocks it caches are plain libc allocations, safe on any thread), and
+// bounded so it never hoards memory.
+#define LDP3_REGION_CACHE 8
+typedef struct {
+    void* ptr;
+    unsigned long long total;
+} Ldp3RegionSlot;
+static thread_local Ldp3RegionSlot g_ldp3_region_cache[LDP3_REGION_CACHE];
+static thread_local int g_ldp3_region_n;
+
+void* __ldp3_region_acquire(unsigned long long total) {
+    for (int i = 0; i < g_ldp3_region_n; i++) {
+        if (g_ldp3_region_cache[i].total == total) {  // reuse a released block of exactly this size
+            void* p = g_ldp3_region_cache[i].ptr;
+            g_ldp3_region_cache[i] = g_ldp3_region_cache[--g_ldp3_region_n];
+            return p;
+        }
+    }
+    return __ldp3_malloc((size_t)total);
+}
+
+void __ldp3_region_release(void* block) {
+    if (block == NULL) return;  // an unallocated (empty-state) or already-released region
+    // The header is [i64 used][i64 cap][ptr dataBase]. An owned region bump-allocates its data just past
+    // the 24-byte header (dataBase == block+24); an `at`-address region's data lives at a fixed external
+    // address, so only its tiny header is ours -- never cache it (its cap is the external size, not the
+    // block size), just free the header.
+    unsigned long long cap = *(unsigned long long*)((char*)block + 8);
+    void* dbase = *(void**)((char*)block + 16);
+    if (dbase != (void*)((char*)block + 24)) {
+        __ldp3_free(block);
+        return;
+    }
+    if (g_ldp3_region_n < LDP3_REGION_CACHE) {
+        g_ldp3_region_cache[g_ldp3_region_n].ptr = block;
+        g_ldp3_region_cache[g_ldp3_region_n].total = cap + 24;
+        g_ldp3_region_n++;
+        return;
+    }
+    __ldp3_free(block);
+}
+
 void* __ldp3_realloc(void* ptr, size_t size) {
     if (ptr == NULL) return __ldp3_malloc(size);
     Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);

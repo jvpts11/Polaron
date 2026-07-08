@@ -2003,6 +2003,24 @@ struct CodeGenerator::Impl {
         return module.getOrInsertFunction("__ldp3_free", ty);  // pooled allocator (runtime)
     }
 
+    // Region backing-memory acquire/release (spec 17). Routes through the runtime's region cache instead
+    // of raw malloc/free so a hot `allocate ... release` arena loop reuses the block on this thread rather
+    // than round-tripping a multi-megabyte allocation through the OS (mmap/munmap + page zeroing) every
+    // iteration -- the dominant cost, since the bump allocation itself is nearly free.
+    llvm::FunctionCallee regionAcquireFn() {
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getPtrTy(), {builder.getInt64Ty()}, false);
+        llvm::FunctionCallee c = module.getOrInsertFunction("__ldp3_region_acquire", ty);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(c.getCallee()))
+            f->addRetAttr(llvm::Attribute::NoAlias);
+        return c;
+    }
+    llvm::FunctionCallee regionReleaseFn() {
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_region_release", ty);
+    }
+
     // sizeof(type) in bytes, the target-portable way: gep null + 1, then
     // ptrtoint. The backend folds it to a constant using the real data layout.
     llvm::Value* sizeOf(llvm::Type* type) {
@@ -3934,7 +3952,7 @@ struct CodeGenerator::Impl {
                 builder.CreateIntCast(addr, builder.getInt64Ty(), false), builder.getPtrTy());
         } else {
             block = builder.CreateCall(
-                mallocFn(), {builder.CreateAdd(builder.getInt64(24), nbytes)}, "region");
+                regionAcquireFn(), {builder.CreateAdd(builder.getInt64(24), nbytes)}, "region");
             dataBase = builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 24, "rgn.databegin");
         }
         builder.CreateStore(builder.getInt64(0), block);  // used = 0
@@ -7559,7 +7577,7 @@ struct CodeGenerator::Impl {
             if (it != locals.end()) {
                 runRegionObjectDtors(rel->region);
                 llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage);
-                builder.CreateCall(freeFn(), {block});
+                builder.CreateCall(regionReleaseFn(), {block});
                 builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()),
                                     it->second.storage);
             }
@@ -7761,7 +7779,7 @@ struct CodeGenerator::Impl {
             runRegionObjectDtors(scopeRegions[i - 1].name);  // destruct objects before freeing (17.7)
             llvm::Value* block =
                 builder.CreateLoad(builder.getPtrTy(), scopeRegions[i - 1].slot, "region");
-            builder.CreateCall(freeFn(), {block});
+            builder.CreateCall(regionReleaseFn(), {block});  // cache the block for reuse (see runtime)
         }
     }
 
