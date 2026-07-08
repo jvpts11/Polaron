@@ -4,11 +4,24 @@ Every type in this slice lives in the **`System.Text`** namespace. As with the r
 stdlib, each type must be imported explicitly by its fully-qualified name before use (importing the
 namespace does not pull in its members). The import line for each type is shown under its heading.
 
+This is where LDP3 does its text work: building strings efficiently (`StringBuilder`), splitting and
+formatting them (`Strings`), matching and searching (`Regex`, `Kmp`, `Manacher`), walking UTF-8
+(`Utf8`), turning bytes into transportable text (`Hex`, `Base64`, `Base32`, `Base58`, `Ascii85`),
+fingerprinting data (`Sha256`, `Sha1`, `Md5`, the CRC/Adler checksums, `Fletcher`), authenticating it
+(`Hmac`), and a handful of compression and classic-algorithm utilities (`Huffman`, `Lz77`, `Rle`,
+`Soundex`, `Calculator`).
+
 The slice is pure LDP3 built on top of the built-in `String`/`string` primitives and the raw-memory
-`System.Memory` builtins — there is no new runtime dependency. Because `String.charAt`/`String.length`
-work at the byte level, the encoding, checksum and hash types treat a `String` as a byte buffer
-(`charAt(i) & 255` is the i-th byte), and several APIs take/return `int[]` where each entry is a
-0..255 byte.
+`System.Memory` builtins — there is no new runtime dependency, and nothing here calls out to a system
+crypto library, so the hashes are readable reference implementations rather than hardware-accelerated
+ones. Because `String.charAt`/`String.length` work at the byte level, the encoding, checksum and hash
+types treat a `String` as a byte buffer (`charAt(i) & 255` is the i-th byte), and several APIs
+take/return `int[]` where each entry is a 0..255 byte. That byte-level view is exactly why a separate
+`Utf8` type exists: to recover whole Unicode codepoints from those bytes.
+
+The cryptographic hashes match their published test vectors, so they interoperate with other tools;
+where an algorithm is broken for security (`Sha1`, `Md5`) the type says so and names the legacy use it
+is kept for. In the examples below, a `// ->` comment shows the value a call returns.
 
 > Only public members (constructors, methods, static methods) are listed. Private helpers used
 > internally by each type are omitted.
@@ -30,6 +43,19 @@ demand, so `append` is amortized O(1); `toString()` copies the accumulated bytes
 - `public method appendInt(int value) returns StringBuilder` — appends the decimal text of an int (via `value.toString()`); returns `this`.
 - `public method length() returns int` — the number of bytes accumulated so far.
 - `public method toString() returns String` — copies the buffer into a fresh owned `String`.
+
+Use it instead of `a.concat(b).concat(c)...` in a loop: repeated `concat` re-copies the whole
+prefix each time (O(n²) total), whereas the builder appends in place and copies once at
+`toString()`. The `append*` methods all return `this`, so calls chain.
+
+```ldp3
+import System.Text.StringBuilder;
+
+StringBuilder sb = new StringBuilder() on heap;
+sb.append("count = ").appendInt(42).appendChar('!');
+sb.length();     // -> 11
+sb.toString();   // -> "count = 42!"
+```
 
 ---
 
@@ -71,6 +97,20 @@ A small backtracking regular-expression matcher (spec 4): literals, `.` (any), c
 
 - `public static method search(String pat, String text) returns boolean` — whether `pat` occurs anywhere in `text`; wrap the pattern in `^` and `$` to require a full match.
 
+Matching is backtracking, so a pathological pattern like `(a*)*` has no equivalent here (there is no
+grouping) but a greedy quantifier over a long run can still be quadratic; keep patterns simple. There
+are no capture groups — `search` answers only yes/no. For plain substring search prefer `Kmp`, which
+is linear.
+
+```ldp3
+import System.Text.Regex;
+
+Regex.search("a+b", "aaab");       // -> true
+Regex.search("c.t", "cat");        // -> true   ('.' matches any one byte)
+Regex.search("^[0-9]+$", "2026");  // -> true   (anchored: all digits)
+Regex.search("^[0-9]+$", "20x6");  // -> false
+```
+
 ---
 
 ## Utf8
@@ -86,6 +126,21 @@ Unicode codepoints out of the byte sequence. A lead byte's high bits give the ch
 - `public static method codepointAt(String s, int i) returns int` — the Unicode codepoint of the character at byte offset `i`.
 - `public static method length(String s) returns int` — the number of Unicode characters (codepoints), not bytes.
 - `public static method codepoints(String s) returns ArrayList<int>` — every codepoint in order.
+
+Reach for this whenever "how many characters" or "the character at position k" must not count raw
+bytes. To iterate characters, read `codepointAt(s, i)` and advance `i` by `widthAt(s, i)` rather than
+by 1. The decoder trusts its input: it assumes well-formed UTF-8 and does not validate continuation
+bytes.
+
+```ldp3
+import System.Text.Utf8;
+
+String s = "héllo";        // 'é' takes 2 UTF-8 bytes
+s.length();             // -> 6   (bytes, since String is byte-level)
+Utf8.length(s);         // -> 5   (Unicode characters)
+Utf8.codepointAt(s, 1); // -> 233 (U+00E9, 'é')
+Utf8.widthAt(s, 1);     // -> 2   (advance past the 2-byte character)
+```
 
 ---
 
@@ -144,6 +199,18 @@ padding on the final group.
 
 - `public static method encode(String data) returns String` — Base64 of `data`'s bytes (standard `+`/`/` alphabet, `=` padded).
 - `public static method decode(String data) returns String` — the bytes decoded from a padded Base64 string.
+
+The standard (not URL-safe) alphabet, so output may contain `+` and `/`; `encode` then `decode`
+round-trips exactly. Encoded text is about 4/3 the size of the input. For URL- or filename-safe
+output without padding characters, use `Base32`, or `Hex` when readability matters more than size.
+
+```ldp3
+import System.Text.Base64;
+
+Base64.encode("Man");   // -> "TWFu"
+Base64.encode("Ma");    // -> "TWE="   (one '=' pad for the short final group)
+Base64.decode("TWFu");  // -> "Man"
+```
 
 ---
 
@@ -232,6 +299,18 @@ the shared byte/hex plumbing (`toHex`, `putWord`) reused by the other hash types
 - `public static method digestRaw(int[] data, int len) returns int[]` — hashes the first `len` bytes of `data`, returning the 32 raw output bytes (used by `Hmac`).
 - `public static method digest(String msg) returns String` — the 64-character lowercase hex digest of `msg`'s bytes.
 - `public static method digestBytes(int[] data, int len) returns String` — the lowercase hex digest of the first `len` bytes of `data`.
+
+`digest` is the everyday entry point: pass a message, get its 64-character hex digest. The output
+matches the FIPS 180-4 test vectors, so it interoperates with other SHA-256 tools. For keyed
+authentication (proving a message came from someone holding a shared secret) use `Hmac.sha256`
+rather than hashing the key and message concatenated.
+
+```ldp3
+import System.Text.Sha256;
+
+Sha256.digest("");     // -> "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+Sha256.digest("abc");  // -> "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+```
 
 ---
 

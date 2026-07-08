@@ -15,9 +15,19 @@ namespaces covered here are:
 
 Import a type with its fully qualified name, e.g. `import System.Collections.IntHeap;`.
 
+Reach for these when the everyday containers on the `System.Collections` collections page stop
+being enough: when you need shortest paths instead of plain adjacency, prefix lookups instead of
+whole-key equality, disjoint-set merges, range queries answered in logarithmic time, or eviction
+once a cache is full. None of them are runtime magic — each is ordinary LDP3 whose cost is exactly
+what its backing arrays and loops imply, and the short paragraph above each type names that cost so
+you can pick the right tool for the input size. Many trade pointer chasing for flat arena arrays
+(a `next[node * 26 + c]` link instead of a node object), which keeps allocation predictable and
+plays to LDP3's manual-memory model.
+
 Notes that apply throughout: an `int[]` is a heap-backed dynamic array; `T[]` is a generic array;
 `function<R, A...>` is a closure/lambda type with return type `R` and argument types `A...`;
-`nullable T*` is a nullable pointer; `T&` is a by-reference parameter.
+`nullable T*` is a nullable pointer; `T&` is a by-reference parameter. In the examples below, a
+`// ->` comment shows the value a call returns.
 
 ---
 
@@ -58,6 +68,21 @@ Members:
 - `public method contains(String word) returns boolean` — whether the exact word was inserted.
 - `public method startsWith(String prefix) returns boolean` — whether any inserted word has the given prefix.
 
+Insert and lookup each cost O(length of the word), independent of how many words the trie holds —
+the reason to prefer it over a `HashSet` when you also need prefix queries. Words are restricted to
+lowercase `a`–`z`.
+
+```ldp3
+import System.Collections.Trie;
+
+Trie t = new Trie() on heap;
+t.insert("cat");
+t.insert("car");
+t.contains("cat");    // -> true
+t.contains("ca");     // -> false  (only whole inserted words match)
+t.startsWith("ca");   // -> true   ("cat" and "car" share it)
+```
+
 ---
 
 ## Graph
@@ -71,6 +96,21 @@ Members:
 - `public constructor Graph(int vertices)` — create a graph with `vertices` vertices numbered `0..vertices-1`.
 - `public method addEdge(int u, int v) returns void` — add an undirected edge between `u` and `v`.
 - `public method distance(int src, int dst) returns int` — shortest hop count from `src` to `dst`, or `-1` if unconnected.
+
+`distance` runs a fresh breadth-first search each call, so it is O(V + E) per query; for many queries
+from the same source, run one BFS yourself and read the distance array. Use this when edges are
+unweighted and you want the fewest hops (for weighted shortest paths, see `WeightedGraph`).
+
+```ldp3
+import System.Collections.Graph;
+
+Graph g = new Graph(5) on heap;   // vertices 0..4
+g.addEdge(0, 1);
+g.addEdge(1, 2);
+g.addEdge(3, 4);
+g.distance(0, 2);   // -> 2   (0 -> 1 -> 2)
+g.distance(0, 4);   // -> -1  (a different component)
+```
 
 ---
 
@@ -120,6 +160,21 @@ Members:
 - `public method merge(int a, int b) returns void` — union the sets containing `a` and `b`.
 - `public method connected(int a, int b) returns boolean` — whether `a` and `b` are in the same set.
 - `public method groups() returns int` — number of distinct sets remaining.
+
+With union by rank and path halving, every operation runs in near-constant amortized time (the
+inverse-Ackermann bound). It is the workhorse for connectivity questions: grouping equivalences,
+detecting cycles as you add edges, or building Kruskal's minimum spanning tree.
+
+```ldp3
+import System.Collections.UnionFind;
+
+UnionFind uf = new UnionFind(6);   // 6 singletons: {0} {1} {2} {3} {4} {5}
+uf.merge(0, 1);
+uf.merge(1, 2);
+uf.connected(0, 2);   // -> true
+uf.connected(0, 3);   // -> false
+uf.groups();          // -> 4   ({0,1,2} {3} {4} {5})
+```
 
 ---
 
@@ -269,6 +324,21 @@ Members:
 - `public method update(int i, int value) returns void` — set position `i` to `value`.
 - `public method query(int lo, int hi) returns int` — inclusive sum over `lo..hi`.
 
+Reach for a segment tree when values change *and* you keep asking for range sums: both `update` and
+`query` are O(log n). If the data never changes, a `Fenwick` tree is lighter; if you only need range
+*minimums* over fixed data, `SparseTable` answers in O(1).
+
+```ldp3
+import System.Collections.SegmentTree;
+
+int[] data = new int[5]();
+data[0] = 1; data[1] = 3; data[2] = 5; data[3] = 7; data[4] = 9;
+SegmentTree st = new SegmentTree(data) on heap;
+st.query(1, 3);    // -> 15   (3 + 5 + 7)
+st.update(2, 0);   // position 2: 5 -> 0
+st.query(1, 3);    // -> 10   (3 + 0 + 7)
+```
+
 ---
 
 ## SparseTable
@@ -311,6 +381,23 @@ Members:
 - `public method contains(int key) returns boolean` — whether `key` is cached (does not change recency).
 - `public method put(int key, int value) returns void` — insert/update `key`, evicting the least-recently-used entry if full.
 - `public method count() returns int` — current number of entries.
+
+Every operation is O(1): a `HashMap` locates a key's slot and a doubly linked list over the slot
+arrays tracks recency, so the tail is always the entry to evict. `get` and `put` count as a use and
+move the entry to the front; `contains` deliberately does not, so you can probe without disturbing
+the order.
+
+```ldp3
+import System.Collections.LruCache;
+
+LruCache cache = new LruCache(2) on heap;   // capacity 2
+cache.put(1, 100);
+cache.put(2, 200);
+cache.get(1);      // -> 100  (key 1 is now most-recent)
+cache.put(3, 300); // full: evicts key 2, the least-recently-used
+cache.get(2);      // -> -1   (evicted)
+cache.get(3);      // -> 300
+```
 
 ---
 

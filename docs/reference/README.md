@@ -1,53 +1,51 @@
-# LDP3 Language Reference — 1.0.0
+# The LDP3 Language Reference — 1.0.0
 
-Complete reference for **LDP3** (Linguagem De Programação 3): an OOP-mandatory, manually
-memory-managed systems language that compiles to native code through LLVM. Created by
-João Victor Pereira Tavares.
+A complete, book-length reference for **LDP3** (Linguagem De Programação 3): an
+object-orientation–mandatory, manually memory-managed systems language that compiles to native
+code through LLVM. Created by João Victor Pereira Tavares.
 
-Everything here is generated from — and cross-checked against — the actual compiler and the
-embedded standard-library prelude, not just the spec: where the written spec and the implementation
-disagree, these pages document **what the compiler accepts today** and flag the divergence.
+This reference is written to *teach*, not just to enumerate. Every feature is explained in terms of
+what it does, why it exists, how it fits LDP3's philosophy, and how it interacts with the rest of the
+language — each illustrated with short, runnable examples. It is cross-checked against the actual
+compiler and the embedded standard-library prelude, so where the written specification and the
+implementation ever diverge, these pages describe **what the compiler accepts today** and flag the
+difference. For the formal design document, see [`../LDP3_specification.md`](../LDP3_specification.md).
 
-For the full language design narrative see [`../LDP3_specification.md`](../LDP3_specification.md)
-(the design source of truth); this reference is the practical, implementation-accurate companion.
+A single typeset PDF of everything below is built by [`make-pdf.py`](make-pdf.py):
+**[LDP3-Language-Reference-1.0.0.pdf](LDP3-Language-Reference-1.0.0.pdf)**.
 
 ---
 
-## The language
+## Part I — The Language
 
-- **[Language Guide](language-guide.md)** — how the language works, end to end, with ~85 runnable
-  examples: program/bundle/namespace structure and the entry point, imports, the full type system
-  (primitives, `String`/`string`, `nullable`, arrays, generics, `record`/`struct`/`union`/`enum`/
-  `catalog`), value semantics and the memory model (deep-copy assignment, `T*`/`T&`, stack/heap,
-  RAII, regions, `move`/`movable`/`unique`, `defer`/`using`, persistents), OOP (inheritance,
-  interfaces, `abstract`/`override`/vtables, properties, operator overloading, `sealed`/`permits`),
-  control flow (`if`/`while`/`for`/`foreach`/ranges/`switch`/`match`, the `goto`/`comefrom` tetrad),
-  exceptions + `Result`/`Option`/`try?` + contracts, lambdas, concurrency (`async`/`await`, `Channel`,
-  `Mutex`/`synchronized`, `atomic`, `Thread`), the universal prefixes, the **native compiler builtins**
-  (`String`/`string` methods, `Decimal` + the `m` suffix, `Memory`/`address`, SIMD `vec2/3/4` + `mat4`,
-  `System.IO.Console`, `$"..."` interpolation), FFI (`extern` + `native_libs`), and freestanding mode.
+| # | Chapter | What it covers |
+|---|---------|----------------|
+| 1 | [Introduction & Philosophy](guide/01-introduction.md) | What LDP3 is, its design pillars (OOP-mandatory, no GC, value semantics, no exploitable UB), and a first taste. |
+| 2 | [Program Structure & Modules](guide/02-program-structure.md) | `program`/`bundle`/`namespace`, the entry point, visibility, imports, multi-file programs. |
+| 3 | [Values & the Type System](guide/03-type-system.md) | Primitives and their names, literals, `String`/`string`, `nullable`, arrays, generics + variance, `record`/`struct`/`union`/`enum`/`catalog`, casting. |
+| 4 | [Memory & Ownership](guide/04-memory-and-ownership.md) | Value semantics and deep copy, `T*`/`T&`, stack/heap, RAII, regions, `move`/`movable`/`unique`/`partitionable`, `defer`/`using`, persistents. |
+| 5 | [Object-Oriented Programming](guide/05-oop.md) | Classes, inheritance, interfaces, `abstract`/`override`/vtables, properties, operators, enums, `sealed`/`permits`. |
+| 6 | [Control Flow](guide/06-control-flow.md) | `if`/`while`/`for`/`foreach`/ranges, `switch`, `match`, labelled `break`/`continue`, and the chaos tetrad. |
+| 7 | [Errors, Results & Contracts](guide/07-errors-and-contracts.md) | Exceptions, `Result`/`Option`/`try?`, `requires`/`ensures`/`invariant`, and the no-UB principle. |
+| 8 | [Concurrency](guide/08-concurrency.md) | `async`/`await` + `Task`, `Thread`, `Mutex`/`synchronized`, `atomic`, `Channel`/`select`. |
+| 9 | [Compile-Time, Reflection & Universal Prefixes](guide/09-metaprogramming-and-prefixes.md) | `comptime`, `static_assert`, reflection, annotations, lifecycle hooks, and `cascade`/`eternal`/`lazy`/`comptime`/`volatile`/`final`. |
+| 10 | [Systems Programming](guide/10-systems-programming.md) | Compiler builtins (`String`, `Decimal`, `Memory`/`address`, SIMD, `Console`), FFI (`extern` + `native_libs`), and freestanding mode. |
+| 11 | [Keyword Reference](guide/11-keyword-reference.md) | Every reserved word, grouped by role, with its meaning, syntax, an example, and its exact status. |
 
-- **[Keyword Reference](keywords.md)** — every reserved word the compiler recognizes (~123 hard
-  keywords + ~16 soft/contextual + the semantic type names), each with what it does, its syntax, a
-  short example, and its status (hard / soft-contextual / freestanding-only / reserved-not-yet-
-  implemented), grouped into 20 categories with a navigable index. Includes the known
-  spec-vs-implementation divergences.
+## Part II — The Standard Library
 
-## The standard library
+The standard library is written in LDP3 itself (an embedded prelude) on top of a small set of native
+compiler builtins. Every type requires an explicit `import`. These pages document the full library as
+verbatim member signatures with explanatory prose.
 
-The stdlib is written in LDP3 itself (an embedded prelude) on top of a small set of native builtins.
-Every type below requires an **explicit import** (`import System.<Namespace>.<Type>;`). These six pages
-document **222 types with ~880 public members**, each as its verbatim signature plus a one-line
-description.
+- [Concurrency & Core](stdlib/concurrency-and-core.md) — `Thread`, `Task`, `Channel`, `atomic`, `Mutex`, synchronization primitives; `Result`/`Option`; `Console`, `Files`, `Logger`; the exception hierarchy; `Iterator`/`Iterable`.
+- [Collections](stdlib/collections.md) — `ArrayList` (with the functional pipeline), `Slice`, stacks/queues/deques, `HashMap`/`HashSet`, `TreeMap`/`TreeSet`, `PriorityQueue`, `Bitset`, and more.
+- [Data Structures & ECS](stdlib/data-structures.md) — `Trie`, graphs, `UnionFind`, Fenwick/segment trees, `LruCache`, spatial grids, a small ECS, and an event system.
+- [Text, Encoding & Crypto](stdlib/text-encoding-crypto.md) — `StringBuilder`, `Strings`, `Regex`, `Utf8`, `Scanner`; hex/Base64/Base32/…; SHA/MD5/HMAC/CRC; compression and string algorithms.
+- [Parsing, Time & JSON](stdlib/parsing-time-json.md) — expression parsers, `Csv`/`Ini`/`Properties`, `Uuid`, `Semver`, text utilities; `Duration`/`Instant`/`Date`/`Calendar`; `Json`.
+- [Math, Net & Misc](stdlib/math-net-misc.md) — `BigInteger`, `Rational`, `Complex`, matrices, vectors, `Fft`, statistics, number theory, geometry; `Socket`/`Http`; resilience utilities; a test runner.
 
-| Reference | Namespaces | Contents |
-|---|---|---|
-| **[Concurrency & core](stdlib/concurrency-and-core.md)** | `System.Concurrency`, `System.Errors`, `System.IO`, `System.Runtime`, `System.Collections` | `Thread`, `Task<T>`, `Channel<T>`, `atomic<T>`, `Mutex<T>`, `Semaphore`, `CountdownLatch`, `Barrier`, `ReadWriteLock`; `Result`/`Ok`/`Err`, `Option`/`Some`/`None`; `Console`, `Files`, `Paths`, `Logger`, `Args`; `Object`, the exception hierarchy; `Iterator`/`Iterable`. |
-| **[Collections](stdlib/collections.md)** | `System.Collections` | `ArrayList<T>` (with `forEach`/`filter`/`map`/`reduce`/`any`/`all`/`find`/`min`/`max`/`sortedBy`), lazy streams, `Slice<T>`, `Stack`/`Queue`/`Deque`/`LinkedList`, `Hashable`/`Comparable`, `HashMap`/`HashSet`, `TreeMap`/`TreeSet` (AVL), `PriorityQueue`, `Bitset`, `Multiset`, `RingBuffer`, `LinkedHashMap`. |
-| **[Data structures & ECS](stdlib/data-structures.md)** | `System.Collections`, `System.Ecs`, `System.Events` | `Range`, `Trie`, `Graph`/`DiGraph`/`WeightedGraph`, `UnionFind`, `Bst`, `Fenwick`/`Fenwick2D`, `SegmentTree`, `SparseTable`, `LruCache`, `BiMap`/`MultiMap`, `SpatialGrid`, `SlotMap`, `EnumMap`/`EnumSet`, algorithm helpers (`Knapsack`, `Lcs`, `QuickSelect`, `Kadane`, interval tools), a small ECS (`World`/`ComponentStore`) and a `Signal`/event system. |
-| **[Text, encoding & crypto](stdlib/text-encoding-crypto.md)** | `System.Text` | `StringBuilder`, `Strings`, `Regex`, `Utf8`, `Scanner`; `Hex`/`Radix`/`Base64`/`Base32`/`Base58`/`Ascii85`; `Sha256`/`Sha1`/`Sha224`/`Md5`/`Hmac`/`Crc`/`Adler32`/`Fletcher`/`Digest`; `BloomFilter`, `Huffman`, `Lz77`, `Rle`; string algorithms (`Kmp`, `Manacher`, `Soundex`); `Calculator`. |
-| **[Parsing, time & JSON](stdlib/parsing-time-json.md)** | `System.Text`, `System.Time`, `System.Json` | `Rpn`/`ShuntingYard`, `Template`, `Csv`/`CsvReader`/`CsvWriter`, `Ini`, `Properties`, `Glob`, `Uuid`, `Semver`, `StateMachine`, `Colors`, `Caesar`/`Vigenere`, text utils (`Slugify`, `Inflector`, `Levenshtein`, `JaroWinkler`, `Luhn`, `Isbn`, `Humanize`, `NumberWords`, `Validators`); `Duration`/`Instant`/`ZonedDateTime`/`Date`/`Calendar`/`Stopwatch`; `Json`/`JsonPointer`/`JsonParser`. |
-| **[Math, net & misc](stdlib/math-net-misc.md)** | `System.Math`, `System.OS`, `System.Security`, `System.Net`, `System.App`, `System.Test` | `BigInteger`, `Rational`, `Complex`, `Matrix`/`MatrixD`, `Vector2/3/4`, `Quaternion`, `Mat4`, `Fft`, `Polynomial`, `Stats`/`Regression`/`Correlation`, number theory (`Sieve`, `NumberTheory`, `Crt`, `Combinatorics`), geometry (`ConvexHull`, `Polygon`), sketches (`CountMinSketch`, `HyperLogLog`); `SecureRandom`/`Aes`; `Socket`/`ServerSocket`/`UdpSocket`/`Http`; `CircuitBreaker`, `TokenBucket`, `ObjectPool`, `Money`; `Assert`/`TestRunner`. |
+---
 
 ## Hello, LDP3
 
@@ -67,9 +65,7 @@ public bundle main {
 }
 ```
 
-Build it:
-
 ```
-ldp3 build          # in a project dir (ldp3.toml), or:
+ldp3 build          # inside a project (ldp3.toml), or, by hand:
 ldp3c hello.ldp3 -o hello.ll && clang hello.ll ldp3_rt.lib -o hello.exe
 ```

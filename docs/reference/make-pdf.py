@@ -14,11 +14,21 @@ import markdown
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERSION = "1.0.0"
 
-# Order the documents read for the PDF: overview, the language, then the six stdlib slices.
+# Order the documents for the PDF: the eleven language chapters (each already carries its own
+# "# N. Title" heading), then the six standard-library slices. Titles here drive the table of
+# contents; each document's own heading is preserved in the body.
 DOCS = [
-    ("Overview", "README.md"),
-    ("Language Guide", "language-guide.md"),
-    ("Keyword Reference", "keywords.md"),
+    ("Introduction & Philosophy", "guide/01-introduction.md"),
+    ("Program Structure & Modules", "guide/02-program-structure.md"),
+    ("Values & the Type System", "guide/03-type-system.md"),
+    ("Memory & Ownership", "guide/04-memory-and-ownership.md"),
+    ("Object-Oriented Programming", "guide/05-oop.md"),
+    ("Control Flow", "guide/06-control-flow.md"),
+    ("Errors, Results & Contracts", "guide/07-errors-and-contracts.md"),
+    ("Concurrency", "guide/08-concurrency.md"),
+    ("Compile-Time, Reflection & Prefixes", "guide/09-metaprogramming-and-prefixes.md"),
+    ("Systems Programming", "guide/10-systems-programming.md"),
+    ("Keyword Reference", "guide/11-keyword-reference.md"),
     ("Standard Library — Concurrency & Core", "stdlib/concurrency-and-core.md"),
     ("Standard Library — Collections", "stdlib/collections.md"),
     ("Standard Library — Data Structures & ECS", "stdlib/data-structures.md"),
@@ -116,12 +126,10 @@ def render():
         full = os.path.join(HERE, path)
         with open(full, encoding="utf-8") as fh:
             text = fh.read()
-        # Drop a leading H1 in the source so our section header is the single H1 for the doc.
-        text = re.sub(r"\A\s*#\s+.*\n", "", text, count=1)
+        # Each chapter already carries its own "# N. Title" heading; keep it as the section's H1.
         md.reset()
         body = md.convert(text)
         parts.append("<section class='doc' id='%s'>" % slug(title))
-        parts.append("<h1>%d. %s</h1>" % (i, _html.escape(title)))
         parts.append(body)
         parts.append("</section>")
 

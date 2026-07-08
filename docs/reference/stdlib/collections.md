@@ -1,11 +1,32 @@
 # System.Collections — Standard Library Reference
 
-All types below live in the `System.Collections` namespace and are shipped as part of the
-LDP3 prelude (embedded in `src/cli/main.cpp` as `kPreludeSource`). Import each type explicitly
-by its fully qualified name, e.g. `import System.Collections.ArrayList;`.
+This is LDP3's general-purpose container library: the growable list, the hash and tree maps and
+sets, the stack/queue/deque family, priority queue, ring buffer, bitset, and the lazy `Stream`
+pipeline — plus the `Iterator`/`Iterable`/`Hashable`/`Comparable` interfaces they are built on.
+If you have reached for `ArrayList`, `HashMap`, or `TreeMap` in another language, the equivalents
+live here.
 
-They are ordinary LDP3 classes and interfaces (no runtime magic): generic containers backed by
-dynamic arrays, ring buffers, linked/tree nodes, and hash tables.
+All types below live in the `System.Collections` namespace and ship as part of the LDP3 prelude
+(embedded in `src/cli/main.cpp` as `kPreludeSource`). They are ordinary LDP3 classes and interfaces
+with no runtime magic — generic containers backed by dynamic arrays, ring buffers, linked and tree
+nodes, and hash tables — compiled from that prelude just like your own code, so the signatures
+shown are the verbatim declarations from the source.
+
+How they fit LDP3:
+
+- **Explicit imports.** Namespace visibility is enforced, so import each type by its fully
+  qualified name before use, e.g. `import System.Collections.ArrayList;`. The import line is given
+  under every type.
+- **Generics are monomorphized.** `ArrayList<int>` and `ArrayList<String>` are separate compiled
+  classes; there is no boxing and no shared erased representation.
+- **Manual memory.** A collection is an object like any other: allocate it with
+  `new ArrayList<int>() on heap` and `delete` it when done. The containers manage their own backing
+  storage internally (for example, the doubling array `delete`s the old block when it grows).
+- **Value semantics for elements.** Storing an element (`add`, `put`, `set`) is an assignment, and
+  assignment in LDP3 is a copy. For a value type `T` the element is copied *into* the collection and
+  `get` copies one back *out* — the collection owns those copies. To store shared instances instead
+  of copies, use a pointer element type (`ArrayList<Node*>`): then the collection holds the pointers
+  and does **not** own or `delete` the pointed-to objects — that stays your responsibility.
 
 **Key/element constraints**
 
@@ -74,6 +95,21 @@ A growable list backed by a dynamic array that doubles on overflow; the general-
 | `public method min(function<int, T, T> compare) returns Option<T>` | Smallest element by `compare` as `Some`, or `None` when empty. |
 | `public method max(function<int, T, T> compare) returns Option<T>` | Largest element by `compare` as `Some`, or `None` when empty. |
 | `public override method iterator() returns Iterator<T>` | Returns an `ArrayListIterator<T>` over this list. |
+
+```ldp3
+import System.IO.Console;
+import System.Collections.ArrayList;
+
+ArrayList<int> nums = new ArrayList<int>() on heap;
+nums.add(10);
+nums.add(20);
+nums.add(30);          // grows automatically past the initial capacity of 4
+mutable int sum = 0;
+for (mutable int i = 0; i < nums.size(); i++) {
+    sum = sum + nums.get(i);
+}
+System.IO.Console.printf("size=%d sum=%d\n", nums.size(), sum);
+```
 
 ---
 
@@ -299,6 +335,20 @@ Hash map with open addressing (linear probing); capacity is a power of two, load
 | `public method valueArray() returns V[]` | All values, in arbitrary order. |
 | `public method size() returns int` | Number of entries. |
 | `public method isEmpty() returns boolean` | True when the map has no entries. |
+
+```ldp3
+import System.IO.Console;
+import System.Collections.HashMap;
+
+HashMap<String, int> scores = new HashMap<String, int>() on heap;
+scores.put("alpha", 1);
+scores.put("beta", 2);
+if (scores.containsKey("alpha")) {              // get() alone can't tell absent from zero
+    System.IO.Console.printf("alpha=%d\n", scores.get("alpha"));
+}
+int g = scores.getOrDefault("gamma", -1);       // -1 because "gamma" is absent
+System.IO.Console.printf("gamma=%d size=%d\n", g, scores.size());
+```
 
 ---
 

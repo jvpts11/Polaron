@@ -1,9 +1,37 @@
 # Stdlib Reference — Parsing, Text Utilities, Time & JSON
 
-This reference documents the parsing / text-utilities / time / JSON slice of the LDP3
-standard library. These classes live in the LDP3 prelude embedded in the compiler
-(`src/cli/main.cpp`, the `kPreludeSource` raw string) and are written in pure LDP3 over
-the `System.Collections` and `System.Text` builtins.
+This reference documents three neighbouring slices of the LDP3 standard library: the text
+and parsing utilities under `System.Text`, the clocks and calendars under `System.Time`,
+and the JSON document model under `System.Json`. Together they cover the everyday "read a
+string, make sense of it, and stamp it with a time" work that most programs need before
+they get to their real logic.
+
+Everything here lives in the LDP3 prelude embedded in the compiler (`src/cli/main.cpp`,
+the `kPreludeSource` raw string) and is written in **pure LDP3** on top of the
+`System.Collections` and `System.Text` builtins. There is no hidden native magic: a
+`Csv` parser is an ordinary LDP3 class walking a `String`, a `Json` tree is a chain of
+heap objects, and `Instant.now()` bottoms out in a single clock builtin. That means these
+classes are also worked examples of idiomatic LDP3 — every one obeys the same rules your
+own code does (mandatory `this.`, explicit visibility, braces on every block).
+
+A few themes run through the group:
+
+- **`System.Text`** is the largest namespace: tokenizers and expression evaluators
+  (`Rpn`, `ShuntingYard`), config and data formats (`Csv`, `Ini`, `Properties`,
+  `QueryString`), string metrics for fuzzy matching (`Levenshtein`, `JaroWinkler`),
+  encoders and codecs (`UrlCodec`, `VarInt`, `BitWriter`/`BitReader`), validators and
+  checksums (`Luhn`, `Isbn`, `Validators`, `Uuid`, `Semver`), and small classics like
+  `Roman`, `Caesar`, and `Slugify`. Most are stateless utilities exposed as `static`
+  methods; a handful (`Ini`, `Properties`, `StateMachine`, `BitWriter`) are objects you
+  construct and then query.
+- **`System.Time`** models time in layers: a `Duration` is a span of milliseconds, an
+  `Instant` is a point on the wall clock (epoch millis), and a `ZonedDateTime` is an
+  `Instant` viewed through a fixed `ZoneOffset`. `Date`/`Calendar` handle the pure
+  civil-calendar arithmetic, and `Stopwatch` measures elapsed time off the monotonic
+  clock.
+- **`System.Json`** is a tiny in-memory JSON model: `Json` is a tagged value (null / bool
+  / number / string / array / object) you build up node by node or parse from text, then
+  serialize back — with `JsonPointer` for RFC 6901 path lookups.
 
 Every stdlib type requires an **explicit import** of its fully-qualified name, one class
 per line:
@@ -22,6 +50,13 @@ namespace: `System.Text` (text/parsing utilities), `System.Time` (dates and cloc
 ---
 
 # Namespace `System.Text`
+
+The text namespace is a grab-bag of string-shaped tools. Most are pure `static` helpers you
+call without allocating anything (`CaseConvert.toSnake`, `Roman.toRoman`, `Luhn.isValid`);
+a few are small objects that hold parsed state (`Ini`, `Properties`, `StateMachine`) or a
+growing buffer (`BitWriter`, `BitReader`). Everything operates on the builtin `String`/
+`char` types and the `System.Collections` containers, so results come back as ordinary
+`String`s, `ArrayList<String>`s, or maps you can feed straight into the rest of your program.
 
 ## Rpn
 
@@ -58,7 +93,19 @@ Public members:
 
 - Namespace: `System.Text` · Import: `import System.Text.Csv;`
 - Parses one line of comma-separated values into fields, honoring double-quoted fields so a
-  comma inside quotes does not split. Quote characters are consumed, not kept.
+  comma inside quotes does not split. Quote characters are consumed, not kept. Reach for it
+  when you are reading a single CSV record; pair it with `CsvWriter`/`CsvReader` when you
+  need the stricter RFC 4180 escaping (doubled quotes).
+
+```ldp3
+import System.Text.Csv;
+import System.Collections.ArrayList;
+
+// The comma inside the quotes stays in one field.
+ArrayList<String> fields = Csv.parse("a,\"b,c\",d");
+System.IO.Console.printf("count=%d second=%s\n", fields.size(), fields.get(1));
+// count=3 second=b,c
+```
 
 Public members:
 
@@ -203,7 +250,16 @@ Public members:
 - RFC 4122 UUIDs: format 16 bytes as the canonical 8-4-4-4-12 hex string, build a version-4
   UUID from 16 random bytes (setting the version and variant bits), or generate one
   deterministically from an int seed via an inline xorshift. `isValid` checks the canonical
-  shape.
+  shape. Use `v4` with bytes from `System.Security.SecureRandom` when you need real
+  unpredictability; `v4Seeded` is for reproducible ids in tests and fixtures.
+
+```ldp3
+import System.Text.Uuid;
+
+String id = Uuid.v4Seeded(12345);   // same seed → same UUID every run
+System.IO.Console.println(id);
+System.IO.Console.println(Uuid.isValid(id));   // true
+```
 
 Public members:
 
@@ -446,6 +502,15 @@ Public members:
 
 # Namespace `System.Time`
 
+Time in LDP3 is built up in small, composable pieces rather than one do-everything
+date-time class. A `Duration` is a length of time; an `Instant` is a point in time (epoch
+milliseconds); a `ZoneOffset` shifts an instant into local wall-clock fields via
+`ZonedDateTime`. For pure calendar math with no clock involved, `Date` and `Calendar` give
+you leap-year rules, month lengths, and day-of-week. `Stopwatch` is the odd one out: it
+reads the monotonic clock, not the wall clock, so it stays correct even if the system time
+is changed while it runs. All of these read the underlying clock through the `Time`
+builtin, which shares this namespace.
+
 ## Duration
 
 - Namespace: `System.Time` · Import: `import System.Time.Duration;`
@@ -466,7 +531,23 @@ Public members:
 ## Instant
 
 - Namespace: `System.Time` · Import: `import System.Time.Instant;`
-- A moment on the wall clock, as milliseconds since the Unix epoch.
+- A moment on the wall clock, as milliseconds since the Unix epoch. Subtract two instants
+  with `since` to get a `Duration`, or push an instant forward with `plus`. Because an
+  `Instant` is a bare epoch value it carries no time zone; wrap it in a `ZonedDateTime`
+  when you need local calendar fields.
+
+```ldp3
+import System.Time.Instant;
+import System.Time.Duration;
+
+Instant start = Instant.now();
+// ... do some work ...
+Instant end = Instant.now();
+Duration elapsed = end.since(start);
+System.IO.Console.printf("took %d ms\n", elapsed.toMillis());
+
+Instant deadline = start.plus(Duration.ofSeconds(30));   // 30s after start
+```
 
 Public members:
 
@@ -572,12 +653,40 @@ Public members:
 
 # Namespace `System.Json`
 
+`System.Json` is a small, dependency-free JSON model: one `Json` type that is either a
+null, a bool, a number, a string, an array, or an object, plus a recursive-descent parser
+(`JsonParser`) and a JSON Pointer resolver (`JsonPointer`). You build a document by
+constructing nodes and wiring them together with `add` (for array elements) and `put` (for
+named members), and you read one back with `field`, `at`, and the `asX` accessors. It is a
+document tree, not a schema binder — there is no reflection-based (de)serialization here,
+which keeps it usable in freestanding builds.
+
 ## Json
 
 - Namespace: `System.Json` · Import: `import System.Json.Json;`
 - A JSON value. The `kind` code is 0=null, 1=bool, 2=number(long), 3=string, 4=array,
   5=object. Built and read with pure-LDP3 code over `System.Collections` + `System.Text`;
-  arrays and object members are held as a sibling chain of child nodes.
+  arrays and object members are held as a sibling chain of child nodes. Numbers are `long`,
+  so wrap integer literals in `cast<long>(...)` when building. `field` on a missing key
+  returns a JSON null node (never a null pointer), so lookups chain safely.
+
+```ldp3
+import System.Json.Json;
+
+Json obj = Json.object();
+obj.put("name", Json.ofStr("LDP3"));
+obj.put("version", Json.ofNum(cast<long>(1)));
+
+Json nums = Json.array();
+nums.add(Json.ofNum(cast<long>(10)));
+nums.add(Json.ofNum(cast<long>(20)));
+obj.put("nums", nums);
+
+String text = obj.toString();                 // {"name":"LDP3","version":1,"nums":[10,20]}
+Json parsed = Json.parse(text);               // round-trip back into a tree
+System.IO.Console.println(parsed.field("name").asStr());          // LDP3
+System.IO.Console.println(parsed.field("nums").at(0).asNum());    // 10
+```
 
 Public members:
 

@@ -1,19 +1,33 @@
 # LDP3 Standard Library — Concurrency & Core
 
-This reference covers the concurrency primitives, `Result`/`Option` sum types, console/file/logging
-helpers, the PRNG, the root `Object`, the runtime exception hierarchy, and the iteration interfaces.
+This is the "everything the language leans on" corner of the standard library. It gathers the
+pieces a program reaches for once it does more than compute a single value: the concurrency
+primitives that let work run on more than one thread, the `Result`/`Option` sum types that model
+"this can fail" and "this may be absent" without exceptions, the console/file/logging helpers for
+talking to the outside world, a small pseudo-random generator, the root `Object` that every class
+descends from, the runtime exception hierarchy, and the two iteration interfaces (`Iterator`,
+`Iterable`) that the collections library builds on.
+
 All of these live in the LDP3-source prelude embedded in `src/cli/main.cpp` (the `kPreludeSource`
-raw string literal). Every type below is compiled from that prelude just like user code, so the
-signatures shown are the exact declarations in the source.
+raw string literal). There is no privileged runtime library written in C++ hiding behind them:
+every type below is ordinary LDP3, compiled from that prelude exactly like your own code, so the
+signatures shown are the verbatim declarations from the source. Where a type is genuinely a thin
+shell over a compiler intrinsic (a channel send, an atomic add, a `printf`), that is called out in
+prose — those operations are lowered directly by the compiler and have no LDP3 method body to quote.
 
-Notes that apply throughout:
+How these types fit the rest of LDP3:
 
-- Namespace visibility is enforced. To use a type you must `import` it (the exact import line is
-  given per type). `System.*` is not exempt.
-- Some types are thin LDP3 shells over compiler builtins. For example, `Channel<T>.send`/`receive`
-  and the `atomic<T>` operations are lowered by the compiler and do not appear as method
-  declarations in the prelude; they are noted in prose but have no verbatim signature to quote.
-- LDP3 is imutable-by-default; a field only carries `mutable` where it is reassigned.
+- **Manual memory, no GC.** These classes are allocated with `new ... on heap` (or `on stack`) and
+  freed with `delete`, just like any object. A `Task`, `Channel`, or `Mutex` wraps an OS/runtime
+  handle in a `long` field; hold the wrapper for as long as you need the underlying resource.
+- **Value semantics.** Assignment in LDP3 is a deep copy, and to *share* one instance across
+  threads or call sites you pass a pointer (`T*`) or reference (`T&`). The concurrency types are
+  meant to be shared, so you almost always allocate them `on heap` and capture them into closures
+  by value of the pointer (see the `Mutex` and `Channel` examples below).
+- **Explicit imports.** Namespace visibility is enforced and `System.*` is not exempt: to use a
+  type you must `import` it by its fully qualified name. The exact import line is given per type.
+- **Immutable by default.** A field carries `mutable` only where it is actually reassigned; you
+  will see this throughout the prelude signatures.
 
 ---
 
@@ -46,6 +60,28 @@ Public members:
 - `public mutable long h;` — the raw runtime task pointer, stored as a 64-bit slot.
 - `public constructor Task()` — creates an empty task handle (`h` = 0); the runtime fills it in when an async method is invoked.
 
+You rarely construct a `Task` by hand: an `async method` produces one for you, returning it the
+moment it is called (the body runs on the worker pool), and `await` blocks for its result.
+
+```ldp3
+import System.IO.Console;
+import System.Concurrency.Task;
+
+public class Main {
+    public static async method sum(int n) returns int {
+        mutable int s = 0;
+        for (mutable int i = 1; i <= n; i++) { s = s + i; }
+        return s;
+    }
+    public static method main(string[] args) returns void {
+        Task<int> a = Main.sum(100);   // scheduled immediately, runs concurrently
+        Task<int> b = Main.sum(200);
+        System.IO.Console.printf("a=%d b=%d\n", await a, await b);
+        return;
+    }
+}
+```
+
 ---
 
 ## `Channel<T>`
@@ -61,6 +97,25 @@ Public members:
 - `public mutable long h;` — the runtime channel handle.
 - `public constructor Channel(int capacity)` — allocates a channel with the given buffer capacity (via `System.Concurrency.__chanNew`).
 - `send(T)` / `receive()` — recognized by the compiler as channel builtins (used e.g. inside `Semaphore`); they block as described above but have no prelude method declaration.
+
+A channel is the safe way for a producer thread and a consumer thread to hand values across without
+sharing mutable state. Allocate it `on heap` so the same channel can be captured into a worker
+closure and used from `main`:
+
+```ldp3
+import System.Concurrency.Thread;
+import System.Concurrency.Channel;
+
+Channel<int> ch = new Channel<int>(4) on heap;
+function<void> producer = lambda[captures: byvalue ch]() returns void {
+    for (mutable int i = 1; i <= 5; i++) { ch.send(i); }   // blocks if the buffer is full
+};
+Thread t = new Thread(producer) on heap;
+t.start();
+mutable int sum = 0;
+for (mutable int i = 0; i < 5; i++) { sum = sum + ch.receive(); }   // blocks until a value arrives
+t.join();
+```
 
 ---
 
@@ -92,6 +147,29 @@ Public members:
 - `public mutable T value;` — the guarded value.
 - `public mutable long lock;` — the underlying OS lock handle.
 - `public constructor Mutex(T initial)` — stores `initial` and creates the lock (via `System.Concurrency.__lockCreate`).
+
+You never touch `value` directly; the only door to it is `synchronized (m) using T& x { ... }`,
+which takes the lock for the duration of the block and binds `x` to a reference to the guarded
+value, so a read-modify-write cannot interleave with another thread's:
+
+```ldp3
+import System.Concurrency.Thread;
+import System.Concurrency.Mutex;
+
+Mutex<int> counter = new Mutex<int>(0) on heap;
+function<void> work = lambda[captures: byvalue counter]() returns void {
+    for (mutable int i = 0; i < 100000; i++) {
+        synchronized (counter) using int& c { c = c + 1; }   // atomic increment
+    }
+};
+Thread t1 = new Thread(work) on heap;
+Thread t2 = new Thread(work) on heap;
+t1.start(); t2.start();
+t1.join(); t2.join();
+synchronized (counter) using int& c {
+    System.IO.Console.printf("total=%d\n", c);   // exactly 200000
+}
+```
 
 ---
 
@@ -246,6 +324,32 @@ Public members:
 
 - `public constructor None()` — the empty option.
 - `public override method isSome() returns boolean` — returns `false`.
+
+Together, `Result` and `Option` let a function report failure or absence in its return type instead
+of throwing. You construct the variants with the `Ok(x)` / `Err(e)` / `Some(x)` / `None()` sugar
+(the generic arguments are inferred from the expected type), and you take them apart with an
+exhaustive `match` — because the base is `sealed`, the compiler checks that you cover every variant,
+so no `default` arm is needed:
+
+```ldp3
+import System.IO.Console;
+import System.Errors.Result;
+
+public class Main {
+    public static method parse(int n) returns Result<int, int>* {
+        if (n < 0) { return Err(404); }   // args inferred from the return type
+        return Ok(n);
+    }
+    public static method main(string[] args) returns void {
+        Result<int, int>* r = Main.parse(5);
+        match (r) {
+            case Ok(int v)  { System.IO.Console.printf("ok %d\n", v); }
+            case Err(int e) { System.IO.Console.printf("err %d\n", e); }
+        }
+        return;
+    }
+}
+```
 
 ---
 

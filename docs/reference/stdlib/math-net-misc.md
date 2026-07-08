@@ -1,10 +1,25 @@
 # LDP3 Standard Library — Math / Numerics / Net / Misc
 
-Reference for the mathematics, numerics, cryptography, networking, and application-utility
-classes of the LDP3 standard library. Every type here is defined in the embedded prelude
-(the `kPreludeSource` raw string in `src/cli/main.cpp`, lines ~6340–8360) and is written in
-pure LDP3 over the compiler builtins, unless a member is noted as `extern` (linking to a
-runtime helper).
+This is the "everything numeric plus the outside world" half of the standard library: the
+mathematics and numerics of `System.Math`, the cryptography of `System.Security`, the
+sockets and HTTP client of `System.Net`, and a set of application-level building blocks in
+`System.App`, rounded out by process results (`System.OS`) and an inline test framework
+(`System.Test`).
+
+Every type here is defined in the embedded prelude (the `kPreludeSource` raw string in
+`src/cli/main.cpp`, lines ~6340–8360) and is written in **pure LDP3** over the compiler
+builtins. The only exceptions are members marked `extern`, which link to a small runtime
+helper for things the language can't do on its own — reading the OS CSPRNG
+(`SecureRandom`), or talking to the network stack (`Socket`, `UdpSocket`, `Http`). Because
+`System.Math` leans on its own `Numerics` class for transcendental functions rather than a
+native math library, the scientific types work unchanged in freestanding builds.
+
+A note on numeric style you'll see throughout: much of `System.Math` is deliberately
+**integer-first**. `Stats`, `Matrix`, `Polygon`, and friends compute in `int`/`long` so
+results are exact and reproducible, with parallel `double` types (`MatrixD`, `Vector2/3/4`,
+`Numerics`, `Regression`) provided where floating point is the point. Immutable value types
+(`BigInteger`, `Rational`, `Complex`, `Quaternion`, `Money`) return **new** objects from
+each operation rather than mutating in place, matching LDP3's copy-by-value model.
 
 All stdlib types require an **explicit import**. The import names the fully-qualified type,
 e.g. `import System.Math.BigInteger;` or `import System.Net.Http;`. Each type below lists its
@@ -28,6 +43,17 @@ Namespaces covered:
 
 # System.Math
 
+By far the largest namespace here, `System.Math` spans several families you can pick from by
+task: exact number types (`BigInteger`, `Rational`, `Complex`, `Quaternion`); number theory
+and combinatorics (`IntMath`, `NumberTheory`, `Sieve`, `Factorize`, `Crt`, `Combinatorics`);
+statistics (`Stats`, `RunningStats`, `Regression`, `Correlation`); linear algebra (`Matrix`,
+`MatrixD`, `Mat4`, the `Vector*` types, `GaussSolver`, `Fft`); computational geometry
+(`Polygon`, `ConvexHull`); graphics and animation math (`Interpolation`, `Easing`, `Angle`);
+probabilistic sketches for streaming data (`CountMinSketch`, `HyperLogLog`); and the
+self-contained transcendental functions in `Numerics` that everything floating-point builds
+on. Nothing here shadows a user class called `Math` — the integer helpers deliberately live
+under `IntMath`.
+
 ## BigInteger
 
 **Namespace:** `System.Math` · **Import:** `import System.Math.BigInteger;`
@@ -35,6 +61,19 @@ Namespaces covered:
 Arbitrary-precision signed integer (spec 34). Decimal digits (0..9) are stored
 least-significant-first in an `int[]` with a separate sign flag. Supports construction from
 `long`, sign-aware add/subtract/multiply/divide/remainder, comparison, and decimal rendering.
+Use it when a product or sum would overflow `long` — a `BigInteger` grows its digit buffer
+as needed. It is an immutable value type: each operation returns a fresh `BigInteger`, so
+the operands are never modified. Note that construction is from `long`, so wrap literals in
+`cast<long>(...)`.
+
+```ldp3
+import System.Math.BigInteger;
+
+BigInteger a = new BigInteger(cast<long>(123456789)) on heap;
+BigInteger b = new BigInteger(cast<long>(987654321)) on heap;
+BigInteger product = a.multiply(b);        // 121932631112635269 — overflows a 32-bit int
+System.IO.Console.println(product.toString());
+```
 
 - `public constructor BigInteger(long value)` — build from a signed 64-bit value.
 - `public method isZero() returns boolean` — whether the value is exactly zero.
@@ -86,7 +125,17 @@ divides out the gcd and normalizes the sign; arithmetic returns new reduced Rati
 
 **Namespace:** `System.Math` · **Import:** `import System.Math.Complex;`
 
-A complex number with `double` real and imaginary parts (spec 34.6).
+A complex number with `double` real and imaginary parts (spec 34.6). Immutable: `add`,
+`sub`, `mul`, and `conjugate` each return a new `Complex`. Useful anywhere a computation
+needs the imaginary axis — signal processing, root-finding, or feeding the `Fft`.
+
+```ldp3
+import System.Math.Complex;
+
+Complex p = new Complex(1.0, 2.0) on heap;
+Complex q = p.mul(new Complex(3.0, 4.0) on heap);   // (1+2i)(3+4i) = -5 + 10i
+System.IO.Console.printf("%d + %di\n", cast<int>(q.real()), cast<int>(q.imag()));
+```
 
 - `public constructor Complex(double re, double im)` — build re + im·i.
 - `public method real() returns double` — the real part.
@@ -101,7 +150,20 @@ A complex number with `double` real and imaginary parts (spec 34.6).
 **Namespace:** `System.Math` · **Import:** `import System.Math.Stats;`
 
 Summary statistics over an `int[]` (spec 34.6): totals, central tendency, spread, and order
-statistics on a sorted copy. All results are integer-valued.
+statistics on a sorted copy. All results are integer-valued, which keeps them exact and
+reproducible; when you need fractional means or variances, accumulate `double`s through
+`RunningStats` (Welford) instead. Order statistics (`median`, `percentile`) sort a copy, so
+the input array is left untouched.
+
+```ldp3
+import System.Math.Stats;
+
+mutable int[] xs = new int[5]();
+xs[0] = 4; xs[1] = 8; xs[2] = 15; xs[3] = 16; xs[4] = 23;
+System.IO.Console.printf("sum=%d mean=%d median=%d p90=%d\n",
+    Stats.sum(xs), Stats.mean(xs), Stats.median(xs), Stats.percentile(xs, 90));
+// sum=66 mean=13 median=15 p90=23
+```
 
 - `public static method sum(int[] xs) returns int` — sum of all values.
 - `public static method mean(int[] xs) returns int` — integer arithmetic mean (0 for empty).
@@ -135,7 +197,22 @@ read `deriv()` for the exact derivative at x; `constant(c)` has derivative 0.
 
 **Namespace:** `System.Math` · **Import:** `import System.Math.Matrix;`
 
-A dense integer matrix stored row-major in one flat `int[]` (spec 34.6).
+A dense integer matrix stored row-major in one flat `int[]` (spec 34.6). Construction gives
+you a zero-filled matrix you fill with `set`; `multiply`, `add`, and `transpose` return new
+matrices, and `determinant` uses fraction-free Bareiss elimination so the result stays an
+exact integer. For floating-point linear algebra (LU-style determinants, non-integer data)
+use `MatrixD` instead.
+
+```ldp3
+import System.Math.Matrix;
+
+mutable Matrix a = new Matrix(2, 2) on heap;
+a.set(0, 0, 1); a.set(0, 1, 2);
+a.set(1, 0, 3); a.set(1, 1, 4);
+Matrix aT = a.transpose();
+Matrix sq = a.multiply(a);            // ordinary matrix product (new matrix)
+System.IO.Console.printf("det=%d\n", a.determinant());   // det=-2
+```
 
 - `public constructor Matrix(int rows, int cols)` — allocate a zero-filled rows×cols matrix.
 - `public method rows() returns int` — row count.
@@ -541,6 +618,14 @@ S-boxes are generated from the GF(2^8) inverse plus the affine transform. `encry
 
 # System.Net
 
+The networking namespace is thin and blocking by design: a handful of classes that wrap OS
+socket handles through `extern` runtime helpers. `Socket`/`ServerSocket` are the TCP pair
+(connect a client, or bind-listen-accept a server); `UdpSocket`/`Datagram` cover
+connectionless UDP; and `Http`/`HttpResponse` layer a minimal HTTP/1.1 GET client on top of
+`Socket`. There is no async here — a `receive` blocks until data arrives — so for
+concurrency, drive sockets from `System.Thread` workers. Because the transport is `extern`,
+these types are the one part of this reference that does not run in freestanding builds.
+
 ## Socket
 
 **Namespace:** `System.Net` · **Import:** `import System.Net.Socket;`
@@ -608,7 +693,20 @@ A parsed HTTP response (spec 34): the raw text is kept and queried lazily.
 **Namespace:** `System.Net` · **Import:** `import System.Net.Http;`
 
 A minimal HTTP/1.1 client over Socket (spec 34). Request building and response parsing are pure;
-`get` performs the network round-trip.
+`get` performs the network round-trip. `get` opens a `Socket`, sends a `GET` with
+`Connection: close`, drains the whole reply, and hands back an `HttpResponse` you can query
+for the status code, body, and individual headers. It is intentionally small — one verb, no
+TLS, no redirects — for talking to plain-HTTP services and health-check endpoints.
+
+```ldp3
+import System.Net.Http;
+import System.Net.HttpResponse;
+
+HttpResponse res = Http.get("example.com", 80, "/");
+System.IO.Console.printf("status=%d\n", res.status());
+System.IO.Console.println(res.header("Content-Type"));
+System.IO.Console.println(res.body());
+```
 
 - `public static method buildRequest(String verb, String host, String path) returns String` — format a request line with Host and Connection: close headers.
 - `public static method get(String host, int port, String path) returns HttpResponse` — open a socket, send a GET, drain the reply, and parse it.
