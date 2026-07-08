@@ -3432,6 +3432,7 @@ struct CodeGenerator::Impl {
                     builder.getInt64Ty(),
                     builder.CreateStructGEP(asyncSMState, asyncSMStatePtr, asyncSMAwaitBase + k),
                     "aw.saved");
+                emitAwaitRethrowCheck(savedH);  // re-throw here if the awaited task failed (spec 21)
                 llvm::FunctionType* trTy = llvm::FunctionType::get(
                     builder.getInt64Ty(), {builder.getInt64Ty()}, false);
                 llvm::Value* r = builder.CreateCall(
@@ -3443,6 +3444,7 @@ struct CodeGenerator::Impl {
                 builder.getInt64Ty(), {builder.getInt64Ty()}, false);
             llvm::Value* r = builder.CreateCall(
                 module.getOrInsertFunction("__ldp3_task_wait", wtTy), {h}, "await");
+            emitAwaitRethrowCheck(h);  // re-throw here if the awaited task failed (spec 21)
             return castTaskResult(r, elem);
         }
         if (const auto* ue = dynamic_cast<const ast::UnimportExpr*>(&expr)) {
@@ -9219,6 +9221,72 @@ struct CodeGenerator::Impl {
         builder.CreateCall(module.getOrInsertFunction("__ldp3_task_complete", ft), {h, v});
     }
 
+    // Stores the exception carrier on the current async resume's task, so the awaiter re-throws it
+    // (spec 21) rather than the exception escaping the resume function and crashing a worker thread.
+    void emitTaskCompleteError(llvm::Value* carrier) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getInt64Ty(), builder.getInt64Ty()}, false);
+        llvm::Value* h = builder.CreatePtrToInt(currentAsyncState, builder.getInt64Ty());
+        llvm::Value* c = builder.CreatePtrToInt(carrier, builder.getInt64Ty());
+        builder.CreateCall(module.getOrInsertFunction("__ldp3_task_complete_error", ft), {h, c});
+    }
+
+    // A catch-all landing pad for an async resume function: if the body throws, record the exception on
+    // the task and return normally instead of letting it escape the worker thread. Pushed onto
+    // ehPadStack around the body so any uncaught throw unwinds here (defers/using still run first, since
+    // the cleanup pads chain into this one). Returns the pad to push.
+    llvm::BasicBlock* buildAsyncGuardPad() {
+        ensurePersonality();
+        llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
+        llvm::PointerType* ptrTy = builder.getPtrTy();
+        llvm::BasicBlock* pad = llvm::BasicBlock::Create(context, "async.guard", currentFn);
+        if (isItaniumEH()) {
+            builder.SetInsertPoint(pad);
+            llvm::LandingPadInst* lp = builder.CreateLandingPad(landingPadType(), 1);
+            lp->addClause(itaniumVoidPtrTypeInfo());
+            llvm::Value* exc = builder.CreateExtractValue(lp, 0, "exc");
+            llvm::Value* carrier = builder.CreateCall(cxaBeginCatch(), {exc}, "async.err");
+            emitTaskCompleteError(carrier);
+            builder.CreateCall(cxaEndCatch(), {});
+            builder.CreateRetVoid();
+        } else {
+            builder.SetInsertPoint(pad);
+            llvm::Value* caughtSlot = createEntryAlloca("exc.async", ptrTy);
+            llvm::CatchSwitchInst* cs =
+                builder.CreateCatchSwitch(llvm::ConstantTokenNone::get(context), nullptr, 1);
+            llvm::BasicBlock* dispatchBB = llvm::BasicBlock::Create(context, "async.dispatch", currentFn);
+            cs->addHandler(dispatchBB);
+            builder.SetInsertPoint(dispatchBB);
+            llvm::CatchPadInst* cp =
+                builder.CreateCatchPad(cs, {ehTypeDesc(), builder.getInt32(0), caughtSlot});
+            llvm::BasicBlock* failBB = llvm::BasicBlock::Create(context, "async.fail", currentFn);
+            builder.CreateCatchRet(cp, failBB);
+            builder.SetInsertPoint(failBB);
+            llvm::Value* carrier = builder.CreateLoad(ptrTy, caughtSlot, "async.err");
+            emitTaskCompleteError(carrier);
+            builder.CreateRetVoid();
+        }
+        builder.restoreIP(saved);
+        return pad;
+    }
+
+    // At an await: if the awaited task failed, re-throw its exception here so it surfaces at the await
+    // (spec 21). In an async awaiter the re-throw unwinds into that awaiter's own guard pad; in a
+    // synchronous context it propagates to the caller.
+    void emitAwaitRethrowCheck(llvm::Value* handle) {
+        llvm::FunctionType* ety =
+            llvm::FunctionType::get(builder.getInt64Ty(), {builder.getInt64Ty()}, false);
+        llvm::Value* err = builder.CreateCall(
+            module.getOrInsertFunction("__ldp3_task_error", ety), {handle}, "aw.err");
+        llvm::Value* hasErr = builder.CreateICmpNE(err, builder.getInt64(0));
+        llvm::BasicBlock* throwBB = llvm::BasicBlock::Create(context, "await.throw", currentFn);
+        llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "await.ok", currentFn);
+        builder.CreateCondBr(hasErr, throwBB, okBB);
+        builder.SetInsertPoint(throwBB);
+        emitThrowObject(builder.CreateIntToPtr(err, builder.getPtrTy()));
+        builder.SetInsertPoint(okBB);
+    }
+
     // Escape analysis for returned locals (mirrors the direct `return new X()` promotion). An object
     // built on the stack and then returned by name -- `T v = new T(); ...; return v;` -- escapes the
     // frame, so its pointer would dangle. Collect every identifier returned anywhere in a body, then
@@ -9521,7 +9589,10 @@ struct CodeGenerator::Impl {
             locals[m.params[i].name] = LocalSlot{
                 builder.CreateStructGEP(stateTy, st, 2 + i, m.params[i].name),
                 typeRefName(m.params[i].type)};
+        llvm::BasicBlock* guard = buildAsyncGuardPad();  // a throw completes the task with the error
+        ehPadStack.push_back(guard);
         emitBlock(m.body, /*newScope=*/false);
+        ehPadStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             emitTaskComplete(nullptr);
             builder.CreateRetVoid();
@@ -9754,7 +9825,10 @@ struct CodeGenerator::Impl {
         asyncSMCases.clear();
 
         builder.SetInsertPoint(bodyStart);
+        llvm::BasicBlock* guard = buildAsyncGuardPad();  // a throw completes the task with the error
+        ehPadStack.push_back(guard);
         emitBlock(m.body, /*newScope=*/false);  // natural control flow; awaits split their blocks
+        ehPadStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             emitTaskComplete(nullptr);
             builder.CreateRetVoid();

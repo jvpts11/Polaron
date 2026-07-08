@@ -552,6 +552,7 @@ typedef struct ldp3_task {
     long long result;
     ldp3_resume_fn waiter_fn;
     void* waiter_state;
+    long long error;  // an exception carrier (object ptr) if the async body threw; 0 otherwise
 } ldp3_task;
 
 // Ready queue of (resume, state) pairs run by a fixed pool of worker threads.
@@ -644,6 +645,27 @@ void __ldp3_task_complete(long long handle, long long value) {
 long long __ldp3_task_result(long long handle) {
     ldp3_task* t = (ldp3_task*)handle;
     return t != NULL ? t->result : 0;
+}
+
+// Called when an async body throws instead of producing a value: record the exception carrier, mark
+// done, and schedule the waiter -- which will re-throw it (spec 21: the exception surfaces at the await).
+void __ldp3_task_complete_error(long long handle, long long carrier) {
+    ldp3_task* t = (ldp3_task*)handle;
+    if (t == NULL) return;
+    t->error = carrier;
+    EnterCriticalSection(&g_qlock);
+    t->done = 1;
+    ldp3_resume_fn wf = t->waiter_fn;
+    void* ws = t->waiter_state;
+    LeaveCriticalSection(&g_qlock);
+    if (wf != NULL) __ldp3_schedule(wf, ws);
+    WakeAllConditionVariable(&g_donecond);
+}
+
+// The exception carrier a completed task failed with, or 0 if it produced a value normally.
+long long __ldp3_task_error(long long handle) {
+    ldp3_task* t = (ldp3_task*)handle;
+    return t != NULL ? t->error : 0;
 }
 
 // await from inside an async state machine: if the awaited task is already done, return 0 so
