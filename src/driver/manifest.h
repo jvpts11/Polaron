@@ -24,6 +24,9 @@ struct Manifest {
     bool freestanding = false;
     std::vector<Dependency> dependencies;  // from [dependencies]
     bool hasDependencies = false;          // convenience: !dependencies.empty()
+    // Native system libraries to link, from [build] native_libs = "opengl32, user32, ...". These are the
+    // libraries an FFI (`extern`) program calls into -- e.g. opengl32/user32/gdi32 for a GL program.
+    std::vector<std::string> nativeLibs;
 };
 
 // Parse the supported TOML subset ([program]/[build]/[dependencies]) from text.

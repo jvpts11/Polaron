@@ -74,6 +74,14 @@ Manifest parseManifestText(const std::string& text) {
             else if (key == "target") m.target = val;
             else if (key == "environment") m.environment = val;
             else if (key == "freestanding") m.freestanding = (val == "true");
+            else if (key == "native_libs") {  // comma-separated system libs for FFI (opengl32, ...)
+                std::stringstream ls(val);
+                std::string lib;
+                while (std::getline(ls, lib, ',')) {
+                    const std::string t = trim(lib);
+                    if (!t.empty()) m.nativeLibs.push_back(t);
+                }
+            }
         } else if (section == "dependencies") {
             m.dependencies.push_back({key, val});
             m.hasDependencies = true;

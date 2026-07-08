@@ -175,6 +175,8 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         linkArgs.push_back(tc.runtimeLib);
         linkArgs.push_back("legacy_stdio_definitions.lib");
         linkArgs.push_back("ws2_32.lib");
+        for (const auto& lib : m.nativeLibs)  // FFI: system libs the program links against (opengl32, ...)
+            linkArgs.push_back(lib + ".lib");
         if (int rc = runProcess(tc.lldLink, linkArgs); rc != 0) {
             std::fprintf(stderr, "ldp3: link failed\n");
             return rc == -1 ? 1 : rc;
@@ -200,6 +202,8 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         linkArgs.push_back("-lstdc++");   // Itanium EH runtime (__cxa_*, personality, _ZTIPv)
         linkArgs.push_back("-rdynamic");  // export symbols so a dlopened bundle resolves them
 #endif
+        for (const auto& lib : m.nativeLibs)  // FFI: system libs the program links against (opengl32, ...)
+            linkArgs.push_back("-l" + lib);
         linkArgs.push_back("-o");
         linkArgs.push_back(exe.string());
         if (int rc = runProcess(tc.clang, linkArgs); rc != 0) {
