@@ -6869,9 +6869,10 @@ struct CodeGenerator::Impl {
         }
         // No clause matched: run finally (uncaught path) then re-raise the same carrier to the
         // enclosing try or the caller. A fresh throw avoids __cxa_rethrow's begin/end-catch bookkeeping.
+        // If the finally itself threw, it already terminated the block, so skip the re-raise.
         if (s.finallyBlock != nullptr) finallyStack.pop_back();
         if (s.finallyBlock != nullptr) emitBlock(*s.finallyBlock);
-        emitThrowObject(obj);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) emitThrowObject(obj);
         // Normal / caught fall-through: the finally runs once here too.
         builder.SetInsertPoint(contBB);
         if (s.finallyBlock != nullptr) emitBlock(*s.finallyBlock);
@@ -6943,7 +6944,8 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(rethrowBB);
         llvm::Value* rethrown = builder.CreateLoad(ptrTy, caughtSlot, "rethrow.obj");
         if (s.finallyBlock != nullptr) emitBlock(*s.finallyBlock);  // uncaught path: finally runs
-        emitThrowObject(rethrown);
+        // A finally that itself threw already terminated the block, so skip the re-raise.
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) emitThrowObject(rethrown);
         // Normal / caught fall-through: the finally runs once here too.
         builder.SetInsertPoint(contBB);
         if (s.finallyBlock != nullptr) emitBlock(*s.finallyBlock);
