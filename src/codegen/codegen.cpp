@@ -2236,6 +2236,36 @@ struct CodeGenerator::Impl {
         return dest;
     }
 
+    // Frees the storage a value object owns through its fields -- arrays and heap value sub-objects
+    // (recursively) -- WITHOUT freeing the object itself. Used before overwriting an existing object in
+    // a value-semantics reassignment (b = a), so the target's old owned copy does not leak. free(null)
+    // is a no-op, so array fields need no guard; a value sub-object pointer is null-guarded before the
+    // recursion so a not-yet-built field never dereferences null.
+    void emitFreeOwnedFields(const std::string& className, llvm::Value* ptr) {
+        auto cit = classes.find(className);
+        if (cit == classes.end()) return;
+        llvm::StructType* st = cit->second.type;
+        for (const auto& [fname, ftype] : collectFields(className)) {
+            const unsigned idx = cit->second.fieldIndex[fname];
+            llvm::Value* slot = builder.CreateStructGEP(st, ptr, idx);
+            if (isArrayType(ftype)) {
+                builder.CreateCall(freeFn(), {builder.CreateLoad(builder.getPtrTy(), slot)});
+            } else if (isClassValue(ftype) && isCopyDiscipline(ftype)) {
+                llvm::Value* sub = builder.CreateLoad(builder.getPtrTy(), slot);
+                llvm::Value* isNull = builder.CreateICmpEQ(
+                    sub, llvm::ConstantPointerNull::get(builder.getPtrTy()));
+                auto* freeBB = llvm::BasicBlock::Create(context, "freefld", currentFn);
+                auto* contBB = llvm::BasicBlock::Create(context, "freefld.cont", currentFn);
+                builder.CreateCondBr(isNull, contBB, freeBB);
+                builder.SetInsertPoint(freeBB);
+                emitFreeOwnedFields(ftype, sub);
+                builder.CreateCall(freeFn(), {sub});
+                builder.CreateBr(contBB);
+                builder.SetInsertPoint(contBB);
+            }
+        }
+    }
+
     // Array memory layout: one heap block [ i64 length | elem 0 | elem 1 | ... ].
     // The array value is a pointer to the length header (element count); elements
     // start 8 bytes in and are sized by the element type.
@@ -7367,14 +7397,29 @@ struct CodeGenerator::Impl {
                     // store the pointer rather than memcpy'ing into a (possibly null) existing object.
                     builder.CreateStore(emitClassCopy(targetType, v, /*heap=*/true), slot);
                 } else {
-                    // A local already has a backing object (from its declaration). Deep-copy the
-                    // source into a fresh object (duplicating its arrays / value sub-objects), then
-                    // copy that object's bytes into the local's backing object, so target and source
-                    // share no storage -- matching the declaration and field paths (value semantics).
+                    // A local already has a backing object (from its declaration). Free the storage it
+                    // currently owns (its old copy dies -- value semantics), then deep-copy the source
+                    // directly into it: shallow-copy the bytes and duplicate the owned fields in place.
+                    // No temporary object is allocated, and the target's old owned arrays do not leak.
                     llvm::Value* destStruct = builder.CreateLoad(builder.getPtrTy(), slot);
-                    llvm::Value* deep = emitClassCopy(targetType, v);  // duplicates owned fields
-                    builder.CreateCall(memcpyFn(),
-                                       {destStruct, deep, sizeOf(classes[targetType].type)});
+                    emitFreeOwnedFields(targetType, destStruct);
+                    llvm::StructType* tst = classes[targetType].type;
+                    builder.CreateCall(memcpyFn(), {destStruct, v, sizeOf(tst)});
+                    for (const auto& [fname, ftype] : collectFields(targetType)) {
+                        const unsigned idx = classes[targetType].fieldIndex[fname];
+                        llvm::Value* deep = nullptr;
+                        if (isArrayType(ftype))
+                            deep = emitArrayDup(builder.CreateLoad(builder.getPtrTy(),
+                                                                   builder.CreateStructGEP(tst, v, idx)),
+                                                elementOf(ftype));
+                        else if (isClassValue(ftype) && isCopyDiscipline(ftype))
+                            deep = emitClassCopy(ftype,
+                                                 builder.CreateLoad(builder.getPtrTy(),
+                                                                    builder.CreateStructGEP(tst, v, idx)),
+                                                 /*heap=*/true);
+                        if (deep != nullptr)
+                            builder.CreateStore(deep, builder.CreateStructGEP(tst, destStruct, idx));
+                    }
                 }
             } else {
                 llvm::Value* sv = coerce(v, typeName(*assign->value), targetType);
