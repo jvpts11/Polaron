@@ -3554,7 +3554,8 @@ struct CodeGenerator::Impl {
             builder.SetInsertPoint(errBB);
             emitPendingFinallys(0);       // run enclosing finallys before propagating out
             emitScopeCleanup();           // run destructors/defers before propagating
-            builder.CreateRet(val);       // forward the Err/None as the method's Result/Option
+            if (builder.GetInsertBlock()->getTerminator() == nullptr)
+                builder.CreateRet(val);   // forward the Err/None as the method's Result/Option
             builder.SetInsertPoint(okBB);
             const std::string vt = cit->second.fieldType.at("value");
             llvm::Value* vp = builder.CreateStructGEP(cit->second.type, val,
@@ -6217,11 +6218,20 @@ struct CodeGenerator::Impl {
             for (const ast::ExprPtr& e : *currentEnsures) emitContractCheck(*e, "ensures");
         if (currentInvariants != nullptr)
             for (const ast::Expr* inv : *currentInvariants) emitContractCheck(*inv, "invariant");
-        // Deferred actions run first, in reverse (LIFO) order.
-        for (auto it = deferred.rbegin(); it != deferred.rend(); ++it) {
+        // Deferred actions run first, in reverse (LIFO) order. Snapshot and clear the list while running
+        // it: if a defer body throws, its own unwind must not re-run the defers (that double-ran them);
+        // the still-live destructors/regions are cleaned by the unwind path instead. Restored after, so a
+        // sibling exit path (another return in a different branch) still sees the defers.
+        std::vector<Cleanup> savedDef = deferred;
+        deferred.clear();
+        for (auto it = savedDef.rbegin(); it != savedDef.rend(); ++it) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
             emitCleanupAction(*it);
         }
+        deferred = savedDef;
+        // A defer/using body that itself threw already terminated the block and taken over control
+        // (its exception propagates); the remaining teardown and the caller's return are unreachable.
+        if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
         for (auto it = scopeObjects.rbegin(); it != scopeObjects.rend(); ++it) {
             if (!it->region.empty()) continue;  // region objects are destructed when the region frees
             auto fnit = functions.find(it->className + ".~" + it->className);
@@ -6542,6 +6552,7 @@ struct CodeGenerator::Impl {
     void emitDefaultReturn() {
         emitPendingFinallys(0);
         emitScopeCleanup();
+        if (builder.GetInsertBlock()->getTerminator() != nullptr) return;  // a throwing defer took over
         if (currentRetType->isVoidTy()) builder.CreateRetVoid();
         else if (currentRetType->isDoubleTy() || currentRetType->isFloatTy())
             builder.CreateRet(llvm::ConstantFP::get(currentRetType, 0.0));
@@ -7559,6 +7570,14 @@ struct CodeGenerator::Impl {
                     // directly into it: shallow-copy the bytes and duplicate the owned fields in place.
                     // No temporary object is allocated, and the target's old owned arrays do not leak.
                     llvm::Value* destStruct = builder.CreateLoad(builder.getPtrTy(), slot);
+                    // Self-assignment (b = b, or b = an alias of b) must be a no-op: freeing the target's
+                    // storage and then reading the source back would be a use-after-free. Only free +
+                    // deep-copy when the source and destination are distinct objects.
+                    llvm::Function* vfn = builder.GetInsertBlock()->getParent();
+                    llvm::BasicBlock* copyBB = llvm::BasicBlock::Create(context, "vcopy", vfn);
+                    llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(context, "vcopy.done", vfn);
+                    builder.CreateCondBr(builder.CreateICmpEQ(v, destStruct), doneBB, copyBB);
+                    builder.SetInsertPoint(copyBB);
                     emitFreeOwnedFields(targetType, destStruct);
                     llvm::StructType* tst = classes[targetType].type;
                     builder.CreateCall(memcpyFn(), {destStruct, v, sizeOf(tst)});
@@ -7577,6 +7596,8 @@ struct CodeGenerator::Impl {
                         if (deep != nullptr)
                             builder.CreateStore(deep, builder.CreateStructGEP(tst, destStruct, idx));
                     }
+                    builder.CreateBr(doneBB);
+                    builder.SetInsertPoint(doneBB);
                 }
             } else {
                 llvm::Value* sv = coerce(v, typeName(*assign->value), targetType);
@@ -7902,8 +7923,10 @@ struct CodeGenerator::Impl {
                 llvm::Value* v = rs->value != nullptr ? emitExpr(*rs->value) : nullptr;
                 emitPendingFinallys(0);
                 emitScopeCleanup();
-                emitTaskComplete(v);
-                builder.CreateRetVoid();
+                if (builder.GetInsertBlock()->getTerminator() == nullptr) {
+                    emitTaskComplete(v);
+                    builder.CreateRetVoid();
+                }
                 return;
             }
             if (rs->value != nullptr) {
@@ -7943,24 +7966,29 @@ struct CodeGenerator::Impl {
                     }
                     emitPendingFinallys(0);
                     emitScopeCleanup();
-                    builder.CreateRetVoid();
+                    if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateRetVoid();
                     return;
                 }
                 emitPendingFinallys(0);  // run every enclosing try's finally before leaving
                 emitScopeCleanup();
-                if (v != nullptr) builder.CreateRet(v);
+                if (builder.GetInsertBlock()->getTerminator() == nullptr && v != nullptr)
+                    builder.CreateRet(v);
                 return;
             }
             emitPendingFinallys(0);
             emitScopeCleanup();
-            if (currentRetType->isVoidTy()) {
-                builder.CreateRetVoid();
-            } else if (currentRetType->isDoubleTy()) {
-                builder.CreateRet(llvm::ConstantFP::get(currentRetType, 0.0));
-            } else if (currentRetType->isStructTy()) {
-                builder.CreateRet(llvm::UndefValue::get(currentRetType));  // tuple
-            } else {
-                builder.CreateRet(builder.getInt32(0));
+            // A throwing defer during cleanup already terminated the block (it took over control), so
+            // the return is unreachable -- emitting it would put a terminator after a terminator.
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) {
+                if (currentRetType->isVoidTy()) {
+                    builder.CreateRetVoid();
+                } else if (currentRetType->isDoubleTy()) {
+                    builder.CreateRet(llvm::ConstantFP::get(currentRetType, 0.0));
+                } else if (currentRetType->isStructTy()) {
+                    builder.CreateRet(llvm::UndefValue::get(currentRetType));  // tuple
+                } else {
+                    builder.CreateRet(builder.getInt32(0));
+                }
             }
             return;
         }
@@ -9533,6 +9561,9 @@ struct CodeGenerator::Impl {
         emitBlock(body, /*newScope=*/false);  // emitBody owns function-level teardown (+ contracts)
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             emitScopeCleanup();
+        }
+        // emitScopeCleanup may itself terminate the block (a throwing defer), so re-check here.
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             if (currentAsyncState != nullptr) {
                 emitTaskComplete(nullptr);  // async body fell through without an explicit return
                 builder.CreateRetVoid();
