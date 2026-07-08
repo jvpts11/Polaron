@@ -1,0 +1,29 @@
+import System.IO.Console;
+program SwitchEnumJava;
+
+// Regression guard: a switch over a Java-style enum (fields + constructor, so each constant is a shared
+// singleton object rather than an ordinal) must match on singleton identity, exactly as == does -- not
+// fall through to default.
+
+public bundle main {
+    public namespace app {
+
+        public enum Planet {
+            MERCURY(1), EARTH(3), MARS(4);
+            public mutable int order;
+            public constructor Planet(int o) { this.order = o; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Planet p = Planet.MARS;
+                switch (p) {
+                    case Planet.EARTH { System.IO.Console.println("earth"); break; }
+                    case Planet.MARS { System.IO.Console.println("mars"); break; }
+                    default { System.IO.Console.println("other"); }
+                }
+                return;
+            }
+        }
+    }
+}
