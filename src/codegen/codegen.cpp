@@ -2552,7 +2552,31 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(doneBB);
     }
 
-    llvm::Value* emitObjectPtr(const ast::Expr& expr) {
+    // Resolves the receiver object pointer for a member/method access. When the receiver is a nullable
+    // reference (spec 3.7) and the access actually dereferences it (field/method/assignment, i.e.
+    // derefCheck), a null receiver traps deterministically with a message rather than segfaulting on a
+    // read through address 0. `&x` (address-of) does not dereference, so it opts out. Non-nullable
+    // receivers pay nothing -- the check is emitted only for a nullable reference type.
+    llvm::Value* emitObjectPtr(const ast::Expr& expr, bool derefCheck = true) {
+        llvm::Value* ptr = emitObjectPtrRaw(expr);
+        if (ptr != nullptr && derefCheck) {
+            const std::string t = typeName(expr);
+            if (!t.empty() && t.back() == '?' && !isBoxablePrimitive(t.substr(0, t.size() - 1)))
+                emitNullReceiverCheck(ptr);
+        }
+        return ptr;
+    }
+    void emitNullReceiverCheck(llvm::Value* ptr) {
+        llvm::Value* isNull =
+            builder.CreateICmpEQ(ptr, llvm::ConstantPointerNull::get(builder.getPtrTy()));
+        llvm::BasicBlock* trapBB = llvm::BasicBlock::Create(context, "nullrecv", currentFn);
+        llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "nullrecv.ok", currentFn);
+        builder.CreateCondBr(isNull, trapBB, okBB);
+        builder.SetInsertPoint(trapBB);
+        emitPanic("null reference dereference");  // ends the block with unreachable
+        builder.SetInsertPoint(okBB);
+    }
+    llvm::Value* emitObjectPtrRaw(const ast::Expr& expr) {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
             if (id->name == "this") return currentThis;
             auto it = locals.find(id->name);
@@ -3401,7 +3425,8 @@ struct CodeGenerator::Impl {
             return v;
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
-            if (un->op == "&") return emitObjectPtr(*un->operand);  // address-of: the object pointer
+            if (un->op == "&")  // address-of does not dereference, so a null nullable is allowed here
+                return emitObjectPtr(*un->operand, /*derefCheck=*/false);
             // Unary operator overload (spec 6.5): a.operator<op>() when a's class defines a no-arg
             // one. A unary overload takes only `this` (arg_size 1), which distinguishes it from the
             // binary form of the same symbol.
