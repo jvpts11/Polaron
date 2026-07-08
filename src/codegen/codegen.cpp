@@ -978,6 +978,10 @@ struct CodeGenerator::Impl {
     // Runs a heap object's destructor (virtually, if the class is polymorphic) and
     // frees it. The single lowering used by both `delete` and `cascade delete`.
     void emitDeleteObject(llvm::Value* objPtr, const std::string& cn) {
+        // No-UB double-delete guard: a freed pool block's field 0 (the vtable slot) has been overwritten
+        // by the free-list link, so the destructor lookup below would call through garbage. Panic first
+        // if the block is already freed (live/foreign pointers pass through untouched).
+        builder.CreateCall(checkLiveFn(), {objPtr});
         auto cit = classes.find(cn);
         if (cit != classes.end() && cit->second.hasVtable) {
             llvm::Value* vtblField = builder.CreateStructGEP(cit->second.type, objPtr, 0, "vtbl.addr");
@@ -2001,6 +2005,11 @@ struct CodeGenerator::Impl {
         llvm::FunctionType* ty =
             llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
         return module.getOrInsertFunction("__ldp3_free", ty);  // pooled allocator (runtime)
+    }
+    llvm::FunctionCallee checkLiveFn() {  // panics on a delete of an already-freed block (runtime)
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_check_live", ty);
     }
 
     // Region backing-memory acquire/release (spec 17). Routes through the runtime's region cache instead

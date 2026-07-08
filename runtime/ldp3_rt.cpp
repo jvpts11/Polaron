@@ -82,6 +82,7 @@ void __ldp3_panic(const char* msg) {
 // calloc'd persistent slot) are forwarded to libc, so mixing is always safe. Large requests bypass the
 // pool. Thread-local free-lists need no lock; a block freed on any thread is simply reused there.
 #define LDP3_MAGIC 0x4C44503341313142ULL  // arbitrary 64-bit tag; collision with libc data ~2^-64
+#define LDP3_FREED 0x4C44503346524545ULL  // stamped into a pool block's header while it sits freed
 #define LDP3_POOL_MAX 512u                 // requests above this go straight to libc malloc
 #define LDP3_NCLASSES 32                   // size classes 16,32,...,512 (step 16)
 #define LDP3_SLAB (1u << 20)               // 1 MiB slabs, bump-allocated then recycled via free-list
@@ -113,6 +114,7 @@ void* __ldp3_malloc(size_t size) {
     Ldp3FreeNode* n = g_ldp3_free[cls];
     if (n != NULL) {  // reuse: the header (magic + class) is still intact just before the node
         g_ldp3_free[cls] = n->next;
+        ((Ldp3Hdr*)((char*)n - 16))->magic = LDP3_MAGIC;  // live again: clear the freed stamp
         return (void*)n;
     }
     size_t need = 16 + (size_t)(cls + 1) * 16;
@@ -132,17 +134,34 @@ void* __ldp3_malloc(size_t size) {
 void __ldp3_free(void* ptr) {
     if (ptr == NULL) return;
     Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
+    // Freeing a pool block that is already on the free-list would splice it in twice and cycle the list,
+    // silently handing the same address out to two later allocations. A live block always carries
+    // LDP3_MAGIC, so a header already stamped LDP3_FREED means a double free -- stop deterministically
+    // rather than corrupt the heap (no UB). One compare on the free path; perf is unchanged.
+    if (h->magic == LDP3_FREED) __ldp3_panic("double free of a heap block");
     if (h->magic != LDP3_MAGIC) {  // foreign pointer (libc) -- forward
         free(ptr);
         return;
     }
     if (h->cls == LDP3_LARGE) {
+        h->magic = LDP3_FREED;  // large blocks go back to libc; stamp guards a same-run double free
         free(h);
         return;
     }
-    Ldp3FreeNode* n = (Ldp3FreeNode*)ptr;  // recycle the payload as the free-list node
+    h->magic = LDP3_FREED;                  // mark freed; __ldp3_malloc clears it on reuse
+    Ldp3FreeNode* n = (Ldp3FreeNode*)ptr;   // recycle the payload as the free-list node
     n->next = g_ldp3_free[h->cls];
     g_ldp3_free[h->cls] = n;
+}
+
+// Called at the start of `delete obj`: a pooled object's field 0 is its vtable slot, but once freed that
+// word holds the free-list link, so looking up the destructor through it would call through garbage. If
+// the block is already freed, stop deterministically instead (no UB). A live pool block carries
+// LDP3_MAGIC; a foreign/stack pointer carries neither stamp and is left alone.
+void __ldp3_check_live(void* ptr) {
+    if (ptr == NULL) return;
+    Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
+    if (h->magic == LDP3_FREED) __ldp3_panic("use of a freed object (double delete)");
 }
 
 // Region backing-memory cache (hosted). A region's data block is often multi-megabyte, which libc
