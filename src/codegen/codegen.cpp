@@ -488,6 +488,9 @@ struct CodeGenerator::Impl {
         bool consumed = false;              // using: an explicit `delete r` already disposed it
     };
     std::vector<Cleanup> deferred;  // defer blocks + using disposals, run at scope end (LIFO)
+    // Locals returned from the current body: a class value copied into such a local escapes the frame,
+    // so its deep copy must live on the heap, not a stack alloca that dangles once the function returns.
+    std::set<std::string> escapingLocals_;
     bool checkedArith_ = false;      // inside checked(...): signed +/-/* trap on overflow (spec 3.6)
     // Function specialization over no-capture lambda arguments (perf). When a method that takes a
     // function<> parameter is called with a known constant lambda, a specialized copy of the method is
@@ -7369,7 +7372,11 @@ struct CodeGenerator::Impl {
             // and movable/unique disciplines transfer instead of copying.
             if (isClassValue(declType) && isCopyDiscipline(declType) &&
                 isCopyableLValue(*vd->init)) {
-                initV = emitClassCopy(declType, initV);
+                // A copy bound to a local that is later returned escapes the frame, so it must live on
+                // the heap; otherwise the frame's alloca is fine (escape analysis, mirrors the `new`
+                // promotion). Over-promotion to the heap is always safe.
+                initV = emitClassCopy(declType, initV,
+                                      /*heap=*/escapingLocals_.count(vd->name) > 0);
             }
             initV = coerce(initV, typeName(*vd->init), declType);  // int -> float widening
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
@@ -9371,6 +9378,7 @@ struct CodeGenerator::Impl {
         volatileRegions_.clear();
         volatileObjects_.clear();
         deferred.clear();
+        escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
         labelBlocks.clear();
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
         builder.SetInsertPoint(block);
@@ -9381,6 +9389,7 @@ struct CodeGenerator::Impl {
         for (const auto& s : body.statements) collectReturnedNames(s.get(), escaping);
         if (!escaping.empty())
             for (const auto& s : body.statements) promoteEscapingNews(s.get(), escaping);
+        escapingLocals_ = escaping;  // value-copy locals that escape (below) are copied onto the heap
 
         unsigned argIdx = 0;
         if (hasEnv) {
@@ -9580,6 +9589,7 @@ struct CodeGenerator::Impl {
         volatileRegions_.clear();
         volatileObjects_.clear();
         deferred.clear();
+        escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
         labelBlocks.clear();
         builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", res));
         llvm::Value* st = res->getArg(0);
@@ -9792,6 +9802,7 @@ struct CodeGenerator::Impl {
         volatileRegions_.clear();
         volatileObjects_.clear();
         deferred.clear();
+        escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
         labelBlocks.clear();
         builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", res));
         llvm::Value* st = res->getArg(0);
