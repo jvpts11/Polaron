@@ -6,12 +6,12 @@
 # ---- Integration tests (driver) ----
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 0\\.1\\.0-dev")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.0")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 0\\.1\\.0-dev")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.0")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"

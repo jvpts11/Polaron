@@ -4,7 +4,7 @@
 # Run after building: cmake --build build --config Release --target ldp3 ldp3c ldp3-studio ldp3-lsp
 param(
     [string]$Config = "Release",
-    [string]$Version = "0.1.0",
+    [string]$Version = "1.0.0",
     [string]$RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
 )
 $ErrorActionPreference = "Stop"

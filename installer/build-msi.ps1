@@ -2,10 +2,10 @@
 # Prereqs: a Release build of the LDP3 binaries (cmake --build build --config Release), LLVM in
 # C:\Program Files\LLVM, and the WiX tool (dotnet tool install --global wix; adds ~\.dotnet\tools to PATH).
 #
-#   ./build-msi.ps1                       # -> installer/dist/LDP3-0.1.0.msi
+#   ./build-msi.ps1                       # -> installer/dist/LDP3-1.0.0.msi
 param(
     [string]$Config = "Release",
-    [string]$Version = "0.1.0"
+    [string]$Version = "1.0.0"
 )
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
