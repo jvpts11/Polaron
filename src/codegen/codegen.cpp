@@ -4384,7 +4384,12 @@ struct CodeGenerator::Impl {
         for (std::size_t i = 0; i < callArgs.size(); ++i) {
             llvm::Value* v = emitExpr(*callArgs[i]);
             if (v == nullptr) return nullptr;
-            if (i < pts.size()) v = coerceToType(v, pts[i]);
+            const std::string pt = (i + 1 < parts.size()) ? parts[i + 1] : std::string();
+            if (pt == "string" || pt == "String") {
+                v = stringData(v);  // FFI: a String maps to its NUL-terminated C char* data (spec 26)
+            } else if (i < pts.size()) {
+                v = coerceToType(v, pts[i]);
+            }
             args.push_back(v);
         }
         return builder.CreateCall(fty, fnPtr, args);  // foreign C call; does not throw an LDP3 exception

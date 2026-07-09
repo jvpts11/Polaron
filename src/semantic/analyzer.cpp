@@ -2713,7 +2713,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string src = under(srcRaw);
         const bool dstRef = dst == "Object" || lookupClass(baseType(dst)) != nullptr;
         const bool srcRef = src.empty() || src == "Object" || src == "Type" || src == "Method" ||
-                            lookupClass(baseType(src)) != nullptr || isRefType(src);
+                            lookupClass(baseType(src)) != nullptr || isRefType(src) ||
+                            src.rfind("funcptr<", 0) == 0;  // a bare C fn pointer reinterprets like a ptr
         const bool dstFuncptr = dst.rfind("funcptr<", 0) == 0;  // a bare C function pointer (dynamic FFI)
         const bool dstPtr = isRefType(dst) || dstRef || dstFuncptr;  // pointer/ref target (T*, T&, class)
         // `char` is an integer for casting purposes; Decimal converts to/from the numeric family too
