@@ -4925,6 +4925,11 @@ struct CodeGenerator::Impl {
             llvm::Value* a = emitExpr(*call.args[0]);
             llvm::Value* v = emitExpr(*call.args[1]);
             if (a == nullptr || v == nullptr) return nullptr;
+            // Store as the declared <T>, not as the value's own type: Memory.write<float>(addr, 1.0)
+            // must write 4 bytes, coercing the double literal down -- otherwise it writes 8 and runs
+            // past the end of the buffer (heap corruption). Mirrors Memory.read<T>.
+            llvm::Type* t = llvmType(call.typeArgs.empty() ? "int" : call.typeArgs[0]);
+            v = coerceToType(v, t);
             builder.CreateStore(v, builder.CreateIntToPtr(a, builder.getPtrTy()));
             return nullptr;
         }
