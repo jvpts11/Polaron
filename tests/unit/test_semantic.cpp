@@ -1272,6 +1272,29 @@ TEST_CASE("semantic accepts low-level memory in freestanding mode") {
         " int x = p[0]; Memory.free(a); return x; } } } }"));
 }
 
+// ---- System.Memory: a first-class stdlib class, import-gated in normal mode (spec 17.8) ----
+
+TEST_CASE("semantic rejects the short Memory.* without importing System.Memory") {
+    CHECK_FALSE(checkSrc(
+        "program M; public bundle b { public namespace app {"
+        " public class Main { public static method main(string[] args) returns void {"
+        " address a = Memory.alloc(8); Memory.free(a); return; } } } }"));
+}
+
+TEST_CASE("semantic accepts Memory.* after importing System.Memory") {
+    CHECK(checkSrc(
+        "import System.Memory; program M; public bundle b { public namespace app {"
+        " public class Main { public static method main(string[] args) returns void {"
+        " address a = Memory.alloc(8); Memory.free(a); return; } } } }"));
+}
+
+TEST_CASE("semantic accepts fully-qualified System.Memory.* without an import") {
+    CHECK(checkSrc(
+        "program M; public bundle b { public namespace app {"
+        " public class Main { public static method main(string[] args) returns void {"
+        " address a = System.Memory.alloc(8); System.Memory.free(a); return; } } } }"));
+}
+
 TEST_CASE("semantic rejects async in freestanding mode") {
     CHECK_FALSE(checkSrc(
         "program K freestanding; public bundle b freestanding { public namespace n {"

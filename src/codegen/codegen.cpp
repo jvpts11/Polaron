@@ -1741,7 +1741,8 @@ struct CodeGenerator::Impl {
             }
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
             if (flattenCallee(*call->callee) == "System.IO.Console.read") return "String";  // reads a line
-            if (flattenCallee(*call->callee) == "Memory.readString") return "String";  // StringBuilder
+            if (const std::string rc = flattenCallee(*call->callee);
+                rc == "Memory.readString" || rc == "System.Memory.readString") return "String";  // StringBuilder
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("Time.", 0) == 0) {
                 if (fc == "Time.millis" || fc == "Time.nanos" || fc == "Time.unixMillis")
                     return "long";  // spec 34
@@ -4896,32 +4897,35 @@ struct CodeGenerator::Impl {
                 return builder.CreateCall(module.getOrInsertFunction(fn, ft), args);
             }
         }
-        // Memory API (spec 17.8): low-level address-based access. `address` is an i64.
-        if (name == "Memory.alloc") {
+        // Memory API (spec 17.8): low-level address-based access. `address` is an i64. Accept both the
+        // qualified System.Memory.X and the short Memory.X (the semantic phase enforces the import).
+        const std::string memName =
+            (name.rfind("System.Memory.", 0) == 0) ? "Memory." + name.substr(14) : name;
+        if (memName == "Memory.alloc") {
             llvm::Value* n = emitExpr(*call.args[0]);
             if (n == nullptr) return nullptr;
             llvm::Value* p = builder.CreateCall(
                 mallocFn(), {builder.CreateIntCast(n, builder.getInt64Ty(), false)}, "mem.alloc");
             return builder.CreatePtrToInt(p, builder.getInt64Ty());
         }
-        if (name == "Memory.free") {
+        if (memName == "Memory.free") {
             llvm::Value* a = emitExpr(*call.args[0]);
             if (a == nullptr) return nullptr;
             builder.CreateCall(freeFn(), {builder.CreateIntToPtr(a, builder.getPtrTy())});
             return nullptr;
         }
-        if (name == "Memory.getMemory") {
+        if (memName == "Memory.getMemory") {
             llvm::Value* p = emitLValue(*call.args[0]);  // the target's storage address
             if (p == nullptr) return nullptr;
             return builder.CreatePtrToInt(p, builder.getInt64Ty());
         }
-        if (name == "Memory.read") {
+        if (memName == "Memory.read") {
             llvm::Value* a = emitExpr(*call.args[0]);
             if (a == nullptr) return nullptr;
             llvm::Type* t = llvmType(call.typeArgs.empty() ? "int" : call.typeArgs[0]);
             return builder.CreateLoad(t, builder.CreateIntToPtr(a, builder.getPtrTy()), "mem.read");
         }
-        if (name == "Memory.write") {
+        if (memName == "Memory.write") {
             llvm::Value* a = emitExpr(*call.args[0]);
             llvm::Value* v = emitExpr(*call.args[1]);
             if (a == nullptr || v == nullptr) return nullptr;
@@ -5174,7 +5178,7 @@ struct CodeGenerator::Impl {
         }
         // Memory.writeString(address, src): bulk-copy src's bytes to a raw buffer via memcpy (used by
         // StringBuilder.append, replacing a byte-at-a-time charAt/write loop).
-        if (name == "Memory.writeString") {
+        if (memName == "Memory.writeString") {
             llvm::Value* dstAddr = emitExpr(*call.args[0]);
             llvm::Value* srcStr = emitExpr(*call.args[1]);
             if (dstAddr == nullptr || srcStr == nullptr) return nullptr;
@@ -5183,7 +5187,7 @@ struct CodeGenerator::Impl {
             return nullptr;
         }
         // Memory.copy(dst, src, n): raw memcpy of n bytes between two addresses.
-        if (name == "Memory.copy") {
+        if (memName == "Memory.copy") {
             llvm::Value* dstAddr = emitExpr(*call.args[0]);
             llvm::Value* srcAddr = emitExpr(*call.args[1]);
             llvm::Value* n = fitInt(emitExpr(*call.args[2]), 64);
@@ -5194,7 +5198,7 @@ struct CodeGenerator::Impl {
         }
         // Memory.readString(address, len): build a String by copying `len` bytes from a raw buffer
         // (the new String owns its own copy). Used by StringBuilder.toString().
-        if (name == "Memory.readString") {
+        if (memName == "Memory.readString") {
             llvm::Value* addr = emitExpr(*call.args[0]);
             llvm::Value* len = fitInt(emitExpr(*call.args[1]), 64);
             if (addr == nullptr || len == nullptr) return nullptr;

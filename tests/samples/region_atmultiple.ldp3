@@ -1,4 +1,6 @@
 import System.IO.Console;
+import System.Memory;
+
 program RegionAtMultiple;
 
 // itself.atMultiple (spec 17.4): a region over several fixed address ranges, each type-constrained.

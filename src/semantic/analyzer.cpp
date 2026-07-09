@@ -1130,6 +1130,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     // Math (spec 34.6) is a virtual builtin type (no prelude class, to avoid clashing with user
     // classes named Math); register its namespace so `import System.Math.Math;` resolves.
     typeNamespace_["Math"] = "System.Math";
+    typeNamespace_["Memory"] = "System";   // the low-level memory API class (spec 17.8): System.Memory
     // File (spec 34.4) is likewise a virtual builtin (static methods lower to runtime stdio calls);
     // register it so `import System.IO.File;` resolves.
     typeNamespace_["File"] = "System.IO";
@@ -1702,7 +1703,8 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     if (currentImports_.count(n) > 0) return;      // brought in by import (incl. stdlib)
     // The stdlib is internally cohesive: a System.* type may use any other System.* type without an
     // import (e.g. System.Json's Json uses System.Text's StringBuilder).
-    if (currentNamespace_.rfind("System.", 0) == 0 && it->second.rfind("System.", 0) == 0) return;
+    if (currentNamespace_.rfind("System.", 0) == 0 &&
+        (it->second == "System" || it->second.rfind("System.", 0) == 0)) return;
     error("type '" + n + "' is in namespace '" + it->second + "'; import it (import " + it->second +
               "." + n + ";) to use it here",
           loc);
@@ -3178,41 +3180,50 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 return "double";
             }
         }
-        // Memory API (spec 17.8): low-level address-based memory access (freestanding-safe).
-        if (name == "Memory.alloc") {
+        // Memory API (spec 17.8): the low-level, address-based memory API, now a first-class stdlib
+        // class System.Memory. Reached as System.Memory.X (fully qualified, always allowed) or, after
+        // `import System.Memory;`, as the short Memory.X. The short form requires the import, enforced
+        // through checkTypeAccessible exactly like System.Math.Math (System.* code stays exempt).
+        std::string memName = name;
+        if (memName.rfind("System.Memory.", 0) == 0) {
+            memName = "Memory." + memName.substr(14);
+        } else if (memName.rfind("Memory.", 0) == 0 && !freestanding_) {
+            checkTypeAccessible("Memory", call->loc);   // freestanding's systems core needs no import
+        }
+        if (memName == "Memory.alloc") {
             if (call->args.size() != 1) error("Memory.alloc takes a byte count", call->loc);
             else typeOf(*call->args.front());
             return "address";
         }
-        if (name == "Memory.free") {
+        if (memName == "Memory.free") {
             if (call->args.size() != 1) error("Memory.free takes an address", call->loc);
             else typeOf(*call->args.front());
             return "void";
         }
-        if (name == "Memory.getMemory") {
+        if (memName == "Memory.getMemory") {
             if (call->args.size() != 1) error("Memory.getMemory takes one argument", call->loc);
             else typeOf(*call->args.front());
             return "address";
         }
-        if (name == "Memory.read") {
+        if (memName == "Memory.read") {
             if (call->typeArgs.size() != 1) error("Memory.read<T> needs a type argument", call->loc);
             else checkBitCounted(call->typeArgs[0], call->loc);  // int8/int16/... are freestanding-only
             for (const auto& a : call->args) typeOf(*a);
             return call->typeArgs.empty() ? "" : call->typeArgs[0];
         }
-        if (name == "Memory.write") {
+        if (memName == "Memory.write") {
             if (!call->typeArgs.empty()) checkBitCounted(call->typeArgs[0], call->loc);  // bit-counted: freestanding-only
             for (const auto& a : call->args) typeOf(*a);
             return "void";
         }
         // Memory.writeString(address, String): bulk-copy a String's bytes to a raw buffer (StringBuilder).
-        if (name == "Memory.writeString") {
+        if (memName == "Memory.writeString") {
             if (call->args.size() != 2) error("Memory.writeString takes (address, String)", call->loc);
             for (const auto& a : call->args) typeOf(*a);
             return "void";
         }
         // Memory.copy(dst, src, n): raw memcpy of n bytes between two addresses (StringBuilder growth).
-        if (name == "Memory.copy") {
+        if (memName == "Memory.copy") {
             if (call->args.size() != 3) error("Memory.copy takes (dst, src, n)", call->loc);
             for (const auto& a : call->args) typeOf(*a);
             return "void";
@@ -3302,7 +3313,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
         }
         // Memory.readString(address, len): build a String from a raw byte buffer (StringBuilder).
-        if (name == "Memory.readString") {
+        if (memName == "Memory.readString") {
             if (call->args.size() != 2) error("Memory.readString takes (address, length)", call->loc);
             for (const auto& a : call->args) typeOf(*a);
             return "String";

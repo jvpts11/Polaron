@@ -1,5 +1,7 @@
 import System.IO.Console;
 import System.Memory.Units.bytes;
+import System.Memory;
+
 program RegionAtAddress;
 
 // Region over fixed memory (spec 17.8 / 36.9): `itself.at(addr, size)` makes a region whose

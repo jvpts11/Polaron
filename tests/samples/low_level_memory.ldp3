@@ -1,4 +1,6 @@
 import System.IO.Console;
+import System.Memory;
+
 program LowLevelMemory;
 
 // Low-level memory for freestanding/systems code (spec 17.8, 36.2): the `address` primitive (a
