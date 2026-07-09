@@ -1,0 +1,24 @@
+import System.IO.Console;
+import System.OS.Env;
+program ParseDouble;
+
+// String.toDouble (spec 4): parses a base-10 double including sign, fraction, and scientific 'e'
+// exponent. And Env.executablePath (spec 34): the running program's own path, which must be
+// non-empty. Prints:
+//   a=314 b=-150 c=42 exe_ok=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String a = "3.14";
+                String b = "-1.5e2";
+                String c = "42";
+                String exe = Env.executablePath();
+                System.IO.Console.printf("a=%d b=%d c=%d exe_ok=%d\n",
+                    cast<int>(a.toDouble() * 100.0), cast<int>(b.toDouble()),
+                    cast<int>(c.toDouble()), exe.length() > 0 ? 1 : 0);
+                return;
+            }
+        }
+    }
+}

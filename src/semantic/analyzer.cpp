@@ -3273,6 +3273,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     error("Env." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
                 return fn == "get" ? "String" : "boolean";
             }
+            // executablePath() -> the running program's own full path (spec 34). Lets a program
+            // resolve files relative to its executable rather than the current directory.
+            if (fn == "executablePath") {
+                checkTypeAccessible("Env", call->loc);
+                if (!call->args.empty())
+                    error("Env.executablePath takes no arguments", call->loc);
+                return "String";
+            }
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio. Require `import System.IO.File;`.
         if (name.rfind("File.", 0) == 0) {
@@ -3471,6 +3479,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "isEmpty" && call->args.empty()) return "boolean";
                 if (mem->member == "charAt" && call->args.size() == 1) return "char";
                 if (mem->member == "toInt" && call->args.empty()) return "int";  // parse (spec 4)
+                if (mem->member == "toDouble" && call->args.empty()) return "double";  // parse (spec 4)
                 if (mem->member == "equals" && call->args.size() == 1) return "boolean";
                 if (mem->member == "concat" && call->args.size() == 1) return "String";
                 // append mutates the receiver, so it is only on the mutable `string` (spec 4).

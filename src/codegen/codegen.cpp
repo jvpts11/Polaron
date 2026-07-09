@@ -1760,6 +1760,7 @@ struct CodeGenerator::Impl {
             if (const std::string ec = flattenCallee(*call->callee); ec.rfind("Env.", 0) == 0) {
                 if (ec == "Env.get") return "String";  // spec 34
                 if (ec == "Env.set") return "boolean";
+                if (ec == "Env.executablePath") return "String";
             }
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("File.", 0) == 0) {
                 if (fc == "File.readAll" || fc == "File.list") return "String";  // spec 34.4
@@ -1799,6 +1800,8 @@ struct CodeGenerator::Impl {
                     if (mem->member == "hash") return "long";
                     if (mem->member == "equalsKey") return "boolean";
                     if (mem->member == "compareTo") return "int";
+                    if (mem->member == "toInt") return "int";
+                    if (mem->member == "toDouble") return "double";
                 }
                 if (typeName(*mem->object) == "Decimal" && mem->member == "toString") return "String";
                 // Integer keys: Hashable/Comparable builtins (collections) + toString (itoa).
@@ -5111,6 +5114,17 @@ struct CodeGenerator::Impl {
             return builder.CreateCall(module.getOrInsertFunction("__ldp3_env_set", ft),
                                       {stringData(nm), stringData(val)});
         }
+        // executablePath(): the running program's own path -- a heap char* from the runtime.
+        if (name == "Env.executablePath") {
+            llvm::Type* p = builder.getPtrTy();
+            llvm::Type* i64 = builder.getInt64Ty();
+            llvm::FunctionType* ft = llvm::FunctionType::get(p, {}, false);
+            llvm::Value* cstr =
+                builder.CreateCall(module.getOrInsertFunction("__ldp3_executable_path", ft), {});
+            llvm::FunctionCallee strlenFn =
+                module.getOrInsertFunction("strlen", llvm::FunctionType::get(i64, {p}, false));
+            return emitStringFromParts(builder.CreateCall(strlenFn, {cstr}, "exe.len"), cstr);
+        }
         // File I/O (spec 34.4): static methods lowering to runtime stdio helpers.
         if (name.rfind("File.", 0) == 0) {
             const std::string fn = name.substr(5);
@@ -5438,6 +5452,13 @@ struct CodeGenerator::Impl {
                     llvm::FunctionType* ft =
                         llvm::FunctionType::get(builder.getInt32Ty(), {builder.getPtrTy()}, false);
                     return builder.CreateCall(module.getOrInsertFunction("atoi", ft), {stringData(s)});
+                }
+                // toDouble(): parse the string as a double (spec 4) -- sign, fraction, and 'e'
+                // exponent -- mirroring toInt(). Invalid input yields 0.0 (defined, no UB), as atoi.
+                if (mem->member == "toDouble") {
+                    llvm::FunctionType* ft =
+                        llvm::FunctionType::get(builder.getDoubleTy(), {builder.getPtrTy()}, false);
+                    return builder.CreateCall(module.getOrInsertFunction("atof", ft), {stringData(s)});
                 }
                 // string.append(x): mutate the receiver in place by replacing its {length, data} with
                 // the concatenation. The receiver must be a mutable `string` (its struct is on the

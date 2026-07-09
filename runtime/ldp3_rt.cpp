@@ -1009,6 +1009,26 @@ int __ldp3_env_set(const char* name, const char* value) {
     return setenv(name, value, 1) == 0 ? 1 : 0;
 #endif
 }
+// The running program's own path (spec 34): Windows via GetModuleFileNameA, POSIX via
+// /proc/self/exe. Returns a heap NUL-terminated string; empty on failure or truncation rather
+// than a half-formed path a caller might trust.
+char* __ldp3_executable_path(void) {
+#ifdef _WIN32
+    DWORD cap = 4096;
+    char* buf = (char*)malloc(cap);
+    if (buf == NULL) { char* e = (char*)malloc(1); if (e) e[0] = 0; return e; }
+    DWORD n = GetModuleFileNameA(NULL, buf, cap);
+    if (n == 0 || n >= cap) { buf[0] = 0; } else { buf[n] = 0; }
+    return buf;
+#else
+    size_t cap = 4096;
+    char* buf = (char*)malloc(cap);
+    if (buf == NULL) { char* e = (char*)malloc(1); if (e) e[0] = 0; return e; }
+    ssize_t n = readlink("/proc/self/exe", buf, cap - 1);
+    if (n < 0) { buf[0] = 0; } else { buf[(size_t)n] = 0; }
+    return buf;
+#endif
+}
 
 // ---- File I/O (spec 34.4): whole-file read/write over C stdio. ----
 char* __ldp3_file_read_all(const char* path, long long* outLen) {
