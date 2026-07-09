@@ -1137,7 +1137,8 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
         expect(TokenKind::KwReturns, "'returns'");
         m->returnType = parseTypeRef();
         currentMethodReturnType_ = m->returnType;
-        m->body = parseBlock();
+        if (headerMode_ && check(TokenKind::Semicolon)) advance();  // .ldh signature: body is in the .ldb
+        else m->body = parseBlock();
         return m;
     }
     const Token op = advance();  // the operator symbol token (+, -, ==, <, [, ...)
@@ -1153,7 +1154,8 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
     expect(TokenKind::KwReturns, "'returns'");
     m->returnType = parseTypeRef();
     currentMethodReturnType_ = m->returnType;  // enables the Ok(x)/.. return-value sugar
-    m->body = parseBlock();
+    if (headerMode_ && check(TokenKind::Semicolon)) advance();  // .ldh signature: body is in the .ldb
+    else m->body = parseBlock();
     return m;
 }
 

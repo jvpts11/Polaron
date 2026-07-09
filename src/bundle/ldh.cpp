@@ -64,6 +64,19 @@ std::string spellTypeParams(const std::vector<std::string>& tps) {
 // Members visible across a bundle boundary: public (callers) and protected (subclassers).
 bool exposed(const std::string& vis) { return vis == "public" || vis == "protected"; }
 
+// Spell a constant field initializer back to source. A static field with a literal initializer must
+// carry its value across the bundle boundary, or an importer that reads `GL.X` sees an uninitialized
+// global (0). Only literal forms are spelled; a non-literal initializer is dropped (value omitted).
+std::string spellConstInit(const Expr* e) {
+    if (e == nullptr) return "";
+    if (const auto* i = dynamic_cast<const IntLiteralExpr*>(e)) return i->text;
+    if (const auto* f = dynamic_cast<const FloatLiteralExpr*>(e)) return f->text;
+    if (const auto* b = dynamic_cast<const BoolLiteralExpr*>(e)) return b->value ? "true" : "false";
+    if (const auto* c = dynamic_cast<const CharLiteralExpr*>(e)) return "'" + c->value + "'";
+    if (const auto* s = dynamic_cast<const StringLiteralExpr*>(e)) return "\"" + s->value + "\"";
+    return "";
+}
+
 struct Emitter {
     std::string out;
     int indent = 0;
@@ -87,6 +100,18 @@ void emitMethod(Emitter& e, const MethodDecl& m) {
     if (m.isComptime) s += "comptime ";
     if (m.isVolatile) s += "volatile ";
     if (m.isExtern) s += "extern " + (m.externConvention.empty() ? "" : m.externConvention + " ");
+    // Operators are stored as methods named "operator<sym>" (spec 6.5) / "operator cast$T" (6.6). Spell
+    // them back as operator syntax: a literal "method operator+" is not valid LDP3 and would not re-parse.
+    if (m.name.rfind("operator", 0) == 0) {
+        const std::string rest = m.name.substr(8);  // after "operator"
+        if (rest.rfind(" cast$", 0) == 0)
+            s += "operator cast<" + rest.substr(6) + ">()";
+        else
+            s += "operator " + rest + " (" + spellParams(m.params) + ")";
+        s += " returns " + spellType(m.returnType) + ";";
+        e.line(s);
+        return;
+    }
     s += "method " + m.name + spellTypeParams(m.typeParams) + "(" + spellParams(m.params) + ")";
     s += " returns " + spellType(m.returnType);
     if (!m.throwsTypes.empty()) {
@@ -114,6 +139,10 @@ void emitField(Emitter& e, const FieldDecl& f) {
     if (f.isUnique) s += "unique ";
     s += spellType(f.type) + " " + f.name;
     if (f.bitWidth > 0) s += " : " + std::to_string(f.bitWidth);
+    if (f.isStatic) {
+        const std::string v = spellConstInit(f.init.get());  // carry a static constant's value across bundles
+        if (!v.empty()) s += " = " + v;
+    }
     e.line(s + ";");
 }
 
