@@ -1,0 +1,27 @@
+import System.IO.Console;
+import System.IO.Paths;
+import System.OS.Env;
+program PathsWin;
+
+// The running executable's own path is a native path (backslash-separated on Windows). basename must
+// strip the directory to just the file name -- a prefix shorter than the whole path -- and dirname must
+// return that shorter directory. This only works if Paths handles the platform separator, not only '/'.
+// Forward-slash paths must still split too. Prints:
+//   baseOk=1 dirOk=1 fwdOk=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String exe = Env.executablePath();
+                String base = Paths.basename(exe);
+                String dir = Paths.dirname(exe);
+                boolean baseOk = base.length() > 0 && base.length() < exe.length();
+                boolean dirOk = dir.length() > 0 && dir.length() < exe.length();
+                boolean fwdOk = Paths.dirname("x/y/z").equals("x/y");
+                System.IO.Console.printf("baseOk=%d dirOk=%d fwdOk=%d\n",
+                    baseOk ? 1 : 0, dirOk ? 1 : 0, fwdOk ? 1 : 0);
+                return;
+            }
+        }
+    }
+}

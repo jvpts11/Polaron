@@ -293,18 +293,23 @@ R"LDP3(
                 return base.concat("/").concat(name);
             }
             public static method basename(String path) returns String {
-                mutable ArrayList<String> parts = Strings.split(path, "/");
-                return parts.get(parts.size() - 1);
+                int cut = Paths.lastSep(path);
+                return cut < 0 ? path : path.substring(cut + 1, path.length());
             }
             public static method dirname(String path) returns String {
-                mutable ArrayList<String> parts = Strings.split(path, "/");
-                if (parts.size() <= 1) { return ""; }
-                StringBuilder sb = new StringBuilder() on heap;  // O(n); repeated concat was O(n^2)
-                for (mutable int i = 0; i < parts.size() - 1; i++) {
-                    if (i > 0) { sb.append("/"); }
-                    sb.append(parts.get(i));
+                int cut = Paths.lastSep(path);
+                return cut < 0 ? "" : path.substring(0, cut);
+            }
+            // Index of the last path separator -- '/' or, on Windows, '\\'. -1 if there is none. Handling
+            // both keeps dirname/basename correct on native Windows paths (e.g. an executable's own path).
+            private static method lastSep(String path) returns int {
+                mutable int last = 0 - 1; mutable int i = 0;
+                while (i < path.length()) {
+                    char c = path.charAt(i);
+                    if (c == '/' || c == '\\') { last = i; }
+                    i = i + 1;
                 }
-                return sb.toString();
+                return last;
             }
             public static method extension(String path) returns String {
                 String base = Paths.basename(path);

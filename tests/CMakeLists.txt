@@ -244,6 +244,15 @@ add_test(NAME codegen_stopwatch_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# Paths.dirname/basename handle the Windows '\' separator, not only '/'.
+add_test(NAME codegen_paths_windows_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/paths_windows.ldp3"
+    "-DCONTAINS=baseOk=1 dirOk=1 fwdOk=1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # String.toDouble (spec 4) + Env.executablePath (spec 34): float parsing and the program's own path.
 add_test(NAME codegen_parse_double_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
