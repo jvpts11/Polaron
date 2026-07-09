@@ -8785,7 +8785,18 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
 
 #ifdef LDP3_WITH_LLVM
     ldp3::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
-    if (!target.empty()) codegen.setTargetTriple(target);  // e.g. --target=x86_64-unknown-none
+    // Always set a triple (and, through it, the data layout) -- with --target for freestanding/cross, or
+    // the host's otherwise -- so ABI alignments are correct and hot loops vectorize. Without this the
+    // module is layout-less and i64 loads emit `align 4`.
+    std::string effectiveTriple = target;
+    if (effectiveTriple.empty()) {
+#ifdef _WIN32
+        effectiveTriple = "x86_64-pc-windows-msvc";
+#else
+        effectiveTriple = "x86_64-unknown-linux-gnu";
+#endif
+    }
+    codegen.setTargetTriple(effectiveTriple);
     codegen.setLibrary(libraryMode);  // a .ldb has no entry point / `main`
     codegen.setTestMode(testMode);    // --test: synthetic [Test] runner as the entry
     codegen.seedVtableSlots(seedSlots);  // adopt imported bundles' vtable slot layout

@@ -1,0 +1,28 @@
+import System.IO.Console;
+program DeepCopyArray;
+
+// Value-copy of an object holding an array of concrete-class elements deep-copies the elements too
+// (assignment is a deep copy -- spec 5): mutating the copy must not disturb the original. A self-
+// referential type (through a collection) instead shares the cyclic sub-object, which is covered by
+// object_collections. Prints:
+//   a0=10 a1=20 b0=99 b1=20
+public bundle main {
+    public namespace app {
+        public class Node { public mutable long v; }
+        public class Graph { public mutable Node[] nodes; }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Graph a = new Graph() on heap;
+                a.nodes = new Node[2]();
+                a.nodes[0] = new Node() on heap; a.nodes[0].v = 10;
+                a.nodes[1] = new Node() on heap; a.nodes[1].v = 20;
+                Graph b = a;             // deep copy: duplicates the array AND its Node elements
+                b.nodes[0].v = 99;       // mutate the copy only
+                System.IO.Console.printf("a0=%d a1=%d b0=%d b1=%d\n",
+                    cast<int>(a.nodes[0].v), cast<int>(a.nodes[1].v),
+                    cast<int>(b.nodes[0].v), cast<int>(b.nodes[1].v));
+                return;
+            }
+        }
+    }
+}

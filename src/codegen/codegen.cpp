@@ -2227,12 +2227,50 @@ struct CodeGenerator::Impl {
 
     // Duplicates an array block [ i64 length | elems... ] into a fresh heap block
     // so a value copy does not share the elements. Elements are 4 bytes in 0.1.
+    // Types currently on the deep-copy / free chain, to break self-referential type cycles at codegen
+    // time (e.g. Node holding an ArrayList<Node>): a cyclic sub-object is shared rather than recursed
+    // into forever. Acyclic types get a full deep copy / free.
+    std::unordered_set<std::string> copyChain_;
+
     llvm::Value* emitArrayDup(llvm::Value* srcBlock, const std::string& elemType) {
+        const long stride = arrayElemBytes(elemType);
         llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), srcBlock, "arr.len");
         llvm::Value* total = builder.CreateAdd(
-            builder.getInt64(8), builder.CreateMul(len, builder.getInt64(arrayElemBytes(elemType))));
+            builder.getInt64(8), builder.CreateMul(len, builder.getInt64(stride)));
         llvm::Value* newBlock = builder.CreateCall(mallocFn(), {total}, "arr.copy");
         builder.CreateCall(memcpyFn(), {newBlock, srcBlock, total});
+        // If the elements are concrete class values (not primitives, and not interface/abstract/enum/
+        // String references, which are shared), the memcpy duplicated the element POINTERS but not the
+        // objects they point to. Deep-copy each non-null element so the copy owns independent objects,
+        // matching the value-copy discipline: assignment is a deep copy (spec 5).
+        if (isClassValue(elemType) && isCopyDiscipline(elemType)) {
+            llvm::Type* i64 = builder.getInt64Ty();
+            auto* head = llvm::BasicBlock::Create(context, "arrdup.head", currentFn);
+            auto* body = llvm::BasicBlock::Create(context, "arrdup.body", currentFn);
+            auto* copy = llvm::BasicBlock::Create(context, "arrdup.copy", currentFn);
+            auto* cont = llvm::BasicBlock::Create(context, "arrdup.cont", currentFn);
+            auto* done = llvm::BasicBlock::Create(context, "arrdup.done", currentFn);
+            llvm::BasicBlock* pre = builder.GetInsertBlock();
+            builder.CreateBr(head);
+            builder.SetInsertPoint(head);
+            llvm::PHINode* i = builder.CreatePHI(i64, 2, "i");
+            i->addIncoming(builder.getInt64(0), pre);
+            builder.CreateCondBr(builder.CreateICmpSLT(i, len), body, done);
+            builder.SetInsertPoint(body);
+            llvm::Value* off = builder.CreateAdd(builder.getInt64(8), builder.CreateMul(i, builder.getInt64(stride)));
+            llvm::Value* slot = builder.CreateGEP(builder.getInt8Ty(), newBlock, off);
+            llvm::Value* elem = builder.CreateLoad(builder.getPtrTy(), slot, "elem");
+            builder.CreateCondBr(
+                builder.CreateICmpEQ(elem, llvm::ConstantPointerNull::get(builder.getPtrTy())), cont, copy);
+            builder.SetInsertPoint(copy);
+            builder.CreateStore(emitClassCopy(elemType, elem, /*heap=*/true), slot);
+            builder.CreateBr(cont);
+            builder.SetInsertPoint(cont);
+            llvm::Value* next = builder.CreateAdd(i, builder.getInt64(1));
+            i->addIncoming(next, cont);
+            builder.CreateBr(head);
+            builder.SetInsertPoint(done);
+        }
         return newBlock;
     }
 
@@ -2249,6 +2287,11 @@ struct CodeGenerator::Impl {
         llvm::Value* dest = heap ? builder.CreateCall(mallocFn(), {sizeOf(st)}, className + ".copy")
                                  : createEntryAlloca(className + ".copy", st);
         builder.CreateCall(memcpyFn(), {dest, srcPtr, sizeOf(st)});  // shallow copy first
+        // Break self-referential type cycles: if this class is already being copied up the call chain
+        // (a field or array/collection element of its own type, directly or transitively), stop at the
+        // shallow copy -- the cyclic sub-object is shared. Without this the codegen recurses on the type
+        // forever (stack overflow). Acyclic types fall through to the full deep copy.
+        if (!copyChain_.insert(className).second) return dest;
         for (const auto& [fname, ftype] : collectFields(className)) {
             const unsigned idx = cit->second.fieldIndex[fname];
             llvm::Value* deep = nullptr;
@@ -2261,6 +2304,7 @@ struct CodeGenerator::Impl {
             }
             if (deep != nullptr) builder.CreateStore(deep, builder.CreateStructGEP(st, dest, idx));
         }
+        copyChain_.erase(className);
         return dest;
     }
 
@@ -10222,6 +10266,18 @@ void CodeGenerator::setTargetTriple(const std::string& triple) {
 #else
     impl_->module.setTargetTriple(triple);
 #endif
+    // Set the target data layout so ABI type alignments are correct. Without it, a layout-less module
+    // aligns i64 to 4, and every array/field load emits `load i64 ... align 4` -- which blocks LLVM's
+    // SIMD vectorizer on hot reduction loops. These strings are clang's own for x86-64 (i64:64 == 8-byte
+    // alignment), so the .ll handed to clang matches its target and needs no realignment. Non-x86-64
+    // targets (e.g. bare-metal --target=...) keep the layout clang applies downstream.
+    if (triple.find("x86_64") != std::string::npos || triple.find("amd64") != std::string::npos) {
+        const bool windows =
+            triple.find("windows") != std::string::npos || triple.find("msvc") != std::string::npos;
+        impl_->module.setDataLayout(
+            windows ? "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+                    : "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128");
+    }
 }
 
 void CodeGenerator::setLibrary(bool library) { impl_->libraryMode = library; }
