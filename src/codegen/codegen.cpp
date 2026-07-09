@@ -651,6 +651,7 @@ struct CodeGenerator::Impl {
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
         if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
+        if (t.rfind("funcptr<", 0) == 0) return builder.getPtrTy();   // a bare C function pointer
         if (t == "String" || t == "string") return builder.getPtrTy();  // ptr to {i64 len, ptr data}
         if (t == "Type" || t == "Method" || t == "Field" || t == "Annotation")
             return builder.getPtrTy();  // reflection tokens (spec 31)
@@ -4358,6 +4359,36 @@ struct CodeGenerator::Impl {
         if (arg != nullptr) args.push_back(coerceToType(arg, llvmType(paramType)));
         builder.CreateCall(fty, fnPtr, args);
     }
+    // Calls a funcptr<Ret, Args...> value -- a bare C function pointer (dynamic FFI, e.g. a
+    // wglGetProcAddress result) -- with the plain C ABI: no closure environment, args passed directly.
+    llvm::Value* emitFuncptrCall(const std::string& ft, llvm::Value* fnPtr,
+                                 const std::vector<ast::ExprPtr>& callArgs) {
+        const std::string inner = ft.substr(8, ft.size() - 9);  // strip "funcptr<" ... ">"
+        std::vector<std::string> parts;
+        int depth = 0;
+        for (std::size_t i = 0, s = 0; i <= inner.size(); i++) {
+            if (i == inner.size() || (inner[i] == ',' && depth == 0)) {
+                parts.push_back(inner.substr(s, i - s));
+                s = i + 1;
+            } else if (inner[i] == '<' || inner[i] == '(') {
+                depth++;
+            } else if (inner[i] == '>' || inner[i] == ')') {
+                depth--;
+            }
+        }
+        std::vector<llvm::Type*> pts;
+        for (std::size_t i = 1; i < parts.size(); i++) pts.push_back(llvmType(parts[i]));
+        llvm::Type* ret = parts.empty() ? builder.getVoidTy() : llvmType(parts[0]);
+        llvm::FunctionType* fty = llvm::FunctionType::get(ret, pts, false);
+        std::vector<llvm::Value*> args;
+        for (std::size_t i = 0; i < callArgs.size(); ++i) {
+            llvm::Value* v = emitExpr(*callArgs[i]);
+            if (v == nullptr) return nullptr;
+            if (i < pts.size()) v = coerceToType(v, pts[i]);
+            args.push_back(v);
+        }
+        return builder.CreateCall(fty, fnPtr, args);  // foreign C call; does not throw an LDP3 exception
+    }
     // Emits a Channel.select as a poll loop: each iteration tries a non-blocking receive on every
     // channel (calling its handler with the value on success), then optionally fires the timeout.
     void emitSelect(const std::vector<SelectCase>& cases) {
@@ -4693,6 +4724,18 @@ struct CodeGenerator::Impl {
                 m = builder.CreateInsertElement(m, coerceToType(c, builder.getFloatTy()), builder.getInt32(i));
             }
             return m;
+        }
+        // Calling a funcptr<> value (a bare C function pointer): plain C indirect call, no environment.
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(call.callee.get())) {
+            auto lit = locals.find(id->name);
+            if (lit != locals.end() && lit->second.type.rfind("funcptr<", 0) == 0)
+                return emitFuncptrCall(lit->second.type,
+                                       builder.CreateLoad(builder.getPtrTy(), lit->second.storage, id->name),
+                                       call.args);
+        }
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get())) {
+            const std::string ft = typeName(*mem);
+            if (ft.rfind("funcptr<", 0) == 0) return emitFuncptrCall(ft, emitExpr(*mem), call.args);
         }
         // Calling a function value: a local of type function<Ret, Params...> -> indirect call.
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(call.callee.get())) {

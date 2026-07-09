@@ -2714,7 +2714,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const bool dstRef = dst == "Object" || lookupClass(baseType(dst)) != nullptr;
         const bool srcRef = src.empty() || src == "Object" || src == "Type" || src == "Method" ||
                             lookupClass(baseType(src)) != nullptr || isRefType(src);
-        const bool dstPtr = isRefType(dst) || dstRef;  // pointer/reference target (T*, T&, class)
+        const bool dstFuncptr = dst.rfind("funcptr<", 0) == 0;  // a bare C function pointer (dynamic FFI)
+        const bool dstPtr = isRefType(dst) || dstRef || dstFuncptr;  // pointer/ref target (T*, T&, class)
         // `char` is an integer for casting purposes; Decimal converts to/from the numeric family too
         // (scaled fixed-point, spec 34).
         auto numLike = [](const std::string& t) {
@@ -2730,7 +2731,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         } else if (dstPtr) {
             // Reference downcast (spec 31), or int/address -> an explicit pointer T* (spec 17.8).
             // Casting a number to a bare class (not a pointer) stays an error.
-            const bool intToPtr = isRefType(dst) && isNumeric(src);
+            const bool intToPtr = (isRefType(dst) || dstFuncptr) && isNumeric(src);
             if (!src.empty() && !srcRef && !intToPtr)
                 error("cannot cast '" + src + "' to '" + dst + "'", cst->loc);
         } else {
@@ -2991,6 +2992,20 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                         error(cid->name + " components must be numeric, got '" + at + "'", arg->loc);
                 }
                 return cid->name;
+            }
+        }
+        // Calling a funcptr<Ret, Params...> value (a bare C function pointer) -> Ret.
+        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
+            if (const LocalVar* fv = lookupLocal(cid->name);
+                fv != nullptr && fv->type.rfind("funcptr<", 0) == 0) {
+                for (const auto& arg : call->args) typeOf(*arg);
+                const std::string inner = fv->type.substr(8, fv->type.size() - 9);
+                for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
+                    if (inner[i] == '<') depth++;
+                    else if (inner[i] == '>') depth--;
+                    else if (inner[i] == ',' && depth == 0) return inner.substr(0, i);
+                }
+                return inner;
             }
         }
         // Calling a function value: callee is a local of type function<Ret, Params...> -> Ret.
@@ -3569,6 +3584,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "hash" && call->args.empty()) return "long";
                 error("Annotation has no method '" + mem->member + "'", call->loc);
                 return "";
+            }
+            // A field of funcptr<...> type (a bare C function pointer): obj.f(args) calls it -> Ret.
+            if (const FieldInfo* fpf = findField(objType, mem->member);
+                fpf != nullptr && fpf->type.rfind("funcptr<", 0) == 0) {
+                for (const auto& arg : call->args) typeOf(*arg);
+                const std::string inner = fpf->type.substr(8, fpf->type.size() - 9);
+                for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
+                    if (inner[i] == '<') depth++;
+                    else if (inner[i] == '>') depth--;
+                    else if (inner[i] == ',' && depth == 0) return inner.substr(0, i);
+                }
+                return inner;
             }
             // A field of function<...> type is a function value: obj.f(args) calls it.
             if (const FieldInfo* fld = findField(objType, mem->member);

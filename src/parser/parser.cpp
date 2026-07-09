@@ -1529,6 +1529,27 @@ ast::TypeRef Parser::parseTypeRef() {
         t.name = nm + ">";
         return t;
     }
+    // funcptr<Ret, Params...> -- a bare C function pointer (no closure environment), for dynamic FFI:
+    // an address obtained at runtime (e.g. wglGetProcAddress / GetProcAddress) cast to this type and
+    // called with the plain C ABI. `funcptr` is a contextual type name (only special before '<'), so it
+    // is not a reserved word. The canonical string, like function<>, is not generic-mangled.
+    if (tok.kind == TokenKind::Identifier && tok.lexeme == "funcptr" && peek(1).kind == TokenKind::Lt) {
+        advance();
+        std::string nm = "funcptr<";
+        expect(TokenKind::Lt, "'<' after funcptr");
+        std::size_t fn = 0;
+        do {
+            ast::TypeRef arg = parseTypeRef();
+            nm += (fn++ ? "," : "") + ast::canonicalType(arg);
+        } while (match(TokenKind::Comma));
+        if (current().kind == TokenKind::Shr) {
+            tokens_[pos_].kind = TokenKind::Gt;
+        } else {
+            expect(TokenKind::Gt, "'>' to close funcptr type");
+        }
+        t.name = nm + ">";
+        return t;
+    }
     if (isTypeKeyword(tok.kind) || tok.kind == TokenKind::Identifier) {
         t.name = tok.lexeme;
         advance();
@@ -2723,7 +2744,13 @@ ast::ExprPtr Parser::parseUnary() {
         advance();  // 'cast'
         expect(TokenKind::Lt, "'<' after 'cast'");
         const Token& tt = current();
-        if (isTypeKeyword(tt.kind) || tt.kind == TokenKind::Identifier) {
+        if (tt.kind == TokenKind::KwFunction ||
+            (tt.kind == TokenKind::Identifier && tt.lexeme == "funcptr" &&
+             peek(1).kind == TokenKind::Lt)) {
+            // A function<...> / funcptr<...> target carries its own angle brackets: parse the full
+            // type (it also splits the trailing '>>', leaving one '>' for the cast to close).
+            c->targetType = parseTypeRef().name;
+        } else if (isTypeKeyword(tt.kind) || tt.kind == TokenKind::Identifier) {
             c->targetType = tt.lexeme;
             advance();
             if (match(TokenKind::Star)) c->targetType += "*";  // cast<T*>: pointer target (spec 17.8)
