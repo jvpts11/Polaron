@@ -58,13 +58,15 @@ Manifest parseManifestText(const std::string& text) {
         if (s.empty()) continue;
         if (s.front() == '[' && s.back() == ']') {
             section = s.substr(1, s.size() - 2);
+            if (section == "library") m.isLibrary = true;
             continue;
         }
         const auto eq = s.find('=');
         if (eq == std::string::npos) continue;
         const std::string key = trim(s.substr(0, eq));
         const std::string val = unquote(trim(s.substr(eq + 1)));
-        if (section == "program") {
+        if (section == "program" || section == "library") {
+            if (section == "library") m.isLibrary = true;
             if (key == "name") m.name = val;
             else if (key == "version") m.version = val;
             else if (key == "language_version") m.languageVersion = val;
@@ -83,7 +85,19 @@ Manifest parseManifestText(const std::string& text) {
                 }
             }
         } else if (section == "dependencies") {
-            m.dependencies.push_back({key, val});
+            Dependency d;
+            d.name = key;
+            const std::string raw = trim(s.substr(eq + 1));
+            if (!raw.empty() && raw.front() == '{') {  // inline table: { path = "../lib" }
+                const auto pp = raw.find("path");
+                const auto q1 = (pp == std::string::npos) ? std::string::npos : raw.find('"', pp);
+                const auto q2 = (q1 == std::string::npos) ? std::string::npos : raw.find('"', q1 + 1);
+                if (q1 != std::string::npos && q2 != std::string::npos)
+                    d.path = raw.substr(q1 + 1, q2 - q1 - 1);
+            } else {
+                d.version = val;
+            }
+            m.dependencies.push_back(d);
             m.hasDependencies = true;
         }
     }
@@ -116,6 +130,7 @@ Manifest ephemeralManifest(const std::filesystem::path& file) {
     m.name = file.stem().string();
     m.entry = file.string();
     m.version = "0.0.0";
+    m.singleFile = true;  // a loose file stands alone; do not sweep in sibling .ldp3 files
     return m;
 }
 

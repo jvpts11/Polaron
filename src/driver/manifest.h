@@ -6,10 +6,12 @@
 
 namespace ldp3::driver {
 
-// A single declared dependency: a package name and the version (a Git tag, or empty for the default branch).
+// A single declared dependency. Either a registry package (name + version, a Git tag) or a local
+// path dependency (`name = { path = "../lib" }`) — a sibling library project built from source.
 struct Dependency {
     std::string name;
     std::string version;
+    std::string path;   // local path dependency, relative to the manifest; when set, version is ignored
 };
 
 // A resolved project manifest. Fields not present in the file keep their defaults.
@@ -22,6 +24,8 @@ struct Manifest {
     std::string target = "x86_64-windows";
     std::string environment;             // optional shared environment ([build] environment = "...")
     bool freestanding = false;
+    bool isLibrary = false;              // [library] instead of [program]: build emits a .ldb bundle
+    bool singleFile = false;             // loose file (ephemeral): compile only the entry, not its siblings
     std::vector<Dependency> dependencies;  // from [dependencies]
     bool hasDependencies = false;          // convenience: !dependencies.empty()
     // Native system libraries to link, from [build] native_libs = "opengl32, user32, ...". These are the

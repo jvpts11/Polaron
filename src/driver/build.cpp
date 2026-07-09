@@ -1,10 +1,12 @@
 #include "driver/build.h"
 #include "driver/process.h"
 #include "driver/toolchain.h"
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <vector>
 
 namespace ldp3::driver {
 namespace fs = std::filesystem;
@@ -38,6 +40,23 @@ void collectClosure(const fs::path& packagesDir, const std::vector<std::string>&
     }
 }
 
+// Collect every .ldp3 under the entry's directory (recursively) so a program can span multiple files.
+// The entry is compiled first (it fixes the program name); the rest follow in a stable sorted order.
+std::vector<fs::path> collectSources(const fs::path& entry) {
+    std::vector<fs::path> extra;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(entry.parent_path(), ec), end; it != end; it.increment(ec)) {
+        if (ec) break;
+        if (!it->is_regular_file() || it->path().extension() != ".ldp3") continue;
+        if (fs::equivalent(it->path(), entry, ec)) continue;
+        extra.push_back(it->path());
+    }
+    std::sort(extra.begin(), extra.end());
+    std::vector<fs::path> all{entry};
+    all.insert(all.end(), extra.begin(), extra.end());
+    return all;
+}
+
 }  // namespace
 
 int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptions& opts) {
@@ -55,6 +74,25 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     const fs::path ll = outDir / (m.name + ".ll");
     const fs::path exe = outDir / (m.name + exeSuffix());
 
+    // A [library] project compiles to a distributable bundle (.ldb + .ldh) with no entry point, ready
+    // to be consumed as a path dependency or installed into a packages/ directory.
+    if (m.isLibrary) {
+        const fs::path ldbOut = outDir / (m.name + ".ldb");
+        std::vector<std::string> ca = {"--lib"};
+        if (m.singleFile) ca.push_back(entry.string());
+        else for (const auto& src : collectSources(entry)) ca.push_back(src.string());
+        ca.push_back("-o");
+        ca.push_back(ldbOut.string());
+        ca.push_back("-O2");
+        for (const auto& p : opts.passthrough) ca.push_back(p);
+        if (int rc = runProcess(tc.ldp3c, ca); rc != 0) {
+            std::fprintf(stderr, "ldp3: library compilation failed\n");
+            return rc == -1 ? 1 : rc;
+        }
+        std::printf("wrote %s\n", ldbOut.string().c_str());
+        return 0;
+    }
+
     // Resolve dependency bundles. The consumer compiles against its *direct* dependencies only (a bundle's
     // .ldh already embeds its own transitive dependencies, so re-using them would redeclare types), but
     // links the *full transitive closure* of their code. Both the project's packages/ and, if declared, the
@@ -65,6 +103,31 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         std::set<std::string> visited;
         std::vector<std::string> direct;
         for (const auto& d : m.dependencies) {
+            if (!d.path.empty()) {
+                // Local path dependency: build the sibling [library] from source, then use its .ldb
+                // both for type-checking (--use) and for linking (its extracted code).
+                const fs::path depDir = fs::absolute(projectDir / d.path);
+                const fs::path depMf = depDir / "ldp3.toml";
+                if (!fs::is_regular_file(depMf)) {
+                    std::fprintf(stderr, "ldp3: path dependency '%s' has no ldp3.toml at %s\n",
+                                 d.name.c_str(), depDir.string().c_str());
+                    return 1;
+                }
+                const Manifest dm = readManifest(depMf);
+                if (!dm.isLibrary) {
+                    std::fprintf(stderr, "ldp3: path dependency '%s' is not a [library]\n", d.name.c_str());
+                    return 1;
+                }
+                std::printf("ldp3: building path dependency '%s'...\n", d.name.c_str());
+                if (int rc = buildProgram(dm, depDir, BuildOptions{}); rc != 0) {
+                    std::fprintf(stderr, "ldp3: building path dependency '%s' failed\n", d.name.c_str());
+                    return rc;
+                }
+                const fs::path depLdb = depDir / dm.outputDir / (dm.name + ".ldb");
+                directLdbs.push_back(depLdb);
+                allLdbs.push_back(depLdb);
+                continue;
+            }
             direct.push_back(d.name);
             directLdbs.push_back(projectDir / "packages" / d.name / (d.name + ".ldb"));
         }
@@ -122,8 +185,11 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         return 0;
     }
 
-    // 1) Compile: ldp3c <entry> [--use <direct-dep.ldb>...] -o <ll> [passthrough]
-    std::vector<std::string> compileArgs = {entry.string()};
+    // 1) Compile: ldp3c <entry> [<other .ldp3>...] [--use <direct-dep.ldb>...] -o <ll> [passthrough].
+    // A program may span several files under src/; the entry goes first, the rest follow.
+    std::vector<std::string> compileArgs;
+    if (m.singleFile) compileArgs.push_back(entry.string());
+    else for (const auto& src : collectSources(entry)) compileArgs.push_back(src.string());
     for (const auto& ldb : directLdbs) {
         compileArgs.push_back("--use");
         compileArgs.push_back(ldb.string());
