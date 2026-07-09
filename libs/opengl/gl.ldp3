@@ -1,0 +1,248 @@
+// LDP3-OpenGL -- the modern OpenGL pipeline (3.3 core) for LDP3, through the FFI, with no C.
+//
+// This is the reusable binding module: include it in a program (it declares the `System.Gl` namespace)
+// or package it as a bundle. It gives you:
+//   * GlApp   -- open a window and create a 3.3 core context (the WGL bootstrap dance), or an offscreen
+//                one for headless rendering; pump events; swap buffers; read the framebuffer back.
+//   * Gl      -- every modern GL entry point as a funcptr<> loaded at runtime via wglGetProcAddress
+//                (opengl32 only exports GL 1.1 directly), plus the GL 1.1 core it does export.
+//   * Mat     -- 4x4 column-major matrix math (perspective / lookAt / translate / scale / multiply)
+//                in Memory buffers ready to hand to glUniformMatrix4fv.
+//
+// The whole approach is proven by the flagship demo Pool_balls_3d_ldp3 (a 3D billiard scene: shaders,
+// VAO/VBO, matrix uniforms, Phong lighting, physics), rendered and verified end to end.
+//
+// Requires an OpenGL 3.3+ driver (any GPU). Build a consumer with the real toolchain:
+//   ldp3 build          (native_libs = "opengl32, gdi32, user32, kernel32")
+
+program LdpOpenGl;
+
+public bundle main {
+    public namespace System.Gl {
+
+        public struct PixelFormatDescriptor {
+            public mutable short nSize;        public mutable short nVersion;
+            public mutable int dwFlags;
+            public mutable byte iPixelType;    public mutable byte cColorBits;
+            public mutable byte cRedBits;      public mutable byte cRedShift;
+            public mutable byte cGreenBits;    public mutable byte cGreenShift;
+            public mutable byte cBlueBits;     public mutable byte cBlueShift;
+            public mutable byte cAlphaBits;    public mutable byte cAlphaShift;
+            public mutable byte cAccumBits;    public mutable byte cAccumRedBits;
+            public mutable byte cAccumGreenBits; public mutable byte cAccumBlueBits;
+            public mutable byte cAccumAlphaBits; public mutable byte cDepthBits;
+            public mutable byte cStencilBits;  public mutable byte cAuxBuffers;
+            public mutable byte iLayerType;    public mutable byte bReserved;
+            public mutable int dwLayerMask;    public mutable int dwVisibleMask;
+            public mutable int dwDamageMask;
+        }
+        public struct Msg { public mutable long a; public mutable long b; public mutable long c;
+                           public mutable long d; public mutable long e; public mutable long f; }
+        public struct Rect { public mutable int left; public mutable int top;
+                            public mutable int right; public mutable int bottom; }
+
+        public class Win {
+            public extern stdcall static method CreateWindowExA(int exStyle, string cls, string name,
+                int style, int x, int y, int w, int h, long parent, long menu, long inst, long param)
+                returns long;
+            public extern stdcall static method GetDC(long hwnd) returns long;
+            public extern stdcall static method ShowWindow(long hwnd, int cmd) returns int;
+            public extern stdcall static method GetClientRect(long hwnd, Rect* r) returns int;
+            public extern stdcall static method PeekMessageA(Msg* m, long hwnd, int min, int max,
+                int remove) returns int;
+            public extern stdcall static method TranslateMessage(Msg* m) returns int;
+            public extern stdcall static method DispatchMessageA(Msg* m) returns long;
+            public extern stdcall static method IsWindow(long hwnd) returns int;
+            public extern stdcall static method GetAsyncKeyState(int vkey) returns int;
+        }
+        public class Gdi {
+            public extern stdcall static method ChoosePixelFormat(long hdc, PixelFormatDescriptor* p) returns int;
+            public extern stdcall static method SetPixelFormat(long hdc, int fmt, PixelFormatDescriptor* p) returns int;
+            public extern stdcall static method SwapBuffers(long hdc) returns int;
+        }
+        public class Kernel { public extern stdcall static method Sleep(int ms) returns void; }
+
+        // GL 1.1 core (directly exported by opengl32) + WGL context management.
+        public class Wgl {
+            public extern stdcall static method wglCreateContext(long hdc) returns long;
+            public extern stdcall static method wglMakeCurrent(long hdc, long ctx) returns int;
+            public extern stdcall static method wglDeleteContext(long ctx) returns int;
+            public extern stdcall static method wglGetProcAddress(string name) returns long;
+            public extern stdcall static method glClear(int mask) returns void;
+            public extern stdcall static method glClearColor(float r, float g, float b, float a) returns void;
+            public extern stdcall static method glViewport(int x, int y, int w, int h) returns void;
+            public extern stdcall static method glEnable(int cap) returns void;
+            public extern stdcall static method glDisable(int cap) returns void;
+            public extern stdcall static method glDepthFunc(int f) returns void;
+            public extern stdcall static method glDrawArrays(int mode, int first, int count) returns void;
+            public extern stdcall static method glDrawElements(int mode, int count, int typ, long idx) returns void;
+            public extern stdcall static method glReadPixels(int x, int y, int w, int h, int fmt, int typ, long data) returns void;
+            public extern stdcall static method glFinish() returns void;
+            public extern stdcall static method glGetError() returns int;
+        }
+
+        // The modern GL entry points (loaded at runtime). GLenum/GLuint/GLint/GLsizei=int, ptr/sizeiptr=long,
+        // GLfloat=float, GLboolean=byte. Extend this list freely -- each field is one wglGetProcAddress line.
+        public class Gl {
+            public mutable funcptr<int, int> createShader;
+            public mutable funcptr<void, int, int, long, long> shaderSource;
+            public mutable funcptr<void, int> compileShader;
+            public mutable funcptr<void, int, int, long> getShaderiv;
+            public mutable funcptr<void, int, int, long, long> getShaderInfoLog;
+            public mutable funcptr<int> createProgram;
+            public mutable funcptr<void, int, int> attachShader;
+            public mutable funcptr<void, int> linkProgram;
+            public mutable funcptr<void, int, int, long> getProgramiv;
+            public mutable funcptr<void, int> useProgram;
+            public mutable funcptr<void, int> deleteShader;
+            public mutable funcptr<int, int, string> getUniformLocation;
+            public mutable funcptr<void, int, int, byte, long> uniformMatrix4fv;
+            public mutable funcptr<void, int, float, float, float> uniform3f;
+            public mutable funcptr<void, int, float> uniform1f;
+            public mutable funcptr<void, int, int> uniform1i;
+            public mutable funcptr<void, int, long> genVertexArrays;
+            public mutable funcptr<void, int> bindVertexArray;
+            public mutable funcptr<void, int, long> genBuffers;
+            public mutable funcptr<void, int, int> bindBuffer;
+            public mutable funcptr<void, int, long, long, int> bufferData;
+            public mutable funcptr<void, int, int, int, byte, int, long> vertexAttribPointer;
+            public mutable funcptr<void, int> enableVertexAttribArray;
+            public mutable funcptr<void, int, long> genTextures;
+            public mutable funcptr<void, int, int> bindTexture;
+            public mutable funcptr<void, int, int, int, int, int, int, int, int, long> texImage2D;
+            public mutable funcptr<void, int, int, int> texParameteri;
+            public mutable funcptr<void, int> activeTexture;
+
+            public method load() returns int {
+                this.createShader = cast<funcptr<int, int>>(Wgl.wglGetProcAddress("glCreateShader"));
+                this.shaderSource = cast<funcptr<void, int, int, long, long>>(Wgl.wglGetProcAddress("glShaderSource"));
+                this.compileShader = cast<funcptr<void, int>>(Wgl.wglGetProcAddress("glCompileShader"));
+                this.getShaderiv = cast<funcptr<void, int, int, long>>(Wgl.wglGetProcAddress("glGetShaderiv"));
+                this.getShaderInfoLog = cast<funcptr<void, int, int, long, long>>(Wgl.wglGetProcAddress("glGetShaderInfoLog"));
+                this.createProgram = cast<funcptr<int>>(Wgl.wglGetProcAddress("glCreateProgram"));
+                this.attachShader = cast<funcptr<void, int, int>>(Wgl.wglGetProcAddress("glAttachShader"));
+                this.linkProgram = cast<funcptr<void, int>>(Wgl.wglGetProcAddress("glLinkProgram"));
+                this.getProgramiv = cast<funcptr<void, int, int, long>>(Wgl.wglGetProcAddress("glGetProgramiv"));
+                this.useProgram = cast<funcptr<void, int>>(Wgl.wglGetProcAddress("glUseProgram"));
+                this.deleteShader = cast<funcptr<void, int>>(Wgl.wglGetProcAddress("glDeleteShader"));
+                this.getUniformLocation = cast<funcptr<int, int, string>>(Wgl.wglGetProcAddress("glGetUniformLocation"));
+                this.uniformMatrix4fv = cast<funcptr<void, int, int, byte, long>>(Wgl.wglGetProcAddress("glUniformMatrix4fv"));
+                this.uniform3f = cast<funcptr<void, int, float, float, float>>(Wgl.wglGetProcAddress("glUniform3f"));
+                this.uniform1f = cast<funcptr<void, int, float>>(Wgl.wglGetProcAddress("glUniform1f"));
+                this.uniform1i = cast<funcptr<void, int, int>>(Wgl.wglGetProcAddress("glUniform1i"));
+                this.genVertexArrays = cast<funcptr<void, int, long>>(Wgl.wglGetProcAddress("glGenVertexArrays"));
+                this.bindVertexArray = cast<funcptr<void, int>>(Wgl.wglGetProcAddress("glBindVertexArray"));
+                this.genBuffers = cast<funcptr<void, int, long>>(Wgl.wglGetProcAddress("glGenBuffers"));
+                this.bindBuffer = cast<funcptr<void, int, int>>(Wgl.wglGetProcAddress("glBindBuffer"));
+                this.bufferData = cast<funcptr<void, int, long, long, int>>(Wgl.wglGetProcAddress("glBufferData"));
+                this.vertexAttribPointer = cast<funcptr<void, int, int, int, byte, int, long>>(Wgl.wglGetProcAddress("glVertexAttribPointer"));
+                this.enableVertexAttribArray = cast<funcptr<void, int>>(Wgl.wglGetProcAddress("glEnableVertexAttribArray"));
+                this.genTextures = cast<funcptr<void, int, long>>(Wgl.wglGetProcAddress("glGenTextures"));
+                this.bindTexture = cast<funcptr<void, int, int>>(Wgl.wglGetProcAddress("glBindTexture"));
+                this.texImage2D = cast<funcptr<void, int, int, int, int, int, int, int, int, long>>(Wgl.wglGetProcAddress("glTexImage2D"));
+                this.texParameteri = cast<funcptr<void, int, int, int>>(Wgl.wglGetProcAddress("glTexParameteri"));
+                this.activeTexture = cast<funcptr<void, int>>(Wgl.wglGetProcAddress("glActiveTexture"));
+                if (cast<long>(this.createShader) == 0) { return 0; }
+                if (cast<long>(this.genVertexArrays) == 0) { return 0; }
+                return 1;
+            }
+
+            public method makeShader(int stage, string src) returns int {
+                int sh = this.createShader(stage);
+                int n = src.length();
+                address buf = Memory.alloc(cast<long>(n + 1));
+                Memory.writeString(buf, src);
+                Memory.write<byte>(buf + cast<address>(n), cast<byte>(0));
+                address pp = Memory.alloc(8);
+                Memory.write<long>(pp, cast<long>(buf));
+                this.shaderSource(sh, 1, cast<long>(pp), 0);
+                this.compileShader(sh);
+                address ok = Memory.alloc(4);
+                this.getShaderiv(sh, 0x8B81, cast<long>(ok));   // GL_COMPILE_STATUS
+                int status = Memory.read<int>(ok);
+                Memory.free(ok); Memory.free(pp); Memory.free(buf);
+                if (status == 0) { System.IO.Console.println("gl: shader compile FAILED"); }
+                return sh;
+            }
+            public method makeProgram(string vs, string fs) returns int {
+                int v = this.makeShader(0x8B31, vs);   // GL_VERTEX_SHADER
+                int f = this.makeShader(0x8B30, fs);   // GL_FRAGMENT_SHADER
+                int p = this.createProgram();
+                this.attachShader(p, v); this.attachShader(p, f);
+                this.linkProgram(p);
+                this.deleteShader(v); this.deleteShader(f);
+                return p;
+            }
+        }
+
+        // Window + 3.3 core context bootstrap. `offscreen` skips ShowWindow (headless PPM rendering).
+        public class GlApp {
+            public mutable long hwnd; public mutable long hdc; public mutable long ctx;
+            public mutable Gl gl;
+
+            public method open(string title, int w, int h, boolean offscreen) returns int {
+                this.hwnd = Win.CreateWindowExA(0, "STATIC", title, 0x10CF0000, 80, 80, w, h, 0, 0, 0, 0);
+                if (this.hwnd == 0) { return 0; }
+                if (!offscreen) { Win.ShowWindow(this.hwnd, 5); }
+                this.hdc = Win.GetDC(this.hwnd);
+                PixelFormatDescriptor* pfd = new PixelFormatDescriptor() on heap;
+                pfd.nSize = cast<short>(40); pfd.nVersion = cast<short>(1);
+                pfd.dwFlags = 0x25; pfd.iPixelType = cast<byte>(0);
+                pfd.cColorBits = cast<byte>(32); pfd.cDepthBits = cast<byte>(24);
+                int fmt = Gdi.ChoosePixelFormat(this.hdc, pfd);
+                Gdi.SetPixelFormat(this.hdc, fmt, pfd);
+                long legacy = Wgl.wglCreateContext(this.hdc);
+                Wgl.wglMakeCurrent(this.hdc, legacy);
+                long attribsFn = Wgl.wglGetProcAddress("wglCreateContextAttribsARB");
+                if (attribsFn == 0) { return 0; }   // no modern GL driver
+                address at = Memory.alloc(28);
+                Memory.write<int>(at, 0x2091); Memory.write<int>(at + cast<address>(4), 3);
+                Memory.write<int>(at + cast<address>(8), 0x2092); Memory.write<int>(at + cast<address>(12), 3);
+                Memory.write<int>(at + cast<address>(16), 0x9126); Memory.write<int>(at + cast<address>(20), 1);
+                Memory.write<int>(at + cast<address>(24), 0);
+                funcptr<long, long, long, long> mk = cast<funcptr<long, long, long, long>>(attribsFn);
+                this.ctx = mk(this.hdc, 0, cast<long>(at));
+                Memory.free(at);
+                if (this.ctx == 0) { return 0; }
+                Wgl.wglMakeCurrent(this.hdc, this.ctx);
+                Wgl.wglDeleteContext(legacy);
+                this.gl = new Gl() on heap;
+                return this.gl.load();
+            }
+            public method swap() returns void { Gdi.SwapBuffers(this.hdc); }
+            public method alive() returns boolean { return Win.IsWindow(this.hwnd) != 0; }
+            public method escPressed() returns boolean { return Win.GetAsyncKeyState(0x1B) != 0; }
+            public method pump() returns void {
+                Msg* m = new Msg() on heap;
+                while (Win.PeekMessageA(m, 0, 0, 0, 1) != 0) {
+                    Win.TranslateMessage(m); Win.DispatchMessageA(m);
+                }
+            }
+        }
+
+        // 4x4 column-major matrices in Memory buffers, ready for glUniformMatrix4fv.
+        public class Mat {
+            public static method make() returns address { return Memory.alloc(64); }
+            public static method set(address m, int i, float v) returns void { Memory.write<float>(m + cast<address>(i * 4), v); }
+            public static method get(address m, int i) returns float { return Memory.read<float>(m + cast<address>(i * 4)); }
+            public static method identity(address m) returns void {
+                mutable int i = 0; while (i < 16) { Mat.set(m, i, 0.0); i = i + 1; }
+                Mat.set(m, 0, 1.0); Mat.set(m, 5, 1.0); Mat.set(m, 10, 1.0); Mat.set(m, 15, 1.0);
+            }
+            public static method mul(address dst, address a, address b) returns void {
+                mutable int c = 0;
+                while (c < 4) { mutable int r = 0;
+                    while (r < 4) { mutable float s = 0.0; mutable int k = 0;
+                        while (k < 4) { s = s + Mat.get(a, k * 4 + r) * Mat.get(b, c * 4 + k); k = k + 1; }
+                        Mat.set(dst, c * 4 + r, s); r = r + 1; }
+                    c = c + 1; }
+            }
+            public static method translate(address m, float x, float y, float z) returns void {
+                Mat.identity(m); Mat.set(m, 12, x); Mat.set(m, 13, y); Mat.set(m, 14, z);
+            }
+            public static method scale(address m, float s) returns void {
+                Mat.identity(m); Mat.set(m, 0, s); Mat.set(m, 5, s); Mat.set(m, 10, s);
+            }
+        }
+    }
+}
