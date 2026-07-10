@@ -1,0 +1,55 @@
+import System.IO.Console;
+
+// Affine bounds-check hoisting: an array index of the form `base + i` (loop-invariant base + induction
+// variable), in both `for` and `while` loops, is versioned -- a guard (base+lo >= 0 && base+hi bound
+// against length, in 64-bit) is proven once, then an unchecked copy runs; anything out of range falls to
+// the original checked copy. A tiny matmul exercises two affine arrays (c[i*n+j], b[k*n+j]) in the loop
+// the optimizer most wants to vectorize. The point: the versioned result equals the fully-checked one.
+program BceAffine;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            // Affine `for`: writes c[base + j] for j in [0, len). base comes from a parameter, so the
+            // compiler cannot fold it -- the generated guard is what makes the fast copy safe.
+            public static method blit(int[] c, int base, int len) returns void {
+                for (mutable int j = 0; j < len; j++) { c[base + j] = base + j; }
+            }
+            // Affine `while`: same shape, while form (increment is the last statement).
+            public static method scaleAdd(int[] dst, int[] src, int base, int len) returns void {
+                mutable int j = 0;
+                while (j < len) { dst[base + j] = dst[base + j] + src[j] * 2; j = j + 1; }
+            }
+            // Two affine arrays in one inner loop (the matmul kernel shape).
+            public static method matmul(int[] a, int[] b, int[] c, int n) returns void {
+                for (mutable int z = 0; z < n * n; z++) { c[z] = 0; }
+                for (mutable int i = 0; i < n; i++) {
+                    for (mutable int k = 0; k < n; k++) {
+                        int r = a[i * n + k];
+                        for (mutable int j = 0; j < n; j++) { c[i * n + j] = c[i * n + j] + r * b[k * n + j]; }
+                    }
+                }
+            }
+            public static method main(string[] args) returns void {
+                int cap = 300;
+                mutable int[] c = new int[cap]();
+                for (mutable int b = 0; b < cap; b = b + 100) { Main.blit(c, b, 100); }  // fill 0..299
+                mutable int[] src = new int[100]();
+                for (mutable int i = 0; i < 100; i++) { src[i] = i; }
+                Main.scaleAdd(c, src, 200, 100);                                          // c[200..299] += 2*src
+
+                int n = 8;
+                mutable int[] a = new int[n*n](); mutable int[] bb = new int[n*n](); mutable int[] cc = new int[n*n]();
+                for (mutable int i = 0; i < n*n; i++) { a[i] = i % 4; bb[i] = i % 3; }
+                Main.matmul(a, bb, cc, n);
+
+                mutable long sum = 0;
+                for (mutable int i = 0; i < cap; i++) { sum = sum + cast<long>(c[i]); }
+                for (mutable int i = 0; i < n*n; i++) { sum = sum + cast<long>(cc[i]); }
+                System.IO.Console.printf("sum=%d\n", cast<int>(sum));                     // deterministic
+                delete c; delete src; delete a; delete bb; delete cc;
+                return;
+            }
+        }
+    }
+}

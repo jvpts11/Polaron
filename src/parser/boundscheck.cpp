@@ -39,6 +39,13 @@ ExprPtr mkLength(ExprPtr arr) {  // arr.length()
     c->callee = std::move(m);
     return c;
 }
+ExprPtr mkCast(const std::string& ty, ExprPtr e) {  // cast<ty>(e)
+    auto c = std::make_unique<CastExpr>();
+    c->targetType = ty;
+    c->op = 0;
+    c->operand = std::move(e);
+    return c;
+}
 
 // ---------- conservative predicates (unknown node type => treat as unsafe) ----------
 
@@ -204,44 +211,74 @@ bool exprInvariant(const Expr* e, const Block& body) {
     return true;
 }
 
-// ---------- collect `array[var]` accesses (bare induction index) ----------
+// ---------- collect `array[base + var]` accesses (affine index, coefficient +1) ----------
 
-void collectBareAccessesExpr(Expr* e, const std::string& var, std::vector<IndexExpr*>& out);
+// A hoistable access: `array[index]` where `index` is `var` (base null) or `base + var` / `var + base`
+// with `base` a var-free, loop-invariant offset. Only stride +1 is matched -- the common contiguous
+// case -- so the accessed index range is exactly [base+lo, base+hi), which the guard bounds directly.
+struct AffineAccess {
+    IndexExpr* ix;
+    Expr* base;  // nullptr means the index is the bare `var` (base 0)
+};
 
-void collectBareAccessesBlock(Block& b, const std::string& var, std::vector<IndexExpr*>& out);
-
-void collectBareAccessesStmt(Stmt* s, const std::string& var, std::vector<IndexExpr*>& out) {
-    if (s == nullptr) return;
-    if (auto* es = dynamic_cast<ExprStmt*>(s)) collectBareAccessesExpr(es->expr.get(), var, out);
-    else if (auto* vd = dynamic_cast<VarDeclStmt*>(s)) collectBareAccessesExpr(vd->init.get(), var, out);
-    else if (auto* as = dynamic_cast<AssignStmt*>(s)) { collectBareAccessesExpr(as->target.get(), var, out); collectBareAccessesExpr(as->value.get(), var, out); }
-    else if (auto* idd = dynamic_cast<IncDecStmt*>(s)) collectBareAccessesExpr(idd->target.get(), var, out);
-    else if (auto* rs = dynamic_cast<ReturnStmt*>(s)) collectBareAccessesExpr(rs->value.get(), var, out);
-    else if (auto* blk = dynamic_cast<Block*>(s)) collectBareAccessesBlock(*blk, var, out);
-    else if (auto* i = dynamic_cast<IfStmt*>(s)) { collectBareAccessesExpr(i->cond.get(), var, out); collectBareAccessesBlock(i->thenBlock, var, out); if (i->elseBlock) collectBareAccessesBlock(*i->elseBlock, var, out); }
-    else if (auto* f = dynamic_cast<ForStmt*>(s)) { collectBareAccessesStmt(f->init.get(), var, out); collectBareAccessesExpr(f->cond.get(), var, out); collectBareAccessesStmt(f->update.get(), var, out); collectBareAccessesBlock(f->body, var, out); }
-    else if (auto* w = dynamic_cast<WhileStmt*>(s)) { collectBareAccessesExpr(w->cond.get(), var, out); collectBareAccessesBlock(w->body, var, out); }
-    else if (auto* d = dynamic_cast<DoWhileStmt*>(s)) { collectBareAccessesExpr(d->cond.get(), var, out); collectBareAccessesBlock(d->body, var, out); }
+// True if `e` reads `var`.
+bool containsIdent(const Expr* e, const std::string& var) {
+    std::set<std::string> ids;
+    collectIdents(e, ids);
+    return ids.count(var) > 0;
 }
 
-void collectBareAccessesExpr(Expr* e, const std::string& var, std::vector<IndexExpr*>& out) {
+// If `idx` is `var`, `base + var`, or `var + base` (base var-free), return true and set `base` (nullptr
+// for the bare `var`). Coefficient must be +1.
+bool matchAffine(Expr* idx, const std::string& var, Expr*& base) {
+    base = nullptr;
+    if (const auto* id = dynamic_cast<const IdentifierExpr*>(idx)) return id->name == var;
+    auto* b = dynamic_cast<BinaryExpr*>(idx);
+    if (b == nullptr || b->op != "+") return false;
+    const auto* l = dynamic_cast<const IdentifierExpr*>(b->lhs.get());
+    const auto* r = dynamic_cast<const IdentifierExpr*>(b->rhs.get());
+    if (r != nullptr && r->name == var && !containsIdent(b->lhs.get(), var)) { base = b->lhs.get(); return true; }
+    if (l != nullptr && l->name == var && !containsIdent(b->rhs.get(), var)) { base = b->rhs.get(); return true; }
+    return false;
+}
+
+void collectAffineExpr(Expr* e, const std::string& var, std::vector<AffineAccess>& out);
+
+void collectAffineBlock(Block& b, const std::string& var, std::vector<AffineAccess>& out);
+
+void collectAffineStmt(Stmt* s, const std::string& var, std::vector<AffineAccess>& out) {
+    if (s == nullptr) return;
+    if (auto* es = dynamic_cast<ExprStmt*>(s)) collectAffineExpr(es->expr.get(), var, out);
+    else if (auto* vd = dynamic_cast<VarDeclStmt*>(s)) collectAffineExpr(vd->init.get(), var, out);
+    else if (auto* as = dynamic_cast<AssignStmt*>(s)) { collectAffineExpr(as->target.get(), var, out); collectAffineExpr(as->value.get(), var, out); }
+    else if (auto* idd = dynamic_cast<IncDecStmt*>(s)) collectAffineExpr(idd->target.get(), var, out);
+    else if (auto* rs = dynamic_cast<ReturnStmt*>(s)) collectAffineExpr(rs->value.get(), var, out);
+    else if (auto* blk = dynamic_cast<Block*>(s)) collectAffineBlock(*blk, var, out);
+    else if (auto* i = dynamic_cast<IfStmt*>(s)) { collectAffineExpr(i->cond.get(), var, out); collectAffineBlock(i->thenBlock, var, out); if (i->elseBlock) collectAffineBlock(*i->elseBlock, var, out); }
+    else if (auto* f = dynamic_cast<ForStmt*>(s)) { collectAffineStmt(f->init.get(), var, out); collectAffineExpr(f->cond.get(), var, out); collectAffineStmt(f->update.get(), var, out); collectAffineBlock(f->body, var, out); }
+    else if (auto* w = dynamic_cast<WhileStmt*>(s)) { collectAffineExpr(w->cond.get(), var, out); collectAffineBlock(w->body, var, out); }
+    else if (auto* d = dynamic_cast<DoWhileStmt*>(s)) { collectAffineExpr(d->cond.get(), var, out); collectAffineBlock(d->body, var, out); }
+}
+
+void collectAffineExpr(Expr* e, const std::string& var, std::vector<AffineAccess>& out) {
     if (e == nullptr) return;
     if (auto* ix = dynamic_cast<IndexExpr*>(e)) {
-        collectBareAccessesExpr(ix->array.get(), var, out);
-        collectBareAccessesExpr(ix->index.get(), var, out);
-        const auto* idx = dynamic_cast<const IdentifierExpr*>(ix->index.get());
-        if (idx != nullptr && idx->name == var && !arrayKey(ix->array.get()).empty()) out.push_back(ix);
+        collectAffineExpr(ix->array.get(), var, out);
+        collectAffineExpr(ix->index.get(), var, out);
+        Expr* base = nullptr;
+        if (matchAffine(ix->index.get(), var, base) && !arrayKey(ix->array.get()).empty())
+            out.push_back({ix, base});
         return;
     }
-    if (auto* b = dynamic_cast<BinaryExpr*>(e)) { collectBareAccessesExpr(b->lhs.get(), var, out); collectBareAccessesExpr(b->rhs.get(), var, out); return; }
-    if (auto* u = dynamic_cast<UnaryExpr*>(e)) { collectBareAccessesExpr(u->operand.get(), var, out); return; }
-    if (auto* m = dynamic_cast<MemberExpr*>(e)) { collectBareAccessesExpr(m->object.get(), var, out); return; }
-    if (auto* c = dynamic_cast<CastExpr*>(e)) { collectBareAccessesExpr(c->operand.get(), var, out); return; }
-    if (auto* t = dynamic_cast<TernaryExpr*>(e)) { collectBareAccessesExpr(t->cond.get(), var, out); collectBareAccessesExpr(t->thenExpr.get(), var, out); collectBareAccessesExpr(t->elseExpr.get(), var, out); return; }
+    if (auto* b = dynamic_cast<BinaryExpr*>(e)) { collectAffineExpr(b->lhs.get(), var, out); collectAffineExpr(b->rhs.get(), var, out); return; }
+    if (auto* u = dynamic_cast<UnaryExpr*>(e)) { collectAffineExpr(u->operand.get(), var, out); return; }
+    if (auto* m = dynamic_cast<MemberExpr*>(e)) { collectAffineExpr(m->object.get(), var, out); return; }
+    if (auto* c = dynamic_cast<CastExpr*>(e)) { collectAffineExpr(c->operand.get(), var, out); return; }
+    if (auto* t = dynamic_cast<TernaryExpr*>(e)) { collectAffineExpr(t->cond.get(), var, out); collectAffineExpr(t->thenExpr.get(), var, out); collectAffineExpr(t->elseExpr.get(), var, out); return; }
 }
 
-void collectBareAccessesBlock(Block& b, const std::string& var, std::vector<IndexExpr*>& out) {
-    for (auto& s : b.statements) collectBareAccessesStmt(s.get(), var, out);
+void collectAffineBlock(Block& b, const std::string& var, std::vector<AffineAccess>& out) {
+    for (auto& s : b.statements) collectAffineStmt(s.get(), var, out);
 }
 
 // ---------- clean-for analysis ----------
@@ -299,6 +336,48 @@ bool analyzeFor(const ForStmt& f, ForInfo& info) {
     return true;
 }
 
+// Recognize the while form of a counted loop: `while (var </<= HI) { ...; INCREMENT }` where INCREMENT
+// (`var++`, `var = var + posLit`, or `var = var + S`) is the LAST statement -- so every access in the
+// body uses the same `var`, exactly as a for-header does -- and `var` is written nowhere else. `var` is
+// declared before the loop, so its entry value is the lower bound: info.lo is a synthesized read of
+// `var`, owned by `loStore` (which the caller must keep alive while the guard is built).
+bool analyzeWhile(const WhileStmt& w, ForInfo& info, ExprPtr& loStore) {
+    const auto* cond = dynamic_cast<const BinaryExpr*>(w.cond.get());
+    if (cond == nullptr || (cond->op != "<" && cond->op != "<=")) return false;
+    const auto* lhs = dynamic_cast<const IdentifierExpr*>(cond->lhs.get());
+    if (lhs == nullptr) return false;
+    info.var = lhs->name;
+    info.hi = cond->rhs.get();
+    info.inclusive = (cond->op == "<=");
+    if (w.body.statements.empty()) return false;
+    const Stmt* last = w.body.statements.back().get();
+    bool okStep = false;
+    if (const auto* idd = dynamic_cast<const IncDecStmt*>(last)) {
+        const auto* t = dynamic_cast<const IdentifierExpr*>(idd->target.get());
+        okStep = (idd->isIncrement && t != nullptr && t->name == info.var);
+    } else if (const auto* as = dynamic_cast<const AssignStmt*>(last)) {
+        const auto* t = dynamic_cast<const IdentifierExpr*>(as->target.get());
+        const auto* add = dynamic_cast<const BinaryExpr*>(as->value.get());
+        if (t != nullptr && t->name == info.var && add != nullptr && add->op == "+") {
+            const auto* al = dynamic_cast<const IdentifierExpr*>(add->lhs.get());
+            if (al != nullptr && al->name == info.var) {
+                const auto* ar = dynamic_cast<const IntLiteralExpr*>(add->rhs.get());
+                if (ar != nullptr) okStep = (!ar->text.empty() && ar->text[0] != '-' && ar->text != "0");
+                else if (pureSimple(add->rhs.get())) { okStep = true; info.step = add->rhs.get(); }
+            }
+        }
+    }
+    if (!okStep) return false;
+    // `var` must be written ONLY by that last increment -- no earlier or nested write would leave the
+    // body's accesses at a value outside [lo, hi).
+    for (std::size_t i = 0; i + 1 < w.body.statements.size(); ++i)
+        if (identWrittenInStmt(w.body.statements[i].get(), info.var)) return false;
+    if (!pureSimple(info.hi)) return false;
+    loStore = mkIdent(info.var);
+    info.lo = loStore.get();
+    return true;
+}
+
 // ---------- the transform ----------
 
 bool containsLoop(const Block& b);
@@ -318,67 +397,112 @@ bool containsLoop(const Block& b) {
     return false;
 }
 
+// An affine access is hoistable in `body` iff its array is provably unchanged and its base offset is
+// loop-invariant. A non-hoistable access is simply left checked (partial hoisting is safe).
+bool accessHoistable(const Block& body, const AffineAccess& a) {
+    if (!arrayInvariant(arrayKey(a.ix->array.get()), body)) return false;
+    if (a.base != nullptr && !exprInvariant(a.base, body)) return false;
+    return true;
+}
+
+// Build the versioning guard for the hoistable affine accesses in `body`; returns null if none qualify.
+// Bare access (index == var): lo >= 0 (once) && hi {<=|<} length. Affine access base+var: (base+lo >= 0)
+// && (base+hi {<=|<} length), computed in 64-bit so a large base cannot overflow the check (array indices
+// fit i32, so the widened bound is exact). For `i < hi` the max index is hi-1 (`base+hi <= length`); for
+// `i <= hi` it is hi (`base+hi < length`). A variable step adds `step >= 1`.
+ExprPtr buildHoistGuard(Block& body, const ForInfo& info) {
+    std::vector<AffineAccess> all;
+    collectAffineBlock(body, info.var, all);
+    std::vector<AffineAccess> hoistable;
+    for (const auto& a : all)
+        if (accessHoistable(body, a)) hoistable.push_back(a);
+    if (hoistable.empty()) return nullptr;
+    const std::string upperOp = info.inclusive ? "<" : "<=";
+    ExprPtr guard = mkBin(">=", cloneExprDeep(info.lo), mkInt("0"));
+    for (const auto& a : hoistable) {
+        ExprPtr len = mkLength(cloneExprDeep(a.ix->array.get()));
+        if (a.base == nullptr) {
+            guard = mkBin("&&", std::move(guard), mkBin(upperOp, cloneExprDeep(info.hi), std::move(len)));
+        } else {
+            ExprPtr lo64 = mkBin("+", mkCast("long", cloneExprDeep(a.base)), mkCast("long", cloneExprDeep(info.lo)));
+            ExprPtr hi64 = mkBin("+", mkCast("long", cloneExprDeep(a.base)), mkCast("long", cloneExprDeep(info.hi)));
+            guard = mkBin("&&", std::move(guard), mkBin(">=", std::move(lo64), mkInt("0")));
+            guard = mkBin("&&", std::move(guard), mkBin(upperOp, std::move(hi64), std::move(len)));
+        }
+    }
+    if (info.step != nullptr)
+        guard = mkBin("&&", std::move(guard), mkBin(">=", cloneExprDeep(info.step), mkInt("1")));
+    return guard;
+}
+
+// Mark exactly the hoistable affine accesses in a (cloned) loop body unchecked -- the guard from
+// buildHoistGuard, built with the identical filter on the identical structure, covers precisely these.
+void markHoistable(Block& body, const std::string& var) {
+    std::vector<AffineAccess> all;
+    collectAffineBlock(body, var, all);
+    for (const auto& a : all)
+        if (accessHoistable(body, a)) a.ix->unchecked = true;
+}
+
+// Wrap `slot` (a loop) as `if (guard) fast else slow`: `fast` is a clone with the hoistable accesses
+// marked unchecked, `slow` is the original fully-checked loop. `fastBody` is the clone's body.
+void versionLoop(StmtPtr& slot, ExprPtr guard, StmtPtr fast, Block& fastBody, const std::string& var,
+                 SourceLocation loc) {
+    markHoistable(fastBody, var);
+    auto iff = std::make_unique<IfStmt>();
+    iff->loc = loc;
+    iff->cond = std::move(guard);
+    iff->thenBlock.statements.push_back(std::move(fast));
+    iff->elseBlock = std::make_unique<Block>();
+    iff->elseBlock->statements.push_back(std::move(slot));  // the original loop stays fully checked
+    slot = std::move(iff);
+}
+
 // Try to version the for-loop held in `slot`. On success `slot` becomes an IfStmt (guard ? fast : slow).
 void tryVersion(StmtPtr& slot) {
     auto* f = dynamic_cast<ForStmt*>(slot.get());
     if (f == nullptr) return;
     ForInfo info;
     if (!analyzeFor(*f, info)) return;
-    // Only version innermost loops: versioning a loop whose body holds another (already-versioned) loop
-    // would duplicate that inner loop into both copies, multiplying code size with each nesting level.
+    // Only version innermost loops (see stmtContainsLoop): versioning an outer loop would duplicate the
+    // inner one into both copies, multiplying code size with each nesting level.
     if (containsLoop(f->body)) return;
     // The induction variable must not be reassigned inside the body (only the header update moves it).
     if (identWrittenInBlock(f->body, info.var)) return;
     // No calls / allocations / frees in the body -- otherwise the array could be reallocated or freed.
     if (blockUnsafe(f->body)) return;
-
-    // Collect the bare `array[var]` accesses and the distinct arrays they touch.
-    std::vector<IndexExpr*> accesses;
-    collectBareAccessesBlock(f->body, info.var, accesses);
-    if (accesses.empty()) return;
-    std::vector<Expr*> arrays;  // one representative array expr per distinct key
-    std::vector<std::string> keys;
-    for (auto* ix : accesses) {
-        std::string k = arrayKey(ix->array.get());
-        bool seen = false;
-        for (const auto& kk : keys) if (kk == k) { seen = true; break; }
-        if (!seen) { keys.push_back(k); arrays.push_back(ix->array.get()); }
-    }
-    // Every touched array must be provably unchanged across the loop.
-    for (const auto& k : keys)
-        if (!arrayInvariant(k, f->body)) return;
-    // The bound must be loop-invariant: the guard is evaluated once, but the condition re-reads `hi`
-    // every iteration, so a `hi` that grows in the body would let the fast copy run past it. Likewise a
-    // variable step must be invariant (else it could flip sign and drive the index below lo).
+    // The bound / variable step must be loop-invariant (re-read every iteration, but guarded once).
     if (!exprInvariant(info.hi, f->body)) return;
     if (info.step != nullptr && !exprInvariant(info.step, f->body)) return;
 
-    // Build the guard: lo >= 0  &&  (hi <= arr.length())[for `<`] / (hi < arr.length())[for `<=`] per
-    // array  &&  (step >= 1)[only for a variable step]. For `i < hi` the max index is hi-1, so
-    // `hi <= length`; for `i <= hi` it is hi, so `hi < length`.
-    const std::string upperOp = info.inclusive ? "<" : "<=";
-    ExprPtr guard = mkBin(">=", cloneExprDeep(info.lo), mkInt("0"));
-    for (auto* arr : arrays) {
-        ExprPtr clause = mkBin(upperOp, cloneExprDeep(info.hi), mkLength(cloneExprDeep(arr)));
-        guard = mkBin("&&", std::move(guard), std::move(clause));
-    }
-    if (info.step != nullptr)  // ensure the index actually increases, so it stays in [lo, hi)
-        guard = mkBin("&&", std::move(guard), mkBin(">=", cloneExprDeep(info.step), mkInt("1")));
-
-    // Fast copy: clone the whole loop, then mark exactly the same accesses unchecked in the clone.
+    ExprPtr guard = buildHoistGuard(f->body, info);
+    if (guard == nullptr) return;
     StmtPtr fast = cloneStmtDeep(f);
-    std::vector<IndexExpr*> fastAccesses;
-    collectBareAccessesBlock(static_cast<ForStmt*>(fast.get())->body, info.var, fastAccesses);
-    for (auto* ix : fastAccesses) ix->unchecked = true;
+    Block& fastBody = static_cast<ForStmt*>(fast.get())->body;  // before the move (unspecified arg order)
+    const SourceLocation loc = f->loc;
+    versionLoop(slot, std::move(guard), std::move(fast), fastBody, info.var, loc);
+}
 
-    // Slow copy: the original loop, left fully checked. Wrap both in `if (guard) fast else slow`.
-    auto iff = std::make_unique<IfStmt>();
-    iff->loc = f->loc;
-    iff->cond = std::move(guard);
-    iff->thenBlock.statements.push_back(std::move(fast));
-    iff->elseBlock = std::make_unique<Block>();
-    iff->elseBlock->statements.push_back(std::move(slot));  // move the original ForStmt into the else
-    slot = std::move(iff);
+// Try to version the while-loop held in `slot`: `while (var </<= HI) { ...; var = var + step }` where the
+// increment is the LAST statement (so every access uses the same var, as in a for header) and var is
+// written nowhere else. The lower bound is var's value at loop entry.
+void tryVersionWhile(StmtPtr& slot) {
+    auto* w = dynamic_cast<WhileStmt*>(slot.get());
+    if (w == nullptr) return;
+    ForInfo info;
+    ExprPtr loStore;  // owns the synthesized `var` read used as the lower bound
+    if (!analyzeWhile(*w, info, loStore)) return;
+    if (containsLoop(w->body)) return;
+    if (blockUnsafe(w->body)) return;
+    if (!exprInvariant(info.hi, w->body)) return;  // hi must not depend on var (which is written) or be reassigned
+    if (info.step != nullptr && !exprInvariant(info.step, w->body)) return;
+
+    ExprPtr guard = buildHoistGuard(w->body, info);
+    if (guard == nullptr) return;
+    StmtPtr fast = cloneStmtDeep(w);
+    Block& fastBody = static_cast<WhileStmt*>(fast.get())->body;
+    const SourceLocation loc = w->loc;
+    versionLoop(slot, std::move(guard), std::move(fast), fastBody, info.var, loc);
 }
 
 // ---------- driver: walk every block, versioning innermost loops first ----------
@@ -392,7 +516,11 @@ void walkStmt(StmtPtr& slot) {
         tryVersion(slot);     // may replace `slot` with an IfStmt (whose copies are already processed)
         return;
     }
-    if (auto* w = dynamic_cast<WhileStmt*>(s)) { walkBlock(w->body); return; }
+    if (auto* w = dynamic_cast<WhileStmt*>(s)) {
+        walkBlock(w->body);   // version nested loops first
+        tryVersionWhile(slot);
+        return;
+    }
     if (auto* d = dynamic_cast<DoWhileStmt*>(s)) { walkBlock(d->body); return; }
     if (auto* i = dynamic_cast<IfStmt*>(s)) { walkBlock(i->thenBlock); if (i->elseBlock) walkBlock(*i->elseBlock); return; }
     if (auto* blk = dynamic_cast<Block*>(s)) { walkBlock(*blk); return; }

@@ -280,6 +280,16 @@ add_test(NAME codegen_bom_source_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# Affine bounds-check hoisting (index `base + i`) in for- and while-loops + a small matmul: the versioned
+# result must equal the fully-checked one.
+add_test(NAME codegen_bce_affine_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bce_affine.ldp3"
+    "-DCONTAINS=sum=55502"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # A bare unqualified call (LDP3 has no free functions) must name the cause and the fix, not just fail.
 add_test(NAME sema_rejects_unqualified_call
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/unqualified_call_bad.ldp3")
