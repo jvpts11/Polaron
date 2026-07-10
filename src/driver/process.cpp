@@ -27,15 +27,28 @@ std::string quoteArg(const std::string& a) {
 }  // namespace
 
 int runProcess(const std::string& exe, const std::vector<std::string>& args) {
-    std::vector<const char*> argv;
-    argv.push_back(exe.c_str());
-    for (const auto& a : args) argv.push_back(a.c_str());
-    argv.push_back(nullptr);
-    // _spawnvp searches PATH when `exe` has no path separator (so a bare "git" resolves), and uses a full
-    // path as-is (clang/ldp3c). No shell is involved, so paths with spaces are safe. _P_WAIT returns the
-    // child's exit code.
-    const intptr_t rc = _spawnvp(_P_WAIT, exe.c_str(), argv.data());
-    return static_cast<int>(rc);
+    // Build a single quoted command line and hand it to CreateProcessA. This is NOT the same as
+    // _spawnvp: the CRT's _spawn family joins argv with spaces WITHOUT quoting, so any argument with an
+    // embedded space (a full exe path or a `-libpath:` under `C:\Program Files\LDP3`, the default install
+    // location) is split into two by the child's command-line parser and the build fails. quoteArg wraps
+    // every whitespace-bearing argument so paths with spaces survive. CreateProcessA with a NULL
+    // application name still searches PATH and appends `.exe` for a bare token (so "git" resolves).
+    std::string cmd = quoteArg(exe);
+    for (const auto& a : args) cmd += " " + quoteArg(a);
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::vector<char> buf(cmd.begin(), cmd.end());
+    buf.push_back('\0');
+    if (!CreateProcessA(nullptr, buf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+        return -1;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return static_cast<int>(code);
 }
 
 int runProcessCapture(const std::string& exe, const std::vector<std::string>& args, std::string& output,
