@@ -1044,6 +1044,14 @@ struct CodeGenerator::Impl {
     // `new T in R` routes to the range whose accepts/rejects matches T (compile-time).
     std::unordered_map<std::string, const std::vector<ast::RegionInitExpr::Range>*> multiRegionRanges_;
     std::unordered_map<std::string, std::vector<llvm::Value*>> multiRegionUsed_;
+    // Owned local regions keep their bump cursor in a local i64 alloca (not the block's write-only
+    // `used` header field) so mem2reg promotes it to a loop-carried register -- an allocation loop then
+    // bumps in a register like a hand-written arena instead of round-tripping the cursor through memory.
+    // Keyed by region local name; reset per function. `ownedRegions_` names the locals eligible for it
+    // (owned == not `at address`, not multi-range, not a field): their block data begins at block+24 and
+    // their `used` header is write-only, so the cursor can live entirely in the alloca.
+    std::unordered_map<std::string, llvm::Value*> regionCursorSlot_;
+    std::unordered_set<std::string> ownedRegions_;
     // `volatile region` (spec 37.5, MMIO): region locals whose objects must be accessed volatilely,
     // and the object locals bound from `new ... in` such a region (their field accesses are volatile).
     std::unordered_set<std::string> volatileRegions_;
@@ -3997,6 +4005,29 @@ struct CodeGenerator::Impl {
         return builder.CreateStructGEP(cit->second.type, currentThis, fi->second, "rgn.field");
     }
 
+    // An owned region init is `itself.allocate(size)` -- a region we own end to end (data at block+24),
+    // as opposed to `itself.at(addr, ...)` (external memory) or `itself.atMultiple({...})` (multi-range).
+    static bool isOwnedRegionInit(const ast::Expr* e) {
+        const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(e);
+        return ri != nullptr && ri->atAddress.get() == nullptr && ri->ranges.empty();
+    }
+
+    // Mark `name` as an owned local region and (re)zero its register-promotable bump cursor. Called at
+    // each acquire of the region's block (eager decl, lazy first-use, reassignment) so the cursor starts
+    // at 0 for the fresh block. The alloca is created once (entry block) and reused across re-acquires.
+    void setupOwnedRegionCursor(const std::string& name) {
+        ownedRegions_.insert(name);
+        auto it = regionCursorSlot_.find(name);
+        llvm::Value* cur;
+        if (it != regionCursorSlot_.end()) {
+            cur = it->second;
+        } else {
+            cur = createEntryAlloca(name + "#cursor", builder.getInt64Ty());
+            regionCursorSlot_[name] = cur;
+        }
+        builder.CreateStore(builder.getInt64(0), cur);
+    }
+
     // A region block is [ i64 used | i64 capacity | data... ]. Bump-allocates
     // `objType` bytes (8-aligned) from region variable `name` and returns the slot.
     llvm::Value* emitRegionBumpAlloc(const std::string& name, llvm::StructType* objType,
@@ -4005,6 +4036,18 @@ struct CodeGenerator::Impl {
         if (slot == nullptr) {
             error("unknown region '" + name + "'", loc);
             return nullptr;
+        }
+        // An owned local region (not `at address`, not multi-range, not a field) is the hot arena case.
+        // Its data begins at block+24 and its `used` header field is write-only (nothing -- runtime
+        // release included -- reads it), so we keep the bump cursor in a local i64 alloca (created at the
+        // region's acquire, see setupOwnedRegionCursor). mem2reg promotes that alloca to a loop-carried
+        // register, so an allocation loop bumps the cursor in a register exactly like a hand-written
+        // arena, rather than round-tripping it through the region block every object -- a heap location
+        // LLVM cannot register-promote across loop iterations, no matter the aliasing metadata.
+        llvm::Value* cursorSlot = nullptr;
+        if (name.find('.') == std::string::npos && ownedRegions_.count(name) > 0) {
+            auto it = regionCursorSlot_.find(name);
+            if (it != regionCursorSlot_.end()) cursorSlot = it->second;
         }
         // `lazy region` (spec 37.3): allocate the backing block the first time an object enters.
         // (Lazy applies to local regions; a field region is allocated in the constructor.)
@@ -4019,18 +4062,31 @@ struct CodeGenerator::Impl {
             builder.SetInsertPoint(allocBB);
             llvm::Value* blk = emitRegionAllocate(lazyRegionSize_[name], lazyRegionAt_[name]);
             if (blk != nullptr) builder.CreateStore(blk, slot);
+            if (cursorSlot != nullptr) builder.CreateStore(builder.getInt64(0), cursorSlot);  // fresh block: used = 0
             builder.CreateBr(contBB);
             builder.SetInsertPoint(contBB);
         }
         llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
-        llvm::Value* used = builder.CreateLoad(builder.getInt64Ty(), block, "used");
-        llvm::Value* dataBase = builder.CreateLoad(
-            builder.getPtrTy(), builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 16, "rgn.dbase"),
-            "rgn.data");
+        llvm::Value* used;
+        llvm::Value* dataBase;
+        if (cursorSlot != nullptr) {
+            used = builder.CreateLoad(builder.getInt64Ty(), cursorSlot, "used");
+            dataBase = builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 24, "rgn.data");
+        } else {
+            // `at address` / field region: the cursor lives in the block header (region+0) and the data
+            // base is stored (region+16). Mark the base load invariant so it still hoists out of a loop.
+            used = builder.CreateLoad(builder.getInt64Ty(), block, "used");
+            auto* db = builder.CreateLoad(
+                builder.getPtrTy(),
+                builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 16, "rgn.dbase"), "rgn.data");
+            db->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(context, {}));
+            dataBase = db;
+        }
         llvm::Value* objPtr = builder.CreateGEP(builder.getInt8Ty(), dataBase, used, "rgn.obj");
         llvm::Value* aligned = builder.CreateAnd(builder.CreateAdd(sizeOf(objType), builder.getInt64(7)),
                                                  builder.getInt64(~static_cast<std::uint64_t>(7)));
-        builder.CreateStore(builder.CreateAdd(used, aligned), block);  // bump
+        builder.CreateStore(builder.CreateAdd(used, aligned),
+                            cursorSlot != nullptr ? cursorSlot : block);  // bump
         return objPtr;
     }
 
@@ -7494,6 +7550,9 @@ struct CodeGenerator::Impl {
                     lazyRegionSize_[vd->name] = ri->size.get();
                     lazyRegionAt_[vd->name] = ri->atAddress.get();
                     if (vd->isVolatile) volatileRegions_.insert(vd->name);  // spec 37.5 (MMIO)
+                    // An owned lazy region keeps its bump cursor in a register-promotable alloca; the
+                    // lazy-acquire block re-zeros it each time the backing block is (re)allocated.
+                    if (ri->atAddress.get() == nullptr) setupOwnedRegionCursor(vd->name);
                     if (!vd->isEternal) scopeRegions.push_back(RegionLocal{slot, vd->isEternal, vd->name});
                     return;
                 }
@@ -7529,6 +7588,10 @@ struct CodeGenerator::Impl {
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
             builder.CreateStore(initV, slot, vd->isVolatile);  // spec 37.5
             locals[vd->name] = LocalSlot{slot, declType, vd->isVolatile};
+            // An eagerly-allocated owned region (`region r = itself.allocate(...)`): give it a
+            // register-promotable bump cursor, zeroed now that its block is freshly acquired.
+            if (declType == "region" && isOwnedRegionInit(vd->init.get()))
+                setupOwnedRegionCursor(vd->name);
             // RAII: a freshly built `new ... on stack` object with a destructor gets cleaned up
             // when the function returns -- unless it is `eternal` (spec 37.2: lives for the whole
             // program, no cleanup).
@@ -7783,6 +7846,11 @@ struct CodeGenerator::Impl {
                         if (!isRefType(typeName(*tix->array)))
                             sv = builder.CreateTrunc(sv, builder.getInt8Ty());
                 builder.CreateStore(sv, slot, isVolatileAccess(*assign->target));  // spec 37.5
+                // Reassigning an owned region a fresh block (`r = itself.allocate(...)`, including filling
+                // an empty-state region): (re)zero its register bump cursor so allocations restart at 0.
+                if (targetType == "region")
+                    if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get()))
+                        if (isOwnedRegionInit(assign->value.get())) setupOwnedRegionCursor(tid->name);
             }
             return;
         }
@@ -9587,6 +9655,8 @@ struct CodeGenerator::Impl {
         lazyRegionSize_.clear();
         lazyRegionAt_.clear();
         volatileRegions_.clear();
+        regionCursorSlot_.clear();
+        ownedRegions_.clear();
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
@@ -9801,6 +9871,8 @@ struct CodeGenerator::Impl {
         lazyRegionSize_.clear();
         lazyRegionAt_.clear();
         volatileRegions_.clear();
+        regionCursorSlot_.clear();
+        ownedRegions_.clear();
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
@@ -10014,6 +10086,8 @@ struct CodeGenerator::Impl {
         lazyRegionSize_.clear();
         lazyRegionAt_.clear();
         volatileRegions_.clear();
+        regionCursorSlot_.clear();
+        ownedRegions_.clear();
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
