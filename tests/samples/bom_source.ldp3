@@ -1,0 +1,15 @@
+﻿import System.IO.Console;
+program BomSource;
+
+// Regression: a UTF-8 BOM (EF BB BF) at the start of the file must be skipped by the lexer, not lexed
+// as a stray character. Many Windows editors save with a BOM. Prints: bom ok
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("bom ok\n");
+                return;
+            }
+        }
+    }
+}

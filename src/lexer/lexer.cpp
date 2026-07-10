@@ -165,7 +165,14 @@ TokenKind keywordKind(std::string_view text) {
 }  // namespace
 
 Lexer::Lexer(std::string_view source, std::string_view file, bool keepComments)
-    : source_(source), file_(file), keepComments_(keepComments) {}
+    : source_(source), file_(file), keepComments_(keepComments) {
+    // Skip a leading UTF-8 BOM (EF BB BF): many Windows editors (Notepad, some VS Code / PowerShell
+    // configs) save source with one, and it must not surface as a stray lex error on the first character.
+    if (source_.size() >= 3 && static_cast<unsigned char>(source_[0]) == 0xEF &&
+        static_cast<unsigned char>(source_[1]) == 0xBB && static_cast<unsigned char>(source_[2]) == 0xBF) {
+        source_.remove_prefix(3);
+    }
+}
 
 void Lexer::skipWhitespace() {
     while (!atEnd()) {

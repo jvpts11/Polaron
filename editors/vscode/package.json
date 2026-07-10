@@ -17,6 +17,17 @@
     "onLanguage:ldp3",
     "onView:ldp3Projects"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "Editing, syntax, formatting and building work in untrusted folders. The toolchain comes from your installed LDP3, not the workspace; the compiler/LSP path settings are ignored in untrusted folders so a workspace cannot redirect the toolchain to another binary.",
+      "restrictedConfigurations": [
+        "ldp3.path",
+        "ldp3.compilerPath",
+        "ldp3.lspPath"
+      ]
+    }
+  },
   "contributes": {
     "languages": [
       {

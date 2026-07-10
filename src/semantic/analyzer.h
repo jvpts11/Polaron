@@ -252,6 +252,8 @@ private:
     bool testMode_ = false;         // `ldp3c --test`: a missing `main` is allowed (runner is synthetic)
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
+    std::string enclosingClass_;  // class the current method belongs to, set even for static methods
+                                  // (unlike currentClass_) -- used to point unqualified calls at their owner
     std::unordered_set<std::string> deleted_;  // locals deleted in this scope (spec 18.2 reattach)
     std::vector<std::string> currentThrows_;  // base names in the method's `throws` clause (spec 21.1)
     std::vector<std::vector<std::string>> catchStack_;  // enclosing try's caught types (base names)

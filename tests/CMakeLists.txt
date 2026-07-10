@@ -271,6 +271,21 @@ add_test(NAME codegen_parse_double_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# A leading UTF-8 BOM (from a Windows editor) must be skipped by the lexer, not lexed as a stray char.
+add_test(NAME codegen_bom_source_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bom_source.ldp3"
+    "-DCONTAINS=bom ok"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# A bare unqualified call (LDP3 has no free functions) must name the cause and the fix, not just fail.
+add_test(NAME sema_rejects_unqualified_call
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/unqualified_call_bad.ldp3")
+set_tests_properties(sema_rejects_unqualified_call PROPERTIES
+    PASS_REGULAR_EXPRESSION "no free functions.*Main.sum")
+
 # TCP server (spec 34): ServerSocket listen/accept + a client over loopback.
 add_test(NAME codegen_tcp_server_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"

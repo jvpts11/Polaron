@@ -1066,6 +1066,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                     for (const auto& e : cls.invariants) invs.push_back(e.get());
                     analyzeMethodBody(ast::Block{}, {}, cls.name, false, invs);
                 }
+                enclosingClass_ = cls.name;  // kept across static methods (currentClass_ is cleared there)
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         if (m->isAbstract || m->isExtern) continue;  // no LDP3 body to analyze
@@ -1102,6 +1103,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
             // not desugared to a class); type-check those bodies too. `this` has the
             // enum type; an instance method receives the enum value (an ordinal).
             for (const ast::EnumDecl& en : ns.enums) {
+                enclosingClass_ = en.name;
                 for (const ast::MemberPtr& member : en.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
                     if (m == nullptr || m->isAbstract) continue;
@@ -3696,6 +3698,36 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 return isNullableType(m->returnType) ? m->returnType : m->returnType + "?";
             }
             return m->returnType;
+        }
+        // A bare, unqualified call. LDP3 has no free functions, so this is almost always a member method
+        // written without its receiver -- the classic slip for anyone coming from C, where `sum(a, b)` is
+        // a free call. If a method with this name exists, name the exact cause and the fix instead of a
+        // bare "unknown call". Prefer the class enclosing this call (the user's own) over any same-named
+        // method in a library class (e.g. the prelude's Stats.sum).
+        if (!name.empty() && name.find('.') == std::string::npos) {
+            auto describe = [&](const std::string& owner, const MethodInfo* m) {
+                if (m->isStatic)
+                    return "unknown call '" + name + "': LDP3 has no free functions -- '" + name +
+                           "' is a static method of '" + owner + "'; call it qualified as '" + owner +
+                           "." + name + "(...)'";
+                return "unknown call '" + name + "': LDP3 has no free functions -- '" + name +
+                       "' is an instance method of '" + owner +
+                       "'; call it on an object ('this." + name + "(...)' inside a method, or 'obj." +
+                       name + "(...)'), and mark it 'static' to call it from a static method";
+            };
+            if (!enclosingClass_.empty()) {
+                if (const MethodInfo* m = findMethod(enclosingClass_, name, /*objectFallback=*/false)) {
+                    error(describe(enclosingClass_, m), call->loc);
+                    return "";
+                }
+            }
+            for (const auto& [cn, ci] : classes_) {
+                if (cn.find('$') != std::string::npos) continue;  // skip monomorphized instances
+                if (const MethodInfo* m = findMethod(cn, name, /*objectFallback=*/false)) {
+                    error(describe(cn, m), call->loc);
+                    return "";
+                }
+            }
         }
         error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call->loc);
         return "";
