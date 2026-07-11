@@ -1041,6 +1041,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
             currentNamespace_ = ns.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 currentClass_ = cls.name;  // keep accurate for checkTypeAccessible's mono exemption
+                enclosingClass_ = cls.name;  // active from here so field inits resolve unqualified calls too
                 // Member signature types must also be visible from this namespace -- except for
                 // monomorphized generic instances (name contains '$'), whose members reference the
                 // type arguments by simple name; those were already checked at the template and the
@@ -3699,12 +3700,40 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             return m->returnType;
         }
-        // A bare, unqualified call. LDP3 has no free functions, so this is almost always a member method
-        // written without its receiver -- the classic slip for anyone coming from C, where `sum(a, b)` is
-        // a free call. If a method with this name exists, name the exact cause and the fix instead of a
-        // bare "unknown call". Prefer the class enclosing this call (the user's own) over any same-named
-        // method in a library class (e.g. the prelude's Stats.sum).
+        // A bare, unqualified call. LDP3 has no free functions, so this names a method of the enclosing
+        // class written without its receiver. The `this.`/`ClassName.` qualifier is optional: locals and
+        // lambdas were already resolved above, so `name` here is not a local -- resolve it as `this.name`
+        // (an instance method, in an instance context) or `EnclosingClass.name` (a static method), exactly
+        // as if the receiver had been written. Only when the method is an instance method reached from a
+        // static context -- or when no such method exists anywhere -- do we error, naming the cause and fix.
         if (!name.empty() && name.find('.') == std::string::npos) {
+            if (!enclosingClass_.empty()) {
+                if (const MethodInfo* m = findMethod(enclosingClass_, name, /*objectFallback=*/false)) {
+                    // An instance-method call needs a receiver; `this` exists only in an instance context
+                    // (currentClass_ is cleared inside a static method).
+                    if (m->isStatic || !currentClass_.empty()) {
+                        checkCallArgs(call->args, m->paramTypes, "'" + name + "'");
+                        checkComptimeArgs(call->args, m->comptimeParams, "'" + name + "'");
+                        if (!m->isProperty && call->args.size() != m->paramCount) {
+                            error("method '" + name + "' expects " + std::to_string(m->paramCount) +
+                                      " argument(s) but got " + std::to_string(call->args.size()),
+                                  call->loc);
+                        }
+                        // An async method call yields a Task<returnType> (spec 20.2), not the bare value.
+                        if (m->isAsync) return ast::mangleGeneric("Task", {m->returnType});
+                        return m->returnType;
+                    }
+                    // Instance method reached from a static method: there is no `this` to call it on.
+                    error("unknown call '" + name + "': '" + name + "' is an instance method of '" +
+                              enclosingClass_ +
+                              "'; it needs an object -- call it on an instance, or mark it 'static' to "
+                              "call it from a static method",
+                          call->loc);
+                    return m->returnType;
+                }
+            }
+            // Not a method of the enclosing class. Name a same-named method elsewhere (there are no free
+            // functions, so a bare call can only ever be a member) to point at the likely fix.
             auto describe = [&](const std::string& owner, const MethodInfo* m) {
                 if (m->isStatic)
                     return "unknown call '" + name + "': LDP3 has no free functions -- '" + name +
@@ -3712,15 +3741,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                            "." + name + "(...)'";
                 return "unknown call '" + name + "': LDP3 has no free functions -- '" + name +
                        "' is an instance method of '" + owner +
-                       "'; call it on an object ('this." + name + "(...)' inside a method, or 'obj." +
-                       name + "(...)'), and mark it 'static' to call it from a static method";
+                       "'; call it on an object ('obj." + name + "(...)')";
             };
-            if (!enclosingClass_.empty()) {
-                if (const MethodInfo* m = findMethod(enclosingClass_, name, /*objectFallback=*/false)) {
-                    error(describe(enclosingClass_, m), call->loc);
-                    return "";
-                }
-            }
             for (const auto& [cn, ci] : classes_) {
                 if (cn.find('$') != std::string::npos) continue;  // skip monomorphized instances
                 if (const MethodInfo* m = findMethod(cn, name, /*objectFallback=*/false)) {

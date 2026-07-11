@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "parser/ast.h"
+#include "parser/monomorphize.h"  // cloneExprDeep, to reroute an unqualified self-call through the member path
 #include "semantic/comptime.h"
 
 namespace ldp3 {
@@ -6369,6 +6370,34 @@ struct CodeGenerator::Impl {
                     callee = specializeMethod(mdecl, owner, mem->member, fnit->second, specParams);
             }
             return emitMaybeInvoke(callee, args);
+        }
+        // Unqualified same-class call: LDP3 has no free functions, and locals/lambdas were resolved above,
+        // so a bare `name(...)` here names a method of the enclosing class written without its receiver.
+        // The this./ClassName. qualifier is optional -- synthesize the receiver (`this` for an instance
+        // method, the owning class for a static one) and re-emit through the normal member-call path, so
+        // virtual dispatch, argument coercion and async spilling all still apply. (The analyzer has already
+        // rejected the instance-from-static case, so a reachable call here always has a valid receiver.)
+        if (!name.empty() && name.find('.') == std::string::npos && !enclosingClass_.empty()) {
+            const std::string owner = methodOwner(enclosingClass_, name);
+            if (!owner.empty() && functions.count(owner + "." + name) > 0) {
+                const ast::MethodDecl* md = findMethodDecl(owner, name);
+                const bool isStatic = md != nullptr && md->isStatic;
+                if (isStatic || currentThis != nullptr) {
+                    auto recv = std::make_unique<ast::IdentifierExpr>();
+                    recv->name = isStatic ? owner : std::string("this");
+                    recv->loc = call.loc;
+                    auto callee = std::make_unique<ast::MemberExpr>();
+                    callee->object = std::move(recv);
+                    callee->member = name;
+                    callee->loc = call.loc;
+                    ast::CallExpr synth;
+                    synth.callee = std::move(callee);
+                    synth.loc = call.loc;
+                    synth.typeArgs = call.typeArgs;
+                    for (const auto& a : call.args) synth.args.push_back(cloneExprDeep(a.get()));
+                    return emitCall(synth);
+                }
+            }
         }
         error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call.loc);
         return nullptr;

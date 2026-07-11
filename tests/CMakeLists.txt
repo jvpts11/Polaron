@@ -290,11 +290,22 @@ add_test(NAME codegen_bce_affine_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-# A bare unqualified call (LDP3 has no free functions) must name the cause and the fix, not just fail.
-add_test(NAME sema_rejects_unqualified_call
-    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/unqualified_call_bad.ldp3")
-set_tests_properties(sema_rejects_unqualified_call PROPERTIES
-    PASS_REGULAR_EXPRESSION "no free functions.*Main.sum")
+# The this./ClassName. receiver on a same-class method call is optional: a bare `name(...)` resolves to
+# this.name / ClassName.name (static, instance, and inside constructors) and runs.
+add_test(NAME codegen_unqualified_self_call_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/unqualified_self_call.ldp3"
+    "-DCONTAINS=self=7 20 14"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# ...but an instance method still needs an object: calling one unqualified from a static context must fail
+# with a diagnostic that names the cause and the fix, not a bare "unknown call".
+add_test(NAME sema_rejects_instance_call_from_static
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/instance_from_static_bad.ldp3")
+set_tests_properties(sema_rejects_instance_call_from_static PROPERTIES
+    PASS_REGULAR_EXPRESSION "instance method of 'Main'.*object")
 
 # TCP server (spec 34): ServerSocket listen/accept + a client over loopback.
 add_test(NAME codegen_tcp_server_runs COMMAND "${CMAKE_COMMAND}"

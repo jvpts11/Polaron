@@ -1,0 +1,16 @@
+program InstanceFromStaticBad;
+
+// The unqualified-call relaxation does NOT invent a receiver out of thin air: an *instance* method still
+// needs an object. Calling one, unqualified, from a *static* method (where there is no `this`) must fail
+// with a diagnostic that names the cause and the fix -- not a bare "unknown call".
+public bundle main {
+    public namespace app {
+        public class Main {
+            public method inst(int a) returns int { return a; }
+            public static method main(string[] args) returns void {
+                int r = inst(3);   // instance method, no object, from a static context: error
+                return;
+            }
+        }
+    }
+}
