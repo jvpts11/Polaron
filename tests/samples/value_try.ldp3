@@ -1,0 +1,58 @@
+import System.IO.Console;
+import System.Errors.Result;
+import System.Errors.Option;
+program ValueTry;
+
+// `try?` on a VALUE Result<T,E> / Option<T> (spec 21.2, value form): if Ok/Some, yield the payload; if
+// Err/None, early-return the value unchanged to the enclosing method. No heap, no boxing -- the propagated
+// value is the same { tag, payload } struct. Also exercises a reference payload (Result<String,int>) and a
+// value Result passed by value. Prints: a=10 b=-3 / ok=5 / some=40 / none.
+public bundle main {
+    public namespace app {
+        public class Main {
+            private static method parseV(int x) returns Result<int, int> {
+                if (x < 0) { return Err(0 - x); }
+                return Ok(x);
+            }
+            private static method doubleV(int x) returns Result<int, int> {
+                int v = try? Main.parseV(x);      // Ok -> v; Err -> propagate the Err value
+                return Ok(v + v);
+            }
+            private static method grade(Result<int, int> r) returns int {   // value Result, passed by value
+                match (r) {
+                    case Ok(int v) { return v; }
+                    case Err(int e) { return 0 - e; }
+                }
+            }
+            private static method named(int x) returns Result<String, int> {   // reference payload
+                if (x == 0) { return Err(1); }
+                return Ok("hello");
+            }
+            private static method firstOpt(int x) returns Option<int> {
+                if (x > 0) { return Some(x); }
+                return None();
+            }
+            private static method chain(int x) returns Option<int> {
+                int v = try? Main.firstOpt(x);    // try? on a value Option; None propagates
+                return Some(v * 10);
+            }
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("a=%d b=%d\n", Main.grade(Main.doubleV(5)),
+                                         Main.grade(Main.doubleV(-3)));   // 10, -3
+                match (Main.named(7)) {
+                    case Ok(String s) { System.IO.Console.printf("ok=%d\n", s.length()); }   // 5
+                    case Err(int e) { System.IO.Console.printf("err=%d\n", e); }
+                }
+                match (Main.chain(4)) {
+                    case Some(int v) { System.IO.Console.printf("some=%d\n", v); }   // 40
+                    case None() { System.IO.Console.printf("none\n"); }
+                }
+                match (Main.chain(-1)) {
+                    case Some(int v) { System.IO.Console.printf("some=%d\n", v); }
+                    case None() { System.IO.Console.printf("none\n"); }             // none (propagated)
+                }
+                return;
+            }
+        }
+    }
+}

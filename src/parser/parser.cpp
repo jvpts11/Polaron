@@ -1629,12 +1629,14 @@ static void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected
     nw->args = std::move(call->args);
     // The `*` picks the representation (spec 21, value form): `Result<T,E>` (no star) builds a value
     // tagged union (location "value" -- no heap, no delete); `Result<T,E>*` keeps the boxed heap class.
-    // A pointer/ref TYPE ARG (Option<Node*>) also stays boxed for now: its mangled name embeds a `*` that
-    // collides with the boxed form's suffix, so a value variant of an explicit-pointer payload is deferred.
-    bool ptrPayload = false;
+    // A payload that does not fit the value form's 64-bit slot stays boxed for now: a pointer/ref (also
+    // mangling-ambiguous), Decimal (i128), or a tuple (aggregate). Sized payloads are deferred.
+    bool boxedPayload = false;
     for (const std::string& a : expected.typeArgs)
-        if (a.find('*') != std::string::npos || a.find('&') != std::string::npos) ptrPayload = true;
-    nw->location = (expected.isPointer || ptrPayload) ? "heap" : "value";
+        if (a.find('*') != std::string::npos || a.find('&') != std::string::npos ||
+            a.find("Decimal") != std::string::npos || a.find('(') != std::string::npos)
+            boxedPayload = true;
+    nw->location = (expected.isPointer || boxedPayload) ? "heap" : "value";
     value = std::move(nw);
 }
 

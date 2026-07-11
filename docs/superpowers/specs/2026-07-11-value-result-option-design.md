@@ -103,3 +103,19 @@ to the boxed `Option<Node>*`. Two consequences handled in slice 1 by keeping any
 **Deferred to a later slice:** a genuine value variant of an explicit-pointer payload (`Option<Node*>` value)
 needs an unambiguous mangling — escape `*`/`&` inside `mangleGeneric` type args (e.g. `Node$ptr`) so the
 boxed suffix is distinguishable — then drop the pointer-payload exclusion above.
+
+## Slice 2 implementation notes (done)
+
+Landed: `try?` on a value Result/Option (codegen `TryExpr` now branches on `isValueVariant`: dispatch on the
+tag, yield the decoded payload on Ok/Some, and on Err/None early-return the value struct unchanged — the
+propagated `{tag,payload}` is representation-identical to the enclosing method's value return, so no boxing).
+Reference-typed `T`/`E` (`Result<String,int>`, class payloads) already work — a reference is a pointer, so it
+packs into the i64 slot via ptrtoint. Value Result passed/returned by value works (small struct in registers).
+Sample `value_try.ldp3`.
+
+**Large payloads — kept boxed for now (not sret yet).** The 64-bit slot can't hold `Decimal` (i128), a tuple,
+or a value `struct`. So those payloads stay boxed: `isValueVariant` and the parser/monomorphize decision also
+exclude a `Decimal` or tuple `(…)` type arg, and `emitNew` guards a value-`struct` payload (undetectable by
+name) with a clear "use the boxed form" error instead of a silent truncation or crash. **Deferred:** a
+per-instance sized payload (`{ i32 tag, [max(sizeof T,E) x i8] }`, sret when large) to make these value too —
+that is the remaining "sret payloads" work.

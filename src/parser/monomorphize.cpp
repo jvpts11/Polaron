@@ -265,7 +265,8 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         // for now -- decided here, once the concrete type args are known. Matches codegen's isValueVariant.
         if (n->location == "value")
             for (const std::string& a : n->typeArgs)
-                if (a.find('*') != std::string::npos || a.find('&') != std::string::npos) {
+                if (a.find('*') != std::string::npos || a.find('&') != std::string::npos ||
+                    a.find("Decimal") != std::string::npos || a.find('(') != std::string::npos) {
                     n->location = "heap";
                     break;
                 }

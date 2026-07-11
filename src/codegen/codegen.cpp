@@ -316,8 +316,12 @@ bool isRefType(const std::string& t) {
 // mangling and is deferred.
 bool isValueVariant(const std::string& t) {
     if (t.rfind("Result$", 0) != 0 && t.rfind("Option$", 0) != 0) return false;
+    // Slice 1/2 pack the payload into a 64-bit slot, so keep boxed anything that does not fit: pointer/ref
+    // payloads (also mangling-ambiguous), Decimal (i128), and tuple payloads (an aggregate). A proper
+    // per-instance sized payload (sret) for these is deferred.
     return t.find('*') == std::string::npos && t.find('&') == std::string::npos &&
-           t.find('?') == std::string::npos;
+           t.find('?') == std::string::npos && t.find("Decimal") == std::string::npos &&
+           t.find('(') == std::string::npos;
 }
 
 // Tuple types are spelled "(T0,T1,...)" (spec 22.5). They lower to an anonymous
@@ -3702,28 +3706,40 @@ struct CodeGenerator::Impl {
             // operand to the enclosing method's Result/Option (propagation).
             llvm::Value* val = emitExpr(*tx->operand);
             if (val == nullptr) return nullptr;
-            const std::string base = baseType(typeName(*tx->operand));  // Result$T$E / Option$T
+            const std::string opType = typeName(*tx->operand);
+            const bool isValue = isValueVariant(opType);
+            const std::string base = baseType(opType);  // Result$T$E / Option$T
             const auto p = base.find('$');
-            const std::string tag = base.rfind("Option", 0) == 0 ? "Some" : "Ok";
-            auto cit = classes.find(p == std::string::npos ? tag : tag + base.substr(p));
-            if (cit == classes.end() || cit->second.vtable == nullptr ||
-                cit->second.fieldIndex.count("value") == 0) {
+            const std::string variant = base.rfind("Option", 0) == 0 ? "Some" : "Ok";
+            auto cit = classes.find(p == std::string::npos ? variant : variant + base.substr(p));
+            if (cit == classes.end() || cit->second.fieldIndex.count("value") == 0 ||
+                (!isValue && cit->second.vtable == nullptr)) {
                 error("try? requires a Result or Option operand", tx->loc);
                 return nullptr;
             }
+            const std::string vt = cit->second.fieldType.at("value");  // T
             llvm::Function* fn = builder.GetInsertBlock()->getParent();
-            llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), val, "try.vtbl");
-            llvm::Value* isOk = builder.CreateICmpEQ(vtbl, cit->second.vtable, "try.ok");
             llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "try.ok", fn);
             llvm::BasicBlock* errBB = llvm::BasicBlock::Create(context, "try.err", fn);
-            builder.CreateCondBr(isOk, okBB, errBB);
+            if (isValue) {  // value form: dispatch on the tag (0 = Ok/Some)
+                llvm::Value* tag = builder.CreateExtractValue(val, {0u}, "try.tag");
+                builder.CreateCondBr(builder.CreateICmpEQ(tag, builder.getInt32(0), "try.ok?"), okBB,
+                                     errBB);
+            } else {  // boxed form: dispatch on the vtable
+                llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), val, "try.vtbl");
+                builder.CreateCondBr(builder.CreateICmpEQ(vtbl, cit->second.vtable, "try.ok?"), okBB,
+                                     errBB);
+            }
             builder.SetInsertPoint(errBB);
             emitPendingFinallys(0);       // run enclosing finallys before propagating out
             emitScopeCleanup();           // run destructors/defers before propagating
             if (builder.GetInsertBlock()->getTerminator() == nullptr)
-                builder.CreateRet(val);   // forward the Err/None as the method's Result/Option
+                builder.CreateRet(val);   // forward the Err/None (value struct or boxed ptr) unchanged
             builder.SetInsertPoint(okBB);
-            const std::string vt = cit->second.fieldType.at("value");
+            if (isValue) {  // decode the payload to T
+                llvm::Value* payload = builder.CreateExtractValue(val, {1u}, "try.pl");
+                return variantDecode(payload, llvmType(vt));
+            }
             llvm::Value* vp = builder.CreateStructGEP(cit->second.type, val,
                                                       cit->second.fieldIndex.at("value"), "try.vp");
             return builder.CreateLoad(llvmType(vt), vp, "try.value");
@@ -4285,6 +4301,16 @@ struct CodeGenerator::Impl {
             if (!nw.args.empty()) {
                 llvm::Value* a = emitExpr(*nw.args[0]);
                 if (a == nullptr) return nullptr;
+                // The value form packs the payload into 64 bits. Name-based detection keeps Decimal/tuple/
+                // pointer payloads boxed upstream, but a value-`struct` payload can't be told apart by name,
+                // so guard it here with a clear error rather than a silent truncation or a crash.
+                if (a->getType()->isAggregateType() ||
+                    (a->getType()->isIntegerTy() && a->getType()->getIntegerBitWidth() > 64)) {
+                    error("a value Result/Option of this payload type is not supported yet; use the boxed "
+                          "form (write the type with a '*')",
+                          nw.loc);
+                    return nullptr;
+                }
                 payload = variantEncode(a);
             }
             llvm::Value* agg = llvm::UndefValue::get(variantStructType());

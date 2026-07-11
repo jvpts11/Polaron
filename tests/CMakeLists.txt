@@ -2719,6 +2719,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # try? on a value Result/Option (spec 21.2): yields the payload on Ok/Some, early-returns the value
+        # on Err/None (propagation) -- no boxing. Also a reference payload and a value Result by value.
+        add_test(NAME codegen_value_try_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/value_try.ldp3"
+            "-DEXPECTED=a=10 b=-3 ok=5 some=40 none"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # F6: Ok(x)/Err(x)/Some(x)/None() construction sugar in return and typed var-decl positions.
         add_test(NAME codegen_result_sugar_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
