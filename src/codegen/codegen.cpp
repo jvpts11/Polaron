@@ -8161,6 +8161,7 @@ struct CodeGenerator::Impl {
                                 break;
                             }
                 const std::string t = typeName(target);
+                if (isValueVariant(t)) return;  // a value Result/Option is not heap-allocated: delete is a no-op
                 if (isArrayType(t)) {
                     // An array is a single heap block: just free it.
                     llvm::Value* block = emitExpr(target);

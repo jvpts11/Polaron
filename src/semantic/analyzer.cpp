@@ -1074,6 +1074,14 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         if (m->isAsync && freestanding_)
                             error("async methods are not available in freestanding mode (spec 36.3)",
                                   m->loc);
+                        // A value Result/Option travels through the Task's result slot, which is not yet
+                        // sized for the { tag, payload } struct (the value would be corrupted). Until the
+                        // Task result storage handles it, require the boxed form for an async Result/Option.
+                        if (m->isAsync && !m->returnType.isPointer &&
+                            (m->returnType.name == "Result" || m->returnType.name == "Option"))
+                            error("an async method returning a value Result/Option is not supported yet; "
+                                  "use the boxed form (write the return type with a '*')",
+                                  m->loc);
                         std::vector<const ast::Expr*> contracts;
                         for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
                         for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());

@@ -307,6 +307,13 @@ add_test(NAME sema_rejects_instance_call_from_static
 set_tests_properties(sema_rejects_instance_call_from_static PROPERTIES
     PASS_REGULAR_EXPRESSION "instance method of 'Main'.*object")
 
+# An async method returning the value form of Result/Option is not supported yet (the value would be
+# corrupted through the Task result slot); it must fail cleanly, pointing at the boxed form.
+add_test(NAME sema_rejects_async_value_result
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/async_value_result_bad.ldp3")
+set_tests_properties(sema_rejects_async_value_result PROPERTIES
+    PASS_REGULAR_EXPRESSION "async method returning a value Result/Option is not supported")
+
 # TCP server (spec 34): ServerSocket listen/accept + a client over loopback.
 add_test(NAME codegen_tcp_server_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
@@ -2726,6 +2733,16 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/value_try.ldp3"
             "-DEXPECTED=a=10 b=-3 ok=5 some=40 none"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # value/boxed Result interop (spec 21): `delete` on a value Result is a no-op (owns no heap), and
+        # the boxed form (`*`) keeps working side by side.
+        add_test(NAME codegen_value_compat_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/value_compat.ldp3"
+            "-DEXPECTED=v=7 boxed=20"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

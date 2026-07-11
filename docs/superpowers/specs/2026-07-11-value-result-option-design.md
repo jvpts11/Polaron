@@ -119,3 +119,19 @@ exclude a `Decimal` or tuple `(…)` type arg, and `emitNew` guards a value-`str
 name) with a clear "use the boxed form" error instead of a silent truncation or crash. **Deferred:** a
 per-instance sized payload (`{ i32 tag, [max(sizeof T,E) x i8] }`, sret when large) to make these value too —
 that is the remaining "sret payloads" work.
+
+## Slice 3 implementation notes (done)
+
+- **`delete` on a value Result/Option is a no-op** — a value owns no heap. The DeleteStmt codegen returns
+  early when the target is a value variant (was a codegen crash before).
+- **Boxed `Result*`/`Option*` keep working side by side** — verified across the suite; `value_compat.ldp3`
+  uses both forms in one program.
+- **Nested value variants** (`Result<Option<int>, E>`) hit the aggregate-payload guard (an inner value
+  variant is a struct) and get a clear error; the `Ok(Some(x))` nested sugar also needs an explicit form.
+  Both fail cleanly, not with a crash.
+- **async is guarded.** An `async` method returning a **value** Result/Option is rejected in the analyzer
+  ("use the boxed form"): the value would travel through the Task's result slot, which is not sized for the
+  `{tag,payload}` struct and corrupted it. NOTE: async returning a *boxed* `Result<T,E>*` is a **pre-existing**
+  limitation too (it fails to compile with "await of a non-Task value"), independent of the value form —
+  `Task<Result<...>>` needs its own fix, tracked separately. Samples: `value_compat.ldp3`,
+  `async_value_result_bad.ldp3`.

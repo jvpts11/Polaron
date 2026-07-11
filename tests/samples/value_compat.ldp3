@@ -1,0 +1,41 @@
+import System.IO.Console;
+import System.Errors.Result;
+
+program ValueCompat;
+
+// Interop of the value Result/Option form with the rest of the language (spec 21):
+//   - `delete` on a value Result/Option is a no-op (values are not heap-allocated) -- it compiles and runs;
+//   - the boxed form (`Result<T,E>*`) keeps working side by side, selected by the `*`.
+// Prints: v=7 boxed=20.
+public bundle main {
+    public namespace app {
+        public class Main {
+            private static method makeValue(int x) returns Result<int, int> {   // value form (no *)
+                if (x < 0) { return Err(1); }
+                return Ok(x);
+            }
+            private static method makeBoxed(int x) returns Result<int, int>* {   // boxed form (*)
+                if (x < 0) { return Err(1); }
+                return Ok(x);
+            }
+            public static method main(string[] args) returns void {
+                Result<int, int> v = Main.makeValue(7);
+                delete v;                       // no-op: a value Result owns no heap
+                mutable int vv = 0;
+                match (v) {                     // still readable after the (no-op) delete
+                    case Ok(int a) { vv = a; }
+                    case Err(int e) { vv = 0 - e; }
+                }
+                Result<int, int>* b = Main.makeBoxed(20);
+                mutable int bv = 0;
+                match (b) {
+                    case Ok(int a) { bv = a; }
+                    case Err(int e) { bv = 0 - e; }
+                }
+                delete b;                       // boxed: frees the heap object
+                System.IO.Console.printf("v=%d boxed=%d\n", vv, bv);
+                return;
+            }
+        }
+    }
+}
