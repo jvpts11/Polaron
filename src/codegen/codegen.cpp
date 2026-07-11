@@ -357,6 +357,7 @@ struct ClassLayout {
     std::unordered_map<std::string, std::string> propertySetters;  // field -> setter method (spec 8.4)
     std::unordered_set<std::string> volatileFields;  // fields whose accesses are volatile (spec 37.5)
     std::unordered_set<std::string> externalFields;  // `external` fields: associations, not owned (spec 37.1)
+    std::unordered_set<std::string> uniqueFields;  // `unique T*` fields: single-owner, so cascade-safe forest edges
     // Lazy class-typed fields (spec 28.4): field name -> deferred initializer. Null in the
     // field means "not yet initialized" (the sentinel), so no extra flag is needed.
     std::unordered_map<std::string, const ast::Expr*> lazyFieldInit;
@@ -1035,6 +1036,7 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, llvm::Function*> cascadeFns_;
     std::unordered_map<std::string, llvm::Function*> cloneFns_;  // `cascade clone` helpers, keyed "csid|Type"
     int cascadeCsid_ = 0;  // unique id per cascade call site, so per-site filters never collide
+    std::unordered_set<int> forestCsids_;  // cascade sites whose owned graph is provably a forest (skip the visited-set)
     // `lazy region` (spec 37.3): the backing block is allocated on first object insertion, not at
     // the declaration. The slot holds null until then; the size/address expr is replayed on demand.
     std::unordered_set<std::string> lazyRegions_;
@@ -1083,11 +1085,56 @@ struct CodeGenerator::Impl {
         return g;
     }
 
+    // True when the owned graph a `cascade` at this type/filters would traverse is provably a FOREST --
+    // every followed edge is single-owner, so no node is reached twice. That makes the runtime visited-set
+    // (which exists only to dedup shared/cyclic graphs, spec 37.1 rule 2) pure overhead, and we skip it. An
+    // edge is single-owner when it is a value-typed (embedded) class field, a `unique` pointer field, or a
+    // pointer to a `unique class`; a plain aliasable class pointer is not, and keeps the set. Uses the exact
+    // same field filter as cascadeHelper. `seen` breaks recursive types (the conjunction still holds: every
+    // type is fully checked at its first entry). Sound because unique ownership forbids two owners of one
+    // object, so an all-single-owner reachable graph cannot share a node or close a cycle.
+    bool cascadeIsForest(const std::string& cn, const ast::CascadeParams& params,
+                         std::unordered_set<std::string>& seen) {
+        if (!seen.insert(cn).second) return true;
+        std::unordered_set<std::string> shadowed;
+        for (std::string cur = cn; !cur.empty();) {
+            auto cc = classes.find(cur);
+            if (cc == classes.end()) break;
+            for (const auto& [fname, ftype] : cc->second.ownFields) {
+                if (!shadowed.insert(fname).second) continue;
+                if (ftype.find('&') != std::string::npos || isArrayType(ftype)) continue;  // association
+                const bool isPtr = ftype.find('*') != std::string::npos;
+                if (isPtr && cc->second.externalFields.count(fname) > 0) continue;  // association
+                const std::string fcn = baseType(ftype);
+                auto fit = classes.find(fcn);
+                if (fit == classes.end()) continue;  // not a class field
+                if (!params.onlyTypes.empty() &&
+                    std::find(params.onlyTypes.begin(), params.onlyTypes.end(), fcn) ==
+                        params.onlyTypes.end())
+                    continue;
+                if (std::find(params.exceptTypes.begin(), params.exceptTypes.end(), fcn) !=
+                    params.exceptTypes.end())
+                    continue;
+                // A followed edge: forest-safe iff embedded value, a unique field, or a unique class.
+                if (isPtr && cc->second.uniqueFields.count(fname) == 0 && !fit->second.isUnique)
+                    return false;
+                if (!cascadeIsForest(fcn, params, seen)) return false;
+            }
+            cur = cc->second.superclass;
+        }
+        return true;
+    }
+    bool cascadeIsForest(const std::string& cn, const ast::CascadeParams& params) {
+        std::unordered_set<std::string> seen;
+        return cascadeIsForest(cn, params, seen);
+    }
+
     // Emits (or returns the memoized) recursive helper `void(ptr obj, ptr visited, i32 depth)` that
     // applies `op` to one object and propagates through its owned children. The runtime visited-set
     // makes the walk safe on cyclic/shared graphs (spec 37.1 rule 2). Owned children are value-typed
     // class fields and non-`external` class pointers (rule 1); references, arrays and `external`
     // pointers are associations and skipped. depth: -1 = unlimited, 0 = stop, else decremented.
+    // When the site is a proven forest (forestCsids_), the visited-set is null and its check is skipped.
     llvm::Function* cascadeHelper(CascadeOp op, int csid, const std::string& cn,
                                   const ast::CascadeParams& params) {
         const std::string key =
@@ -1120,10 +1167,14 @@ struct CodeGenerator::Impl {
             builder.CreateICmpNE(objArg, llvm::ConstantPointerNull::get(builder.getPtrTy())), liveBB,
             retBB);
         builder.SetInsertPoint(liveBB);
-        llvm::Value* fresh = builder.CreateCall(ptrsetAddFn(), {setArg, objArg});
         llvm::BasicBlock* freshBB = llvm::BasicBlock::Create(context, "fresh", fn);
-        builder.CreateCondBr(  // already visited (cycle / shared): stop
-            builder.CreateICmpNE(fresh, builder.getInt32(0)), freshBB, retBB);
+        if (forestCsids_.count(csid) > 0) {
+            builder.CreateBr(freshBB);  // proven forest: every node is reached once, no dedup needed
+        } else {
+            llvm::Value* fresh = builder.CreateCall(ptrsetAddFn(), {setArg, objArg});
+            builder.CreateCondBr(  // already visited (cycle / shared): stop
+                builder.CreateICmpNE(fresh, builder.getInt32(0)), freshBB, retBB);
+        }
         builder.SetInsertPoint(freshBB);
 
         // Read the owned child pointers BEFORE applying the op, since delete frees this node.
@@ -1193,10 +1244,17 @@ struct CodeGenerator::Impl {
     // then free the set. `csid` uniquely identifies this call site so its filters do not collide.
     void emitCascade(CascadeOp op, llvm::Value* root, const std::string& cn, int csid,
                      const ast::CascadeParams& params) {
-        llvm::Value* set = builder.CreateCall(ptrsetNewFn(), {});
+        // Skip the visited-set entirely when the owned graph is provably a forest (all single-owner edges):
+        // it can never dedup, so it is pure overhead. Behaviour is identical -- on a forest the set always
+        // reports "fresh" -- only faster (no per-node hash insert, no growing table spilling cache).
+        const bool forest = cascadeIsForest(cn, params);
+        if (forest) forestCsids_.insert(csid);
+        llvm::Value* set = forest ? static_cast<llvm::Value*>(
+                                        llvm::ConstantPointerNull::get(builder.getPtrTy()))
+                                  : static_cast<llvm::Value*>(builder.CreateCall(ptrsetNewFn(), {}));
         builder.CreateCall(cascadeHelper(op, csid, cn, params),
                            {root, set, builder.getInt32(params.depth)});
-        builder.CreateCall(ptrsetFreeFn(), {set});
+        if (!forest) builder.CreateCall(ptrsetFreeFn(), {set});
     }
 
     // `cascade println` (spec 37.1): call the node's describe() to print it. Virtual when the class
@@ -8865,6 +8923,7 @@ struct CodeGenerator::Impl {
                                     layout.propertySetters[f->name] = f->propertySetter;
                                 if (f->isVolatile) layout.volatileFields.insert(f->name);
                                 if (f->isExternal) layout.externalFields.insert(f->name);
+                                if (f->isUnique) layout.uniqueFields.insert(f->name);
                                 if (f->isLazy && f->init) layout.lazyFieldInit[f->name] = f->init.get();
                             }
                         } else if (const auto* m =

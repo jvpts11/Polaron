@@ -3674,6 +3674,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # cascade delete over a `unique class` graph: every pointer is a sole owner, so the owned graph
+        # is provably a forest -- the compiler drops the runtime visited-set (fast path) yet still frees
+        # the whole tree exactly once (right checksum, clean exit, no double-free panic).
+        add_test(NAME codegen_cascade_forest_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/cascade_forest.ldp3"
+            "-DCONTAINS=sum=496"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # lazy region (spec 37.3): the backing block is allocated on first object insertion; an
         # unused lazy region is never allocated.
         add_test(NAME codegen_lazy_region_runs COMMAND "${CMAKE_COMMAND}"

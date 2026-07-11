@@ -1,0 +1,39 @@
+import System.IO.Console;
+program CascadeForest;
+
+// `cascade delete` over a provably-single-owner graph. Node is a `unique class`, so every `Node*` is a
+// sole owner -- the owned graph can never share or cycle. The compiler proves this (cascadeIsForest) and
+// frees the tree WITHOUT the runtime visited-set: identical behaviour, no per-node dedup. This checks the
+// fast path frees the whole tree exactly once (right checksum, clean exit, no double-free panic).
+public bundle main {
+    public namespace app {
+        public unique class Node {
+            public mutable int val;
+            public mutable nullable Node* left;
+            public mutable nullable Node* right;
+            public constructor Node(int v) { this.val = v; this.left = null; this.right = null; }
+        }
+        public class Main {
+            private static method build(int depth, int tag) returns nullable Node* {
+                Node* n = new Node(tag) on heap;
+                if (depth > 0) {
+                    n.left = Main.build(depth - 1, tag * 2);
+                    n.right = Main.build(depth - 1, tag * 2 + 1);
+                }
+                return n;
+            }
+            private static method sumTree(nullable Node* n) returns int {
+                if (n == null) { return 0; }
+                return n.val + Main.sumTree(n.left) + Main.sumTree(n.right);
+            }
+            public static method main(string[] args) returns void {
+                nullable Node* root = Main.build(4, 1);   // 2^5-1 = 31 nodes, labels 1..31
+                int before = Main.sumTree(root);          // 1+2+...+31 = 496
+                System.IO.Console.printf("sum=%d\n", before);
+                cascade delete root;                       // forest fast path: no visited-set
+                System.IO.Console.println("freed");
+                return;
+            }
+        }
+    }
+}
