@@ -2482,6 +2482,42 @@ public method findDog(String name) returns Option<Dog> {
 }
 ```
 
+### 21.4 Representação: value vs boxed (o `*`)
+
+`Result<T,E>` e `Option<T>` têm **duas representações**, escolhidas pelo `*` — sem custo de sintaxe, e o
+`Ok`/`Err`/`Some`/`None` é o mesmo nos dois casos:
+
+- **Value (sem `*`)** — a forma padrão e rápida. `Result<T,E>` / `Option<T>` é uma **união etiquetada por
+  valor** (`{ tag, payload }`), passada em registradores como o `Result` do Rust ou o `std::expected` do
+  C++. `Ok(x)` não aloca nada, não há `delete`, e um laço quente de `Result` não toca o heap. É a forma pra
+  retornar um resultado que se consome logo (match/`try?`).
+
+  ```ldp3
+  public method parse(int x) returns Result<int, int> {   // value: nada no heap
+      if (x < 0) { return Err(0 - x); }
+      return Ok(x);
+  }
+  Result<int, int> r = parse(5);
+  match (r) { case Ok(int v) { /* ... */ } case Err(int e) { /* ... */ } }
+  int v = try? parse(5);                                   // propaga o Err por valor
+  ```
+
+- **Boxed (`*`)** — `Result<T,E>*` / `Option<T>*` é o objeto no heap (a classe selada `Ok`/`Err` /
+  `Some`/`None`), com `new ... on heap` implícito no açúcar e `delete` pra liberar. Use quando precisar
+  **guardar, compartilhar ou armazenar** a variante além do ponto de uso (num campo, numa coleção). O
+  compilador (`ldp3c`) distingue pelo `*`: código existente com `Result<T,E>*` + `delete` continua igual.
+
+  ```ldp3
+  Result<int, int>* r = parse(5);   // no heap; guardável
+  // ... usa r ...
+  delete r;                          // libera; num value seria no-op
+  ```
+
+Regra prática: **use a forma value por padrão** (é a que vence o error-code em performance); recorra ao
+`*` só quando a variante precisa sobreviver ao seu consumidor imediato. (Limites atuais da forma value:
+payload que não cabe em 64 bits — `Decimal`, tupla, `struct` por valor, ou ponteiro explícito — usa a forma
+boxed; e um método `async` que retorna Result/Option deve usar a forma boxed por ora.)
+
 ---
 
 ## 22. Lambdas e funções
