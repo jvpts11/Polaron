@@ -81,3 +81,25 @@ store a pointer in the payload — same as any value struct field.
 - **`delete` on a value:** chosen as a no-op + warning (not an error) so partially-migrated code compiles.
 - **`std` APIs returning `Result`.** Audit stdlib/prelude signatures: those returning `Result<T,E>*` keep
   the boxed form; consider migrating hot ones to value in a later pass (out of scope here).
+
+## Slice 1 implementation notes (done)
+
+Landed: value repr `{i32 tag, i64 payload}` (shared `__ldp3_variant`), `Ok/Err/Some/None` value construct,
+statement + expression `match`, return-by-value; enum `parse()` (`emitOptionVariant` + the parse slot)
+migrated to value; stdlib `find/min/max` (which return no-star `Option<T>`) work as value. Sample
+`value_result.ldp3`; the E5 loop is malloc-free.
+
+**Mangling-ambiguity finding (important for later slices).** The value/boxed discriminator can't be a plain
+string suffix: `Option<Node*>` (a value option of a pointer) mangles to `Option$Node*`, which is byte-identical
+to the boxed `Option<Node>*`. Two consequences handled in slice 1 by keeping any pointer/ref-payload variant
+**boxed**:
+- `isValueVariant(t)` is true only when the mangled name has a `Result$`/`Option$` base **and no `*`/`&`/`?`
+  anywhere** (a pointer type arg embeds a `*` mid-string; a trailing `*` is the boxed form).
+- The value-vs-boxed choice is finalized **after monomorphization** (parser handles concrete sites;
+  `monomorphize.cpp` re-boxes a `location:"value"` variant once a type arg substitutes to a pointer/ref, e.g.
+  a generic `Option<T>` instantiated at `T = Node*`). This is why a value decision made at parse time on an
+  abstract `T` is corrected once `T` is known.
+
+**Deferred to a later slice:** a genuine value variant of an explicit-pointer payload (`Option<Node*>` value)
+needs an unambiguous mangling — escape `*`/`&` inside `mangleGeneric` type args (e.g. `Node$ptr`) so the
+boxed suffix is distinguishable — then drop the pointer-payload exclusion above.

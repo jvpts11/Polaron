@@ -306,6 +306,20 @@ bool isRefType(const std::string& t) {
     return !t.empty() && (t.back() == '*' || t.back() == '&');
 }
 
+// A *value* Result<T,E> / Option<T> (spec 21, value form): the tagged-union representation used when the
+// type is written WITHOUT a `*` -- the `*` form stays the boxed heap class. By codegen time the type is
+// monomorphized ("Result$int$int"). A trailing `*` is the boxed form; a pointer/ref TYPE ARG (Option<Node*>
+// -> "Option$Node*") also embeds a `*` and, worse, collides in the mangled string with the boxed
+// `Option<Node>*` -- so slice 1 keeps ANY variant whose mangling contains a pointer/ref/nullable marker
+// boxed, and only packs pointer-free payloads (int/float/String/class-by-name) into the shared
+// { i32 tag, i64 payload } struct. A value variant of an explicit-pointer payload needs an unambiguous
+// mangling and is deferred.
+bool isValueVariant(const std::string& t) {
+    if (t.rfind("Result$", 0) != 0 && t.rfind("Option$", 0) != 0) return false;
+    return t.find('*') == std::string::npos && t.find('&') == std::string::npos &&
+           t.find('?') == std::string::npos;
+}
+
 // Tuple types are spelled "(T0,T1,...)" (spec 22.5). They lower to an anonymous
 // LLVM struct returned/passed by value.
 bool isTupleType(const std::string& t) {
@@ -618,6 +632,39 @@ struct CodeGenerator::Impl {
         return st;
     }
 
+    // The shared LLVM type of a *value* Result/Option (spec 21, value form): { i32 tag, i64 payload }.
+    // tag 0 = Ok/Some, 1 = Err/None. Slice 1 packs any scalar/pointer/float payload (<= 64 bits) into the
+    // i64 slot; larger value-struct payloads (sret) come in slice 2. One struct type serves every instance.
+    llvm::StructType* variantStructTy_ = nullptr;
+    llvm::StructType* variantStructType() {
+        if (variantStructTy_ == nullptr)
+            variantStructTy_ = llvm::StructType::create(
+                context, {builder.getInt32Ty(), builder.getInt64Ty()}, "__ldp3_variant");
+        return variantStructTy_;
+    }
+    // Pack a scalar/pointer/float payload into the i64 slot (zero-extended / bitcast); None passes null.
+    llvm::Value* variantEncode(llvm::Value* v) {
+        if (v == nullptr) return builder.getInt64(0);
+        llvm::Type* ty = v->getType();
+        if (ty->isPointerTy()) return builder.CreatePtrToInt(v, builder.getInt64Ty(), "var.enc.p");
+        if (ty->isFloatingPointTy()) {
+            llvm::Value* bits = builder.CreateBitCast(
+                v, builder.getIntNTy(ty->getPrimitiveSizeInBits()), "var.enc.fb");
+            return builder.CreateZExt(bits, builder.getInt64Ty(), "var.enc.f");
+        }
+        return builder.CreateZExtOrTrunc(v, builder.getInt64Ty(), "var.enc.i");
+    }
+    // Reverse of variantEncode: recover the payload as `ty` (truncate / bitcast / inttoptr).
+    llvm::Value* variantDecode(llvm::Value* payload, llvm::Type* ty) {
+        if (ty->isPointerTy()) return builder.CreateIntToPtr(payload, ty, "var.dec.p");
+        if (ty->isFloatingPointTy()) {
+            llvm::Value* bits = builder.CreateTrunc(
+                payload, builder.getIntNTy(ty->getPrimitiveSizeInBits()), "var.dec.fb");
+            return builder.CreateBitCast(bits, ty, "var.dec.f");
+        }
+        return builder.CreateZExtOrTrunc(payload, ty, "var.dec.i");
+    }
+
     // Resolve a `newtype` name (spec 24) to its underlying representation type, recursively. Other
     // types pass through unchanged. Used where the physical representation matters (casts, coercion)
     // but the free-function type predicates (intBits/isUnsigned/isFloatType) can't see newtypes_.
@@ -659,6 +706,7 @@ struct CodeGenerator::Impl {
             return builder.getPtrTy();  // reflection tokens (spec 31)
         if (t == "Object") return builder.getPtrTy();  // root reference type (spec 3.4)
         if (t == "Decimal") return builder.getInt128Ty();  // fixed-point, scale 10^18 (spec 34)
+        if (isValueVariant(t)) return variantStructType();  // value Result/Option: { i32 tag, i64 payload }
         if (classes.count(t) > 0) return builder.getPtrTy();
         if (auto it = newtypes_.find(t); it != newtypes_.end()) return llvmType(it->second);
         // A method-carrying catalog value is tagged (enumTypeId << 32 | ordinal) for multi-implementer
@@ -3149,13 +3197,14 @@ struct CodeGenerator::Impl {
         return fn;
     }
 
-    // Constructs Some<Enum>(ordinal) or None<Enum>() for EnumName.parse() (spec 12.5), reusing
-    // emitNew so the object's vtable + constructor run (so the result is matchable). ordinal < 0 = None.
+    // Constructs Some<Enum>(ordinal) or None<Enum>() for EnumName.parse() (spec 12.5). parse() is typed
+    // as the value Option<Enum> (no star), so build the value form -- a { tag, ordinal } -- to match.
+    // ordinal < 0 = None.
     llvm::Value* emitOptionVariant(const std::string& variant, const std::string& en, int ordinal) {
         ast::NewExpr nw;
         nw.className = variant;  // "Some" / "None"
         nw.typeArgs = {en};
-        nw.location = "heap";
+        nw.location = "value";
         if (ordinal >= 0) {
             auto lit = std::make_unique<ast::IntLiteralExpr>();
             lit->text = std::to_string(ordinal);
@@ -4227,6 +4276,22 @@ struct CodeGenerator::Impl {
     }
 
     llvm::Value* emitNew(const ast::NewExpr& nw) {
+        // Value Result/Option (spec 21, value form): Ok/Err/Some/None with location "value" build a
+        // { i32 tag, i64 payload } directly -- no allocation, no class, no delete. tag 0 = Ok/Some,
+        // 1 = Err/None. The payload is packed from the single arg (None carries none).
+        if (nw.location == "value") {
+            const int tag = (nw.className == "Ok" || nw.className == "Some") ? 0 : 1;
+            llvm::Value* payload = builder.getInt64(0);
+            if (!nw.args.empty()) {
+                llvm::Value* a = emitExpr(*nw.args[0]);
+                if (a == nullptr) return nullptr;
+                payload = variantEncode(a);
+            }
+            llvm::Value* agg = llvm::UndefValue::get(variantStructType());
+            agg = builder.CreateInsertValue(agg, builder.getInt32(tag), {0u}, "var.tag");
+            agg = builder.CreateInsertValue(agg, payload, {1u}, "var.val");
+            return agg;
+        }
         const std::string cn = ast::mangleGeneric(nw.className, nw.typeArgs);  // Box<int> -> Box$int
         auto cit = classes.find(cn);
         if (cit == classes.end()) {
@@ -6155,7 +6220,9 @@ struct CodeGenerator::Impl {
                         llvm::Value* s = emitExpr(*call.args[0]);
                         if (s == nullptr) return nullptr;
                         llvm::Value* sData = stringData(s);
-                        llvm::Value* slot = createEntryAlloca("parse.opt", builder.getPtrTy());
+                        // parse() yields the value Option<Enum> (a { tag, ordinal } struct), so the slot
+                        // holds that value, not a boxed pointer.
+                        llvm::Value* slot = createEntryAlloca("parse.opt", variantStructType());
                         llvm::Function* pf = currentFn;
                         llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(context, "parse.done", pf);
                         for (int i = 0; i < n; ++i) {
@@ -6173,7 +6240,7 @@ struct CodeGenerator::Impl {
                         builder.CreateStore(emitOptionVariant("None", eid->name, -1), slot);
                         builder.CreateBr(doneBB);
                         builder.SetInsertPoint(doneBB);
-                        return builder.CreateLoad(builder.getPtrTy(), slot, "parse.result");
+                        return builder.CreateLoad(variantStructType(), slot, "parse.result");
                     }
                 }
             }
@@ -8445,9 +8512,52 @@ struct CodeGenerator::Impl {
     // match (subject) { case Type(binds) { ... } ... default { ... } } (spec 16):
     // a chain of vtable comparisons. Each case binds the case type's own fields
     // (positional) and runs its body.
+    // match on a *value* Result/Option (spec 21, value form): dispatch on the i32 tag (Ok/Some = 0,
+    // Err/None = 1) instead of a vtable, and bind the payload decoded to the case's declared binding type.
+    void emitValueMatch(const ast::MatchStmt& s, llvm::Value* subj) {
+        llvm::Value* tag = builder.CreateExtractValue(subj, {0u}, "var.tag");
+        llvm::Value* payload = builder.CreateExtractValue(subj, {1u}, "var.pl");
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "match.end", fn);
+        for (const ast::MatchCase& c : s.cases) {
+            const int caseTag = (c.typeName == "Ok" || c.typeName == "Some") ? 0 : 1;
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "match.case", fn);
+            llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(context, "match.next", fn);
+            builder.CreateCondBr(builder.CreateICmpEQ(tag, builder.getInt32(caseTag), "is"), bodyBB,
+                                 nextBB);
+            builder.SetInsertPoint(bodyBB);
+            std::string added;
+            bool hadPrior = false;
+            LocalSlot prior{};
+            if (!c.bindings.empty()) {
+                const std::string bt = typeRefName(c.bindings[0].type);
+                llvm::Type* bty = llvmType(bt);
+                llvm::Value* slot = createEntryAlloca(c.bindings[0].name, bty);
+                builder.CreateStore(variantDecode(payload, bty), slot);
+                if (auto pit = locals.find(c.bindings[0].name); pit != locals.end()) {
+                    hadPrior = true;
+                    prior = pit->second;
+                }
+                locals[c.bindings[0].name] = LocalSlot{slot, bt};
+                added = c.bindings[0].name;
+            }
+            emitBlock(c.body);
+            if (!added.empty()) {
+                locals.erase(added);
+                if (hadPrior) locals[added] = prior;
+            }
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
+            builder.SetInsertPoint(nextBB);
+        }
+        if (s.defaultBody) emitBlock(*s.defaultBody);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
+        builder.SetInsertPoint(endBB);
+    }
+
     void emitMatch(const ast::MatchStmt& s) {
         llvm::Value* subj = emitExpr(*s.subject);
         if (subj == nullptr) return;
+        if (isValueVariant(typeName(*s.subject))) { emitValueMatch(s, subj); return; }
         auto sit = classes.find(clsKey(typeName(*s.subject)));
         if (sit == classes.end() || !sit->second.hasVtable) {
             error("match subject must be a polymorphic class", s.loc);
@@ -8525,9 +8635,66 @@ struct CodeGenerator::Impl {
         return builder.CreateLoad(rty, slot, "matchx.arm.val");
     }
 
+    // Expression form of a *value* Result/Option match: tag dispatch producing a phi (mirrors
+    // emitMatchExpr's vtable path, but reads the { tag, payload } value).
+    llvm::Value* emitValueMatchExpr(const ast::MatchExpr& s, llvm::Value* subj) {
+        const std::string rtype = s.resultType.empty() ? std::string("int") : s.resultType;
+        llvm::Type* rty = llvmType(rtype);
+        llvm::Value* tag = builder.CreateExtractValue(subj, {0u}, "var.tag");
+        llvm::Value* payload = builder.CreateExtractValue(subj, {1u}, "var.pl");
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "matchx.end", fn);
+        std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+        for (const ast::MatchCase& c : s.cases) {
+            const int caseTag = (c.typeName == "Ok" || c.typeName == "Some") ? 0 : 1;
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "matchx.case", fn);
+            llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(context, "matchx.next", fn);
+            builder.CreateCondBr(builder.CreateICmpEQ(tag, builder.getInt32(caseTag), "is"), bodyBB,
+                                 nextBB);
+            builder.SetInsertPoint(bodyBB);
+            std::string added;
+            bool hadPrior = false;
+            LocalSlot prior{};
+            if (!c.bindings.empty()) {
+                const std::string bt = typeRefName(c.bindings[0].type);
+                llvm::Type* bty = llvmType(bt);
+                llvm::Value* slot = createEntryAlloca(c.bindings[0].name, bty);
+                builder.CreateStore(variantDecode(payload, bty), slot);
+                if (auto pit = locals.find(c.bindings[0].name); pit != locals.end()) {
+                    hadPrior = true;
+                    prior = pit->second;
+                }
+                locals[c.bindings[0].name] = LocalSlot{slot, bt};
+                added = c.bindings[0].name;
+            }
+            llvm::Value* v;
+            if (c.result) {
+                v = emitExpr(*c.result);
+                if (v != nullptr) v = coerce(v, typeName(*c.result), rtype);
+            } else {
+                v = emitYieldBlock(c.body, rty, rtype);
+            }
+            if (!added.empty()) {
+                locals.erase(added);
+                if (hadPrior) locals[added] = prior;
+            }
+            if (v == nullptr) v = llvm::Constant::getNullValue(rty);
+            incoming.push_back({v, builder.GetInsertBlock()});
+            builder.CreateBr(endBB);
+            builder.SetInsertPoint(nextBB);
+        }
+        builder.CreateUnreachable();  // sema guarantees a sealed value match is exhaustive
+        builder.SetInsertPoint(endBB);
+        if (incoming.empty()) return llvm::Constant::getNullValue(rty);
+        llvm::PHINode* phi = builder.CreatePHI(rty, static_cast<unsigned>(incoming.size()), "matchx");
+        for (auto& in : incoming) phi->addIncoming(in.first, in.second);
+        return phi;
+    }
+
     llvm::Value* emitMatchExpr(const ast::MatchExpr& s) {
         llvm::Value* subj = emitExpr(*s.subject);
         if (subj == nullptr) return nullptr;
+        if (isValueVariant(typeName(*s.subject))) return emitValueMatchExpr(s, subj);
         auto sit = classes.find(clsKey(typeName(*s.subject)));
         if (sit == classes.end() || !sit->second.hasVtable) {
             error("match subject must be a polymorphic class", s.loc);

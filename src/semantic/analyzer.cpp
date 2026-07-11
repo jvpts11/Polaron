@@ -2844,6 +2844,25 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
+        // Value Result/Option (spec 21, value form): Ok/Err/Some/None with location "value" is a value, not
+        // a heap object. Type it as the sealed base (Result$T$E / Option$T, no star) and check the payload
+        // against T (Ok/Some) or E (Err); None carries no payload. No class is allocated.
+        if (nw->location == "value") {
+            const bool isResult = nw->className == "Ok" || nw->className == "Err";
+            const bool okSide = nw->className == "Ok" || nw->className == "Some";
+            const std::string payloadType =
+                okSide ? (nw->typeArgs.empty() ? std::string() : nw->typeArgs[0])
+                       : (isResult && nw->typeArgs.size() > 1 ? nw->typeArgs[1] : std::string());
+            if (!nw->args.empty()) {
+                const std::string at = typeOf(*nw->args[0]);
+                if (!payloadType.empty() && !at.empty() && !isSubtype(at, payloadType) &&
+                    !intLiteralFits(*nw->args[0], payloadType))
+                    error("cannot build '" + nw->className + "' with a value of type '" + at +
+                              "' (expected '" + payloadType + "')",
+                          nw->loc);
+            }
+            return ast::mangleGeneric(isResult ? "Result" : "Option", nw->typeArgs);
+        }
         const std::string cn = ast::mangleGeneric(nw->className, nw->typeArgs);  // Box<int> -> Box$int
         checkTypeAccessible(cn, nw->loc);
         const ClassInfo* ci = lookupClass(cn);

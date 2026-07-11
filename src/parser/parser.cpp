@@ -1627,7 +1627,14 @@ static void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected
     nw->className = id->name;
     nw->typeArgs = expected.typeArgs;
     nw->args = std::move(call->args);
-    nw->location = "heap";
+    // The `*` picks the representation (spec 21, value form): `Result<T,E>` (no star) builds a value
+    // tagged union (location "value" -- no heap, no delete); `Result<T,E>*` keeps the boxed heap class.
+    // A pointer/ref TYPE ARG (Option<Node*>) also stays boxed for now: its mangled name embeds a `*` that
+    // collides with the boxed form's suffix, so a value variant of an explicit-pointer payload is deferred.
+    bool ptrPayload = false;
+    for (const std::string& a : expected.typeArgs)
+        if (a.find('*') != std::string::npos || a.find('&') != std::string::npos) ptrPayload = true;
+    nw->location = (expected.isPointer || ptrPayload) ? "heap" : "value";
     value = std::move(nw);
 }
 

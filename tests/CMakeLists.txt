@@ -2709,6 +2709,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # value Result<T,E> / Option<T> (spec 21, value form): no `*` -> a tagged-union value, so Ok/Err/
+        # Some/None allocate nothing and a hot loop of them is malloc-free (the E5 fix).
+        add_test(NAME codegen_value_result_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/value_result.ldp3"
+            "-DEXPECTED=ok 21 err 1 some 5 loopsum=499500"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # F6: Ok(x)/Err(x)/Some(x)/None() construction sugar in return and typed var-decl positions.
         add_test(NAME codegen_result_sugar_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

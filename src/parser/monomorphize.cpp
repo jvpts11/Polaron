@@ -260,6 +260,15 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         for (const std::string& a : x->typeArgs) n->typeArgs.push_back(substArg(a, s));
         for (const auto& a : x->args) n->args.push_back(cloneExpr(a.get(), s));
         n->location = x->location;
+        // A value Result/Option (spec 21) whose payload substitutes to a pointer/ref (a generic Option<T>
+        // instantiated at T=Node*) mangles into a name that collides with the boxed form, so keep it boxed
+        // for now -- decided here, once the concrete type args are known. Matches codegen's isValueVariant.
+        if (n->location == "value")
+            for (const std::string& a : n->typeArgs)
+                if (a.find('*') != std::string::npos || a.find('&') != std::string::npos) {
+                    n->location = "heap";
+                    break;
+                }
         n->region = x->region;
         return n;
     }
