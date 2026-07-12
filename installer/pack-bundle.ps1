@@ -60,8 +60,9 @@ foreach ($f in "kernel32.lib","ws2_32.lib","uuid.lib") { Copy-Item (Join-Path $s
 $extSrc = Join-Path $RepoRoot "editors\vscode"
 Push-Location $extSrc
 try {
-    if (-not (Test-Path (Join-Path $extSrc "out\extension.js"))) { & npm run build; if ($LASTEXITCODE -ne 0) { throw "extension build failed" } }
-    & npx --yes @vscode/vsce package --no-dependencies -o (Join-Path $vscode "ldp3-0.1.0.vsix")
+    if (-not (Test-Path (Join-Path $extSrc "out\extension.js"))) { & npm.cmd run build; if ($LASTEXITCODE -ne 0) { throw "extension build failed" } }
+    # Quote the scoped package: a bare @vscode/vsce would be mangled by PowerShell's @ splat operator.
+    & npx.cmd --yes '@vscode/vsce' package --no-dependencies -o (Join-Path $vscode "ldp3-0.1.0.vsix")
     if ($LASTEXITCODE -ne 0) { throw "vsce package failed (is Node/npm installed?)" }
 } finally { Pop-Location }
 foreach ($item in "package.json","out","media","syntaxes","language-configuration.json") {
