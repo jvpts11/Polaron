@@ -54,6 +54,14 @@ endif()
 
 add_executable(ldp3c src/cli/main.cpp)
 target_link_libraries(ldp3c PRIVATE ldp3_core)
+# Reserve a large stack: several compiler passes (parse, sema, codegen, and LLVM's own recursion) descend
+# recursively over the whole program, so the 1 MB default overflows on big inputs (a large multi-file
+# program like the Forge IDE). 256 MB reserve keeps deep-but-bounded recursion well inside the stack.
+if(MSVC)
+    target_link_options(ldp3c PRIVATE /STACK:268435456)
+else()
+    target_link_options(ldp3c PRIVATE -Wl,-z,stacksize=268435456)
+endif()
 
 # Prebuilt runtime linked into every LDP3 program, placed next to the binaries so the driver finds it
 # as a sibling of ldp3.exe.
