@@ -10,7 +10,8 @@ if not exist "%EXTROOT%" (
   echo VS Code user extensions folder not found - is VS Code installed? Skipping.
   exit /b 0
 )
-set "DEST=%EXTROOT%\ldp3-lang-0.1.0"
+rem The folder name follows VS Code's convention (publisher.name-version) so it is detected reliably.
+set "DEST=%EXTROOT%\ldp3.ldp3-0.1.0"
 xcopy /E /I /Y "%SRC%" "%DEST%" >nul 2>&1
 if errorlevel 1 (
   echo Could not copy the extension; skipping.
