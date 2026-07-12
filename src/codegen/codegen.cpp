@@ -6645,6 +6645,66 @@ struct CodeGenerator::Impl {
     // any address-taken function -- threads/async entries, reflection Method tokens, the unimport address
     // table) and drops the rest. Skipped in library mode, whose public API must stay exported. Generic
     // classes already cost nothing unless monomorphized; this reclaims the non-generic ones.
+    // Type-based alias analysis metadata (spec: match C's ability to keep loads in registers). LLVM can't
+    // tell that a store to `a.n` (i64 field of one class) doesn't alias a load of `b.field` (ptr field of
+    // another) -- so it re-loads a field on every loop iteration and re-runs its null check, the E6 tax.
+    // Clang solves this with TBAA; we emit the same, scalar (Clang-style root -> char -> per-type-category).
+    // A normal typed class field is always accessed as one type, so two different-category accesses can't be
+    // the same memory -- SOUND. We tag only loads/stores whose pointer is a GEP into a known, NON-union
+    // class struct; `union` fields (which overlap) and cast/Memory/FFI accesses (raw pointer arithmetic, not
+    // a class GEP) are left untagged = conservative. Runs once, after all IR is emitted.
+    void attachTBAA() {
+        llvm::MDBuilder mdb(context);
+        llvm::MDNode* root = mdb.createTBAARoot("ldp3 TBAA");
+        llvm::MDNode* omni = mdb.createTBAAScalarTypeNode("ldp3 char", root);  // aliases everything
+        std::unordered_map<std::string, llvm::MDNode*> cat;
+        auto node = [&](const char* name) -> llvm::MDNode* {
+            auto it = cat.find(name);
+            if (it != cat.end()) return it->second;
+            llvm::MDNode* n = mdb.createTBAAScalarTypeNode(name, omni);
+            return cat[name] = n;
+        };
+        auto tagFor = [&](llvm::Type* t) -> llvm::MDNode* {
+            llvm::MDNode* n = nullptr;
+            if (t->isPointerTy()) n = node("ptr");
+            else if (t->isDoubleTy()) n = node("f64");
+            else if (t->isFloatTy()) n = node("f32");
+            else if (t->isIntegerTy()) {
+                switch (t->getIntegerBitWidth()) {
+                    case 1: n = node("i1"); break;      case 8: n = node("i8"); break;
+                    case 16: n = node("i16"); break;    case 32: n = node("i32"); break;
+                    case 64: n = node("i64"); break;    case 128: n = node("i128"); break;
+                    default: return nullptr;
+                }
+            } else {
+                return nullptr;  // aggregate / vector / half: leave conservative
+            }
+            return mdb.createTBAAStructTagNode(n, n, 0);
+        };
+        std::unordered_set<llvm::Type*> okStruct;  // non-union class structs
+        for (auto& [cn, ci] : classes)
+            if (ci.type != nullptr && !ci.isUnion) okStruct.insert(ci.type);
+        auto isClassField = [&](llvm::Value* ptr) -> bool {
+            auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(ptr);
+            return gep != nullptr && okStruct.count(gep->getSourceElementType()) > 0;
+        };
+        for (llvm::Function& f : module) {
+            for (llvm::BasicBlock& bb : f) {
+                for (llvm::Instruction& inst : bb) {
+                    if (auto* L = llvm::dyn_cast<llvm::LoadInst>(&inst)) {
+                        if (isClassField(L->getPointerOperand()))
+                            if (llvm::MDNode* tag = tagFor(L->getType()))
+                                L->setMetadata(llvm::LLVMContext::MD_tbaa, tag);
+                    } else if (auto* S = llvm::dyn_cast<llvm::StoreInst>(&inst)) {
+                        if (isClassField(S->getPointerOperand()))
+                            if (llvm::MDNode* tag = tagFor(S->getValueOperand()->getType()))
+                                S->setMetadata(llvm::LLVMContext::MD_tbaa, tag);
+                    }
+                }
+            }
+        }
+    }
+
     void stripDeadCode() {
         if (libraryMode) return;
         llvm::ModuleAnalysisManager mam;
@@ -10675,6 +10735,7 @@ bool CodeGenerator::generate() {
     impl_->emitSpecializations();  // deferred lambda-specialized method copies (inlinable direct calls)
     if (impl_->libraryMode) impl_->exportBundleSymbols();  // make the .ldb's functions DLL-loadable
     if (!errors_.empty()) return false;
+    impl_->attachTBAA();     // type-based alias metadata: lets LLVM hoist field loads across opaque calls
     impl_->stripDeadCode();  // drop unreferenced prelude/user code from executables
 
     std::string verifyMsg;
