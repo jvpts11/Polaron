@@ -567,6 +567,19 @@ R"LDP3(
                 }
                 this.count = this.count - 1;
             }
+            public method insertAt(int i, T item) returns void {  // shift the tail right, insert at i
+                if (this.count >= this.data.length()) {
+                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    for (mutable int k = 0; k < this.count; k++) { bigger[k] = this.data[k]; }
+                    delete this.data;
+                    this.data = bigger;
+                }
+                for (mutable int j = this.count; j > i; j--) {
+                    this.data[j] = this.data[j - 1];
+                }
+                this.data[i] = item;
+                this.count = this.count + 1;
+            }
             public method remove(T item) returns boolean {  // remove first equal element
                 int i = this.indexOf(item);
                 if (i < 0) { return false; }
