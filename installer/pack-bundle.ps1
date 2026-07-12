@@ -54,8 +54,19 @@ foreach ($f in "libcmt.lib","libvcruntime.lib","oldnames.lib","legacy_stdio_defi
 Copy-Item (Join-Path $sdkRoot.FullName "ucrt\x64\libucrt.lib") $lib
 foreach ($f in "kernel32.lib","ws2_32.lib","uuid.lib") { Copy-Item (Join-Path $sdkRoot.FullName "um\x64\$f") $lib }
 
-# 6) The VS Code extension, for the optional install.
-Copy-Item (Join-Path $RepoRoot "editors\vscode\*") $vscode -Recurse -Force
+# 6) The VS Code extension: build a .vsix (the reliable install path -- a hand-copied folder is not
+#    detected by modern VS Code) and stage it, plus the minimal extension files as a last-resort fallback
+#    for machines without the `code` CLI. Requires Node/npm on the build machine.
+$extSrc = Join-Path $RepoRoot "editors\vscode"
+Push-Location $extSrc
+try {
+    if (-not (Test-Path (Join-Path $extSrc "out\extension.js"))) { & npm run build; if ($LASTEXITCODE -ne 0) { throw "extension build failed" } }
+    & npx --yes @vscode/vsce package --no-dependencies -o (Join-Path $vscode "ldp3-0.1.0.vsix")
+    if ($LASTEXITCODE -ne 0) { throw "vsce package failed (is Node/npm installed?)" }
+} finally { Pop-Location }
+foreach ($item in "package.json","out","media","syntaxes","language-configuration.json") {
+    Copy-Item (Join-Path $extSrc $item) $vscode -Recurse -Force
+}
 
 Write-Host ("staged bundle: core={0:N0} MB, tui + vscode included" -f ((Get-ChildItem $core -Recurse | Measure-Object Length -Sum).Sum / 1MB))
 Write-Host "-> $stage"
