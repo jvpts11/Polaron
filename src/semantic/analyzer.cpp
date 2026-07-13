@@ -1154,6 +1154,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     typeNamespace_["Process"] = "System.OS";
     // Env (spec 34): environment-variable builtins (Env.get/set); register for `import System.OS.Env;`.
     typeNamespace_["Env"] = "System.OS";
+    // Subproc: low-level persistent-subprocess builtins behind the System.OS.Subprocess prelude class
+    // (bidirectional stdio for the debugger/LSP). Internal -- users go through the Subprocess class.
+    typeNamespace_["Subproc"] = "System.OS";
     // reflect (spec 31) is a builtin namespace, not a prelude class; register it so `import reflect;`
     // resolves. Reflection use is gated on this import at the reflect.typeOf call site.
     typeNamespace_["reflect"] = "reflect";
@@ -3311,6 +3314,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     error("Env.executablePath takes no arguments", call->loc);
                 return "String";
             }
+        }
+        // Persistent subprocess (debugger/LSP): low-level builtins behind the System.OS.Subprocess class.
+        // spawn(cmd) -> handle (0 = failed); writeStr(h, data) -> bytes written; readChunk(h) -> available
+        // bytes ("" on EOF); isAlive(h)/closeStdin(h)/kill(h). Internal; the Subprocess class is the API.
+        if (name.rfind("Subproc.", 0) == 0) {
+            const std::string fn = name.substr(8);
+            for (const auto& a : call->args) typeOf(*a);
+            if (fn == "spawn") return "long";
+            if (fn == "writeStr") return "int";
+            if (fn == "readChunk") return "String";
+            if (fn == "isAlive" || fn == "canRead") return "boolean";
+            if (fn == "closeStdin" || fn == "kill") return "void";
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio. Require `import System.IO.File;`.
         if (name.rfind("File.", 0) == 0) {

@@ -23,11 +23,14 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>        // kill/SIGTERM (subprocess teardown)
+#include <sys/ioctl.h>     // FIONREAD (non-blocking subprocess readability check)
 #include <sys/mman.h>
 #include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>      // waitpid (subprocess liveness/teardown)
 #include <time.h>
 #include <unistd.h>
 #endif
@@ -946,6 +949,186 @@ char* __ldp3_process_run(const char* cmd, long long* outLen, int* outExit) {
     *outLen = (long long)len;
     return buf;
 }
+
+// ---- Persistent subprocess (debugger/LSP support): spawn a child with pipes on its stdin/stdout, then
+// exchange bytes over its lifetime (unlike Process.run, which is one-shot and captures stdout to EOF).
+// The handle returned is a heap pointer cast to i64; 0 means the spawn failed. Callers own it until close.
+// ----
+struct LdpSubproc {
+#ifdef _WIN32
+    HANDLE proc;   // child process
+    HANDLE hIn;    // our write end -> child's stdin
+    HANDLE hOut;   // our read end  <- child's stdout
+#else
+    pid_t pid;
+    int fdIn;      // our write end -> child's stdin
+    int fdOut;     // our read end  <- child's stdout
+#endif
+};
+
+#ifdef _WIN32
+long long __ldp3_subproc_spawn(const char* cmdline) {
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = NULL;
+    HANDLE inRd = NULL, inWr = NULL, outRd = NULL, outWr = NULL;
+    if (!CreatePipe(&inRd, &inWr, &sa, 0)) return 0;
+    if (!CreatePipe(&outRd, &outWr, &sa, 0)) { CloseHandle(inRd); CloseHandle(inWr); return 0; }
+    // Our own ends must not be inherited by the child (else they never signal EOF).
+    SetHandleInformation(inWr, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(outRd, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOA si;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = inRd;
+    si.hStdOutput = outWr;
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof(pi));
+    char* mutableCmd = _strdup(cmdline);  // CreateProcessA may modify the command line in place
+    BOOL ok = CreateProcessA(NULL, mutableCmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+    free(mutableCmd);
+    CloseHandle(inRd);   // the child owns these now
+    CloseHandle(outWr);
+    if (!ok) { CloseHandle(inWr); CloseHandle(outRd); return 0; }
+    CloseHandle(pi.hThread);
+    LdpSubproc* s = (LdpSubproc*)malloc(sizeof(LdpSubproc));
+    s->proc = pi.hProcess;
+    s->hIn = inWr;
+    s->hOut = outRd;
+    return (long long)(intptr_t)s;
+}
+
+long long __ldp3_subproc_write(long long h, const char* data, long long len) {
+    if (h == 0) return -1;
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    DWORD written = 0;
+    if (!WriteFile(s->hIn, data, (DWORD)len, &written, NULL)) return -1;
+    return (long long)written;
+}
+
+char* __ldp3_subproc_read(long long h, long long* outLen) {
+    *outLen = 0;
+    if (h == 0) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    DWORD n = 0;
+    char* buf = (char*)malloc(4097);
+    if (!ReadFile(s->hOut, buf, 4096, &n, NULL) || n == 0) { buf[0] = 0; return buf; }  // EOF/broken pipe
+    buf[n] = 0;
+    *outLen = (long long)n;
+    return buf;
+}
+
+int __ldp3_subproc_alive(long long h) {
+    if (h == 0) return 0;
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    return WaitForSingleObject(s->proc, 0) == WAIT_TIMEOUT ? 1 : 0;
+}
+
+// True when the child has bytes buffered to read right now (so read() returns data without blocking).
+// EOF/broken pipe reads as 0 -- callers detect end-of-session via alive()/the adapter's terminated event,
+// so a `while (can_read()) read()` pump terminates naturally instead of spinning on empty EOF reads.
+int __ldp3_subproc_can_read(long long h) {
+    if (h == 0) return 0;
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    DWORD avail = 0;
+    if (!PeekNamedPipe(s->hOut, NULL, 0, NULL, &avail, NULL)) return 0;  // closed/broken -> nothing to read
+    return avail > 0 ? 1 : 0;
+}
+
+// Close only the child's stdin (send it EOF) without killing it -- lets a well-behaved child (lldb-dap,
+// sort, cat) finish and exit on its own. Idempotent: the handle is nulled so close() won't double-close.
+void __ldp3_subproc_close_stdin(long long h) {
+    if (h == 0) return;
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    if (s->hIn != NULL) { CloseHandle(s->hIn); s->hIn = NULL; }
+}
+
+void __ldp3_subproc_close(long long h) {
+    if (h == 0) return;
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    if (s->hIn != NULL) CloseHandle(s->hIn);
+    CloseHandle(s->hOut);
+    if (WaitForSingleObject(s->proc, 0) == WAIT_TIMEOUT) TerminateProcess(s->proc, 0);
+    CloseHandle(s->proc);
+    free(s);
+}
+#else
+long long __ldp3_subproc_spawn(const char* cmdline) {
+    int inPipe[2], outPipe[2];  // inPipe: parent writes [1] -> child reads [0]; outPipe: child writes [1] -> parent reads [0]
+    if (pipe(inPipe) != 0) return 0;
+    if (pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return 0; }
+    pid_t pid = fork();
+    if (pid < 0) { close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]); return 0; }
+    if (pid == 0) {
+        dup2(inPipe[0], 0);
+        dup2(outPipe[1], 1);
+        close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]);
+        execl("/bin/sh", "sh", "-c", cmdline, (char*)NULL);
+        _exit(127);
+    }
+    close(inPipe[0]);
+    close(outPipe[1]);
+    LdpSubproc* s = (LdpSubproc*)malloc(sizeof(LdpSubproc));
+    s->pid = pid;
+    s->fdIn = inPipe[1];
+    s->fdOut = outPipe[0];
+    return (long long)(intptr_t)s;
+}
+
+long long __ldp3_subproc_write(long long h, const char* data, long long len) {
+    if (h == 0) return -1;
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    ssize_t w = write(s->fdIn, data, (size_t)len);
+    return (long long)w;
+}
+
+char* __ldp3_subproc_read(long long h, long long* outLen) {
+    *outLen = 0;
+    if (h == 0) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    char* buf = (char*)malloc(4097);
+    ssize_t n = read(s->fdOut, buf, 4096);
+    if (n <= 0) { buf[0] = 0; return buf; }
+    buf[n] = 0;
+    *outLen = (long long)n;
+    return buf;
+}
+
+int __ldp3_subproc_alive(long long h) {
+    if (h == 0) return 0;
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    int status;
+    pid_t r = waitpid(s->pid, &status, WNOHANG);
+    return r == 0 ? 1 : 0;
+}
+
+int __ldp3_subproc_can_read(long long h) {
+    if (h == 0) return 0;
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    int n = 0;
+    if (ioctl(s->fdOut, FIONREAD, &n) < 0) return 0;  // FIONREAD is 0 at EOF, matching the Windows path
+    return n > 0 ? 1 : 0;
+}
+
+void __ldp3_subproc_close_stdin(long long h) {
+    if (h == 0) return;
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    if (s->fdIn >= 0) { close(s->fdIn); s->fdIn = -1; }
+}
+
+void __ldp3_subproc_close(long long h) {
+    if (h == 0) return;
+    LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
+    if (s->fdIn >= 0) close(s->fdIn);
+    close(s->fdOut);
+    int status;
+    if (waitpid(s->pid, &status, WNOHANG) == 0) { kill(s->pid, SIGTERM); waitpid(s->pid, &status, 0); }
+    free(s);
+}
+#endif
 
 // ---- Local time zone (spec 34): the system's current UTC offset in seconds (east positive), including
 // any active daylight-saving adjustment. Windows' Bias is UTC = local + Bias (minutes), so the offset is

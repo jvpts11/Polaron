@@ -7849,6 +7849,45 @@ R"LDP3(
             }
             public method success() returns boolean { return this.exitCode == 0; }
         }
+        // A persistent child process (debugger/LSP support): spawn a command, then exchange bytes over its
+        // stdin/stdout for its whole lifetime. Unlike Process.run (one-shot, captures stdout to EOF), this
+        // stays open for request/response protocols like DAP. Require `import System.OS.Subprocess;`.
+        public class Subprocess {
+            private mutable long handle;
+            private constructor Subprocess(long h) {
+                this.handle = h;
+            }
+            // Spawn `command` (run through the system shell). Check isValid() before use.
+            public static method start(String command) returns Subprocess {
+                return new Subprocess(Subproc.spawn(command)) on heap;
+            }
+            public method isValid() returns boolean {
+                return this.handle != cast<long>(0);
+            }
+            // Write bytes to the child's stdin; returns the number written (-1 on error).
+            public method write(String data) returns int {
+                return Subproc.writeStr(this.handle, data);
+            }
+            // Read the next available chunk from the child's stdout (blocks until data or EOF). Empty on EOF.
+            public method read() returns String {
+                return Subproc.readChunk(this.handle);
+            }
+            public method isAlive() returns boolean {
+                return Subproc.isAlive(this.handle);
+            }
+            // True when read() would return immediately (data ready or EOF): pump without blocking a UI loop.
+            public method canRead() returns boolean {
+                return Subproc.canRead(this.handle);
+            }
+            // Send EOF to the child's stdin without killing it, so a well-behaved child can finish and exit.
+            public method closeInput() returns void {
+                Subproc.closeStdin(this.handle);
+            }
+            // Close pipes and terminate the child if still running.
+            public method close() returns void {
+                Subproc.kill(this.handle);
+            }
+        }
     }
     public namespace System.Security {
         // A cryptographically secure random source (spec 34): 64 bits per draw from the OS CSPRNG,

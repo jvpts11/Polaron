@@ -1,0 +1,31 @@
+import System.IO.Console;
+import System.OS.Subprocess;
+
+// Persistent subprocess with bidirectional stdio (the debugger/LSP foundation): spawn `sort`, feed it
+// three lines on stdin, send EOF, then read its sorted stdout back over the live pipe. Unlike Process.run
+// (one-shot), the child stays open for a request/response exchange -- exactly what a DAP client needs.
+program SubprocessTest;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Subprocess proc = Subprocess.start("sort");
+                if (!proc.isValid()) {
+                    System.IO.Console.println("spawn failed");
+                    return;
+                }
+                proc.write("banana\napple\ncherry\n");
+                proc.closeInput();
+                mutable String out = "";
+                mutable String chunk = proc.read();
+                while (chunk.length() > 0) {
+                    out = out + chunk;
+                    chunk = proc.read();
+                }
+                proc.close();
+                System.IO.Console.print(out);
+            }
+        }
+    }
+}

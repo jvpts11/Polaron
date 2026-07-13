@@ -2012,6 +2012,13 @@ struct CodeGenerator::Impl {
                 if (ec == "Env.set") return "boolean";
                 if (ec == "Env.executablePath") return "String";
             }
+            if (const std::string sc = flattenCallee(*call->callee); sc.rfind("Subproc.", 0) == 0) {
+                if (sc == "Subproc.spawn") return "long";
+                if (sc == "Subproc.writeStr") return "int";
+                if (sc == "Subproc.readChunk") return "String";
+                if (sc == "Subproc.isAlive" || sc == "Subproc.canRead") return "boolean";
+                if (sc == "Subproc.closeStdin" || sc == "Subproc.kill") return "void";
+            }
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("File.", 0) == 0) {
                 if (fc == "File.readAll" || fc == "File.list") return "String";  // spec 34.4
                 if (fc == "File.size") return "long";
@@ -5474,6 +5481,57 @@ struct CodeGenerator::Impl {
             builder.CreateCall(ctorFn, {obj, coerceToType(output, ctorFn->getArg(1)->getType()),
                                         coerceToType(code, ctorFn->getArg(2)->getType())});
             return obj;
+        }
+        // Persistent subprocess (debugger/LSP): low-level builtins behind the System.OS.Subprocess class.
+        // The handle is a long (the runtime's heap pointer as i64). See runtime/ldp3_rt.cpp __ldp3_subproc_*.
+        if (name.rfind("Subproc.", 0) == 0) {
+            const std::string fn = name.substr(8);
+            llvm::Type* p = builder.getPtrTy();
+            llvm::Type* i64 = builder.getInt64Ty();
+            llvm::Type* i32 = builder.getInt32Ty();
+            if (fn == "spawn") {
+                llvm::Value* cmd = emitExpr(*call.args[0]);
+                if (cmd == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {p}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_subproc_spawn", ft),
+                                          {stringData(cmd)});
+            }
+            if (fn == "writeStr") {
+                llvm::Value* h = emitExpr(*call.args[0]);
+                llvm::Value* data = emitExpr(*call.args[1]);
+                if (h == nullptr || data == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64, p, i64}, false);
+                llvm::Value* n = builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_subproc_write", ft),
+                    {fitInt(h, 64), stringData(data), stringLen(data)});
+                return builder.CreateTrunc(n, i32);
+            }
+            if (fn == "readChunk") {
+                llvm::Value* h = emitExpr(*call.args[0]);
+                if (h == nullptr) return nullptr;
+                llvm::Value* lenSlot = createEntryAlloca("sp.len", i64);
+                llvm::FunctionType* ft = llvm::FunctionType::get(p, {i64, p}, false);
+                llvm::Value* buf = builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_subproc_read", ft), {fitInt(h, 64), lenSlot});
+                return emitStringFromParts(builder.CreateLoad(i64, lenSlot, "sp.n"), buf);
+            }
+            if (fn == "isAlive" || fn == "canRead") {
+                llvm::Value* h = emitExpr(*call.args[0]);
+                if (h == nullptr) return nullptr;
+                const char* sym =
+                    fn == "canRead" ? "__ldp3_subproc_can_read" : "__ldp3_subproc_alive";
+                llvm::FunctionType* ft = llvm::FunctionType::get(i32, {i64}, false);
+                return builder.CreateCall(module.getOrInsertFunction(sym, ft), {fitInt(h, 64)});
+            }
+            if (fn == "closeStdin" || fn == "kill") {
+                llvm::Value* h = emitExpr(*call.args[0]);
+                if (h == nullptr) return nullptr;
+                const char* sym =
+                    fn == "closeStdin" ? "__ldp3_subproc_close_stdin" : "__ldp3_subproc_close";
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getVoidTy(), {i64}, false);
+                builder.CreateCall(module.getOrInsertFunction(sym, ft), {fitInt(h, 64)});
+                return nullptr;
+            }
         }
         // Env (spec 34): environment variables.
         if (name == "Env.get") {

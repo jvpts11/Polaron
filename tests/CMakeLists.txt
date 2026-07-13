@@ -192,6 +192,16 @@ add_test(NAME codegen_debuginfo_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_debuginfo_test.cmake")
 
+# Persistent subprocess (debugger/LSP): spawn `sort`, write lines, send EOF, read the sorted output back
+# over the live pipe. Proves bidirectional stdio, unlike the one-shot Process.run.
+add_test(NAME codegen_subprocess_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/subprocess.ldp3"
+    "-DEXPECTED=apple banana cherry"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # AES (spec 34, FIPS-197): AES-128/256 test vectors + ECB and CTR round-trips.
 add_test(NAME codegen_aes_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
