@@ -196,7 +196,9 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     }
     compileArgs.push_back("-o");
     compileArgs.push_back(ll.string());
-    compileArgs.push_back("-O2");  // optimized by default (runs ldp3c's middle-end); a passthrough -O overrides
+    // A debug build emits DWARF and skips ldp3c's middle-end so lines/variables survive; otherwise
+    // optimize by default (a passthrough -O still overrides).
+    compileArgs.push_back(opts.debug ? "-g" : "-O2");
     for (const auto& p : opts.passthrough) compileArgs.push_back(p);
     if (int rc = runProcess(tc.ldp3c, compileArgs); rc != 0) {
         std::fprintf(stderr, "ldp3: compilation failed\n");
@@ -227,10 +229,15 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     // runs on a bare Windows 10/11 x64 machine. Otherwise clang drives the link against the system SDK.
     if (!tc.libDir.empty()) {
         const fs::path mainObj = outDir / (ll.stem().string() + ".main.obj");
-        if (int rc = runProcess(tc.clang, {"--target=x86_64-pc-windows-msvc", "-O2",
-                                           "-Wno-override-module", "-c", ll.string(), "-o",
-                                           mainObj.string()});
-            rc != 0) {
+        std::vector<std::string> mainCompile = {"--target=x86_64-pc-windows-msvc"};
+        if (opts.debug) { mainCompile.push_back("-g"); mainCompile.push_back("-O0"); }
+        else mainCompile.push_back("-O2");
+        mainCompile.push_back("-Wno-override-module");
+        mainCompile.push_back("-c");
+        mainCompile.push_back(ll.string());
+        mainCompile.push_back("-o");
+        mainCompile.push_back(mainObj.string());
+        if (int rc = runProcess(tc.clang, mainCompile); rc != 0) {
             std::fprintf(stderr, "ldp3: compiling to object failed\n");
             return rc == -1 ? 1 : rc;
         }
@@ -248,7 +255,9 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
             return rc == -1 ? 1 : rc;
         }
     } else {
-        std::vector<std::string> linkArgs = {"-O2"};
+        std::vector<std::string> linkArgs;
+        if (opts.debug) { linkArgs.push_back("-g"); linkArgs.push_back("-O0"); }
+        else linkArgs.push_back("-O2");
 #ifdef _WIN32
         // Force lld as the linker so the choice is deterministic -- a native object input can otherwise
         // flip clang to the MSVC link.exe, which does not pull in the UCRT the runtime needs.

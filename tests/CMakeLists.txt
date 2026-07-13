@@ -67,6 +67,15 @@ if(LDP3_CLANG)
         DEPENDS ldp3_new_scaffolds
         PASS_REGULAR_EXPRESSION "wrote .*demoproj")
 
+    # A debug build (-g -O0, DWARF) still compiles and links the project (a debugger's breakpoint binding
+    # and variable reading are proven separately with lldb-dap).
+    add_test(NAME ldp3_build_debug
+        COMMAND ldp3 build --debug
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/demoproj")
+    set_tests_properties(ldp3_build_debug PROPERTIES
+        DEPENDS ldp3_new_scaffolds
+        PASS_REGULAR_EXPRESSION "wrote .*demoproj")
+
     add_test(NAME ldp3_run_bare_file
         COMMAND ldp3 run "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3"
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")

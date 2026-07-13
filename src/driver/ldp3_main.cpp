@@ -75,7 +75,10 @@ int main(int argc, char** argv) {
         ldp3::driver::Manifest m = ldp3::driver::ephemeralManifest(file);
         m.outputDir = "build-output/";
         ldp3::driver::BuildOptions opts;
-        for (std::size_t i = 2; i < args.size(); ++i) opts.passthrough.push_back(args[i]);
+        for (std::size_t i = 2; i < args.size(); ++i) {
+            if (args[i] == "--debug") opts.debug = true;
+            else opts.passthrough.push_back(args[i]);
+        }
         return ldp3::driver::buildProgram(m, std::filesystem::current_path(), opts);
     }
     if (cmd == "build") {
@@ -92,6 +95,12 @@ int main(int argc, char** argv) {
         ldp3::driver::Manifest m = ldp3::driver::parseManifestText(ss.str());
         if (m.entry.empty()) { std::fprintf(stderr, "ldp3: manifest has no [program] entry\n"); return 1; }
         ldp3::driver::BuildOptions opts;
+        // `--debug`: a -g -O0 build a debugger can step (DWARF line tables + variables). Other flags pass
+        // through to ldp3c.
+        for (std::size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "--debug") opts.debug = true;
+            else opts.passthrough.push_back(args[i]);
+        }
         return ldp3::driver::buildProgram(m, manifestPath->parent_path(), opts);
     }
     if (cmd == "fmt") {

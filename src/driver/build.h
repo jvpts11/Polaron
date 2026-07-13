@@ -8,6 +8,7 @@ namespace ldp3::driver {
 
 struct BuildOptions {
     bool run = false;                       // execute the exe after building
+    bool debug = false;                     // -g -O0 build for a debugger (DWARF, no optimization)
     std::vector<std::string> runArgs;       // args passed to the program (run only)
     std::vector<std::string> passthrough;   // extra flags forwarded to ldp3c (--target, -O, ...)
 };
