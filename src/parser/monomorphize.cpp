@@ -701,7 +701,25 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
 // A type argument can itself be a nested mangled generic, e.g. ArrayList<Handler<int>> stores the arg as
 // "Handler$int". That inner instance (Handler$int) must be generated too, so split "Base$arg1$arg2..." and
 // register it when Base is generic, recursing for deeper nesting (spec 15.1).
-void collectTypeArgString(const std::string& a, const std::set<std::string>& generics, InstMap& out) {
+void collectTypeArgString(const std::string& a0, const std::set<std::string>& generics, InstMap& out) {
+    // Strip trailing type decorations (`*`, `&`, `?`, `[]`) first: canonicalType appends them AFTER the
+    // mangled generic name, so a type argument like ArrayList<int>* becomes "ArrayList$int*". Those markers
+    // decorate the whole instance (a pointer TO ArrayList<int>), not its last type argument. Without this,
+    // the split below misreads "ArrayList$int*" as ArrayList<int*> and registers a bogus element-is-pointer
+    // instance -- which collides with and corrupts the real ArrayList<int>. The base instance to generate is
+    // the same whether it is used by value or via pointer/array, so we collect the undecorated form.
+    std::string a = a0;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        if (!a.empty() && (a.back() == '*' || a.back() == '&' || a.back() == '?')) {
+            a.pop_back();
+            changed = true;
+        } else if (a.size() >= 2 && a.compare(a.size() - 2, 2, "[]") == 0) {
+            a.erase(a.size() - 2);
+            changed = true;
+        }
+    }
     const std::size_t d = a.find('$');
     if (d == std::string::npos) return;  // a plain type, nothing nested to instantiate
     const std::string base = a.substr(0, d);

@@ -181,6 +181,16 @@ add_test(NAME codegen_main_args_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# Regression: a pointer-to-generic type argument (HashMap<String, ArrayList<int>*>) must not corrupt the
+# base ArrayList<int> instantiation (its get() must stay int, not int*).
+add_test(NAME codegen_generic_ptr_typearg_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/generic_ptr_typearg.ldp3"
+    "-DEXPECTED=sum=30 size=2"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # Debug info (`ldp3c -g`): the .ll carries DWARF metadata (compile unit, subprograms, line locations,
 # local/parameter variables) and the program stays correct when built with debug info. Line breakpoints +
 # variable inspection are proven separately with lldb.

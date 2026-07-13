@@ -1,0 +1,33 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.HashMap;
+
+// Regression: a pointer to a generic instantiation used as a generic type argument
+// (HashMap<String, ArrayList<int>*>) must not corrupt the base instantiation. The type arg mangles to
+// "ArrayList$int*"; if the trailing '*' is misread as part of the last type argument, a bogus
+// ArrayList<int*> instance is registered and ArrayList<int>.get() starts resolving to int*, breaking
+// == / .toString() across the whole program. Here the map round-trips an ArrayList<int>* and the plain
+// ArrayList<int> next to it still behaves.
+program GenericPtrTypeArg;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable HashMap<String, ArrayList<int>*>* m = new HashMap<String, ArrayList<int>*>() on heap;
+                mutable ArrayList<int>* xs = new ArrayList<int>() on heap;
+                xs.add(10);
+                xs.add(20);
+                m.put("a", xs);
+                ArrayList<int>* got = m.get("a");
+                mutable int sum = 0;
+                for (mutable int i = 0; i < got.size(); i++) {
+                    if (got.get(i) == 10 || got.get(i) == 20) {
+                        sum = sum + got.get(i);
+                    }
+                }
+                System.IO.Console.printf("sum=%d size=%d\n", sum, got.size());
+            }
+        }
+    }
+}
