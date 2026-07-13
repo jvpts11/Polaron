@@ -8639,7 +8639,8 @@ std::string ldhPathFor(const std::string& ldbPath) {
 int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             const std::string& target = "", int optLevel = 0, bool libraryMode = false,
             const std::vector<std::string>& deps = {},
-            const std::vector<std::string>& dynDeps = {}, bool testMode = false) {
+            const std::vector<std::string>& dynDeps = {}, bool testMode = false,
+            bool debugInfo = false) {
     ldp3::ast::Program program;
     std::string programName;
     // Keep each file's source alive only within its iteration: the AST copies
@@ -8812,6 +8813,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     codegen.setTargetTriple(effectiveTriple);
     codegen.setLibrary(libraryMode);  // a .ldb has no entry point / `main`
     codegen.setTestMode(testMode);    // --test: synthetic [Test] runner as the entry
+    codegen.setDebugInfo(debugInfo);  // -g: emit DWARF debug metadata
     codegen.seedVtableSlots(seedSlots);  // adopt imported bundles' vtable slot layout
     for (const auto& [name, path, fp] : dynBundleInfo)
         codegen.addDynamicBundle(name, path, fp);  // runtime-resolving thunks for --use-dynamic
@@ -8940,6 +8942,7 @@ int main(int argc, char** argv) {
     int optLevel = 0;    // -O0..-O3: run ldp3c's own optimization pipeline before emitting IR
     bool libraryMode = false;  // --lib: compile a bundle to a .ldb (+ .ldh), no entry point required
     bool testMode = false;     // --test: emit a synthetic runner over the [Test] methods, not main
+    bool debugInfo = false;    // -g: emit DWARF debug metadata (for lldb / the Forge debugger)
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "-o") {
             if (i + 1 >= args.size()) {
@@ -8983,6 +8986,9 @@ int main(int argc, char** argv) {
             optLevel = 1;
         } else if (args[i] == "-O3") {
             optLevel = 3;
+        } else if (args[i] == "-g") {
+            debugInfo = true;
+            optLevel = 0;  // debug info survives best unoptimized (variables, line stepping)
         } else {
             inputs.emplace_back(args[i]);
         }
@@ -8992,5 +8998,5 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: no input files\n");
         return printUsage(argv[0]);
     }
-    return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps, testMode);
+    return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps, testMode, debugInfo);
 }

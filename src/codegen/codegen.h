@@ -40,6 +40,11 @@ public:
     // reports pass/fail, instead of the program's own `main`. Call before generate().
     void setTestMode(bool test);
 
+    // Debug info (`ldp3c -g`): emit DWARF debug metadata (line tables, functions, local variables) so the
+    // compiled program is debuggable by a native debugger (lldb / the Forge debugger). Call before
+    // generate(). Best paired with -O0 so variables and line stepping survive.
+    void setDebugInfo(bool debug);
+
     // Seeds the global vtable slot numbering from depended-on bundles (their vtableSlotNames), so a
     // virtual call on an imported object hits the slot its baked-in vtable uses. Call before generate().
     void seedVtableSlots(const std::vector<std::string>& slotNames);

@@ -1,0 +1,33 @@
+import System.IO.Console;
+
+program DebugInfo;
+
+public bundle main {
+    public namespace app {
+
+        public class Calc {
+            public static method sumTo(int n) returns int {
+                mutable int acc = 0;
+                for (mutable int i = 1; i <= n; i++) {
+                    acc = acc + i;
+                }
+                return acc;
+            }
+
+            public static method addTwo(int a, int b) returns int {
+                int s = a + b;
+                return s;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                int x = 10;
+                int y = 32;
+                int r = Calc.addTwo(x, y);
+                int t = Calc.sumTo(5);
+                System.IO.Console.printf("r=%d t=%d\n", r, t);
+            }
+        }
+    }
+}

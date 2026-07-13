@@ -1,9 +1,13 @@
 #include "llvm/IR/MDBuilder.h"
 #include "codegen/codegen.h"
 
+#include <llvm/ADT/ScopeExit.h>
+#include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -435,6 +439,133 @@ struct CodeGenerator::Impl {
     llvm::LLVMContext context;
     llvm::Module module;
     llvm::IRBuilder<> builder;
+
+    // --- debug info (-g): DWARF metadata so the compiled program is debuggable by lldb / the Forge
+    // debugger. dib is null unless -g is set. diCU is the compile unit; diFiles caches a DIFile per source
+    // path; diCurrentSP is the DISubprogram of the function being emitted (the scope for line locations).
+    bool debugInfo = false;
+    std::unique_ptr<llvm::DIBuilder> dib;
+    llvm::DICompileUnit* diCU = nullptr;
+    std::unordered_map<std::string, llvm::DIFile*> diFiles;
+    llvm::DISubprogram* diCurrentSP = nullptr;
+    llvm::DIType* diIntTy = nullptr;   // a cached generic type for a minimal DISubroutineType
+
+    // The DIFile for a source path (cached). Splits into directory + filename as DWARF expects.
+    llvm::DIFile* diFileFor(std::string_view path) {
+        std::string p(path);
+        if (p.empty()) p = module.getName().str();
+        auto it = diFiles.find(p);
+        if (it != diFiles.end()) return it->second;
+        std::string dir, name = p;
+        std::size_t slash = p.find_last_of("/\\");
+        if (slash != std::string::npos) {
+            dir = p.substr(0, slash);
+            name = p.substr(slash + 1);
+        }
+        llvm::DIFile* f = dib->createFile(name, dir);
+        diFiles[p] = f;
+        return f;
+    }
+
+    // Set up the DIBuilder, compile unit and module flags. Called once at the start of generate() when -g
+    // is on, before any function is emitted.
+    void initDebugInfo() {
+        dib = std::make_unique<llvm::DIBuilder>(module);
+        llvm::DIFile* mainFile = diFileFor(module.getName());
+        diCU = dib->createCompileUnit(llvm::dwarf::DW_LANG_C, mainFile, "ldp3c",
+                                      /*isOptimized=*/false, /*flags=*/"", /*runtimeVersion=*/0);
+        diIntTy = dib->createBasicType("int", 32, llvm::dwarf::DW_ATE_signed);
+        module.addModuleFlag(llvm::Module::Warning, "Debug Info Version",
+                             llvm::DEBUG_METADATA_VERSION);
+        module.addModuleFlag(llvm::Module::Warning, "Dwarf Version", 4);
+    }
+    void finalizeDebugInfo() {
+        if (dib) dib->finalize();
+    }
+    // A minimal DISubroutineType (return + no typed params). Enough for line-level breakpoints and stepping;
+    // richer parameter types come with variable inspection.
+    llvm::DISubroutineType* diMinimalFnType(llvm::DIFile* file) {
+        llvm::SmallVector<llvm::Metadata*, 1> elts{diIntTy};
+        return dib->createSubroutineType(dib->getOrCreateTypeArray(elts));
+    }
+    // Create and attach a DISubprogram for `fn`, using `loc` for its file/line, and make it the current
+    // debug scope. Returns the subprogram (or null when -g is off).
+    llvm::DISubprogram* beginDebugFunction(llvm::Function* fn, SourceLocation loc) {
+        if (!debugInfo || !dib) { diCurrentSP = nullptr; return nullptr; }
+        llvm::DIFile* file = diFileFor(loc.file);
+        unsigned line = loc.line > 0 ? static_cast<unsigned>(loc.line) : 1;
+        llvm::DISubprogram* sp = dib->createFunction(
+            file, fn->getName(), fn->getName(), file, line, diMinimalFnType(file), line,
+            llvm::DINode::FlagPrototyped, llvm::DISubprogram::SPFlagDefinition);
+        fn->setSubprogram(sp);
+        diCurrentSP = sp;
+        return sp;
+    }
+    // Set the current debug location to (loc.line, loc.col) within the current function's scope. A no-op
+    // when -g is off or there is no active subprogram.
+    void setDebugLoc(SourceLocation loc) {
+        if (!debugInfo || diCurrentSP == nullptr) return;
+        unsigned line = loc.line > 0 ? static_cast<unsigned>(loc.line) : diCurrentSP->getLine();
+        unsigned col = loc.col > 0 ? static_cast<unsigned>(loc.col) : 1;
+        builder.SetCurrentDebugLocation(llvm::DILocation::get(context, line, col, diCurrentSP));
+    }
+
+    // --- Local/parameter variable debug info (llvm.dbg.declare) ---
+    std::unordered_map<std::string, llvm::DIType*> diTypeCache;
+    llvm::DIType* diPtrTy_ = nullptr;
+    llvm::DIType* diCachedBasic(const std::string& name, unsigned bits, unsigned enc) {
+        std::string key = name + ':' + std::to_string(bits) + ':' + std::to_string(enc);
+        auto it = diTypeCache.find(key);
+        if (it != diTypeCache.end()) return it->second;
+        llvm::DIType* t = dib->createBasicType(name, bits, enc);
+        diTypeCache[key] = t;
+        return t;
+    }
+    llvm::DIType* diPtrTy() {
+        if (diPtrTy_ == nullptr)
+            diPtrTy_ = dib->createBasicType("ptr", 64, llvm::dwarf::DW_ATE_address);
+        return diPtrTy_;
+    }
+    // The DIType for a variable. The bit-width/encoding follow the *actual* LLVM storage type so the
+    // debugger reads the right number of bytes; the LDP3 type name (int, char, MyClass...) supplies a
+    // readable label. Pointers/objects/arrays show as an address.
+    llvm::DIType* diTypeFor(const std::string& tyName, llvm::Type* storage) {
+        if (storage == nullptr) return diIntTy;
+        if (storage->isPointerTy()) return diPtrTy();
+        if (storage->isFloatTy())
+            return diCachedBasic(tyName.empty() ? "smallfloat" : tyName, 32, llvm::dwarf::DW_ATE_float);
+        if (storage->isDoubleTy())
+            return diCachedBasic(tyName.empty() ? "float" : tyName, 64, llvm::dwarf::DW_ATE_float);
+        if (auto* it = llvm::dyn_cast<llvm::IntegerType>(storage)) {
+            unsigned bits = it->getBitWidth();
+            if (bits == 1) return diCachedBasic("boolean", 8, llvm::dwarf::DW_ATE_boolean);
+            bool uns = tyName.rfind("uint", 0) == 0 || tyName.rfind("ubyte", 0) == 0 ||
+                       tyName.rfind("ushort", 0) == 0 || tyName.rfind("ulong", 0) == 0;
+            unsigned enc = uns ? llvm::dwarf::DW_ATE_unsigned : llvm::dwarf::DW_ATE_signed;
+            std::string nm = tyName.empty() ? ("int" + std::to_string(bits)) : tyName;
+            return diCachedBasic(nm, bits, enc);
+        }
+        return diPtrTy();  // structs/arrays by value: at least surface the address
+    }
+    // Attach a DILocalVariable + llvm.dbg.declare to a stack slot so the debugger can name and read it.
+    // argNo > 0 marks a function parameter (1-based); 0 is an ordinary local. No-op unless -g is on and the
+    // slot is a plain alloca in the current function.
+    void declareLocalDebug(llvm::Value* slot, const std::string& name, const std::string& tyName,
+                           SourceLocation loc, unsigned argNo = 0) {
+        if (!debugInfo || diCurrentSP == nullptr || dib == nullptr || name.empty()) return;
+        auto* alloca = llvm::dyn_cast<llvm::AllocaInst>(slot);
+        if (alloca == nullptr) return;  // dbg.declare needs a stack address
+        llvm::DIFile* file = diCurrentSP->getFile();
+        unsigned line = loc.line > 0 ? static_cast<unsigned>(loc.line) : diCurrentSP->getLine();
+        llvm::DIType* dt = diTypeFor(tyName, alloca->getAllocatedType());
+        llvm::DILocalVariable* v =
+            argNo > 0
+                ? dib->createParameterVariable(diCurrentSP, name, argNo, file, line, dt, true)
+                : dib->createAutoVariable(diCurrentSP, name, file, line, dt, true);
+        llvm::DILocation* dl = llvm::DILocation::get(
+            context, line, loc.col > 0 ? static_cast<unsigned>(loc.col) : 1, diCurrentSP);
+        dib->insertDeclare(alloca, v, dib->createExpression(), dl, builder.GetInsertBlock());
+    }
 
     std::unordered_map<std::string, ClassLayout> classes;
     // `newtype Name = Underlying;` (spec 24): a distinct type that shares the underlying's
@@ -7552,6 +7683,7 @@ struct CodeGenerator::Impl {
             dynamic_cast<const ast::LabelMarkStmt*>(&stmt) == nullptr) {
             return;
         }
+        setDebugLoc(stmt.loc);  // -g: this statement's line, so breakpoints/stepping map to source
         // static_assert is a compile-time check (spec 28.2); it emits no code.
         if (dynamic_cast<const ast::StaticAssertStmt*>(&stmt) != nullptr) return;
         if (const auto* br = dynamic_cast<const ast::BreakStmt*>(&stmt)) {
@@ -7828,6 +7960,7 @@ struct CodeGenerator::Impl {
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
             builder.CreateStore(initV, slot, vd->isVolatile);  // spec 37.5
             locals[vd->name] = LocalSlot{slot, declType, vd->isVolatile};
+            declareLocalDebug(slot, vd->name, declType, vd->loc);  // -g: name/read this local in the debugger
             // An eagerly-allocated owned region (`region r = itself.allocate(...)`): give it a
             // register-promotable bump cursor, zeroed now that its block is freshly acquired.
             if (declType == "region" && isOwnedRegionInit(vd->init.get()))
@@ -8959,6 +9092,7 @@ struct CodeGenerator::Impl {
         builder.CreateStore(builder.getInt32(0), iSlot);
         llvm::Value* vSlot = createEntryAlloca(s.varName, llvmType(et));
         locals[s.varName] = LocalSlot{vSlot, et};
+        declareLocalDebug(vSlot, s.varName, et, s.loc);  // -g: inspect the loop element in the debugger
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "fe.cond", fn);
         llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "fe.body", fn);
@@ -8970,7 +9104,10 @@ struct CodeGenerator::Impl {
         builder.CreateCondBr(builder.CreateICmpSLT(i, len), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
         // The `index i` form (spec 7.6): expose the loop counter as an int local.
-        if (!s.indexName.empty()) locals[s.indexName] = LocalSlot{iSlot, "int"};
+        if (!s.indexName.empty()) {
+            locals[s.indexName] = LocalSlot{iSlot, "int"};
+            declareLocalDebug(iSlot, s.indexName, "int", s.loc);  // -g
+        }
         llvm::Type* feElemTy = arrayStorageTy(et);
         llvm::Value* elem =
             builder.CreateLoad(feElemTy, arrayElemPtr(block, i, feElemTy), "fe.el");
@@ -9004,12 +9141,14 @@ struct CodeGenerator::Impl {
         llvm::Value* vSlot = createEntryAlloca(s.varName, ty);
         builder.CreateStore(start, vSlot);
         locals[s.varName] = LocalSlot{vSlot, et};
+        declareLocalDebug(vSlot, s.varName, et, s.loc);  // -g: inspect the loop value in the debugger
         // The `index i` form (spec 7.6): a 0-based counter alongside the range value.
         llvm::Value* idxSlot = nullptr;
         if (!s.indexName.empty()) {
             idxSlot = createEntryAlloca(s.indexName, builder.getInt32Ty());
             builder.CreateStore(builder.getInt32(0), idxSlot);
             locals[s.indexName] = LocalSlot{idxSlot, "int"};
+            declareLocalDebug(idxSlot, s.indexName, "int", s.loc);  // -g
         }
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "fr.cond", fn);
@@ -9973,6 +10112,10 @@ struct CodeGenerator::Impl {
                   const std::vector<std::string>* capTypes = nullptr,
                   const std::string& dtorChainBase = "", const ast::ClassDecl* dtorOf = nullptr,
                   bool asyncResume = false, bool argvEntry = false) {
+        // -g: a nested emitBody (a lambda emitted mid-method) must not leave its DISubprogram as the current
+        // debug scope, or the enclosing method's later instructions get a mismatched scope (verifier error).
+        llvm::DISubprogram* savedDiSP = diCurrentSP;
+        auto diRestore = llvm::make_scope_exit([this, savedDiSP]() { diCurrentSP = savedDiSP; });
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
@@ -10005,6 +10148,10 @@ struct CodeGenerator::Impl {
         labelBlocks.clear();
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
         builder.SetInsertPoint(block);
+        // -g: attach a DISubprogram for this function and give the prologue (arg stores, super/field-init
+        // calls) the function's opening line, so no instruction in a debug function lacks a location.
+        beginDebugFunction(fn, body.loc);
+        setDebugLoc(body.loc);
 
         // Identifiers returned anywhere in the body. Used both to promote returned stack `new`s and to
         // decide whether a copied class-value parameter must live on the heap (it escapes) or the frame.
@@ -10040,6 +10187,7 @@ struct CodeGenerator::Impl {
                     incoming = emitClassCopy(pt, incoming, /*heap=*/escaping.count(p.name) > 0);
                 builder.CreateStore(incoming, slot);
                 locals[p.name] = LocalSlot{slot, pt};
+                declareLocalDebug(slot, p.name, pt, p.loc, argIdx + 1);  // -g: parameter (1-based DWARF)
                 ++argIdx;
             }
         }
@@ -10698,6 +10846,7 @@ void CodeGenerator::setTargetTriple(const std::string& triple) {
 
 void CodeGenerator::setLibrary(bool library) { impl_->libraryMode = library; }
 void CodeGenerator::setTestMode(bool test) { impl_->testMode = test; }
+void CodeGenerator::setDebugInfo(bool debug) { impl_->debugInfo = debug; }
 
 void CodeGenerator::seedVtableSlots(const std::vector<std::string>& slotNames) {
     impl_->seededSlots = slotNames;
@@ -10717,6 +10866,7 @@ bool CodeGenerator::generate() {
         errors_.push_back(CodegenError{"no entry point to generate", {}});
         return false;
     }
+    if (impl_->debugInfo) impl_->initDebugInfo();  // -g: set up the DIBuilder before any function is emitted
     if (impl_->testMode) impl_->collectTests();
     impl_->declareClasses();
     impl_->collectAbstainedLabels();
@@ -10734,6 +10884,7 @@ bool CodeGenerator::generate() {
     impl_->emitDynamicThunks();  // runtime-resolving thunks for --use-dynamic bundles
     impl_->emitSpecializations();  // deferred lambda-specialized method copies (inlinable direct calls)
     if (impl_->libraryMode) impl_->exportBundleSymbols();  // make the .ldb's functions DLL-loadable
+    impl_->finalizeDebugInfo();  // -g: resolve all debug metadata before verification
     if (!errors_.empty()) return false;
     impl_->attachTBAA();     // type-based alias metadata: lets LLVM hoist field loads across opaque calls
     impl_->stripDeadCode();  // drop unreferenced prelude/user code from executables

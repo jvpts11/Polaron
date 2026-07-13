@@ -181,6 +181,17 @@ add_test(NAME codegen_main_args_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# Debug info (`ldp3c -g`): the .ll carries DWARF metadata (compile unit, subprograms, line locations,
+# local/parameter variables) and the program stays correct when built with debug info. Line breakpoints +
+# variable inspection are proven separately with lldb.
+add_test(NAME codegen_debuginfo_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/debug_info.ldp3"
+    "-DEXPECTED=r=42 t=15"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_debuginfo_test.cmake")
+
 # AES (spec 34, FIPS-197): AES-128/256 test vectors + ECB and CTR round-trips.
 add_test(NAME codegen_aes_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
