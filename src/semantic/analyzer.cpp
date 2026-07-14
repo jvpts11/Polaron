@@ -1213,6 +1213,12 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     typeNamespace_["Time"] = "System.Time";
     // Net (spec 34): TCP builtins lowering to runtime winsock calls; register for the import.
     typeNamespace_["Net"] = "System.Net";
+    // Ipc (spec 2.8): the cross-program transport builtins (a named pipe / Unix socket named after the
+    // program). Used by the System.Ipc prelude, not written by hand.
+    typeNamespace_["Ipc"] = "System.Ipc";
+    // Bits: exact reinterpretation between double and long (an IEEE-754 bit pattern). Needed wherever a
+    // double must survive a byte channel bit-for-bit -- the IPC wire format, hashing, binary files.
+    typeNamespace_["Bits"] = "System.Ipc";
     // Process (spec 34): subprocess builtin (Process.run) lowering to a runtime shell call; register
     // so `import System.OS.Process;` resolves. ProcessResult is a real prelude class.
     typeNamespace_["Process"] = "System.OS";
@@ -3459,6 +3465,23 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (call->args.size() != 3) error("Memory.copy takes (dst, src, n)", call->loc);
             for (const auto& a : call->args) typeOf(*a);
             return "void";
+        }
+        if (name == "Bits.doubleToLong" || name == "Bits.longToDouble") {
+            checkTypeAccessible("Bits", call->loc);
+            for (const auto& a : call->args) typeOf(*a);
+            return name == "Bits.doubleToLong" ? "long" : "double";
+        }
+        // Ipc (spec 2.8): cross-program transport builtins. The program NAME is the address.
+        if (name.rfind("Ipc.", 0) == 0) {
+            const std::string fn = name.substr(4);
+            if (fn == "listen" || fn == "accept" || fn == "connect" || fn == "send" || fn == "recv" ||
+                fn == "close") {
+                checkTypeAccessible("Ipc", call->loc);
+                for (const auto& a : call->args) typeOf(*a);
+                if (fn == "recv") return "String";   // (conn) -> one whole frame ("" when the peer left)
+                if (fn == "close") return "void";    // (handle)
+                return "long";  // listen(name)/accept(srv)/connect(name) -> handle (-1); send -> bytes
+            }
         }
         // Net (spec 34): TCP client builtins. Require `import System.Net.Net;` (used by Socket).
         if (name.rfind("Net.", 0) == 0) {

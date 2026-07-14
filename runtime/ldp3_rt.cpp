@@ -30,6 +30,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>        // AF_UNIX (cross-program IPC transport, spec 2.8)
 #include <sys/wait.h>      // waitpid (subprocess liveness/teardown)
 #include <time.h>
 #include <unistd.h>
@@ -930,6 +931,214 @@ long long __ldp3_udp_recvfrom(long long sock, char* buf, long long cap) {
 const char* __ldp3_udp_peer_host(void) { return g_udp_peer_host; }
 int __ldp3_udp_peer_port(void) { return g_udp_peer_port; }
 void __ldp3_udp_close(long long sock) { closesocket((SOCKET)sock); }
+
+// ---- Cross-program IPC transport (spec 2.8). The program's NAME is its address: a named pipe
+// \\.\pipe\ldp3.<Name> on Windows, a Unix domain socket /tmp/ldp3-<Name>.sock (mode 0600) on POSIX.
+// So Program.connect("GameEngine") needs no registry, no port and no discovery -- and nothing is ever
+// exposed on the network. Both ends of a connection are symmetric: either side may send a frame.
+//
+// A handle is a malloc'd Ldp3Pipe so the same close() works for a listener and for a connection.
+// Every frame is length-prefixed ([u32 length][payload]); send/recv deal in whole frames, so the
+// LDP3 side never has to reassemble a stream. ----
+typedef struct Ldp3Pipe {
+    int isServer;
+    char name[256];
+#ifdef _WIN32
+    HANDLE h;
+#else
+    int fd;
+#endif
+} Ldp3Pipe;
+
+static void ldp3_ipc_path(const char* name, char* out, size_t cap) {
+#ifdef _WIN32
+    snprintf(out, cap, "\\\\.\\pipe\\ldp3.%s", name);
+#else
+    snprintf(out, cap, "/tmp/ldp3-%s.sock", name);
+#endif
+}
+
+long long __ldp3_ipc_listen(const char* name) {
+    Ldp3Pipe* p = (Ldp3Pipe*)calloc(1, sizeof(Ldp3Pipe));
+    if (p == NULL) return -1;
+    p->isServer = 1;
+    snprintf(p->name, sizeof(p->name), "%s", name);
+#ifdef _WIN32
+    p->h = INVALID_HANDLE_VALUE;  // an instance is created per accept()
+    return (long long)(intptr_t)p;
+#else
+    char path[512];
+    ldp3_ipc_path(name, path, sizeof(path));
+    unlink(path);  // a stale socket file from a crashed run would make bind() fail
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { free(p); return -1; }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0 || listen(fd, 16) != 0) {
+        close(fd);
+        free(p);
+        return -1;
+    }
+    chmod(path, 0600);  // only this user may talk to the program
+    p->fd = fd;
+    return (long long)(intptr_t)p;
+#endif
+}
+
+long long __ldp3_ipc_accept(long long srv) {
+    Ldp3Pipe* s = (Ldp3Pipe*)(intptr_t)srv;
+    if (s == NULL || !s->isServer) return -1;
+    Ldp3Pipe* c = (Ldp3Pipe*)calloc(1, sizeof(Ldp3Pipe));
+    if (c == NULL) return -1;
+#ifdef _WIN32
+    char path[512];
+    ldp3_ipc_path(s->name, path, sizeof(path));
+    HANDLE h = CreateNamedPipeA(path, PIPE_ACCESS_DUPLEX,
+                                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                                PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) { free(c); return -1; }
+    if (!ConnectNamedPipe(h, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
+        CloseHandle(h);
+        free(c);
+        return -1;
+    }
+    c->h = h;
+#else
+    int fd = accept(s->fd, NULL, NULL);
+    if (fd < 0) { free(c); return -1; }
+    c->fd = fd;
+#endif
+    return (long long)(intptr_t)c;
+}
+
+long long __ldp3_ipc_connect(const char* name) {
+    char path[512];
+    ldp3_ipc_path(name, path, sizeof(path));
+    Ldp3Pipe* c = (Ldp3Pipe*)calloc(1, sizeof(Ldp3Pipe));
+    if (c == NULL) return -1;
+    snprintf(c->name, sizeof(c->name), "%s", name);
+#ifdef _WIN32
+    for (int attempt = 0; attempt < 50; ++attempt) {  // the server may be between accept() calls
+        HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            c->h = h;
+            return (long long)(intptr_t)c;
+        }
+        if (GetLastError() != ERROR_PIPE_BUSY && GetLastError() != ERROR_FILE_NOT_FOUND) break;
+        Sleep(20);
+    }
+    free(c);
+    return -1;
+#else
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { free(c); return -1; }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    for (int attempt = 0; attempt < 50; ++attempt) {
+        if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+            c->fd = fd;
+            return (long long)(intptr_t)c;
+        }
+        __ldp3_sleep(20);
+    }
+    close(fd);
+    free(c);
+    return -1;
+#endif
+}
+
+static int ldp3_ipc_write_all(Ldp3Pipe* c, const char* data, long long len) {
+    long long done = 0;
+    while (done < len) {
+#ifdef _WIN32
+        DWORD n = 0;
+        if (!WriteFile(c->h, data + done, (DWORD)(len - done), &n, NULL) || n == 0) return 0;
+#else
+        long n = write(c->fd, data + done, (size_t)(len - done));
+        if (n <= 0) return 0;
+#endif
+        done += (long long)n;
+    }
+    return 1;
+}
+
+static int ldp3_ipc_read_all(Ldp3Pipe* c, char* buf, long long len) {
+    long long done = 0;
+    while (done < len) {
+#ifdef _WIN32
+        DWORD n = 0;
+        if (!ReadFile(c->h, buf + done, (DWORD)(len - done), &n, NULL) || n == 0) return 0;
+#else
+        long n = read(c->fd, buf + done, (size_t)(len - done));
+        if (n <= 0) return 0;
+#endif
+        done += (long long)n;
+    }
+    return 1;
+}
+
+// Sends one whole frame. Returns the number of payload bytes written, or -1 if the peer is gone.
+long long __ldp3_ipc_send(long long conn, const char* data, long long len) {
+    Ldp3Pipe* c = (Ldp3Pipe*)(intptr_t)conn;
+    if (c == NULL || c->isServer || len < 0) return -1;
+    unsigned char hdr[4];
+    unsigned int n = (unsigned int)len;
+    hdr[0] = (unsigned char)(n & 0xFF);
+    hdr[1] = (unsigned char)((n >> 8) & 0xFF);
+    hdr[2] = (unsigned char)((n >> 16) & 0xFF);
+    hdr[3] = (unsigned char)((n >> 24) & 0xFF);
+    if (!ldp3_ipc_write_all(c, (const char*)hdr, 4)) return -1;
+    if (len > 0 && !ldp3_ipc_write_all(c, data, len)) return -1;
+    return len;
+}
+
+// Receives one whole frame. Returns a malloc'd NUL-terminated buffer (*outLen = its length); an empty
+// buffer with *outLen == 0 means the peer closed the connection.
+char* __ldp3_ipc_recv(long long conn, long long* outLen) {
+    Ldp3Pipe* c = (Ldp3Pipe*)(intptr_t)conn;
+    *outLen = 0;
+    if (c == NULL || c->isServer) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    unsigned char hdr[4];
+    if (!ldp3_ipc_read_all(c, (char*)hdr, 4)) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    unsigned int n = (unsigned int)hdr[0] | ((unsigned int)hdr[1] << 8) |
+                     ((unsigned int)hdr[2] << 16) | ((unsigned int)hdr[3] << 24);
+    char* buf = (char*)malloc((size_t)n + 1);
+    if (buf == NULL) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    if (n > 0 && !ldp3_ipc_read_all(c, buf, (long long)n)) {
+        free(buf);
+        char* e = (char*)malloc(1);
+        e[0] = 0;
+        return e;
+    }
+    buf[n] = 0;
+    *outLen = (long long)n;
+    return buf;
+}
+
+void __ldp3_ipc_close(long long h) {
+    Ldp3Pipe* p = (Ldp3Pipe*)(intptr_t)h;
+    if (p == NULL) return;
+#ifdef _WIN32
+    if (p->h != INVALID_HANDLE_VALUE && p->h != NULL) {
+        if (!p->isServer) FlushFileBuffers(p->h);
+        CloseHandle(p->h);
+    }
+#else
+    if (p->isServer) {
+        char path[512];
+        ldp3_ipc_path(p->name, path, sizeof(path));
+        close(p->fd);
+        unlink(path);
+    } else {
+        close(p->fd);
+    }
+#endif
+    free(p);
+}
 
 // ---- Subprocess (spec 34): run a command line through the shell, capturing its stdout and exit
 // code. Returns a malloc'd NUL-terminated buffer of the captured output; *outLen is its length and

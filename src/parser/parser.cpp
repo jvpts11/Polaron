@@ -975,6 +975,19 @@ ast::ClassDecl Parser::parseRecord() {
     return c;
 }
 
+// A member name: an identifier, or a KEYWORD used as a member. `a.namespace("mixers")` (spec 2.8) and
+// `method namespace(...)` are both unambiguous -- after a `.` or after `method`, nothing else can start
+// there -- and the spec's own IPC example needs it, since `namespace` is one of the 134 reserved words.
+std::string Parser::expectMemberName(const char* what) {
+    if (check(TokenKind::Identifier)) return expect(TokenKind::Identifier, what).lexeme;
+    const Token& t = current();
+    if (!t.lexeme.empty() && (std::isalpha(static_cast<unsigned char>(t.lexeme[0])) != 0)) {
+        advance();
+        return t.lexeme;  // a keyword spelled where a member name is expected
+    }
+    return expect(TokenKind::Identifier, what).lexeme;  // reports the error
+}
+
 // A type-parameter constraint (spec 15.2), in canonical mangled form: `Numeric` -> "Numeric",
 // `Comparable<T>` -> "Comparable$T". Carrying the bound's own arguments is what lets the check at
 // instantiation demand Comparable OF T rather than Comparable of anything. A `>>` closing both the
@@ -1251,7 +1264,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     m->isVolatile = isVolatile;  // spec 37.5: always executed; never inlined/elided
     m->isDeprecated = isDeprecated;  // spec 14.2: warn at every call site
     expect(TokenKind::KwMethod, "'method'");
-    m->name = expect(TokenKind::Identifier, "the method name").lexeme;
+    m->name = expectMemberName("the method name");
     // Generic method type parameters: method identity<T>(...) (spec 15). Each
     // (method-name, type-args) call is monomorphized into a concrete method.
     if (match(TokenKind::Lt)) {
@@ -3090,7 +3103,7 @@ ast::ExprPtr Parser::parsePostfix() {
                 m->member = "method";
                 advance();
             } else {
-                m->member = expect(TokenKind::Identifier, "a member name").lexeme;
+                m->member = expectMemberName("a member name");
             }
             m->object = std::move(expr);
             expr = std::move(m);

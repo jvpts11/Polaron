@@ -2159,6 +2159,15 @@ struct CodeGenerator::Impl {
                     return "long";  // spec 34
                 if (fc == "Time.sleep") return "void";
             }
+            if (const std::string fc = flattenCallee(*call->callee); fc == "Bits.doubleToLong")
+                return "long";
+            if (const std::string fc = flattenCallee(*call->callee); fc == "Bits.longToDouble")
+                return "double";
+            if (const std::string fc = flattenCallee(*call->callee); fc.rfind("Ipc.", 0) == 0) {
+                if (fc == "Ipc.recv") return "String";  // spec 2.8: one whole frame
+                if (fc == "Ipc.close") return "void";
+                return "long";  // listen/accept/connect -> handle; send -> bytes written
+            }
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("Net.", 0) == 0) {
                 if (fc == "Net.recv" || fc == "Net.udpRecv" || fc == "Net.udpPeerHost") return "String";  // spec 34
                 if (fc == "Net.connect" || fc == "Net.send" || fc == "Net.listen" || fc == "Net.accept" ||
@@ -5576,6 +5585,62 @@ struct CodeGenerator::Impl {
                                                   : "__ldp3_unix_ms";
                 llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt64Ty(), {}, false);
                 return builder.CreateCall(module.getOrInsertFunction(rfn, ft), {});
+            }
+        }
+        // Bits: reinterpret a double's IEEE-754 bits as a long and back (no conversion, no rounding).
+        if (name == "Bits.doubleToLong" || name == "Bits.longToDouble") {
+            llvm::Value* v = emitExpr(*call.args[0]);
+            if (v == nullptr) return nullptr;
+            return name == "Bits.doubleToLong"
+                       ? builder.CreateBitCast(v, builder.getInt64Ty(), "bits.d2l")
+                       : builder.CreateBitCast(fitInt(v, 64), builder.getDoubleTy(), "bits.l2d");
+        }
+        // Ipc (spec 2.8): the cross-program transport. listen/accept/connect deal in program NAMES;
+        // send/recv deal in whole length-prefixed frames, so the LDP3 side never reassembles a stream.
+        if (name.rfind("Ipc.", 0) == 0) {
+            const std::string fn = name.substr(4);
+            llvm::Type* p = builder.getPtrTy();
+            llvm::Type* i64 = builder.getInt64Ty();
+            if (fn == "listen" || fn == "connect") {
+                llvm::Value* nm = emitExpr(*call.args[0]);
+                if (nm == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {p}, false);
+                return builder.CreateCall(
+                    module.getOrInsertFunction(fn == "listen" ? "__ldp3_ipc_listen" : "__ldp3_ipc_connect",
+                                               ft),
+                    {stringData(nm)});
+            }
+            if (fn == "accept") {
+                llvm::Value* srv = emitExpr(*call.args[0]);
+                if (srv == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_ipc_accept", ft),
+                                          {fitInt(srv, 64)});
+            }
+            if (fn == "send") {
+                llvm::Value* conn = emitExpr(*call.args[0]);
+                llvm::Value* data = emitExpr(*call.args[1]);
+                if (conn == nullptr || data == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64, p, i64}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_ipc_send", ft),
+                                          {fitInt(conn, 64), stringData(data), stringLen(data)});
+            }
+            if (fn == "recv") {
+                llvm::Value* conn = emitExpr(*call.args[0]);
+                if (conn == nullptr) return nullptr;
+                llvm::Value* lenSlot = createEntryAlloca("ipc.len", i64);
+                llvm::FunctionType* ft = llvm::FunctionType::get(p, {i64, p}, false);
+                llvm::Value* buf = builder.CreateCall(module.getOrInsertFunction("__ldp3_ipc_recv", ft),
+                                                      {fitInt(conn, 64), lenSlot});
+                llvm::Value* len = builder.CreateLoad(i64, lenSlot, "ipc.n");
+                return emitStringFromParts(len, buf);
+            }
+            if (fn == "close") {
+                llvm::Value* h = emitExpr(*call.args[0]);
+                if (h == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getVoidTy(), {i64}, false);
+                builder.CreateCall(module.getOrInsertFunction("__ldp3_ipc_close", ft), {fitInt(h, 64)});
+                return nullptr;
             }
         }
         // Net (spec 34): TCP client builtins lowering to runtime winsock helpers.
