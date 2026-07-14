@@ -68,6 +68,7 @@ private:
     std::vector<ast::AnnotationUse> parseAnnotationUsesOpt();
     ast::AnnotationDecl parseAnnotationDecl(const std::vector<ast::AnnotationUse>& leading);
     ast::MemberPtr parseMember(bool inInterface);
+    std::string parseBoundName();  // spec 15.2: a type-param constraint, mangled ("Comparable$T")
     // spec 32.9: `[visibility] affinity hot { <fields> }` -- a cache-locality hint block.
     bool atAffinityBlock() const;
     void parseAffinityBlock(ast::ClassDecl& c);

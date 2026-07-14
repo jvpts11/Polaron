@@ -1,0 +1,51 @@
+import System.IO.Console;
+import System.Collections.Comparable;
+program GenericBoundArgsBad;
+
+// Cat implements Comparable<DOG>, not Comparable<Cat>, so it does NOT satisfy
+// `<T implements Comparable<T>>`: Sorter<Cat> must be rejected. Before the constraint honoured the
+// bound's type arguments, only the base name "Comparable" was checked and this compiled.
+public bundle main {
+    public namespace app {
+        public class Dog implements Comparable<Dog> {
+            private mutable int age;
+            public constructor Dog(int age) {
+                this.age = age;
+            }
+            public override method compareTo(Dog other) returns int {
+                return this.age - other.age();
+            }
+            public method age() returns int {
+                return this.age;
+            }
+        }
+        public class Cat implements Comparable<Dog> {
+            public constructor Cat() {
+            }
+            public override method compareTo(Dog other) returns int {
+                return 0;
+            }
+        }
+        public class Sorter<T implements Comparable<T>> {
+            public constructor Sorter() {
+            }
+            public method pick(T* a, T* b) returns int {
+                return a.compareTo(b);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Sorter<Dog> ok = new Sorter<Dog>() on heap;
+                Dog d1 = new Dog(3) on heap;
+                Dog d2 = new Dog(8) on heap;
+                System.IO.Console.printf("cmp=%d\n", ok.pick(d1, d2));
+                Sorter<Cat> bad = new Sorter<Cat>() on heap;
+                delete bad;
+                delete d2;
+                delete d1;
+                delete ok;
+                return;
+            }
+        }
+    }
+}

@@ -597,6 +597,13 @@ add_test(NAME sema_rejects_extend_permit
 set_tests_properties(sema_rejects_extend_permit PROPERTIES
     PASS_REGULAR_EXPRESSION "a sealed variant")
 
+# a generic constraint carries its own type arguments (spec 15.2): implementing Comparable<Dog> does
+# not satisfy `<T implements Comparable<T>>` when T is Cat.
+add_test(NAME sema_rejects_generic_bound_args
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/generic_bound_args_bad.ldp3")
+set_tests_properties(sema_rejects_generic_bound_args PROPERTIES
+    PASS_REGULAR_EXPRESSION "does not satisfy constraint 'T extends Comparable<Cat>'")
+
 # a `final class` cannot be extended; a `final method` cannot be overridden (spec 15).
 add_test(NAME sema_rejects_final_class
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/final_class_bad.ldp3")
@@ -3561,6 +3568,15 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bidirectional_property.ldp3"
             "-DEXPECTED=f=212.0 c=0.0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # a generic constraint with type arguments (spec 15.2) is satisfied by the right instantiation.
+        add_test(NAME codegen_generic_bound_args_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/generic_bound_args.ldp3"
+            "-DEXPECTED=cmp=-5"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

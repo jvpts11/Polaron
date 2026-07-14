@@ -804,25 +804,12 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
             c.typeParams.push_back(tp);
             c.typeParamVariance.push_back(variance);
-            // Constraint (spec 15.2): `<T extends Base>` or `<T implements Iface>`.
-            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {
-                c.typeParamBounds.push_back(
-                    {tp, expect(TokenKind::Identifier, "a constraint type").lexeme});
-                // A generic bound like Comparable<T> is accepted; its arguments are skipped for now.
-                if (match(TokenKind::Lt)) {
-                    int depth = 1;
-                    while (depth > 0 && !check(TokenKind::EndOfFile)) {
-                        if (match(TokenKind::Lt)) ++depth;
-                        else if (match(TokenKind::Gt)) --depth;
-                        else if (check(TokenKind::Shr)) {
-                            // '>>' is two '>': close two nested bounds, or close this one and leave
-                            // a single '>' (split the token) for the type-parameter list to consume.
-                            if (depth >= 2) { depth -= 2; advance(); }
-                            else { depth -= 1; tokens_[pos_].kind = TokenKind::Gt; }
-                        } else advance();
-                    }
-                }
-            }
+            // Constraint (spec 15.2): `<T extends Base>` or `<T implements Iface>`, whose own type
+            // arguments count: `<T implements Comparable<T>>` demands Comparable OF T, not of anything.
+            // The bound is stored in its canonical mangled form ("Comparable$T"), so the constraint check
+            // at instantiation can substitute T and compare the whole thing.
+            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements))
+                c.typeParamBounds.push_back({tp, parseBoundName()});
         } while (match(TokenKind::Comma));
         expect(TokenKind::Gt, "'>' to close type parameters");
     }
@@ -981,6 +968,26 @@ ast::ClassDecl Parser::parseRecord() {
     }
     expect(TokenKind::RBrace, "'}'");
     return c;
+}
+
+// A type-parameter constraint (spec 15.2), in canonical mangled form: `Numeric` -> "Numeric",
+// `Comparable<T>` -> "Comparable$T". Carrying the bound's own arguments is what lets the check at
+// instantiation demand Comparable OF T rather than Comparable of anything. A `>>` closing both the
+// bound and the type-parameter list is split, leaving a single `>` for the caller.
+std::string Parser::parseBoundName() {
+    std::string base = expect(TokenKind::Identifier, "a constraint type").lexeme;
+    std::vector<std::string> args;
+    if (match(TokenKind::Lt)) {
+        do {
+            if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier)
+                fail("expected a type argument but found '" + current().lexeme + "'", current().loc);
+            args.push_back(current().lexeme);
+            advance();
+        } while (match(TokenKind::Comma));
+        if (check(TokenKind::Shr)) tokens_[pos_].kind = TokenKind::Gt;  // `>>`: one closes the bound
+        else expect(TokenKind::Gt, "'>' to close the constraint's type arguments");
+    }
+    return ast::mangleGeneric(base, args);
 }
 
 // `affinity` is a soft keyword: only a class-body `affinity hot {` / `affinity cold {` (with an optional
@@ -1247,22 +1254,9 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
             const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
             m->typeParams.push_back(tp);
             // Constraint (spec 15.2): `<T extends Numeric>` / `<T implements Comparable<T>>`, exactly like
-            // the class-level form. The bound's own type arguments are skipped (only the base name binds).
-            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {
-                m->typeParamBounds.push_back(
-                    {tp, expect(TokenKind::Identifier, "a constraint type").lexeme});
-                if (match(TokenKind::Lt)) {
-                    int depth = 1;
-                    while (depth > 0 && !check(TokenKind::EndOfFile)) {
-                        if (match(TokenKind::Lt)) ++depth;
-                        else if (match(TokenKind::Gt)) --depth;
-                        else if (check(TokenKind::Shr)) {
-                            if (depth >= 2) { depth -= 2; advance(); }
-                            else { depth -= 1; tokens_[pos_].kind = TokenKind::Gt; }
-                        } else advance();
-                    }
-                }
-            }
+            // the class-level form, type arguments included.
+            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements))
+                m->typeParamBounds.push_back({tp, parseBoundName()});
         } while (match(TokenKind::Comma));
         expect(TokenKind::Gt, "'>' to close type parameters");
     }

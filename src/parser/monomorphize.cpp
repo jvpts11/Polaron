@@ -998,6 +998,12 @@ void rewriteMethStmt(ast::Stmt* st) {
 // call `inner<T>` becomes `inner<int>`; a worklist collects those transitively.
 bool isSubtypeOf(const std::string& sub, const std::string& base,
                  const std::map<std::string, const ast::ClassDecl*>& idx);
+// spec 15.2: a constraint's own type arguments count (see their definitions below).
+bool satisfiesBound(const std::string& sub, const std::string& bound,
+                    const std::map<std::string, const ast::ClassDecl*>& idx, int depth = 0);
+std::string substBound(const std::string& bound, const std::vector<std::string>& typeParams,
+                       const std::vector<std::string>& args);
+std::string spellBound(const std::string& bound);
 
 bool expandGenericMethods(ast::Program& program) {
     bool ok = true;
@@ -1054,14 +1060,16 @@ bool expandGenericMethods(ast::Program& program) {
                                 while (pi < meth->typeParams.size() && meth->typeParams[pi] != pb.first)
                                     ++pi;
                                 if (pi >= inst.second.size()) continue;
-                                if (!isSubtypeOf(inst.second[pi], pb.second, classIndex)) {
+                                const std::string bound =
+                                    substBound(pb.second, meth->typeParams, inst.second);
+                                if (!satisfiesBound(inst.second[pi], bound, classIndex)) {
                                     const auto& mloc = meth->loc;
                                     std::fprintf(stderr,
                                                  "%s:%d:%d: error: type argument '%s' does not satisfy "
                                                  "constraint '%s extends %s' of method '%s'\n",
                                                  std::string(mloc.file).c_str(), mloc.line, mloc.col,
                                                  inst.second[pi].c_str(), pb.first.c_str(),
-                                                 pb.second.c_str(), meth->name.c_str());
+                                                 spellBound(bound).c_str(), meth->name.c_str());
                                     ok = false;
                                 }
                             }
@@ -1121,6 +1129,76 @@ bool isSubtypeOf(const std::string& sub, const std::string& base,
     for (const auto& i : it->second->interfaces)
         if (isSubtypeOf(i, base, idx)) return true;
     return false;
+}
+
+// Does `sub` satisfy the constraint `bound` (spec 15.2), where the bound is in canonical mangled form
+// with its type parameters already substituted ("Comparable$Dog")? A bound WITH arguments demands
+// exactly those arguments: implementing Comparable<Cat> does not satisfy Comparable<Dog>. A bound
+// without arguments is the plain name check.
+bool satisfiesBound(const std::string& sub, const std::string& bound,
+                    const std::map<std::string, const ast::ClassDecl*>& idx, int depth) {
+    const std::size_t sep = bound.find('$');
+    if (sep == std::string::npos) return isSubtypeOf(sub, bound, idx);
+    if (depth > 16) return false;  // a malformed (cyclic) type graph must not overflow
+    const std::string bbase = bound.substr(0, sep);
+    std::vector<std::string> bargs;
+    for (std::size_t start = sep + 1; start <= bound.size();) {
+        const std::size_t next = bound.find('$', start);
+        bargs.push_back(
+            bound.substr(start, next == std::string::npos ? std::string::npos : next - start));
+        if (next == std::string::npos) break;
+        start = next + 1;
+    }
+    auto it = idx.find(sub);
+    if (it == idx.end()) return false;
+    const ast::ClassDecl& c = *it->second;
+    for (std::size_t k = 0; k < c.interfaces.size(); ++k) {
+        const std::vector<std::string> iargs =
+            k < c.interfaceTypeArgs.size() ? c.interfaceTypeArgs[k] : std::vector<std::string>{};
+        if (c.interfaces[k] == bbase && iargs == bargs) return true;
+        if (satisfiesBound(c.interfaces[k], bound, idx, depth + 1)) return true;
+    }
+    if (!c.superclass.empty()) {
+        if (c.superclass == bbase && c.superclassTypeArgs == bargs) return true;
+        if (satisfiesBound(c.superclass, bound, idx, depth + 1)) return true;
+    }
+    return false;
+}
+
+// The constraint with the generic's type parameters substituted: `Comparable$T` with T=Dog becomes
+// `Comparable$Dog`. A bound with no arguments passes through unchanged.
+std::string substBound(const std::string& bound, const std::vector<std::string>& typeParams,
+                       const std::vector<std::string>& args) {
+    const std::size_t sep = bound.find('$');
+    if (sep == std::string::npos) return bound;
+    const std::string base = bound.substr(0, sep);
+    std::vector<std::string> parts;
+    for (std::size_t start = sep + 1; start <= bound.size();) {
+        const std::size_t next = bound.find('$', start);
+        parts.push_back(
+            bound.substr(start, next == std::string::npos ? std::string::npos : next - start));
+        if (next == std::string::npos) break;
+        start = next + 1;
+    }
+    for (std::string& part : parts)
+        for (std::size_t i = 0; i < typeParams.size() && i < args.size(); ++i)
+            if (part == typeParams[i]) part = args[i];
+    return ast::mangleGeneric(base, parts);
+}
+
+// A mangled bound spelled back for a diagnostic: "Comparable$Dog" -> "Comparable<Dog>".
+std::string spellBound(const std::string& bound) {
+    const std::size_t sep = bound.find('$');
+    if (sep == std::string::npos) return bound;
+    std::string out = bound.substr(0, sep) + "<";
+    for (std::size_t start = sep + 1, n = 0; start <= bound.size(); ++n) {
+        const std::size_t next = bound.find('$', start);
+        if (n) out += ", ";
+        out += bound.substr(start, next == std::string::npos ? std::string::npos : next - start);
+        if (next == std::string::npos) break;
+        start = next + 1;
+    }
+    return out + ">";
 }
 
 }  // namespace
@@ -1764,13 +1842,14 @@ bool monomorphize(ast::Program& program) {
             while (pi < tit->second->typeParams.size() && tit->second->typeParams[pi] != pb.first)
                 ++pi;
             if (pi >= args.size()) continue;
-            if (!isSubtypeOf(args[pi], pb.second, classIndex)) {
+            const std::string bound = substBound(pb.second, tit->second->typeParams, args);
+            if (!satisfiesBound(args[pi], bound, classIndex)) {
                 const auto& loc = tit->second->loc;
                 std::fprintf(stderr,
                              "%s:%d:%d: error: type argument '%s' does not satisfy constraint "
                              "'%s extends %s' in '%s'\n",
                              std::string(loc.file).c_str(), loc.line, loc.col, args[pi].c_str(),
-                             pb.first.c_str(), pb.second.c_str(), m.c_str());
+                             pb.first.c_str(), spellBound(bound).c_str(), m.c_str());
                 ok = false;
             }
         }
