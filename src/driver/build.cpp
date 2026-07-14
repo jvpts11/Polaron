@@ -81,6 +81,15 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         std::vector<std::string> ca = {"--lib"};
         if (m.singleFile) ca.push_back(entry.string());
         else for (const auto& src : collectSources(entry)) ca.push_back(src.string());
+        if (opts.checkOnly) {  // a library type-checks like a program, minus the entry point
+            ca.insert(ca.begin(), "--check");
+            for (const auto& ov : opts.overlays) {
+                ca.push_back("--overlay");
+                ca.push_back(ov);
+            }
+            const int rc = runProcess(tc.ldp3c, ca);
+            return rc == -1 ? 1 : rc;
+        }
         ca.push_back("-o");
         ca.push_back(ldbOut.string());
         ca.push_back("-O2");
@@ -117,6 +126,16 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
                 if (!dm.isLibrary) {
                     std::fprintf(stderr, "ldp3: path dependency '%s' is not a [library]\n", d.name.c_str());
                     return 1;
+                }
+                // A check runs on every pause in typing: rebuilding a whole dependency library each time
+                // would make it useless. If the .ldb is already there, type-check against it as it stands;
+                // the next real build is what refreshes it.
+                if (opts.checkOnly) {
+                    const fs::path built = depDir / dm.outputDir / (dm.name + ".ldb");
+                    if (fs::is_regular_file(built)) {
+                        directLdbs.push_back(built);
+                        continue;
+                    }
                 }
                 std::printf("ldp3: building path dependency '%s'...\n", d.name.c_str());
                 if (int rc = buildProgram(dm, depDir, BuildOptions{}); rc != 0) {
@@ -193,6 +212,18 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     for (const auto& ldb : directLdbs) {
         compileArgs.push_back("--use");
         compileArgs.push_back(ldb.string());
+    }
+    // A check answers with diagnostics, not an executable: same sources, same dependency headers, no
+    // codegen and no link. Everything above this point (finding the sources, resolving the bundles) is the
+    // reason it agrees with the build instead of approximating it.
+    if (opts.checkOnly) {
+        compileArgs.insert(compileArgs.begin(), "--check");
+        for (const auto& ov : opts.overlays) {
+            compileArgs.push_back("--overlay");
+            compileArgs.push_back(ov);
+        }
+        const int rc = runProcess(tc.ldp3c, compileArgs);
+        return rc == -1 ? 1 : rc;
     }
     compileArgs.push_back("-o");
     compileArgs.push_back(ll.string());

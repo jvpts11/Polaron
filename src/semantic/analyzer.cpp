@@ -3550,7 +3550,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (name.rfind("Subproc.", 0) == 0) {
             const std::string fn = name.substr(8);
             for (const auto& a : call->args) typeOf(*a);
-            if (fn == "spawn") return "long";
+            // spawnCombined: same, but the child's stderr shares its stdout pipe (a compiler's diagnostics).
+            if (fn == "spawn" || fn == "spawnCombined") return "long";
             if (fn == "writeStr") return "int";
             if (fn == "readChunk") return "String";
             if (fn == "isAlive" || fn == "canRead") return "boolean";

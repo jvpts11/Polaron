@@ -4,14 +4,17 @@
 //   ldp3c <in.ldp3> [-o <out.ll>]   compile to LLVM IR (stdout if no -o)
 //   ldp3c --dump-tokens <in.ldp3>   lexer output
 //   ldp3c --dump-ast <in.ldp3>      parser output
-//   ldp3c --check <in.ldp3>         lex + parse + semantic, report entry point
+//   ldp3c --check <in.ldp3>...      lex + parse + semantic only (no codegen), report every diagnostic
 //   ldp3c --version
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <tuple>
 #include <sstream>
@@ -49,6 +52,28 @@ std::optional<std::string> readFile(const std::string& path) {
     std::ostringstream buffer;
     buffer << in.rdbuf();
     return buffer.str();
+}
+
+// `--overlay <real>=<temp>`: read <real>'s CONTENT from <temp>, but keep calling it <real>.
+//
+// An editor checks a buffer that is not on disk yet. It writes the buffer to a scratch file and asks for
+// a check -- and every diagnostic must still point at the file the user is looking at, not at the scratch
+// copy. So the compiler is told both paths: the bytes come from one, the name from the other.
+std::map<std::string, std::string> g_overlays;  // key(real) -> temp path
+
+std::string overlayKey(const std::string& path) {
+    std::error_code ec;
+    std::filesystem::path c = std::filesystem::weakly_canonical(std::filesystem::path(path), ec);
+    std::string s = (ec ? std::filesystem::path(path) : c).string();
+#ifdef _WIN32
+    for (char& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+#endif
+    return s;
+}
+
+std::optional<std::string> readSource(const std::string& path) {
+    const auto it = g_overlays.find(overlayKey(path));
+    return readFile(it == g_overlays.end() ? path : it->second);
 }
 
 // The embedded standard prelude. Parsed and merged into every program so that
@@ -7862,6 +7887,13 @@ R"LDP3(
             public static method start(String command) returns Subprocess {
                 return new Subprocess(Subproc.spawn(command)) on heap;
             }
+            // Same, but the child's stderr is merged into its stdout: one stream carries everything it
+            // prints. That is what you want from a tool that reports on stderr (a compiler), and exactly
+            // what you must NOT do to a child speaking a framed protocol -- a stray log line would be read
+            // as part of a message. Hence two spawns, and a caller that says which one it means.
+            public static method startCombined(String command) returns Subprocess {
+                return new Subprocess(Subproc.spawnCombined(command)) on heap;
+            }
             public method isValid() returns boolean {
                 return this.handle != cast<long>(0);
             }
@@ -9007,40 +9039,6 @@ int dumpAst(const std::string& path) {
     return 0;
 }
 
-int checkProgram(const std::string& path) {
-    auto source = readFile(path);
-    if (!source) {
-        std::fprintf(stderr, "error: cannot open input file '%s'\n", path.c_str());
-        return 1;
-    }
-    ldp3::Lexer lexer(*source, path);
-    std::vector<ldp3::Token> tokens = lexer.tokenize();
-    if (reportLexErrors(path, lexer)) return 1;
-    ldp3::Parser parser(std::move(tokens), path);
-    ldp3::ast::Program program = parser.parse();
-    if (reportParseErrors(path, parser)) return 1;
-    appendPrelude(program);
-    ldp3::resolveTypeAliases(program);           // expand `typealias` to its target everywhere (spec 24)
-    ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
-    assignObjectRoot(program);                   // a class with no `extends` implicitly extends Object
-    if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
-    ldp3::SemanticAnalyzer sema;
-    const bool semaOk = sema.analyze(program);
-    for (const ldp3::SemaError& w : sema.warnings()) {
-        std::fprintf(stderr, "%s:%d:%d: warning: %s\n", path.c_str(), w.loc.line, w.loc.col,
-                     w.message.c_str());
-    }
-    if (!semaOk) {
-        for (const ldp3::SemaError& e : sema.errors()) {
-            std::fprintf(stderr, "%s:%d:%d: error: %s\n", path.c_str(), e.loc.line, e.loc.col,
-                         e.message.c_str());
-        }
-        return 1;
-    }
-    std::printf("OK: entry point %s\n", sema.entryPoint().qualifiedName.c_str());
-    return 0;
-}
-
 // Compiles one or more .ldp3 files that together form a single program. Each
 // file declares `program <Name>;` (all must agree); their bundles are merged
 // (the semantic catalog is flat, so concatenation is enough). `inputs` outlives
@@ -9121,23 +9119,35 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             const std::string& target = "", int optLevel = 0, bool libraryMode = false,
             const std::vector<std::string>& deps = {},
             const std::vector<std::string>& dynDeps = {}, bool testMode = false,
-            bool debugInfo = false, const std::vector<std::string>& remoteDeps = {}) {
+            bool debugInfo = false, const std::vector<std::string>& remoteDeps = {},
+            bool checkOnly = false) {
     ldp3::ast::Program program;
     std::string programName;
+    // In check mode a broken file must not hide the others: an editor asks about the whole project and
+    // expects every file's diagnostics back, so the front end keeps going and reports at the end.
+    bool frontEndFailed = false;
     // Keep each file's source alive only within its iteration: the AST copies
     // the lexemes it needs, and locations reference the (long-lived) path string.
     for (const std::string& path : inputs) {
-        auto source = readFile(path);
+        auto source = readSource(path);
         if (!source) {
             std::fprintf(stderr, "error: cannot open input file '%s'\n", path.c_str());
             return 1;
         }
         ldp3::Lexer lexer(*source, path);
         std::vector<ldp3::Token> tokens = lexer.tokenize();
-        if (reportLexErrors(path, lexer)) return 1;
+        if (reportLexErrors(path, lexer)) {
+            if (!checkOnly) return 1;
+            frontEndFailed = true;
+            continue;
+        }
         ldp3::Parser parser(std::move(tokens), path);
         ldp3::ast::Program prog = parser.parse();
-        if (reportParseErrors(path, parser)) return 1;
+        if (reportParseErrors(path, parser)) {
+            if (!checkOnly) return 1;
+            frontEndFailed = true;
+            continue;
+        }
         if (programName.empty()) {
             programName = prog.name;
             program.name = prog.name;
@@ -9155,6 +9165,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         if (source->find("Program.serve") != std::string::npos) program.usesIpcServe = true;
         if (prog.isFreestanding) program.isFreestanding = true;
     }
+    if (frontEndFailed) return 1;  // check mode: every file was lexed and parsed, and some did not survive
 
     std::vector<std::string> seedSlots;  // vtable slot layout adopted from imported bundles
     std::vector<std::pair<std::string, std::vector<std::string>>> depSlotMaps;  // (path, slots) per dep
@@ -9314,6 +9325,15 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         return 1;
     }
 
+    // `--check`: the answer is the diagnostics above, so stop here. Everything the front end can catch has
+    // been caught, and codegen -- by far the slowest phase -- is skipped, which is what makes this fast
+    // enough for an editor to run on every pause in typing.
+    if (checkOnly) {
+        if (!libraryMode) std::printf("OK: entry point %s\n", sema.entryPoint().qualifiedName.c_str());
+        else std::printf("OK: library\n");
+        return 0;
+    }
+
 #ifdef LDP3_WITH_LLVM
     ldp3::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
     codegen.setPatchedClasses(sema.patchedClasses());  // spec 32.8: they need a writable vtable
@@ -9408,7 +9428,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    if (args[0] == "--dump-tokens" || args[0] == "--dump-ast" || args[0] == "--check") {
+    if (args[0] == "--dump-tokens" || args[0] == "--dump-ast") {
         if (args.size() < 2) {
             std::fprintf(stderr, "error: %.*s requires an input file\n",
                          static_cast<int>(args[0].size()), args[0].data());
@@ -9416,8 +9436,43 @@ int main(int argc, char** argv) {
         }
         const std::string path(args[1]);
         if (args[0] == "--dump-tokens") return dumpTokens(path);
-        if (args[0] == "--dump-ast") return dumpAst(path);
-        return checkProgram(path);
+        return dumpAst(path);
+    }
+
+    // `--check <file.ldp3>... [--lib] [--use <dep.ldb>]... [--overlay <real>=<temp>]...`
+    // The front end only: every diagnostic the compiler can produce without generating code. It takes the
+    // same inputs a build does -- a program spans several files and sees its dependencies' headers -- so an
+    // editor gets the SAME answer the build would give, in a fraction of the time.
+    if (args[0] == "--check") {
+        std::vector<std::string> inputs;
+        std::vector<std::string> deps;
+        bool libraryMode = false;
+        for (std::size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "--lib") {
+                libraryMode = true;
+            } else if (args[i] == "--use" && i + 1 < args.size()) {
+                deps.emplace_back(args[++i]);
+            } else if (args[i] == "--overlay" && i + 1 < args.size()) {
+                const std::string pair(args[++i]);
+                const std::size_t eq = pair.rfind('=');  // rfind: a Windows path may hold no '=', the temp may
+                if (eq == std::string::npos) {
+                    std::fprintf(stderr, "error: --overlay expects <real>=<temp>\n");
+                    return 2;
+                }
+                g_overlays[overlayKey(pair.substr(0, eq))] = pair.substr(eq + 1);
+            } else if (args[i].rfind("--", 0) == 0) {
+                std::fprintf(stderr, "error: unknown --check option '%.*s'\n",
+                             static_cast<int>(args[i].size()), args[i].data());
+                return 2;
+            } else {
+                inputs.emplace_back(args[i]);
+            }
+        }
+        if (inputs.empty()) {
+            std::fprintf(stderr, "error: --check requires an input file\n");
+            return printUsage(argv[0]);
+        }
+        return compile(inputs, "", "", 0, libraryMode, deps, {}, false, false, {}, /*checkOnly=*/true);
     }
 
     if (args[0] == "--fmt") {  // re-format a file's whitespace (in place, or to -o)

@@ -2183,7 +2183,7 @@ struct CodeGenerator::Impl {
                 if (ec == "Env.executablePath") return "String";
             }
             if (const std::string sc = flattenCallee(*call->callee); sc.rfind("Subproc.", 0) == 0) {
-                if (sc == "Subproc.spawn") return "long";
+                if (sc == "Subproc.spawn" || sc == "Subproc.spawnCombined") return "long";
                 if (sc == "Subproc.writeStr") return "int";
                 if (sc == "Subproc.readChunk") return "String";
                 if (sc == "Subproc.isAlive" || sc == "Subproc.canRead") return "boolean";
@@ -5785,12 +5785,15 @@ struct CodeGenerator::Impl {
             llvm::Type* p = builder.getPtrTy();
             llvm::Type* i64 = builder.getInt64Ty();
             llvm::Type* i32 = builder.getInt32Ty();
-            if (fn == "spawn") {
+            if (fn == "spawn" || fn == "spawnCombined") {
                 llvm::Value* cmd = emitExpr(*call.args[0]);
                 if (cmd == nullptr) return nullptr;
-                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {p}, false);
-                return builder.CreateCall(module.getOrInsertFunction("__ldp3_subproc_spawn", ft),
-                                          {stringData(cmd)});
+                // spawnCombined: the child's stderr shares its stdout pipe, so one read() sees everything
+                // it printed -- what a caller wants from a compiler, and what would corrupt a DAP stream.
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {p, i64}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_subproc_spawn_ex", ft),
+                                          {stringData(cmd),
+                                           llvm::ConstantInt::get(i64, fn == "spawnCombined" ? 1 : 0)});
             }
             if (fn == "writeStr") {
                 llvm::Value* h = emitExpr(*call.args[0]);

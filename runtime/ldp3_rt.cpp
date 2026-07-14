@@ -1185,7 +1185,11 @@ struct LdpSubproc {
 };
 
 #ifdef _WIN32
-long long __ldp3_subproc_spawn(const char* cmdline) {
+// mergeErr: give the child's stderr the same pipe as its stdout, so ONE stream carries everything the
+// child says. A compiler prints its diagnostics on stderr, and a caller that only reads stdout would call
+// a failing build silent. It is not the default: a child speaking a framed protocol (DAP) would have its
+// stream corrupted by stray log lines, which is exactly the bug this flag lets each caller decide about.
+long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr) {
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
@@ -1202,7 +1206,7 @@ long long __ldp3_subproc_spawn(const char* cmdline) {
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdInput = inRd;
     si.hStdOutput = outWr;
-    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    si.hStdError = mergeErr != 0 ? outWr : GetStdHandle(STD_ERROR_HANDLE);
     PROCESS_INFORMATION pi;
     memset(&pi, 0, sizeof(pi));
     char* mutableCmd = _strdup(cmdline);  // CreateProcessA may modify the command line in place
@@ -1217,6 +1221,10 @@ long long __ldp3_subproc_spawn(const char* cmdline) {
     s->hIn = inWr;
     s->hOut = outRd;
     return (long long)(intptr_t)s;
+}
+
+long long __ldp3_subproc_spawn(const char* cmdline) {
+    return __ldp3_subproc_spawn_ex(cmdline, 0);
 }
 
 long long __ldp3_subproc_write(long long h, const char* data, long long len) {
@@ -1274,7 +1282,7 @@ void __ldp3_subproc_close(long long h) {
     free(s);
 }
 #else
-long long __ldp3_subproc_spawn(const char* cmdline) {
+long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr) {
     int inPipe[2], outPipe[2];  // inPipe: parent writes [1] -> child reads [0]; outPipe: child writes [1] -> parent reads [0]
     if (pipe(inPipe) != 0) return 0;
     if (pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return 0; }
@@ -1283,6 +1291,7 @@ long long __ldp3_subproc_spawn(const char* cmdline) {
     if (pid == 0) {
         dup2(inPipe[0], 0);
         dup2(outPipe[1], 1);
+        if (mergeErr != 0) dup2(outPipe[1], 2);
         close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]);
         execl("/bin/sh", "sh", "-c", cmdline, (char*)NULL);
         _exit(127);
@@ -1294,6 +1303,10 @@ long long __ldp3_subproc_spawn(const char* cmdline) {
     s->fdIn = inPipe[1];
     s->fdOut = outPipe[0];
     return (long long)(intptr_t)s;
+}
+
+long long __ldp3_subproc_spawn(const char* cmdline) {
+    return __ldp3_subproc_spawn_ex(cmdline, 0);
 }
 
 long long __ldp3_subproc_write(long long h, const char* data, long long len) {

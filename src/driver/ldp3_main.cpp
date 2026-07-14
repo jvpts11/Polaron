@@ -26,6 +26,8 @@ int printHelp() {
         "usage:\n"
         "  ldp3 run [file.ldp3] [-- args...]   build and run (current project, or a bare file)\n"
         "  ldp3 build                          build the current project to build-output/\n"
+        "  ldp3 check [--project <dir>]        type-check the project, print diagnostics, emit nothing\n"
+        "             [--overlay <file>=<tmp>]  check <file> as it reads in <tmp> (an editor's buffer)\n"
         "  ldp3 test                           build and run the project's [Test] methods\n"
         "  ldp3 doc                            render the public API to HTML from /// comments\n"
         "  ldp3 fmt [file.ldp3]                format the project's source (or one file) in place\n"
@@ -83,6 +85,41 @@ int runCli(int argc, char** argv) {
         }
         return ldp3::driver::buildProgram(m, std::filesystem::current_path(), opts);
     }
+    // `ldp3 check [--overlay <real>=<temp>]...` -- the project's diagnostics, without building anything.
+    // An editor runs this on every pause in typing, passing an overlay for each buffer it has not saved:
+    // the check then sees exactly the code on screen, and reports against the file the user is editing.
+    if (cmd == "check") {
+        ldp3::driver::BuildOptions opts;
+        opts.checkOnly = true;
+        // --project: check THAT project, whatever the working directory is. An editor spawns the check
+        // directly, with no shell to cd for it, and a shell is not something to require on the hot path.
+        std::filesystem::path from = std::filesystem::current_path();
+        for (std::size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "--overlay" && i + 1 < args.size()) {
+                opts.overlays.push_back(args[++i]);
+            } else if (args[i] == "--project" && i + 1 < args.size()) {
+                from = std::filesystem::path(args[++i]);
+            } else {
+                std::fprintf(stderr, "ldp3: unknown 'check' option '%s'\n", args[i].c_str());
+                return 2;
+            }
+        }
+        const auto manifestPath = ldp3::driver::findManifest(from);
+        if (!manifestPath) {
+            std::fprintf(stderr, "ldp3: no ldp3.toml found in %s or any parent\n", from.string().c_str());
+            return 1;
+        }
+        std::ifstream f(*manifestPath);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        ldp3::driver::Manifest m = ldp3::driver::parseManifestText(ss.str());
+        if (m.entry.empty() && !m.isLibrary) {
+            std::fprintf(stderr, "ldp3: manifest has no [program] entry\n");
+            return 1;
+        }
+        return ldp3::driver::buildProgram(m, manifestPath->parent_path(), opts);
+    }
+
     if (cmd == "build") {
         std::filesystem::path sawToml;
         const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path(), &sawToml);

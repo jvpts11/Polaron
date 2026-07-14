@@ -152,6 +152,33 @@ add_test(NAME sema_rejects_no_entry
 set_tests_properties(sema_rejects_no_entry PROPERTIES
     PASS_REGULAR_EXPRESSION "no entry point")
 
+# --check accepts a whole program spanning several files (what an editor checks), not just one file.
+add_test(NAME check_accepts_multifile_program
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/multifile_b.ldp3"
+                          "${CMAKE_CURRENT_SOURCE_DIR}/samples/multifile_a.ldp3")
+set_tests_properties(check_accepts_multifile_program PROPERTIES
+    PASS_REGULAR_EXPRESSION "OK: entry point")
+
+# --overlay: the bytes come from a scratch copy (an unsaved buffer), the diagnostics name the real file.
+# The clean base checks clean; overlaid with the broken scratch, the error is reported -- against the base.
+add_test(NAME check_base_is_clean
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/overlay_base.ldp3")
+set_tests_properties(check_base_is_clean PROPERTIES
+    PASS_REGULAR_EXPRESSION "OK: entry point")
+
+add_test(NAME check_overlay_reports_against_the_real_file
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/overlay_base.ldp3"
+            --overlay "${CMAKE_CURRENT_SOURCE_DIR}/samples/overlay_base.ldp3=${CMAKE_CURRENT_SOURCE_DIR}/samples/overlay_broken.ldp3")
+set_tests_properties(check_overlay_reports_against_the_real_file PROPERTIES
+    WILL_FAIL TRUE)
+
+# The same run, checking the diagnostic names overlay_base (the real file), not overlay_broken (the scratch).
+add_test(NAME check_overlay_names_the_base_not_the_scratch
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/overlay_base.ldp3"
+            --overlay "${CMAKE_CURRENT_SOURCE_DIR}/samples/overlay_base.ldp3=${CMAKE_CURRENT_SOURCE_DIR}/samples/overlay_broken.ldp3")
+set_tests_properties(check_overlay_names_the_base_not_the_scratch PROPERTIES
+    PASS_REGULAR_EXPRESSION "overlay_base.ldp3:[0-9]+:[0-9]+: error: use of undeclared variable 'undeclaredHere'")
+
 # A catalog `extends` cycle must be reported, not crash (regression: it used to
 # overflow the stack in isSubtype).
 add_test(NAME sema_rejects_catalog_cycle
