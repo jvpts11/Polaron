@@ -1089,11 +1089,13 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
                         for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
                         currentReturnType_ = typeRefStr(m->returnType);  // for the return null check
+                        currentGenElem_ = m->genElem;  // spec 22.6: the type each `yield` must produce
                         currentThrows_.clear();
                         for (const auto& t : m->throwsTypes)
                             currentThrows_.push_back(baseType(typeRefStr(t)));
                         analyzeMethodBody(m->body, m->params,
                                           m->isStatic ? std::string() : cls.name, false, contracts);
+                        currentGenElem_.clear();
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                         std::vector<const ast::Expr*> contracts;
@@ -2135,7 +2137,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* ys = dynamic_cast<const ast::YieldStmt*>(&stmt)) {
-        if (ys->value) typeOf(*ys->value);  // `yield expr;` (spec 16.2): type-check the value
+        if (ys->value == nullptr) return;
+        const std::string vt = typeOf(*ys->value);  // `yield expr;` (spec 16.2 / 22.6)
+        // In a generator (spec 22.6) the yielded value is an element of the Iterator<T> it produces.
+        if (!currentGenElem_.empty() && !vt.empty() && !isSubtype(vt, currentGenElem_))
+            error("cannot yield a '" + vt + "' from a generator producing 'Iterator<" +
+                      currentGenElem_ + ">'",
+                  ys->loc);
         return;
     }
     if (dynamic_cast<const ast::AsmStmt*>(&stmt) != nullptr) {

@@ -891,6 +891,10 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             c.onClassUnload = std::make_unique<ast::Block>(parseBlock());
             continue;
         }
+        if (atAffinityBlock()) {  // spec 32.9: a cache-locality hint grouping fields as hot/cold
+            parseAffinityBlock(c);
+            continue;
+        }
         c.members.push_back(parseMember(c.isInterface));
         // A property with a custom setter synthesizes extra members (the setter method); collect them.
         for (auto& em : extraMembers_) c.members.push_back(std::move(em));
@@ -977,6 +981,40 @@ ast::ClassDecl Parser::parseRecord() {
     }
     expect(TokenKind::RBrace, "'}'");
     return c;
+}
+
+// `affinity` is a soft keyword: only a class-body `affinity hot {` / `affinity cold {` (with an optional
+// leading visibility, which the spec's example carries and the keyword catalog's does not) starts a block.
+// Anywhere else the word stays an ordinary identifier.
+bool Parser::atAffinityBlock() const {
+    int i = 0;
+    if (check(TokenKind::KwPublic) || check(TokenKind::KwPrivate) || check(TokenKind::KwProtected) ||
+        check(TokenKind::KwInternal))
+        i = 1;
+    return peek(i).kind == TokenKind::Identifier && peek(i).lexeme == "affinity" &&
+           peek(i + 1).kind == TokenKind::Identifier &&
+           (peek(i + 1).lexeme == "hot" || peek(i + 1).lexeme == "cold");
+}
+
+// spec 32.9: `public affinity hot { float x; float y; }` -- the fields inside are ordinary fields,
+// tagged with their affinity. The block's visibility (if any) is the default for fields that state none.
+void Parser::parseAffinityBlock(ast::ClassDecl& c) {
+    const std::string vis = parseVisibilityOpt();
+    advance();                                   // 'affinity'
+    const std::string kind = current().lexeme;   // 'hot' or 'cold'
+    advance();
+    expect(TokenKind::LBrace, "'{'");
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        ast::MemberPtr m = parseMember(/*inInterface=*/false);
+        auto* f = dynamic_cast<ast::FieldDecl*>(m.get());
+        if (f == nullptr) fail("an 'affinity' block holds only fields (spec 32.9)", m->loc);
+        f->affinity = kind;
+        if (f->visibility.empty()) f->visibility = vis;
+        c.members.push_back(std::move(m));
+        for (auto& em : extraMembers_) c.members.push_back(std::move(em));
+        extraMembers_.clear();
+    }
+    expect(TokenKind::RBrace, "'}'");
 }
 
 ast::MemberPtr Parser::parseMember(bool inInterface) {

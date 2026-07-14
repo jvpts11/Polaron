@@ -68,6 +68,9 @@ private:
     std::vector<ast::AnnotationUse> parseAnnotationUsesOpt();
     ast::AnnotationDecl parseAnnotationDecl(const std::vector<ast::AnnotationUse>& leading);
     ast::MemberPtr parseMember(bool inInterface);
+    // spec 32.9: `[visibility] affinity hot { <fields> }` -- a cache-locality hint block.
+    bool atAffinityBlock() const;
+    void parseAffinityBlock(ast::ClassDecl& c);
     std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic,
                                                  bool isAbstract, bool isOverride, bool isFinal,
                                                  bool inInterface, bool isComptime = false,

@@ -26,6 +26,17 @@
 - **Bidirectional properties** (spec 32.6) — `bidirectional double fahrenheit { celsius to fahrenheit: ...;
   fahrenheit to celsius: ...; }`: ler converte a partir do campo, atribuir converte para o campo. Desaçucarado
   no maquinário de properties (getter + `nome$set`). Sample: `bidirectional_property.ldp3`.
+- **`defer within <orçamento>`** (spec 32.10) — `defer within Duration.ofMillis(100) { s.close(); }` (ou um
+  contador cru de milissegundos). O orçamento é avaliado *onde o defer é escrito*; estourá-lo **alerta** no
+  stderr em vez de lançar — a saída de escopo pode já ser um unwind, e um cleanup atrasado ainda precisa
+  terminar. Sample: `defer_within.ldp3`.
+- **Generators (`yield`)** (spec 22.6) — um método que dá `yield` produz um `Iterator<T>` **preguiçoso**:
+  o corpo roda até o próximo `yield`, suspende ali e retoma no ponto exato na chamada seguinte. Sequência
+  infinita funciona (o consumidor para com `break`); vale em método estático e de instância (o estado captura
+  o `this`). Lowering: o corpo vira uma máquina de estados em heap (a mesma do `async`) exposta como quatro
+  funções cruas (`$start`/`$resume`/`$current`/`$free`), embrulhadas por uma classe sintetizada que implementa
+  `Iterator<T>` — então um generator é um iterador comum (funciona em `foreach`, atrás da interface, e é
+  liberado pelo laço que o possui). Sample: `generator.ldp3`.
 
 **Testes:** suíte CTest completa (samples e2e + doctest), verde.
 

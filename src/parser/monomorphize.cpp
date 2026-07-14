@@ -1340,8 +1340,323 @@ void mergePartialClasses(ast::Program& program) {
     }
 }
 
+// ---- Generators (spec 22.6) ----
+//
+// A method whose body `yield`s is a generator: calling it produces an Iterator<T> that runs the body
+// lazily, one element per next(). It is lowered here, before generics and semantics, so everything
+// downstream (type checking, the lazy `foreach`, vtables) sees ordinary LDP3:
+//
+//   1. the original method keeps its signature but its body becomes a factory:
+//          return new <Cls>$<m>$Gen(<Cls>$<m>$start(this?, args...)) on heap;
+//   2. its real body moves into a hidden twin method flagged `isGeneratorBody`, which codegen emits
+//      as four raw functions -- $start (allocate the state), $resume (run to the next yield),
+//      $current (read the yielded value), $free -- the resume being a yield-suspending state machine
+//      built on the same coroutine lowering as async;
+//   3. a synthesized class implementing Iterator<T> drives those functions, buffering one element so
+//      hasNext() can look ahead without losing it.
+//
+// The generator's state lives on the heap and is freed by the synthesized class's destructor, so the
+// iterator can be deleted like any other object (the lazy `foreach` owns the one it is handed).
+
+// Any `yield` in this statement tree? Expressions are not walked, so the `yield` of a
+// match-EXPRESSION arm (spec 16.2, a different construct with the same keyword) never counts.
+bool blockYields(const ast::Block& b);
+bool stmtYields(const ast::Stmt* st) {
+    if (st == nullptr) return false;
+    if (dynamic_cast<const ast::YieldStmt*>(st) != nullptr) return true;
+    if (const auto* x = dynamic_cast<const ast::IfStmt*>(st))
+        return blockYields(x->thenBlock) || (x->elseBlock && blockYields(*x->elseBlock));
+    if (const auto* x = dynamic_cast<const ast::WhileStmt*>(st)) return blockYields(x->body);
+    if (const auto* x = dynamic_cast<const ast::DoWhileStmt*>(st)) return blockYields(x->body);
+    if (const auto* x = dynamic_cast<const ast::ForStmt*>(st)) return blockYields(x->body);
+    if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) return blockYields(x->body);
+    if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) return stmtYields(x->stmt.get());
+    if (const auto* x = dynamic_cast<const ast::UsingStmt*>(st)) return blockYields(x->body);
+    if (const auto* x = dynamic_cast<const ast::SynchronizedStmt*>(st)) return blockYields(x->body);
+    if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) {
+        for (const auto& c : x->cases)
+            if (blockYields(c.body)) return true;
+        return x->defaultBody && blockYields(*x->defaultBody);
+    }
+    if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) {
+        for (const auto& c : x->cases)
+            if (blockYields(c.body)) return true;
+        return x->defaultBody && blockYields(*x->defaultBody);
+    }
+    if (const auto* x = dynamic_cast<const ast::TryStmt*>(st)) {
+        if (blockYields(x->body)) return true;
+        for (const auto& c : x->catches)
+            if (blockYields(c.body)) return true;
+        return x->finallyBlock && blockYields(*x->finallyBlock);
+    }
+    return false;
+}
+bool blockYields(const ast::Block& b) {
+    for (const auto& s : b.statements)
+        if (stmtYields(s.get())) return true;
+    return false;
+}
+
+ast::TypeRef simpleType(const std::string& name) {
+    ast::TypeRef t;
+    t.name = name;
+    return t;
+}
+ast::ExprPtr thisExpr() {
+    auto e = std::make_unique<ast::IdentifierExpr>();
+    e->name = "this";
+    return e;
+}
+ast::ExprPtr fieldExpr(const std::string& name) {  // this.<name>
+    auto m = std::make_unique<ast::MemberExpr>();
+    m->object = thisExpr();
+    m->member = name;
+    return m;
+}
+ast::ExprPtr boolExpr(bool v) {
+    auto b = std::make_unique<ast::BoolLiteralExpr>();
+    b->value = v;
+    return b;
+}
+ast::ExprPtr callExpr(const std::string& fn, std::vector<ast::ExprPtr> args) {
+    auto c = std::make_unique<ast::CallExpr>();
+    auto id = std::make_unique<ast::IdentifierExpr>();
+    id->name = fn;
+    c->callee = std::move(id);
+    c->args = std::move(args);
+    c->argNames.assign(c->args.size(), "");
+    return c;
+}
+ast::StmtPtr assignStmt(ast::ExprPtr target, ast::ExprPtr value) {
+    auto a = std::make_unique<ast::AssignStmt>();
+    a->target = std::move(target);
+    a->value = std::move(value);
+    return a;
+}
+ast::StmtPtr exprStmt(ast::ExprPtr e) {
+    auto s = std::make_unique<ast::ExprStmt>();
+    s->expr = std::move(e);
+    return s;
+}
+ast::StmtPtr returnStmt(ast::ExprPtr v) {
+    auto r = std::make_unique<ast::ReturnStmt>();
+    r->value = std::move(v);
+    return r;
+}
+
+// An `extern cdecl static` declaration of one of the generator's four raw functions. Codegen defines
+// them in this same module; declaring them as extern is what lets synthesized LDP3 call them.
+ast::MemberPtr externDecl(const std::string& name, std::vector<ast::Param> params,
+                          const ast::TypeRef& ret, SourceLocation loc) {
+    auto m = std::make_unique<ast::MethodDecl>();
+    m->loc = loc;
+    m->visibility = "private";
+    m->isStatic = true;
+    m->isExtern = true;
+    m->externConvention = "cdecl";
+    m->name = name;
+    m->params = std::move(params);
+    m->returnType = ret;
+    return m;
+}
+
+bool synthesizeGenerators(ast::Program& program) {
+    bool ok = true;
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            std::vector<ast::ClassDecl> newClasses;
+            for (auto& cls : ns.classes) {
+                std::vector<ast::MemberPtr> extraMembers;
+                for (auto& mem : cls.members) {
+                    auto* m = dynamic_cast<ast::MethodDecl*>(mem.get());
+                    if (m == nullptr || m->isExtern || m->isAbstract) continue;
+                    if (!blockYields(m->body)) continue;
+
+                    if (m->returnType.name != "Iterator" || m->returnType.typeArgs.size() != 1) {
+                        std::fprintf(stderr,
+                                     "%s:%d:%d: error: a method that yields is a generator and must "
+                                     "return Iterator<T> (spec 22.6); '%s' returns '%s'\n",
+                                     std::string(m->loc.file).c_str(), m->loc.line, m->loc.col,
+                                     m->name.c_str(), ast::canonicalType(m->returnType).c_str());
+                        ok = false;
+                        continue;
+                    }
+                    const std::string elem = m->returnType.typeArgs[0];
+                    bool elemIsParam = false;
+                    for (const auto& tp : cls.typeParams)
+                        if (tp == elem) elemIsParam = true;
+                    for (const auto& tp : m->typeParams)
+                        if (tp == elem) elemIsParam = true;
+                    if (elemIsParam) {
+                        std::fprintf(stderr,
+                                     "%s:%d:%d: error: generator '%s' yields its type parameter '%s'; "
+                                     "generators in a generic class or method are not supported yet "
+                                     "(spec 22.6)\n",
+                                     std::string(m->loc.file).c_str(), m->loc.line, m->loc.col,
+                                     m->name.c_str(), elem.c_str());
+                        ok = false;
+                        continue;
+                    }
+
+                    const std::string sym = cls.name + "$" + m->name;
+                    const std::string genCls = sym + "$Gen";
+                    const ast::TypeRef elemT = simpleType(elem);
+                    const ast::TypeRef longT = simpleType("long");
+                    const ast::TypeRef boolT = simpleType("boolean");
+                    const ast::TypeRef voidT = simpleType("void");
+
+                    // --- the hidden twin holding the real body (codegen lowers it to $start/$resume/...)
+                    auto twin = std::make_unique<ast::MethodDecl>();
+                    twin->loc = m->loc;
+                    twin->visibility = "private";
+                    twin->isStatic = m->isStatic;
+                    twin->isGeneratorBody = true;
+                    twin->genElem = elem;
+                    twin->genSym = sym;
+                    twin->name = m->name + "$body";
+                    twin->returnType = voidT;
+                    for (const auto& p : m->params) twin->params.push_back({p.type, p.name, p.loc});
+                    twin->body = std::move(m->body);
+
+                    // --- $start(this?, args...) -> long: allocate the state, seed it with the arguments
+                    std::vector<ast::Param> startParams;
+                    if (!m->isStatic) startParams.push_back({simpleType(cls.name), "self", m->loc});
+                    for (const auto& p : m->params) startParams.push_back({p.type, p.name, p.loc});
+                    extraMembers.push_back(externDecl(sym + "$start", startParams, longT, m->loc));
+
+                    // --- the factory body the original method now has
+                    std::vector<ast::ExprPtr> startArgs;
+                    if (!m->isStatic) startArgs.push_back(thisExpr());
+                    for (const auto& p : m->params) {
+                        auto id = std::make_unique<ast::IdentifierExpr>();
+                        id->name = p.name;
+                        startArgs.push_back(std::move(id));
+                    }
+                    auto mk = std::make_unique<ast::NewExpr>();
+                    mk->loc = m->loc;
+                    mk->className = genCls;
+                    mk->location = "heap";
+                    mk->args.push_back(callExpr(sym + "$start", std::move(startArgs)));
+                    m->body = ast::Block{};
+                    m->body.statements.push_back(returnStmt(std::move(mk)));
+                    extraMembers.push_back(std::move(twin));
+
+                    // --- the Iterator<T> class driving the state machine
+                    ast::ClassDecl g;
+                    g.loc = m->loc;
+                    g.visibility = "public";
+                    g.name = genCls;
+                    g.interfaces.push_back("Iterator");
+                    g.interfaceTypeArgs.push_back({elem});
+                    auto field = [&](const std::string& name, const ast::TypeRef& t) {
+                        auto f = std::make_unique<ast::FieldDecl>();
+                        f->loc = m->loc;
+                        f->visibility = "private";
+                        f->isMutable = true;
+                        f->type = t;
+                        f->name = name;
+                        g.members.push_back(std::move(f));
+                    };
+                    field("st", longT);        // the heap state object, as an opaque handle
+                    field("buffered", boolT);  // an element is sitting in `buf`, not yet consumed
+                    field("finished", boolT);  // the body ran to completion
+                    field("buf", elemT);
+                    g.members.push_back(
+                        externDecl(sym + "$resume", {{longT, "st", m->loc}}, boolT, m->loc));
+                    g.members.push_back(
+                        externDecl(sym + "$current", {{longT, "st", m->loc}}, elemT, m->loc));
+                    g.members.push_back(
+                        externDecl(sym + "$free", {{longT, "st", m->loc}}, voidT, m->loc));
+
+                    auto ctor = std::make_unique<ast::ConstructorDecl>();
+                    ctor->loc = m->loc;
+                    ctor->visibility = "public";
+                    ctor->params.push_back({longT, "st", m->loc});
+                    auto stArg = std::make_unique<ast::IdentifierExpr>();
+                    stArg->name = "st";
+                    ctor->body.statements.push_back(assignStmt(fieldExpr("st"), std::move(stArg)));
+                    ctor->body.statements.push_back(assignStmt(fieldExpr("buffered"), boolExpr(false)));
+                    ctor->body.statements.push_back(assignStmt(fieldExpr("finished"), boolExpr(false)));
+                    g.members.push_back(std::move(ctor));
+
+                    // pump(): run the body to the next yield unless an element is already buffered.
+                    auto pump = std::make_unique<ast::MethodDecl>();
+                    pump->loc = m->loc;
+                    pump->visibility = "private";
+                    pump->name = "pump";
+                    pump->returnType = voidT;
+                    auto guard = [&](const std::string& f) {
+                        auto i = std::make_unique<ast::IfStmt>();
+                        i->loc = m->loc;
+                        i->cond = fieldExpr(f);
+                        i->thenBlock.statements.push_back(returnStmt(nullptr));
+                        pump->body.statements.push_back(std::move(i));
+                    };
+                    guard("buffered");
+                    guard("finished");
+                    auto step = std::make_unique<ast::IfStmt>();
+                    step->loc = m->loc;
+                    {
+                        std::vector<ast::ExprPtr> a;
+                        a.push_back(fieldExpr("st"));
+                        step->cond = callExpr(sym + "$resume", std::move(a));
+                        std::vector<ast::ExprPtr> a2;
+                        a2.push_back(fieldExpr("st"));
+                        step->thenBlock.statements.push_back(
+                            assignStmt(fieldExpr("buf"), callExpr(sym + "$current", std::move(a2))));
+                        step->thenBlock.statements.push_back(
+                            assignStmt(fieldExpr("buffered"), boolExpr(true)));
+                        step->elseBlock = std::make_unique<ast::Block>();
+                        step->elseBlock->statements.push_back(
+                            assignStmt(fieldExpr("finished"), boolExpr(true)));
+                    }
+                    pump->body.statements.push_back(std::move(step));
+                    g.members.push_back(std::move(pump));
+
+                    auto hasNext = std::make_unique<ast::MethodDecl>();
+                    hasNext->loc = m->loc;
+                    hasNext->visibility = "public";
+                    hasNext->isOverride = true;
+                    hasNext->name = "hasNext";
+                    hasNext->returnType = boolT;
+                    hasNext->body.statements.push_back(exprStmt(callExpr("pump", {})));
+                    hasNext->body.statements.push_back(returnStmt(fieldExpr("buffered")));
+                    g.members.push_back(std::move(hasNext));
+
+                    auto next = std::make_unique<ast::MethodDecl>();
+                    next->loc = m->loc;
+                    next->visibility = "public";
+                    next->isOverride = true;
+                    next->name = "next";
+                    next->returnType = elemT;
+                    next->body.statements.push_back(exprStmt(callExpr("pump", {})));
+                    next->body.statements.push_back(assignStmt(fieldExpr("buffered"), boolExpr(false)));
+                    next->body.statements.push_back(returnStmt(fieldExpr("buf")));
+                    g.members.push_back(std::move(next));
+
+                    auto dtor = std::make_unique<ast::DestructorDecl>();
+                    dtor->loc = m->loc;
+                    dtor->visibility = "public";
+                    {
+                        std::vector<ast::ExprPtr> a;
+                        a.push_back(fieldExpr("st"));
+                        dtor->body.statements.push_back(exprStmt(callExpr(sym + "$free", std::move(a))));
+                    }
+                    g.members.push_back(std::move(dtor));
+
+                    newClasses.push_back(std::move(g));
+                }
+                for (auto& em : extraMembers) cls.members.push_back(std::move(em));
+            }
+            for (auto& g : newClasses) ns.classes.push_back(std::move(g));
+        }
+    }
+    return ok;
+}
+
 bool monomorphize(ast::Program& program) {
     mergePartialClasses(program);   // spec 8.3: fold the parts of a `partial` class into one
+    if (!synthesizeGenerators(program)) return false;  // spec 22.6: `yield` -> a lazy Iterator class
     // Record enum names so EnumName.parse() can force-monomorphize its Option<Enum> result.
     g_enumNames.clear();
     for (auto& b : program.bundles)

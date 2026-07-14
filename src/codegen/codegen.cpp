@@ -389,6 +389,9 @@ struct ClassLayout {
     std::string superclass;
     std::vector<std::string> interfaces;
     std::vector<std::pair<std::string, std::string>> ownFields;  // (name, type), declaration order
+    // spec 32.9: affinity of each own field ("hot"/"cold"; absent = neutral). Only the object's layout
+    // is affected -- ownFields stays in declaration order, which is what positional patterns key on.
+    std::map<std::string, std::string> fieldAffinity;
     bool isAbstract = false;
     bool isInterface = false;
     bool isUnion = false;  // fields overlap one storage (C-style union)
@@ -639,6 +642,10 @@ struct CodeGenerator::Impl {
         bool heap = false;                  // using: free it (a heap resource)
         bool consumed = false;              // using: an explicit `delete r` already disposed it
         llvm::Value* lockRelease = nullptr; // synchronized: release this Mutex lock (block-scoped)
+        // A `foreach` iterator the loop itself minted (spec 9.2 / 22.6): dispose it through its vtable,
+        // since its static type is usually the Iterator<T> interface and the concrete class (a
+        // generator's, say) is the one whose destructor releases the sequence's state.
+        bool virtualDelete = false;
         // spec 32.10: `defer within <duration>` -- an i64 millisecond budget for this defer block. Null
         // for a plain defer. Exceeding it reports an overrun (an alert, not a thrown exception, so a
         // soft-real-time cleanup still completes).
@@ -693,6 +700,15 @@ struct CodeGenerator::Impl {
     int asyncSpillTop_ = 0;                     // next free scratch slot (used LIFO)
     static constexpr int kAsyncScratchSlots = 64;
     struct SpillToken { bool active = false; unsigned slot = 0; llvm::Type* ty = nullptr; };
+    // Generator state-machine lowering (spec 22.6), the same shape as the async one: while emitting a
+    // generator's parked body, every local lives in the heap state object and each `yield` splits its
+    // block into a return-to-caller / resume-here pair.
+    bool genSM = false;
+    llvm::StructType* genSMState = nullptr;  // {i32 state, T current, self?, params..., locals...}
+    llvm::Value* genSMStatePtr = nullptr;    // the resume function's `st` argument
+    std::string genSMElem;                   // the element type T
+    int genSMIdx = 0;                        // next yield's index / state number (1-based; 0 = start)
+    std::vector<std::pair<int, llvm::BasicBlock*>> genSMCases;  // (state index -> resume block)
     // Inside an `expecting { ... }` block (spec 30.18): a `return` stores into this slot and branches
     // to expectingEnd_ (the block is an expression, not a method return).
     llvm::Value* expectingSlot_ = nullptr;
@@ -1698,13 +1714,29 @@ struct CodeGenerator::Impl {
         return "";
     }
 
-    // Fields in layout order: inherited (base-first), then own.
+    // Fields in layout order: inherited (base-first, in the base's own layout order, so a subclass's
+    // object still starts with exactly the base's prefix), then own.
+    //
+    // Own fields are grouped by affinity (spec 32.9): hot first, then the unmarked ones, then cold --
+    // stably, so declaration order is preserved within each group. Packing the hot fields together at
+    // the front means a loop that touches only them touches fewer cache lines. Applying this per class
+    // (rather than to the flattened list) is what keeps the base prefix intact.
     std::vector<std::pair<std::string, std::string>> collectFields(const std::string& className) {
         std::vector<std::pair<std::string, std::string>> result;
         auto it = classes.find(className);
         if (it == classes.end()) return result;
         if (!it->second.superclass.empty()) result = collectFields(it->second.superclass);
-        for (const auto& f : it->second.ownFields) result.push_back(f);
+        const ClassLayout& l = it->second;
+        if (l.fieldAffinity.empty()) {
+            for (const auto& f : l.ownFields) result.push_back(f);
+            return result;
+        }
+        for (const char* group : {"hot", "", "cold"})
+            for (const auto& f : l.ownFields) {
+                auto a = l.fieldAffinity.find(f.first);
+                const std::string aff = a == l.fieldAffinity.end() ? std::string() : a->second;
+                if (aff == group) result.push_back(f);
+            }
         return result;
     }
 
@@ -6845,6 +6877,10 @@ struct CodeGenerator::Impl {
         }
         if (c.consumed) return;  // an explicit `delete r` inside the using block already disposed it
         llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), c.slot);
+        if (c.virtualDelete) {  // destructor through the vtable, then free (see emitDeleteObject)
+            emitDeleteObject(objPtr, c.className);
+            return;
+        }
         auto cit = classes.find(c.className);
         if (cit != classes.end() && cit->second.hasDestructor)
             builder.CreateCall(functions[c.className + ".~" + c.className], {objPtr});
@@ -7978,9 +8014,9 @@ struct CodeGenerator::Impl {
         }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
             const std::string declType = vd->isVar ? typeName(*vd->init) : typeRefName(vd->type);
-            // Inside an async state machine the local already lives in the heap state object
-            // (pre-bound); just evaluate the initializer (which may itself await) and store it.
-            if (asyncSM) {
+            // Inside an async/generator state machine the local already lives in the heap state
+            // object (pre-bound); just evaluate the initializer and store it, so it survives a suspend.
+            if (asyncSM || genSM) {
                 auto it = locals.find(vd->name);
                 if (it != locals.end()) {
                     llvm::Value* v = emitExpr(*vd->init);
@@ -8669,6 +8705,21 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* ys = dynamic_cast<const ast::YieldStmt*>(&stmt)) {
+            if (genSM) {  // spec 22.6: hand the element to the caller and suspend right here
+                llvm::Value* v = ys->value != nullptr ? emitExpr(*ys->value) : nullptr;
+                if (v == nullptr) return;
+                builder.CreateStore(coerce(v, typeName(*ys->value), genSMElem),
+                                    builder.CreateStructGEP(genSMState, genSMStatePtr, 1, "gen.cur"));
+                const int idx = ++genSMIdx;  // the state to come back to, on the next resume
+                builder.CreateStore(builder.getInt32(idx),
+                                    builder.CreateStructGEP(genSMState, genSMStatePtr, 0, "gen.st"));
+                builder.CreateRet(llvm::ConstantInt::get(currentFn->getReturnType(), 1));  // yielded
+                llvm::BasicBlock* resumeBB =
+                    llvm::BasicBlock::Create(context, "gen.resume" + std::to_string(idx), currentFn);
+                genSMCases.push_back({idx, resumeBB});
+                builder.SetInsertPoint(resumeBB);
+                return;
+            }
             // `yield expr;` in a match-expression block arm (spec 16.2): store the value and jump to
             // the arm's continuation.
             llvm::Value* v = ys->value != nullptr ? emitExpr(*ys->value) : nullptr;
@@ -8688,6 +8739,13 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
+            if (genSM) {  // spec 22.6: a bare `return` ends the sequence -- the resume reports "done"
+                emitScopeCleanup();
+                builder.CreateStore(builder.getInt32(-1),
+                                    builder.CreateStructGEP(genSMState, genSMStatePtr, 0, "gen.st"));
+                builder.CreateRet(llvm::ConstantInt::get(currentFn->getReturnType(), 0));
+                return;
+            }
             // Returning a stack-allocated object escapes the frame -- its pointer would dangle and the
             // caller reads freed memory. Promote a directly-returned plain `new X() [on stack]` to the
             // heap so the returned object stays live; a returned object is the caller's to own and free.
@@ -9301,10 +9359,17 @@ struct CodeGenerator::Impl {
             llvm::FunctionType::get(builder.getPtrTy(), {builder.getPtrTy()}, false);
         std::string itCls = cbase;
         llvm::Value* itObj = nullptr;
+        // Who owns the iterator object? The loop does whenever it is fresh: either the loop called
+        // iterator() itself, or the subject is a call that minted one (a generator, or an explicit
+        // `list.iterator()`) -- a returned object is the caller's to own. A subject that is a variable
+        // or a field is borrowed and must survive the loop, so it is left alone.
+        bool ownsIterator = false;
         const bool selfIterator =
             !methodOwner(cbase, "hasNext").empty() && !methodOwner(cbase, "next").empty();
         if (selfIterator) {
             itObj = emitExpr(*s.iterable);       // the subject is the iterator
+            ownsIterator = dynamic_cast<const ast::CallExpr*>(s.iterable.get()) != nullptr ||
+                           dynamic_cast<const ast::NewExpr*>(s.iterable.get()) != nullptr;
         } else if (!methodOwner(cbase, "iterator").empty()) {
             llvm::Value* recv = emitExpr(*s.iterable);
             if (recv == nullptr) return false;
@@ -9313,6 +9378,7 @@ struct CodeGenerator::Impl {
             itCls = baseType(ret);
             if (methodOwner(itCls, "hasNext").empty() || methodOwner(itCls, "next").empty()) return false;
             itObj = emitDynCall(cbase, "iterator", ptrToPtr, recv);
+            ownsIterator = true;  // the loop minted it, so the loop disposes it
         } else {
             return false;
         }
@@ -9329,6 +9395,16 @@ struct CodeGenerator::Impl {
 
         llvm::Value* itSlot = createEntryAlloca("fe.it", builder.getPtrTy());
         builder.CreateStore(itObj, itSlot);
+        if (ownsIterator) {
+            // Registered as a scope cleanup, not freed at the loop's end block: that way it is disposed
+            // on every exit -- falling off the end, `break`, `return`, or an exception unwind.
+            Cleanup c;
+            c.slot = itSlot;
+            c.className = itCls;
+            c.heap = true;
+            c.virtualDelete = true;
+            deferred.push_back(c);
+        }
         llvm::Value* vSlot = createEntryAlloca(s.varName, elemTy);
         locals[s.varName] = LocalSlot{vSlot, et};
         declareLocalDebug(vSlot, s.varName, et, s.loc);
@@ -9556,6 +9632,7 @@ struct CodeGenerator::Impl {
                                 staticFieldType[cls.name + "." + f->name] = ftype;
                             } else {
                                 layout.ownFields.emplace_back(f->name, ftype);
+                                if (!f->affinity.empty()) layout.fieldAffinity[f->name] = f->affinity;
                                 if (f->isPersistent) layout.persistOrder.push_back(f->name);
                                 if (f->bitWidth > 0) layout.bitFieldWidth[f->name] = f->bitWidth;
                                 if (!f->propertySetter.empty())
@@ -10035,6 +10112,9 @@ struct CodeGenerator::Impl {
                                 continue;
                             }
                             if (m->isAbstract) continue;  // no body to declare
+                            // spec 22.6: a generator's parked body is not a method at all -- it becomes
+                            // the four raw functions declared as externs by the synthesized class.
+                            if (m->isGeneratorBody) continue;
                             if (m->isExtern) {  // spec 26: links to a C symbol (the simple name)
                                 llvm::FunctionType* ety =
                                     externFnType(m->params, m->returnType, m->isVariadic, m->loc);
@@ -10784,6 +10864,125 @@ struct CodeGenerator::Impl {
             "spilled");
     }
 
+    // Emits a generator's parked body (spec 22.6) as the four raw functions the synthesized Iterator
+    // class declared as externs:
+    //
+    //   <sym>$start(self?, args...) -> long   allocate the heap state, seed it with the arguments
+    //   <sym>$resume(long st) -> boolean      run the body to the next `yield`; false when it ends
+    //   <sym>$current(long st) -> T           the element the last resume yielded
+    //   <sym>$free(long st) -> void           release the state
+    //
+    // $resume is a state machine built exactly like the async one: every local lives in the state
+    // object (so it survives suspension), the body is emitted with its natural control flow, and each
+    // `yield` -- anywhere, including inside loops -- returns to the caller after recording the block to
+    // come back to. The entry switch jumps straight there on the next call.
+    void emitGeneratorMethod(const ast::ClassDecl& cls, const ast::MethodDecl& m) {
+        llvm::Function* startF = module.getFunction(m.genSym + "$start");
+        llvm::Function* resumeF = module.getFunction(m.genSym + "$resume");
+        llvm::Function* currentF = module.getFunction(m.genSym + "$current");
+        llvm::Function* freeF = module.getFunction(m.genSym + "$free");
+        if (startF == nullptr || resumeF == nullptr || currentF == nullptr || freeF == nullptr)
+            return;  // the synthesized class was dropped (e.g. an earlier error): nothing to emit
+
+        std::vector<std::pair<std::string, std::string>> tlocals;
+        scanAsyncLocals(m.body, tlocals);  // same scan: every local must live in the state object
+
+        // State layout: {i32 state, T current, self?, params..., locals...}.
+        const bool hasSelf = !m.isStatic;
+        std::vector<llvm::Type*> fields = {builder.getInt32Ty(), llvmType(m.genElem)};
+        if (hasSelf) fields.push_back(builder.getPtrTy());
+        const unsigned argBase = static_cast<unsigned>(fields.size());
+        for (const auto& p : m.params) fields.push_back(llvmType(typeRefName(p.type)));
+        const unsigned localBase = static_cast<unsigned>(fields.size());
+        for (const auto& l : tlocals) fields.push_back(llvmType(l.second));
+        llvm::StructType* stateTy =
+            llvm::StructType::create(context, fields, m.genSym + "$genstate");
+
+        // --- $start: malloc the state, store state=0 and the arguments, hand back the handle.
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", startF));
+        llvm::Value* st = builder.CreateCall(mallocFn(), {sizeOf(stateTy)}, "gen.state");
+        builder.CreateStore(builder.getInt32(0), builder.CreateStructGEP(stateTy, st, 0));
+        for (unsigned i = 0; i < startF->arg_size(); ++i)  // self (if any) then the arguments, in order
+            builder.CreateStore(startF->getArg(i), builder.CreateStructGEP(stateTy, st, 2 + i));
+        builder.CreateRet(builder.CreatePtrToInt(st, builder.getInt64Ty()));
+
+        // --- $current: read the buffered element.
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", currentF));
+        llvm::Value* cst = builder.CreateIntToPtr(currentF->getArg(0), builder.getPtrTy(), "gen.st");
+        builder.CreateRet(builder.CreateLoad(llvmType(m.genElem),
+                                             builder.CreateStructGEP(stateTy, cst, 1), "gen.cur"));
+
+        // --- $free: release the state.
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", freeF));
+        builder.CreateCall(freeFn(), {builder.CreateIntToPtr(freeF->getArg(0), builder.getPtrTy())});
+        builder.CreateRetVoid();
+
+        // --- $resume: the body, as a state machine.
+        currentFn = resumeF;
+        currentClass = hasSelf ? cls.name : "";
+        currentRetType = resumeF->getReturnType();
+        currentThis = nullptr;
+        currentEnsures = nullptr;
+        currentInvariants = nullptr;
+        currentDtorChain = "";
+        locals.clear();
+        scopeObjects.clear();
+        scopeRegions.clear();
+        lazyRegions_.clear();
+        lazyRegionSize_.clear();
+        lazyRegionAt_.clear();
+        volatileRegions_.clear();
+        regionCursorSlot_.clear();
+        ownedRegions_.clear();
+        volatileObjects_.clear();
+        deferred.clear();
+        escapingLocals_.clear();
+        labelBlocks.clear();
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", resumeF));
+        llvm::Value* rst = builder.CreateIntToPtr(resumeF->getArg(0), builder.getPtrTy(), "gen.st");
+        if (hasSelf)
+            currentThis = builder.CreateLoad(builder.getPtrTy(),
+                                             builder.CreateStructGEP(stateTy, rst, 2, "gen.self.addr"),
+                                             "gen.self");
+        for (std::size_t i = 0; i < m.params.size(); ++i)
+            locals[m.params[i].name] =
+                LocalSlot{builder.CreateStructGEP(stateTy, rst, argBase + i, m.params[i].name),
+                          typeRefName(m.params[i].type)};
+        for (std::size_t j = 0; j < tlocals.size(); ++j)
+            locals[tlocals[j].first] = LocalSlot{
+                builder.CreateStructGEP(stateTy, rst, localBase + j, tlocals[j].first),
+                tlocals[j].second};
+
+        llvm::BasicBlock* bodyStart = llvm::BasicBlock::Create(context, "gen.body", resumeF);
+        llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(context, "gen.done", resumeF);
+        llvm::Value* stateVal = builder.CreateLoad(
+            builder.getInt32Ty(), builder.CreateStructGEP(stateTy, rst, 0, "gen.st.addr"), "gen.state");
+        llvm::SwitchInst* sw = builder.CreateSwitch(stateVal, doneBB, 2);
+        sw->addCase(builder.getInt32(0), bodyStart);  // state 0: run from the top; -1: exhausted
+
+        genSM = true;
+        genSMState = stateTy;
+        genSMStatePtr = rst;
+        genSMElem = m.genElem;
+        genSMIdx = 0;
+        genSMCases.clear();
+
+        builder.SetInsertPoint(bodyStart);
+        emitBlock(m.body, /*newScope=*/false);  // natural control flow; yields split their blocks
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) {
+            builder.CreateStore(builder.getInt32(-1),
+                                builder.CreateStructGEP(stateTy, rst, 0, "gen.st.addr"));
+            builder.CreateBr(doneBB);  // ran off the end: the sequence is exhausted
+        }
+        builder.SetInsertPoint(doneBB);
+        builder.CreateRet(llvm::ConstantInt::get(resumeF->getReturnType(), 0));
+        for (const auto& [idx, blk] : genSMCases) sw->addCase(builder.getInt32(idx), blk);
+
+        genSM = false;
+        genSMState = nullptr;
+        genSMStatePtr = nullptr;
+    }
+
     // Emits an async method whose body awaits (spec 20.2) as a state machine, via coroutine
     // lowering: every local lives in the heap state object, the body is emitted with its natural
     // control flow, and each `await` (anywhere -- including inside loops/ifs) splits its block into
@@ -10968,6 +11167,8 @@ struct CodeGenerator::Impl {
                                          nullptr, nullptr, "", nullptr, false,
                                          /*argvEntry=*/moduleTripleStr(module).find("none") ==
                                              std::string::npos);
+                            } else if (m->isGeneratorBody) {
+                                emitGeneratorMethod(cls, *m);  // spec 22.6: $start/$resume/$current/$free
                             } else if (m->isAsync && !m->isAbstract) {
                                 emitAsyncMethod(cls, *m);
                             } else if (!m->isAbstract && !m->isExtern) {  // extern: no LDP3 body

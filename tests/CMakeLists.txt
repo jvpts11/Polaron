@@ -3564,6 +3564,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # generators (spec 22.6): a method that yields produces a lazy Iterator<T> -- bounded, unbounded
+        # (stopped by `break`), instance (capturing `this`), and driven by hand through the interface.
+        add_test(NAME codegen_generator_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/generator.ldp3"
+            "-DEXPECTED=evens=20 primes=10 last=29 ticks=3210 first=0 more=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # `defer within <budget>` (spec 32.10): a cleanup with a time budget. Under budget it is silent;
         # over budget the cleanup still completes and the runtime alerts on stderr (checked via
         # ERRCONTAINS -- the alert is a diagnostic, so it is deliberately not on stdout).

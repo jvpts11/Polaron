@@ -264,6 +264,9 @@ private:
     std::vector<std::string> currentThrows_;  // base names in the method's `throws` clause (spec 21.1)
     std::vector<std::vector<std::string>> catchStack_;  // enclosing try's caught types (base names)
     std::string currentReturnType_;  // declared return type of the method being analyzed (null-safety)
+    // spec 22.6: inside a generator's parked body, the element type of the Iterator<T> it produces --
+    // every `yield` must produce it. Empty in any other method.
+    std::string currentGenElem_;
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state
     std::unordered_map<std::string, RegionConstraints> regionConstraints_;  // region var -> accepts/rejects

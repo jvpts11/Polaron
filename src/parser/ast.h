@@ -733,6 +733,13 @@ struct MethodDecl : MemberDecl {
     bool isDeprecated = false;  // spec 14.2: every call site gets a warning
     bool isExtern = false;    // spec 26: an external C function (no LDP3 body); links to a C symbol
     bool isVariadic = false;  // spec 26: an extern C function with a trailing `...` (e.g. printf)
+    // spec 22.6 generators: a method whose body yields. The synthesis pass (monomorphize) turns the
+    // original method into a factory returning a synthesized Iterator class, and parks the original
+    // body in a hidden twin flagged here. Codegen emits that twin as four raw functions
+    // (<genSym>$start/$resume/$current/$free) whose resume is a yield-suspending state machine.
+    bool isGeneratorBody = false;
+    std::string genElem;  // the element type T of the Iterator<T> the generator produces
+    std::string genSym;   // symbol prefix of its four raw functions, e.g. "Primes$upTo"
     std::string externConvention;  // "cdecl"/"stdcall"/"fastcall" when isExtern
     std::string name;
     std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
@@ -761,6 +768,10 @@ struct FieldDecl : MemberDecl {
     bool isExternal = false;    // spec 37.1: an association, not owned; cascade does not follow it
     bool isMovable = false;     // spec 19.9: `movable` field -- movable separately (partitionable class)
     bool isUnique = false;      // spec 19.9: `unique` field -- single live reference, movable separately
+    // spec 32.9: "hot" / "cold" when the field was declared inside an `affinity` block; "" otherwise.
+    // A layout hint only: hot fields are packed first in the object and cold ones last, so a loop that
+    // touches only the hot ones touches fewer cache lines.
+    std::string affinity;
     TypeRef type;
     std::string name;
     int bitWidth = 0;  // `field : N` bit-field width (spec 11.1); 0 = not a bit-field

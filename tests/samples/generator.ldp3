@@ -1,0 +1,114 @@
+import System.IO.Console;
+import System.Collections.Iterator;
+program Generator;
+
+// Generators (spec 22.6): a method whose body `yield`s produces an Iterator<T> that runs the body
+// lazily -- one element per next(), suspending at each yield and resuming right there on the next
+// call. The sequence can be infinite: the loop consumes only what it asks for, and `break` simply
+// leaves the body suspended forever.
+//
+// The compiler lowers the body to a heap state machine (the same coroutine lowering async uses) and
+// wraps it in a synthesized class implementing Iterator<T>, so a generator is an ordinary iterator:
+// it works with `foreach`, with an interface-typed variable, and its state is freed by the loop that
+// owns it.
+
+public bundle main {
+    public namespace app {
+
+        public class Sequences {
+            // A static generator over a bounded range, with a local that must survive each suspension.
+            public static method evens(int limit) returns Iterator<int> {
+                mutable int n = 0;
+                while (n <= limit) {
+                    yield n;
+                    n = n + 2;
+                }
+            }
+
+            // The spec's example: an unbounded sequence. `while (true)` never ends -- the consumer
+            // decides when to stop.
+            public static method primes() returns Iterator<int> {
+                mutable int n = 2;
+                while (true) {
+                    if (Sequences.isPrime(n)) {
+                        yield n;
+                    }
+                    n = n + 1;
+                }
+            }
+
+            private static method isPrime(int n) returns boolean {
+                if (n < 2) {
+                    return false;
+                }
+                mutable int d = 2;
+                while (d * d <= n) {
+                    if (n % d == 0) {
+                        return false;
+                    }
+                    d = d + 1;
+                }
+                return true;
+            }
+        }
+
+        // An instance generator: the state captures `this`, so the body reads the object's fields.
+        public class Countdown {
+            private mutable int from;
+
+            public constructor Countdown(int from) {
+                this.from = from;
+            }
+
+            public method ticks() returns Iterator<int> {
+                mutable int t = this.from;
+                while (t > 0) {
+                    yield t;
+                    t = t - 1;
+                }
+                yield 0;
+                return;   // an early return ends the sequence
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int sum = 0;
+                for (int e in Sequences.evens(8)) {
+                    sum = sum + e;
+                }
+                System.IO.Console.printf("evens=%d\n", sum);   // 0+2+4+6+8
+
+                // An infinite generator, stopped by the consumer.
+                mutable int last = 0;
+                mutable int count = 0;
+                for (int p in Sequences.primes()) {
+                    if (p > 30) {
+                        break;
+                    }
+                    last = p;
+                    count = count + 1;
+                }
+                System.IO.Console.printf("primes=%d last=%d\n", count, last);
+
+                Countdown c = new Countdown(3) on heap;
+                mutable int steps = 0;
+                for (int t in c.ticks()) {
+                    steps = steps * 10 + t;
+                }
+                System.IO.Console.printf("ticks=%d\n", steps);   // 3,2,1,0 -> 3210
+                delete c;
+
+                // A generator is just an Iterator: it can be held, driven by hand, and deleted.
+                Iterator<int> it = Sequences.evens(4);
+                mutable int first = -1;
+                if (it.hasNext()) {
+                    first = it.next();
+                }
+                System.IO.Console.printf("first=%d more=%d\n", first, it.hasNext());
+                delete it;
+                return;
+            }
+        }
+    }
+}
