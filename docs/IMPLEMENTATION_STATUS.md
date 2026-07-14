@@ -38,6 +38,16 @@
   `Iterator<T>` — então um generator é um iterador comum (funciona em `foreach`, atrás da interface, e é
   liberado pelo laço que o possui). Sample: `generator.ldp3`.
 
+- **Affinity hints** (spec 32.9) — `public affinity hot { ... }` / `affinity cold { ... }`: os campos *hot* são
+  empacotados no começo do objeto e os *cold* no fim, independentemente da ordem em que os blocos foram
+  escritos (uma subclasse continua começando exatamente com o layout da base). Data-oriented design como
+  feature de linguagem. Sample: `affinity.ldp3`.
+- **Mutable dispatch tables** (spec 32.8) — `Dog.methods.replace("bark", lambda(Dog d) returns void { ... })`:
+  a substituição assume o slot da vtable da classe, então **toda** instância (as já vivas e as futuras) passa
+  a usá-la — AOP de verdade, mocking sem framework, hot patching localizado. Type-safe: a assinatura exigida
+  é `function<Retorno, Receptor, Params...>`, checada em tempo de compilação. A lambda pode capturar (a closure
+  é instalada num global que o *thunk* do slot lê). Sample: `dispatch_table.ldp3`.
+
 **Testes:** suíte CTest completa (samples e2e + doctest), verde.
 
 > Documento panorâmico do que **está** e do que **não está** implementado no compilador LDP3.

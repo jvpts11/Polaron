@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -115,6 +116,9 @@ public:
     bool analyze(const ast::Program& program, bool libraryMode = false, bool testMode = false);
 
     bool hasErrors() const { return !errors_.empty(); }
+    // Classes whose dispatch table is patched at runtime (spec 32.8). Codegen must give them a vtable
+    // and never devirtualize their calls, or a replacement would not be seen at the call sites.
+    const std::set<std::string>& patchedClasses() const { return patchedClasses_; }
     const std::vector<SemaError>& errors() const { return errors_; }
     const std::vector<SemaError>& warnings() const { return warnings_; }  // non-fatal diagnostics
     const EntryPoint& entryPoint() const { return entry_; }
@@ -200,6 +204,11 @@ private:
     const FieldInfo* findField(const std::string& className, const std::string& field) const;
     const MethodInfo* findMethod(const std::string& className, const std::string& method,
                                  bool objectFallback = false) const;
+    // spec 32.8 mutable dispatch tables. dispatchTableClass returns the class name when `expr` is a
+    // `<Class>.methods` reference (else ""); checkMethodPatch validates a `.replace(name, fn)` on it and
+    // records the class, which codegen needs (a patched class always dispatches through its vtable).
+    std::string dispatchTableClass(const ast::Expr& expr) const;
+    std::string checkMethodPatch(const std::string& className, const ast::CallExpr& call);
     std::vector<std::string> catalogImplementers(const std::string& catalog) const;  // enums of (spec 12.4)
     // True if `sub` is `super` or transitively extends/implements it. `depth`
     // bounds the recursion so a malformed (cyclic) type graph can't overflow.
@@ -267,6 +276,7 @@ private:
     // spec 22.6: inside a generator's parked body, the element type of the Iterator<T> it produces --
     // every `yield` must produce it. Empty in any other method.
     std::string currentGenElem_;
+    std::set<std::string> patchedClasses_;  // spec 32.8: classes with a runtime-replaced method
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state
     std::unordered_map<std::string, RegionConstraints> regionConstraints_;  // region var -> accepts/rejects

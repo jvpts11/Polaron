@@ -127,6 +127,14 @@ void emitMethod(Emitter& e, const MethodDecl& m) {
 
 void emitField(Emitter& e, const FieldDecl& f) {
     if (!exposed(f.visibility)) return;
+    // spec 32.9: an affinity decides where the field sits in the object, so it MUST cross the bundle
+    // boundary -- a consumer that laid the same class out in declaration order would disagree with the
+    // bundle's own code about every offset. Each field is re-emitted in its own one-field block; the
+    // grouping is by affinity, not by how many blocks it was written in, so the layout is identical.
+    if (!f.affinity.empty()) {
+        e.line("affinity " + f.affinity + " {");
+        ++e.indent;
+    }
     std::string s = f.visibility + " ";
     if (f.isStatic) s += "static ";
     if (f.isMutable) s += "mutable ";
@@ -144,6 +152,10 @@ void emitField(Emitter& e, const FieldDecl& f) {
         if (!v.empty()) s += " = " + v;
     }
     e.line(s + ";");
+    if (!f.affinity.empty()) {
+        --e.indent;
+        e.line("}");
+    }
 }
 
 void emitClass(Emitter& e, const ClassDecl& c) {

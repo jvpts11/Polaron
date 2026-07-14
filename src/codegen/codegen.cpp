@@ -583,6 +583,10 @@ struct CodeGenerator::Impl {
     // class implementing several interfaces dispatches each one correctly.
     std::unordered_map<std::string, int> methodSlots;  // virtual method name -> global slot
     std::vector<std::string> methodSlotNames;          // global slot -> method name
+    // spec 32.8: classes whose dispatch table is patched at runtime (from the analyzer). They always get
+    // a vtable, are never devirtualized, and their vtable global is writable.
+    std::set<std::string> patchedClasses_;
+    int patchCounter_ = 0;
     std::vector<std::string> seededSlots;              // slot layout adopted from imported bundles
     std::unordered_set<std::string> subclassed_;       // classes/interfaces that something extends or
                                                        // implements; a type NOT here has no subtype, so
@@ -1229,6 +1233,86 @@ struct CodeGenerator::Impl {
         if (cit != classes.end() && cit->second.hasDestructor)
             builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
         builder.CreateCall(freeFn(), {objPtr});
+    }
+
+    // spec 32.8: `Dog.methods.replace("bark", <function value>)` -- install a replacement in the class's
+    // vtable slot, so every Dog (already alive or not yet born) dispatches to it. Genuine AOP, mocking
+    // without a framework, localized hot patching.
+    //
+    // A function value in LDP3 is a closure pair {code, env} and its code takes the environment as arg 0,
+    // while a vtable slot is called as (this, args...). The two are bridged by a thunk emitted per patch
+    // site: it has the method's exact signature, reads the closure from a global the patch stores it into,
+    // and calls code(env, this, args...). Going through the global (instead of baking the closure in) is
+    // what lets the replacement capture, and what lets the same site install a different closure each time
+    // it runs. The analyzer already checked the signature, so no dynamic check is needed here.
+    llvm::Value* emitMethodPatch(const std::string& cls, const ast::CallExpr& call) {
+        const auto* lit = dynamic_cast<const ast::StringLiteralExpr*>(call.args[0].get());
+        auto cit = classes.find(cls);
+        if (lit == nullptr || cit == classes.end()) return nullptr;
+        const std::string& mname = lit->value;
+        auto sit = methodSlots.find(mname);
+        const std::string impl = vtableImpl(cls, mname);
+        auto fit = functions.find(impl);
+        if (sit == methodSlots.end() || impl.empty() || fit == functions.end()) {
+            error("cannot replace '" + cls + "." + mname + "': it has no dispatch slot", call.loc);
+            return nullptr;
+        }
+        llvm::FunctionType* mty = fit->second->getFunctionType();  // (ptr this, args...) -> R
+
+        // The global the closure lives in, and the thunk that reads it.
+        const int id = patchCounter_++;
+        const std::string tag = cls + "." + mname + ".patch" + std::to_string(id);
+        auto* slotGV = new llvm::GlobalVariable(
+            module, builder.getPtrTy(), /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantPointerNull::get(builder.getPtrTy()), tag + ".fn");
+        llvm::Function* thunk = llvm::Function::Create(mty, llvm::Function::InternalLinkage,
+                                                       tag + ".thunk", module);
+        {
+            auto sIP = builder.saveIP();
+            builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", thunk));
+            llvm::Value* clos = builder.CreateLoad(builder.getPtrTy(), slotGV, "patch.clos");
+            llvm::Value* code = builder.CreateLoad(builder.getPtrTy(), clos, "patch.code");
+            llvm::Value* envP = builder.CreateConstGEP1_64(builder.getPtrTy(), clos, 1, "patch.env.addr");
+            llvm::Value* env = builder.CreateLoad(builder.getPtrTy(), envP, "patch.env");
+            std::vector<llvm::Type*> pts = {builder.getPtrTy()};  // arg 0: the closure environment
+            std::vector<llvm::Value*> args = {env};
+            for (auto& a : thunk->args()) {
+                pts.push_back(a.getType());
+                args.push_back(&a);
+            }
+            llvm::FunctionType* cty = llvm::FunctionType::get(mty->getReturnType(), pts, false);
+            llvm::Value* r = builder.CreateCall(cty, code, args);
+            if (mty->getReturnType()->isVoidTy()) builder.CreateRetVoid();
+            else builder.CreateRet(r);
+            builder.restoreIP(sIP);
+        }
+
+        // The patch itself: store the closure, then point the vtable slot at the thunk -- in this class
+        // and in every subclass that INHERITS the same implementation. A Poodle is a Dog, so replacing
+        // Dog.bark must reach the Poodles too; a subclass that overrides bark has its own behaviour and
+        // is deliberately left alone.
+        llvm::Value* fnVal = emitExpr(*call.args[1]);
+        if (fnVal == nullptr) return nullptr;
+        builder.CreateStore(fnVal, slotGV);
+        for (auto& [cname, cl] : classes) {
+            if (cl.vtable == nullptr) continue;                   // abstract/interface/imported: no table
+            if (cname != cls && !derivesFrom(cname, cls)) continue;
+            if (vtableImpl(cname, mname) != impl) continue;       // it overrides the method: keep its own
+            llvm::ArrayType* vtType =
+                llvm::ArrayType::get(builder.getPtrTy(), cl.vtslots.size() + 1);
+            llvm::Value* slotPtr = builder.CreateConstGEP2_64(
+                vtType, cl.vtable, 0, static_cast<unsigned>(sit->second), "vt.slot");
+            builder.CreateStore(thunk, slotPtr);
+        }
+        return nullptr;  // a statement, not a value
+    }
+
+    // Is `sub` a (transitive) subclass of `base`?
+    bool derivesFrom(const std::string& sub, const std::string& base) {
+        for (auto it = classes.find(sub); it != classes.end() && !it->second.superclass.empty();
+             it = classes.find(it->second.superclass))
+            if (it->second.superclass == base) return true;
+        return false;
     }
 
     // The `cascade` universal prefix (spec 37.1): an operation propagated through an object's
@@ -4033,6 +4117,14 @@ struct CodeGenerator::Impl {
             if (dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr) {
                 return nullptr;
             }
+            // spec 32.8: `Dog.methods.replace("bark", fn)` rewrites the class's vtable slot.
+            if (const auto* rp = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+                rp != nullptr && rp->member == "replace" && call->args.size() == 2)
+                if (const auto* tbl = dynamic_cast<const ast::MemberExpr*>(rp->object.get());
+                    tbl != nullptr && tbl->member == "methods")
+                    if (const auto* cn = dynamic_cast<const ast::IdentifierExpr*>(tbl->object.get());
+                        cn != nullptr && classes.count(cn->name) > 0)
+                        return emitMethodPatch(cn->name, *call);
             return emitCall(*call);
         }
         error("unsupported expression in codegen", expr.loc);
@@ -9667,7 +9759,16 @@ struct CodeGenerator::Impl {
         }
         for (auto& [name, l] : classes) {
             l.hasVtable = !l.superclass.empty() || !l.interfaces.empty() || l.isAbstract ||
-                          l.isInterface || bases.count(name) > 0;
+                          l.isInterface || bases.count(name) > 0 || patchedClasses_.count(name) > 0;
+        }
+        // A patched class (spec 32.8) must dispatch through its vtable even with no subtype: that slot is
+        // exactly where the replacement lands, so a direct call would keep running the original. Its
+        // subclasses too -- they inherit the patched method, and a devirtualized `poodle.bark()` would
+        // walk straight past the replacement installed in Poodle's table.
+        for (const std::string& p : patchedClasses_) {
+            bases.insert(p);
+            for (const auto& [cname, cl] : classes)
+                if (derivesFrom(cname, p)) bases.insert(cname);
         }
         subclassed_ = bases;  // remember which types have a subtype, for devirtualization at call sites
         // Adopt the slot layout of imported bundles first, so a virtual call on an imported object
@@ -10069,7 +10170,10 @@ struct CodeGenerator::Impl {
             }
             entries.push_back(dtorFn);
             llvm::ArrayType* vtType = llvm::ArrayType::get(builder.getPtrTy(), entries.size());
-            l.vtable = new llvm::GlobalVariable(module, vtType, /*isConstant=*/true,
+            bool patched = patchedClasses_.count(name) > 0;  // spec 32.8: its slots are rewritten
+            for (const std::string& p : patchedClasses_)      // ...and so are its subclasses' (inherited)
+                if (derivesFrom(name, p)) patched = true;
+            l.vtable = new llvm::GlobalVariable(module, vtType, /*isConstant=*/!patched,
                                                 llvm::GlobalValue::PrivateLinkage,
                                                 llvm::ConstantArray::get(vtType, entries),
                                                 name + ".vtable");
@@ -11294,6 +11398,10 @@ void CodeGenerator::setTargetTriple(const std::string& triple) {
 void CodeGenerator::setLibrary(bool library) { impl_->libraryMode = library; }
 void CodeGenerator::setTestMode(bool test) { impl_->testMode = test; }
 void CodeGenerator::setDebugInfo(bool debug) { impl_->debugInfo = debug; }
+
+void CodeGenerator::setPatchedClasses(const std::set<std::string>& classes) {
+    impl_->patchedClasses_ = classes;
+}
 
 void CodeGenerator::seedVtableSlots(const std::vector<std::string>& slotNames) {
     impl_->seededSlots = slotNames;

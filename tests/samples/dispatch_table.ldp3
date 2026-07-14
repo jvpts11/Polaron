@@ -1,0 +1,86 @@
+import System.IO.Console;
+program DispatchTable;
+
+// Mutable dispatch tables (spec 32.8): a class's method table can be rewritten at runtime.
+//
+//     Dog.methods.replace("bark", lambda(Dog d) returns void { ... });
+//
+// The replacement takes over the class's vtable slot, so EVERY instance -- the ones already alive and
+// the ones not yet born -- picks up the new behaviour. Type safety is not lost: the replacement must
+// have the method's exact signature with the receiver as its first parameter, checked at compile time.
+//
+// Applications: genuine AOP, mocking in tests without a framework, localized hot patching.
+
+public bundle main {
+    public namespace app {
+
+        public class Dog {
+            private mutable int volume;
+
+            public constructor Dog(int volume) {
+                this.volume = volume;
+            }
+
+            public method bark() returns void {
+                System.IO.Console.printf("woof (%d)\n", this.volume);
+            }
+
+            public method loudness(int times) returns int {
+                return this.volume * times;
+            }
+        }
+
+        // A Poodle IS a Dog: it inherits bark, so replacing Dog.bark reaches it too. It has its own
+        // loudness, though, and a class that overrides a method keeps its own behaviour.
+        public class Poodle extends Dog {
+            public constructor Poodle() {
+                super(1);
+            }
+
+            public override method loudness(int times) returns int {
+                return times;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog rex = new Dog(3) on heap;   // born BEFORE the patch
+                rex.bark();
+
+                // Patch a void method with no arguments.
+                Dog.methods.replace("bark", lambda(Dog d) returns void {
+                    System.IO.Console.println("woof remix");
+                });
+
+                Dog fido = new Dog(9) on heap;  // born AFTER the patch
+                rex.bark();                     // both see it: the table is the class's, not the object's
+                fido.bark();
+
+                // Patch a method that takes arguments and returns a value; the replacement reads the
+                // receiver's state just like the original did.
+                Dog.methods.replace("loudness", lambda(Dog d, int times) returns int {
+                    return 100 + times;
+                });
+                System.IO.Console.printf("loudness=%d\n", rex.loudness(7));
+
+                // A capturing replacement: the closure is installed, so the captured value travels with it.
+                mutable int base = 1000;
+                Dog.methods.replace("loudness", lambda(Dog d, int times) returns int {
+                    return base + times;
+                });
+                System.IO.Console.printf("captured=%d\n", fido.loudness(5));
+
+                // The Poodle inherits bark, so the patch reaches it; it overrides loudness, so it keeps
+                // its own.
+                Poodle p = new Poodle() on heap;
+                p.bark();
+                System.IO.Console.printf("poodle=%d\n", p.loudness(5));
+
+                delete p;
+                delete fido;
+                delete rex;
+                return;
+            }
+        }
+    }
+}

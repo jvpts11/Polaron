@@ -8837,6 +8837,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
 
 #ifdef LDP3_WITH_LLVM
     ldp3::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
+    codegen.setPatchedClasses(sema.patchedClasses());  // spec 32.8: they need a writable vtable
     // Always set a triple (and, through it, the data layout) -- with --target for freestanding/cross, or
     // the host's otherwise -- so ABI alignments are correct and hot loops vectorize. Without this the
     // module is layout-less and i64 loads emit `align 4`.

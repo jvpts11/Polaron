@@ -303,6 +303,55 @@ const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
     return nullptr;
 }
 
+// spec 32.8: is `expr` a class's dispatch table (`Dog.methods`)? Returns the class name, or "".
+std::string SemanticAnalyzer::dispatchTableClass(const ast::Expr& expr) const {
+    const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr);
+    if (mem == nullptr || mem->member != "methods") return "";
+    const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+    if (id == nullptr || lookupClass(id->name) == nullptr) return "";
+    return id->name;
+}
+
+// spec 32.8: `Dog.methods.replace("bark", <function value>)`. The replacement must be a function whose
+// first parameter is the receiver, then the method's own parameters, returning what the method returns
+// -- exactly the shape of the slot it takes over. Type safety is not lost: the signature is checked here,
+// at compile time, and the replacement is installed in the class's vtable, so every instance (existing
+// and future) picks it up.
+std::string SemanticAnalyzer::checkMethodPatch(const std::string& className,
+                                               const ast::CallExpr& call) {
+    if (call.args.size() != 2) {
+        error("'" + className + ".methods.replace' takes the method name and its replacement", call.loc);
+        return "void";
+    }
+    const auto* lit = dynamic_cast<const ast::StringLiteralExpr*>(call.args[0].get());
+    if (lit == nullptr) {
+        error("the method to replace must be a string literal, so it can be checked at compile time",
+              call.args[0]->loc);
+        return "void";
+    }
+    const MethodInfo* m = findMethod(className, lit->value);
+    if (m == nullptr) {
+        error("no method '" + lit->value + "' on class '" + className + "' to replace", call.loc);
+        return "void";
+    }
+    if (m->isStatic) {
+        error("cannot replace the static method '" + className + "." + lit->value +
+                  "'; only instance methods are dispatched through the table",
+              call.loc);
+        return "void";
+    }
+    std::string want = "function<" + m->returnType + "," + className;
+    for (const std::string& pt : m->paramTypes) want += "," + pt;
+    want += ">";
+    const std::string got = typeOf(*call.args[1]);
+    if (!got.empty() && got != want)
+        error("the replacement for '" + className + "." + lit->value + "' must have type '" + want +
+                  "' (the receiver, then the method's parameters); got '" + got + "'",
+              call.args[1]->loc);
+    patchedClasses_.insert(className);
+    return "void";
+}
+
 const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
                                                const std::string& method,
                                                bool objectFallback) const {
@@ -3105,6 +3154,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+        // spec 32.8: `Dog.methods.replace("bark", <function value>)` -- a mutable dispatch table. The
+        // replacement takes over the class's vtable slot, so every Dog (already alive or not yet born)
+        // gets the new behaviour: genuine AOP, mocking without a framework, localized hot patching.
+        if (const auto* rp = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+            rp != nullptr && rp->member == "replace") {
+            if (const std::string cls = dispatchTableClass(*rp->object); !cls.empty())
+                return checkMethodPatch(cls, *call);
+        }
         // mat4.identity(): the identity-matrix factory.
         if (const auto* mc = dynamic_cast<const ast::MemberExpr*>(call->callee.get()))
             if (const auto* mo = dynamic_cast<const ast::IdentifierExpr*>(mc->object.get());

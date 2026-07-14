@@ -1,0 +1,82 @@
+import System.IO.Console;
+program Affinity;
+
+// Affinity hints (spec 32.9): a class can group its fields by how they are used. The hot ones -- the
+// ones a tight loop touches every frame -- are packed first in the object; the cold ones (debug names,
+// bookkeeping read once in a blue moon) are pushed to the end. Same object, same semantics: only the
+// layout changes, so a hot loop pulls in fewer cache lines per particle.
+//
+// Data-oriented design as a language feature, without hand-splitting the class into parallel arrays.
+
+public bundle main {
+    public namespace app {
+
+        public class Particle {
+            // Declared cold-first on purpose: the layout is decided by the affinity, not by the order
+            // the blocks appear in. The emitted struct is { vtable, x, y, vx, vy, id, spawnFrame }.
+            public affinity cold {
+                mutable int id;
+                mutable int spawnFrame;
+            }
+            public affinity hot {
+                mutable float x;
+                mutable float y;
+                mutable float vx;
+                mutable float vy;
+            }
+
+            public constructor Particle(int id, float x, float y, float vx, float vy) {
+                this.id = id;
+                this.spawnFrame = 0;
+                this.x = x;
+                this.y = y;
+                this.vx = vx;
+                this.vy = vy;
+            }
+
+            // The hot loop: it reads and writes only the hot fields.
+            public method advance() returns void {
+                this.x = this.x + this.vx;
+                this.y = this.y + this.vy;
+            }
+        }
+
+        // Affinity is inherited safely: a subclass's object still starts with exactly the base's
+        // layout, and only its OWN fields are grouped.
+        public class Tagged extends Particle {
+            public affinity cold {
+                mutable int tag;
+            }
+
+            public constructor Tagged(int id, float x, float y, int tag) {
+                super(id, x, y, 1.0f, 2.0f);
+                this.tag = tag;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Particle p = new Particle(7, 1.0f, 2.0f, 0.5f, 0.25f) on heap;
+                mutable int i = 0;
+                while (i < 4) {
+                    p.advance();
+                    i = i + 1;
+                }
+                System.IO.Console.printf("x=%.1f y=%.1f id=%d\n", cast<double>(p.x),
+                    cast<double>(p.y), p.id);
+
+                Tagged t = new Tagged(9, 10.0f, 20.0f, 42) on heap;
+                t.advance();
+                System.IO.Console.printf("tx=%.1f ty=%.1f tid=%d tag=%d\n", cast<double>(t.x),
+                    cast<double>(t.y), t.id, t.tag);
+
+                // Upcast: the base view of a subclass object reads the same hot fields.
+                Particle* up = t;
+                System.IO.Console.printf("ux=%.1f uid=%d\n", cast<double>(up.x), up.id);
+                delete t;
+                delete p;
+                return;
+            }
+        }
+    }
+}

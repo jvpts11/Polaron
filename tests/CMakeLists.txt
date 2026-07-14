@@ -3564,6 +3564,26 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # affinity hints (spec 32.9): hot fields are packed first in the object and cold ones last,
+        # whatever order the blocks were written in; a subclass still starts with the base's layout.
+        add_test(NAME codegen_affinity_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/affinity.ldp3"
+            "-DEXPECTED=x=3.0 y=3.0 id=7 tx=11.0 ty=22.0 tid=9 tag=42 ux=11.0 uid=9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # mutable dispatch tables (spec 32.8): replacing a method rewrites the class's vtable slot, so
+        # instances created before AND after the patch dispatch to the replacement (which may capture).
+        add_test(NAME codegen_dispatch_table_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/dispatch_table.ldp3"
+            "-DEXPECTED=woof (3) woof remix woof remix loudness=107 captured=1005 woof remix poodle=5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # generators (spec 22.6): a method that yields produces a lazy Iterator<T> -- bounded, unbounded
         # (stopped by `break`), instance (capturing `this`), and driven by hand through the interface.
         add_test(NAME codegen_generator_runs COMMAND "${CMAKE_COMMAND}"
