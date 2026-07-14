@@ -1,6 +1,7 @@
 // The `ldp3` toolchain driver: a lightweight front-end that dispatches subcommands and orchestrates
 // the low-level compiler (ldp3c) and linker (clang). Carries no LLVM itself.
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -42,7 +43,8 @@ int printHelp() {
 }
 }  // namespace
 
-int main(int argc, char** argv) {
+namespace {
+int runCli(int argc, char** argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
     if (args.empty()) return printHelp();
     const std::string& cmd = args[0];
@@ -82,8 +84,16 @@ int main(int argc, char** argv) {
         return ldp3::driver::buildProgram(m, std::filesystem::current_path(), opts);
     }
     if (cmd == "build") {
-        const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path());
+        std::filesystem::path sawToml;
+        const auto manifestPath = ldp3::driver::findManifest(std::filesystem::current_path(), &sawToml);
         if (!manifestPath) {
+            if (!sawToml.empty()) {
+                std::fprintf(stderr,
+                    "ldp3: %s is not an LDP3 manifest: its first line must be [ldp3_project]\n"
+                    "      (an LDP3 manifest looks like:  [ldp3_project]  /  [program] name= entry=)\n",
+                    sawToml.string().c_str());
+                return 1;
+            }
             std::fprintf(stderr,
                 "ldp3: no ldp3.toml found in this directory or any parent; "
                 "run 'ldp3 init' or 'ldp3 run <file>'\n");
@@ -278,4 +288,22 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "ldp3: unknown command '%s'\n", cmd.c_str());
     printHelp();
     return 2;
+}
+}  // namespace
+
+// Never let an exception escape: on Windows an uncaught one calls std::terminate, which fail-fasts the
+// process (exit 0xC0000409) with no output at all -- the driver just vanishes. Report it instead.
+int main(int argc, char** argv) {
+    try {
+        return runCli(argc, argv);
+    } catch (const std::filesystem::filesystem_error& e) {
+        std::fprintf(stderr, "ldp3: filesystem error: %s\n", e.what());
+        return 1;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "ldp3: %s\n", e.what());
+        return 1;
+    } catch (...) {
+        std::fprintf(stderr, "ldp3: unknown internal error\n");
+        return 1;
+    }
 }

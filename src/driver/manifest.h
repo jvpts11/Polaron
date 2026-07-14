@@ -37,6 +37,10 @@ struct Manifest {
 Manifest parseManifestText(const std::string& text);
 
 // Walk up from `start` (inclusive) looking for a .toml whose first non-blank line is [ldp3_project].
+// The two-argument form also reports, via `sawToml`, the first .toml that was found WITHOUT that header,
+// so callers can tell "no manifest anywhere" from "there is a .toml but it isn't an LDP3 manifest".
+std::optional<std::filesystem::path> findManifest(const std::filesystem::path& start,
+                                                  std::filesystem::path* sawToml);
 std::optional<std::filesystem::path> findManifest(const std::filesystem::path& start);
 
 // Synthesize a manifest for a single loose file (name = stem, entry = the file).

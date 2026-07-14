@@ -104,25 +104,42 @@ Manifest parseManifestText(const std::string& text) {
     return m;
 }
 
-std::optional<std::filesystem::path> findManifest(const std::filesystem::path& start) {
+// Walk up from `start` looking for a project manifest: a .toml whose first non-blank line is
+// `[ldp3_project]`. Every filesystem query takes an error_code -- the throwing overloads abort the
+// process on an unreadable entry (a broken link or a permission-denied directory, both common under
+// %TEMP% and network drives), which would kill the driver with no message at all.
+// `sawToml` reports a .toml that was found but lacked the header, so the caller can say so.
+std::optional<std::filesystem::path> findManifest(const std::filesystem::path& start,
+                                                  std::filesystem::path* sawToml) {
     namespace fs = std::filesystem;
-    fs::path dir = fs::absolute(start);
-    if (fs::is_regular_file(dir)) dir = dir.parent_path();
+    std::error_code ec;
+    fs::path dir = fs::absolute(start, ec);
+    if (ec) dir = start;
+    if (fs::is_regular_file(dir, ec)) dir = dir.parent_path();
     for (;; dir = dir.parent_path()) {
-        std::error_code ec;
-        for (const auto& entry : fs::directory_iterator(dir, ec)) {
-            if (!entry.is_regular_file() || entry.path().extension() != ".toml") continue;
-            std::ifstream f(entry.path());
-            std::string line;
-            while (std::getline(f, line)) {
-                const std::string t = trim(line);
-                if (t.empty()) continue;
-                if (t == "[ldp3_project]") return entry.path();
-                break;  // first non-blank line only
+        std::error_code dec;
+        fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, dec);
+        if (!dec) {
+            for (const auto& entry : it) {
+                std::error_code fec;
+                if (!entry.is_regular_file(fec) || fec) continue;
+                if (entry.path().extension() != ".toml") continue;
+                std::ifstream f(entry.path());
+                std::string line;
+                while (std::getline(f, line)) {
+                    const std::string t = trim(line);
+                    if (t.empty()) continue;
+                    if (t == "[ldp3_project]") return entry.path();
+                    if (sawToml != nullptr && sawToml->empty()) *sawToml = entry.path();
+                    break;  // first non-blank line only
+                }
             }
         }
         if (!dir.has_parent_path() || dir == dir.parent_path()) return std::nullopt;
     }
+}
+std::optional<std::filesystem::path> findManifest(const std::filesystem::path& start) {
+    return findManifest(start, nullptr);
 }
 
 Manifest ephemeralManifest(const std::filesystem::path& file) {
