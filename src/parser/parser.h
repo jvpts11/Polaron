@@ -36,6 +36,10 @@ public:
 
     ast::Program parse();
 
+    // Parses a single class declaration from the token stream: how a synthesis pass turns generated
+    // LDP3 source into AST (IPC proxies and dispatchers, spec 2.8).
+    ast::ClassDecl parseClassForSynthesis();
+
     bool hasErrors() const { return !errors_.empty(); }
     const std::vector<ParseError>& errors() const { return errors_; }
 

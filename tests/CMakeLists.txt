@@ -3571,6 +3571,18 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # cross-program IPC (spec 2.8) + capability tokens (spec 32.7): two programs, one named pipe /
+        # unix socket, an object that lives in the engine and is called from the client, and a policy
+        # that refuses one capability and grants another.
+        add_test(NAME codegen_ipc_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DSERVER=${CMAKE_CURRENT_SOURCE_DIR}/samples/ipc_server.ldp3"
+            "-DCLIENT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ipc_client.ldp3"
+            "-DEXPECTED=client: plays=1,2 client: volume=9 client: 'root' refused client: mixdown=900"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ipc_test.cmake")
+
         # inline tests (spec 32.11): `@Test` methods calling the stdlib Test assertions, run by --test.
         # A void test's verdict comes from its assertions; the boolean form still works.
         add_test(NAME codegen_inline_tests_runs COMMAND "${CMAKE_COMMAND}"

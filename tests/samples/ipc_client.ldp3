@@ -1,0 +1,76 @@
+import System.IO.Console;
+import System.OS.Subprocess;
+import System.Time.Time;
+import System.Ipc.Program;
+import System.Ipc.ProgramHandle;
+import System.Ipc.IpcError;
+import System.Ipc.BundleAccessToken;
+import from program GameEngine bundle audio.StereoMixer;
+program AudioClient;
+
+// The client half of cross-program IPC (spec 2.8), written exactly as the spec writes it:
+//
+//     ProgramHandle a = Program.connect("GameEngine");
+//     StereoMixer mixer = a.bundle("audio").namespace("mixers").type<StereoMixer>().instantiate();
+//     mixer.play(soundFile);     // this call becomes serialized IPC
+//
+// StereoMixer is known from the engine's header (--use-remote); its BODY lives in the other process,
+// so the compiler gives this program a proxy whose every method is a frame on the wire.
+//
+// The engine's executable is passed as argv[1] so the test can start it; in real use it is already
+// running and only the NAME is needed.
+
+public bundle client {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                if (args.length() < 1) {
+                    System.IO.Console.println("usage: ipc_client <path-to-the-engine-executable>");
+                    return;
+                }
+                // The engine is started here only so the example is self-contained. In real use it is
+                // already running and the client needs nothing but its NAME. The handle must outlive the
+                // calls below: when a Subprocess is destroyed it takes the child with it.
+                Subprocess engine = Subprocess.start(args[0]);
+                Time.sleep(400);   // let it bind its endpoint
+
+                nullable ProgramHandle* a = Program.connect("GameEngine");
+                if (a == null) {
+                    System.IO.Console.println("client: the engine is not running");
+                    return;
+                }
+
+                StereoMixer mixer = a.bundle("audio").namespace("mixers")
+                                     .type<StereoMixer>().instantiate();
+                try {
+                    // Ordinary calls: the arguments are serialized, the result comes back.
+                    int first = mixer.play("boom.wav");
+                    int second = mixer.play("laser.wav");
+                    System.IO.Console.printf("client: plays=%d,%d\n", first, second);
+
+                    // The object lives in the engine, so state persists across calls.
+                    mixer.setVolume(9);
+                    System.IO.Console.printf("client: volume=%d\n", mixer.volume());
+
+                    // A capability the policy refuses.
+                    BundleAccessToken* denied = a.requestAccess("root");
+                    if (!denied.granted()) {
+                        System.IO.Console.println("client: 'root' refused");
+                    }
+
+                    // One it grants -- and the privileged call now runs.
+                    BundleAccessToken* mixdown = a.requestAccess("mixdown");
+                    if (mixdown.granted()) {
+                        System.IO.Console.printf("client: mixdown=%d\n", mixer.mixdown(mixdown));
+                    }
+                }
+                catch (IpcError e) {
+                    System.IO.Console.printf("client: ipc failed: %s\n", e.message());
+                }
+                a.close();
+                engine.close();   // the engine serves forever; the example is done with it
+                return;
+            }
+        }
+    }
+}

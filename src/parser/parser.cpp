@@ -341,6 +341,19 @@ ast::ImportDecl Parser::parseImportDecl() {
     imp.isFinal = match(TokenKind::KwFinal);  // `final import` (spec 37.6): cannot be unimported
     imp.isLazy = match(TokenKind::KwLazy);    // `lazy import` (spec 37.3): load on first instance
     expect(TokenKind::KwImport, "'import'");
+    // Cross-program (spec 2.7/2.8): `import from program GameEngine bundle audio.mixers.StereoMixer;`
+    // -- the type is known from the other program's header and reached over IPC.
+    if (check(TokenKind::Identifier) && current().lexeme == "from") {
+        advance();
+        if (!(check(TokenKind::KwProgram))) fail("expected 'program' after 'import from'", current().loc);
+        advance();
+        imp.programName = expectMemberName("the program name");
+        if (check(TokenKind::KwBundle)) advance();  // `bundle` is optional noise in the path
+        imp.path.push_back(expectMemberName("an import path"));
+        while (match(TokenKind::Dot)) imp.path.push_back(expectMemberName("a name after '.'"));
+        expect(TokenKind::Semicolon, "';'");
+        return imp;
+    }
     imp.path.push_back(expect(TokenKind::Identifier, "an import path").lexeme);
     while (match(TokenKind::Dot))
         imp.path.push_back(expect(TokenKind::Identifier, "a name after '.'").lexeme);
@@ -763,6 +776,8 @@ ast::CatalogDecl Parser::parseCatalog() {
     expect(TokenKind::RBrace, "'}'");
     return c;
 }
+
+ast::ClassDecl Parser::parseClassForSynthesis() { return parseClassOrInterface(); }
 
 ast::ClassDecl Parser::parseClassOrInterface() {
     ast::ClassDecl c;

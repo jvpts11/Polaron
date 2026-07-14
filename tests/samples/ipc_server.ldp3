@@ -1,0 +1,59 @@
+import System.IO.Console;
+import System.Ipc.Program;
+import System.Ipc.BundleAccessToken;
+program GameEngine;
+
+// The server half of cross-program IPC (spec 2.8). It exports a class and serves it under its own
+// program name -- the pipe/socket is named after the program, so a client only needs that name.
+//
+// The `auth` lambda is the capability policy (spec 32.7): it is asked for every capability a client
+// requests, and its answer is final. A method that declares a BundleAccessToken parameter cannot run
+// until the dispatcher has checked that the token is one THIS program actually issued.
+
+public bundle main {
+    public namespace audio {
+
+        // Exported: the client reaches this class through a proxy, and every call on it is a frame on
+        // the wire. The state lives here, in this process, and only here.
+        public class StereoMixer {
+            private mutable int volume;
+            private mutable int plays;
+
+            public constructor StereoMixer() {
+                this.volume = 5;
+                this.plays = 0;
+            }
+
+            public method play(String sound) returns int {
+                this.plays = this.plays + 1;
+                System.IO.Console.printf("engine: playing %s (#%d)\n", sound, this.plays);
+                return this.plays;
+            }
+
+            public method setVolume(int v) returns void {
+                this.volume = v;
+                return;
+            }
+
+            public method volume() returns int {
+                return this.volume;
+            }
+
+            // A privileged operation: it runs only for a client the policy granted "mixdown" to.
+            public method mixdown(BundleAccessToken mixdown) returns int {
+                return this.volume * 100;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("engine: serving");
+                // Grant "mixdown", refuse anything else.
+                Program.serve("GameEngine", lambda(String capability) returns boolean {
+                    return capability.equals("mixdown");
+                });
+                return;
+            }
+        }
+    }
+}

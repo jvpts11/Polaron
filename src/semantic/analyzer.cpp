@@ -1092,6 +1092,12 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
 void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         if (bundle.isImported) continue;  // bodies live in the .ldb; only its public API is visible
+        // The freestanding restrictions (spec 36.3) are about what the PROGRAM may use. The stdlib
+        // itself is written in full LDP3 -- System.Ipc throws, for one -- and the parts a freestanding
+        // program cannot reach are stripped as dead code anyway. Checking the prelude's own bodies
+        // against them would outlaw the stdlib for having features the program simply never calls.
+        const bool wasFreestanding = freestanding_;
+        if (bundle.isPrelude) freestanding_ = false;
         // Imports are written before `program` (file level, spec 2.7); the in-bundle form is still
         // accepted during migration. Collect the imported symbol names from both.
         currentImports_.clear();
@@ -1191,6 +1197,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                 }
             }
         }
+        freestanding_ = wasFreestanding;
     }
 }
 

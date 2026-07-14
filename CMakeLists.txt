@@ -19,6 +19,7 @@ set(LDP3_CORE_SOURCES
     src/parser/ast.cpp
     src/parser/parser.cpp
     src/parser/monomorphize.cpp
+    src/parser/ipc.cpp  # spec 2.8: IPC proxy + dispatcher synthesis
     src/parser/loopopt.cpp
     src/parser/boundscheck.cpp
     src/semantic/analyzer.cpp

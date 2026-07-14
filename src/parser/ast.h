@@ -928,6 +928,9 @@ struct Namespace {
 // enable a literal's `N suffix` syntax (spec 17.10 rule 5).
 struct ImportDecl {
     std::vector<std::string> path;  // e.g. ["System","Memory","Units","kilobytes"]
+    // spec 2.7/2.8: `import from program GameEngine bundle audio.mixers.StereoMixer;` -- the type lives
+    // in ANOTHER PROGRAM and is reached over IPC. Empty for an ordinary import.
+    std::string programName;
     bool isFinal = false;           // `final import` (spec 37.6): the symbol cannot be unimported
     bool isLazy = false;            // `lazy import` (spec 37.3): load on first instance, not at boot
     SourceLocation loc;
@@ -942,6 +945,8 @@ struct Bundle {
                                   // but bodies live in the .ldb -- sema skips them, codegen externs them
     bool isDynamic = false;       // imported via --use-dynamic: loaded at runtime; codegen emits thunks
                                   // that load the .ldb and resolve the symbol instead of linking it
+    bool isRemote = false;        // imported via --use-remote (spec 2.8): its code runs in ANOTHER
+                                  // PROGRAM; the compiler synthesizes IPC proxies for its classes
     std::vector<ImportDecl> imports;
     std::vector<Namespace> namespaces;
     SourceLocation loc;
@@ -958,6 +963,7 @@ struct Program {
     // the surviving concrete instantiations. Keyed by the generic's (mangled) name.
     std::map<std::string, std::vector<std::string>> genericVariance;
     bool hasQualifiedTypeRef = false;  // a `ns.Type` reference was used (gates qualifyNamespaces)
+    bool usesIpcServe = false;    // spec 2.8: the program calls Program.serve, so it needs a dispatcher
     // Internal names produced by namespace disambiguation (e.g. app__Box). These are
     // already explicitly scoped, so they bypass the import/visibility requirement.
     std::set<std::string> qualifiedTypes;

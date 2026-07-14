@@ -25,6 +25,7 @@
 #include "parser/ast.h"
 #include "parser/boundscheck.h"
 #include "parser/loopopt.h"
+#include "parser/ipc.h"
 #include "parser/monomorphize.h"
 #include "parser/parser.h"
 #include "semantic/analyzer.h"
@@ -8693,6 +8694,12 @@ R"LDP3(
             public method capability() returns String {
                 return this.capabilityName;
             }
+            // A refused request yields a token that was never granted. (LDP3's nullable does not narrow,
+            // so a `nullable BundleAccessToken*` could never be passed to a method that demands one --
+            // the type system itself pushes the answer here.)
+            public method granted() returns boolean {
+                return this.nonceValue != cast<long>(0);
+            }
         }
         // The client's view of another running program.
         public class ProgramHandle {
@@ -8716,7 +8723,7 @@ R"LDP3(
                 return new RemoteType<T>(this.conn) on heap;
             }
             // Ask the program for a capability. Its serve() policy decides; null means refused.
-            public method requestAccess(String capability) returns nullable BundleAccessToken* {
+            public method requestAccess(String capability) returns BundleAccessToken* {
                 IpcWriter w = new IpcWriter() on heap;
                 w.putByte(IpcProto.kCapability());
                 w.putString(capability);
@@ -8732,7 +8739,7 @@ R"LDP3(
                 catch (IpcError e) {
                     delete ch;
                     delete w;
-                    return null;
+                    return new BundleAccessToken(cast<long>(0), capability) on heap;   // refused
                 }
             }
             public method close() returns void {
@@ -8748,7 +8755,8 @@ R"LDP3(
                 this.conn = conn;
             }
             public method instantiate() returns T {
-                return new T(this.conn) on heap;   // the synthesized proxy ctor sends CREATE
+                // id 0: the proxy's constructor makes the object in the other program.
+                return new T(this.conn, cast<long>(0)) on heap;
             }
         }
         // Connecting to, and serving as, a program (spec 2.8).
@@ -9113,7 +9121,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             const std::string& target = "", int optLevel = 0, bool libraryMode = false,
             const std::vector<std::string>& deps = {},
             const std::vector<std::string>& dynDeps = {}, bool testMode = false,
-            bool debugInfo = false) {
+            bool debugInfo = false, const std::vector<std::string>& remoteDeps = {}) {
     ldp3::ast::Program program;
     std::string programName;
     // Keep each file's source alive only within its iteration: the AST copies
@@ -9142,6 +9150,9 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         for (auto& bundle : prog.bundles) program.bundles.push_back(std::move(bundle));
         for (auto& imp : prog.imports) program.imports.push_back(std::move(imp));  // file-level (spec 2.7)
         program.hasQualifiedTypeRef |= prog.hasQualifiedTypeRef;
+        // spec 2.8: a program that serves its types over IPC needs a dispatcher for them. Spotting the
+        // call in the source is enough -- a false positive only synthesizes a dispatcher nobody calls.
+        if (source->find("Program.serve") != std::string::npos) program.usesIpcServe = true;
         if (prog.isFreestanding) program.isFreestanding = true;
     }
 
@@ -9186,6 +9197,35 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         for (const std::string& s : dep.vtableSlots)
             if (std::find(seedSlots.begin(), seedSlots.end(), s) == seedSlots.end())
                 seedSlots.push_back(s);
+    }
+    // Remote bundles (--use-remote foo.ldb, spec 2.8): the types are known from the .ldh, but the code
+    // runs in ANOTHER PROGRAM. synthesizeIpc turns each of their classes into a proxy whose methods are
+    // RPCs, so nothing is linked and nothing is loaded -- the calls travel over the IPC channel.
+    for (const std::string& depPath : remoteDeps) {
+        auto depBytes = readFile(depPath);
+        if (!depBytes) {
+            std::fprintf(stderr, "error: cannot open bundle '%s'\n", depPath.c_str());
+            return 1;
+        }
+        ldp3::LdbBundle dep;
+        if (!ldp3::readLdb(*depBytes, dep)) {
+            std::fprintf(stderr, "error: '%s' is not a valid .ldb bundle\n", depPath.c_str());
+            return 1;
+        }
+        ldp3::Lexer rlex(dep.ldh, depPath);
+        ldp3::Parser rparser(rlex.tokenize(), depPath);
+        rparser.setHeaderMode(true);
+        ldp3::ast::Program rprog = rparser.parse();
+        if (rparser.hasErrors()) {
+            std::fprintf(stderr, "error: failed to parse the header of bundle '%s'\n",
+                         depPath.c_str());
+            return 1;
+        }
+        for (auto& b : rprog.bundles) {
+            b.isImported = true;   // synthesizeIpc clears this once it has given the classes bodies
+            b.isRemote = true;
+            program.bundles.push_back(std::move(b));
+        }
     }
     // Dynamically-loaded bundles (--use-dynamic foo.ldb): same type-checking against the .ldh, but the
     // implementation is loaded at runtime (not linked). Codegen emits resolving thunks; record each
@@ -9251,6 +9291,10 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // built DLL is self-contained (every class extends the prelude's Object). This matters now that
     // Object is the universal root, so even a trivial bundle references the prelude.
     ldp3::resolveTypeAliases(program);           // expand `typealias` to its target everywhere (spec 24)
+    // Before qualifyNamespaces: the remote program's header carries ITS entry class, which this pass
+    // drops. Left in place, two classes named Main would look like a name clash and both would be
+    // renamed -- and this program would lose its entry point.
+    if (!ldp3::synthesizeIpc(program)) return 1;  // spec 2.8: IPC proxies + this program's dispatcher
     ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
     assignObjectRoot(program);                   // a class with no `extends` implicitly extends Object
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
@@ -9410,6 +9454,8 @@ int main(int argc, char** argv) {
     std::vector<std::string> inputs;
     std::vector<std::string> deps;  // --use <dep.ldb>: depended-on bundles to type-check/link against
     std::vector<std::string> dynDeps;  // --use-dynamic <dep.ldb>: bundles loaded at runtime
+    std::vector<std::string> remoteDeps;  // --use-remote <dep.ldb>: spec 2.8, the code runs in ANOTHER
+                                          // PROGRAM; the compiler synthesizes IPC proxies for its types
     std::string output;
     std::string extractFrom;  // --extract-code <dep.ldb>: dump the bundle's CODE bitcode to -o
     std::string target;  // --target=<triple>, e.g. x86_64-unknown-none for freestanding/bare metal
@@ -9435,6 +9481,13 @@ int main(int argc, char** argv) {
                 return printUsage(argv[0]);
             }
             deps.emplace_back(args[i + 1]);
+            ++i;
+        } else if (args[i] == "--use-remote") {
+            if (i + 1 >= args.size()) {
+                std::fprintf(stderr, "error: --use-remote requires a .ldb file\n");
+                return printUsage(argv[0]);
+            }
+            remoteDeps.emplace_back(args[i + 1]);
             ++i;
         } else if (args[i] == "--use-dynamic") {
             if (i + 1 >= args.size()) {
@@ -9472,5 +9525,6 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: no input files\n");
         return printUsage(argv[0]);
     }
-    return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps, testMode, debugInfo);
+    return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps, testMode, debugInfo,
+                   remoteDeps);
 }
