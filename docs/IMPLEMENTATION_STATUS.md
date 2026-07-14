@@ -65,7 +65,18 @@
   das assertions (o runner zera o contador em volta de cada teste). A forma `returns boolean` continua valendo.
   Sample: `inline_tests.ldp3`.
 
-**Testes:** suíte CTest completa (samples e2e + doctest), verde — **521 testes**.
+- **IPC cross-program + capability tokens** (spec 2.8 + 32.7) — `import from program X bundle a.b.C;`,
+  `Program.connect("X")`, `a.bundle(..).namespace(..).type<T>().instantiate()`, e cada chamada no proxy
+  vira um frame no fio. Transporte = **named pipe (Windows) / Unix socket (POSIX) com o NOME do programa**
+  (sem registry, sem porta, nada exposto na rede). O modelo de objeto é a regra da própria linguagem:
+  **valor copia, ponteiro compartilha** — então `T*` cruza como *handle* (o objeto fica em casa e o peer
+  chama de volta), e o canal é **simétrico**. O id de um objeto é o endereço dele, mas número de peer nunca
+  é confiado: só ids que este programa entregou são aceitos. Uma capability é um nonce que o **servidor**
+  cunhou e lembra; método que declara `BundleAccessToken` não roda sem validação. A política é uma lambda
+  do servidor (`Program.serve(nome, auth)`). Lowering: `src/parser/ipc.cpp` gera **fonte LDP3** (proxies +
+  dispatcher) e parseia. Samples: `ipc_server.ldp3` + `ipc_client.ldp3` (teste e2e com 2 processos).
+
+**Testes:** suíte CTest completa (samples e2e + doctest), verde — **522 testes**.
 
 > Documento panorâmico do que **está** e do que **não está** implementado no compilador LDP3.
 > A fonte de verdade da *linguagem* continua sendo `docs/LDP3_specification.md`; este arquivo
