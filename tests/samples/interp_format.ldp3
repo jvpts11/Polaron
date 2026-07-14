@@ -1,0 +1,17 @@
+import System.IO.Console;
+program InterpFormat;
+
+// Interpolation format specifiers (spec 4.1): `{expr:0.00}` fixes the decimal places, `{expr:5}` sets a
+// minimum field width. Without a specifier the value formats as before.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                double pi = 3.14159265;
+                int n = 42;
+                System.IO.Console.println($"pi={pi:0.00} pi3={pi:0.000} n={n} raw={pi}");
+                return;
+            }
+        }
+    }
+}

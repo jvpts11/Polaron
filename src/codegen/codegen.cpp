@@ -27,6 +27,7 @@
 #include <llvm/Transforms/Utils/Cloning.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <set>
@@ -1811,6 +1812,35 @@ struct CodeGenerator::Impl {
             }
         }
         return nullptr;
+    }
+
+    // Call `method` on `recv` (a class/interface object), dispatching through the vtable when the class is
+    // polymorphic and directly otherwise. `cls` is the receiver's class (or interface) name, `fty` the
+    // signature (receiver first). Used by the Iterable foreach lowering (spec 9.2), where the receiver may
+    // be an interface reference whose concrete type is only known at run time.
+    llvm::Value* emitDynCall(const std::string& cls, const std::string& method, llvm::FunctionType* fty,
+                             llvm::Value* recv, const std::vector<llvm::Value*>& extra = {}) {
+        std::vector<llvm::Value*> args{recv};
+        args.insert(args.end(), extra.begin(), extra.end());
+        auto cit = classes.find(clsKey(cls));
+        if (cit != classes.end() && cit->second.hasVtable) {
+            const int slot = slotIndex(cls, method);
+            if (slot >= 0) {
+                llvm::Value* vtblField =
+                    builder.CreateStructGEP(cit->second.type, recv, 0, "it.vtbl.addr");
+                llvm::Value* vtbl = builder.CreateLoad(builder.getPtrTy(), vtblField, "it.vtbl");
+                llvm::Type* vtArrTy =
+                    llvm::ArrayType::get(builder.getPtrTy(), cit->second.vtslots.size());
+                llvm::Value* slotPtr = builder.CreateConstGEP2_64(
+                    vtArrTy, vtbl, 0, static_cast<std::uint64_t>(slot), "it.slot");
+                llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), slotPtr, "it.fn");
+                return builder.CreateCall(fty, fnPtr, args);
+            }
+        }
+        const std::string owner = methodOwner(clsKey(cls), method);
+        auto fnit = functions.find(owner + "." + method);
+        if (owner.empty() || fnit == functions.end()) return nullptr;
+        return builder.CreateCall(fnit->second, args);
     }
 
     // The vtable slot for `method`. Slots are global per method name, so this is the
@@ -4653,6 +4683,33 @@ struct CodeGenerator::Impl {
             const std::string et = typeName(*is.exprs[i]);
             llvm::Value* v = emitExpr(*is.exprs[i]);
             if (v == nullptr) return nullptr;
+            // Format specifier (spec 4.1): `{pi:0.00}` -> two decimals. The digits AFTER the dot fix the
+            // precision; a specifier with no dot (e.g. `{n:5}`) sets a minimum field width.
+            const std::string spec = i < is.formats.size() ? is.formats[i] : std::string();
+            if (!spec.empty() && (isFloatType(et) || isIntName(et))) {
+                const std::size_t dot = spec.find('.');
+                if (dot != std::string::npos) {
+                    const std::size_t prec = spec.size() - dot - 1;
+                    fmt += "%." + std::to_string(prec) + "f";
+                    v = coerce(v, et, "double");   // %f takes a double
+                    values.push_back(v);
+                    continue;
+                }
+                if (std::all_of(spec.begin(), spec.end(),
+                                [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+                    if (isFloatType(et)) {
+                        fmt += "%" + spec + "g";
+                        v = coerce(v, et, "double");
+                    } else {
+                        fmt += "%" + spec + "d";
+                        if (v->getType()->isIntegerTy() &&
+                            v->getType()->getIntegerBitWidth() < 32)
+                            v = builder.CreateSExt(v, builder.getInt32Ty());
+                    }
+                    values.push_back(v);
+                    continue;
+                }
+            }
             if (isFloatType(et)) {
                 fmt += "%g";
                 v = coerce(v, et, "double");  // f64 for the %g vararg
@@ -9127,6 +9184,10 @@ struct CodeGenerator::Impl {
         // toArray method is iterable. Arrays are iterated directly.
         const bool isCollection =
             classes.count(cbase) > 0 && functions.count(cbase + ".toArray") > 0;
+        // Iterable / Iterator (spec 9.2): a class with no toArray but with `iterator()` (Iterable) or with
+        // `hasNext()`/`next()` (Iterator itself) is iterated LAZILY, calling next() one element at a time --
+        // no snapshot, so an infinite or expensive sequence works. Interface receivers dispatch virtually.
+        if (!isCollection && classes.count(cbase) > 0 && emitForeachIterable(s, cbase)) return;
         llvm::Value* block;
         std::string et;
         if (isCollection) {
@@ -9183,6 +9244,88 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(endBB);
         locals.erase(s.varName);
         if (!s.indexName.empty()) locals.erase(s.indexName);
+    }
+
+    // Lazy `foreach` over an Iterable/Iterator (spec 9.2). The subject is either an Iterator itself
+    // (it declares hasNext/next) or an Iterable (it declares iterator(), whose result is the Iterator).
+    // The loop calls hasNext()/next() one element at a time -- no snapshot -- so a lazy or unbounded
+    // sequence works, and an interface-typed subject dispatches through its vtable. Returns false when the
+    // type is not iterable this way, so the caller can fall back to the array/toArray paths.
+    bool emitForeachIterable(const ast::ForeachStmt& s, const std::string& cbase) {
+        llvm::FunctionType* ptrToPtr =
+            llvm::FunctionType::get(builder.getPtrTy(), {builder.getPtrTy()}, false);
+        std::string itCls = cbase;
+        llvm::Value* itObj = nullptr;
+        const bool selfIterator =
+            !methodOwner(cbase, "hasNext").empty() && !methodOwner(cbase, "next").empty();
+        if (selfIterator) {
+            itObj = emitExpr(*s.iterable);       // the subject is the iterator
+        } else if (!methodOwner(cbase, "iterator").empty()) {
+            llvm::Value* recv = emitExpr(*s.iterable);
+            if (recv == nullptr) return false;
+            const std::string owner = methodOwner(cbase, "iterator");
+            const std::string ret = classes[clsKey(owner)].methodReturnType.at("iterator");
+            itCls = baseType(ret);
+            if (methodOwner(itCls, "hasNext").empty() || methodOwner(itCls, "next").empty()) return false;
+            itObj = emitDynCall(cbase, "iterator", ptrToPtr, recv);
+        } else {
+            return false;
+        }
+        if (itObj == nullptr) return false;
+
+        const std::string nextOwner = methodOwner(itCls, "next");
+        const std::string retT = classes[clsKey(nextOwner)].methodReturnType.at("next");
+        const std::string et = s.isVar ? retT : typeRefName(s.elemType);
+        llvm::Type* elemTy = llvmType(et);
+        llvm::FunctionType* hasNextTy =
+            llvm::FunctionType::get(builder.getInt32Ty(), {builder.getPtrTy()}, false);
+        llvm::FunctionType* nextTy =
+            llvm::FunctionType::get(elemTy, {builder.getPtrTy()}, false);
+
+        llvm::Value* itSlot = createEntryAlloca("fe.it", builder.getPtrTy());
+        builder.CreateStore(itObj, itSlot);
+        llvm::Value* vSlot = createEntryAlloca(s.varName, elemTy);
+        locals[s.varName] = LocalSlot{vSlot, et};
+        declareLocalDebug(vSlot, s.varName, et, s.loc);
+        // The `index i` form (spec 7.6) still works: count the elements as they come.
+        llvm::Value* iSlot = createEntryAlloca("fe.i", builder.getInt32Ty());
+        builder.CreateStore(builder.getInt32(0), iSlot);
+
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "fei.cond", fn);
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "fei.body", fn);
+        llvm::BasicBlock* updateBB = llvm::BasicBlock::Create(context, "fei.update", fn);
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "fei.end", fn);
+        builder.CreateBr(condBB);
+        builder.SetInsertPoint(condBB);
+        llvm::Value* it = builder.CreateLoad(builder.getPtrTy(), itSlot, "fei.itv");
+        llvm::Value* more = emitDynCall(itCls, "hasNext", hasNextTy, it);
+        if (more == nullptr) return false;
+        builder.CreateCondBr(builder.CreateICmpNE(more, builder.getInt32(0)), bodyBB, endBB);
+
+        builder.SetInsertPoint(bodyBB);
+        if (!s.indexName.empty()) {
+            locals[s.indexName] = LocalSlot{iSlot, "int"};
+            declareLocalDebug(iSlot, s.indexName, "int", s.loc);
+        }
+        llvm::Value* it2 = builder.CreateLoad(builder.getPtrTy(), itSlot, "fei.itv2");
+        llvm::Value* elem = emitDynCall(itCls, "next", nextTy, it2);
+        if (elem == nullptr) return false;
+        builder.CreateStore(elem, vSlot);
+        loopStack.push_back({endBB, updateBB, pendingLoopLabel, finallyStack.size(),
+                             scopeObjects.size(), deferred.size(), scopeRegions.size()});
+        pendingLoopLabel.clear();
+        emitBlock(s.body);
+        loopStack.pop_back();
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(updateBB);
+        builder.SetInsertPoint(updateBB);
+        llvm::Value* iv = builder.CreateLoad(builder.getInt32Ty(), iSlot, "fei.iv");
+        builder.CreateStore(builder.CreateAdd(iv, builder.getInt32(1)), iSlot);
+        builder.CreateBr(condBB);
+        builder.SetInsertPoint(endBB);
+        locals.erase(s.varName);
+        if (!s.indexName.empty()) locals.erase(s.indexName);
+        return true;
     }
 
     // `for (int i in start..end [step k])` (spec 7.5): a counting loop over an integer range. `..` is

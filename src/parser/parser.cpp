@@ -1,5 +1,8 @@
 #include "parser/parser.h"
 
+#include <algorithm>
+#include <cctype>
+
 #include <cstdlib>
 #include <utility>
 
@@ -557,15 +560,20 @@ ast::LiteralDecl Parser::parseLiteral() {
     return std::move(*parseLiteralMember(std::move(visibility), isComptime));
 }
 
-// Parses zero or more applied annotations `[Name(arg: val, ...)]` (spec 14.3) that precede a
-// declaration. Each annotation is `[` Name optional-arg-list `]`; args are named (`name: expr`).
+// Parses zero or more applied annotations preceding a declaration. Two equivalent spellings (spec 14.1):
+//   `[Name(arg: val, ...)]`  -- user-defined annotations (spec 14.3)
+//   `@Name(arg: val, ...)`   -- the language's built-in ones, e.g. `@Test` (spec 32.11)
+// Both produce the same AnnotationUse, so a built-in is just an annotation the stdlib declares.
 std::vector<ast::AnnotationUse> Parser::parseAnnotationUsesOpt() {
     std::vector<ast::AnnotationUse> uses;
-    while (check(TokenKind::LBracket)) {
+    while (check(TokenKind::LBracket) || check(TokenKind::At)) {
+        const bool bracketed = check(TokenKind::LBracket);
         ast::AnnotationUse use;
         use.loc = current().loc;
-        advance();  // '['
-        use.name = expect(TokenKind::Identifier, "an annotation name after '['").lexeme;
+        advance();  // '[' or '@'
+        use.name = expect(TokenKind::Identifier,
+                          bracketed ? "an annotation name after '['" : "an annotation name after '@'")
+                       .lexeme;
         if (match(TokenKind::LParen)) {
             if (!check(TokenKind::RParen)) {
                 do {
@@ -579,7 +587,7 @@ std::vector<ast::AnnotationUse> Parser::parseAnnotationUsesOpt() {
             }
             expect(TokenKind::RParen, "')' to close the annotation arguments");
         }
-        expect(TokenKind::RBracket, "']' to close the annotation");
+        if (bracketed) expect(TokenKind::RBracket, "']' to close the annotation");
         uses.push_back(std::move(use));
     }
     return uses;
@@ -755,9 +763,11 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     ast::ClassDecl c;
     c.loc = current().loc;
     c.visibility = parseVisibilityOpt();
+    if (match(TokenKind::KwPartial)) c.isPartial = true;   // spec 8.3: one part of a split class
     if (match(TokenKind::KwSealed)) c.isSealed = true;
     if (match(TokenKind::KwFinal)) c.isFinal = true;
     if (match(TokenKind::KwAbstract)) c.isAbstract = true;
+    if (match(TokenKind::KwPartial)) c.isPartial = true;   // ... in either order
     if (match(TokenKind::KwMovable)) {
         c.isMovable = true;
     } else if (match(TokenKind::KwUnique)) {
@@ -980,6 +990,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isPersistent = false;
     bool isEternal = false;
     bool isTransient = false;
+    bool isDeprecated = false;   // spec 14.2
     bool isVolatile = false;
     bool isComptime = false;
     bool isLazy = false;
@@ -1028,6 +1039,11 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         if (!isTransient && check(TokenKind::KwTransient)) {
             advance();
             isTransient = true;
+            continue;
+        }
+        if (!isDeprecated && check(TokenKind::KwDeprecated)) {  // spec 14.2: warn at every use
+            advance();
+            isDeprecated = true;
             continue;
         }
         // `in region X` field placement (spec 18.7): places the field's storage in a region. Accepted;
@@ -1087,10 +1103,16 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         break;
     }
     ast::MemberPtr member;
+    // spec 32.6: `bidirectional T name { src to name: expr; name to src: expr; }` -- a property that
+    // converts both ways over a backing field. `bidirectional` is a soft keyword (still usable as a name).
+    if (check(TokenKind::Identifier) && current().lexeme == "bidirectional") {
+        advance();
+        return parseBidirectional(std::move(visibility), isStatic);
+    }
     if (check(TokenKind::KwMethod)) {
         member = parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
                              inInterface, isComptime, isAsync, isVolatile, isExtern,
-                             std::move(externConvention));
+                             std::move(externConvention), isDeprecated);
     } else if (check(TokenKind::KwConstructor)) {
         member = parseConstructor(std::move(visibility));
     } else if (check(TokenKind::KwDestructor)) {
@@ -1163,7 +1185,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
                                                      bool isAbstract, bool isOverride, bool isFinal,
                                                      bool inInterface, bool isComptime,
                                                      bool isAsync, bool isVolatile, bool isExtern,
-                                                     std::string externConvention) {
+                                                     std::string externConvention, bool isDeprecated) {
     auto m = std::make_unique<ast::MethodDecl>();
     m->loc = current().loc;
     m->visibility = std::move(visibility);
@@ -1177,14 +1199,32 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     m->isComptime = isComptime;  // `comptime` prefix (spec 37.4); suffix handled below
     m->isAsync = isAsync;
     m->isVolatile = isVolatile;  // spec 37.5: always executed; never inlined/elided
+    m->isDeprecated = isDeprecated;  // spec 14.2: warn at every call site
     expect(TokenKind::KwMethod, "'method'");
     m->name = expect(TokenKind::Identifier, "the method name").lexeme;
     // Generic method type parameters: method identity<T>(...) (spec 15). Each
     // (method-name, type-args) call is monomorphized into a concrete method.
     if (match(TokenKind::Lt)) {
         do {
-            m->typeParams.push_back(
-                expect(TokenKind::Identifier, "a type parameter").lexeme);
+            const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
+            m->typeParams.push_back(tp);
+            // Constraint (spec 15.2): `<T extends Numeric>` / `<T implements Comparable<T>>`, exactly like
+            // the class-level form. The bound's own type arguments are skipped (only the base name binds).
+            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {
+                m->typeParamBounds.push_back(
+                    {tp, expect(TokenKind::Identifier, "a constraint type").lexeme});
+                if (match(TokenKind::Lt)) {
+                    int depth = 1;
+                    while (depth > 0 && !check(TokenKind::EndOfFile)) {
+                        if (match(TokenKind::Lt)) ++depth;
+                        else if (match(TokenKind::Gt)) --depth;
+                        else if (check(TokenKind::Shr)) {
+                            if (depth >= 2) { depth -= 2; advance(); }
+                            else { depth -= 1; tokens_[pos_].kind = TokenKind::Gt; }
+                        } else advance();
+                    }
+                }
+            }
         } while (match(TokenKind::Comma));
         expect(TokenKind::Gt, "'>' to close type parameters");
     }
@@ -1279,6 +1319,136 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
 // init / get-only -> immutable). A `get { body }` is a computed get-only
 // property: it becomes a getter method read as `obj.name` (no parens).
 // set-with-body (backing-field properties) is a later refinement.
+// Bidirectional property (spec 32.6):
+//
+//   public bidirectional double fahrenheit {
+//       celsius to fahrenheit: celsius * 9.0 / 5.0 + 32.0;   // read:  compute it FROM the field
+//       fahrenheit to celsius: (fahrenheit - 32.0) * 5.0 / 9.0;   // write: compute the field FROM it
+//   }
+//
+// It desugars into the existing property machinery: a computed getter `fahrenheit` (isProperty) and a
+// setter `fahrenheit$set(value)` that assigns the backing field. Inside the two expressions the field and
+// the property are written as bare names; they are rewritten on the token stream before parsing --
+// the field becomes `this.<field>` and, in the write direction, the property name becomes `value`.
+ast::MemberPtr Parser::parseBidirectional(std::string visibility, bool isStatic) {
+    const SourceLocation loc = current().loc;
+    ast::TypeRef type = parseTypeRef();
+    const std::string name = expect(TokenKind::Identifier, "the property name").lexeme;
+    expect(TokenKind::LBrace, "'{' to open a bidirectional property");
+
+    std::string field;                 // the backing field both directions talk about
+    std::vector<Token> readToks;       // tokens of the read expression  (field -> property)
+    std::vector<Token> writeToks;      // tokens of the write expression (property -> field)
+    bool sawRead = false;
+    bool sawWrite = false;
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        const std::string from = expect(TokenKind::Identifier, "a name before 'to'").lexeme;
+        if (!(check(TokenKind::Identifier) && current().lexeme == "to"))
+            fail("expected 'to' in a bidirectional property direction", current().loc);
+        advance();  // 'to'
+        const std::string to = expect(TokenKind::Identifier, "a name after 'to'").lexeme;
+        expect(TokenKind::Colon, "':' after the direction");
+        std::vector<Token> body;
+        while (!check(TokenKind::Semicolon) && !check(TokenKind::EndOfFile)) body.push_back(advance());
+        expect(TokenKind::Semicolon, "';' to end a bidirectional direction");
+        if (to == name) {          // `<field> to <property>`: the READ direction
+            field = from;
+            readToks = std::move(body);
+            sawRead = true;
+        } else if (from == name) {  // `<property> to <field>`: the WRITE direction
+            field = to;
+            writeToks = std::move(body);
+            sawWrite = true;
+        } else {
+            fail("a bidirectional direction must mention the property '" + name + "'", loc);
+        }
+    }
+    expect(TokenKind::RBrace, "'}' to close a bidirectional property");
+    if (!sawRead || !sawWrite)
+        fail("a bidirectional property needs both directions ('field to " + name + "' and '" + name +
+                 " to field')",
+             loc);
+
+    // Rewrite the bare names on the token stream, then parse each expression with a sub-parser.
+    auto rewrite = [&](std::vector<Token> toks, bool writeDir) {
+        std::vector<Token> out;
+        for (Token& t : toks) {
+            if (t.kind == TokenKind::Identifier && t.lexeme == field) {
+                Token th = t;
+                th.kind = TokenKind::KwThis;
+                th.lexeme = "this";
+                Token dot = t;
+                dot.kind = TokenKind::Dot;
+                dot.lexeme = ".";
+                out.push_back(th);
+                out.push_back(dot);
+                out.push_back(t);
+                continue;
+            }
+            if (writeDir && t.kind == TokenKind::Identifier && t.lexeme == name) {
+                t.lexeme = "value";  // the incoming value in the setter
+            }
+            out.push_back(t);
+        }
+        Token eof;
+        eof.kind = TokenKind::EndOfFile;
+        eof.loc = loc;
+        out.push_back(eof);
+        Parser sub(std::move(out), file_);
+        ast::ExprPtr e = sub.parseExpression();
+        for (const ParseError& se : sub.errors()) errors_.push_back(se);
+        return e;
+    };
+    ast::ExprPtr readExpr = rewrite(std::move(readToks), /*writeDir=*/false);
+    ast::ExprPtr writeExpr = rewrite(std::move(writeToks), /*writeDir=*/true);
+    if (readExpr == nullptr || writeExpr == nullptr)
+        fail("invalid expression in bidirectional property '" + name + "'", loc);
+
+    // setter: `method name$set(T value) { this.<field> = <writeExpr>; }`
+    auto setter = std::make_unique<ast::MethodDecl>();
+    setter->loc = loc;
+    setter->visibility = visibility;
+    setter->isStatic = isStatic;
+    setter->name = name + "$set";
+    ast::Param p;
+    p.loc = loc;
+    p.type = type;
+    p.name = "value";
+    setter->params.push_back(std::move(p));
+    setter->returnType = ast::TypeRef{};
+    setter->returnType.name = "void";
+    {
+        auto target = std::make_unique<ast::MemberExpr>();
+        target->loc = loc;
+        auto self = std::make_unique<ast::IdentifierExpr>();   // `this` is an identifier in the AST
+        self->loc = loc;
+        self->name = "this";
+        target->object = std::move(self);
+        target->member = field;
+        auto assign = std::make_unique<ast::AssignStmt>();
+        assign->loc = loc;
+        assign->target = std::move(target);
+        assign->value = std::move(writeExpr);
+        setter->body.statements.push_back(std::move(assign));
+    }
+    extraMembers_.push_back(std::move(setter));
+
+    // getter: `method name() returns T { return <readExpr>; }` (a computed property)
+    auto getter = std::make_unique<ast::MethodDecl>();
+    getter->loc = loc;
+    getter->visibility = std::move(visibility);
+    getter->isStatic = isStatic;
+    getter->isProperty = true;
+    getter->name = name;
+    getter->returnType = type;
+    getter->propertySetter = name + "$set";
+    auto ret = std::make_unique<ast::ReturnStmt>();
+    ret->loc = loc;
+    ret->value = std::move(readExpr);
+    getter->body.statements.push_back(std::move(ret));
+    return getter;
+}
+
 ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
                                      const std::string& name, SourceLocation loc, bool isAbstract,
                                      bool isOverride, bool isFinal) {
@@ -1467,11 +1637,35 @@ std::vector<ast::Param> Parser::parseParams(bool* variadic) {
         ast::Param p;
         p.loc = current().loc;
         p.isComptime = match(TokenKind::KwComptime);  // spec 32.4: `comptime T p` -- const argument
+        // spec 22.4: `requires named T p` -- the caller must pass this argument by name. `named` is a soft
+        // keyword here (it stays usable as an identifier everywhere else).
+        if (check(TokenKind::KwRequires) && peek(1).kind == TokenKind::Identifier && peek(1).lexeme == "named") {
+            advance();  // requires
+            advance();  // named
+            p.requiresNamed = true;
+        }
         p.type = parseTypeRef();
         p.name = expect(TokenKind::Identifier, "a parameter name").lexeme;
         params.push_back(std::move(p));
     } while (match(TokenKind::Comma));
     return params;
+}
+
+// The argument list of a call, up to (but not consuming) the ')'. Supports named arguments (spec 22.4):
+// `name: expr`. A bare `expr` is positional and records an empty name. A ternary `cond ? a : b` cannot be
+// confused with one, because a named argument is exactly an identifier immediately followed by ':'.
+void Parser::parseCallArgs(ast::CallExpr& call) {
+    if (check(TokenKind::RParen)) return;
+    do {
+        std::string name;
+        if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon) {
+            name = current().lexeme;
+            advance();  // the name
+            advance();  // ':'
+        }
+        call.args.push_back(parseExpression());
+        call.argNames.push_back(std::move(name));
+    } while (match(TokenKind::Comma));
 }
 
 ast::TypeRef Parser::parseTypeRef() {
@@ -2671,6 +2865,26 @@ ast::ExprPtr Parser::parseInterpolation(const std::string& raw, SourceLocation l
             e->literals.push_back(lit);
             lit.clear();
 
+            // Optional format specifier (spec 4.1): `{pi:0.00}`. Split on the LAST ':' when what follows
+            // looks like a specifier -- digits, '.', '#', ',' and letters, no spaces -- and the expression
+            // contains no '?' (so a ternary `{a ? b : c}` is never mistaken for one).
+            std::string format;
+            if (exprSrc.find('?') == std::string::npos) {
+                const std::size_t c = exprSrc.rfind(':');
+                if (c != std::string::npos && c + 1 < exprSrc.size() && (c == 0 || exprSrc[c - 1] != ':')) {
+                    const std::string tail = exprSrc.substr(c + 1);
+                    const bool specLike =
+                        !tail.empty() &&
+                        std::all_of(tail.begin(), tail.end(), [](unsigned char ch) {
+                            return std::isalnum(ch) != 0 || ch == '.' || ch == '#' || ch == ',';
+                        });
+                    if (specLike) {
+                        format = tail;
+                        exprSrc = exprSrc.substr(0, c);
+                    }
+                }
+            }
+
             Lexer sublex(exprSrc, file_);
             Parser sub(sublex.tokenize(), file_);
             ast::ExprPtr parsed;
@@ -2684,6 +2898,7 @@ ast::ExprPtr Parser::parseInterpolation(const std::string& raw, SourceLocation l
                 fail("invalid expression in interpolation: {" + exprSrc + "}", loc);
             }
             e->exprs.push_back(std::move(parsed));
+            e->formats.push_back(std::move(format));
             i = j + 1;  // skip past '}'
         } else {
             lit += raw[i];
@@ -2853,11 +3068,7 @@ ast::ExprPtr Parser::parsePostfix() {
             auto call = std::make_unique<ast::CallExpr>();
             call->loc = current().loc;
             expect(TokenKind::LParen, "'('");
-            if (!check(TokenKind::RParen)) {
-                do {
-                    call->args.push_back(parseExpression());
-                } while (match(TokenKind::Comma));
-            }
+            parseCallArgs(*call);
             expect(TokenKind::RParen, "')'");
             call->callee = std::move(expr);
             call->typeArgs = std::move(typeArgs);
@@ -2866,11 +3077,7 @@ ast::ExprPtr Parser::parsePostfix() {
             auto call = std::make_unique<ast::CallExpr>();
             call->loc = current().loc;
             advance();  // '('
-            if (!check(TokenKind::RParen)) {
-                do {
-                    call->args.push_back(parseExpression());
-                } while (match(TokenKind::Comma));
-            }
+            parseCallArgs(*call);
             expect(TokenKind::RParen, "')'");
             call->callee = std::move(expr);
             expr = std::move(call);

@@ -1,0 +1,39 @@
+import System.IO.Console;
+program NamedArgs;
+
+public bundle main {
+    public namespace app {
+
+        public class Speaker {
+            // A plain method: every argument may be passed positionally OR by name (spec 22.4).
+            public static method describe(int volume, int duration) returns int {
+                return volume * 100 + duration;
+            }
+
+            // `requires named` (spec 22.4): a bare `configure(5, 2, false)` would be unreadable at the call
+            // site, so the compiler demands `repeat: false`.
+            public static method configure(int volume, int duration, requires named boolean repeat)
+                    returns int {
+                mutable int r = 0;
+                if (repeat) {
+                    r = 1;
+                }
+                return volume * 100 + duration * 10 + r;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = Speaker.describe(5, 2);                    // positional
+                int b = Speaker.describe(volume: 5, duration: 2);  // named, in order
+                int c = Speaker.describe(duration: 2, volume: 5);  // named, OUT of order -> permuted back
+                int d = Speaker.describe(5, duration: 2);          // positional first, then named
+                int e = Speaker.configure(5, 2, repeat: true);     // `requires named` must be named
+                int f = Speaker.configure(volume: 5, repeat: false, duration: 2);
+                System.IO.Console.println("a=" + a.toString() + " b=" + b.toString() + " c=" + c.toString()
+                    + " d=" + d.toString() + " e=" + e.toString() + " f=" + f.toString());
+                return;
+            }
+        }
+    }
+}

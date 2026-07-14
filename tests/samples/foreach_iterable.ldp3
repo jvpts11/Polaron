@@ -1,0 +1,83 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.Iterator;
+import System.Collections.Iterable;
+program ForeachIterable;
+
+// foreach over a user Iterable/Iterator (spec 9.2). Iteration is LAZY -- hasNext()/next() are called one
+// element at a time, with no snapshot -- so an UNBOUNDED sequence works as long as the loop breaks out.
+public bundle main {
+    public namespace app {
+
+        // An infinite Fibonacci sequence. There is no toArray() here (there could not be), so this only
+        // works because foreach drives the iterator directly.
+        public class Fib implements Iterator<int> {
+            private mutable int a;
+            private mutable int b;
+            public constructor Fib() {
+                this.a = 0;
+                this.b = 1;
+            }
+            public override method hasNext() returns boolean {
+                return true;                       // never ends
+            }
+            public override method next() returns int {
+                int cur = this.a;
+                int nb = this.a + this.b;
+                this.a = this.b;
+                this.b = nb;
+                return cur;
+            }
+        }
+
+        // A finite Iterable: it HAS an iterator (rather than being one).
+        public class Countdown implements Iterable<int> {
+            private mutable int from;
+            public constructor Countdown(int from) {
+                this.from = from;
+            }
+            public override method iterator() returns Iterator<int>* {
+                return new CountdownIter(this.from) on heap;
+            }
+        }
+
+        public class CountdownIter implements Iterator<int> {
+            private mutable int n;
+            public constructor CountdownIter(int n) {
+                this.n = n;
+            }
+            public override method hasNext() returns boolean {
+                return this.n > 0;
+            }
+            public override method next() returns int {
+                int cur = this.n;
+                this.n = this.n - 1;
+                return cur;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // An infinite iterator, consumed lazily and cut short with break.
+                Fib* f = new Fib() on heap;
+                mutable int sum = 0;
+                for (int v in f) {
+                    if (v > 40) {
+                        break;
+                    }
+                    sum = sum + v;
+                }
+                // An Iterable: foreach calls iterator() first, then drives it.
+                Countdown* c = new Countdown(4) on heap;
+                mutable int prod = 1;
+                for (int v in c) {
+                    prod = prod * v;
+                }
+                System.IO.Console.println("sum=" + sum.toString() + " prod=" + prod.toString());
+                delete f;
+                delete c;
+                return;
+            }
+        }
+    }
+}

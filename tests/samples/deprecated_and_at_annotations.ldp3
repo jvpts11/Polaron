@@ -1,0 +1,39 @@
+import System.IO.Console;
+import System.Test.Assert;
+program DeprecatedAndAt;
+
+// Two small language features from spec 14:
+//   14.2 -- `deprecated` on a method: every call site gets a compiler warning (the code still runs).
+//   14.1 -- the built-in annotation spelling `@Name`, equivalent to the user form `[Name]`.
+public bundle main {
+    public namespace app {
+
+        public class Api {
+            public deprecated static method oldWay(int x) returns int {
+                return x * 2;
+            }
+            public static method newWay(int x) returns int {
+                return x * 2;
+            }
+
+            // `@Test` (spec 32.11) is the built-in spelling; `[Test]` is the same annotation.
+            @Test
+            public static method doubling_at() returns boolean {
+                return Assert.eq(Api.newWay(4), 8);
+            }
+            [Test]
+            public static method doubling_bracket() returns boolean {
+                return Assert.eq(Api.newWay(0), 0);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = Api.oldWay(21);    // warns: 'oldWay' is deprecated
+                int b = Api.newWay(21);
+                System.IO.Console.println("a=" + a.toString() + " b=" + b.toString());
+                return;
+            }
+        }
+    }
+}

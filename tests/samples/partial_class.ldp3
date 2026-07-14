@@ -1,0 +1,40 @@
+import System.IO.Console;
+program PartialClass;
+
+// `partial` classes (spec 8.3): the same class declared in several parts. They may live in different
+// files; the compiler folds them into one class before anything else looks at it. Here both parts are in
+// one file so the sample is self-contained.
+public bundle main {
+    public namespace app {
+
+        public partial class Dog {
+            private mutable int barks;
+            public constructor Dog() {
+                this.barks = 0;
+            }
+            public method bark() returns void {
+                this.barks = this.barks + 1;
+                return;
+            }
+        }
+
+        // The second part adds a method that reads the first part's field.
+        public partial class Dog {
+            public method count() returns int {
+                return this.barks;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog* d = new Dog() on heap;
+                d.bark();
+                d.bark();
+                d.bark();
+                System.IO.Console.println("barks=" + d.count().toString());
+                delete d;
+                return;
+            }
+        }
+    }
+}

@@ -328,6 +328,7 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         auto n = std::make_unique<ast::InterpStringExpr>();
         n->loc = x->loc;
         n->literals = x->literals;
+        n->formats = x->formats;   // spec 4.1 format specifiers travel with the clone
         for (const auto& ex : x->exprs) n->exprs.push_back(cloneExpr(ex.get(), s));
         return n;
     }
@@ -994,7 +995,16 @@ void rewriteMethStmt(ast::Stmt* st) {
 // template, drops the templates, then rewrites every generic call to the mangled
 // member. Cloning substitutes the type params, so a concrete body's own generic
 // call `inner<T>` becomes `inner<int>`; a worklist collects those transitively.
-void expandGenericMethods(ast::Program& program) {
+bool isSubtypeOf(const std::string& sub, const std::string& base,
+                 const std::map<std::string, const ast::ClassDecl*>& idx);
+
+bool expandGenericMethods(ast::Program& program) {
+    bool ok = true;
+    // The class hierarchy, for checking generic-method constraints (spec 15.2).
+    std::map<std::string, const ast::ClassDecl*> classIndex;
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes) classIndex[c.name] = &c;
     // Any generic method templates at all? If not, there is nothing to do.
     bool anyTemplate = false;
     for (auto& b : program.bundles)
@@ -1003,7 +1013,7 @@ void expandGenericMethods(ast::Program& program) {
                 for (auto& m : c.members)
                     if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
                         if (!meth->typeParams.empty()) anyTemplate = true;
-    if (!anyTemplate) return;
+    if (!anyTemplate) return ok;
 
     // 1. Collect (name, args) from every existing method body (templates included).
     MethInsts insts;
@@ -1036,6 +1046,24 @@ void expandGenericMethods(ast::Program& program) {
                             const std::string key = c.name + "::" + mangled;
                             if (done.count(key) > 0) continue;
                             done.insert(key);
+                            // Constraints on a generic METHOD (spec 15.2): every type argument must
+                            // satisfy its bound, exactly as for a generic class.
+                            for (const auto& pb : meth->typeParamBounds) {
+                                std::size_t pi = 0;
+                                while (pi < meth->typeParams.size() && meth->typeParams[pi] != pb.first)
+                                    ++pi;
+                                if (pi >= inst.second.size()) continue;
+                                if (!isSubtypeOf(inst.second[pi], pb.second, classIndex)) {
+                                    const auto& mloc = meth->loc;
+                                    std::fprintf(stderr,
+                                                 "%s:%d:%d: error: type argument '%s' does not satisfy "
+                                                 "constraint '%s extends %s' of method '%s'\n",
+                                                 std::string(mloc.file).c_str(), mloc.line, mloc.col,
+                                                 inst.second[pi].c_str(), pb.first.c_str(),
+                                                 pb.second.c_str(), meth->name.c_str());
+                                    ok = false;
+                                }
+                            }
                             Subst s;
                             for (std::size_t i = 0; i < inst.second.size(); ++i)
                                 s[meth->typeParams[i]] = inst.second[i];
@@ -1078,6 +1106,7 @@ void expandGenericMethods(ast::Program& program) {
                         rewriteMethBlock(meth->body);
             }
     g_genericMethodNames = nullptr;
+    return ok;
 }
 
 // Subtype check over the class hierarchy (AST-level), for constraint validation.
@@ -1274,7 +1303,44 @@ void qualifyNamespaces(ast::Program& program) {
     }
 }
 
+// `partial` classes (spec 8.3): several declarations of the same class, in the same namespace, are one
+// class. Merge every later part into the first: members are appended, and the inheritance/modifier facts
+// of any part apply to the whole (so the parts need not repeat `extends`/`implements`). Merging happens
+// before generics/semantics, so nothing downstream ever sees the split.
+void mergePartialClasses(ast::Program& program) {
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            std::map<std::string, std::size_t> firstOf;   // class name -> index of its first part
+            std::vector<bool> drop(ns.classes.size(), false);
+            for (std::size_t i = 0; i < ns.classes.size(); ++i) {
+                ast::ClassDecl& c = ns.classes[i];
+                auto it = firstOf.find(c.name);
+                if (it == firstOf.end()) {
+                    firstOf[c.name] = i;
+                    continue;
+                }
+                if (!c.isPartial) continue;              // a genuine duplicate: sema reports it
+                ast::ClassDecl& head = ns.classes[it->second];
+                if (!head.isPartial) continue;
+                for (auto& m : c.members) head.members.push_back(std::move(m));
+                if (head.superclass.empty()) head.superclass = c.superclass;
+                for (const auto& i2 : c.interfaces) head.interfaces.push_back(i2);
+                head.isAbstract = head.isAbstract || c.isAbstract;
+                head.isSealed = head.isSealed || c.isSealed;
+                head.isFinal = head.isFinal || c.isFinal;
+                drop[i] = true;
+            }
+            std::vector<ast::ClassDecl> kept;
+            kept.reserve(ns.classes.size());
+            for (std::size_t i = 0; i < ns.classes.size(); ++i)
+                if (!drop[i]) kept.push_back(std::move(ns.classes[i]));
+            ns.classes = std::move(kept);
+        }
+    }
+}
+
 bool monomorphize(ast::Program& program) {
+    mergePartialClasses(program);   // spec 8.3: fold the parts of a `partial` class into one
     // Record enum names so EnumName.parse() can force-monomorphize its Option<Enum> result.
     g_enumNames.clear();
     for (auto& b : program.bundles)
@@ -1317,8 +1383,7 @@ bool monomorphize(ast::Program& program) {
 
     // No generic classes: still expand any generic methods, then done.
     if (templates.empty()) {
-        expandGenericMethods(program);
-        return true;
+        return expandGenericMethods(program);
     }
 
     // Index every class by name for constraint subtype checks.
@@ -1463,7 +1528,7 @@ bool monomorphize(ast::Program& program) {
             }
     // Generic methods live on both plain and monomorphized classes; expand them
     // now that every concrete class (and its cloned bodies) exists.
-    expandGenericMethods(program);
+    if (!expandGenericMethods(program)) ok = false;
     return ok;
 }
 

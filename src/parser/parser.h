@@ -73,7 +73,8 @@ private:
                                                  bool inInterface, bool isComptime = false,
                                                  bool isAsync = false, bool isVolatile = false,
                                                  bool isExtern = false,
-                                                 std::string externConvention = "");
+                                                 std::string externConvention = "",
+                                                 bool isDeprecated = false);
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
                               bool isPersistent, bool isEternal, bool isTransient,
                               bool isVolatile = false, bool isLazy = false,
@@ -86,6 +87,8 @@ private:
     // Parses a label reference `label` (spec 7.9-7.11). The chaos tetrad is intra-method only, so a
     // method-qualified `method.label` form is rejected.
     void parseLabelRef(std::string& name);
+    // spec 32.6: `bidirectional T name { f to name: e; name to f: e; }` -> getter + name$set setter.
+    ast::MemberPtr parseBidirectional(std::string visibility, bool isStatic);
     ast::MemberPtr parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
                                  const std::string& name, SourceLocation loc,
                                  bool isAbstract = false, bool isOverride = false,
@@ -99,6 +102,7 @@ private:
     // Parses `[using a, b] { ... }` after `expecting`; fills usingVars and returns the block.
     std::unique_ptr<ast::Block> parseExpectingTail(std::vector<std::string>& usingVars);
     std::vector<ast::Param> parseParams(bool* variadic = nullptr);
+    void parseCallArgs(ast::CallExpr& call);  // args of a call, incl. named ones (spec 22.4)
     ast::TypeRef parseTypeRef();
     ast::Block parseBlock();
     ast::StmtPtr parseStatement();

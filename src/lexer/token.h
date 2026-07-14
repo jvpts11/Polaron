@@ -55,6 +55,8 @@ enum class TokenKind : std::uint8_t {
     KwRegion, KwOf, KwAccepts, KwRejects,
     KwItself, KwRelease,
     KwPersistent, KwEternal, KwTransient,
+    KwDeprecated,   // spec 14.2: marks a method as deprecated -> a warning at each call site
+    KwPartial,      // spec 8.3: a class declaration split across several declarations/files
     KwDefer, KwUsing, KwSynchronized, KwAsync, KwAwait,
     KwExtern, KwCdecl, KwStdcall, KwFastcall, KwFreestanding,
     KwVolatile, KwCascade, KwLazy, KwExternal,
@@ -86,6 +88,7 @@ enum class TokenKind : std::uint8_t {
     LParen, RParen,       // ( )
     LBrace, RBrace,       // { }
     LBracket, RBracket,   // [ ]
+    At,                   // @  -- built-in annotation prefix (spec 14.1): @Test
     Semicolon, Comma,     // ; ,
     Dot, DotDot, DotDotEq,  // . .. ..=
     Colon, Question,      // : ?

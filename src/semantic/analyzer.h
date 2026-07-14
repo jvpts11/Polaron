@@ -49,6 +49,9 @@ struct MethodInfo {
     bool isVariadic = false;  // spec 26: an extern C function with a trailing `...` (arg count is open)
     std::vector<std::string> paramTypes;  // declared parameter types (for methodref's function type)
     std::vector<bool> comptimeParams;     // spec 32.4: which params are `comptime` (arg must be const)
+    std::vector<std::string> paramNames;  // spec 22.4: for matching named arguments at the call site
+    std::vector<bool> namedOnlyParams;    // spec 22.4: `requires named` -- must be passed by name
+    bool isDeprecated = false;            // spec 14.2: each call site gets a warning
 };
 struct ClassInfo {
     std::string name;
@@ -185,6 +188,9 @@ private:
     bool isConstArg(const ast::Expr& e);
     void checkComptimeArgs(const std::vector<ast::ExprPtr>& args,
                            const std::vector<bool>& comptimeParams, const std::string& desc);
+    // spec 22.4: reorder a call's named arguments into parameter order (and enforce `requires named`).
+    void bindNamedArgs(ast::CallExpr* call, const std::vector<std::string>& paramNames,
+                       const std::vector<bool>& namedOnly, const std::string& desc);
     std::string flattenCallee(const ast::Expr& expr) const;
     const ClassInfo* lookupClass(const std::string& name) const;
     void validateHierarchy();

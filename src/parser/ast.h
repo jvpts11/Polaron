@@ -133,6 +133,11 @@ struct OldExpr : Expr {
 struct CallExpr : Expr {
     ExprPtr callee;
     std::vector<ExprPtr> args;
+    // Named arguments (spec 22.4): `configure(5, duration: 2, repeat: false)`. Parallel to `args` -- an
+    // empty string means the argument was passed positionally. Semantic analysis reorders `args` into the
+    // parameter order and then clears these, so codegen only ever sees positional arguments.
+    std::vector<std::string> argNames;
+    bool argsBound = false;  // set once the analyzer has bound/validated the arguments (it may revisit a call)
     std::vector<std::string> typeArgs;  // generic method call: obj.identity<int>(x) -> ["int"]
     bool fromSuffix = false;  // formed from `N suffix` (spec 17.10); requires import
     void dump(std::string& out, int indent) const override;
@@ -281,6 +286,9 @@ struct ArrayLiteralExpr : Expr {
 struct InterpStringExpr : Expr {
     std::vector<std::string> literals;  // N+1 chunks (escapes unresolved)
     std::vector<ExprPtr> exprs;         // N embedded expressions
+    // spec 4.1: an optional format specifier per expression -- `$"pi = {pi:0.00}"` -> formats[i] = "0.00".
+    // "" means "default formatting". A specifier of zeros/hashes after a dot fixes the decimal places.
+    std::vector<std::string> formats;
     void dump(std::string& out, int indent) const override;
 };
 
@@ -503,6 +511,9 @@ struct Param {
     std::string name;
     SourceLocation loc;
     bool isComptime = false;  // spec 32.4: `comptime T p` -- the argument must be a compile-time constant
+    // spec 22.4: `requires named boolean repeat` -- callers MUST pass this one by name, so a bare
+    // `configure(5, 2, false)` is rejected and the call site stays readable.
+    bool requiresNamed = false;
 };
 
 // A lambda value: `lambda(params) returns T { body }`. Its type is function<T, Params...>.
@@ -716,11 +727,15 @@ struct MethodDecl : MemberDecl {
     bool isComptime = false;  // spec 28.3/37.4: may be evaluated at compile time
     bool isAsync = false;     // spec 20.2: returns a Task<T>; body becomes a state machine
     bool isVolatile = false;  // spec 37.5: always executed; never inlined or optimized away
+    bool isDeprecated = false;  // spec 14.2: every call site gets a warning
     bool isExtern = false;    // spec 26: an external C function (no LDP3 body); links to a C symbol
     bool isVariadic = false;  // spec 26: an extern C function with a trailing `...` (e.g. printf)
     std::string externConvention;  // "cdecl"/"stdcall"/"fastcall" when isExtern
     std::string name;
     std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
+    // spec 15.2: constraints on those parameters -- `clamp<T extends Numeric>` -> [{"T","Numeric"}].
+    // Checked against the type arguments at monomorphization, like the class-level ones.
+    std::vector<std::pair<std::string, std::string>> typeParamBounds;
     std::vector<Param> params;
     TypeRef returnType;
     std::vector<TypeRef> throwsTypes;  // `throws(...)` declared exceptions (spec 21.1)
@@ -782,6 +797,7 @@ struct ClassDecl {
     bool isAbstract = false;              // `abstract class` (interfaces are abstract too)
     bool isFinal = false;                 // `final class` -- cannot be extended
     bool isSealed = false;                // `sealed` -- only `permits` types may extend it
+    bool isPartial = false;               // spec 8.3: this is one part of a class split across declarations
     bool isMovable = false;               // `movable class` -- move discipline
     bool isUnique = false;                // `unique class` -- single live reference
     bool isPartitionable = false;         // `partitionable class` -- fields movable separately (spec 19.9)

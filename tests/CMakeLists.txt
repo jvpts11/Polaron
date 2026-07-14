@@ -3554,6 +3554,73 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # bidirectional properties (spec 32.6): one property converting both ways over a backing field
+        # (Celsius <-> Fahrenheit): reading converts out of the field, assigning converts into it.
+        add_test(NAME codegen_bidirectional_property_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bidirectional_property.ldp3"
+            "-DEXPECTED=f=212.0 c=0.0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `partial` classes (spec 8.3): two declarations of the same class are folded into one.
+        add_test(NAME codegen_partial_class_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/partial_class.ldp3"
+            "-DEXPECTED=barks=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # interpolation format specifiers (spec 4.1): `{pi:0.00}` fixes the decimals; no spec = unchanged.
+        add_test(NAME codegen_interp_format_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interp_format.ldp3"
+            "-DEXPECTED=pi=3.14 pi3=3.142 n=42 raw=3.14159"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # foreach over a user Iterable/Iterator (spec 9.2): lazy, no snapshot -- an infinite Fibonacci
+        # iterator is consumed with break (sum=88) and an Iterable is driven through iterator() (prod=24).
+        add_test(NAME codegen_foreach_iterable_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/foreach_iterable.ldp3"
+            "-DEXPECTED=sum=88 prod=24"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # spec 14.1/14.2: the built-in `@Name` annotation spelling (alongside `[Name]`), and `deprecated`
+        # methods (each call site warns; the program still builds and runs).
+        add_test(NAME codegen_deprecated_and_at_annotations_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/deprecated_and_at_annotations.ldp3"
+            "-DEXPECTED=a=42 b=42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # constraints on a generic METHOD (spec 15.2): <T implements Shape> is enforced at each call site.
+        add_test(NAME codegen_generic_method_constraints_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/generic_method_constraints.ldp3"
+            "-DEXPECTED=sq=25 ci=15"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # named arguments (spec 22.4): `name: value` at the call site, in any order, plus `requires named`
+        # parameters that may not be passed positionally.
+        add_test(NAME codegen_named_args_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/named_args.ldp3"
+            "-DEXPECTED=a=502 b=502 c=502 d=502 e=521 f=520"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # catalogs value contract (spec 12.3/12.4): enum extends catalog, byCatalog
         # constants continue the ordinals (3..5), enum is a subtype of the catalog.
         add_test(NAME codegen_catalog_values_runs COMMAND "${CMAKE_COMMAND}"

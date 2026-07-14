@@ -90,6 +90,8 @@ TokenKind keywordKind(std::string_view text) {
         {"persistent", TokenKind::KwPersistent},
         {"eternal", TokenKind::KwEternal},
         {"transient", TokenKind::KwTransient},
+        {"deprecated", TokenKind::KwDeprecated},
+        {"partial", TokenKind::KwPartial},
         {"lambda", TokenKind::KwLambda},
         {"function", TokenKind::KwFunction},
         {"methodref", TokenKind::KwMethodref},
@@ -502,6 +504,7 @@ Token Lexer::scanToken() {
         case ')': return make(TokenKind::RParen, ")", loc);
         case '{': return make(TokenKind::LBrace, "{", loc);
         case '}': return make(TokenKind::RBrace, "}", loc);
+        case '@': return make(TokenKind::At, "@", loc);
         case '[': return make(TokenKind::LBracket, "[", loc);
         case ']': return make(TokenKind::RBracket, "]", loc);
         case ';': return make(TokenKind::Semicolon, ";", loc);

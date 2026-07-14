@@ -8375,9 +8375,8 @@ R"LDP3(
 // System.Test in its own literal (the unit-test framework, spec 34).
 R"LDP3(
     public namespace System.Test {
-        // Marker annotation (spec 32.11): a public static method returning boolean tagged [Test] is an
-        // inline test, discovered and run by `ldp3 test`. (The spec writes @Test, but LDP3 annotations use
-        // [Name] brackets.)
+        // Marker annotation (spec 32.11): a public static method returning boolean tagged @Test (or the
+        // equivalent [Test] form) is an inline test, discovered and run by `ldp3 test`.
         public annotation Test {}
         // Boolean assertion helpers (spec 34): each returns whether the check holds, to be fed to
         // TestRunner.check. near compares doubles within an epsilon.

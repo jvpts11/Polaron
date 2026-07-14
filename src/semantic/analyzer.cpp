@@ -656,7 +656,10 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                                       m->params.size(), m->isFinal, m->isAsync};
                         for (const ast::Param& p : m->params) mi.paramTypes.push_back(typeRefStr(p.type));
                         for (const ast::Param& p : m->params) mi.comptimeParams.push_back(p.isComptime);
+                        for (const ast::Param& p : m->params) mi.paramNames.push_back(p.name);
+                        for (const ast::Param& p : m->params) mi.namedOnlyParams.push_back(p.requiresNamed);
                         mi.isVariadic = m->isVariadic;
+                        mi.isDeprecated = m->isDeprecated;
                         info.methods[m->name] = std::move(mi);
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
@@ -1884,13 +1887,28 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             !it.empty() && !isArrayType(it) &&
             (it.find('<') != std::string::npos || it.find('$') != std::string::npos);
         const bool isRange = baseType(it) == "Range";  // a first-class Range value (spec 7.5), over int
-        if (!it.empty() && !isArrayType(it) && !isColl && !isRange)
-            error("foreach requires an array, a collection or a range, got '" + it + "'", fe->loc);
+        // Iterable / Iterator (spec 9.2): any class that declares hasNext()+next() (it IS an iterator) or
+        // iterator() (it HAS one) can be foreach-ed lazily, no snapshot. Interfaces qualify too.
+        const MethodInfo* hasNextM = findMethod(baseType(it), "hasNext", /*objectFallback=*/false);
+        const MethodInfo* nextM = findMethod(baseType(it), "next", /*objectFallback=*/false);
+        const MethodInfo* iterM = findMethod(baseType(it), "iterator", /*objectFallback=*/false);
+        const bool isIterable =
+            (hasNextM != nullptr && nextM != nullptr) || iterM != nullptr;
+        if (!it.empty() && !isArrayType(it) && !isColl && !isRange && !isIterable)
+            error("foreach requires an array, a collection, a range or an Iterable, got '" + it + "'",
+                  fe->loc);
         std::string et;
         if (!fe->isVar) {
             et = typeRefStr(fe->elemType);
         } else if (isRange) {
             et = "int";
+        } else if (isIterable && !isColl) {  // var x: the element type is what next() returns
+            if (nextM != nullptr) {
+                et = nextM->returnType;
+            } else if (iterM != nullptr) {
+                const MethodInfo* n2 = findMethod(baseType(iterM->returnType), "next", false);
+                et = n2 != nullptr ? n2->returnType : "";
+            }
         } else if (isColl) {  // var x: take the single type argument (ArrayList<int> -> int)
             const std::size_t lt = it.find('<');
             const std::string args = lt != std::string::npos
@@ -2448,6 +2466,75 @@ void SemanticAnalyzer::checkComptimeArgs(const std::vector<ast::ExprPtr>& args,
             error("argument " + std::to_string(i + 1) + " to " + desc +
                       " must be a compile-time constant ('comptime' parameter, spec 32.4)",
                   args[i]->loc);
+}
+
+// Named arguments (spec 22.4). Rewrites `call->args` into declared parameter order, so every later stage
+// (type checking, codegen) only ever sees positional arguments, and enforces the rules:
+//   - a name must match a parameter, and no parameter may be bound twice;
+//   - positional arguments come first (once you name one, the rest must be named);
+//   - a `requires named` parameter cannot be passed positionally;
+//   - every parameter must end up bound.
+// A call with no names and no `requires named` parameter is left untouched (the common path).
+void SemanticAnalyzer::bindNamedArgs(ast::CallExpr* call, const std::vector<std::string>& paramNames,
+                                     const std::vector<bool>& namedOnly, const std::string& desc) {
+    if (call == nullptr || call->argsBound || paramNames.empty()) return;
+    const bool anyNamed = std::any_of(call->argNames.begin(), call->argNames.end(),
+                                      [](const std::string& n) { return !n.empty(); });
+    const bool anyNamedOnly = std::any_of(namedOnly.begin(), namedOnly.end(), [](bool b) { return b; });
+    if (!anyNamed && !anyNamedOnly) return;                       // ordinary positional call: nothing to do
+    if (call->args.size() != call->argNames.size()) return;       // synthesized call: nothing to bind
+    if (call->args.size() != paramNames.size()) return;           // arity error is reported elsewhere
+    // The analyzer may type a call more than once (overload probing, generic instantiation), so bind exactly
+    // once. Validate everything BEFORE moving anything, so a rejected call leaves the AST intact.
+    call->argsBound = true;
+
+    std::vector<std::size_t> slotOf(call->args.size(), 0);   // arg i -> parameter slot
+    std::vector<bool> filled(paramNames.size(), false);
+    bool sawNamed = false;
+    for (std::size_t i = 0; i < call->args.size(); ++i) {
+        const std::string& n = call->argNames[i];
+        if (n.empty()) {
+            if (sawNamed) {
+                error("positional argument after a named one in a call to " + desc +
+                          " (spec 22.4: once an argument is named, the rest must be too)",
+                      call->args[i]->loc);
+                return;
+            }
+            if (i < namedOnly.size() && namedOnly[i]) {
+                error("parameter '" + paramNames[i] + "' of " + desc +
+                          " is 'requires named': pass it as '" + paramNames[i] + ": <value>' (spec 22.4)",
+                      call->args[i]->loc);
+                return;
+            }
+            slotOf[i] = i;
+            filled[i] = true;
+            continue;
+        }
+        sawNamed = true;
+        const auto it = std::find(paramNames.begin(), paramNames.end(), n);
+        if (it == paramNames.end()) {
+            error(desc + " has no parameter named '" + n + "'", call->args[i]->loc);
+            return;
+        }
+        const std::size_t slot = static_cast<std::size_t>(it - paramNames.begin());
+        if (filled[slot]) {
+            error("argument '" + n + "' passed twice to " + desc, call->args[i]->loc);
+            return;
+        }
+        slotOf[i] = slot;
+        filled[slot] = true;
+    }
+    for (std::size_t s = 0; s < filled.size(); ++s) {
+        if (!filled[s]) {
+            error("no argument for parameter '" + paramNames[s] + "' of " + desc, call->loc);
+            return;
+        }
+    }
+    if (!anyNamed) return;   // only the `requires named` rule applied; the order is already positional
+    std::vector<ast::ExprPtr> bound(paramNames.size());
+    for (std::size_t i = 0; i < call->args.size(); ++i) bound[slotOf[i]] = std::move(call->args[i]);
+    call->args = std::move(bound);
+    call->argNames.assign(call->args.size(), std::string());   // now purely positional
 }
 
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
@@ -3435,6 +3522,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                             // the `...` and pass through.
                             for (const auto& a : call->args) typeOf(*a);
                         } else {
+                            if (mit->second.isDeprecated)
+                                warn("'" + mem->member + "' is deprecated (spec 14.2)", call->loc);
+                            bindNamedArgs(const_cast<ast::CallExpr*>(call), mit->second.paramNames,
+                                          mit->second.namedOnlyParams, "method '" + mem->member + "'");
                             checkCallArgs(call->args, mit->second.paramTypes, "'" + mem->member + "'");
                             checkComptimeArgs(call->args, mit->second.comptimeParams,
                                               "'" + mem->member + "'");
@@ -3718,6 +3809,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("class '" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";
             }
+            // Named arguments (spec 22.4): rewrite into parameter order before anything checks the args.
+            if (m->isDeprecated)
+                warn("'" + mem->member + "' is deprecated (spec 14.2)", call->loc);
+            bindNamedArgs(const_cast<ast::CallExpr*>(call), m->paramNames, m->namedOnlyParams,
+                          "method '" + mem->member + "'");
             checkCallArgs(call->args, m->paramTypes, "'" + mem->member + "'");
             checkComptimeArgs(call->args, m->comptimeParams, "'" + mem->member + "'");
             if (!m->isProperty && call->args.size() != m->paramCount) {
@@ -3754,6 +3850,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     // An instance-method call needs a receiver; `this` exists only in an instance context
                     // (currentClass_ is cleared inside a static method).
                     if (m->isStatic || !currentClass_.empty()) {
+                        if (m->isDeprecated) warn("'" + name + "' is deprecated (spec 14.2)", call->loc);
+                        bindNamedArgs(const_cast<ast::CallExpr*>(call), m->paramNames, m->namedOnlyParams,
+                                      "method '" + name + "'");
                         checkCallArgs(call->args, m->paramTypes, "'" + name + "'");
                         checkComptimeArgs(call->args, m->comptimeParams, "'" + name + "'");
                         if (!m->isProperty && call->args.size() != m->paramCount) {

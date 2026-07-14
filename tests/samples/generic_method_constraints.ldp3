@@ -1,0 +1,56 @@
+import System.IO.Console;
+program GenericMethodConstraints;
+
+public bundle main {
+    public namespace app {
+
+        public interface Shape {
+            method area() returns int;
+        }
+
+        public class Square implements Shape {
+            private int side;
+            public constructor Square(int side) {
+                this.side = side;
+            }
+            public override method area() returns int {
+                return this.side * this.side;
+            }
+        }
+
+        public class Circle implements Shape {
+            private int r;
+            public constructor Circle(int r) {
+                this.r = r;
+            }
+            public override method area() returns int {
+                return 3 * this.r * this.r;
+            }
+        }
+
+        public class Geometry {
+            // A constrained generic METHOD (spec 15.2): T must implement Shape, so the body may call
+            // area() on it. The constraint is checked against the type argument at each call site.
+            public static method totalArea<T implements Shape>(T* a, T* b) returns int {
+                return a.area() + b.area();
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Square* s1 = new Square(3) on heap;
+                Square* s2 = new Square(4) on heap;
+                Circle* c1 = new Circle(2) on heap;
+                Circle* c2 = new Circle(1) on heap;
+                int sq = Geometry.totalArea<Square>(s1, s2);
+                int ci = Geometry.totalArea<Circle>(c1, c2);
+                System.IO.Console.println("sq=" + sq.toString() + " ci=" + ci.toString());
+                delete s1;
+                delete s2;
+                delete c1;
+                delete c2;
+                return;
+            }
+        }
+    }
+}
