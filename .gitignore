@@ -43,3 +43,6 @@ docs/reference/_reference.html
 
 # LLVM IR emitted next to a sample when ldp3c is run on it by hand
 tests/samples/*.ll
+
+# stray IR dumps at the repo root (ldp3c -o na.ll etc.)
+/*.ll
