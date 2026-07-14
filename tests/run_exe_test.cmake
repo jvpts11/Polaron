@@ -63,15 +63,30 @@ endif()
 if(DEFINED RUNARGS)
     # RUNARGS is optional: command-line arguments to pass to the program (for testing main's args).
     separate_arguments(_runargs UNIX_COMMAND "${RUNARGS}")
-    execute_process(COMMAND "${exe}" ${_runargs} OUTPUT_VARIABLE out RESULT_VARIABLE rc)
+    execute_process(COMMAND "${exe}" ${_runargs}
+        OUTPUT_VARIABLE out ERROR_VARIABLE err RESULT_VARIABLE rc)
 elseif(DEFINED INPUT_FILE)
     execute_process(COMMAND "${exe}" INPUT_FILE "${INPUT_FILE}"
-        OUTPUT_VARIABLE out RESULT_VARIABLE rc)
+        OUTPUT_VARIABLE out ERROR_VARIABLE err RESULT_VARIABLE rc)
 else()
-    execute_process(COMMAND "${exe}" OUTPUT_VARIABLE out RESULT_VARIABLE rc)
+    execute_process(COMMAND "${exe}" OUTPUT_VARIABLE out ERROR_VARIABLE err RESULT_VARIABLE rc)
+endif()
+if(NOT err STREQUAL "")
+    message(STATUS "stderr: ${err}")   # keep panics/alerts visible in the test log
 endif()
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "program exited with ${rc}")
+endif()
+
+# ERRCONTAINS is optional: text the program must have written to stderr (runtime alerts, e.g. the
+# overrun report of `defer within`, which is a diagnostic and deliberately not part of stdout).
+if(DEFINED ERRCONTAINS)
+    string(FIND "${err}" "${ERRCONTAINS}" _efound)
+    if(_efound EQUAL -1)
+        message(FATAL_ERROR "stderr missing expected text:
+  got:      [${err}]
+  needle:   [${ERRCONTAINS}]")
+    endif()
 endif()
 
 # Collapse all runs of whitespace (incl. Windows CRLF and internal newlines)

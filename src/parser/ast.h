@@ -455,6 +455,9 @@ struct Block {
 // defer { ... } -- runs at the end of the enclosing method (LIFO).
 struct DeferStmt : Stmt {
     Block body;
+    // spec 32.10: `defer within milliseconds(100) { ... }` -- a soft deadline for the cleanup. Null when
+    // the plain `defer` form was used. The expression is a Duration (or a millisecond count).
+    ExprPtr within;
     void dump(std::string& out, int indent) const override;
 };
 

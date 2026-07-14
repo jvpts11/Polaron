@@ -803,6 +803,7 @@ long long __ldp3_unix_ms(void) {
     clock_gettime(CLOCK_REALTIME, &ts);
     return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
 }
+
 void __ldp3_sleep(long long ms) {
     struct timespec ts;
     ts.tv_sec = (time_t)(ms / 1000);
@@ -810,6 +811,14 @@ void __ldp3_sleep(long long ms) {
     nanosleep(&ts, NULL);
 }
 #endif
+
+// `defer within <duration>` (spec 32.10): the cleanup ran past its budget. The spec allows an exception or
+// an alert; LDP3 alerts -- a soft-real-time cleanup must still finish, and killing the scope exit (which
+// may itself be an unwind) would be worse than the overrun it reports.
+void __ldp3_defer_overrun(long long budget_ms, long long took_ms) {
+    fprintf(stderr, "ldp3: defer overran its budget: took %lldms, budget %lldms\n", took_ms, budget_ms);
+    fflush(stderr);
+}
 
 // ---- Networking (spec 34): minimal TCP client. The BSD socket API is the same on both OSes
 // (via the shim's SOCKET/closesocket); only winsock's startup call is Windows-specific. ----

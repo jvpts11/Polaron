@@ -2275,6 +2275,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {
+        if (def->within != nullptr) {  // spec 32.10: the cleanup's time budget
+            const std::string t = baseType(typeOf(*def->within));
+            if (t != "Duration" && !isIntName(t) && !t.empty()) {
+                error("'defer within' expects a Duration or a millisecond count, got '" + t + "'",
+                      def->within->loc);
+            }
+        }
         analyzeBlock(def->body);
         return;
     }

@@ -2665,6 +2665,12 @@ ast::StmtPtr Parser::parseDefer() {
     auto d = std::make_unique<ast::DeferStmt>();
     d->loc = current().loc;
     expect(TokenKind::KwDefer, "'defer'");
+    // spec 32.10: `defer within <duration> { ... }` -- the cleanup has a time budget. `within` is a soft
+    // keyword (it stays usable as an identifier), so only treat it as one when a block does not follow.
+    if (check(TokenKind::Identifier) && current().lexeme == "within") {
+        advance();
+        d->within = parseExpression();
+    }
     d->body = parseBlock();
     return d;
 }

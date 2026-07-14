@@ -538,6 +538,7 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
     if (const auto* x = dynamic_cast<const ast::DeferStmt*>(st)) {
         auto n = std::make_unique<ast::DeferStmt>();
         n->loc = x->loc;
+        n->within = cloneExpr(x->within.get(), s);  // spec 32.10: the cleanup's time budget
         n->body = cloneBlock(x->body, s);
         return n;
     }
@@ -814,7 +815,7 @@ void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& o
     if (const auto* x = dynamic_cast<const ast::TupleDeclStmt*>(st)) { for (const auto& b : x->bindings) collectType(b.type, g, out); collectExpr(x->init.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::AssignStmt*>(st)) { collectExpr(x->target.get(), g, out); collectExpr(x->value.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::IncDecStmt*>(st)) { collectExpr(x->target.get(), g, out); return; }
-    if (const auto* x = dynamic_cast<const ast::DeferStmt*>(st)) { collectBlock(x->body, g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::DeferStmt*>(st)) { collectExpr(x->within.get(), g, out); collectBlock(x->body, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::UsingStmt*>(st)) { collectStmt(x->decl.get(), g, out); collectBlock(x->body, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::IfStmt*>(st)) { collectExpr(x->cond.get(), g, out); collectBlock(x->thenBlock, g, out); if (x->elseBlock) collectBlock(*x->elseBlock, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::WhileStmt*>(st)) { collectExpr(x->cond.get(), g, out); collectBlock(x->body, g, out); return; }
@@ -913,7 +914,7 @@ void collectMethStmt(const ast::Stmt* st, MethInsts& out) {
     if (const auto* x = dynamic_cast<const ast::TupleDeclStmt*>(st)) { collectMethExpr(x->init.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::AssignStmt*>(st)) { collectMethExpr(x->target.get(), out); collectMethExpr(x->value.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::IncDecStmt*>(st)) { collectMethExpr(x->target.get(), out); return; }
-    if (const auto* x = dynamic_cast<const ast::DeferStmt*>(st)) { collectMethBlock(x->body, out); return; }
+    if (const auto* x = dynamic_cast<const ast::DeferStmt*>(st)) { collectMethExpr(x->within.get(), out); collectMethBlock(x->body, out); return; }
     if (const auto* x = dynamic_cast<const ast::UsingStmt*>(st)) { collectMethStmt(x->decl.get(), out); collectMethBlock(x->body, out); return; }
     if (const auto* x = dynamic_cast<const ast::IfStmt*>(st)) { collectMethExpr(x->cond.get(), out); collectMethBlock(x->thenBlock, out); if (x->elseBlock) collectMethBlock(*x->elseBlock, out); return; }
     if (const auto* x = dynamic_cast<const ast::WhileStmt*>(st)) { collectMethExpr(x->cond.get(), out); collectMethBlock(x->body, out); return; }
@@ -982,7 +983,7 @@ void rewriteMethStmt(ast::Stmt* st) {
     if (auto* x = dynamic_cast<ast::TupleDeclStmt*>(st)) { rewriteMethExpr(x->init.get()); return; }
     if (auto* x = dynamic_cast<ast::AssignStmt*>(st)) { rewriteMethExpr(x->target.get()); rewriteMethExpr(x->value.get()); return; }
     if (auto* x = dynamic_cast<ast::IncDecStmt*>(st)) { rewriteMethExpr(x->target.get()); return; }
-    if (auto* x = dynamic_cast<ast::DeferStmt*>(st)) { rewriteMethBlock(x->body); return; }
+    if (auto* x = dynamic_cast<ast::DeferStmt*>(st)) { rewriteMethExpr(x->within.get()); rewriteMethBlock(x->body); return; }
     if (auto* x = dynamic_cast<ast::UsingStmt*>(st)) { rewriteMethStmt(x->decl.get()); rewriteMethBlock(x->body); return; }
     if (auto* x = dynamic_cast<ast::IfStmt*>(st)) { rewriteMethExpr(x->cond.get()); rewriteMethBlock(x->thenBlock); if (x->elseBlock) rewriteMethBlock(*x->elseBlock); return; }
     if (auto* x = dynamic_cast<ast::WhileStmt*>(st)) { rewriteMethExpr(x->cond.get()); rewriteMethBlock(x->body); return; }

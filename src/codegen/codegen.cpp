@@ -133,7 +133,7 @@ void collectRefs(const ast::Stmt* s, std::set<std::string>& out) {
     if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(s)) { collectRefs(dw->body, out); collectRefs(dw->cond.get(), out); return; }
     if (const auto* fs = dynamic_cast<const ast::ForStmt*>(s)) { collectRefs(fs->init.get(), out); collectRefs(fs->cond.get(), out); collectRefs(fs->update.get(), out); collectRefs(fs->body, out); return; }
     if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(s)) { collectRefs(fe->iterable.get(), out); collectRefs(fe->body, out); return; }
-    if (const auto* df = dynamic_cast<const ast::DeferStmt*>(s)) { collectRefs(df->body, out); return; }
+    if (const auto* df = dynamic_cast<const ast::DeferStmt*>(s)) { collectRefs(df->within.get(), out); collectRefs(df->body, out); return; }
     if (const auto* us = dynamic_cast<const ast::UsingStmt*>(s)) { collectRefs(us->decl.get(), out); collectRefs(us->body, out); return; }
     if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(s)) { collectRefs(sy->mutex.get(), out); collectRefs(sy->body, out); return; }
     if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(s)) { collectRefs(ms->subject.get(), out); for (const auto& cs : ms->cases) { collectRefs(cs.result.get(), out); collectRefs(cs.body, out); } if (ms->defaultBody) collectRefs(*ms->defaultBody, out); return; }
@@ -639,6 +639,10 @@ struct CodeGenerator::Impl {
         bool heap = false;                  // using: free it (a heap resource)
         bool consumed = false;              // using: an explicit `delete r` already disposed it
         llvm::Value* lockRelease = nullptr; // synchronized: release this Mutex lock (block-scoped)
+        // spec 32.10: `defer within <duration>` -- an i64 millisecond budget for this defer block. Null
+        // for a plain defer. Exceeding it reports an overrun (an alert, not a thrown exception, so a
+        // soft-real-time cleanup still completes).
+        llvm::Value* budgetMs = nullptr;
     };
     std::vector<Cleanup> deferred;  // defer blocks + using disposals, run at scope end (LIFO)
     // Locals returned from the current body: a class value copied into such a local escapes the frame,
@@ -6813,7 +6817,30 @@ struct CodeGenerator::Impl {
             return;
         }
         if (c.block != nullptr) {
+            if (c.budgetMs == nullptr) {
+                emitBlock(*c.block);
+                return;
+            }
+            // spec 32.10: time the cleanup and report an overrun of its budget.
+            llvm::FunctionType* nowTy = llvm::FunctionType::get(builder.getInt64Ty(), {}, false);
+            llvm::FunctionCallee now = module.getOrInsertFunction("__ldp3_now_ns", nowTy);
+            llvm::Value* t0 = builder.CreateCall(now, {}, "defer.t0");
             emitBlock(*c.block);
+            llvm::Value* t1 = builder.CreateCall(now, {}, "defer.t1");
+            llvm::Value* tookNs = builder.CreateSub(t1, t0, "defer.ns");
+            llvm::Value* tookMs =
+                builder.CreateSDiv(tookNs, builder.getInt64(1000000), "defer.ms");
+            llvm::FunctionType* ovTy = llvm::FunctionType::get(
+                builder.getVoidTy(), {builder.getInt64Ty(), builder.getInt64Ty()}, false);
+            llvm::Function* fn = builder.GetInsertBlock()->getParent();
+            llvm::BasicBlock* overBB = llvm::BasicBlock::Create(context, "defer.over", fn);
+            llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "defer.ok", fn);
+            builder.CreateCondBr(builder.CreateICmpSGT(tookMs, c.budgetMs), overBB, okBB);
+            builder.SetInsertPoint(overBB);
+            builder.CreateCall(module.getOrInsertFunction("__ldp3_defer_overrun", ovTy),
+                               {c.budgetMs, tookMs});
+            builder.CreateBr(okBB);
+            builder.SetInsertPoint(okBB);
             return;
         }
         if (c.consumed) return;  // an explicit `delete r` inside the using block already disposed it
@@ -8548,7 +8575,25 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {
-            deferred.push_back(Cleanup{&def->body});  // runs at scope end (see emitScopeCleanup)
+            // spec 32.10: `defer within <duration>` -- evaluate the budget HERE (where it is written), so
+            // it reads the values in scope at that point, and carry it to the scope-exit cleanup.
+            llvm::Value* budget = nullptr;
+            if (def->within != nullptr) {
+                llvm::Value* d = emitExpr(*def->within);
+                if (d != nullptr) {
+                    const std::string dt = baseType(typeName(*def->within));
+                    if (dt == "Duration") {   // a Duration: ask it for its milliseconds
+                        llvm::FunctionType* ft =
+                            llvm::FunctionType::get(builder.getInt64Ty(), {builder.getPtrTy()}, false);
+                        budget = emitDynCall("Duration", "toMillis", ft, d);
+                    } else if (d->getType()->isIntegerTy()) {   // a bare count of milliseconds
+                        budget = builder.CreateSExtOrTrunc(d, builder.getInt64Ty());
+                    }
+                }
+            }
+            Cleanup c{&def->body};
+            c.budgetMs = budget;
+            deferred.push_back(c);  // runs at scope end (see emitScopeCleanup)
             return;
         }
         if (const auto* us = dynamic_cast<const ast::UsingStmt*>(&stmt)) {

@@ -3564,6 +3564,18 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `defer within <budget>` (spec 32.10): a cleanup with a time budget. Under budget it is silent;
+        # over budget the cleanup still completes and the runtime alerts on stderr (checked via
+        # ERRCONTAINS -- the alert is a diagnostic, so it is deliberately not on stdout).
+        add_test(NAME codegen_defer_within_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/defer_within.ldp3"
+            "-DEXPECTED=quick body closed 1 slow body closed 2 done"
+            "-DERRCONTAINS=defer overran its budget"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # `partial` classes (spec 8.3): two declarations of the same class are folded into one.
         add_test(NAME codegen_partial_class_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

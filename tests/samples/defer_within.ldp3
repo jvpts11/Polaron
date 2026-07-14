@@ -1,0 +1,67 @@
+import System.IO.Console;
+import System.Time.Duration;
+import System.Time.Time;
+program DeferWithin;
+
+// `defer within <budget>` (spec 32.10): a cleanup with a time budget, for soft real-time code --
+// a frame budget in a game, a buffer deadline in audio, a connection handler that must not stall.
+// The budget is a Duration or a bare millisecond count, and it is evaluated where the defer is
+// written (so it can read the values in scope there), not at scope exit.
+//
+// Overrunning the budget ALERTS (on stderr) rather than throwing: the scope exit may itself already
+// be an unwind, and a cleanup that is late must still finish -- aborting it halfway would leak the
+// very resource the defer exists to release. The cleanup runs to completion and the overrun is
+// reported with what it took and what it was allowed.
+
+public bundle main {
+    public namespace app {
+
+        // A resource whose close() takes a configurable amount of time (stands in for a socket
+        // flush, a file sync, a GPU fence).
+        public class Resource {
+            private mutable int id;
+            private mutable int busyMs;
+
+            public constructor Resource(int id, int busyMs) {
+                this.id = id;
+                this.busyMs = busyMs;
+            }
+
+            public method close() returns void {
+                if (this.busyMs > 0) {
+                    Time.sleep(this.busyMs);
+                }
+                System.IO.Console.printf("closed %d\n", this.id);
+            }
+        }
+
+        public class Main {
+            // Comfortably inside its budget: the cleanup runs, nothing is reported.
+            public static method quick() returns void {
+                Resource r = new Resource(1, 0) on heap;
+                defer within Duration.ofMillis(cast<long>(500)) {
+                    r.close();
+                    delete r;
+                }
+                System.IO.Console.println("quick body");
+            }
+
+            // Over its budget: the cleanup still runs to completion, and the runtime alerts on
+            // stderr. The budget here is a bare millisecond count instead of a Duration.
+            public static method slow() returns void {
+                Resource r = new Resource(2, 40) on heap;
+                defer within 5 {
+                    r.close();
+                    delete r;
+                }
+                System.IO.Console.println("slow body");
+            }
+
+            public static method main(string[] args) returns void {
+                Main.quick();
+                Main.slow();
+                System.IO.Console.println("done");
+            }
+        }
+    }
+}
