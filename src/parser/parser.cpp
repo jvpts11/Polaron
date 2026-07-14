@@ -568,9 +568,13 @@ std::vector<ast::AnnotationUse> Parser::parseAnnotationUsesOpt() {
     std::vector<ast::AnnotationUse> uses;
     while (check(TokenKind::LBracket) || check(TokenKind::At)) {
         const bool bracketed = check(TokenKind::LBracket);
+        // A compiler attribute is written with double brackets (spec 36.4): `[[no_bounds_check]]`.
+        // Same node, so a consumer just looks the name up; only the closing bracket count differs.
+        const bool attribute = bracketed && peek(1).kind == TokenKind::LBracket;
         ast::AnnotationUse use;
         use.loc = current().loc;
         advance();  // '[' or '@'
+        if (attribute) advance();  // the second '['
         use.name = expect(TokenKind::Identifier,
                           bracketed ? "an annotation name after '['" : "an annotation name after '@'")
                        .lexeme;
@@ -588,6 +592,7 @@ std::vector<ast::AnnotationUse> Parser::parseAnnotationUsesOpt() {
             expect(TokenKind::RParen, "')' to close the annotation arguments");
         }
         if (bracketed) expect(TokenKind::RBracket, "']' to close the annotation");
+        if (attribute) expect(TokenKind::RBracket, "']]' to close the attribute");
         uses.push_back(std::move(use));
     }
     return uses;

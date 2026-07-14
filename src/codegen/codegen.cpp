@@ -279,9 +279,9 @@ int vecWidth(const std::string& t) {
 }
 // The explicit overflow-mode integer methods (spec 3.6): wrapping/unchecked wrap, saturating clamps.
 bool isIntOverflowMethod(const std::string& m) {
-    return m == "wrappingAdd" || m == "wrappingSub" || m == "wrappingMul" ||
+    return m == "wrappingAdd" || m == "wrappingSub" || m == "wrappingMul" || m == "wrappingDiv" ||
            m == "saturatingAdd" || m == "saturatingSub" || m == "saturatingMul" ||
-           m == "uncheckedAdd" || m == "uncheckedSub" || m == "uncheckedMul";
+           m == "uncheckedAdd" || m == "uncheckedSub" || m == "uncheckedMul" || m == "uncheckedDiv";
 }
 // Named vector lane accessor: .x/.y/.z/.w (or .r/.g/.b/.a). Returns the index, or -1.
 int vecLane(const std::string& m) {
@@ -659,7 +659,10 @@ struct CodeGenerator::Impl {
     // Locals returned from the current body: a class value copied into such a local escapes the frame,
     // so its deep copy must live on the heap, not a stack alloca that dangles once the function returns.
     std::set<std::string> escapingLocals_;
-    bool checkedArith_ = false;      // inside checked(...): signed +/-/* trap on overflow (spec 3.6)
+    bool checkedArith_ = false;
+    // spec 36.4: `[[no_bounds_check]]` on a method -- its array indexing drops the runtime bounds check.
+    // An EXPLICIT, named opt-out for a hot path: LDP3 has no implicit UB, but it does hand you the cannon.
+    bool noBoundsCheck_ = false;      // inside checked(...): signed +/-/* trap on overflow (spec 3.6)
     // Function specialization over no-capture lambda arguments (perf). When a method that takes a
     // function<> parameter is called with a known constant lambda, a specialized copy of the method is
     // emitted whose calls to that parameter are DIRECT (so LLVM inlines the lambda instead of an indirect
@@ -1312,6 +1315,13 @@ struct CodeGenerator::Impl {
         for (auto it = classes.find(sub); it != classes.end() && !it->second.superclass.empty();
              it = classes.find(it->second.superclass))
             if (it->second.superclass == base) return true;
+        return false;
+    }
+
+    // spec 36.4: does this method carry the `[[<name>]]` compiler attribute?
+    static bool hasAttribute(const ast::MethodDecl& m, const std::string& name) {
+        for (const ast::AnnotationUse& a : m.annotations)
+            if (a.name == name) return true;
         return false;
     }
 
@@ -3121,7 +3131,8 @@ struct CodeGenerator::Impl {
                                      : builder.CreateSExt(index, builder.getInt64Ty());
                 return builder.CreateGEP(llvmType(baseType(at)), block, i, "ptr.elem");
             }
-            return arrayElemPtr(block, index, arrayStorageTy(elementOf(at)), /*checked=*/!ix->unchecked);
+            return arrayElemPtr(block, index, arrayStorageTy(elementOf(at)),
+                                /*checked=*/!ix->unchecked && !noBoundsCheck_);
         }
         error("invalid assignment target", expr.loc);
         return nullptr;
@@ -6245,6 +6256,35 @@ struct CodeGenerator::Impl {
                     if (mm == "wrappingAdd" || mm == "uncheckedAdd") return builder.CreateAdd(a, b);
                     if (mm == "wrappingSub" || mm == "uncheckedSub") return builder.CreateSub(a, b);
                     if (mm == "wrappingMul" || mm == "uncheckedMul") return builder.CreateMul(a, b);
+                    // Division has exactly one overflow case: INT_MIN / -1, whose true quotient does not
+                    // fit. Wrapping it yields INT_MIN (the two's-complement wrap), which is what the
+                    // hardware would trap on -- so the divisor is folded to 1 in that case, and the
+                    // dividend (INT_MIN) comes back. A zero divisor still panics: that is not overflow,
+                    // it is undefined, and LDP3 has no undefined behaviour to hand out (spec 3.6).
+                    if (mm == "wrappingDiv" || mm == "uncheckedDiv") {
+                        {  // a zero divisor still panics -- that is not overflow, it is undefined
+                            llvm::Value* zero =
+                                builder.CreateICmpEQ(b, llvm::ConstantInt::get(b->getType(), 0));
+                            auto* badBB = llvm::BasicBlock::Create(context, "div.bad", currentFn);
+                            auto* okBB = llvm::BasicBlock::Create(context, "div.ok", currentFn);
+                            builder.CreateCondBr(zero, badBB, okBB);
+                            builder.SetInsertPoint(badBB);
+                            emitPanic("integer division by zero");
+                            builder.SetInsertPoint(okBB);
+                        }
+                        if (isUnsigned(ot)) return builder.CreateUDiv(a, b);
+                        llvm::Type* ity = a->getType();
+                        const unsigned bits = ity->getIntegerBitWidth();
+                        llvm::Value* minV = llvm::ConstantInt::get(
+                            ity, llvm::APInt::getSignedMinValue(bits));
+                        llvm::Value* isMin = builder.CreateICmpEQ(a, minV);
+                        llvm::Value* isNeg1 =
+                            builder.CreateICmpEQ(b, llvm::ConstantInt::getSigned(ity, -1));
+                        llvm::Value* wraps = builder.CreateAnd(isMin, isNeg1, "div.wraps");
+                        llvm::Value* safeB = builder.CreateSelect(
+                            wraps, llvm::ConstantInt::get(ity, 1), b, "div.rhs");
+                        return builder.CreateSDiv(a, safeB);
+                    }
                     return emitSaturatingArith(mm, a, b, isUnsigned(ot));  // saturating add/sub/mul
                 }
                 if (mem->member == "equalsKey")
@@ -11311,6 +11351,7 @@ struct CodeGenerator::Impl {
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             enclosingMethod_ = m->name;
+                            noBoundsCheck_ = hasAttribute(*m, "no_bounds_check");  // spec 36.4
                             if (m == entry.method && !testMode) {
                                 emitBody(functions["@entry"], m->body, m->params, "",
                                          builder.getInt32Ty(), nullptr, nullptr, nullptr, nullptr, false,
@@ -11331,6 +11372,7 @@ struct CodeGenerator::Impl {
                         } else if (const auto* c =
                                        dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                             hasCtor = true;
+                            noBoundsCheck_ = false;
                             enclosingMethod_ = cls.name;  // ctor function is "class.class"
                             emitBody(functions[cls.name + "." + cls.name], c->body, c->params,
                                      cls.name, builder.getVoidTy(), &cls,

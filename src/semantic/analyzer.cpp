@@ -782,6 +782,12 @@ void SemanticAnalyzer::checkAnnotationUses(const std::vector<ast::AnnotationUse>
                 error("'[CompileTimeProcessor]' takes no arguments", use.loc);
             continue;
         }
+        // Compiler attributes (spec 36.4): `[[no_bounds_check]]` -- a named, explicit opt-out of the
+        // runtime bounds check on a hot path. Not a user annotation, so it needs no declaration.
+        if (use.name == "no_bounds_check") {
+            if (!use.args.empty()) error("'[[no_bounds_check]]' takes no arguments", use.loc);
+            continue;
+        }
         auto it = annotations_.find(use.name);
         if (it == annotations_.end()) {
             error("unknown annotation '" + use.name + "'", use.loc);
@@ -3760,9 +3766,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "compareTo" && call->args.size() == 1) return "int";
                 // Overflow-mode arithmetic (spec 3.6): wrapping/saturating/unchecked, same int type.
                 static const std::set<std::string> kOverflowMethods = {
-                    "wrappingAdd",   "wrappingSub",   "wrappingMul",
+                    "wrappingAdd",   "wrappingSub",   "wrappingMul",   "wrappingDiv",
                     "saturatingAdd", "saturatingSub", "saturatingMul",
-                    "uncheckedAdd",  "uncheckedSub",  "uncheckedMul"};
+                    "uncheckedAdd",  "uncheckedSub",  "uncheckedMul",  "uncheckedDiv"};
                 if (kOverflowMethods.count(mem->member) > 0 && call->args.size() == 1) return objType;
                 error("'" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";

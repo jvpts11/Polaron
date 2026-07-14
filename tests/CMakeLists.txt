@@ -3571,6 +3571,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # named escape hatches: `[[no_bounds_check]]` (spec 36.4) drops the bounds check in that method,
+        # and wrappingDiv/uncheckedDiv (spec 3.6) wrap INT_MIN / -1 instead of trapping (0 still panics).
+        add_test(NAME codegen_hot_path_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/hot_path.ldp3"
+            "-DEXPECTED=hot=10 checked=10 wrapDiv=-2147483648 uncheckedDiv=-2147483648 plainDiv=-1073741824"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # pointer arithmetic (spec 27): +/-/++/-- step by whole elements, `q - p` is an element count,
         # and a pointer to a class is warned about (the program still compiles and runs).
         add_test(NAME codegen_pointer_arith_runs COMMAND "${CMAKE_COMMAND}"
