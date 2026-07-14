@@ -48,7 +48,24 @@
   é `function<Retorno, Receptor, Params...>`, checada em tempo de compilação. A lambda pode capturar (a closure
   é instalada num global que o *thunk* do slot lê). Sample: `dispatch_table.ldp3`.
 
-**Testes:** suíte CTest completa (samples e2e + doctest), verde.
+- **Aritmética de ponteiro** (spec 27) — `p + n` / `p - n` / `p++` / `p--` andam de **elemento em elemento**;
+  `q - p` é a distância em elementos. Ponteiro pra classe é permitido **com warning** (como a spec pede).
+  Junto veio o fix de um buraco real de memória: `&` só funcionava para objeto de classe — em `int`,
+  elemento de array ou campo ele **carregava o valor** e devolvia como ponteiro (`int* p = &xs[0]` dava lixo).
+  Sample: `pointer_arith.ldp3`.
+- **`[[no_bounds_check]]`** (spec 36.4) e **`wrappingDiv`/`uncheckedDiv`** (spec 3.6) — as duas válvulas de
+  escape *nomeadas*: a primeira derruba o bounds check daquele método (hot path); as segundas fazem a única
+  divisão que estoura (`INT_MIN / -1`) dar wrap em vez de trap (divisor **zero** continua em pânico — isso não
+  é overflow). Sample: `hot_path.ldp3`.
+- **Constraint genérico com type-args** (spec 15.2) — `<T implements Comparable<T>>` agora exige Comparable
+  **DE T** (antes só o nome-base "Comparable" era checado: um `Cat implements Comparable<Dog>` passava).
+  Samples: `generic_bound_args.ldp3` (+ o rejeitado).
+- **API `Test` da stdlib** (spec 32.11) — `Test.assertEqual/assertTrue/assertFalse/assertWithin/
+  assertEqualString/assertEqualLong/assertThrows<E>`. Um `@Test` agora pode retornar **void**: o veredito vem
+  das assertions (o runner zera o contador em volta de cada teste). A forma `returns boolean` continua valendo.
+  Sample: `inline_tests.ldp3`.
+
+**Testes:** suíte CTest completa (samples e2e + doctest), verde — **521 testes**.
 
 > Documento panorâmico do que **está** e do que **não está** implementado no compilador LDP3.
 > A fonte de verdade da *linguagem* continua sendo `docs/LDP3_specification.md`; este arquivo
