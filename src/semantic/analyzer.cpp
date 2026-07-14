@@ -1839,6 +1839,16 @@ bool SemanticAnalyzer::classHasUniqueField(const std::string& className) {
     return false;
 }
 
+// spec 27: "Aritmética de ponteiro é permitida em todos os tipos mas o compilador emite warning, pois
+// em ponteiros pra classe avançar não faz sentido semântico e pode corromper memória."
+void SemanticAnalyzer::warnClassPointerArith(const std::string& ptrType, SourceLocation loc) {
+    if (lookupClass(baseType(ptrType)) == nullptr) return;  // a pointer into an array of primitives
+    warn("pointer arithmetic on '" + ptrType +
+             "' can corrupt memory: a pointer to a class usually points at ONE object, not at an array "
+             "of them (spec 27)",
+         loc);
+}
+
 void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, bool isIncrement, SourceLocation loc) {
     std::string type;
     bool mutableTarget = false;
@@ -1875,6 +1885,10 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, bool isIncreme
     // A class with an operator ++/-- overload is a valid target (spec 6.5): `c++` reassigns c to the
     // operator's result.
     if (findMethod(baseType(type), isIncrement ? "operator++" : "operator--") != nullptr) return;
+    if (isRefType(type)) {  // spec 27: stepping a pointer is allowed -- one element forward or back
+        warnClassPointerArith(type, loc);
+        return;
+    }
     if (type != "int") error("'++'/'--' requires an int target", loc);
 }
 
@@ -2944,6 +2958,22 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (op != "+" && op != "-" && op != "*" && op != "/")
                 error("operator '" + op + "' is not defined on vectors", bin->loc);
             return "vec" + std::to_string(vw);
+        }
+        // Pointer arithmetic (spec 27): `p + n` / `p - n` step by whole elements and stay a pointer;
+        // `q - p` is the number of elements between them. Allowed on every pointee type, but stepping a
+        // pointer TO A CLASS is warned about: it usually points at one object, not an array of them.
+        if ((op == "+" || op == "-") && isRefType(lt) && !isRefType(rt) && !rt.empty()) {
+            if (!isIntName(rt))
+                error("a pointer can only be offset by an integer, got '" + rt + "' (spec 27)", bin->loc);
+            warnClassPointerArith(lt, bin->loc);
+            return lt;
+        }
+        if (op == "-" && isRefType(lt) && isRefType(rt)) {
+            if (baseType(lt) != baseType(rt))
+                error("cannot subtract pointers to different types ('" + lt + "' and '" + rt + "')",
+                      bin->loc);
+            warnClassPointerArith(lt, bin->loc);
+            return "long";
         }
         // String concatenation (spec 4): String/string + String/string -> String.
         auto isStr = [](const std::string& t) { return t == "String" || t == "string"; };

@@ -3571,6 +3571,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # pointer arithmetic (spec 27): +/-/++/-- step by whole elements, `q - p` is an element count,
+        # and a pointer to a class is warned about (the program still compiles and runs).
+        add_test(NAME codegen_pointer_arith_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/pointer_arith.ldp3"
+            "-DEXPECTED=p1=10 p3=30 p2=20 gap=2 q=10 age=7 back=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # a generic constraint with type arguments (spec 15.2) is satisfied by the right instantiation.
         add_test(NAME codegen_generic_bound_args_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

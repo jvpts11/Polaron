@@ -3916,8 +3916,19 @@ struct CodeGenerator::Impl {
             return v;
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
-            if (un->op == "&")  // address-of does not dereference, so a null nullable is allowed here
-                return emitObjectPtr(*un->operand, /*derefCheck=*/false);
+            if (un->op == "&") {
+                // Address-of. For a class/struct value the variable's slot already holds the pointer to
+                // the object -- its identity IS that pointer, so `&rex` is just `rex` (and address-of
+                // does not dereference, so a null nullable is fine here). For anything else -- an int
+                // local, an array element, a field -- the address is the address of its STORAGE, which
+                // is what emitLValue yields. Taking emitObjectPtr for those loaded the VALUE and used it
+                // as a pointer: `int* p = &xs[0]` used to produce garbage (a silent memory-safety hole).
+                const std::string ot = typeName(*un->operand);
+                const bool isObject = !ot.empty() && !isArrayType(ot) && !isRefType(ot) &&
+                                      classes.count(baseType(ot)) > 0;
+                if (isObject) return emitObjectPtr(*un->operand, /*derefCheck=*/false);
+                return emitLValue(*un->operand);
+            }
             // Unary operator overload (spec 6.5): a.operator<op>() when a's class defines a no-arg
             // one. A unary overload takes only `this` (arg_size 1), which distinguishes it from the
             // binary form of the same symbol.
@@ -4254,6 +4265,29 @@ struct CodeGenerator::Impl {
     llvm::Value* emitBinary(const ast::BinaryExpr& bin) {
         if (bin.op == "&&" || bin.op == "||") return emitShortCircuit(bin);
         const std::string lt = typeName(*bin.lhs);
+        // Pointer arithmetic (spec 27): `p + n` / `p - n` step by whole ELEMENTS. Without this the
+        // pointer would be fed to an integer add, which is not even valid IR. The distance between two
+        // pointers (`q - p`) is an element count, like C. The analyzer warns when the pointee is a class.
+        if ((bin.op == "+" || bin.op == "-") && isRefType(lt)) {
+            const std::string rt = typeName(*bin.rhs);
+            llvm::Value* base = emitExpr(*bin.lhs);
+            llvm::Value* off = emitExpr(*bin.rhs);
+            if (base == nullptr || off == nullptr) return nullptr;
+            llvm::Type* elem = llvmType(baseType(lt));
+            if (isRefType(rt)) {  // q - p: how many elements apart
+                if (bin.op != "-") {
+                    error("two pointers cannot be added (spec 27)", bin.loc);
+                    return nullptr;
+                }
+                llvm::Value* a = builder.CreatePtrToInt(base, builder.getInt64Ty());
+                llvm::Value* b = builder.CreatePtrToInt(off, builder.getInt64Ty());
+                llvm::Value* bytes = builder.CreateSub(a, b, "ptr.diff.bytes");
+                return builder.CreateSDiv(bytes, sizeOf(elem), "ptr.diff");
+            }
+            llvm::Value* n = builder.CreateSExtOrTrunc(off, builder.getInt64Ty());
+            if (bin.op == "-") n = builder.CreateNeg(n, "ptr.back");
+            return builder.CreateGEP(elem, base, {n}, "ptr.off");
+        }
         // Operator overloading: a OP b -> a.operator OP(b) when a's class defines it.
         {
             const std::string owner = methodOwner(baseType(lt), "operator" + bin.op);
@@ -8531,10 +8565,22 @@ struct CodeGenerator::Impl {
                     }
                 }
             }
-            llvm::Type* ty = llvmType(typeName(*incdec->target));
+            const std::string itn = typeName(*incdec->target);
+            llvm::Type* ty = llvmType(itn);
             llvm::Value* slot = emitLValue(*incdec->target);
             if (slot == nullptr) return;
             llvm::Value* cur = builder.CreateLoad(ty, slot);
+            // Pointer arithmetic (spec 27): `p++` steps by one ELEMENT, not one byte -- an integer add
+            // on a pointer value is not even valid IR. The analyzer already warned about doing this to a
+            // pointer-to-class.
+            if (isRefType(itn)) {
+                // The element type matches what `p[i]` indexes by, so `p++; *p` and `p[1]` always agree.
+                llvm::Value* res = builder.CreateGEP(
+                    llvmType(baseType(itn)), cur,
+                    {builder.getInt64(incdec->isIncrement ? 1 : -1)}, "ptr.step");
+                builder.CreateStore(res, slot);
+                return;
+            }
             llvm::Value* one = llvm::ConstantInt::get(ty, 1);
             llvm::Value* res =
                 incdec->isIncrement ? builder.CreateAdd(cur, one) : builder.CreateSub(cur, one);

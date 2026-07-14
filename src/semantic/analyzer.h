@@ -207,6 +207,7 @@ private:
     // spec 32.8 mutable dispatch tables. dispatchTableClass returns the class name when `expr` is a
     // `<Class>.methods` reference (else ""); checkMethodPatch validates a `.replace(name, fn)` on it and
     // records the class, which codegen needs (a patched class always dispatches through its vtable).
+    void warnClassPointerArith(const std::string& ptrType, SourceLocation loc);  // spec 27
     std::string dispatchTableClass(const ast::Expr& expr) const;
     std::string checkMethodPatch(const std::string& className, const ast::CallExpr& call);
     std::vector<std::string> catalogImplementers(const std::string& catalog) const;  // enums of (spec 12.4)
