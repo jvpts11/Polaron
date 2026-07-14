@@ -3571,6 +3571,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # inline tests (spec 32.11): `@Test` methods calling the stdlib Test assertions, run by --test.
+        # A void test's verdict comes from its assertions; the boolean form still works.
+        add_test(NAME codegen_inline_tests_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/inline_tests.ldp3"
+            "-DEXPECTED=PASS add_basic PASS predicates_and_tolerance PASS still_boolean tests: 3 passed, 0 failed"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # named escape hatches: `[[no_bounds_check]]` (spec 36.4) drops the bounds check in that method,
         # and wrappingDiv/uncheckedDiv (spec 3.6) wrap INT_MIN / -1 instead of trapping (0 still panics).
         add_test(NAME codegen_hot_path_runs COMMAND "${CMAKE_COMMAND}"

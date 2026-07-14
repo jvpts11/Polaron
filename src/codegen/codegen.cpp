@@ -439,6 +439,7 @@ struct CodeGenerator::Impl {
     bool libraryMode = false;  // compiling a bundle to a .ldb: no entry point / `main` wrapper
     bool testMode = false;     // `ldp3c --test`: the entry is a synthetic [Test] runner
     std::vector<std::pair<std::string, std::string>> testMethods;  // {symbol "Class.method", display name}
+    std::set<std::string> voidTests_;  // spec 32.11: tests that return void and report via Test.assert*
     std::vector<CodegenError>& errors;
     llvm::LLVMContext context;
     llvm::Module module;
@@ -11280,13 +11281,17 @@ struct CodeGenerator::Impl {
                         for (const ast::AnnotationUse& a : m->annotations)
                             if (a.name == "Test") isTest = true;
                         if (!isTest) continue;
-                        if (!m->isStatic || typeRefName(m->returnType) != "boolean") {
+                        const std::string trt = typeRefName(m->returnType);
+                        if (!m->isStatic || (trt != "boolean" && trt != "void")) {
                             errors.push_back(CodegenError{
                                 "[Test] method '" + cls.name + "." + m->name +
-                                    "' must be a public static method returning boolean",
+                                    "' must be a public static method returning boolean (the test's own "
+                                    "verdict) or void (the verdict comes from its Test.assert* calls)",
                                 m->loc});
                             continue;
                         }
+                        // spec 32.11: a void test passes when none of its Test.assert* calls failed.
+                        if (trt == "void") voidTests_.insert(cls.name + "." + m->name);
                         testMethods.push_back({cls.name + "." + m->name, m->name});
                     }
                 }
@@ -11314,8 +11319,21 @@ struct CodeGenerator::Impl {
         for (const auto& [sym, name] : testMethods) {
             const auto it = functions.find(sym);
             if (it == functions.end()) continue;
-            llvm::Value* r = builder.CreateCall(it->second, {}, "t");
-            llvm::Value* ok = builder.CreateICmpNE(r, builder.getInt32(0), "ok");
+            llvm::Value* ok = nullptr;
+            if (voidTests_.count(sym) > 0) {
+                // spec 32.11: `Test.assertEqual(...)` inside a void test records a failure; the test
+                // passes if it recorded none. Reset the counter around the call so tests do not bleed.
+                auto rit = functions.find("Test.reset");
+                auto fit = functions.find("Test.failures");
+                if (rit == functions.end() || fit == functions.end()) continue;
+                builder.CreateCall(rit->second, {});
+                builder.CreateCall(it->second, {});
+                llvm::Value* f = builder.CreateCall(fit->second, {}, "t.failures");
+                ok = builder.CreateICmpEQ(f, builder.getInt32(0), "ok");
+            } else {
+                llvm::Value* r = builder.CreateCall(it->second, {}, "t");
+                ok = builder.CreateICmpNE(r, builder.getInt32(0), "ok");
+            }
             llvm::Value* nameStr = createGlobalStringPtr(builder,name, ".test.name");
             llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context, "pass", mainFn);
             llvm::BasicBlock* elseBB = llvm::BasicBlock::Create(context, "fail", mainFn);

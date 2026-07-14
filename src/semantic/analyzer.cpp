@@ -749,8 +749,12 @@ void SemanticAnalyzer::registerAnnotations(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::AnnotationDecl& a : ns.annotationDecls) {
-                if (annotations_.count(a.name) > 0 || classes_.count(a.name) > 0 ||
-                    enums_.count(a.name) > 0 || newtypes_.count(a.name) > 0) {
+                // An annotation and a CLASS may share a name: they are used in different positions and
+                // never confused (`@Test` marks a method; `Test.assertEqual(...)` calls a static method).
+                // The stdlib relies on it -- spec 32.11 calls both of them System.Test.Test. A clash with
+                // an enum/newtype/another annotation is still a redeclaration.
+                if (annotations_.count(a.name) > 0 || enums_.count(a.name) > 0 ||
+                    newtypes_.count(a.name) > 0) {
                     error("redeclaration of type '" + a.name + "'", a.loc);
                     continue;
                 }

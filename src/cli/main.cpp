@@ -8380,6 +8380,88 @@ R"LDP3(
         public annotation Test {}
         // Boolean assertion helpers (spec 34): each returns whether the check holds, to be fed to
         // TestRunner.check. near compares doubles within an epsilon.
+        // The assertion API of spec 32.11. Unlike Assert (whose helpers merely RETURN whether a check
+        // holds), these RECORD a failure and print what went wrong, so a `@Test` method can be a plain
+        // list of assertions returning void: `ldp3c --test` resets the counter around each test and
+        // reads it back as that test's verdict.
+        public class Test {
+            private static mutable int fails;
+            public static method reset() returns void {
+                Test.fails = 0;
+                return;
+            }
+            public static method failures() returns int {
+                return Test.fails;
+            }
+            public static method assertEqual(int actual, int expected) returns void {
+                if (actual != expected) {
+                    Test.fails = Test.fails + 1;
+                    System.IO.Console.printf("  assertion failed: expected %d, got %d\n",
+                                             expected, actual);
+                }
+                return;
+            }
+            public static method assertEqualLong(long actual, long expected) returns void {
+                if (actual != expected) {
+                    Test.fails = Test.fails + 1;
+                    System.IO.Console.printf("  assertion failed: expected %lld, got %lld\n",
+                                             expected, actual);
+                }
+                return;
+            }
+            public static method assertEqualString(String actual, String expected) returns void {
+                if (!actual.equals(expected)) {
+                    Test.fails = Test.fails + 1;
+                    System.IO.Console.printf("  assertion failed: expected %s, got %s\n",
+                                             expected, actual);
+                }
+                return;
+            }
+            public static method assertTrue(boolean condition) returns void {
+                if (!condition) {
+                    Test.fails = Test.fails + 1;
+                    System.IO.Console.println("  assertion failed: expected true");
+                }
+                return;
+            }
+            public static method assertFalse(boolean condition) returns void {
+                if (condition) {
+                    Test.fails = Test.fails + 1;
+                    System.IO.Console.println("  assertion failed: expected false");
+                }
+                return;
+            }
+            // Numeric tolerance: |actual - expected| must not exceed it.
+            public static method assertWithin(double actual, double expected, double tolerance)
+                    returns void {
+                mutable double d = actual - expected;
+                if (d < 0.0) {
+                    d = 0.0 - d;
+                }
+                if (d > tolerance) {
+                    Test.fails = Test.fails + 1;
+                    System.IO.Console.printf("  assertion failed: expected %f +/- %f, got %f\n",
+                                             expected, tolerance, actual);
+                }
+                return;
+            }
+            // The action must throw E: a different exception propagates, and no exception at all is a
+            // failure. E is monomorphized, so the catch below is a concrete type.
+            public static method assertThrows<E>(function<void> action) returns void {
+                mutable boolean threw = false;
+                try {
+                    action();
+                }
+                catch (E e) {
+                    threw = true;
+                }
+                if (!threw) {
+                    Test.fails = Test.fails + 1;
+                    System.IO.Console.println("  assertion failed: expected an exception, none thrown");
+                }
+                return;
+            }
+        }
         public class Assert {
             public static method eq(int a, int b) returns boolean { return a == b; }
             public static method eqLong(long a, long b) returns boolean { return a == b; }
