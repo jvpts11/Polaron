@@ -12,6 +12,50 @@
 namespace ldp3 {
 
 namespace {
+// Levenshtein edit distance, capped: the number of single-character insertions, deletions or
+// substitutions to turn `a` into `b`. Used only to say "did you mean X?" on a name error, so a small
+// classic DP is plenty -- the strings are identifiers.
+int editDistance(const std::string& a, const std::string& b) {
+    const std::size_t n = a.size(), m = b.size();
+    std::vector<int> prev(m + 1), cur(m + 1);
+    for (std::size_t j = 0; j <= m; ++j) prev[j] = static_cast<int>(j);
+    for (std::size_t i = 1; i <= n; ++i) {
+        cur[0] = static_cast<int>(i);
+        for (std::size_t j = 1; j <= m; ++j) {
+            const int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+            cur[j] = std::min({prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost});
+        }
+        std::swap(prev, cur);
+    }
+    return prev[m];
+}
+
+// The candidate closest to `typed`, or "" if none is close enough to be worth suggesting. The threshold
+// scales with the typed length -- one edit for a short name, up to a third of it for a long one -- so a
+// genuine typo is caught but two unrelated names are not paired up. A case-only difference always wins.
+std::string closestName(const std::string& typed, const std::vector<std::string>& candidates) {
+    if (typed.empty()) return "";
+    const int budget = std::max(1, static_cast<int>(typed.size()) / 3 + 1);
+    std::string best;
+    int bestDist = budget + 1;
+    for (const std::string& c : candidates) {
+        if (c == typed || c.empty()) continue;
+        const int d = editDistance(typed, c);
+        if (d < bestDist || (d == bestDist && c.size() == typed.size())) {
+            bestDist = d;
+            best = c;
+        }
+    }
+    return bestDist <= budget ? best : "";
+}
+
+// The "; did you mean 'X'?" suffix for a name error, or "" when nothing is close. Kept as a suffix so the
+// existing error text is untouched and an editor can pattern-match "did you mean '<name>'" to offer a fix.
+std::string didYouMean(const std::string& typed, const std::vector<std::string>& candidates) {
+    const std::string best = closestName(typed, candidates);
+    return best.empty() ? "" : "; did you mean '" + best + "'?";
+}
+
 // Array types are spelled with a trailing "[]" in the analyzer (e.g. "int[]").
 bool isArrayType(const std::string& t) {
     return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;
@@ -301,6 +345,34 @@ const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
         c = lookupClass(c->superclass);
     }
     return nullptr;
+}
+
+// Every name usable as a bare identifier at the current point: the locals in every open scope, the
+// namespace-level constants, and -- inside an enum's own methods -- that enum's constants. This is the
+// candidate set for "did you mean?" on an undeclared-variable error, so it must mirror what the lookup at
+// the error site actually accepts.
+std::vector<std::string> SemanticAnalyzer::namesInScope() const {
+    std::vector<std::string> out;
+    for (const auto& scope : scopes_)
+        for (const auto& [name, var] : scope) out.push_back(name);
+    for (const auto& [name, type] : constTypes_) out.push_back(name);
+    if (auto it = enums_.find(currentClass_); it != enums_.end())
+        for (const std::string& c : it->second) out.push_back(c);
+    return out;
+}
+
+// Every field name of a class, including inherited ones -- the candidate set for "did you mean?" on a
+// no-such-field error.
+std::vector<std::string> SemanticAnalyzer::fieldNames(const std::string& className) const {
+    std::vector<std::string> out;
+    const ClassInfo* c = lookupClass(className);
+    if (c == nullptr) c = lookupClass(baseType(className));
+    while (c != nullptr) {
+        for (const auto& [name, info] : c->fields) out.push_back(name);
+        if (c->superclass.empty()) break;
+        c = lookupClass(c->superclass);
+    }
+    return out;
 }
 
 // spec 32.8: is `expr` a class's dispatch table (`Dog.methods`)? Returns the class name, or "".
@@ -1651,7 +1723,9 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&target)) {
         const LocalVar* var = lookupLocal(id->name);
         if (var == nullptr) {
-            error("assignment to undeclared variable '" + id->name + "'", loc);
+            error("assignment to undeclared variable '" + id->name + "'" +
+                      didYouMean(id->name, namesInScope()),
+                  loc);
             return;
         }
         // A region handle may be (re)bound to bind an empty `region r;` to its allocation (spec 17.2
@@ -1714,7 +1788,9 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
                           loc);
                 return;
             }
-            error("class '" + objType + "' has no field '" + mem->member + "'", loc);
+            error("class '" + objType + "' has no field '" + mem->member + "'" +
+                      didYouMean(mem->member, fieldNames(objType)),
+                  loc);
             return;
         }
         // Immutable fields may still be initialized via `this.field` in a constructor.
@@ -1879,7 +1955,9 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, bool isIncreme
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&target)) {
         const LocalVar* var = lookupLocal(id->name);
         if (var == nullptr) {
-            error("modification of undeclared variable '" + id->name + "'", loc);
+            error("modification of undeclared variable '" + id->name + "'" +
+                      didYouMean(id->name, namesInScope()),
+                  loc);
             return;
         }
         type = var->type;
@@ -2704,7 +2782,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 std::find(eit->second.begin(), eit->second.end(), id->name) != eit->second.end()) {
                 return currentClass_;
             }
-            error("use of undeclared variable '" + id->name + "'", id->loc);
+            error("use of undeclared variable '" + id->name + "'" + didYouMean(id->name, namesInScope()),
+                  id->loc);
             return "";
         }
         if (moved_.count(id->name) > 0) {
@@ -4107,7 +4186,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                    pm != nullptr && pm->isProperty) {
             memType = pm->returnType;  // computed get-only property read as obj.name (no parens)
         } else {
-            error("class '" + objType + "' has no field '" + mem->member + "'", mem->loc);
+            error("class '" + objType + "' has no field '" + mem->member + "'" +
+                      didYouMean(mem->member, fieldNames(objType)),
+                  mem->loc);
             return "";
         }
         if (!mem->safe) return memType;

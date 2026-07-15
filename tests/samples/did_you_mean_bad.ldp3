@@ -1,0 +1,25 @@
+import System.IO.Console;
+program DidYouMean;
+
+// Two typos the compiler should offer a "did you mean?" for: a misspelled field in a constructor, and a
+// misspelled local in a method. The suggestion is what the live-check quick fix (Alt+Enter) reads back.
+public bundle main {
+    public namespace app {
+        public class Point {
+            public mutable int width;
+            public mutable int height;
+            public constructor Point() {
+                this.width = 0;
+                this.heigth = 0;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int total = 0;
+                total = totl + 1;
+                System.IO.Console.println($"x = {total}");
+                return;
+            }
+        }
+    }
+}

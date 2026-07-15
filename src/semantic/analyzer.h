@@ -197,6 +197,11 @@ private:
                        const std::vector<bool>& namedOnly, const std::string& desc);
     std::string flattenCallee(const ast::Expr& expr) const;
     const ClassInfo* lookupClass(const std::string& name) const;
+    // Candidate names for a "did you mean?" suggestion on a name error. namesInScope: everything usable
+    // as a bare identifier right here (locals, namespace constants, the current enum's constants).
+    // fieldNames: every field of a class, walking its superclasses.
+    std::vector<std::string> namesInScope() const;
+    std::vector<std::string> fieldNames(const std::string& className) const;
     void validateHierarchy();
     void validateOverrides(const ast::Program& program);
     void collectMethodNamesInto(const std::string& className, std::vector<std::string>& out) const;

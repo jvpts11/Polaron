@@ -179,6 +179,17 @@ add_test(NAME check_overlay_names_the_base_not_the_scratch
 set_tests_properties(check_overlay_names_the_base_not_the_scratch PROPERTIES
     PASS_REGULAR_EXPRESSION "overlay_base.ldp3:[0-9]+:[0-9]+: error: use of undeclared variable 'undeclaredHere'")
 
+# A name error offers "did you mean?" with the closest field / local (what powers the editor quick fix).
+add_test(NAME check_suggests_the_closest_field
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/did_you_mean_bad.ldp3")
+set_tests_properties(check_suggests_the_closest_field PROPERTIES
+    PASS_REGULAR_EXPRESSION "no field 'heigth'; did you mean 'height'")
+
+add_test(NAME check_suggests_the_closest_local
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/did_you_mean_bad.ldp3")
+set_tests_properties(check_suggests_the_closest_local PROPERTIES
+    PASS_REGULAR_EXPRESSION "undeclared variable 'totl'; did you mean 'total'")
+
 # A catalog `extends` cycle must be reported, not crash (regression: it used to
 # overflow the stack in isSubtype).
 add_test(NAME sema_rejects_catalog_cycle
