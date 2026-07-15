@@ -274,6 +274,14 @@ void SemanticAnalyzer::warn(std::string message, SourceLocation loc) {
     warnings_.push_back(SemaError{std::move(message), loc});
 }
 
+void SemanticAnalyzer::error(diag::Code code, std::string message, SourceLocation loc) {
+    errors_.push_back(SemaError{std::move(message), loc, code});
+}
+
+void SemanticAnalyzer::warn(diag::Code code, std::string message, SourceLocation loc) {
+    warnings_.push_back(SemaError{std::move(message), loc, code});
+}
+
 // A statement that can exit or branch out of straight-line flow (so it could break a comefrom loop).
 static bool stmtCanExit(const ast::Stmt* st) {
     return dynamic_cast<const ast::ReturnStmt*>(st) != nullptr ||
@@ -1723,7 +1731,8 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&target)) {
         const LocalVar* var = lookupLocal(id->name);
         if (var == nullptr) {
-            error("assignment to undeclared variable '" + id->name + "'" +
+            error(diag::Code::UndeclaredVariable,
+                  "assignment to undeclared variable '" + id->name + "'" +
                       didYouMean(id->name, namesInScope()),
                   loc);
             return;
@@ -1788,7 +1797,8 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
                           loc);
                 return;
             }
-            error("class '" + objType + "' has no field '" + mem->member + "'" +
+            error(diag::Code::NoSuchField,
+                  "class '" + objType + "' has no field '" + mem->member + "'" +
                       didYouMean(mem->member, fieldNames(objType)),
                   loc);
             return;
@@ -1955,7 +1965,8 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, bool isIncreme
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&target)) {
         const LocalVar* var = lookupLocal(id->name);
         if (var == nullptr) {
-            error("modification of undeclared variable '" + id->name + "'" +
+            error(diag::Code::UndeclaredVariable,
+                  "modification of undeclared variable '" + id->name + "'" +
                       didYouMean(id->name, namesInScope()),
                   loc);
             return;
@@ -2782,7 +2793,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 std::find(eit->second.begin(), eit->second.end(), id->name) != eit->second.end()) {
                 return currentClass_;
             }
-            error("use of undeclared variable '" + id->name + "'" + didYouMean(id->name, namesInScope()),
+            error(diag::Code::UndeclaredVariable,
+                  "use of undeclared variable '" + id->name + "'" + didYouMean(id->name, namesInScope()),
                   id->loc);
             return "";
         }
@@ -4186,7 +4198,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                    pm != nullptr && pm->isProperty) {
             memType = pm->returnType;  // computed get-only property read as obj.name (no parens)
         } else {
-            error("class '" + objType + "' has no field '" + mem->member + "'" +
+            error(diag::Code::NoSuchField,
+                  "class '" + objType + "' has no field '" + mem->member + "'" +
                       didYouMean(mem->member, fieldNames(objType)),
                   mem->loc);
             return "";

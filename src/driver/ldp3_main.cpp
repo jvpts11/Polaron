@@ -28,6 +28,7 @@ int printHelp() {
         "  ldp3 build                          build the current project to build-output/\n"
         "  ldp3 check [--project <dir>]        type-check the project, print diagnostics, emit nothing\n"
         "             [--overlay <file>=<tmp>]  check <file> as it reads in <tmp> (an editor's buffer)\n"
+        "  ldp3 explain <code>                 the why / fix / prevent for a diagnostic code (e.g. LDP3-0101)\n"
         "  ldp3 test                           build and run the project's [Test] methods\n"
         "  ldp3 doc                            render the public API to HTML from /// comments\n"
         "  ldp3 fmt [file.ldp3]                format the project's source (or one file) in place\n"
@@ -60,6 +61,15 @@ int runCli(int argc, char** argv) {
     if (cmd == "json") {  // machine-readable workspace data for the VS Code extension's tree views
         std::fputs(ldp3::driver::studioJson(std::filesystem::current_path()).c_str(), stdout);
         return 0;
+    }
+
+    // `ldp3 explain <code>`: the canonical why / fix / prevent for a diagnostic code -- forwarded to the
+    // compiler, which owns the catalog. With no code, lists every code.
+    if (cmd == "explain") {
+        const ldp3::driver::Toolchain tc = ldp3::driver::locateToolchain();
+        std::vector<std::string> forward = {"--explain"};
+        for (std::size_t i = 1; i < args.size(); ++i) forward.push_back(args[i]);
+        return ldp3::driver::runProcess(tc.ldp3c, forward);
     }
 
     if (cmd == "new") {

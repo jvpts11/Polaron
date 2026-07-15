@@ -24,6 +24,8 @@ set(LDP3_CORE_SOURCES
     src/parser/boundscheck.cpp
     src/semantic/analyzer.cpp
     src/semantic/comptime.cpp
+    src/diag/catalog.cpp  # rich-diagnostic catalog: why/fix/prevent per error code
+    src/diag/render.cpp   # rich-diagnostic renderer: snippet + caret + sections, or one concise line
     src/bundle/ldh.cpp  # public-API header (.ldh) generation; AST-only, no LLVM
     src/bundle/ldb.cpp  # .ldb container read/write + SHA-256 fingerprint; self-contained, no LLVM
     src/doc/htmldoc.cpp # `ldp3 doc`: HTML API docs from /// comments; AST-only, no LLVM

@@ -34,6 +34,8 @@
 #include "semantic/analyzer.h"
 
 #include "bundle/ldh.h"
+#include "diag/diagnostic.h"
+#include "diag/render.h"
 #include "doc/htmldoc.h"
 #include "fmt/formatter.h"
 
@@ -74,6 +76,38 @@ std::string overlayKey(const std::string& path) {
 std::optional<std::string> readSource(const std::string& path) {
     const auto it = g_overlays.find(overlayKey(path));
     return readFile(it == g_overlays.end() ? path : it->second);
+}
+
+// The source of every file compiled this run, so the rich-diagnostic renderer can show the offending line.
+// Keyed by the loc's file string (the path as it appears in SourceLocation), and holding the OVERLAID
+// content when an overlay is in effect -- the snippet must show what was actually compiled.
+std::map<std::string, std::string> g_sources;
+bool g_concise = false;  // --concise: one machine-parseable line per diagnostic (implied by --check)
+
+// The 1-based `line` of `file`'s compiled source, or "" if unavailable (e.g. the embedded prelude).
+std::string sourceLineAt(std::string_view file, int line) {
+    const auto it = g_sources.find(std::string(file));
+    if (it == g_sources.end() || line < 1) return "";
+    const std::string& src = it->second;
+    std::size_t start = 0;
+    for (int cur = 1; cur < line; ++cur) {
+        const std::size_t nl = src.find('\n', start);
+        if (nl == std::string::npos) return "";
+        start = nl + 1;
+    }
+    std::size_t end = src.find('\n', start);
+    std::string ln = src.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    if (!ln.empty() && ln.back() == '\r') ln.pop_back();
+    return ln;
+}
+
+// Print one semantic diagnostic (error or warning) richly, unless concise output was requested.
+void printSemaDiag(std::string_view severity, const ldp3::SemaError& d, bool concise) {
+    const std::string file(d.loc.file);
+    std::fputs(ldp3::diag::render(severity, file, d.loc.line, d.loc.col, d.message, d.code,
+                                  sourceLineAt(d.loc.file, d.loc.line), concise)
+                   .c_str(),
+               stderr);
 }
 
 // The embedded standard prelude. Parsed and merged into every program so that
@@ -9134,6 +9168,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             std::fprintf(stderr, "error: cannot open input file '%s'\n", path.c_str());
             return 1;
         }
+        g_sources[path] = *source;  // for the rich-diagnostic snippet
         ldp3::Lexer lexer(*source, path);
         std::vector<ldp3::Token> tokens = lexer.tokenize();
         if (reportLexErrors(path, lexer)) {
@@ -9313,15 +9348,12 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     if (optLevel > 0) ldp3::hoistBoundsChecks(program);          // bounds-check hoisting (sema re-checks it)
     ldp3::SemanticAnalyzer sema;
     const bool semaOk = sema.analyze(program, libraryMode, testMode);
-    for (const ldp3::SemaError& w : sema.warnings()) {
-        std::fprintf(stderr, "%.*s:%d:%d: warning: %s\n", static_cast<int>(w.loc.file.size()),
-                     w.loc.file.data(), w.loc.line, w.loc.col, w.message.c_str());
-    }
+    // `--check` (used by the editor's live check) and `--concise` want one machine-parseable line per
+    // diagnostic; a normal build shows the full rich explanation.
+    const bool concise = checkOnly || g_concise;
+    for (const ldp3::SemaError& w : sema.warnings()) printSemaDiag("warning", w, concise);
     if (!semaOk) {
-        for (const ldp3::SemaError& e : sema.errors()) {
-            std::fprintf(stderr, "%.*s:%d:%d: error: %s\n", static_cast<int>(e.loc.file.size()),
-                         e.loc.file.data(), e.loc.line, e.loc.col, e.message.c_str());
-        }
+        for (const ldp3::SemaError& e : sema.errors()) printSemaDiag("error", e, concise);
         return 1;
     }
 
@@ -9425,6 +9457,27 @@ int main(int argc, char** argv) {
 
     if (args[0] == "--version" || args[0] == "-v") {
         std::printf("%s\n", kVersion.data());
+        return 0;
+    }
+
+    // `--explain <code>`: the canonical write-up for a diagnostic code (why / how to fix / how to prevent),
+    // the way `rustc --explain` works. With no code, list every code. `ldp3 explain <code>` forwards here.
+    if (args[0] == "--explain") {
+        if (args.size() < 2) {
+            std::fputs(ldp3::diag::allCodesListing().c_str(), stdout);
+            return 0;
+        }
+        const std::string code(args[1]);
+        const ldp3::diag::Entry* e = ldp3::diag::entryByCodeString(code);
+        if (e == nullptr) {
+            std::fprintf(stderr, "error: unknown diagnostic code '%s' (try `ldp3c --explain` for a list)\n",
+                         code.c_str());
+            return 1;
+        }
+        std::printf("%s -- %.*s\n\n", code.c_str(), static_cast<int>(e->caret.size()), e->caret.data());
+        std::printf("why:     %.*s\n\n", static_cast<int>(e->why.size()), e->why.data());
+        std::printf("fix:     %.*s\n\n", static_cast<int>(e->fix.size()), e->fix.data());
+        std::printf("prevent: %.*s\n", static_cast<int>(e->prevent.size()), e->prevent.data());
         return 0;
     }
 
@@ -9571,6 +9624,8 @@ int main(int argc, char** argv) {
         } else if (args[i] == "-g") {
             debugInfo = true;
             optLevel = 0;  // debug info survives best unoptimized (variables, line stepping)
+        } else if (args[i] == "--concise" || args[i] == "-q") {
+            g_concise = true;  // one machine-parseable line per diagnostic (CI / huge broken builds)
         } else {
             inputs.emplace_back(args[i]);
         }

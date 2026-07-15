@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "diag/diagnostic.h"
 #include "lexer/token.h"
 #include "parser/ast.h"
 
@@ -16,6 +17,7 @@ namespace ldp3 {
 struct SemaError {
     std::string message;
     SourceLocation loc;
+    diag::Code code = diag::Code::None;  // the rich-diagnostic code, or None for an un-migrated one-liner
 };
 
 // The validated program entry point.
@@ -126,6 +128,10 @@ public:
 private:
     void error(std::string message, SourceLocation loc);
     void warn(std::string message, SourceLocation loc);  // records a non-fatal diagnostic
+    // Rich variants: attach a diagnostic code so the driver can print why / how-to-fix / how-to-prevent
+    // from the catalog. The message is still the specific one-line title (it names the actual thing).
+    void error(diag::Code code, std::string message, SourceLocation loc);
+    void warn(diag::Code code, std::string message, SourceLocation loc);
     // Best-effort detection of an obvious infinite loop via comefrom (spec 7.10 rule 7).
     void detectComefromLoops(const ast::Block& block);
     bool isValidMainSignature(const ast::MethodDecl& method) const;

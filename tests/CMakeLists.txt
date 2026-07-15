@@ -177,7 +177,7 @@ add_test(NAME check_overlay_names_the_base_not_the_scratch
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/overlay_base.ldp3"
             --overlay "${CMAKE_CURRENT_SOURCE_DIR}/samples/overlay_base.ldp3=${CMAKE_CURRENT_SOURCE_DIR}/samples/overlay_broken.ldp3")
 set_tests_properties(check_overlay_names_the_base_not_the_scratch PROPERTIES
-    PASS_REGULAR_EXPRESSION "overlay_base.ldp3:[0-9]+:[0-9]+: error: use of undeclared variable 'undeclaredHere'")
+    PASS_REGULAR_EXPRESSION "overlay_base.ldp3:[0-9]+:[0-9]+: error\\[LDP3-[0-9]+\\]: use of undeclared variable 'undeclaredHere'")
 
 # A name error offers "did you mean?" with the closest field / local (what powers the editor quick fix).
 add_test(NAME check_suggests_the_closest_field
@@ -189,6 +189,30 @@ add_test(NAME check_suggests_the_closest_local
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/did_you_mean_bad.ldp3")
 set_tests_properties(check_suggests_the_closest_local PROPERTIES
     PASS_REGULAR_EXPRESSION "undeclared variable 'totl'; did you mean 'total'")
+
+# Rich diagnostics: a normal build (not --check/-q) prints why / fix / prevent under the error, with a
+# stable code and a source snippet.
+add_test(NAME rich_diagnostic_has_why_fix_prevent
+    COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/did_you_mean_bad.ldp3" -o "${CMAKE_CURRENT_BINARY_DIR}/dym.ll")
+set_tests_properties(rich_diagnostic_has_why_fix_prevent PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-0102\\].*\n.*\n.*\n.*\n.* why: ")
+
+# --check / -q stays one machine-parseable line per diagnostic, now carrying the code.
+add_test(NAME concise_diagnostic_is_one_line_with_code
+    COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/did_you_mean_bad.ldp3" -o "${CMAKE_CURRENT_BINARY_DIR}/dym.ll" -q)
+set_tests_properties(concise_diagnostic_is_one_line_with_code PROPERTIES
+    PASS_REGULAR_EXPRESSION "did_you_mean_bad.ldp3:[0-9]+:[0-9]+: error\\[LDP3-0102\\]: class 'Point' has no field")
+
+# `ldp3c --explain <code>` prints a code's canonical why / fix / prevent.
+add_test(NAME explain_prints_the_canonical_writeup
+    COMMAND ldp3c --explain LDP3-0101)
+set_tests_properties(explain_prints_the_canonical_writeup PROPERTIES
+    PASS_REGULAR_EXPRESSION "LDP3-0101 -- not declared in this scope")
+
+add_test(NAME explain_rejects_an_unknown_code
+    COMMAND ldp3c --explain LDP3-9999)
+set_tests_properties(explain_rejects_an_unknown_code PROPERTIES
+    WILL_FAIL TRUE)
 
 # A catalog `extends` cycle must be reported, not crash (regression: it used to
 # overflow the stack in isSubtype).
