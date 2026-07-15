@@ -214,6 +214,18 @@ add_test(NAME explain_rejects_an_unknown_code
 set_tests_properties(explain_rejects_an_unknown_code PROPERTIES
     WILL_FAIL TRUE)
 
+# Even a syntax error is rich: a stable code, a snippet, and the why/fix/prevent sections.
+add_test(NAME syntax_error_is_rich
+    COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/syntax_bad.ldp3" -o "${CMAKE_CURRENT_BINARY_DIR}/syn.ll")
+set_tests_properties(syntax_error_is_rich PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-0001\\]:.*\n.*syntax_bad.ldp3:9")
+
+# A rule-classified semantic error (immutability) is coded and rich without a per-call-site change.
+add_test(NAME immutable_assignment_is_coded
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/immutable_bad.ldp3")
+set_tests_properties(immutable_assignment_is_coded PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-0401\\]: cannot assign to immutable")
+
 # A catalog `extends` cycle must be reported, not crash (regression: it used to
 # overflow the stack in isSubtype).
 add_test(NAME sema_rejects_catalog_cycle

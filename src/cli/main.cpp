@@ -8971,21 +8971,23 @@ int printUsage(const char* prog) {
     return 2;
 }
 
-bool reportLexErrors(const std::string& path, const ldp3::Lexer& lexer) {
+bool reportLexErrors(const std::string& path, const ldp3::Lexer& lexer, bool concise = false) {
     if (!lexer.hasErrors()) return false;
-    for (const ldp3::LexError& e : lexer.errors()) {
-        std::fprintf(stderr, "%s:%d:%d: lex error: %s\n", path.c_str(), e.loc.line, e.loc.col,
-                     e.message.c_str());
-    }
+    for (const ldp3::LexError& e : lexer.errors())
+        std::fputs(ldp3::diag::render("error", path, e.loc.line, e.loc.col, e.message,
+                                      ldp3::diag::Code::LexError, sourceLineAt(path, e.loc.line), concise)
+                       .c_str(),
+                   stderr);
     return true;
 }
 
-bool reportParseErrors(const std::string& path, const ldp3::Parser& parser) {
+bool reportParseErrors(const std::string& path, const ldp3::Parser& parser, bool concise = false) {
     if (!parser.hasErrors()) return false;
-    for (const ldp3::ParseError& e : parser.errors()) {
-        std::fprintf(stderr, "%s:%d:%d: parse error: %s\n", path.c_str(), e.loc.line, e.loc.col,
-                     e.message.c_str());
-    }
+    for (const ldp3::ParseError& e : parser.errors())
+        std::fputs(ldp3::diag::render("error", path, e.loc.line, e.loc.col, e.message,
+                                      ldp3::diag::Code::SyntaxError, sourceLineAt(path, e.loc.line), concise)
+                       .c_str(),
+                   stderr);
     return true;
 }
 
@@ -9169,16 +9171,17 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             return 1;
         }
         g_sources[path] = *source;  // for the rich-diagnostic snippet
+        const bool frontEndConcise = checkOnly || g_concise;  // check/CI: one parseable line per error
         ldp3::Lexer lexer(*source, path);
         std::vector<ldp3::Token> tokens = lexer.tokenize();
-        if (reportLexErrors(path, lexer)) {
+        if (reportLexErrors(path, lexer, frontEndConcise)) {
             if (!checkOnly) return 1;
             frontEndFailed = true;
             continue;
         }
         ldp3::Parser parser(std::move(tokens), path);
         ldp3::ast::Program prog = parser.parse();
-        if (reportParseErrors(path, parser)) {
+        if (reportParseErrors(path, parser, frontEndConcise)) {
             if (!checkOnly) return 1;
             frontEndFailed = true;
             continue;

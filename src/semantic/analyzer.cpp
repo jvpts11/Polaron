@@ -267,11 +267,15 @@ static bool evalConstDouble(const ast::Expr& e, double& out,
                                 nullptr);
 
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
-    errors_.push_back(SemaError{std::move(message), loc});
+    // No explicit code at the call-site: infer one from the message so the diagnostic is still rich (the
+    // mapping is the one table in diag/catalog.cpp). An unmatched message stays a clean one-liner.
+    const diag::Code code = diag::classify(message);
+    errors_.push_back(SemaError{std::move(message), loc, code});
 }
 
 void SemanticAnalyzer::warn(std::string message, SourceLocation loc) {
-    warnings_.push_back(SemaError{std::move(message), loc});
+    const diag::Code code = diag::classify(message);
+    warnings_.push_back(SemaError{std::move(message), loc, code});
 }
 
 void SemanticAnalyzer::error(diag::Code code, std::string message, SourceLocation loc) {

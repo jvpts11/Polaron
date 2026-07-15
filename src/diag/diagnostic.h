@@ -15,11 +15,16 @@ namespace ldp3::diag {
 enum class Code {
     None = 0,
 
+    // 00xx -- lexing and parsing
+    SyntaxError,          // the parser expected different syntax here
+    LexError,             // the lexer could not tokenize the source here
+
     // 01xx -- naming and resolution
     UndeclaredVariable,   // read of a name bound to nothing in scope
     NoSuchField,          // obj.field where the class has no such field
     NoSuchMethod,         // obj.method() where the class has no such method
     UnknownType,          // a type name that resolves to no declared type
+    UnknownName,          // an unknown class/region/label/symbol/import referenced by name
 
     // 02xx -- visibility
     NotAccessible,        // a private/internal member reached from outside its allowed scope
@@ -28,18 +33,58 @@ enum class Code {
     TypeMismatch,         // a value of one type where another is required
     ArgCount,             // a call with the wrong number of arguments
     ReturnTypeMismatch,   // a return value that does not match the method's declared return type
+    ArgType,              // an argument whose type does not match the parameter
+    BadCast,              // a cast between types that cannot convert
+    BadIndex,             // indexing a non-array, or with a non-integer
+    BadOperand,           // an operator applied to an operand of the wrong type
 
     // 04xx -- mutability and ownership
     AssignImmutable,      // assignment to a value not declared mutable
     UseAfterMove,         // use of a value after it was moved out
+    MoveMisuse,           // moving something that cannot be moved (a field, an immutable)
+    InvalidAssignTarget,  // assigning to / incrementing something that is not an assignable place
 
     // 05xx -- control flow
     MissingReturn,        // a non-void method that can reach its end without returning
+    MatchNotExhaustive,   // a match/switch that does not cover every case and has no default
+    TryContext,           // `try?` used outside a method returning Result/Option
 
-    // 06xx -- declarations
+    // 06xx -- declarations and inheritance
     Redeclaration,        // two declarations of the same name in the same scope
     DuplicateField,       // two fields with the same name in one class
+    DuplicateMember,      // a duplicated enum constant / catalog value / argument name
+    InheritanceCycle,     // a class/catalog that (transitively) extends itself
+    IllegalExtend,        // extending a final/sealed type that forbids it
+    IllegalOverride,      // overriding a final method
+    ConstraintNotMet,     // a type argument that does not satisfy a generic bound
+    ContradictoryModifiers,  // modifiers that cannot combine (e.g. unique + partitionable)
+
+    // 07xx -- literals and I/O builtins
+    LiteralSuffix,        // an unknown or misused literal suffix
+    StringInterp,         // a string interpolation of an unprintable value
+    PrintfFormat,         // a printf/println whose format argument is not a string literal
+
+    // 08xx -- features used incorrectly
+    OperatorOverload,     // a malformed operator overload
+    ReflectionMisuse,     // reflect.* used without the import, or wrongly
+    RegionMisuse,         // a region declaration or `new in region` used wrongly
+    VectorMisuse,         // a vec/mat operation with the wrong shape or component
+    UnimportMisuse,       // unimport/reimport used wrongly
+    StaticAssert,         // a failed or non-constant static_assert
+    ComptimeConstant,     // a value required to be a compile-time constant but is not
+    PersistentLifecycle,  // a persistent with no `release persistent` in the program
+
+    // 09xx -- context restrictions
+    FreestandingRestriction,  // a feature unavailable in freestanding mode (spec 36.3)
+
+    // 0Axx -- not-yet-implemented corners
+    NotSupportedYet,      // a valid construct the current compiler does not implement yet
 };
+
+// Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First
+// matching rule wins; an unmatched message stays Code::None (a clean one-liner). This is what makes every
+// error rich without editing every call-site -- the mapping lives in one reviewable table (catalog.cpp).
+Code classify(std::string_view message);
 
 // The rich payload attached to a SemaError/LexError/etc. Empty (Code::None) renders as a plain one-liner.
 struct Rich {
