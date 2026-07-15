@@ -9172,6 +9172,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         }
         g_sources[path] = *source;  // for the rich-diagnostic snippet
         const bool frontEndConcise = checkOnly || g_concise;  // check/CI: one parseable line per error
+        ldp3::diag::setConcise(frontEndConcise);  // so monomorphize's own diagnostics honour it too
         ldp3::Lexer lexer(*source, path);
         std::vector<ldp3::Token> tokens = lexer.tokenize();
         if (reportLexErrors(path, lexer, frontEndConcise)) {

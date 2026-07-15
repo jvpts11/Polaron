@@ -86,6 +86,11 @@ enum class Code {
 // error rich without editing every call-site -- the mapping lives in one reviewable table (catalog.cpp).
 Code classify(std::string_view message);
 
+// The process-wide concise flag, so subsystems that print diagnostics on their own (e.g. monomorphize)
+// can honour --check / --concise without threading the flag through. Set once by the driver.
+void setConcise(bool concise);
+bool conciseMode();
+
 // The rich payload attached to a SemaError/LexError/etc. Empty (Code::None) renders as a plain one-liner.
 struct Rich {
     Code code = Code::None;

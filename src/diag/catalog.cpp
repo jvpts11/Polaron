@@ -486,6 +486,7 @@ constexpr Rule kRules[] = {
 
     {"must return a value", Code::MissingReturn},
     {"paths return", Code::MissingReturn},
+    {"must return Iterator", Code::ReturnTypeMismatch},
     {"'try?'", Code::TryContext},
     {"try? can only", Code::TryContext},
 
@@ -562,5 +563,11 @@ Code classify(std::string_view message) {
         if (message.find(r.needle) != std::string_view::npos) return r.code;
     return Code::None;
 }
+
+namespace {
+bool g_conciseMode = false;
+}
+void setConcise(bool concise) { g_conciseMode = concise; }
+bool conciseMode() { return g_conciseMode; }
 
 }  // namespace ldp3::diag

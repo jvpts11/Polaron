@@ -7,7 +7,21 @@
 #include <utility>
 #include <vector>
 
+#include "diag/diagnostic.h"
+#include "diag/render.h"
+
 namespace ldp3 {
+
+namespace {
+// Emit a monomorphization diagnostic richly: infer its code from the message and render the why / fix /
+// prevent through the shared renderer (no source snippet here -- this pass runs after the source is gone).
+void monoError(const SourceLocation& loc, const std::string& message) {
+    std::fputs(diag::render("error", std::string(loc.file), loc.line, loc.col, message,
+                            diag::classify(message), "", diag::conciseMode())
+                   .c_str(),
+               stderr);
+}
+}  // namespace
 namespace {
 
 using Subst = std::map<std::string, std::string>;            // type param -> concrete type
@@ -1063,13 +1077,10 @@ bool expandGenericMethods(ast::Program& program) {
                                 const std::string bound =
                                     substBound(pb.second, meth->typeParams, inst.second);
                                 if (!satisfiesBound(inst.second[pi], bound, classIndex)) {
-                                    const auto& mloc = meth->loc;
-                                    std::fprintf(stderr,
-                                                 "%s:%d:%d: error: type argument '%s' does not satisfy "
-                                                 "constraint '%s extends %s' of method '%s'\n",
-                                                 std::string(mloc.file).c_str(), mloc.line, mloc.col,
-                                                 inst.second[pi].c_str(), pb.first.c_str(),
-                                                 spellBound(bound).c_str(), meth->name.c_str());
+                                    monoError(meth->loc, "type argument '" + inst.second[pi] +
+                                                             "' does not satisfy constraint '" + pb.first +
+                                                             " extends " + spellBound(bound) +
+                                                             "' of method '" + meth->name + "'");
                                     ok = false;
                                 }
                             }
@@ -1551,11 +1562,9 @@ bool synthesizeGenerators(ast::Program& program) {
                     if (!blockYields(m->body)) continue;
 
                     if (m->returnType.name != "Iterator" || m->returnType.typeArgs.size() != 1) {
-                        std::fprintf(stderr,
-                                     "%s:%d:%d: error: a method that yields is a generator and must "
-                                     "return Iterator<T> (spec 22.6); '%s' returns '%s'\n",
-                                     std::string(m->loc.file).c_str(), m->loc.line, m->loc.col,
-                                     m->name.c_str(), ast::canonicalType(m->returnType).c_str());
+                        monoError(m->loc, "a method that yields is a generator and must return "
+                                          "Iterator<T> (spec 22.6); '" + m->name + "' returns '" +
+                                              ast::canonicalType(m->returnType) + "'");
                         ok = false;
                         continue;
                     }
@@ -1566,12 +1575,9 @@ bool synthesizeGenerators(ast::Program& program) {
                     for (const auto& tp : m->typeParams)
                         if (tp == elem) elemIsParam = true;
                     if (elemIsParam) {
-                        std::fprintf(stderr,
-                                     "%s:%d:%d: error: generator '%s' yields its type parameter '%s'; "
-                                     "generators in a generic class or method are not supported yet "
-                                     "(spec 22.6)\n",
-                                     std::string(m->loc.file).c_str(), m->loc.line, m->loc.col,
-                                     m->name.c_str(), elem.c_str());
+                        monoError(m->loc, "generator '" + m->name + "' yields its type parameter '" +
+                                              elem + "'; generators in a generic class or method are not "
+                                                     "supported yet (spec 22.6)");
                         ok = false;
                         continue;
                     }
@@ -1844,12 +1850,9 @@ bool monomorphize(ast::Program& program) {
             if (pi >= args.size()) continue;
             const std::string bound = substBound(pb.second, tit->second->typeParams, args);
             if (!satisfiesBound(args[pi], bound, classIndex)) {
-                const auto& loc = tit->second->loc;
-                std::fprintf(stderr,
-                             "%s:%d:%d: error: type argument '%s' does not satisfy constraint "
-                             "'%s extends %s' in '%s'\n",
-                             std::string(loc.file).c_str(), loc.line, loc.col, args[pi].c_str(),
-                             pb.first.c_str(), spellBound(bound).c_str(), m.c_str());
+                monoError(tit->second->loc, "type argument '" + args[pi] + "' does not satisfy constraint '" +
+                                                pb.first + " extends " + spellBound(bound) + "' in '" + m +
+                                                "'");
                 ok = false;
             }
         }
