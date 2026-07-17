@@ -784,6 +784,17 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                             FieldInfo{typeRefStr(f->type), f->isMutable || f->isMovable || f->isUnique,
                                       f->isStatic, f->isMovable, f->isUnique};
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                        // LDP3 has no method overloading -- a name is unique within a class. A silent
+                        // duplicate (last-wins in this map) makes codegen emit two same-named functions;
+                        // LLVM renames the second to `.1`, and -g then emits a duplicate DISubprogram
+                        // (invalid DWARF). A property get/set pair legitimately shares a name, so only two
+                        // plain methods collide.
+                        if (auto prev = info.methods.find(m->name);
+                            prev != info.methods.end() && !prev->second.isProperty && !m->isProperty)
+                            error("method '" + m->name + "' is already declared in class '" + cls.name +
+                                      "' -- LDP3 has no method overloading, so each method name must be "
+                                      "unique",
+                                  m->loc);
                         MethodInfo mi{typeRefStr(m->returnType), m->isStatic,
                                       m->isAbstract, m->isProperty,
                                       m->params.size(), m->isFinal, m->isAsync};

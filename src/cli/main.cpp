@@ -6846,11 +6846,6 @@ R"LDP3(
                 return c[n / 2];
             }
             // Sum of all values (spec 34.6).
-            public static method sum(int[] xs) returns int {
-                mutable int s = 0;
-                for (mutable int i = 0; i < xs.length(); i++) { s = s + xs[i]; }
-                return s;
-            }
             // Spread between the largest and smallest values.
             public static method range(int[] xs) returns int {
                 if (xs.length() == 0) { return 0; }
