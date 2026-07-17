@@ -1407,6 +1407,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
 
+        # Slice is a non-owning window over an array: get/set past the window length must panic even when
+        # the index still lands inside the backing array (else it silently reads/writes a neighbour).
+        add_test(NAME codegen_slice_oob_panics COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/slice_oob_bad.ldp3"
+            "-DPANIC=array index out of bounds"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+
         # Companion: the same guard must leave valid in-bounds access untouched, including across a grow.
         add_test(NAME codegen_arraylist_bounds_ok_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

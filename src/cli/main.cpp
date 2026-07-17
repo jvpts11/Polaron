@@ -908,9 +908,18 @@ R"LDP3(
                 return this.len;
             }
             public method get(int i) returns T {
+                if (i < 0 || i >= this.len) {
+                    // Inside the backing array but outside THIS window: the raw check would not catch it,
+                    // so force a clean "array index out of bounds" panic rather than read a neighbour. No UB.
+                    return this.backing[this.backing.length()];
+                }
                 return this.backing[this.start + i];
             }
             public method set(int i, T value) returns void {
+                if (i < 0 || i >= this.len) {
+                    this.backing[this.backing.length()] = value;   // outside the window -> clean panic
+                    return;
+                }
                 this.backing[this.start + i] = value;
             }
             public method sub(int from, int to) returns Slice<T> {

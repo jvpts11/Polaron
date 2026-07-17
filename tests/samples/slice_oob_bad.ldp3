@@ -1,0 +1,22 @@
+import System.Collections.Slice;
+
+// No-UB regression: Slice.get past the window length must panic, even when start+i still lands inside
+// the backing array. The window is [2,5) here; get(3) would silently read backing[5] -- a neighbour
+// outside the slice. That is the same silent out-of-window read the ArrayList guard closed.
+
+program SliceOob;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns int {
+                mutable int[] a = new int[10]();
+                for (mutable int i = 0; i < 10; i++) {
+                    a[i] = i * 10;
+                }
+                Slice<int>* s = new Slice<int>(a, 2, 3) on heap;   // window covers a[2], a[3], a[4]
+                return s.get(3);   // i == len: outside the window -> must panic, not read a[5]
+            }
+        }
+    }
+}
