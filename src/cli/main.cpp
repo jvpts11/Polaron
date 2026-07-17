@@ -583,6 +583,9 @@ R"LDP3(
                 this.data = new T[4]();
                 this.count = 0;
             }
+            public destructor ~ArrayList() returns void {
+                delete this.data;
+            }
             public method add(T item) returns void {
                 if (this.count >= this.data.length()) {
                     mutable T[] bigger = new T[this.data.length() * 2]();

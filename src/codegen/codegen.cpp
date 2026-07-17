@@ -2815,6 +2815,34 @@ struct CodeGenerator::Impl {
         return builder.CreateGEP(elemTy, arrayData(block), idx, "arr.elem");
     }
 
+    // String RAII: free every element of a String[] before its backing block is freed. Each element is
+    // an owned copy (copy-on-store), so it must be released or it leaks; a null slot (new String[n]()
+    // zero-init, or a hole past an ArrayList's size) is skipped by the null-safe __ldp3_str_free. The
+    // slot is nulled after freeing, so a re-delete of the same array finds nothing to free again. Loops
+    // over the whole capacity (the array's i64 length header) -- copy-on-store keeps every live element
+    // a distinct buffer, so no two slots alias and nothing is freed twice.
+    void emitFreeStringArrayElements(llvm::Value* block) {
+        llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "sa.len");
+        llvm::Value* base = arrayData(block);
+        llvm::Value* iSlot = createEntryAlloca("sa.i", builder.getInt64Ty());
+        builder.CreateStore(builder.getInt64(0), iSlot);
+        llvm::Function* f = currentFn;
+        auto* condBB = llvm::BasicBlock::Create(context, "sa.free.cond", f);
+        auto* bodyBB = llvm::BasicBlock::Create(context, "sa.free.body", f);
+        auto* endBB = llvm::BasicBlock::Create(context, "sa.free.end", f);
+        builder.CreateBr(condBB);
+        builder.SetInsertPoint(condBB);
+        llvm::Value* i = builder.CreateLoad(builder.getInt64Ty(), iSlot, "sa.iv");
+        builder.CreateCondBr(builder.CreateICmpULT(i, len), bodyBB, endBB);
+        builder.SetInsertPoint(bodyBB);
+        llvm::Value* ep = builder.CreateGEP(builder.getPtrTy(), base, i, "sa.ep");
+        builder.CreateCall(strFreeFn(), {builder.CreateLoad(builder.getPtrTy(), ep, "sa.s")});
+        builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), ep);
+        builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
+        builder.CreateBr(condBB);
+        builder.SetInsertPoint(endBB);
+    }
+
     // Signed +/-/* with a trap on overflow (spec 3.6): the with.overflow intrinsic yields {result, ovf},
     // and a cold branch to a deterministic panic -- like the bounds and division checks, not a catchable
     // exception, so the hot path stays a single straight-line op and no invoke is introduced -- fires only
@@ -8899,9 +8927,14 @@ struct CodeGenerator::Impl {
                 const std::string t = typeName(target);
                 if (isValueVariant(t)) return;  // a value Result/Option is not heap-allocated: delete is a no-op
                 if (isArrayType(t)) {
-                    // An array is a single heap block: just free it.
+                    // An array is a single heap block. A String[] owns its elements (copy-on-store), so
+                    // free each before the block or they leak (this is the ArrayList<String> backing that
+                    // `delete this.data` reclaims); other element types own nothing here.
                     llvm::Value* block = emitExpr(target);
-                    if (block != nullptr) builder.CreateCall(freeFn(), {block});
+                    if (block != nullptr) {
+                        if (elementOf(t) == "String") emitFreeStringArrayElements(block);
+                        builder.CreateCall(freeFn(), {block});
+                    }
                     return;
                 }
                 llvm::Value* objPtr = emitObjectPtr(target);
