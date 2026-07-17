@@ -1,0 +1,20 @@
+import System.Collections.ArrayList;
+
+// No-UB regression: reading an ArrayList past its logical size must panic cleanly, even when the index
+// still falls inside the backing store's spare capacity (here size 2, capacity 4). Before the guard,
+// get(2) returned an uninitialized slot -- silent garbage for a value, a wild pointer for an object.
+
+program ArrayListOob;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns int {
+                ArrayList<int>* xs = new ArrayList<int>() on heap;
+                xs.add(10);
+                xs.add(20);
+                return xs.get(2);   // index == size, still within capacity -> must panic, not return garbage
+            }
+        }
+    }
+}

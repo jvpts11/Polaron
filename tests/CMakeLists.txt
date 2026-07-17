@@ -1387,6 +1387,25 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # No-UB: ArrayList.get/set past the logical size (but inside spare capacity) must panic cleanly
+        # rather than return an uninitialized slot. The raw-array check only catches index >= capacity.
+        add_test(NAME codegen_arraylist_oob_panics COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/arraylist_oob_bad.ldp3"
+            "-DPANIC=array index out of bounds"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+
+        # Companion: the same guard must leave valid in-bounds access untouched, including across a grow.
+        add_test(NAME codegen_arraylist_bounds_ok_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/arraylist_bounds_ok.ldp3"
+            "-DCONTAINS=size=10 first=100 last=900 sum=1204"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Args + Range (spec 34): command-line option parsing and integer range lists.
         add_test(NAME codegen_args_range_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

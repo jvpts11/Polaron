@@ -607,9 +607,20 @@ R"LDP3(
                 }
             }
             public method get(int i) returns T {
+                if (i < 0 || i >= this.count) {
+                    // Past the logical size but still inside the backing store's spare capacity: the raw
+                    // array check would not catch it, so force a clean "array index out of bounds" panic
+                    // instead of returning an uninitialized slot (garbage for a value, a wild pointer for
+                    // an object). No UB.
+                    return this.data[this.data.length()];
+                }
                 return this.data[i];
             }
             public method set(int i, T item) returns void {
+                if (i < 0 || i >= this.count) {
+                    this.data[this.data.length()] = item;   // out of bounds -> clean panic, never a silent write
+                    return;
+                }
                 this.data[i] = item;
             }
             public method indexOf(T item) returns int {  // -1 if absent (uses equalsKey)

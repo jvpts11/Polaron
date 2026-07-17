@@ -1,0 +1,29 @@
+import System.Collections.ArrayList;
+import System.IO.Console;
+
+// Companion to arraylist_oob_bad: the logical-bounds guard on get/set must NOT disturb valid access,
+// including across a capacity grow (add past the initial capacity of 4). Fills, reads back, and sets.
+
+program ArrayListBoundsOk;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<int>* xs = new ArrayList<int>() on heap;
+                for (mutable int i = 0; i < 10; i++) {   // forces a grow from capacity 4
+                    xs.add(i * i);
+                }
+                xs.set(0, 100);          // in-bounds write at the low edge
+                xs.set(9, 900);          // in-bounds write at the high edge (size - 1)
+                mutable int sum = 0;
+                for (mutable int j = 0; j < xs.size(); j++) {
+                    sum = sum + xs.get(j);
+                }
+                System.IO.Console.printf("size=%d first=%d last=%d sum=%d\n",
+                    xs.size(), xs.get(0), xs.get(9), sum);
+                return;
+            }
+        }
+    }
+}
