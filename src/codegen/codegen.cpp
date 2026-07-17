@@ -2656,10 +2656,14 @@ struct CodeGenerator::Impl {
         return it != classes.end() && !it->second.isMovable && !it->second.isUnique;
     }
 
-    // An existing object that a value copy must duplicate (vs. a fresh `new`).
+    // An existing object that a value copy must duplicate (vs. a fresh `new`). Reading an array element
+    // (`arr[i]`) yields an existing object too, so it is copyable: without this, `dst[i] = src[i]` (e.g.
+    // ArrayList's grow migration `bigger[i] = this.data[i]`) shallow-shared the boxed value-class element
+    // between the two arrays -- a value-semantics violation, and a double-free once the source is freed.
     bool isCopyableLValue(const ast::Expr& e) {
         return dynamic_cast<const ast::IdentifierExpr*>(&e) != nullptr ||
-               dynamic_cast<const ast::MemberExpr*>(&e) != nullptr;
+               dynamic_cast<const ast::MemberExpr*>(&e) != nullptr ||
+               dynamic_cast<const ast::IndexExpr*>(&e) != nullptr;
     }
 
     // Duplicates an array block [ i64 length | elems... ] into a fresh heap block
@@ -2821,26 +2825,42 @@ struct CodeGenerator::Impl {
     // slot is nulled after freeing, so a re-delete of the same array finds nothing to free again. Loops
     // over the whole capacity (the array's i64 length header) -- copy-on-store keeps every live element
     // a distinct buffer, so no two slots alias and nothing is freed twice.
-    void emitFreeStringArrayElements(llvm::Value* block) {
-        llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "sa.len");
+    void emitFreeOwnedArrayElements(llvm::Value* block, const std::string& elemType) {
+        const bool isStr = (elemType == "String");
+        llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), block, "ae.len");
         llvm::Value* base = arrayData(block);
-        llvm::Value* iSlot = createEntryAlloca("sa.i", builder.getInt64Ty());
+        llvm::Value* iSlot = createEntryAlloca("ae.i", builder.getInt64Ty());
         builder.CreateStore(builder.getInt64(0), iSlot);
         llvm::Function* f = currentFn;
-        auto* condBB = llvm::BasicBlock::Create(context, "sa.free.cond", f);
-        auto* bodyBB = llvm::BasicBlock::Create(context, "sa.free.body", f);
-        auto* endBB = llvm::BasicBlock::Create(context, "sa.free.end", f);
+        auto* condBB = llvm::BasicBlock::Create(context, "ae.cond", f);
+        auto* bodyBB = llvm::BasicBlock::Create(context, "ae.body", f);
+        auto* freeBB = llvm::BasicBlock::Create(context, "ae.free", f);
+        auto* nextBB = llvm::BasicBlock::Create(context, "ae.next", f);
+        auto* endBB = llvm::BasicBlock::Create(context, "ae.end", f);
         builder.CreateBr(condBB);
         builder.SetInsertPoint(condBB);
-        llvm::Value* i = builder.CreateLoad(builder.getInt64Ty(), iSlot, "sa.iv");
+        llvm::Value* i = builder.CreateLoad(builder.getInt64Ty(), iSlot, "ae.iv");
         builder.CreateCondBr(builder.CreateICmpULT(i, len), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
-        llvm::Value* ep = builder.CreateGEP(builder.getPtrTy(), base, i, "sa.ep");
-        builder.CreateCall(strFreeFn(), {builder.CreateLoad(builder.getPtrTy(), ep, "sa.s")});
+        llvm::Value* ep = builder.CreateGEP(builder.getPtrTy(), base, i, "ae.ep");
+        llvm::Value* elem = builder.CreateLoad(builder.getPtrTy(), ep, "ae.el");
+        builder.CreateCondBr(
+            builder.CreateICmpNE(elem, llvm::ConstantPointerNull::get(builder.getPtrTy())), freeBB, nextBB);
+        builder.SetInsertPoint(freeBB);
+        if (isStr) builder.CreateCall(strFreeFn(), {elem});
+        else emitDeleteObject(elem, clsKey(elemType));
         builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), ep);
+        builder.CreateBr(nextBB);
+        builder.SetInsertPoint(nextBB);
         builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
         builder.CreateBr(condBB);
         builder.SetInsertPoint(endBB);
+    }
+    bool arrayOwnsElements(const std::string& elemType) {
+        if (elemType == "String") return true;
+        if (elemType == "string" || isArrayType(elemType)) return false;
+        if (elemType.find('*') != std::string::npos) return false;
+        return classes.count(clsKey(elemType)) > 0 && arrayStorageTy(elemType)->isPointerTy();
     }
 
     // Signed +/-/* with a trap on overflow (spec 3.6): the with.overflow intrinsic yields {result, ovf},
@@ -8932,7 +8952,7 @@ struct CodeGenerator::Impl {
                     // `delete this.data` reclaims); other element types own nothing here.
                     llvm::Value* block = emitExpr(target);
                     if (block != nullptr) {
-                        if (elementOf(t) == "String") emitFreeStringArrayElements(block);
+                        if (arrayOwnsElements(elementOf(t))) emitFreeOwnedArrayElements(block, elementOf(t));
                         builder.CreateCall(freeFn(), {block});
                     }
                     return;
