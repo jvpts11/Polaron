@@ -3135,7 +3135,7 @@ R"LDP3(
             }
             public method appendChar(char c) returns StringBuilder {
                 this.ensure(1);
-                Memory.write(this.buf + cast<address>(this.count), cast<byte>(c));
+                Memory.write<byte>(this.buf + cast<address>(this.count), cast<byte>(c));  // one byte, not int-wide
                 this.count = this.count + 1;
                 return this;
             }

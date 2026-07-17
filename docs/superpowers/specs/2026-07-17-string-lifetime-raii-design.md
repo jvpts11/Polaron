@@ -1,8 +1,9 @@
 # String lifetime (scope-based RAII) — design
 
-Status: **designed, not yet implemented in codegen.** The practical half (Forge stops
-re-rendering when idle, so it no longer grows) is already shipped. This doc is the plan for the
-language-level half, to be implemented interactively with hard test gating.
+Status: **implemented (stage 1) — see "Shipped" at the bottom.** 538 CTest green; the 5 M-iter
+String loop dropped 826 MB → 4.4 MB. The remaining increments (container-element freeing, tracking
+method-call results, unwind-path release) are listed as follow-ups. The practical half (Forge stops
+re-rendering when idle) shipped earlier. The rest of this doc is the original plan.
 
 ## The problem (measured)
 
@@ -99,3 +100,47 @@ makes freeing safe; without it, freeing a temp that was aliased into a slot/cont
 background state; after ~1.2 s idle it stops repainting entirely. Measured: idle window flat at
 ~214 MB instead of climbing. This removes the *observed* growth without touching String semantics;
 the increments above remove the *cause* so any LDP3 program (not just Forge) stops leaking Strings.
+
+## Shipped (stage 1 — 2026-07-17)
+
+Implemented in codegen, restricted to the **immutable `String`** (the mutable `string` keeps its own
+`coerce`/append lifecycle and shared data buffer, which this scheme must not double-free):
+
+- Runtime `__ldp3_str_copy` / `__ldp3_str_free` as single calls (so codegen never splits a block to
+  null-check). The four str helpers (`upper`/`lower`/`trim`/`repeat`) now allocate through
+  `__ldp3_malloc` so the same allocator frees them.
+- **Owned-temporary tracking**: every fresh-malloc producer (`+`, `.concat`, `.substring`,
+  `.trim`/`.repeat`, `.toUpper`/`.toLower`, `$"..."`, `int`/`Decimal` `.toString`) is tracked and
+  freed at the statement boundary and after `if`/`while`/`for` conditions; conditional-arm temps
+  (wrong block) are dropped, never freed.
+- **Copy-on-store**: var-decl init and identifier/field/element assignment deep-copy, so the owner is
+  unaliased. A tracked local also frees its previous copy on reassignment (sound because copy-on-store
+  keeps it a fresh, unshared, heap buffer).
+- **Free owned locals at scope exit** (mirrors `scopeObjects` in `emitBlock` / `emitBlockCleanup` /
+  `emitScopeCleanup`); `break`/`continue` deliberately skip it (the outer/function exit frees them, so
+  no double-free). **Copy-on-return** so the caller receives an owned String outliving the frame.
+- Tracking sets reset per function and saved/restored across lambda bodies, so a slot never leaks
+  into another function's cleanup (this was a real cross-function-use IR-verifier crash caught in
+  iteration).
+
+Also fixed a **latent `StringBuilder.appendChar` heap overflow** this exposed: it wrote a char via an
+untyped `Memory.write` (defaults to int, 4 bytes) while advancing the count by 1, spilling 3 zero
+bytes past the buffer. Dormant until String structs were allocated in that adjacent memory (the
+spilled zero overwrote a block-header magic byte → `csv_writer` heap corruption). Now writes one byte.
+
+Result: 5 M-iter String loop 826 MB → 4.4 MB; 538 CTest green.
+
+### Follow-ups (stage 2)
+
+- Track **method/function call results** whose static type is `String` (copy-on-return already makes
+  them owned) and the remaining `System.*` `emitStringFromParts` producers (Env / exe-path / Process /
+  Regex / split), so discarded String-returning *calls* stop leaking too.
+- **Container element freeing**: `delete String[]` frees each element; String fields freed at object
+  destruction; `this.data[i] = item` (generic `T = String`) copies. Removes long-lived container and
+  per-frame `list.add(concat)` leaks.
+- **Free String locals on the exception-unwind path** (currently they leak on a throw that unwinds
+  through them — bounded and rare, but the unwind pad should release them like `scopeObjects`).
+- Free the **old value on field/array-element reassignment** (M3), once field/element ownership is
+  tracked; today the previous String there leaks.
+- Optimisation: **move** an owned temp into a store instead of copy-then-free (removes one alloc+copy
+  per string-producing initializer/assignment).

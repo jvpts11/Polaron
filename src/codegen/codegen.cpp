@@ -660,6 +660,14 @@ struct CodeGenerator::Impl {
     // Locals returned from the current body: a class value copied into such a local escapes the frame,
     // so its deep copy must live on the heap, not a stack alloca that dangles once the function returns.
     std::set<std::string> escapingLocals_;
+    // Scope-based RAII for String. String is a builtin ptr -> {i64 len, ptr data, i64 hash}, both blocks
+    // __ldp3_malloc'd, previously never freed. Scheme: every STORE of a String deep-copies it, so nothing
+    // live is aliased; then every OWNED temporary (a fresh malloc from concat/substring/interp/toString/...)
+    // is freed at its statement boundary and String LOCALS at scope exit, and a returned String is copied
+    // out. stringTemps: owned temporaries + creating block (only ones in the current block are freed at the
+    // boundary; a conditional-arm temp is dropped). scopeStrings: String local SLOTS, freed at scope exit.
+    std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> stringTemps;
+    std::vector<llvm::Value*> scopeStrings;
     bool checkedArith_ = false;
     // spec 36.4: `[[no_bounds_check]]` on a method -- its array indexing drops the runtime bounds check.
     // An EXPLICIT, named opt-out for a hot path: LDP3 has no implicit UB, but it does hand you the cannon.
@@ -2614,7 +2622,7 @@ struct CodeGenerator::Impl {
         llvm::Value* len = builder.CreateCall(
             module.getOrInsertFunction("__ldp3_decimal_str", ft),
             {builder.CreateZExt(neg, builder.getInt32Ty()), intPart, frac, buf});
-        return emitStringFromParts(len, buf);
+        return ownedStr(emitStringFromParts(len, buf));
     }
     // Loads the i64 length field of a String object.
     llvm::Value* stringLen(llvm::Value* strObj) {
@@ -3207,6 +3215,44 @@ struct CodeGenerator::Impl {
         return v;
     }
 
+    // Runtime String RAII helpers (a single call, so codegen never splits a block to null-check).
+    llvm::FunctionCallee strCopyFn() {
+        return module.getOrInsertFunction("__ldp3_str_copy",
+            llvm::FunctionType::get(builder.getPtrTy(), {builder.getPtrTy()}, false));
+    }
+    llvm::FunctionCallee strFreeFn() {
+        return module.getOrInsertFunction("__ldp3_str_free",
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false));
+    }
+    // Deep-copy a String into a fresh, fully-owned one (null-safe). Emitted on every String store so the
+    // destination owns its own buffer and no live String is ever aliased.
+    llvm::Value* emitStringCopy(llvm::Value* v) {
+        if (v == nullptr) return v;
+        return builder.CreateCall(strCopyFn(), {v}, "strcpy");
+    }
+    // Record a freshly-owned String temporary to free at the statement boundary.
+    void trackStringTemp(llvm::Value* v) {
+        if (v != nullptr) stringTemps.emplace_back(v, builder.GetInsertBlock());
+    }
+    // Wrap a fresh-malloc String producer: track it as an owned temporary, then return it unchanged.
+    llvm::Value* ownedStr(llvm::Value* v) { trackStringTemp(v); return v; }
+    // At a statement boundary: free the owned temporaries created in the CURRENT block (they dominate the
+    // free point) and clear the list. Temporaries from a conditional arm (a different block) are dropped,
+    // never freed unsafely. A no-op when empty, so code without String temporaries pays nothing.
+    void freeStringTemps() {
+        if (stringTemps.empty()) return;
+        llvm::BasicBlock* here = builder.GetInsertBlock();
+        if (here != nullptr && here->getTerminator() == nullptr)
+            for (auto& tb : stringTemps)
+                if (tb.second == here) builder.CreateCall(strFreeFn(), {tb.first});
+        stringTemps.clear();
+    }
+    // True if `slot` is a String local we own (tracked for scope-exit release) -- so reassigning it may
+    // free the previous copy. A parameter slot or an untracked variable is left alone.
+    bool isTrackedStringSlot(llvm::Value* slot) {
+        return std::find(scopeStrings.begin(), scopeStrings.end(), slot) != scopeStrings.end();
+    }
+
     // The reflection Type token layout (spec 31): { ptr name, i64 methodCount,
     // ptr methodNames, ptr methodFns, i64 fieldCount, ptr fieldNames }. methodFns is a
     // parallel array of function pointers, one per method (for Method.invoke). The name
@@ -3499,6 +3545,8 @@ struct CodeGenerator::Impl {
         auto sEns = currentEnsures; auto sInv = currentInvariants; auto sThis = currentThis;
         auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
         auto sRegions = scopeRegions; auto sDtorChain = currentDtorChain; auto sOld = oldValues_;
+        auto sStr = scopeStrings; auto sTmp = stringTemps;  // String RAII: nested body gets its own set
+        scopeStrings.clear(); stringTemps.clear();
         auto sIP = builder.saveIP();
         emitBody(fn, lam.body, lam.params, "", rt, nullptr, nullptr, nullptr, nullptr,
                  /*hasEnv=*/false);
@@ -3506,6 +3554,7 @@ struct CodeGenerator::Impl {
         currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
         currentDtorChain = sDtorChain; oldValues_ = sOld;
         locals = sLoc; scopeObjects = sScope; deferred = sDef; scopeRegions = sRegions;
+        scopeStrings = sStr; stringTemps = sTmp;
         builder.restoreIP(sIP);
         return fn;
     }
@@ -3580,6 +3629,8 @@ struct CodeGenerator::Impl {
             auto sRegions = scopeRegions;
             auto sDtorChain = currentDtorChain;
             auto sOld = oldValues_;  // emitBody clears these; the enclosing method's old() slots must survive
+            auto sStr = scopeStrings; auto sTmp = stringTemps;  // String RAII: nested body gets its own set
+            scopeStrings.clear(); stringTemps.clear();
             auto sIP = builder.saveIP();
             emitBody(fn, lam->body, lam->params, "", rt, nullptr, nullptr, nullptr, nullptr,
                      /*hasEnv=*/true, &eff, &capTypes);
@@ -3589,6 +3640,7 @@ struct CodeGenerator::Impl {
             oldValues_ = sOld;
             locals = sLoc; scopeObjects = sScope; deferred = sDef;
             scopeRegions = sRegions;
+            scopeStrings = sStr; stringTemps = sTmp;
             builder.restoreIP(sIP);
             // No captures: the closure {code, null} is a compile-time constant. Emit it as a private
             // unnamed constant global instead of a heap allocation. Two wins: a no-capture lambda never
@@ -4337,7 +4389,7 @@ struct CodeGenerator::Impl {
         const std::string& op = bin.op;
         // String concatenation: + on String/string operands builds a fresh String (spec 4).
         if (op == "+" && (lt == "String" || lt == "string") && (rt == "String" || rt == "string"))
-            return emitStringConcat(l, r);
+            return ownedStr(emitStringConcat(l, r));
         // Decimal fixed-point arithmetic (spec 34): i128 mantissa, scale 10^18. Multiply and divide
         // rescale through a 256-bit intermediate so the product does not overflow.
         if (lt == "Decimal" && rt == "Decimal") {
@@ -4942,7 +4994,7 @@ struct CodeGenerator::Impl {
             std::vector<llvm::Value*> format = {buf, cap, fmtG};
             for (llvm::Value* v : values) format.push_back(v);
             builder.CreateCall(sn, format);
-            return emitStringFromParts(len, buf);
+            return ownedStr(emitStringFromParts(len, buf));
         }
         if (addNewline) fmt += "\n";
         std::vector<llvm::Value*> args;
@@ -6183,7 +6235,7 @@ struct CodeGenerator::Impl {
                 if (mem->member == "concat") {
                     llvm::Value* o = emitExpr(*call.args[0]);
                     if (o == nullptr) return nullptr;
-                    return emitStringConcat(s, o);
+                    return ownedStr(emitStringConcat(s, o));
                 }
                 // toInt(): parse the string as a base-10 integer (spec 4) -- the typical use of read().
                 if (mem->member == "toInt") {
@@ -6222,7 +6274,7 @@ struct CodeGenerator::Impl {
                         {buf, builder.CreateGEP(builder.getInt8Ty(), stringData(s), start), n});
                     builder.CreateStore(builder.getInt8(0),
                                         builder.CreateGEP(builder.getInt8Ty(), buf, n));  // NUL
-                    return emitStringFromParts(n, buf);
+                    return ownedStr(emitStringFromParts(n, buf));
                 }
                 // Search / predicates (spec 34.5): indexOf / contains / startsWith / endsWith.
                 if (mem->member == "indexOf" || mem->member == "contains" ||
@@ -6260,7 +6312,7 @@ struct CodeGenerator::Impl {
                     llvm::Value* len = stringLen(s);
                     llvm::Value* buf = builder.CreateCall(module.getOrInsertFunction(fn, ft),
                                                           {stringData(s), len});
-                    return emitStringFromParts(len, buf);
+                    return ownedStr(emitStringFromParts(len, buf));
                 }
                 if (mem->member == "trim") {
                     llvm::Type* p = builder.getPtrTy();
@@ -6270,7 +6322,7 @@ struct CodeGenerator::Impl {
                     llvm::Value* buf = builder.CreateCall(
                         module.getOrInsertFunction("__ldp3_str_trim", ft),
                         {stringData(s), stringLen(s), lenSlot});
-                    return emitStringFromParts(builder.CreateLoad(i64, lenSlot), buf);
+                    return ownedStr(emitStringFromParts(builder.CreateLoad(i64, lenSlot), buf));
                 }
                 if (mem->member == "repeat") {
                     llvm::Value* count = fitInt(emitExpr(*call.args[0]), 64);
@@ -6282,7 +6334,7 @@ struct CodeGenerator::Impl {
                     llvm::Value* buf = builder.CreateCall(
                         module.getOrInsertFunction("__ldp3_str_repeat", ft),
                         {stringData(s), stringLen(s), count, lenSlot});
-                    return emitStringFromParts(builder.CreateLoad(i64, lenSlot), buf);
+                    return ownedStr(emitStringFromParts(builder.CreateLoad(i64, lenSlot), buf));
                 }
                 if (mem->member == "toString") return s;  // identity
                 // String satisfies Hashable<String>/Comparable<String> (collections).
@@ -6315,7 +6367,7 @@ struct CodeGenerator::Impl {
                     llvm::Value* buf =
                         builder.CreateCall(mallocFn(), {builder.getInt64(24)}, "itoa.buf");
                     llvm::Value* len = builder.CreateCall(itoaFn(), {fitInt(a, 64), buf});
-                    return emitStringFromParts(len, buf);
+                    return ownedStr(emitStringFromParts(len, buf));
                 }
                 llvm::Value* b = emitExpr(*call.args[0]);
                 if (b == nullptr) return nullptr;
@@ -7148,6 +7200,10 @@ struct CodeGenerator::Impl {
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), it->slot);
             builder.CreateCall(fnit->second, {objPtr});
         }
+        // String RAII: release every live String local at this function exit (spec 4). Not cleared here
+        // (like scopeObjects) -- the unwinding emitBlock calls resize away the tracking entries.
+        for (auto it = scopeStrings.rbegin(); it != scopeStrings.rend(); ++it)
+            builder.CreateCall(strFreeFn(), {builder.CreateLoad(builder.getPtrTy(), *it)});
         freeRegionsFrom(0);  // region RAII (spec 17.7): free every live region at this exit
         // Inside a destructor: chain to the base class destructor last (derived-then-base),
         // so the inherited part is torn down at every exit of this destructor.
@@ -8370,9 +8426,16 @@ struct CodeGenerator::Impl {
                                       /*heap=*/escapingLocals_.count(vd->name) > 0);
             }
             initV = coerce(initV, typeName(*vd->init), declType);  // int -> float widening
+            // String RAII: an immutable `String` local owns its own buffer (deep-copy on init) and is
+            // freed at scope exit. Only a plain `String` value -- not `String*` (an alias), a `String[]`,
+            // nor the mutable `string` (whose coerce shares the data pointer and whose append reallocs it,
+            // so it carries a separate copy/free lifecycle we must not double-free here).
+            bool declIsString = (declType == "String");
+            if (declIsString) initV = emitStringCopy(initV);
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
             builder.CreateStore(initV, slot, vd->isVolatile);  // spec 37.5
             locals[vd->name] = LocalSlot{slot, declType, vd->isVolatile};
+            if (declIsString) scopeStrings.push_back(slot);
             declareLocalDebug(slot, vd->name, declType, vd->loc);  // -g: name/read this local in the debugger
             // An eagerly-allocated owned region (`region r = itself.allocate(...)`): give it a
             // register-promotable bump cursor, zeroed now that its block is freshly acquired.
@@ -8412,6 +8475,7 @@ struct CodeGenerator::Impl {
                 scopeRegions.push_back(RegionLocal{slot, vd->isEternal, vd->name});
             if (declType == "region" && vd->isVolatile)
                 volatileRegions_.insert(vd->name);  // spec 37.5 (MMIO): volatile object accesses
+            freeStringTemps();  // String RAII: the initializer's owned temporaries die here (slot holds a copy)
             return;
         }
         if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
@@ -8624,6 +8688,18 @@ struct CodeGenerator::Impl {
                 }
             } else {
                 llvm::Value* sv = coerce(v, typeName(*assign->value), targetType);
+                // String RAII: assigning a `String` deep-copies so the target owns an independent buffer
+                // (value semantics; spec 4). For a tracked local we also free its previous copy first --
+                // sound because copy-on-store guarantees the slot owned a fresh, unshared, heap buffer
+                // (null-safe; the fresh copy is distinct from the old value, so self-assign is fine too).
+                if (targetType == "String") {
+                    sv = emitStringCopy(sv);
+                    if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get()))
+                        if (auto lit = locals.find(tid->name);
+                            lit != locals.end() && isTrackedStringSlot(lit->second.storage))
+                            builder.CreateCall(strFreeFn(),
+                                               {builder.CreateLoad(builder.getPtrTy(), lit->second.storage)});
+                }
                 if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
                     sv = maskBitField(sv, typeName(*mt->object), mt->member);  // bit-field (spec 11.1)
                 // A boolean array element occupies 1 byte; narrow the i32 boolean value before storing.
@@ -8638,6 +8714,7 @@ struct CodeGenerator::Impl {
                     if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get()))
                         if (isOwnedRegionInit(assign->value.get())) setupOwnedRegionCursor(tid->name);
             }
+            freeStringTemps();  // String RAII: release owned temporaries at the statement boundary
             return;
         }
         if (const auto* incdec = dynamic_cast<const ast::IncDecStmt*>(&stmt)) {
@@ -8949,6 +9026,7 @@ struct CodeGenerator::Impl {
         }
         if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
             emitExpr(*es->expr);
+            freeStringTemps();  // String RAII: release owned temporaries at the statement boundary
             return;
         }
         if (const auto* ys = dynamic_cast<const ast::YieldStmt*>(&stmt)) {
@@ -9045,6 +9123,11 @@ struct CodeGenerator::Impl {
                         }
                     }
                 }
+                // String RAII: copy-on-return so the caller receives an owned buffer that outlives this
+                // frame's scope-exit release of the returned local (spec 4 value semantics). Do the copy
+                // before freeing this statement's temporaries, then free them (the fresh copy survives).
+                if (typeName(*rs->value) == "String" && v != nullptr) v = emitStringCopy(v);
+                freeStringTemps();
                 // A value struct returned by value uses sret: copy it into the caller-provided
                 // result slot (the trailing argument) and return void. Each caller owns its result,
                 // with no dangling stack pointer and no leaked copy (spec 11 value semantics).
@@ -9116,7 +9199,8 @@ struct CodeGenerator::Impl {
         }
     }
 
-    void emitBlockCleanup(std::size_t soBase, std::size_t dfBase, std::size_t regBase) {
+    void emitBlockCleanup(std::size_t soBase, std::size_t dfBase, std::size_t regBase,
+                          std::size_t strBase = static_cast<std::size_t>(-1)) {
         for (std::size_t i = deferred.size(); i > dfBase; --i) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
             emitCleanupAction(deferred[i - 1]);
@@ -9129,6 +9213,13 @@ struct CodeGenerator::Impl {
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
             builder.CreateCall(fnit->second, {objPtr});
         }
+        // String RAII: free String locals declared in this block (LIFO). The sentinel base means "leave
+        // them" -- break/continue pass it so the outer scope-exit / function return frees them, never us
+        // double-freeing here.
+        if (strBase != static_cast<std::size_t>(-1))
+            for (std::size_t i = scopeStrings.size(); i > strBase; --i)
+                builder.CreateCall(strFreeFn(),
+                                   {builder.CreateLoad(builder.getPtrTy(), scopeStrings[i - 1])});
         freeRegionsFrom(regBase);  // region RAII (spec 17.7)
     }
 
@@ -9142,6 +9233,7 @@ struct CodeGenerator::Impl {
         const std::size_t soBase = scopeObjects.size();
         const std::size_t dfBase = deferred.size();
         const std::size_t regBase = scopeRegions.size();
+        const std::size_t strBase = scopeStrings.size();
         for (const auto& stmt : block.statements) {
             // Don't stop at a terminator: a later `label` (the target of a forward goto/comefrom)
             // must still be placed. emitStatement skips genuinely dead statements but always emits
@@ -9149,15 +9241,16 @@ struct CodeGenerator::Impl {
             emitStatement(*stmt);
         }
         if (newScope) {
-            // Normal fall-through: tear down this block's objects/defers/regions. On a
+            // Normal fall-through: tear down this block's objects/defers/regions/strings. On a
             // terminating exit (return runs full cleanup; break/continue branch out)
             // we skip emission but still drop the entries so they are not re-run or
             // run on a stale slot at an outer/function exit.
             if (builder.GetInsertBlock()->getTerminator() == nullptr)
-                emitBlockCleanup(soBase, dfBase, regBase);
+                emitBlockCleanup(soBase, dfBase, regBase, strBase);
             scopeObjects.resize(soBase);
             deferred.resize(dfBase);
             scopeRegions.resize(regBase);
+            scopeStrings.resize(strBase);
         }
     }
 
@@ -9174,6 +9267,7 @@ struct CodeGenerator::Impl {
         }
         llvm::Value* condV = emitExpr(*s.cond);
         if (condV == nullptr) return;
+        freeStringTemps();  // String RAII: release temporaries built in the condition, before branching
         llvm::Value* condBool = builder.CreateICmpNE(condV, builder.getInt32(0));
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context, "if.then", fn);
@@ -9467,6 +9561,7 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(condBB);
         llvm::Value* condV = emitExpr(*s.cond);
         if (condV == nullptr) return;
+        freeStringTemps();  // String RAII: release temporaries built in the condition, before branching
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
         loopStack.push_back({endBB, condBB, pendingLoopLabel, finallyStack.size(), scopeObjects.size(), deferred.size(), scopeRegions.size()});  // break -> end, continue -> cond
@@ -9493,6 +9588,7 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(condBB);
         llvm::Value* condV = emitExpr(*s.cond);
         if (condV == nullptr) return;
+        freeStringTemps();  // String RAII: release temporaries built in the condition, before branching
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
         builder.SetInsertPoint(endBB);
     }
@@ -9508,6 +9604,7 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(condBB);
         llvm::Value* condV = emitExpr(*s.cond);
         if (condV == nullptr) return;
+        freeStringTemps();  // String RAII: release temporaries built in the condition, before branching
         builder.CreateCondBr(builder.CreateICmpNE(condV, builder.getInt32(0)), bodyBB, endBB);
         builder.SetInsertPoint(bodyBB);
         loopStack.push_back({endBB, updateBB, pendingLoopLabel, finallyStack.size(), scopeObjects.size(), deferred.size(), scopeRegions.size()});  // break -> end, continue -> update
@@ -10721,6 +10818,8 @@ struct CodeGenerator::Impl {
         locals.clear();
         scopeObjects.clear();
         scopeRegions.clear();
+        scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
+        stringTemps.clear();
         lazyRegions_.clear();  // region/volatile tracking is keyed by local name; reset per function
         lazyRegionSize_.clear();
         lazyRegionAt_.clear();
@@ -10942,6 +11041,8 @@ struct CodeGenerator::Impl {
         locals.clear();
         scopeObjects.clear();
         scopeRegions.clear();
+        scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
+        stringTemps.clear();
         lazyRegions_.clear();  // region/volatile tracking is keyed by local name; reset per function
         lazyRegionSize_.clear();
         lazyRegionAt_.clear();
@@ -11187,6 +11288,8 @@ struct CodeGenerator::Impl {
         locals.clear();
         scopeObjects.clear();
         scopeRegions.clear();
+        scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
+        stringTemps.clear();
         lazyRegions_.clear();
         lazyRegionSize_.clear();
         lazyRegionAt_.clear();
@@ -11276,6 +11379,8 @@ struct CodeGenerator::Impl {
         locals.clear();
         scopeObjects.clear();
         scopeRegions.clear();
+        scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
+        stringTemps.clear();
         lazyRegions_.clear();  // region/volatile tracking is keyed by local name; reset per function
         lazyRegionSize_.clear();
         lazyRegionAt_.clear();

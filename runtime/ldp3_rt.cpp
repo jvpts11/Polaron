@@ -1575,13 +1575,13 @@ int __ldp3_str_ends(const char* h, long long hl, const char* n, long long nl) {
     return memcmp(h + (hl - nl), n, (size_t)nl) == 0 ? 1 : 0;
 }
 char* __ldp3_str_upper(const char* d, long long len) {
-    char* b = (char*)malloc((size_t)len + 1);
+    char* b = (char*)__ldp3_malloc((size_t)len + 1);   // __ldp3_malloc so String RAII can __ldp3_free it
     for (long long i = 0; i < len; i++) { char c = d[i]; b[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
     b[len] = 0;
     return b;
 }
 char* __ldp3_str_lower(const char* d, long long len) {
-    char* b = (char*)malloc((size_t)len + 1);
+    char* b = (char*)__ldp3_malloc((size_t)len + 1);
     for (long long i = 0; i < len; i++) { char c = d[i]; b[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
     b[len] = 0;
     return b;
@@ -1591,7 +1591,7 @@ char* __ldp3_str_trim(const char* d, long long len, long long* outLen) {
     while (s < e && (d[s] == ' ' || d[s] == '\t' || d[s] == '\n' || d[s] == '\r')) s++;
     while (e > s && (d[e - 1] == ' ' || d[e - 1] == '\t' || d[e - 1] == '\n' || d[e - 1] == '\r')) e--;
     long long n = e - s;
-    char* b = (char*)malloc((size_t)n + 1);
+    char* b = (char*)__ldp3_malloc((size_t)n + 1);
     memcpy(b, d + s, (size_t)n);
     b[n] = 0;
     *outLen = n;
@@ -1600,11 +1600,32 @@ char* __ldp3_str_trim(const char* d, long long len, long long* outLen) {
 char* __ldp3_str_repeat(const char* d, long long len, long long count, long long* outLen) {
     if (count < 0) count = 0;
     long long n = len * count;
-    char* b = (char*)malloc((size_t)n + 1);
+    char* b = (char*)__ldp3_malloc((size_t)n + 1);
     for (long long k = 0; k < count; k++) memcpy(b + k * len, d, (size_t)len);
     b[n] = 0;
     *outLen = n;
     return b;
+}
+// Scope-based String RAII helpers. String is laid out { i64 len, char* data, i64 hash }; struct and data
+// buffer are both __ldp3_malloc'd. copy makes a fully-owned duplicate; free releases buffer then struct.
+// Single runtime calls (not inlined IR) so codegen never has to split a basic block to null-check.
+void* __ldp3_str_copy(void* src) {
+    if (src == 0) return 0;
+    struct Ldp3Str { long long len; char* data; long long hash; };
+    Ldp3Str* s = (Ldp3Str*)src;
+    Ldp3Str* out = (Ldp3Str*)__ldp3_malloc(sizeof(Ldp3Str));
+    char* buf = (char*)__ldp3_malloc((size_t)s->len + 1);
+    memcpy(buf, s->data, (size_t)s->len);
+    buf[s->len] = 0;
+    out->len = s->len; out->data = buf; out->hash = 0;
+    return out;
+}
+void __ldp3_str_free(void* src) {
+    if (src == 0) return;
+    struct Ldp3Str { long long len; char* data; long long hash; };
+    Ldp3Str* s = (Ldp3Str*)src;
+    __ldp3_free(s->data);
+    __ldp3_free(s);
 }
 
 // FNV-1a hash of `len` bytes, for Hashable<String> (collections).
