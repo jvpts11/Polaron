@@ -1,5 +1,6 @@
 #include "diag/render.h"
 
+#include <algorithm>
 #include <cctype>
 #include <string>
 
@@ -8,6 +9,15 @@ namespace ldp3::diag {
 namespace {
 bool isIdentChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// A path for display: one separator, always '/'. On Windows a project path (backslashes) joined with a
+// manifest's forward-slash entry produces a mixed `C:\proj\src/main.ldp3`; forward slashes throughout read
+// clean, stay clickable, and match what the editor passes for its overlay files.
+std::string displayPath(const std::string& path) {
+    std::string p = path;
+    std::replace(p.begin(), p.end(), '\\', '/');
+    return p;
 }
 
 // How many characters the caret should underline, starting at column `col` (0-based) of `line`: the
@@ -72,17 +82,18 @@ void section(std::string& out, std::string_view label, std::string_view body) {
 std::string render(std::string_view severity, const std::string& path, int line, int col,
                    const std::string& message, Code code, const std::string& sourceLine, bool concise) {
     const std::string sev = severityToken(severity, code);
+    const std::string shown = displayPath(path);
 
     // Concise: the one line CI and Forge's live-check parse.
     if (concise) {
-        return path + ":" + std::to_string(line) + ":" + std::to_string(col) + ": " + sev + ": " +
+        return shown + ":" + std::to_string(line) + ":" + std::to_string(col) + ": " + sev + ": " +
                message + "\n";
     }
 
     const Entry& e = entry(code);
     std::string out;
     out += sev + ": " + message + "\n";
-    out += "  --> " + path + ":" + std::to_string(line) + ":" + std::to_string(col) + "\n";
+    out += "  --> " + shown + ":" + std::to_string(line) + ":" + std::to_string(col) + "\n";
 
     // The snippet: the offending line with a caret beneath it. `line`/`col` are 1-based.
     if (!sourceLine.empty() && line > 0) {
