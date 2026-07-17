@@ -1397,6 +1397,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
 
+        # Same guard on the mutating index accessor: removeAt past the size must panic, not silently
+        # corrupt the count. insertAt shares the mechanism; valid paths are covered by the wider suite.
+        add_test(NAME codegen_arraylist_removeat_oob_panics COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/arraylist_removeat_oob_bad.ldp3"
+            "-DPANIC=array index out of bounds"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+
         # Companion: the same guard must leave valid in-bounds access untouched, including across a grow.
         add_test(NAME codegen_arraylist_bounds_ok_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

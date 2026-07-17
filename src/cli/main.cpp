@@ -633,12 +633,22 @@ R"LDP3(
                 return this.indexOf(item) >= 0;
             }
             public method removeAt(int i) returns void {  // shift the tail left
+                if (i < 0 || i >= this.count) {
+                    // Out of range would silently decrement count (or leave a gap) without removing
+                    // anything. Force a clean "array index out of bounds" panic instead. No UB.
+                    mutable T oob = this.data[this.data.length()];
+                    return;
+                }
                 for (mutable int j = i; j < this.count - 1; j++) {
                     this.data[j] = this.data[j + 1];
                 }
                 this.count = this.count - 1;
             }
             public method insertAt(int i, T item) returns void {  // shift the tail right, insert at i
+                if (i < 0 || i > this.count) {   // count itself is valid here -- that is an append
+                    this.data[this.data.length()] = item;   // out of bounds -> clean panic, no silent gap
+                    return;
+                }
                 if (this.count >= this.data.length()) {
                     mutable T[] bigger = new T[this.data.length() * 2]();
                     for (mutable int k = 0; k < this.count; k++) { bigger[k] = this.data[k]; }

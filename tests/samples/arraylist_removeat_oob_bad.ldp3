@@ -1,0 +1,20 @@
+import System.Collections.ArrayList;
+
+// No-UB regression: removeAt past the logical size must panic, not silently decrement the count (which
+// could even drive it negative) without removing anything. insertAt shares the same guard mechanism.
+
+program ArrayListRemoveAtOob;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns int {
+                ArrayList<int>* xs = new ArrayList<int>() on heap;
+                xs.add(1);
+                xs.add(2);
+                xs.removeAt(5);   // out of range -> must panic
+                return xs.size();
+            }
+        }
+    }
+}
