@@ -130,14 +130,38 @@ spilled zero overwrote a block-header magic byte → `csv_writer` heap corruptio
 
 Result: 5 M-iter String loop 826 MB → 4.4 MB; 538 CTest green.
 
-### Follow-ups (stage 2)
+## Shipped (stage 2 — 2026-07-17)
 
-- Track **method/function call results** whose static type is `String` (copy-on-return already makes
-  them owned) and the remaining `System.*` `emitStringFromParts` producers (Env / exe-path / Process /
-  Regex / split), so discarded String-returning *calls* stop leaking too.
+The Forge render leaked ~12 k Strings **per frame** (90.7% of all allocations never freed). Measured
+with a new env-gated allocation profiler in the runtime (`LDP3_MEMPROF`: net live-bytes + a size-class
+histogram of the still-live set at exit — kept STL-free so it compiles with the bundled clang). The
+render's churn is dominated by **method-call results returning String** (`document.line(i)`,
+`renderLine(r)`, breadcrumb/status/tab helpers): every user method copy-on-returns an owned String, but
+a discarded/consumed *call result* was never registered as a temporary, so stage 1 (which only tracked
+the ~8 builtin producers) left them all leaking.
+
+- **Track user-method String results**: at the single `emitExpr(CallExpr) -> emitCall` choke point, a
+  call that resolves to a user-defined method / enum method whose declared return type is `String`
+  registers its result as an owned temporary (`callReturnsOwnedUserString`). Freed at the statement
+  boundary; stores (copy-on-store) and returns (copy-on-return) copy first, so a still-referenced String
+  is never freed. **Whitelisted by user-method resolution**, so borrowed-String builtins (`.toString()`
+  identity on a String, `Env`/`Net` cstr wrappers) and the self-tracking String producers never match
+  and are never double-freed.
+- **Copy-on-return keys on the declared return type too** (`currentRetTypeName_`, threaded through
+  `emitBody`): `return "literal"` (a `string`-typed expression) from a `returns String` method now hands
+  back an owned copy. Without this, stage 2's free would call `libc free()` on a string-literal global
+  and corrupt the heap (found via 4 CTest failures exiting `0xC0000374`).
+
+Result: Forge render-only (2000 frames) **1038 MB → 31.6 MB** live (33× fewer bytes leaked; 90.7% →
+3.3% of allocations unfreed). Isolated 5 M-call leak test flat. 538 CTest green; Forge self-test 398.
+
+### Follow-ups (stage 3)
+
 - **Container element freeing**: `delete String[]` frees each element; String fields freed at object
-  destruction; `this.data[i] = item` (generic `T = String`) copies. Removes long-lived container and
-  per-frame `list.add(concat)` leaks.
+  destruction; `this.data[i] = item` (generic `T = String`) copies. This is the bulk of the ~16 kB/frame
+  Forge residual (e.g. `Breadcrumbs.trail()` returns an `ArrayList<String>*` whose elements leak).
+- Track **computed String property getters** (read as a `MemberExpr`, not a `CallExpr`) and the
+  remaining `System.*` `emitStringFromParts` producers (Env / exe-path / Process / Regex / split).
 - **Free String locals on the exception-unwind path** (currently they leak on a throw that unwinds
   through them — bounded and rare, but the unwind pad should release them like `scopeObjects`).
 - Free the **old value on field/array-element reassignment** (M3), once field/element ownership is
