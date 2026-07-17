@@ -694,6 +694,8 @@ struct CodeGenerator::Impl {
     llvm::Value* currentThis = nullptr;
     llvm::Function* currentFn = nullptr;
     llvm::Type* currentRetType = nullptr;
+    std::string currentRetTypeName_;  // the current function's DECLARED return type name (String RAII:
+                                      // a `returns String` method copy-on-returns even a literal/`string`)
     // While re-emitting a `?.` node as a plain access inside its non-null branch, this points at
     // that node so its safe-navigation guard is skipped exactly once (nested ?. still guard).
     const ast::Expr* safeGuardNode_ = nullptr;
@@ -3252,6 +3254,38 @@ struct CodeGenerator::Impl {
     bool isTrackedStringSlot(llvm::Value* slot) {
         return std::find(scopeStrings.begin(), scopeStrings.end(), slot) != scopeStrings.end();
     }
+    // String RAII stage 2: true iff this call resolves to a user-defined method (or enum/catalog
+    // method) whose declared return type is String. Every user method copy-on-returns (see the return
+    // path), so its result is a freshly-owned String -- safe to register as a temporary and free at the
+    // statement boundary. Builtins never match here: their receiver is not a user class/enum, so the
+    // borrowed-String builtins (`.toString()` identity on a String, Env/Net cstr wrappers) and the
+    // self-tracking String producers (concat/substring/...) are excluded and never double-freed.
+    bool callReturnsOwnedUserString(const ast::CallExpr& call) {
+        const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
+        if (mem == nullptr) return false;
+        // Enum/catalog instance method (spec 12.4): resolve the (possibly catalog-implementing) enum.
+        std::string enumRecv = baseType(typeName(*mem->object));
+        if (enumMethodDecls.find(enumRecv) == enumMethodDecls.end())
+            if (std::string impl = catalogImplementerEnum(enumRecv, mem->member); !impl.empty())
+                enumRecv = impl;
+        if (auto eit = enumMethodDecls.find(enumRecv); eit != enumMethodDecls.end()) {
+            for (const ast::MemberPtr& member : eit->second->members) {
+                const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                if (m != nullptr && m->name == mem->member)
+                    return typeRefName(m->returnType) == "String";
+            }
+            return false;
+        }
+        // Instance: search the receiver's class hierarchy; static: the named class.
+        std::string owner = methodOwner(typeName(*mem->object), mem->member);
+        if (owner.empty() && classes.count(flattenCallee(*mem->object)) > 0)
+            owner = methodOwner(flattenCallee(*mem->object), mem->member);
+        if (owner.empty()) return false;
+        // An async method yields a Task<...>, not an owned String; leave it alone.
+        const ast::MethodDecl* md = findMethodDecl(owner, mem->member);
+        if (md != nullptr && md->isAsync) return false;
+        return classes[owner].methodReturnType[mem->member] == "String";
+    }
 
     // The reflection Type token layout (spec 31): { ptr name, i64 methodCount,
     // ptr methodNames, ptr methodFns, i64 fieldCount, ptr fieldNames }. methodFns is a
@@ -3541,7 +3575,7 @@ struct CodeGenerator::Impl {
             llvm::FunctionType::get(rt, pts, false), llvm::Function::InternalLinkage,
             "__ldp3_cb_" + std::to_string(lambdaCounter++), module);
         // emitBody clobbers function-local state -- save and restore it (mirrors the lambda path).
-        auto sFn = currentFn; auto sCls = currentClass; auto sRet = currentRetType;
+        auto sFn = currentFn; auto sCls = currentClass; auto sRet = currentRetType; auto sRetN = currentRetTypeName_;
         auto sEns = currentEnsures; auto sInv = currentInvariants; auto sThis = currentThis;
         auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
         auto sRegions = scopeRegions; auto sDtorChain = currentDtorChain; auto sOld = oldValues_;
@@ -3550,7 +3584,7 @@ struct CodeGenerator::Impl {
         auto sIP = builder.saveIP();
         emitBody(fn, lam.body, lam.params, "", rt, nullptr, nullptr, nullptr, nullptr,
                  /*hasEnv=*/false);
-        currentFn = sFn; currentClass = sCls; currentRetType = sRet;
+        currentFn = sFn; currentClass = sCls; currentRetType = sRet; currentRetTypeName_ = sRetN;
         currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
         currentDtorChain = sDtorChain; oldValues_ = sOld;
         locals = sLoc; scopeObjects = sScope; deferred = sDef; scopeRegions = sRegions;
@@ -3623,7 +3657,7 @@ struct CodeGenerator::Impl {
                 capTypes.push_back(cit != locals.end() ? cit->second.type : std::string("int"));
             }
             // emitBody clobbers all function-local state -- save and restore it.
-            auto sFn = currentFn; auto sCls = currentClass; auto sRet = currentRetType;
+            auto sFn = currentFn; auto sCls = currentClass; auto sRet = currentRetType; auto sRetN = currentRetTypeName_;
             auto sEns = currentEnsures; auto sInv = currentInvariants; auto sThis = currentThis;
             auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
             auto sRegions = scopeRegions;
@@ -3634,7 +3668,7 @@ struct CodeGenerator::Impl {
             auto sIP = builder.saveIP();
             emitBody(fn, lam->body, lam->params, "", rt, nullptr, nullptr, nullptr, nullptr,
                      /*hasEnv=*/true, &eff, &capTypes);
-            currentFn = sFn; currentClass = sCls; currentRetType = sRet;
+            currentFn = sFn; currentClass = sCls; currentRetType = sRet; currentRetTypeName_ = sRetN;
             currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
             currentDtorChain = sDtorChain;
             oldValues_ = sOld;
@@ -4209,7 +4243,12 @@ struct CodeGenerator::Impl {
                     if (const auto* cn = dynamic_cast<const ast::IdentifierExpr*>(tbl->object.get());
                         cn != nullptr && classes.count(cn->name) > 0)
                         return emitMethodPatch(cn->name, *call);
-            return emitCall(*call);
+            llvm::Value* r = emitCall(*call);
+            // String RAII stage 2: a user method's String result is owned (copy-on-return). Register it
+            // as a temporary so a discarded / consumed result is freed at the statement boundary instead
+            // of leaking. Stores and returns copy first, so this never frees a still-referenced String.
+            if (r != nullptr && callReturnsOwnedUserString(*call)) return ownedStr(r);
+            return r;
         }
         error("unsupported expression in codegen", expr.loc);
         return nullptr;
@@ -5217,7 +5256,9 @@ struct CodeGenerator::Impl {
             const std::string thisClass = req.decl->isStatic ? std::string() : req.owner;
             emitBody(req.fn, req.decl->body, req.decl->params, thisClass, llvmType(req.returnType),
                      nullptr, &req.decl->requiresClauses, &req.decl->ensuresClauses,
-                     req.decl->isStatic ? nullptr : &classInvariants(req.owner));
+                     req.decl->isStatic ? nullptr : &classInvariants(req.owner),
+                     false, nullptr, nullptr, "", nullptr, false, false,
+                     req.returnType);  // String RAII: copy-on-return key
             boundLambdas_.clear();
         }
     }
@@ -9126,7 +9167,11 @@ struct CodeGenerator::Impl {
                 // String RAII: copy-on-return so the caller receives an owned buffer that outlives this
                 // frame's scope-exit release of the returned local (spec 4 value semantics). Do the copy
                 // before freeing this statement's temporaries, then free them (the fresh copy survives).
-                if (typeName(*rs->value) == "String" && v != nullptr) v = emitStringCopy(v);
+                // Key on the DECLARED return type too: `return "literal"` (a `string`-typed expression)
+                // from a `returns String` method must still hand back an owned copy, or the caller's
+                // stage-2 free would free a string-literal global (heap corruption).
+                if ((currentRetTypeName_ == "String" || typeName(*rs->value) == "String") && v != nullptr)
+                    v = emitStringCopy(v);
                 freeStringTemps();
                 // A value struct returned by value uses sret: copy it into the caller-provided
                 // result slot (the trailing argument) and return void. Each caller owns its result,
@@ -10793,7 +10838,7 @@ struct CodeGenerator::Impl {
                   bool hasEnv = false, const std::vector<ast::Capture>* caps = nullptr,
                   const std::vector<std::string>* capTypes = nullptr,
                   const std::string& dtorChainBase = "", const ast::ClassDecl* dtorOf = nullptr,
-                  bool asyncResume = false, bool argvEntry = false) {
+                  bool asyncResume = false, bool argvEntry = false, const std::string& retTypeName = "") {
         // -g: a nested emitBody (a lambda emitted mid-method) must not leave its DISubprogram as the current
         // debug scope, or the enclosing method's later instructions get a mismatched scope (verifier error).
         llvm::DISubprogram* savedDiSP = diCurrentSP;
@@ -10801,6 +10846,7 @@ struct CodeGenerator::Impl {
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
+        currentRetTypeName_ = retTypeName;  // String RAII: drives copy-on-return for `returns String`
         // A value-struct return uses sret: the result slot is the trailing argument and the function
         // itself returns void, so `return X` copies X into the slot rather than returning a value.
         currentSretSlot_ = nullptr;
@@ -11558,7 +11604,9 @@ struct CodeGenerator::Impl {
                                          m->isStatic ? std::string() : cls.name,
                                          llvmType(typeRefName(m->returnType)), nullptr,
                                          &m->requiresClauses, &m->ensuresClauses,
-                                         m->isStatic ? nullptr : &classInvariants(cls.name));
+                                         m->isStatic ? nullptr : &classInvariants(cls.name),
+                                         false, nullptr, nullptr, "", nullptr, false, false,
+                                         typeRefName(m->returnType));  // String RAII: copy-on-return key
                             }
                         } else if (const auto* c =
                                        dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
@@ -11640,7 +11688,9 @@ struct CodeGenerator::Impl {
                         emitBody(functions[en.name + "." + m->name], m->body, m->params,
                                  m->isStatic ? std::string() : en.name,
                                  llvmType(typeRefName(m->returnType)), nullptr,
-                                 &m->requiresClauses, &m->ensuresClauses);
+                                 &m->requiresClauses, &m->ensuresClauses,
+                                 nullptr, false, nullptr, nullptr, "", nullptr, false, false,
+                                 typeRefName(m->returnType));  // String RAII: copy-on-return key
                     }
                 }
             }

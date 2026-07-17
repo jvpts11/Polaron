@@ -39,6 +39,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#ifdef _WIN32
+#include <intrin.h>  // _InterlockedExchangeAdd64 for the allocation profiler's lock-free counters
+#endif
 
 #ifndef _WIN32
 // POSIX shim spelling the Win32 primitives the concurrency/socket code below uses, so that code
@@ -105,6 +108,49 @@ static thread_local Ldp3FreeNode* g_ldp3_free[LDP3_NCLASSES];
 static thread_local char* g_ldp3_slab_cur;
 static thread_local char* g_ldp3_slab_end;
 
+// -------- allocation profiler (env LDP3_MEMPROF=1) — diagnostic only, one branch when off --------
+// Logical live-bytes: incremented on __ldp3_malloc, decremented on __ldp3_free. Pool blocks never
+// return to libc (they recycle on a free-list), so RSS follows the *net* live bytes: if this climbs,
+// the program is leaking. A size-class histogram of the still-live set at exit says whether the leak
+// is many small blocks (Strings/objects/spans, pool classes) or a few big buffers (large bucket).
+// Kept STL-free (plain longs + a lock-free add) so it compiles with the bundled clang toolchain.
+static bool g_prof_on = false;
+static long long g_prof_live_bytes = 0;
+static long long g_prof_live_count = 0;
+static long long g_prof_total_alloc = 0;
+static long long g_prof_total_free = 0;
+static long long g_prof_class_live[33];  // 0..31 = pool classes; 32 = large (>512 B)
+
+static inline void prof_add(long long* p, long long d) {
+#ifdef _WIN32
+    _InterlockedExchangeAdd64((volatile long long*)p, d);
+#else
+    __atomic_fetch_add(p, d, __ATOMIC_RELAXED);
+#endif
+}
+
+static void __ldp3_memprof_dump() {
+    if (!g_prof_on) return;
+    fprintf(stderr, "[memprof] FINAL live=%.1f MB count=%lld  totalAlloc=%lld totalFree=%lld\n",
+            g_prof_live_bytes / 1048576.0, g_prof_live_count, g_prof_total_alloc, g_prof_total_free);
+    for (int c = 0; c <= 32; c++) {
+        long long n = g_prof_class_live[c];
+        if (n <= 0) continue;
+        if (c < 32) fprintf(stderr, "  pool class %2d (<=%4d B): %lld live\n", c, (c + 1) * 16, n);
+        else        fprintf(stderr, "  large  (>512 B):        %lld live\n", n);
+    }
+    fflush(stderr);
+}
+
+struct Ldp3ProfInit {
+    Ldp3ProfInit() {
+        const char* e = getenv("LDP3_MEMPROF");
+        g_prof_on = (e != NULL && e[0] != '\0' && e[0] != '0');
+        if (g_prof_on) atexit(__ldp3_memprof_dump);
+    }
+};
+static Ldp3ProfInit g_ldp3_prof_init;
+
 void* __ldp3_malloc(size_t size) {
     if (size == 0) size = 1;
     if (size > LDP3_POOL_MAX) {  // large: a plain libc block tagged so free/realloc recognise it
@@ -112,6 +158,8 @@ void* __ldp3_malloc(size_t size) {
         if (p == NULL) return NULL;
         ((Ldp3Hdr*)p)->magic = LDP3_MAGIC;
         ((Ldp3Hdr*)p)->cls = LDP3_LARGE;
+        ((Ldp3Hdr*)p)->pad = (unsigned)size;  // remember size for the profiler's free accounting
+        if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)size); prof_add(&g_prof_class_live[32], 1); }
         return p + 16;
     }
     unsigned cls = (unsigned)((size + 15) / 16) - 1;  // 0..31
@@ -119,6 +167,7 @@ void* __ldp3_malloc(size_t size) {
     if (n != NULL) {  // reuse: the header (magic + class) is still intact just before the node
         g_ldp3_free[cls] = n->next;
         ((Ldp3Hdr*)((char*)n - 16))->magic = LDP3_MAGIC;  // live again: clear the freed stamp
+        if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)(cls + 1) * 16); prof_add(&g_prof_class_live[cls], 1); }
         return (void*)n;
     }
     size_t need = 16 + (size_t)(cls + 1) * 16;
@@ -132,6 +181,7 @@ void* __ldp3_malloc(size_t size) {
     g_ldp3_slab_cur += need;
     ((Ldp3Hdr*)p)->magic = LDP3_MAGIC;
     ((Ldp3Hdr*)p)->cls = cls;
+    if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)(cls + 1) * 16); prof_add(&g_prof_class_live[cls], 1); }
     return p + 16;
 }
 
@@ -149,9 +199,11 @@ void __ldp3_free(void* ptr) {
     }
     if (h->cls == LDP3_LARGE) {
         h->magic = LDP3_FREED;  // large blocks go back to libc; stamp guards a same-run double free
+        if (g_prof_on) { prof_add(&g_prof_live_count, -1); prof_add(&g_prof_total_free, 1); prof_add(&g_prof_live_bytes, -(long long)h->pad); prof_add(&g_prof_class_live[32], -1); }
         free(h);
         return;
     }
+    if (g_prof_on) { prof_add(&g_prof_live_count, -1); prof_add(&g_prof_total_free, 1); prof_add(&g_prof_live_bytes, -(long long)(h->cls + 1) * 16); prof_add(&g_prof_class_live[h->cls], -1); }
     h->magic = LDP3_FREED;                  // mark freed; __ldp3_malloc clears it on reuse
     Ldp3FreeNode* n = (Ldp3FreeNode*)ptr;   // recycle the payload as the free-list node
     n->next = g_ldp3_free[h->cls];
@@ -220,10 +272,13 @@ void* __ldp3_realloc(void* ptr, size_t size) {
     Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
     if (h->magic != LDP3_MAGIC) return realloc(ptr, size);  // foreign pointer
     if (h->cls == LDP3_LARGE) {
+        long long oldsz = (long long)h->pad;
         char* np = (char*)realloc(h, size + 16);
         if (np == NULL) return NULL;
         ((Ldp3Hdr*)np)->magic = LDP3_MAGIC;
         ((Ldp3Hdr*)np)->cls = LDP3_LARGE;
+        ((Ldp3Hdr*)np)->pad = (unsigned)size;
+        if (g_prof_on) { prof_add(&g_prof_live_bytes, (long long)size - oldsz); }
         return np + 16;
     }
     size_t oldsz = (size_t)(h->cls + 1) * 16;
