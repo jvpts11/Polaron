@@ -76,6 +76,15 @@ extern "C" {
 // continuing into undefined territory.
 void __ldp3_panic(const char* msg) {
     fprintf(stderr, "LDP3 panic: %s\n", msg);
+#ifdef _WIN32
+    if (getenv("LDP3_BT") != NULL) {  // diagnostic: print the call stack RVAs so a -g build can be symbolized
+        void* frames[32];
+        unsigned short n = RtlCaptureStackBackTrace(0, 32, frames, NULL);
+        char* base = (char*)GetModuleHandleA(NULL);
+        for (unsigned short k = 0; k < n; k++)
+            fprintf(stderr, "[bt] rva 0x%llx\n", (unsigned long long)((char*)frames[k] - base));
+    }
+#endif
     fflush(stderr);
     exit(70);
 }
