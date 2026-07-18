@@ -176,6 +176,9 @@ static int site_index(void* const* fr) {
     return 0;  // table full: dump into bucket 0
 }
 static void memsite_record(Ldp3Hdr* hdr) {
+    static int clsFilter = -2;  // -2 = unread, -1 = all classes, >=0 = only that pool class
+    if (clsFilter == -2) { const char* c = getenv("LDP3_MEMSITE_CLS"); clsFilter = c ? atoi(c) : -1; }
+    if (clsFilter >= 0 && (int)hdr->cls != clsFilter) return;  // e.g. LDP3_MEMSITE_CLS=1 -> 32 B Strings
     void* fr[LDP3_NFR + 2];
     unsigned short n = RtlCaptureStackBackTrace(2, LDP3_NFR + 2, fr, NULL);  // skip malloc + its wrapper
     void* key[LDP3_NFR];
