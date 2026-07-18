@@ -123,7 +123,15 @@ static thread_local char* g_ldp3_slab_end;
 // the program is leaking. A size-class histogram of the still-live set at exit says whether the leak
 // is many small blocks (Strings/objects/spans, pool classes) or a few big buffers (large bucket).
 // Kept STL-free (plain longs + a lock-free add) so it compiles with the bundled clang toolchain.
+// Compiled out of the production runtime for ZERO overhead: without -DLDP3_PROFILING the gate is a
+// compile-time `false`, so every `if (g_prof_on)` / `if (g_memsite_on)` hot-path branch dead-eliminates
+// at -O2 (the counters/helpers below stay defined but unreachable). Build the runtime with
+// -DLDP3_PROFILING to enable LDP3_MEMPROF / LDP3_MEMSITE.
+#ifdef LDP3_PROFILING
 static bool g_prof_on = false;
+#else
+#define g_prof_on false
+#endif
 static long long g_prof_live_bytes = 0;
 static long long g_prof_live_count = 0;
 static long long g_prof_total_alloc = 0;
@@ -138,6 +146,68 @@ static inline void prof_add(long long* p, long long d) {
 #endif
 }
 
+// -------- leak-by-site attribution (env LDP3_MEMSITE=1) --------
+// Heavier than the size histogram: captures a short backtrace per POOL alloc, aggregates the live count
+// per call-site, and dumps the top leaking sites at exit as RVAs -- symbolize against a -g build with
+// `llvm-dwarfdump --lookup=<imageBase+rva>`. Pool blocks only (their pad word is free; large blocks use
+// pad for size). Single-threaded assumption for the site table (diagnostic use). Windows only.
+#ifdef _WIN32
+#define LDP3_NSITES 16384u
+#define LDP3_NFR 5
+struct Ldp3Site { void* fr[LDP3_NFR]; long long live; long long total; };
+static Ldp3Site g_sites[LDP3_NSITES];
+#ifdef LDP3_PROFILING
+static bool g_memsite_on = false;
+#else
+#define g_memsite_on false
+#endif
+
+static int site_index(void* const* fr) {
+    unsigned long long h = 1469598103934665603ULL;
+    for (int k = 0; k < LDP3_NFR; k++) { h ^= (unsigned long long)fr[k]; h *= 1099511628211ULL; }
+    unsigned idx = (unsigned)h & (LDP3_NSITES - 1);
+    for (unsigned probe = 0; probe < LDP3_NSITES; probe++) {
+        unsigned i = (idx + probe) & (LDP3_NSITES - 1);
+        if (g_sites[i].fr[0] == 0) { for (int k = 0; k < LDP3_NFR; k++) g_sites[i].fr[k] = fr[k]; return (int)i; }
+        int same = 1;
+        for (int k = 0; k < LDP3_NFR; k++) if (g_sites[i].fr[k] != fr[k]) { same = 0; break; }
+        if (same) return (int)i;
+    }
+    return 0;  // table full: dump into bucket 0
+}
+static void memsite_record(Ldp3Hdr* hdr) {
+    void* fr[LDP3_NFR + 2];
+    unsigned short n = RtlCaptureStackBackTrace(2, LDP3_NFR + 2, fr, NULL);  // skip malloc + its wrapper
+    void* key[LDP3_NFR];
+    for (int k = 0; k < LDP3_NFR; k++) key[k] = k < n ? fr[k] : 0;
+    int si = site_index(key);
+    hdr->pad = (unsigned)si;
+    g_sites[si].live++;
+    g_sites[si].total++;
+}
+static void memsite_release(Ldp3Hdr* hdr) {
+    unsigned si = hdr->pad;
+    if (si < LDP3_NSITES) g_sites[si].live--;
+}
+static void memsite_dump() {
+    if (!g_memsite_on) return;
+    char* base = (char*)GetModuleHandleA(NULL);
+    fprintf(stderr, "[memsite] top leaking call-sites (live count, RVAs to symbolize):\n");
+    for (int rank = 0; rank < 30; rank++) {
+        long long best = 0; int bi = -1;
+        for (unsigned i = 0; i < LDP3_NSITES; i++)
+            if (g_sites[i].live > best) { best = g_sites[i].live; bi = (int)i; }
+        if (bi < 0) break;
+        fprintf(stderr, "  live=%lld  rva", best);
+        for (int k = 0; k < LDP3_NFR; k++)
+            fprintf(stderr, " 0x%llx", (unsigned long long)((char*)g_sites[bi].fr[k] - base));
+        fprintf(stderr, "\n");
+        g_sites[bi].live = -1;  // mark ranked so the next scan skips it
+    }
+    fflush(stderr);
+}
+#endif
+
 static void __ldp3_memprof_dump() {
     if (!g_prof_on) return;
     fprintf(stderr, "[memprof] FINAL live=%.1f MB count=%lld  totalAlloc=%lld totalFree=%lld\n",
@@ -151,14 +221,21 @@ static void __ldp3_memprof_dump() {
     fflush(stderr);
 }
 
+#ifdef LDP3_PROFILING
 struct Ldp3ProfInit {
     Ldp3ProfInit() {
         const char* e = getenv("LDP3_MEMPROF");
         g_prof_on = (e != NULL && e[0] != '\0' && e[0] != '0');
         if (g_prof_on) atexit(__ldp3_memprof_dump);
+#ifdef _WIN32
+        const char* ms = getenv("LDP3_MEMSITE");
+        g_memsite_on = (ms != NULL && ms[0] != '\0' && ms[0] != '0');
+        if (g_memsite_on) atexit(memsite_dump);
+#endif
     }
 };
 static Ldp3ProfInit g_ldp3_prof_init;
+#endif
 
 void* __ldp3_malloc(size_t size) {
     if (size == 0) size = 1;
@@ -177,6 +254,9 @@ void* __ldp3_malloc(size_t size) {
         g_ldp3_free[cls] = n->next;
         ((Ldp3Hdr*)((char*)n - 16))->magic = LDP3_MAGIC;  // live again: clear the freed stamp
         if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)(cls + 1) * 16); prof_add(&g_prof_class_live[cls], 1); }
+#ifdef _WIN32
+        if (g_memsite_on) memsite_record((Ldp3Hdr*)((char*)n - 16));
+#endif
         return (void*)n;
     }
     size_t need = 16 + (size_t)(cls + 1) * 16;
@@ -191,6 +271,9 @@ void* __ldp3_malloc(size_t size) {
     ((Ldp3Hdr*)p)->magic = LDP3_MAGIC;
     ((Ldp3Hdr*)p)->cls = cls;
     if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)(cls + 1) * 16); prof_add(&g_prof_class_live[cls], 1); }
+#ifdef _WIN32
+    if (g_memsite_on) memsite_record((Ldp3Hdr*)p);
+#endif
     return p + 16;
 }
 
@@ -213,6 +296,9 @@ void __ldp3_free(void* ptr) {
         return;
     }
     if (g_prof_on) { prof_add(&g_prof_live_count, -1); prof_add(&g_prof_total_free, 1); prof_add(&g_prof_live_bytes, -(long long)(h->cls + 1) * 16); prof_add(&g_prof_class_live[h->cls], -1); }
+#ifdef _WIN32
+    if (g_memsite_on) memsite_release(h);
+#endif
     h->magic = LDP3_FREED;                  // mark freed; __ldp3_malloc clears it on reuse
     Ldp3FreeNode* n = (Ldp3FreeNode*)ptr;   // recycle the payload as the free-list node
     n->next = g_ldp3_free[h->cls];
