@@ -1249,6 +1249,22 @@ struct CodeGenerator::Impl {
         builder.CreateCall(freeFn(), {objPtr});
     }
 
+    // A `new T() on heap` value-class rvalue passed as an argument to a by-value copy-discipline parameter
+    // is deep-copied by the callee at entry (see emitBody's parameter copy) and never retained, so the
+    // caller's fresh heap temporary would leak -- the pervasive `list.add(new T() on heap)` idiom leaked one
+    // object per call. This mirrors the String owned-temporary model. Returns the class to destruct after
+    // the call (via emitDeleteObject), or "" if the argument is not such an owned temporary. Gated on the
+    // parameter being a by-value copy-discipline class, exactly the condition under which the callee copies:
+    // a T*/T& or interface/abstract parameter borrows/shares the pointer, so it must NOT be freed here; a
+    // movable/unique parameter transfers ownership to the callee, which frees it. A `new ... on stack`
+    // argument (an alloca in this frame) is left alone -- freeing it would be a stack free.
+    std::string ownedHeapNewArg(const ast::Expr& argExpr, const std::string& paramType) {
+        const auto* nw = dynamic_cast<const ast::NewExpr*>(&argExpr);
+        if (nw == nullptr || nw->location != "heap" || !nw->region.empty()) return "";
+        if (!isClassValue(paramType) || !isCopyDiscipline(paramType)) return "";
+        return ast::mangleGeneric(nw->className, nw->typeArgs);
+    }
+
     // spec 32.8: `Dog.methods.replace("bark", <function value>)` -- install a replacement in the class's
     // vtable slot, so every Dog (already alive or not yet born) dispatches to it. Genuine AOP, mocking
     // without a framework, localized hot patching.
@@ -4930,16 +4946,24 @@ struct CodeGenerator::Impl {
                         v = coerceToType(v, fnit->second->getArg(pi + 1)->getType());
                     args.push_back(v);
                 }
-            } else {
+            }
+            std::vector<std::pair<std::size_t, std::string>> freeAfter;  // owned `new` ctor args
+            if (!partial) {
                 for (std::size_t i = 0; i < nw.args.size(); ++i) {
                     llvm::Value* v = emitExpr(*nw.args[i]);
                     if (v == nullptr) return nullptr;
                     if (i + 1 < fnit->second->arg_size())  // coerce to the ctor's param width/type
                         v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
                     args.push_back(v);
+                    if (ctor != nullptr && i < ctor->params.size())
+                        if (std::string acn = ownedHeapNewArg(*nw.args[i],
+                                                              typeRefName(ctor->params[i].type));
+                            !acn.empty())
+                            freeAfter.emplace_back(i + 1, acn);
                 }
             }
             emitMaybeInvoke(fnit->second, args);
+            for (const auto& [idx, acn] : freeAfter) emitDeleteObject(args[idx], acn);
         }
         return objPtr;
     }
@@ -7117,11 +7141,17 @@ struct CodeGenerator::Impl {
                     SpillToken recvTk;
                     if (asyncSM && anyArgAwaits(call.args)) recvTk = spillAcrossAwait(recv);
                     std::vector<SpillToken> atk(call.args.size());
+                    std::vector<std::pair<std::size_t, std::string>> freeAfter;  // owned `new` args
                     for (std::size_t i = 0; i < call.args.size(); ++i) {
                         llvm::Value* v = emitExpr(*call.args[i]);
                         if (v == nullptr) return nullptr;
                         if (i + 1 < fty->getNumParams()) v = coerceToType(v, fty->getParamType(i + 1));
                         vargs.push_back(v);
+                        if (i < mdecl->params.size())
+                            if (std::string cn = ownedHeapNewArg(*call.args[i],
+                                                                 typeRefName(mdecl->params[i].type));
+                                !cn.empty())
+                                freeAfter.emplace_back(i + 1, cn);
                         if (asyncSM && laterArgAwaits(call.args, i)) atk[i] = spillAcrossAwait(v);
                     }
                     for (std::size_t i = call.args.size(); i-- > 0;)
@@ -7133,9 +7163,12 @@ struct CodeGenerator::Impl {
                         llvm::Value* slot = createEntryAlloca("sret", classes[baseType(vrt)].type);
                         vargs.push_back(slot);
                         emitMaybeInvoke(fty, fnPtr, vargs);
+                        for (const auto& [idx, cn] : freeAfter) emitDeleteObject(vargs[idx], cn);
                         return slot;
                     }
-                    return emitMaybeInvoke(fty, fnPtr, vargs);
+                    llvm::Value* res = emitMaybeInvoke(fty, fnPtr, vargs);
+                    for (const auto& [idx, cn] : freeAfter) emitDeleteObject(vargs[idx], cn);
+                    return res;
                 }
             }
 
@@ -7149,17 +7182,24 @@ struct CodeGenerator::Impl {
                 error("unknown method '" + mem->member + "'", call.loc);
                 return nullptr;
             }
+            const ast::MethodDecl* mdecl = findMethodDecl(owner, mem->member);
             std::vector<llvm::Value*> args;
             args.push_back(objPtr);
             SpillToken recvTk;
             if (asyncSM && anyArgAwaits(call.args)) recvTk = spillAcrossAwait(objPtr);
             std::vector<SpillToken> atk(call.args.size());
+            std::vector<std::pair<std::size_t, std::string>> freeAfter;  // owned `new` args to destruct
             for (std::size_t i = 0; i < call.args.size(); ++i) {
                 llvm::Value* v = emitExpr(*call.args[i]);
                 if (v == nullptr) return nullptr;
                 if (i + 1 < fnit->second->arg_size())
                     v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
                 args.push_back(v);
+                if (mdecl != nullptr && i < mdecl->params.size())
+                    if (std::string cn = ownedHeapNewArg(*call.args[i],
+                                                         typeRefName(mdecl->params[i].type));
+                        !cn.empty())
+                        freeAfter.emplace_back(i + 1, cn);
                 if (asyncSM && laterArgAwaits(call.args, i)) atk[i] = spillAcrossAwait(v);
             }
             for (std::size_t i = call.args.size(); i-- > 0;)
@@ -7169,7 +7209,7 @@ struct CodeGenerator::Impl {
             // constant, or a bound param forwarded here), call a specialized copy whose calls to it are
             // direct so LLVM inlines the lambda -- what makes sortedBy/filter/map/reduce competitive.
             llvm::Function* callee = fnit->second;
-            if (const ast::MethodDecl* mdecl = findMethodDecl(owner, mem->member); mdecl != nullptr) {
+            if (mdecl != nullptr) {
                 std::map<int, llvm::Function*> specParams;
                 for (std::size_t i = 0; i < call.args.size() && i < mdecl->params.size(); ++i)
                     if (typeRefName(mdecl->params[i].type).rfind("function<", 0) == 0)
@@ -7178,7 +7218,9 @@ struct CodeGenerator::Impl {
                 if (!specParams.empty())
                     callee = specializeMethod(mdecl, owner, mem->member, fnit->second, specParams);
             }
-            return emitMaybeInvoke(callee, args);
+            llvm::Value* res = emitMaybeInvoke(callee, args);
+            for (const auto& [idx, cn] : freeAfter) emitDeleteObject(args[idx], cn);
+            return res;
         }
         // Unqualified same-class call: LDP3 has no free functions, and locals/lambdas were resolved above,
         // so a bare `name(...)` here names a method of the enclosing class written without its receiver.
