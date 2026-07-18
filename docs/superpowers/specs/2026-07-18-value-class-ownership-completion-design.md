@@ -182,3 +182,28 @@ Order: Piece 0 (escape checking) → Piece 1 (copy-on-return) → Piece 2 (destr
 call-result locals) → Piece 3 (deep-copy completeness) → Piece 4 (move opt to keep perf). Each phase
 gated on the full CTest suite + the Forge 398 self-test + the render leak measurement. This is a
 dedicated multi-phase effort, not a tail-of-session patch.
+
+## Implementation log (2026-07-18, session 3) — drove the residual 182 → ~2 objects/frame
+
+Continued past the value-class-arg fix; the *String* side of the same value-ownership problem carried
+most of the remaining Forge per-frame growth. All shipped fixes: repro flat under LDP3_MEMPROF, 538
+CTest, byte-identical benchmark IR (zero perf), Forge 398 green.
+
+- **`a80d6dc` — M3 for String fields/elements** (task #130). Reassigning a String field/array element
+  leaked the previous value; now freed first. Made null-safe by **null-defaulting owned-type fields
+  (String / value class / array) that lack an inline initializer** in the constructor prologue (malloc
+  does not zero, so the first free would hit garbage). Borrowed `T*`/`T&` fields are left alone.
+  Value-class field/element M3 stays deferred (aliasing — Piece 3 territory).
+- **`67d0940` — owned String temporaries in ternary arms.** `cond ? path : path.substring(...)` (the
+  `Paths.basename` shape, ~8 calls/frame in the draw path) created the substring in the arm block, which
+  the merge-block `freeStringTemps` dropped and leaked. Each String-ternary arm is now copied to a fresh
+  owned String with its producer temps released in-arm; the merge phi is one owned temp. This one fix
+  took the residual from 10 → 2 objects/frame.
+- **Forge-side `5abde27` / `6dcf2d0`** — freed the per-file symbol-index temporaries and the per-frame
+  bracket `Match*`.
+
+**Result: Forge render-only is essentially flat — 6000 frames = 2.1 MB live, +0.2 MB over 5800 frames
+(~2 objects/frame, ~0.06 KB/frame).** From the string-RAII start that is ~1038 MB → ~2 MB; the per-frame
+growth rate is ~57,000× below the original "80→300 MB/min" report. The last ~2/frame is a subtle String
+temporary in the per-frame draw prologue (trackNav/pump path) — negligible, and it belongs to the same
+coordinated work (copy-on-return / property-getter tracking) above rather than another point patch.
