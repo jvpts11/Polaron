@@ -8825,11 +8825,21 @@ struct CodeGenerator::Impl {
                 // (null-safe; the fresh copy is distinct from the old value, so self-assign is fine too).
                 if (targetType == "String") {
                     sv = emitStringCopy(sv);
-                    if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get()))
+                    const ast::Expr* tgt = assign->target.get();
+                    if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(tgt)) {
                         if (auto lit = locals.find(tid->name);
                             lit != locals.end() && isTrackedStringSlot(lit->second.storage))
                             builder.CreateCall(strFreeFn(),
                                                {builder.CreateLoad(builder.getPtrTy(), lit->second.storage)});
+                    } else if (dynamic_cast<const ast::MemberExpr*>(tgt) != nullptr ||
+                               dynamic_cast<const ast::IndexExpr*>(tgt) != nullptr) {
+                        // M3: a String field/element owns its buffer (copy-on-store), so free the previous
+                        // one before overwriting -- otherwise reassignment leaks it (e.g. a per-frame
+                        // `this.field = producer()`). Null-safe: owned String fields are null-defaulted and
+                        // `new String[n]()` is zero-initialized, and the fresh copy above is distinct from
+                        // the old value, so a self-assign `f = f` is still correct.
+                        builder.CreateCall(strFreeFn(), {builder.CreateLoad(builder.getPtrTy(), slot)});
+                    }
                 }
                 if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
                     sv = maskBitField(sv, typeName(*mt->object), mt->member);  // bit-field (spec 11.1)
@@ -10769,6 +10779,24 @@ struct CodeGenerator::Impl {
     // Run at the start of each constructor, before its body (spec 940).
     void emitFieldInits(const ast::ClassDecl& cls, llvm::Value* thisPtr) {
         ClassLayout& layout = classes[cls.name];
+        // Null-default owned-type fields (String, value class, array) that have no inline initializer,
+        // before running the initializers/body. Heap objects come from malloc, which does not zero, so
+        // such a field would otherwise hold garbage until first assigned -- and reassignment now frees
+        // the previous owned value (M3), which on a garbage pointer would crash. A null default makes
+        // that free null-safe (and reading an unset owned field yields null, not garbage). Borrowed
+        // T*/T& fields are left alone (not freed on reassignment, and often perf-critical, e.g. tree
+        // links); fields with an inline initializer are set by the loop below.
+        for (const ast::MemberPtr& member : cls.members) {
+            const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
+            if (f == nullptr || f->init || f->isStatic || f->isLazy) continue;
+            const std::string ft = typeRefName(f->type);
+            if (ft != "String" && !isClassValue(ft) && !isArrayType(ft)) continue;
+            auto di = layout.fieldIndex.find(f->name);
+            if (di == layout.fieldIndex.end()) continue;
+            if (!llvmType(ft)->isPointerTy()) continue;  // only pointer-stored owned fields
+            builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()),
+                                builder.CreateStructGEP(layout.type, thisPtr, di->second, f->name));
+        }
         for (const ast::MemberPtr& member : cls.members) {
             const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
             if (f == nullptr || !f->init || f->isStatic) continue;
