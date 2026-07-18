@@ -121,3 +121,64 @@ leak (must drop from 27.8 MB toward flat) on **every** phase.
 - Rewriting Forge to pass containers by pointer everywhere — fights the language's value semantics and
   ripples to 9+ sites; the compiler is the right layer.
 - Blindly re-attempting the narrow patch — it demonstrably shifts the double-free.
+
+## Implementation log (2026-07-18, session 2)
+
+Root-caused and shipped the *dominant* value-class leak, which turned out NOT to be call-result
+containers (this doc's original focus) but **value-class arguments**:
+
+- **SHIPPED (`19a42f5`) — free `new T() on heap` value-class arguments.** A value-class parameter is
+  deep-copied at callee entry (emitBody) and never retains the caller's argument, so the pervasive
+  `list.add(new T() on heap)` idiom leaked one element temporary per call — this was ~170 leaked Span
+  objects/frame in Forge, the whole per-frame growth. Fix: at method/virtual/ctor call sites, destruct
+  a `new … on heap` value-class argument after the call, gated on the parameter being a by-value
+  copy-discipline class (T*/T&/interface/movable/unique excluded — they borrow or transfer). Safe
+  because a fresh `new` temporary has no aliases. **Zero perf** (byte-identical IR on matmul/primes/
+  regions), 538 CTest + Forge 398 green. Forge render-only 2000 frames **14.8 MB → 4.2 MB live**;
+  per-frame growth 170 → ~7 value-class objects. (Total from the string-RAII start: 1038 MB → ~2.5 MB.)
+
+- **TRIED then REVERTED (`815afad` → `060a5bc`) — destruct by-value parameter copies at callee exit.**
+  Correct value semantics and fixes a real per-call leak of the copy's owned heap content (e.g. an
+  `ArrayList<String>` param copies its backing + every String, then dropped them). IR-verified, 538
+  CTest green — **but it segfaulted Forge's editor-core self-test deterministically.** Root: it turns a
+  previously-silent leak into a **use-after-free**. Code that returns a pointer/reference into a
+  by-value value-class parameter (a pointer into the copy's backing) was kept valid only by the leak;
+  freeing the copy makes that returned pointer dangle. This is a latent dangling-pointer bug the leak
+  masked. Shipping the param-copy free bare turns silent-leak into crash for any such code (the sim
+  would hit it too). **It needs a companion: compile-time escape checking that rejects returning a
+  pointer/ref into a by-value parameter** (an escape analysis for pointers), done together with
+  copy-on-return. Folded into this doc's coordinated work; do not re-ship standalone.
+
+- **SHIPPED (Forge `5abde27`) — free per-file readLines/symbol lists in project symbol indexing.**
+  `refreshProjectSymbols`/`openWorkspaceSymbols` leaked the whole `Files.readLines(path)` result, the
+  per-file `ArrayList<Symbol>`, and the `tree.allFiles()` list, per file, on project open/save. These
+  are call-result / fresh-pointer temporaries the caller owns — deleted them explicitly. Startup symbol
+  index footprint 3.7 → 2.0 MB.
+
+### Revised understanding of the residual (~13 objects/frame after `19a42f5`)
+
+MEMSITE (debug build, slope-isolated at 3000 frames) pins the *remaining* per-frame growth to a
+long tail of ~13 distinct sites each leaking exactly 1/frame, all under `GuiApp.drawFrame`:
+1. **Forge-side per-frame `new X() on heap` / call-result pointers never deleted** — e.g.
+   `Brackets.none()`/`matchingBracket()` returning a fresh `Match*` (`GpuScreen.ldp3:1390`), and
+   other draw-path temporaries. These are genuine manual-memory misses (LDP3 is manual for `T*`); fix
+   Forge-side by deleting them, OR (better, general) by the coordinated ownership work below.
+2. **Compiler String residual (E)** — `str_copy`'d Strings from the draw path that RAII doesn't yet
+   track: computed String property getters (read as MemberExpr, not CallExpr) and a few `System.*`
+   producers. A String-RAII follow-up.
+
+### Sequencing decision (session 2)
+
+The safe, perf-neutral, self-contained wins are shipped. The remaining pieces are the coordinated
+value-class-ownership feature — and it now clearly needs a **fourth piece** the original doc missed:
+
+- **Piece 0 (new) — escape checking for pointers into by-value parameters/locals.** Reject (or copy)
+  `return &param` / `return param.elementPtr()` where the pointer escapes a by-value value-class
+  parameter or a local that will be destructed. Without it, destructing param copies / call-result
+  locals (Pieces 2) turns latent dangling pointers into crashes. This is the blocker the reverted
+  `815afad` proved is real.
+
+Order: Piece 0 (escape checking) → Piece 1 (copy-on-return) → Piece 2 (destruct param copies +
+call-result locals) → Piece 3 (deep-copy completeness) → Piece 4 (move opt to keep perf). Each phase
+gated on the full CTest suite + the Forge 398 self-test + the render leak measurement. This is a
+dedicated multi-phase effort, not a tail-of-session patch.
