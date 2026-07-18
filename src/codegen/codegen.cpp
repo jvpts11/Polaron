@@ -11008,21 +11008,8 @@ struct CodeGenerator::Impl {
                 // assignment -- mutating it must not affect the caller's object. Pointer/reference (T*/T&),
                 // interface and abstract parameters keep sharing (isClassValue excludes them). Copy onto
                 // the heap when the parameter is returned (escapes the frame), otherwise onto the frame.
-                if (incoming != nullptr && isClassValue(pt) && isCopyDiscipline(pt)) {
-                    const bool paramEscapes = escaping.count(p.name) > 0;
-                    incoming = emitClassCopy(pt, incoming, /*heap=*/paramEscapes);
-                    // The copy is an independent object this frame owns; its deep-copied heap content (a
-                    // backing array, boxed value-class elements, owned String fields) must be freed when the
-                    // frame exits -- otherwise every `f(valueClass)` call leaked the copy's heap sub-objects
-                    // (a Span-only copy lives on the stack and owns nothing, so this is a no-op for it, but an
-                    // ArrayList/Map/String-bearing copy owns real heap). Registered like a copy-init local
-                    // (T b = a); an escaping (returned) param is excluded -- the caller owns the moved copy.
-                    if (!paramEscapes) {
-                        const std::string cn = baseType(pt);
-                        if (auto cit = classes.find(cn); cit != classes.end() && cit->second.hasDestructor)
-                            scopeObjects.push_back(ScopeObject{slot, cn, ""});
-                    }
-                }
+                if (incoming != nullptr && isClassValue(pt) && isCopyDiscipline(pt))
+                    incoming = emitClassCopy(pt, incoming, /*heap=*/escaping.count(p.name) > 0);
                 builder.CreateStore(incoming, slot);
                 locals[p.name] = LocalSlot{slot, pt};
                 declareLocalDebug(slot, p.name, pt, p.loc, argIdx + 1);  // -g: parameter (1-based DWARF)
