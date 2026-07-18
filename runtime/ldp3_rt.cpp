@@ -201,7 +201,7 @@ static void memsite_dump() {
         for (unsigned i = 0; i < LDP3_NSITES; i++)
             if (g_sites[i].live > best) { best = g_sites[i].live; bi = (int)i; }
         if (bi < 0) break;
-        fprintf(stderr, "  live=%lld  rva", best);
+        fprintf(stderr, "  live=%lld total=%lld  rva", best, g_sites[bi].total);
         for (int k = 0; k < LDP3_NFR; k++)
             fprintf(stderr, " 0x%llx", (unsigned long long)((char*)g_sites[bi].fr[k] - base));
         fprintf(stderr, "\n");
