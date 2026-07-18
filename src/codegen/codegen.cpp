@@ -3313,6 +3313,18 @@ struct CodeGenerator::Impl {
                 if (tb.second == here) builder.CreateCall(strFreeFn(), {tb.first});
         stringTemps.clear();
     }
+    // Free the owned String temporaries created since `from` (a ternary/expression arm's own temps) that
+    // live in the current block, and forget them. Used when an arm's value has just been copied into an
+    // owned result, so the arm's producer temp (e.g. a substring in `cond ? a : b.substring()`) is freed
+    // here rather than being dropped at the merge -- where freeStringTemps only sees the merge block.
+    void releaseArmStringTemps(std::size_t from) {
+        llvm::BasicBlock* here = builder.GetInsertBlock();
+        if (here != nullptr && here->getTerminator() == nullptr)
+            for (std::size_t i = from; i < stringTemps.size(); ++i)
+                if (stringTemps[i].second == here)
+                    builder.CreateCall(strFreeFn(), {stringTemps[i].first});
+        if (from <= stringTemps.size()) stringTemps.resize(from);
+    }
     // True if `slot` is a String local we own (tracked for scope-exit release) -- so reassigning it may
     // free the previous copy. A parameter slot or an untracked variable is left alone.
     bool isTrackedStringSlot(llvm::Value* slot) {
@@ -4419,15 +4431,30 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context, "tern.then", fn);
         llvm::BasicBlock* elseBB = llvm::BasicBlock::Create(context, "tern.else", fn);
         llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "tern.end", fn);
+        // A String-typed ternary: an owned producer in one arm (e.g. `cond ? path : path.substring(...)`)
+        // is created in that arm's block, so the enclosing statement's freeStringTemps -- which only sees
+        // the merge block -- would drop it and leak. Copy each arm to a fresh owned String and free the
+        // arm's own producer temp there; the merge phi is then one uniformly-owned temp tracked in endBB.
+        const bool ownedStr_ = (rt == "String");
         builder.CreateCondBr(c, thenBB, elseBB);
         builder.SetInsertPoint(thenBB);
+        std::size_t tBefore = stringTemps.size();
         llvm::Value* tv = emitExpr(*t.thenExpr);
         if (tv != nullptr) tv = coerce(tv, typeName(*t.thenExpr), rt);
+        if (ownedStr_ && tv != nullptr) {
+            tv = emitStringCopy(tv);
+            releaseArmStringTemps(tBefore);
+        }
         llvm::BasicBlock* thenEnd = builder.GetInsertBlock();
         builder.CreateBr(endBB);
         builder.SetInsertPoint(elseBB);
+        std::size_t eBefore = stringTemps.size();
         llvm::Value* ev = emitExpr(*t.elseExpr);
         if (ev != nullptr) ev = coerce(ev, typeName(*t.elseExpr), rt);
+        if (ownedStr_ && ev != nullptr) {
+            ev = emitStringCopy(ev);
+            releaseArmStringTemps(eBefore);
+        }
         llvm::BasicBlock* elseEnd = builder.GetInsertBlock();
         builder.CreateBr(endBB);
         builder.SetInsertPoint(endBB);
@@ -4435,7 +4462,7 @@ struct CodeGenerator::Impl {
         llvm::PHINode* phi = builder.CreatePHI(rty, 2, "tern");
         phi->addIncoming(tv, thenEnd);
         phi->addIncoming(ev, elseEnd);
-        return phi;
+        return ownedStr_ ? ownedStr(phi) : static_cast<llvm::Value*>(phi);
     }
 
     llvm::Value* emitBinary(const ast::BinaryExpr& bin) {
