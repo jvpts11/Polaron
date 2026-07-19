@@ -2,10 +2,15 @@
 # boot stub, and link them at 1 MiB with the kernel linker script into a Multiboot2 kernel.elf.
 param(
     [string]$LDP3C = "$PSScriptRoot\..\build\bin\Debug\ldp3c.exe",
-    [string]$Clang = "C:\Program Files\LLVM\bin\clang.exe"
+    [string]$Clang = ""
 )
 # Continue on native-command stderr (clang writes harmless warnings there); we gate on $LASTEXITCODE.
 $ErrorActionPreference = "Continue"
+# Prefer clang on PATH, falling back to the usual install location, so this runs on any machine.
+if (-not $Clang) {
+    $Clang = (Get-Command clang -ErrorAction SilentlyContinue).Source
+    if (-not $Clang) { $Clang = "C:\Program Files\LLVM\bin\clang.exe" }
+}
 $here = $PSScriptRoot
 $TT = "x86_64-unknown-none-elf"
 

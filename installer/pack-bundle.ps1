@@ -12,9 +12,15 @@
 param(
     [string]$Config = "Release",
     [string]$RepoRoot = (Resolve-Path "$PSScriptRoot\.."),
-    [string]$LlvmBin  = "C:\Program Files\LLVM\bin"
+    [string]$LlvmBin  = ""
 )
 $ErrorActionPreference = "Stop"
+# Prefer the LLVM that clang/lld-link resolve to on PATH, falling back to the default install, so the
+# bundle can be staged on any machine with LLVM available -- not only one with it in Program Files.
+if (-not $LlvmBin) {
+    $c = (Get-Command clang -ErrorAction SilentlyContinue).Source
+    if ($c) { $LlvmBin = Split-Path $c -Parent } else { $LlvmBin = "C:\Program Files\LLVM\bin" }
+}
 function Need($p, $what) { if (-not (Test-Path $p)) { throw "$what not found: $p" } ; return $p }
 
 $bin  = Join-Path $RepoRoot "build\bin\$Config"
