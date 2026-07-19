@@ -386,6 +386,18 @@ constexpr Row kCatalog[] = {
         "everything, `release region R` (or `.clear()`). Use a `pool region` if you need individual delete.",
         "Reach for a ring only for bounded history/streaming where losing the oldest is the intent." }},
 
+    {Code::RegionGrowableContradiction, {
+        "LDP3-1712", "growable does not apply here",
+        "`growable` lets a region chain another block when it fills (spec 17). It cannot combine with a "
+        "region that is bounded or fixed by nature: a `ring` is intentionally bounded, a mapped "
+        "(`at address`) region backs fixed foreign memory, and a `stack` region's mark/rollback cursor is "
+        "not defined across chained blocks.",
+        "Drop `growable` here. For a pool that outgrows its size use `growable pool region`; for a fixed "
+        "bound use `ring`; for a mapped region give `itself.at` the real size; size a `stack` region for "
+        "its deepest nesting.",
+        "Decide up front whether a region is bounded (ring / mapped / a sized stack) or open-ended "
+        "(growable pool/bump); the two are mutually exclusive." }},
+
     {Code::VectorMisuse, {
         "LDP3-0804", "vector/matrix operation is malformed",
         "The SIMD vector and matrix types have fixed shapes: a vecN has N numeric lanes, a mat4 has 16 "
@@ -614,6 +626,8 @@ constexpr Rule kRules[] = {
     {"this checkpoint belongs to region", Code::RegionCheckpointWrongRegion},
     {"needs its single element type", Code::RegionFixedslotAcceptsRequired},
     {"a ring region auto-evicts", Code::RegionRingNoDelete},
+    {"growable does not apply", Code::RegionGrowableContradiction},
+    {"growable does not compose", Code::RegionGrowableContradiction},
     {"region ", Code::RegionMisuse},
     {"vector ", Code::VectorMisuse},
     {"mat4 ", Code::VectorMisuse},

@@ -268,6 +268,11 @@ add_test(NAME sema_rejects_ring_delete
 set_tests_properties(sema_rejects_ring_delete PROPERTIES
     PASS_REGULAR_EXPRESSION "error\\[LDP3-1715\\]")
 
+add_test(NAME sema_rejects_growable_ring
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_growable_ring.ldp3")
+set_tests_properties(sema_rejects_growable_ring PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-1712\\]")
+
 # A catalog `extends` cycle must be reported, not crash (regression: it used to
 # overflow the stack in isSubtype).
 add_test(NAME sema_rejects_catalog_cycle
@@ -3339,6 +3344,16 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_ring.ldp3"
             "-DEXPECTED=evicted=7 final=10"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # growable region (spec 17): 1000 live objects grow a 256-byte region past its initial block by
+        # chaining -- a fixed region would overflow. release frees the whole chain.
+        add_test(NAME codegen_region_growable_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_growable.ldp3"
+            "-DEXPECTED=sum=24500"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

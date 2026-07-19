@@ -2516,10 +2516,16 @@ struct CodeGenerator::Impl {
     // Flavored-region allocator (spec 17, flavors expansion). init sets up a pool/fixedslot/ring block's
     // descriptor; new pops/bumps a slot; free returns a slot to the region's free-list. Bump/stack never
     // call these -- they keep the inline bump fast path.
-    llvm::FunctionCallee regionInitFn() {  // (block, flavor, cap) -> void
+    llvm::FunctionCallee regionInitFn() {  // (block, flavor, cap, growable) -> void
         llvm::FunctionType* ty = llvm::FunctionType::get(
-            builder.getVoidTy(), {builder.getPtrTy(), builder.getInt64Ty(), builder.getInt64Ty()}, false);
+            builder.getVoidTy(),
+            {builder.getPtrTy(), builder.getInt64Ty(), builder.getInt64Ty(), builder.getInt64Ty()}, false);
         return module.getOrInsertFunction("__ldp3_region_init", ty);
+    }
+    llvm::FunctionCallee regionFreeChainFn() {  // (block) -> void  (free a growable region's block chain)
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_region_free_chain", ty);
     }
     llvm::FunctionCallee regionNewFn() {  // (block, size) -> ptr
         llvm::FunctionType* ty = llvm::FunctionType::get(
@@ -2578,7 +2584,7 @@ struct CodeGenerator::Impl {
         return f == "pool" || f == "fixedslot" || f == "stack" || f == "ring";
     }
     // The flavored-region data offset -- MUST match LDP3_REGION_HDR in runtime/ldp3_rt.cpp.
-    static constexpr unsigned kRegionHdr = 384u;
+    static constexpr unsigned kRegionHdr = 448u;
     // The descriptor flavor code stored at block+24 (matches the runtime's reading).
     static unsigned flavorCode(const std::string& f) {
         if (f == "pool") return 1;
@@ -2587,9 +2593,11 @@ struct CodeGenerator::Impl {
         if (f == "ring") return 4;
         return 0;  // bump
     }
-    // The flavor threaded into emitRegionAllocate for an eager `<flavor> region r = itself.allocate(...)`
-    // (the init expr itself does not carry the flavor; the VarDecl does). Set around emitExpr(init).
+    // The flavor + growth threaded into emitRegionAllocate for an eager `<flavor> region r =
+    // itself.allocate(...)` (the init expr itself does not carry them; the VarDecl does). Set around
+    // emitExpr(init).
     std::string pendingRegionFlavor_;
+    bool pendingRegionGrowable_ = false;
 
     // sizeof(type) in bytes, the target-portable way: gep null + 1, then
     // ptrtoint. The backend folds it to a constant using the real data layout.
@@ -4359,7 +4367,8 @@ struct CodeGenerator::Impl {
             return builder.CreateLoad(llvmType(vt), vp, "try.value");
         }
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
-            return emitRegionAllocate(ri->size.get(), ri->atAddress.get(), pendingRegionFlavor_);
+            return emitRegionAllocate(ri->size.get(), ri->atAddress.get(), pendingRegionFlavor_,
+                                      pendingRegionGrowable_);
         }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
             // `x is T` (op 1) / `x as? T` (op 2), spec 6.4: a runtime is-a test on a class value.
@@ -4829,6 +4838,7 @@ struct CodeGenerator::Impl {
             return nullptr;
         }
         const std::string flavor = regionFlavor_.count(name) ? regionFlavor_[name] : std::string();
+        const bool growable = growableRegions_.count(name) > 0;
         // An owned local region (not `at address`, not multi-range, not a field) is the hot arena case.
         // Its data begins at block+24 and its `used` header field is write-only (nothing -- runtime
         // release included -- reads it), so we keep the bump cursor in a local i64 alloca (created at the
@@ -4852,7 +4862,8 @@ struct CodeGenerator::Impl {
                 builder.CreateICmpEQ(cur, llvm::ConstantPointerNull::get(builder.getPtrTy())),
                 allocBB, contBB);
             builder.SetInsertPoint(allocBB);
-            llvm::Value* blk = emitRegionAllocate(lazyRegionSize_[name], lazyRegionAt_[name], flavor);
+            llvm::Value* blk =
+                emitRegionAllocate(lazyRegionSize_[name], lazyRegionAt_[name], flavor, growable);
             if (blk != nullptr) builder.CreateStore(blk, slot);
             if (cursorSlot != nullptr) builder.CreateStore(builder.getInt64(0), cursorSlot);  // fresh block: used = 0
             builder.CreateBr(contBB);
@@ -4866,7 +4877,9 @@ struct CodeGenerator::Impl {
         if (isRingFlavor(flavor)) {
             return builder.CreateCall(ringNewFn(), {block, sizeOf(objType)}, "ring.slot");
         }
-        if (usesRuntimeDesc(flavor)) {
+        // A growable bump region also serves through the runtime allocator (it chains blocks on overflow),
+        // so it leaves the inline cursor fast path -- only fixed bump keeps the byte-identical hot path.
+        if (usesRuntimeDesc(flavor) || growable) {
             return builder.CreateCall(regionNewFn(), {block, sizeOf(objType)}, "rgn.slot");
         }
         llvm::Value* used;
@@ -4934,7 +4947,7 @@ struct CodeGenerator::Impl {
     // address (spec 17.8 / 36.9). `size` is a ByteSize (read .bytes) or a raw byte count;
     // accepts/rejects are compile-time only, so codegen ignores them.
     llvm::Value* emitRegionAllocate(const ast::Expr* sizeExpr, const ast::Expr* atAddr = nullptr,
-                                    const std::string& flavor = "") {
+                                    const std::string& flavor = "", bool growable = false) {
         llvm::Value* nbytes = builder.getInt64(0);
         if (sizeExpr != nullptr) {
             llvm::Value* arg = emitExpr(*sizeExpr);
@@ -4949,14 +4962,15 @@ struct CodeGenerator::Impl {
                 nbytes = fitInt(arg, 64);
             }
         }
-        // pool/fixedslot/stack region: a larger block whose Ldp3RegionDesc header (LDP3_REGION_HDR bytes)
-        // carries the free-lists / stack registry; the runtime init lays it out. Individual objects are
-        // then served by __ldp3_region_new (see emitRegionAlloc). `at address` + flavor is not supported.
-        if (usesRuntimeDesc(flavor) && atAddr == nullptr) {
+        // A flavored (pool/fixedslot/stack/ring) OR growable region: a larger block whose Ldp3RegionDesc
+        // header (LDP3_REGION_HDR bytes) carries the free-lists / stack registry / grow chain; the runtime
+        // init lays it out. Objects are then served by __ldp3_region_new/ring_new. `at address` cannot grow.
+        if ((usesRuntimeDesc(flavor) || growable) && atAddr == nullptr) {
             llvm::Value* block = builder.CreateCall(
                 regionAcquireFn(), {builder.CreateAdd(builder.getInt64(kRegionHdr), nbytes)}, "region");
             builder.CreateCall(regionInitFn(),
-                               {block, builder.getInt64(flavorCode(flavor)), nbytes});
+                               {block, builder.getInt64(flavorCode(flavor)), nbytes,
+                                builder.getInt64(growable ? 1 : 0)});
             return block;
         }
         llvm::Value* block;
@@ -8722,7 +8736,7 @@ struct CodeGenerator::Impl {
                     if (vd->isVolatile) volatileRegions_.insert(vd->name);  // spec 37.5 (MMIO)
                     // An owned lazy region keeps its bump cursor in a register-promotable alloca; the
                     // lazy-acquire block re-zeros it each time the backing block is (re)allocated.
-                    if (ri->atAddress.get() == nullptr && !usesRuntimeDesc(vd->regionFlavor))
+                    if (ri->atAddress.get() == nullptr && !usesRuntimeDesc(vd->regionFlavor) && !vd->regionGrowable)
                         setupOwnedRegionCursor(vd->name);
                     if (!vd->isEternal) scopeRegions.push_back(RegionLocal{slot, vd->isEternal, vd->name});
                     return;
@@ -8743,9 +8757,13 @@ struct CodeGenerator::Impl {
             }
             // Thread the region flavor into the init expr's RegionInitExpr (the flavor lives on the
             // VarDecl, not the init). Cleared right after so it never leaks into an unrelated allocate.
-            if (declType == "region") pendingRegionFlavor_ = vd->regionFlavor;
+            if (declType == "region") {
+                pendingRegionFlavor_ = vd->regionFlavor;
+                pendingRegionGrowable_ = vd->regionGrowable;
+            }
             llvm::Value* initV = emitExpr(*vd->init);
             pendingRegionFlavor_.clear();
+            pendingRegionGrowable_ = false;
             pendingPersistKey.clear();
             if (initV == nullptr) return;
             // Value semantics: copying a class value from an existing object makes
@@ -8773,9 +8791,10 @@ struct CodeGenerator::Impl {
             declareLocalDebug(slot, vd->name, declType, vd->loc);  // -g: name/read this local in the debugger
             // An eagerly-allocated owned region (`region r = itself.allocate(...)`): give it a
             // register-promotable bump cursor, zeroed now that its block is freshly acquired.
-            // (pool/fixedslot use the runtime free-list, not an inline cursor -- no cursor for them.)
+            // (pool/fixedslot/stack/ring and any growable region use the runtime allocator, not an inline
+            // cursor -- no cursor for them.)
             if (declType == "region" && isOwnedRegionInit(vd->init.get()) &&
-                !usesRuntimeDesc(vd->regionFlavor))
+                !usesRuntimeDesc(vd->regionFlavor) && !vd->regionGrowable)
                 setupOwnedRegionCursor(vd->name);
             // A ring region records its single element type's destructor (from `.accepts({T})`), so
             // eviction of the oldest entry and release can run it. Set once, here at the declaration.
@@ -9310,12 +9329,16 @@ struct CodeGenerator::Impl {
                 runRegionObjectDtors(rel->region);
                 llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage);
                 // A stack region tears down its registry (rollback-to-0 + free it); a ring region destructs
-                // its live entries -- both before the block is freed.
+                // its live entries -- both before the block is freed. A growable region frees its whole
+                // block chain (bump/pool/fixedslot only -- growable stack/ring are rejected in sema).
                 const std::string relFlavor =
                     regionFlavor_.count(rel->region) ? regionFlavor_[rel->region] : std::string();
                 if (isStackFlavor(relFlavor)) builder.CreateCall(regionTeardownFn(), {block});
                 else if (isRingFlavor(relFlavor)) builder.CreateCall(ringTeardownFn(), {block});
-                builder.CreateCall(regionReleaseFn(), {block});
+                if (growableRegions_.count(rel->region))
+                    builder.CreateCall(regionFreeChainFn(), {block});
+                else
+                    builder.CreateCall(regionReleaseFn(), {block});
                 builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()),
                                     it->second.storage);
             }
@@ -9604,7 +9627,10 @@ struct CodeGenerator::Impl {
             const std::string rfl = regionFlavor_.count(rname) ? regionFlavor_[rname] : std::string();
             if (isStackFlavor(rfl)) builder.CreateCall(regionTeardownFn(), {block});
             else if (isRingFlavor(rfl)) builder.CreateCall(ringTeardownFn(), {block});
-            builder.CreateCall(regionReleaseFn(), {block});  // cache the block for reuse (see runtime)
+            if (growableRegions_.count(rname))
+                builder.CreateCall(regionFreeChainFn(), {block});  // free the whole grown chain
+            else
+                builder.CreateCall(regionReleaseFn(), {block});  // cache the block for reuse (see runtime)
         }
     }
 

@@ -2197,6 +2197,23 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                     }
                 }
             }
+            // `growable` contradictions (LDP3-1712): a ring is bounded by definition; a mapped
+            // (at-address) region cannot grow; stack growth across chained blocks is not supported yet.
+            if (vd->regionGrowable && declType == "region") {
+                const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get());
+                if (vd->regionFlavor == "ring")
+                    error("growable does not apply to a ring region (a ring is bounded by "
+                          "definition) (spec 17)",
+                          vd->loc);
+                else if (ri != nullptr && ri->atAddress != nullptr)
+                    error("growable does not apply to a mapped (at address) region -- foreign "
+                          "memory cannot grow (spec 17)",
+                          vd->loc);
+                else if (vd->regionFlavor == "stack")
+                    error("growable does not compose with a stack region: size the stack region for its "
+                          "depth, or use a growable pool (spec 17)",
+                          vd->loc);
+            }
         }
         if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType) &&
             !intLiteralFits(*vd->init, declType)) {

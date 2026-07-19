@@ -1,0 +1,35 @@
+import System.IO.Console;
+import System.Memory.Units.bytes;
+program RegionGrowable;
+
+public bundle main {
+    public namespace app {
+
+        public class Dog {
+            public mutable int age;
+            public constructor Dog(int a) {
+                this.age = a;
+            }
+            public method getAge() returns int {
+                return this.age;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // 1000 objects kept live (never deleted) allocated into a 256-byte region (~8 slots): it
+                // completes only because `growable` chains a new block when the current one fills. A fixed
+                // region would trap at ~8. release frees the whole chain.
+                growable pool region g = itself.allocate(256 bytes);
+                mutable int sum = 0;
+                for (mutable int i = 0; i < 1000; i++) {
+                    Dog* d = new Dog(i % 50) in region g;
+                    sum = sum + d.getAge();
+                }
+                System.IO.Console.printf("sum=%d\n", sum);   // 20 * (0+..+49) = 24500
+                release region g;
+                return;
+            }
+        }
+    }
+}

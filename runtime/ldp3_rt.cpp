@@ -105,10 +105,11 @@ void __ldp3_panic(const char* msg) {
 #define LDP3_NCLASSES 32                   // size classes 16,32,...,512 (step 16)
 #define LDP3_SLAB (1u << 20)               // 1 MiB slabs, bump-allocated then recycled via free-list
 #define LDP3_LARGE 0xFFFFFFFFu
-// A flavored region (pool/fixedslot/ring) block begins with an Ldp3RegionDesc header; its object data
-// starts LDP3_REGION_HDR bytes in. Kept a fixed 16-aligned constant so the compiler and the runtime agree
-// on the data offset without the compiler needing sizeof(Ldp3RegionDesc). A static_assert below pins it.
-#define LDP3_REGION_HDR 384u
+// A flavored region (pool/fixedslot/ring/stack, or any growable region) block begins with an
+// Ldp3RegionDesc header; its object data starts LDP3_REGION_HDR bytes in. Kept a fixed 16-aligned constant
+// so the compiler and the runtime agree on the data offset without the compiler needing
+// sizeof(Ldp3RegionDesc). A static_assert below pins it (with headroom for future fields).
+#define LDP3_REGION_HDR 448u
 
 typedef struct Ldp3Hdr {
     unsigned long long magic;
@@ -404,7 +405,13 @@ typedef struct Ldp3RegionDesc {
     unsigned long long trackCount;// +80
     unsigned long long trackCap;  // +88
     void*              ringDtor;  // +96 ring: the single element type's destructor (all entries share it)
-    Ldp3FreeNode*      freelists[LDP3_NCLASSES + 1];  // +104 per size class; [LDP3_NCLASSES] = large (>512)
+    // growable region (spec 17): blocks chain on overflow. `growNext` links each block to the next;
+    // `growTail` (head only) is the current bump block; `growable` is the flag. A shared free-list on the
+    // head serves pool/fixedslot reuse across the whole chain. `release` frees the chain.
+    struct Ldp3RegionDesc* growNext;  // +104 next block in the chain (null = last)
+    struct Ldp3RegionDesc* growTail;  // +112 head only: the block currently being bumped
+    unsigned long long growable;      // +120 1 = chain a new block on overflow instead of trapping
+    Ldp3FreeNode*      freelists[LDP3_NCLASSES + 1];  // +128 per size class; [LDP3_NCLASSES] = large (>512)
 } Ldp3RegionDesc;
 // The compiler hardcodes LDP3_REGION_HDR as the data offset; keep the struct within it.
 typedef char Ldp3RegionDescFits[(sizeof(Ldp3RegionDesc) <= LDP3_REGION_HDR) ? 1 : -1];
@@ -416,7 +423,8 @@ static inline unsigned ldp3_region_class(unsigned long long payload) {
 }
 
 // Initialize a freshly acquired flavored region block (called by codegen right after acquire).
-void __ldp3_region_init(void* block, unsigned long long flavor, unsigned long long cap) {
+void __ldp3_region_init(void* block, unsigned long long flavor, unsigned long long cap,
+                        unsigned long long growable) {
     Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
     d->used = 0;
     d->cap = cap;
@@ -431,6 +439,9 @@ void __ldp3_region_init(void* block, unsigned long long flavor, unsigned long lo
     d->trackCount = 0;
     d->trackCap = 0;
     d->ringDtor = NULL;
+    d->growNext = NULL;
+    d->growTail = d;  // the head is its own initial bump block
+    d->growable = growable;
     for (int i = 0; i <= LDP3_NCLASSES; i++) d->freelists[i] = NULL;
 }
 
@@ -441,41 +452,58 @@ void* __ldp3_region_new(void* block, unsigned long long size) {
     unsigned long long payload = (size + 15) & ~15ULL;  // 16-align
     if (payload == 0) payload = 16;
     unsigned cls = ldp3_region_class(payload);
-    // A stack region never reuses a free-list -- it bumps and reclaims LIFO via mark/rollback -- so skip
-    // straight to the bump below. pool/fixedslot try their size-class free-list first.
-    if (d->flavor != 2 && cls < LDP3_NCLASSES) {
-        Ldp3FreeNode* n = d->freelists[cls];
-        if (n != NULL) {  // reuse: the [16-byte header][payload] is still just before the node
-            d->freelists[cls] = n->next;
-            ((Ldp3Hdr*)((char*)n - 16))->magic = LDP3_RMAGIC;  // live again
-            if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)payload); prof_add(&g_prof_class_live[cls], 1); }
-            return (void*)n;
-        }
-    } else {
-        // large: first-fit exact-size match on the large list (homogeneous churn hits the head every time)
-        Ldp3FreeNode** pp = &d->freelists[LDP3_NCLASSES];
-        while (*pp != NULL) {
-            Ldp3Hdr* h = (Ldp3Hdr*)((char*)(*pp) - 16);
-            if (h->pad == (unsigned)payload) {
-                Ldp3FreeNode* n = *pp;
-                *pp = n->next;
-                h->magic = LDP3_RMAGIC;
-                if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)payload); prof_add(&g_prof_class_live[32], 1); }
+    // Only pool/fixedslot reuse a free-list (shared on the head across all growable blocks). bump/stack
+    // always bump: bump frees together on release; stack reclaims LIFO via mark/rollback.
+    if (d->flavor == 1 || d->flavor == 3) {
+        if (cls < LDP3_NCLASSES) {
+            Ldp3FreeNode* n = d->freelists[cls];
+            if (n != NULL) {  // reuse: the [16-byte header][payload] is still just before the node
+                d->freelists[cls] = n->next;
+                ((Ldp3Hdr*)((char*)n - 16))->magic = LDP3_RMAGIC;  // live again
+                // Region slots are sub-allocations inside a block that the profiler already counts; the
+                // block is freed en masse on release, so per-slot live accounting would over-report.
+                if (g_prof_on) prof_add(&g_prof_total_alloc, 1);
                 return (void*)n;
             }
-            pp = &(*pp)->next;
+        } else {
+            // large: first-fit exact-size match on the large list (homogeneous churn hits the head first)
+            Ldp3FreeNode** pp = &d->freelists[LDP3_NCLASSES];
+            while (*pp != NULL) {
+                Ldp3Hdr* h = (Ldp3Hdr*)((char*)(*pp) - 16);
+                if (h->pad == (unsigned)payload) {
+                    Ldp3FreeNode* n = *pp;
+                    *pp = n->next;
+                    h->magic = LDP3_RMAGIC;
+                    if (g_prof_on) prof_add(&g_prof_total_alloc, 1);
+                    return (void*)n;
+                }
+                pp = &(*pp)->next;
+            }
         }
     }
     unsigned long long slotBytes = 16 + payload;
-    if (d->used + slotBytes > d->cap)
-        __ldp3_panic("region out of memory: this fixed region is full -- give itself.allocate a bigger size, delete/extract objects to reclaim slots, or make it a `growable` region");
-    char* slot = (char*)d->dataBase + d->used;
-    d->used += slotBytes;
+    // Bump in the current tail block. A growable region chains a new block on overflow instead of trapping;
+    // a fixed region traps (no UB). The shared free-list above means steady-state churn never grows.
+    Ldp3RegionDesc* tail = d->growable ? d->growTail : d;
+    if (tail->used + slotBytes > tail->cap) {
+        if (!d->growable)
+            __ldp3_panic("region out of memory: this fixed region is full -- give itself.allocate a bigger size, delete/extract objects to reclaim slots, or make it a `growable` region");
+        unsigned long long newcap = tail->cap;          // grow by at least the previous block's size
+        if (newcap < slotBytes) newcap = slotBytes;
+        void* nb = __ldp3_malloc((size_t)(LDP3_REGION_HDR + newcap));
+        if (nb == NULL) __ldp3_panic("out of memory growing a region");
+        __ldp3_region_init(nb, d->flavor, newcap, 1);
+        tail->growNext = (Ldp3RegionDesc*)nb;
+        d->growTail = (Ldp3RegionDesc*)nb;
+        tail = (Ldp3RegionDesc*)nb;
+    }
+    char* slot = (char*)tail->dataBase + tail->used;
+    tail->used += slotBytes;
     Ldp3Hdr* h = (Ldp3Hdr*)slot;
     h->magic = LDP3_RMAGIC;
     h->cls = cls;
     h->pad = (unsigned)payload;
-    if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)payload); prof_add(&g_prof_class_live[cls < LDP3_NCLASSES ? cls : 32], 1); }
+    if (g_prof_on) prof_add(&g_prof_total_alloc, 1);  // block-level bytes already counted at acquire
     return slot + 16;
 }
 
@@ -490,7 +518,7 @@ void __ldp3_region_free(void* block, void* ptr, unsigned long long size) {
     if (h->magic == LDP3_RFREED) __ldp3_panic("double free of a region object (it was already deleted or extracted)");
     if (h->magic != LDP3_RMAGIC) __ldp3_panic("region free of a pointer that this region did not allocate");
     unsigned cls = h->cls;
-    if (g_prof_on) { prof_add(&g_prof_live_count, -1); prof_add(&g_prof_total_free, 1); prof_add(&g_prof_live_bytes, -(long long)h->pad); prof_add(&g_prof_class_live[cls < LDP3_NCLASSES ? cls : 32], -1); }
+    if (g_prof_on) prof_add(&g_prof_total_free, 1);  // per-slot live is not tracked (see region_new)
     h->magic = LDP3_RFREED;
     if (d->flavor == 2) {  // stack: no free-list. Untrack, and reclaim LIFO if this was the top slot.
         for (unsigned long long i = d->trackCount; i > 0; --i) {
@@ -511,6 +539,18 @@ void __ldp3_region_free(void* block, void* ptr, unsigned long long size) {
     unsigned idx = (cls < LDP3_NCLASSES) ? cls : LDP3_NCLASSES;
     n->next = d->freelists[idx];
     d->freelists[idx] = n;
+}
+
+// Free every block of a (possibly growable) region chain. Called by codegen on release/scope exit of a
+// growable region, after its objects' destructors have run. A non-growable region has a null growNext, so
+// this frees just its one block (equivalent to release without the block cache).
+void __ldp3_region_free_chain(void* block) {
+    Ldp3RegionDesc* b = (Ldp3RegionDesc*)block;
+    while (b != NULL) {
+        Ldp3RegionDesc* next = b->growNext;
+        __ldp3_free(b);
+        b = next;
+    }
 }
 
 // Record a stack-region object that has a destructor, so mark/rollback and release can run it (newest
@@ -587,7 +627,7 @@ void* __ldp3_ring_new(void* block, unsigned long long size) {
     char* slot = (char*)d->dataBase + widx * d->entrySize;
     if (d->ringCount < d->ringCap) {
         d->ringCount++;
-        if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); }
+        if (g_prof_on) prof_add(&g_prof_total_alloc, 1);  // per-slot live not tracked (see region_new)
     } else {  // full: evict the oldest (this same slot), running its destructor before reuse
         Ldp3Hdr* oh = (Ldp3Hdr*)slot;
         if (d->ringDtor != NULL && oh->magic == LDP3_RMAGIC) {
