@@ -12,7 +12,10 @@
 param(
     [string]$Config = "Release",
     [string]$RepoRoot = (Resolve-Path "$PSScriptRoot\.."),
-    [string]$LlvmBin  = ""
+    [string]$LlvmBin  = "",
+    # A Python 3.11 embeddable (a dir containing python311.dll, or the -embed-amd64.zip). If empty, it is
+    # downloaded and cached under installer\.cache. Needed because liblldb.dll (the debugger) imports python311.dll.
+    [string]$PythonEmbed = ""
 )
 $ErrorActionPreference = "Stop"
 # Prefer the LLVM that clang/lld-link resolve to on PATH, falling back to the default install, so the
@@ -43,6 +46,40 @@ if ($LASTEXITCODE -ne 0) { throw "compiling the runtime failed" }
 # 3) The LLVM tools clang + lld-link (slim, standalone).
 Copy-Item (Need "$LlvmBin\clang.exe" "clang") $core
 Copy-Item (Need "$LlvmBin\lld-link.exe" "lld-link") $core
+
+# 3b) The native debugger: lldb-dap + liblldb, plus a self-contained Python 3.11 (liblldb.dll imports
+#     python311.dll). Staged into core/ so it lands on PATH -- Forge's findLldbDap resolves `lldb-dap`
+#     there -- with python311.dll/.zip/._pth beside it, so lldb's embedded Python finds its stdlib with
+#     no environment set (verified end to end). This adds ~120 MB (liblldb.dll alone is ~108 MB).
+Copy-Item (Need "$LlvmBin\lldb-dap.exe" "lldb-dap") $core
+Copy-Item (Need "$LlvmBin\liblldb.dll" "liblldb") $core
+$pyVer = "3.11.9"
+$pyDir = ""
+if ($PythonEmbed -and (Test-Path $PythonEmbed -PathType Container) -and (Test-Path (Join-Path $PythonEmbed "python311.dll"))) {
+    $pyDir = $PythonEmbed
+} else {
+    $cache = Join-Path $RepoRoot "installer\.cache"
+    New-Item -ItemType Directory -Force $cache | Out-Null
+    $pyDir = Join-Path $cache "python-embed"
+    if (-not (Test-Path (Join-Path $pyDir "python311.dll"))) {
+        $zip = ""
+        if ($PythonEmbed -and (Test-Path $PythonEmbed -PathType Leaf)) {
+            $zip = $PythonEmbed
+        } else {
+            $zip = Join-Path $cache "python-$pyVer-embed-amd64.zip"
+            if (-not (Test-Path $zip)) {
+                Write-Host "downloading the Python $pyVer embeddable (for the bundled debugger)..."
+                $eap2 = $ErrorActionPreference; $pp = $ProgressPreference
+                $ErrorActionPreference = "Continue"; $ProgressPreference = "SilentlyContinue"
+                Invoke-WebRequest -Uri "https://www.python.org/ftp/python/$pyVer/python-$pyVer-embed-amd64.zip" -OutFile $zip
+                $ErrorActionPreference = $eap2; $ProgressPreference = $pp
+                if (-not (Test-Path $zip)) { throw "could not obtain the Python embeddable; pass -PythonEmbed <zip-or-dir>" }
+            }
+        }
+        Expand-Archive -Path $zip -DestinationPath $pyDir -Force
+    }
+}
+foreach ($f in "python311.dll","python311.zip","python311._pth") { Copy-Item (Need (Join-Path $pyDir $f) "python embeddable file") $core }
 
 # 4) The VC++ runtime DLLs the release binaries need (present in System32 when VS is installed; a bare
 #    machine has ucrtbase.dll but not these, so we ship them -- they are redistributable).
