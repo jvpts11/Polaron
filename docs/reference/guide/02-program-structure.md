@@ -376,6 +376,64 @@ distribution boundary — the foundation for shipping libraries, plugins, and
 different build variants of the same program without maintaining parallel source
 trees.
 
+## Cross-program access via IPC
+
+Two separate LDP3 programs can talk to each other as if they shared one object graph. A
+**server** program exports a class; a **client** program holds a proxy for it and calls its
+methods, and each call is serialized across a pipe/socket named after the server program. The
+object's state lives only in the server process.
+
+The server calls `Program.serve`, naming itself and supplying a **capability policy** — a
+lambda consulted for every capability a client requests:
+
+```ldp3
+import System.Ipc.Program;
+
+// Grant "mixdown", refuse everything else.
+Program.serve("GameEngine", lambda(String capability) returns boolean {
+    return capability.equals("mixdown");
+});
+```
+
+Any method on the exported class is callable remotely. A method that takes a
+`BundleAccessToken` parameter is **privileged**: the dispatcher runs it only after checking
+the token is one this program actually issued (see the client side below).
+
+The client imports the remote type's header with `import from program`, connects by name, and
+builds a proxy. `Program.connect` returns a `nullable ProgramHandle*` (null if the server
+isn't running); the proxy's every method call becomes IPC:
+
+```ldp3
+import from program GameEngine bundle audio.StereoMixer;
+import System.Ipc.Program;
+import System.Ipc.IpcError;
+
+nullable ProgramHandle* a = Program.connect("GameEngine");
+if (a == null) {
+    // the engine is not running
+    return;
+}
+
+StereoMixer mixer = a.bundle("audio").namespace("mixers").type<StereoMixer>().instantiate();
+try {
+    int n = mixer.play("boom.wav");   // arguments are serialized; the result comes back
+    mixer.setVolume(9);               // state persists in the server across calls
+
+    // Capabilities: ask the server's policy, then use the token for a privileged call.
+    BundleAccessToken* mixdown = a.requestAccess("mixdown");
+    if (mixdown.granted()) {
+        int level = mixer.mixdown(mixdown);
+    }
+} catch (IpcError e) {
+    // a call failed on the wire
+}
+a.close();
+```
+
+The type is known to the client only from the server's header (its *body* lives in the other
+process), so the compiler hands the client a proxy whose methods are wire frames. Capability
+tokens make the trust boundary explicit: the server decides, per client, what is allowed.
+
 ## A forward pointer: freestanding mode
 
 Everything above assumes the managed LDP3 runtime — the machinery behind
