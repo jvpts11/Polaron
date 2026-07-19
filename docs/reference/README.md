@@ -32,6 +32,7 @@ A single typeset PDF of everything below:
 | 10 | [Systems Programming](guide/10-systems-programming.md) | Compiler builtins (`String`, `Decimal`, `Memory`/`address`, SIMD, `Console`), FFI (`extern` + `native_libs`), and freestanding mode. |
 | 11 | [Keyword Reference](guide/11-keyword-reference.md) | Every reserved word, grouped by role, with its meaning, syntax, an example, and its exact status. |
 | 12 | [Diagnostics](guide/12-diagnostics.md) | The `LDP3-NNNN` code system, the rich why/fix/prevent format, `ldp3 explain`, the code ranges, and editor integration. |
+| 13 | [Functions, Lambdas & Tuples](guide/13-functions-and-lambdas.md) | First-class functions, the `function<>` type, lambdas + `byvalue`/`byref` captures, `methodref`, `funcptr<>` for FFI, tuple returns, and named arguments. |
 
 ## Part II — The Standard Library
 
