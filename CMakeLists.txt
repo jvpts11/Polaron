@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ldp3 LANGUAGES CXX)
+project(ldp3 LANGUAGES C CXX)  # C is enabled for LLVM's FindFFI probe on Linux
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

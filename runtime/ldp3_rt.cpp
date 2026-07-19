@@ -1739,6 +1739,9 @@ long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr) {
     pid_t pid = fork();
     if (pid < 0) { close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]); return 0; }
     if (pid == 0) {
+        setpgid(0, 0);  // own process group: close() signals the whole spawned subtree. /bin/sh -c
+                        // may fork the program rather than exec into it, so killing only s->pid would
+                        // orphan a long-lived child (e.g. an IPC engine) that then holds inherited pipes.
         dup2(inPipe[0], 0);
         dup2(outPipe[1], 1);
         if (mergeErr != 0) dup2(outPipe[1], 2);
@@ -1746,6 +1749,8 @@ long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr) {
         execl("/bin/sh", "sh", "-c", cmdline, (char*)NULL);
         _exit(127);
     }
+    (void)setpgid(pid, pid);  // race-free with the child's own setpgid; whichever runs first wins, and a
+                              // late call after the child exec'd fails harmlessly (EACCES), which is fine.
     close(inPipe[0]);
     close(outPipe[1]);
     LdpSubproc* s = (LdpSubproc*)malloc(sizeof(LdpSubproc));
@@ -1806,7 +1811,10 @@ void __ldp3_subproc_close(long long h) {
     if (s->fdIn >= 0) close(s->fdIn);
     close(s->fdOut);
     int status;
-    if (waitpid(s->pid, &status, WNOHANG) == 0) { kill(s->pid, SIGTERM); waitpid(s->pid, &status, 0); }
+    // Signal the whole process group (the /bin/sh wrapper AND the program it launched); killing only
+    // s->pid can leave a spawned server (e.g. an IPC engine) orphaned and holding pipes it inherited,
+    // which would keep a capturing parent (a build tool reading our output) blocked until it times out.
+    if (waitpid(s->pid, &status, WNOHANG) == 0) { kill(-s->pid, SIGTERM); waitpid(s->pid, &status, 0); }
     free(s);
 }
 #endif

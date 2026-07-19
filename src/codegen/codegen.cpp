@@ -790,7 +790,16 @@ struct CodeGenerator::Impl {
     // each active try's body began. When a throw inside a try body unwinds to that try's handler, the
     // block-scoped teardown declared since these bases must run first (spec 23.1) -- so `defer`/`using`/
     // destructors in the try body are honoured on the caught path, not just the normal-exit path.
-    struct EhBase { std::size_t so, df, rg; };
+    // The try-body scope bases at the point a try opened, so a throw inside the body runs the block-scoped
+    // teardown declared since (spec 23.1) before reaching the handler. On Itanium the handler is not a
+    // funclet but ordinary code, so we also carry where a cleanup landing pad should feed after running the
+    // teardown: `itDispatch` (the clause-matching block) and `itCarrier` (the slot holding the caught
+    // carrier). Both stay null for WinEH tries and for the async-guard sentinel frames.
+    struct EhBase {
+        std::size_t so, df, rg;
+        llvm::BasicBlock* itDispatch = nullptr;
+        llvm::Value* itCarrier = nullptr;
+    };
     std::vector<EhBase> ehBaseStack;
     llvm::Constant* ehThrowInfoCache = nullptr;  // shared carrier-ptr ThrowInfo (_TI1PEAX), lazy
     llvm::Constant* ehTypeDescCache = nullptr;   // shared carrier-ptr type descriptor, lazy
@@ -8199,6 +8208,45 @@ struct CodeGenerator::Impl {
         builder.restoreIP(saved);
         return pad;
     }
+    // Itanium in-try cleanup (spec 23.1): a throw inside a try body must run the body's block-scoped
+    // defers/destructors declared since the try opened, then be handled by that try's clauses -- not skip
+    // straight to the handler. A landing pad catches the carrier, runs the bounded teardown as ordinary
+    // code, stores the carrier, and branches to the try's clause-matching block (emitTryItanium split its
+    // handler so both the direct pad and this cleanup pad feed the same dispatch). Only the entries since
+    // the bases are torn down here; they are snapshotted and dropped from the live vectors during emission
+    // so a teardown action never re-targets this same pad.
+    llvm::BasicBlock* buildCleanupDispatchItanium(std::size_t soBase, std::size_t dfBase,
+                                                  std::size_t rgBase, llvm::BasicBlock* dispatchBB,
+                                                  llvm::Value* carrierSlot) {
+        soBase = std::min(soBase, scopeObjects.size());
+        dfBase = std::min(dfBase, deferred.size());
+        rgBase = std::min(rgBase, scopeRegions.size());
+        llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
+        ensurePersonality();
+        std::vector<ScopeObject> objs(scopeObjects.begin() + soBase, scopeObjects.end());
+        std::vector<Cleanup> defs(deferred.begin() + dfBase, deferred.end());
+        std::vector<RegionLocal> regs(scopeRegions.begin() + rgBase, scopeRegions.end());
+        scopeObjects.resize(soBase);
+        deferred.resize(dfBase);
+        scopeRegions.resize(rgBase);
+        llvm::BasicBlock* pad = llvm::BasicBlock::Create(context, "cleanup.catch", currentFn);
+        builder.SetInsertPoint(pad);
+        llvm::LandingPadInst* lp = builder.CreateLandingPad(landingPadType(), 1);
+        lp->addClause(itaniumVoidPtrTypeInfo());
+        llvm::Value* excPtr = builder.CreateExtractValue(lp, 0, "exc");
+        llvm::Value* obj = builder.CreateCall(cxaBeginCatch(), {excPtr}, "caught");
+        builder.CreateCall(cxaEndCatch(), {});
+        emitUnwindCleanupBody(objs, defs, regs);  // block-scoped defers/dtors of the unwound scopes
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) {  // teardown itself may have thrown
+            builder.CreateStore(obj, carrierSlot);
+            builder.CreateBr(dispatchBB);
+        }
+        scopeObjects.insert(scopeObjects.end(), objs.begin(), objs.end());  // restore for the normal path
+        deferred.insert(deferred.end(), defs.begin(), defs.end());
+        scopeRegions.insert(scopeRegions.end(), regs.begin(), regs.end());
+        builder.restoreIP(saved);
+        return pad;
+    }
     // WinEH unwind cleanup. Pure stack-object destructors keep the original, tested cleanuppad-funclet
     // chain (pad_n -> ... -> pad_0 -> finalUnwind), each destructor running under its funclet bundle.
     // When defer/using blocks or live regions are also in scope -- arbitrary code that cannot easily run
@@ -8274,15 +8322,21 @@ struct CodeGenerator::Impl {
     // with a destructor), a fresh cleanup pad that runs it before propagating to the caller; else null.
     // Inside a try, teardown declared in the try body (defer/using/destructors) must run on the
     // caught-exception path too, not only on the normal/return path (spec 23.1). So a faulting point runs
-    // the block-scoped cleanup for the scopes opened since the try body began, then unwinds to the try's
-    // handler. (WinEH only for now; the Itanium in-try path stays as-is -- it needs a Linux environment to
-    // validate the resume-into-enclosing-landingpad behaviour, so it is a later slice.)
+    // the block-scoped cleanup for the scopes opened since the try body began, then reaches the try's
+    // handler -- on WinEH via a cleanup funclet chain into the try pad, on Itanium via a cleanup landing
+    // pad that runs the teardown and branches into the try's clause dispatch (both validated on Linux).
     llvm::BasicBlock* computeUnwindDest() {
         if (!ehPadStack.empty()) {
-            if (!isItaniumEH() && !ehBaseStack.empty()) {
+            if (!ehBaseStack.empty()) {
                 const EhBase& b = ehBaseStack.back();
-                if (hasUnwindCleanupAbove(b.so, b.df, b.rg))
-                    return buildCleanupChain(ehPadStack.back(), b.so, b.df, b.rg);
+                if (hasUnwindCleanupAbove(b.so, b.df, b.rg)) {
+                    if (isItaniumEH()) {
+                        if (b.itDispatch != nullptr)
+                            return buildCleanupDispatchItanium(b.so, b.df, b.rg, b.itDispatch, b.itCarrier);
+                    } else {
+                        return buildCleanupChain(ehPadStack.back(), b.so, b.df, b.rg);
+                    }
+                }
             }
             return ehPadStack.back();
         }
@@ -8429,9 +8483,15 @@ struct CodeGenerator::Impl {
         ensurePersonality();
         llvm::PointerType* ptrTy = builder.getPtrTy();
         llvm::BasicBlock* ehpad = llvm::BasicBlock::Create(context, "ehpad", currentFn);
+        llvm::BasicBlock* dispatchBB = llvm::BasicBlock::Create(context, "try.dispatch", currentFn);
         llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "try.cont", currentFn);
+        // The handler is split so both the direct landing pad and the in-try cleanup landing pads
+        // (buildCleanupDispatchItanium, for throws nested in the body that must run block-scoped teardown
+        // first) converge on one clause-matching block, reading the carrier from a shared slot.
+        llvm::Value* carrierSlot = createEntryAlloca("exc.carrier", ptrTy);
         ehPadStack.push_back(ehpad);
-        ehBaseStack.push_back({scopeObjects.size(), deferred.size(), scopeRegions.size()});
+        ehBaseStack.push_back(
+            {scopeObjects.size(), deferred.size(), scopeRegions.size(), dispatchBB, carrierSlot});
         if (s.finallyBlock != nullptr) finallyStack.push_back(s.finallyBlock.get());
         emitBlock(s.body);
         ehPadStack.pop_back();
@@ -8445,8 +8505,15 @@ struct CodeGenerator::Impl {
         // __cxa_begin_catch on a pointer-typed exception (_ZTIPv) returns the thrown pointer value -- our
         // carrier -- directly, so it is used as-is with no extra load. end_catch then releases the
         // exception; the carrier points at the LDP3 object, which lives on its own, so it stays valid.
-        llvm::Value* obj = builder.CreateCall(cxaBeginCatch(), {excPtr}, "caught");
+        llvm::Value* caught = builder.CreateCall(cxaBeginCatch(), {excPtr}, "caught");
         builder.CreateCall(cxaEndCatch(), {});
+        builder.CreateStore(caught, carrierSlot);
+        builder.CreateBr(dispatchBB);
+
+        // Clause matching, catch bodies, finally and the unmatched rethrow: ordinary code, reached from
+        // the direct pad and from any in-try cleanup pad, with the carrier read once from the slot.
+        builder.SetInsertPoint(dispatchBB);
+        llvm::Value* obj = builder.CreateLoad(ptrTy, carrierSlot, "exc.obj");
         llvm::Value* objVtbl = builder.CreateLoad(ptrTy, obj, "exc.vtbl");  // field 0 (polymorphic)
         for (const ast::CatchClause& cc : s.catches) {
             const std::string cty = baseType(typeRefName(cc.type));
