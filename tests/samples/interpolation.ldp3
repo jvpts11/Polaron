@@ -3,7 +3,7 @@ program Interp;
 
 // M5+: string interpolation as a println argument. The compiler lowers it to a
 // printf with %d/%c specifiers inferred from each {expr}'s type.
-// Expected output: placar: 10 x 7 vez do X / soma = 17
+// Expected output: score: 10 x 7 turn of X / sum = 17
 
 public bundle main {
     public namespace examples {
@@ -12,8 +12,8 @@ public bundle main {
                 int a = 10;
                 int b = 7;
                 char player = 'X';
-                System.IO.Console.println($"placar: {a} x {b} vez do {player}");
-                System.IO.Console.println($"soma = {a + b}");
+                System.IO.Console.println($"score: {a} x {b} turn of {player}");
+                System.IO.Console.println($"sum = {a + b}");
                 return;
             }
         }
