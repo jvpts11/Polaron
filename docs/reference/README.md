@@ -31,6 +31,7 @@ A single typeset PDF of everything below:
 | 9 | [Compile-Time, Reflection & Universal Prefixes](guide/09-metaprogramming-and-prefixes.md) | `comptime`, `static_assert`, reflection, annotations, lifecycle hooks, and `cascade`/`eternal`/`lazy`/`comptime`/`volatile`/`final`. |
 | 10 | [Systems Programming](guide/10-systems-programming.md) | Compiler builtins (`String`, `Decimal`, `Memory`/`address`, SIMD, `Console`), FFI (`extern` + `native_libs`), and freestanding mode. |
 | 11 | [Keyword Reference](guide/11-keyword-reference.md) | Every reserved word, grouped by role, with its meaning, syntax, an example, and its exact status. |
+| 12 | [Diagnostics](guide/12-diagnostics.md) | The `LDP3-NNNN` code system, the rich why/fix/prevent format, `ldp3 explain`, the code ranges, and editor integration. |
 
 ## Part II — The Standard Library
 
