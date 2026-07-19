@@ -1,0 +1,46 @@
+// The ergonomic form (no ceremony):
+//   - 'new Car(...)' without 'on stack/heap' -> defaults to stack (RAII, no delete)
+//   - System.IO.Console.println -> automatic newline (no trailing \n)
+// When you need the "cannon" (manual heap control), that's when you write
+// 'on heap' + 'delete' -- see examples/classes.ldp3.
+
+import System.IO.Console;
+
+program Car;
+
+public bundle main {
+    public namespace main {
+        public class Car {
+            private int tires = 4;
+            private int doors = 4;
+            private mutable boolean isRunning = false;
+
+            public constructor Car(boolean isRunning) {
+                this.isRunning = isRunning;
+                System.IO.Console.println("Constructor called!");
+            }
+
+            public method getState() returns boolean {
+                return this.isRunning;
+            }
+
+            public method setBoolean(boolean state) returns void {
+                this.isRunning = state;
+                System.IO.Console.println("Set state for isRunning!");
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Car car1 = new Car(false);   // no ceremony: defaults to stack
+
+                System.IO.Console.println($"Car1 state: {car1.getState()}");
+                car1.setBoolean(true);
+                System.IO.Console.println($"Car1 state after setting: {car1.getState()}");
+
+                return;   // car1 (stack) is freed automatically at end of scope
+            }
+        }
+    }
+}

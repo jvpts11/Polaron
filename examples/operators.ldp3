@@ -2,6 +2,8 @@
 //
 // Run with:  powershell -ExecutionPolicy Bypass -File scripts\run.ps1 examples\operators.ldp3
 
+import System.IO.Console;
+
 program Operators;
 
 public bundle main {
@@ -12,20 +14,20 @@ public bundle main {
                 int b = 5;
 
                 // Arithmetic, with precedence (* binds tighter than +).
-                System.IO.printf("a + b * 2 = %d\n", a + b * 2);
-                System.IO.printf("a divided by b = %d\n", a / b);
-                System.IO.printf("a modulo b = %d\n", a % b);
+                System.IO.Console.printf("a + b * 2 = %d\n", a + b * 2);
+                System.IO.Console.printf("a divided by b = %d\n", a / b);
+                System.IO.Console.printf("a modulo b = %d\n", a % b);
 
                 // Comparison and logical operators produce booleans (printed as 0/1).
                 boolean inRange = a > 10 && a < 20;
-                System.IO.printf("10 < a < 20 ? %d\n", inRange);
-                System.IO.printf("negation = %d\n", !inRange);
+                System.IO.Console.printf("10 < a < 20 ? %d\n", inRange);
+                System.IO.Console.printf("negation = %d\n", !inRange);
 
                 // Increment / decrement.
                 mutable int n = 0;
                 n++;
                 n++;
-                System.IO.printf("n after two ++ = %d\n", n);
+                System.IO.Console.printf("n after two ++ = %d\n", n);
             }
         }
     }
