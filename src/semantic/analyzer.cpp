@@ -2446,25 +2446,31 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             }
             return;
         }
-        const LocalVar* r = lookupLocal(rel->region);
-        if (r == nullptr) {
-            error("unknown region '" + rel->region + "'", rel->loc);
-        } else if (r->type != "region") {
-            error("'" + rel->region + "' is not a region", rel->loc);
+        // A `this.field` region is validated at codegen (via the field); only a plain local name is
+        // resolved here (spec 17: region as a field).
+        if (rel->region.find('.') == std::string::npos) {
+            const LocalVar* r = lookupLocal(rel->region);
+            if (r == nullptr) {
+                error("unknown region '" + rel->region + "'", rel->loc);
+            } else if (r->type != "region") {
+                error("'" + rel->region + "' is not a region", rel->loc);
+            }
         }
         return;
     }
     if (const auto* rb = dynamic_cast<const ast::RollbackStmt*>(&stmt)) {
         // `rollback region R to m` needs a stack region (LDP3-1713) and a checkpoint captured from that
-        // same region (LDP3-1714).
-        const LocalVar* r = lookupLocal(rb->region);
-        if (r == nullptr)
-            error("unknown region '" + rb->region + "'", rb->loc);
-        else if (r->type != "region")
-            error("'" + rb->region + "' is not a region", rb->loc);
-        else if ((regionFlavor_.count(rb->region) ? regionFlavor_[rb->region] : std::string()) != "stack")
-            error("mark/rollback need a `stack region`, but '" + rb->region + "' is not one (spec 17)",
-                  rb->loc);
+        // same region (LDP3-1714). A `this.field` region is validated at codegen.
+        if (rb->region.find('.') == std::string::npos) {
+            const LocalVar* r = lookupLocal(rb->region);
+            if (r == nullptr)
+                error("unknown region '" + rb->region + "'", rb->loc);
+            else if (r->type != "region")
+                error("'" + rb->region + "' is not a region", rb->loc);
+            else if ((regionFlavor_.count(rb->region) ? regionFlavor_[rb->region] : std::string()) != "stack")
+                error("mark/rollback need a `stack region`, but '" + rb->region + "' is not one (spec 17)",
+                      rb->loc);
+        }
         const std::string ct = rb->checkpoint ? typeOf(*rb->checkpoint) : std::string();
         if (!ct.empty() && ct != "checkpoint")
             error("`rollback ... to` expects a checkpoint (from `mark of region`), not a '" + ct + "'",
@@ -3081,14 +3087,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
     if (const auto* mk = dynamic_cast<const ast::MarkExpr*>(&expr)) {
         // `mark of region R` yields a `checkpoint`; mark/rollback need a `stack region` (LDP3-1713).
-        const LocalVar* r = lookupLocal(mk->region);
-        if (r == nullptr)
-            error("unknown region '" + mk->region + "' in mark", mk->loc);
-        else if (r->type != "region")
-            error("'" + mk->region + "' is not a region", mk->loc);
-        else if ((regionFlavor_.count(mk->region) ? regionFlavor_[mk->region] : std::string()) != "stack")
-            error("mark/rollback need a `stack region`, but '" + mk->region + "' is not one (spec 17)",
-                  mk->loc);
+        // A `this.field` region is validated at codegen (spec 17: region as a field).
+        if (mk->region.find('.') == std::string::npos) {
+            const LocalVar* r = lookupLocal(mk->region);
+            if (r == nullptr)
+                error("unknown region '" + mk->region + "' in mark", mk->loc);
+            else if (r->type != "region")
+                error("'" + mk->region + "' is not a region", mk->loc);
+            else if ((regionFlavor_.count(mk->region) ? regionFlavor_[mk->region] : std::string()) != "stack")
+                error("mark/rollback need a `stack region`, but '" + mk->region + "' is not one (spec 17)",
+                      mk->loc);
+        }
         return "checkpoint";
     }
     if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {

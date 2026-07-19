@@ -1,0 +1,45 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionFieldPool;
+
+// A region flavor works on a class FIELD too (spec 17): the object owns a `pool region` arena and
+// churns objects through it, reclaiming each slot -- the pattern behind Forge's terminal pool.
+
+public bundle main {
+    public namespace app {
+
+        public class Dog {
+            public mutable int age;
+            public constructor Dog(int a) {
+                this.age = a;
+            }
+        }
+
+        public class Kennel {
+            private pool region den;
+            public constructor Kennel() {
+                this.den = itself.allocate(4 kilobytes);
+            }
+            public method churn() returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < 100000; i++) {
+                    Dog* d = new Dog(1) in region this.den;
+                    s = s + d.age;
+                    delete d from region this.den;   // reclaims the field region's slot
+                }
+                return s;
+            }
+            public destructor ~Kennel() returns void {
+                release region this.den;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Kennel k = new Kennel() on stack;
+                System.IO.Console.printf("s=%d\n", k.churn());   // 100000
+                return;
+            }
+        }
+    }
+}

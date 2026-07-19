@@ -93,11 +93,11 @@
         },
         {
           "name": "storage.modifier.ldp3",
-          "match": "\\b(public|private|protected|internal|static|abstract|final|override|mutable|nullable|sealed|permits|var|move|movable|unique|partitionable|extern|cdecl|stdcall|fastcall|freestanding|persistent|eternal|transient|comptime|literal|fixed|volatile|cascade|lazy|external|release|reimport|unimport|requires|ensures|invariant|static_assert|extends|implements)\\b"
+          "match": "\\b(public|private|protected|internal|static|abstract|final|override|mutable|nullable|sealed|permits|var|move|movable|unique|partitionable|extern|cdecl|stdcall|fastcall|freestanding|persistent|eternal|transient|comptime|literal|fixed|volatile|cascade|lazy|external|release|reimport|unimport|requires|ensures|invariant|static_assert|extends|implements|bump|pool|stack|fixedslot|ring|growable)\\b"
         },
         {
           "name": "keyword.operator.word.ldp3",
-          "match": "\\b(new|delete|on|in|is|as|cast|of|accepts|rejects)\\b"
+          "match": "\\b(new|delete|on|in|is|as|cast|of|accepts|rejects|extract|mark|rollback)\\b"
         }
       ]
     },
@@ -113,7 +113,7 @@
       "patterns": [
         {
           "name": "storage.type.primitive.ldp3",
-          "match": "\\b(void|boolean|char|string|String|int8|int16|int32|int64|int|uint8|uint16|uint32|uint64|short|long|byte|float32|float64|float|double|Decimal)\\b"
+          "match": "\\b(void|boolean|char|string|String|int8|int16|int32|int64|int|uint8|uint16|uint32|uint64|short|long|byte|float32|float64|float|double|Decimal|checkpoint)\\b"
         }
       ]
     },

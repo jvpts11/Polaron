@@ -1354,6 +1354,16 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
                                   bool isVolatile, bool isLazy, bool isExternal, bool isMovable,
                                   bool isUnique, bool isAbstract, bool isOverride, bool isFinal) {
     const SourceLocation loc = current().loc;
+    // Region flavor / growth soft keywords (spec 17 flavors) on a `region` field, before the type.
+    std::string fieldRegionFlavor;
+    bool fieldRegionGrowable = false;
+    while (isRegionFlavorWord(current())) {
+        const std::string w = current().lexeme;
+        advance();
+        if (w == "growable") fieldRegionGrowable = true;
+        else if (fieldRegionFlavor.empty()) fieldRegionFlavor = w;
+        else fieldRegionFlavor += " " + w;  // two flavors -> LDP3-1710 in the analyzer
+    }
     ast::TypeRef type = parseTypeRef();
     const std::string name = expect(TokenKind::Identifier, "a field name").lexeme;
     // A `{` here makes it a property (spec 8.4) rather than a plain field. Inheritance modifiers
@@ -1375,6 +1385,8 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->isExternal = isExternal;
     f->isMovable = isMovable;
     f->isUnique = isUnique;
+    f->regionFlavor = fieldRegionFlavor;
+    f->regionGrowable = fieldRegionGrowable;
     f->type = std::move(type);
     f->name = name;
     // Bit-field width: `field : N` (spec 11.1). Constrains the stored value to N bits.
@@ -2275,7 +2287,7 @@ ast::StmtPtr Parser::parseStatement() {
             ast::ExprPtr t = parseExpression();
             if (match(TokenKind::KwOf)) {
                 expect(TokenKind::KwRegion, "'region' after 'of'");
-                del->fromRegion = expect(TokenKind::Identifier, "the region name").lexeme;
+                del->fromRegion = parseRegionName();
             }
             return t;
         };
@@ -2288,7 +2300,7 @@ ast::StmtPtr Parser::parseStatement() {
         if (check(TokenKind::Identifier) && current().lexeme == "from") {
             advance();  // 'from'
             if (match(TokenKind::KwRegion))
-                del->fromRegion = expect(TokenKind::Identifier, "the region name").lexeme;
+                del->fromRegion = parseRegionName();
             else if (check(TokenKind::Identifier) && current().lexeme == "heap") {
                 advance();  // 'heap'
                 del->fromHeap = true;
@@ -2304,7 +2316,7 @@ ast::StmtPtr Parser::parseStatement() {
         rel->loc = current().loc;
         advance();  // 'release'
         if (match(TokenKind::KwRegion)) {
-            rel->region = expect(TokenKind::Identifier, "the region name").lexeme;
+            rel->region = parseRegionName();
         } else {
             // `release persistent obj.field;` / `release eternal obj.field;` (spec 18.13/18.15).
             if (!match(TokenKind::KwPersistent)) expect(TokenKind::KwEternal, "'region', 'persistent' or 'eternal' after 'release'");
@@ -2322,7 +2334,7 @@ ast::StmtPtr Parser::parseStatement() {
         rb->loc = current().loc;
         advance();  // 'rollback'
         advance();  // 'region'
-        rb->region = expect(TokenKind::Identifier, "the region name after 'rollback region'").lexeme;
+        rb->region = parseRegionName();
         if (!(check(TokenKind::Identifier) && current().lexeme == "to"))
             fail("expected 'to <checkpoint>' after 'rollback region <name>' (spec 17)", current().loc);
         advance();  // 'to'
@@ -2440,6 +2452,16 @@ bool Parser::looksLikeFlavoredRegionDecl() const {
 // dispatch so `extract d from ...` is not mis-parsed as declaring a variable `d` of a class `extract`
 // (the analyzer then rejects the unbound extract with LDP3-1720). Requires `from` to follow the lvalue,
 // so `extract d = ...` (a real declaration of a class named `extract`) is left to the var-decl path.
+// A region reference in an operation (`... region R` / `... region this.field`): a local name, or a
+// region field reached through `this` (spec 17: region as a field). Mirrors the `new ... in region` form.
+std::string Parser::parseRegionName() {
+    std::string r;
+    if (match(TokenKind::KwThis)) r = "this";
+    else r = expect(TokenKind::Identifier, "the region name").lexeme;
+    while (match(TokenKind::Dot)) r += "." + expect(TokenKind::Identifier, "a field name").lexeme;
+    return r;
+}
+
 bool Parser::looksLikeExtractStmt() const {
     if (!(check(TokenKind::Identifier) && current().lexeme == "extract")) return false;
     int i = 1;
@@ -3152,7 +3174,7 @@ ast::ExprPtr Parser::parseUnary() {
         advance();  // 'mark'
         advance();  // 'of'
         advance();  // 'region'
-        mk->region = expect(TokenKind::Identifier, "the region name after 'mark of region'").lexeme;
+        mk->region = parseRegionName();
         return mk;
     }
     // `extract X from region R` (spec 17, flavors expansion): relocate X out of a region and yield the
@@ -3169,7 +3191,7 @@ ast::ExprPtr Parser::parseUnary() {
             fail("expected 'from region <name>' after the object to extract (spec 17)", current().loc);
         advance();  // 'from'
         expect(TokenKind::KwRegion, "'region' after 'from' in an extract");
-        ex->region = expect(TokenKind::Identifier, "the region name").lexeme;
+        ex->region = parseRegionName();
         return ex;
     }
     // `move x` transfers ownership (the source becomes invalid); `move x as T` also reinterprets the
@@ -3189,7 +3211,7 @@ ast::ExprPtr Parser::parseUnary() {
                 peek(1).kind == TokenKind::KwRegion) {
                 const std::string kw = advance().lexeme;  // from / to / into
                 advance();                                // 'region'
-                const std::string rgn = expect(TokenKind::Identifier, "the region name").lexeme;
+                const std::string rgn = parseRegionName();
                 if (kw == "from") mv->fromRegion = rgn;
                 else mv->toRegion = rgn;  // to / into region: relocate here
             } else if (check(TokenKind::Identifier) &&
@@ -3662,11 +3684,7 @@ ast::ExprPtr Parser::parseNew() {
     // accessed through `this` (spec 17: region as a field). Takes precedence.
     if (match(TokenKind::KwIn)) {
         expect(TokenKind::KwRegion, "'region' after 'in'");
-        std::string r;
-        if (match(TokenKind::KwThis)) r = "this";
-        else r = expect(TokenKind::Identifier, "the region name").lexeme;
-        while (match(TokenKind::Dot)) r += "." + expect(TokenKind::Identifier, "a field name").lexeme;
-        e->region = r;
+        e->region = parseRegionName();  // a local name or a `this.field` region (spec 17)
     }
     return e;
 }

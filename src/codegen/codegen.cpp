@@ -2583,6 +2583,29 @@ struct CodeGenerator::Impl {
     static bool usesRuntimeDesc(const std::string& f) {
         return f == "pool" || f == "fixedslot" || f == "stack" || f == "ring";
     }
+    // The declared flavor of a region referenced by `name`: a local (regionFlavor_) or a `this.field`
+    // region (looked up on the current class's field). "" == bump.
+    const ast::FieldDecl* regionFieldDecl(const std::string& name) {
+        const auto dot = name.find('.');
+        if (dot == std::string::npos || currentClass.empty()) return nullptr;
+        auto cit = classes.find(currentClass);
+        if (cit == classes.end() || cit->second.decl == nullptr) return nullptr;
+        const std::string fname = name.substr(dot + 1);
+        for (const ast::MemberPtr& m : cit->second.decl->members)
+            if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()))
+                if (fd->name == fname) return fd;
+        return nullptr;
+    }
+    std::string flavorOfRegion(const std::string& name) {
+        if (auto it = regionFlavor_.find(name); it != regionFlavor_.end()) return it->second;
+        if (const ast::FieldDecl* fd = regionFieldDecl(name)) return fd->regionFlavor;
+        return std::string();
+    }
+    bool growableOfRegion(const std::string& name) {
+        if (growableRegions_.count(name) > 0) return true;
+        if (const ast::FieldDecl* fd = regionFieldDecl(name)) return fd->regionGrowable;
+        return false;
+    }
     // The flavored-region data offset -- MUST match LDP3_REGION_HDR in runtime/ldp3_rt.cpp.
     static constexpr unsigned kRegionHdr = 448u;
     // The descriptor flavor code stored at block+24 (matches the runtime's reading).
@@ -4305,7 +4328,7 @@ struct CodeGenerator::Impl {
             // Reclaim/untrack the vacated slot on a pool/fixedslot/stack region (the runtime free untracks
             // a stack object so rollback/release never re-destructs the bytes that moved to the heap).
             const std::string rflavor =
-                regionFlavor_.count(ex->region) ? regionFlavor_[ex->region] : std::string();
+                flavorOfRegion(ex->region);
             if (usesRuntimeDesc(rflavor)) {
                 llvm::Value* block = builder.CreateLoad(
                     builder.getPtrTy(), regionStorageSlot(ex->region), "region");
@@ -4837,8 +4860,8 @@ struct CodeGenerator::Impl {
             error("unknown region '" + name + "'", loc);
             return nullptr;
         }
-        const std::string flavor = regionFlavor_.count(name) ? regionFlavor_[name] : std::string();
-        const bool growable = growableRegions_.count(name) > 0;
+        const std::string flavor = flavorOfRegion(name);
+        const bool growable = growableOfRegion(name);
         // An owned local region (not `at address`, not multi-range, not a field) is the hot arena case.
         // Its data begins at block+24 and its `used` header field is write-only (nothing -- runtime
         // release included -- reads it), so we keep the bump cursor in a local i64 alloca (created at the
@@ -5165,7 +5188,7 @@ struct CodeGenerator::Impl {
         // A stack region records each constructed object that has a destructor, so `rollback`/`release`
         // can run those destructors newest-first (the runtime registry, not scopeObjects, owns them).
         if (!nw.region.empty() && cit->second.hasDestructor &&
-            isStackFlavor(regionFlavor_.count(nw.region) ? regionFlavor_[nw.region] : std::string())) {
+            isStackFlavor(flavorOfRegion(nw.region))) {
             llvm::Value* block =
                 builder.CreateLoad(builder.getPtrTy(), regionStorageSlot(nw.region), "region");
             builder.CreateCall(regionTrackFn(), {block, objPtr, functions[cn + ".~" + cn]});
@@ -8820,7 +8843,7 @@ struct CodeGenerator::Impl {
                     // A STACK- or RING-region object is NOT tracked here: the runtime owns its destructor
                     // (the stack registry / the ring teardown), so scopeObjects would double-destruct it.
                     const std::string rfl =
-                        regionFlavor_.count(nw->region) ? regionFlavor_[nw->region] : std::string();
+                        flavorOfRegion(nw->region);
                     if (!nw->region.empty() && !isStackFlavor(rfl) && !isRingFlavor(rfl))
                         scopeObjects.push_back(ScopeObject{slot, nw->className, nw->region});
                     else if (nw->region.empty() && nw->location == "stack")
@@ -9009,7 +9032,17 @@ struct CodeGenerator::Impl {
             }
             llvm::Value* slot = emitLValue(*assign->target);
             if (slot == nullptr) return;
+            // A `this.field = itself.allocate(...)` init of a flavored region field: thread the field's
+            // flavor/growth into the RegionInitExpr RHS so it lays out the right header (spec 17 fields).
+            if (targetType == "region")
+                if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
+                    if (const ast::FieldDecl* fd = regionFieldDecl("this." + mt->member)) {
+                        pendingRegionFlavor_ = fd->regionFlavor;
+                        pendingRegionGrowable_ = fd->regionGrowable;
+                    }
             llvm::Value* v = emitExpr(*assign->value);
+            pendingRegionFlavor_.clear();
+            pendingRegionGrowable_ = false;
             if (v == nullptr) return;
             pendingPersistIndex = nullptr;  // defensive: never leak into the next new
             // Value semantics: assigning a class value makes the target an independent copy.
@@ -9263,7 +9296,7 @@ struct CodeGenerator::Impl {
                     // (pool/fixedslot: free-list; stack: untrack + LIFO reclaim). A bump region reclaims
                     // only on release.
                     const std::string rflavor =
-                        regionFlavor_.count(del->fromRegion) ? regionFlavor_[del->fromRegion] : std::string();
+                        flavorOfRegion(del->fromRegion);
                     const bool runtimeReclaim = usesRuntimeDesc(rflavor) && cit != classes.end();
                     if (runtimeReclaim) builder.CreateCall(checkLiveFn(), {objPtr});
                     if (cit != classes.end() && cit->second.hasDestructor)
@@ -9332,10 +9365,10 @@ struct CodeGenerator::Impl {
                 // its live entries -- both before the block is freed. A growable region frees its whole
                 // block chain (bump/pool/fixedslot only -- growable stack/ring are rejected in sema).
                 const std::string relFlavor =
-                    regionFlavor_.count(rel->region) ? regionFlavor_[rel->region] : std::string();
+                    flavorOfRegion(rel->region);
                 if (isStackFlavor(relFlavor)) builder.CreateCall(regionTeardownFn(), {block});
                 else if (isRingFlavor(relFlavor)) builder.CreateCall(ringTeardownFn(), {block});
-                if (growableRegions_.count(rel->region))
+                if (growableOfRegion(rel->region))
                     builder.CreateCall(regionFreeChainFn(), {block});
                 else
                     builder.CreateCall(regionReleaseFn(), {block});
@@ -9624,10 +9657,10 @@ struct CodeGenerator::Impl {
                 builder.CreateLoad(builder.getPtrTy(), scopeRegions[i - 1].slot, "region");
             // stack tears down its registry, ring destructs its live entries -- on scope exit and
             // exception unwind alike, so region objects are reclaimed either way (spec 17.7).
-            const std::string rfl = regionFlavor_.count(rname) ? regionFlavor_[rname] : std::string();
+            const std::string rfl = flavorOfRegion(rname);
             if (isStackFlavor(rfl)) builder.CreateCall(regionTeardownFn(), {block});
             else if (isRingFlavor(rfl)) builder.CreateCall(ringTeardownFn(), {block});
-            if (growableRegions_.count(rname))
+            if (growableOfRegion(rname))
                 builder.CreateCall(regionFreeChainFn(), {block});  // free the whole grown chain
             else
                 builder.CreateCall(regionReleaseFn(), {block});  // cache the block for reuse (see runtime)

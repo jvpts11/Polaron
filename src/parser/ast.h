@@ -806,6 +806,8 @@ struct FieldDecl : MemberDecl {
     TypeRef type;
     std::string name;
     int bitWidth = 0;  // `field : N` bit-field width (spec 11.1); 0 = not a bit-field
+    std::string regionFlavor;    // spec 17 flavors: a `pool/stack/... region` field ("" = bump)
+    bool regionGrowable = false; // spec 17: a `growable region` field
     std::string propertySetter;  // spec 8.4: setter method name when this field backs a `set { }`
     ExprPtr init;  // optional inline initializer (null if none); see spec 940
     std::vector<AnnotationUse> annotations;  // applied `[Name(...)]` annotations (spec 14.3)
