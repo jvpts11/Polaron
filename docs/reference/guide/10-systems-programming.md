@@ -487,7 +487,7 @@ Freestanding LDP3 is not a toy subset. What survives is almost the entire *value
   exception — they are removed, because they depend on persistents.)
 - **Regions — `region`, `release region`, `itself`, `new ... in region`, including `at address`.**
   Type-safe manual memory with predictable layout; see the MMIO use below.
-- **`comptime`** functions, `const`, `static_assert`, and compile-time string DSLs.
+- **`comptime`** functions, `fixed` constants, `static_assert`, and compile-time string DSLs.
 - **The bit-counted numeric types — `int8`…`int64`, `uint8`…`uint64`, `float32`/`float64`, and
   `address`.** These are actually **freestanding-only**: in normal mode LDP3 uses the named types
   (`byte`/`short`/`int`/`long`, `smallfloat`/`float`/`double`, etc.) and the compiler *rejects* the

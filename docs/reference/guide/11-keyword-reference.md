@@ -30,7 +30,8 @@ chapter documents what the compiler accepts today and flags the difference.
 > - `operator` uses `operator + (...)`, not the legacy `operator method +(...)`.
 > - `cdecl`/`stdcall`/`fastcall`/`byCatalog`/`expecting`/`onFailure` are called "contextual" in spec 39,
 >   but the lexer reserves them as **hard keywords**.
-> - `yield` is the value of a `match`-expression arm (spec 16.2), not a generator construct.
+> - `yield` has two uses: the value of a `match`-expression arm (spec 16.2), and producing the
+>   next element of a generator method that returns `Iterator<T>` (spec 22.6).
 
 ---
 
@@ -180,6 +181,12 @@ public record Point(int x, int y);
 
 #### `permits`
 **hard.** Lists the allowed subclasses of a `sealed` class.
+
+#### `partial`
+**hard.** A class declared in several parts (across files); the compiler merges them into one type.
+
+#### `deprecated`
+**hard.** Marks a declaration as deprecated; using it raises a compiler warning.
 
 ---
 
@@ -353,7 +360,9 @@ defer { file.close(); }
 **hard.** Exhaustive pattern matching on dynamic type (statement form, and an expression form with `->`).
 
 #### `yield`
-**hard.** The value of a block arm in a `match` expression (spec 16.2).
+**hard.** Two uses: the value of a block arm in a `match` expression (spec 16.2); and, inside a
+method that returns `Iterator<T>`, producing the next element of a generator (spec 22.6) — the
+compiler lowers such a method to a state machine.
 
 #### `goto`
 **hard.** A jump to a `label` (intra-method; also goto-address in freestanding). Part of the "chaos tetrad". **Available in freestanding.**
@@ -572,6 +581,18 @@ identifiers elsewhere.
 | `onLastInstanceDestroyed` | class body (hook) | `onLastInstanceDestroyed { teardown(); }` (removed in freestanding) |
 | `onClassUnload` | class body (hook) | `onClassUnload { cleanup(); }` (removed in freestanding) |
 | `asm` | `asm("arch") { ... }` | an inline assembly block; a normal identifier otherwise |
+| `funcptr` | type position | `funcptr<int, int>` — a bare C function-pointer type for dynamic FFI |
+| `named` | `requires named` | `requires named` — a parameter that must be passed by name |
+| `explicit` | conversion operator | `explicit operator Foo(...)` — an explicit-only conversion (spec 6.6) |
+| `implicit` | conversion operator | `implicit operator Foo(...)` — an implicit conversion (spec 6.6) |
+| `bidirectional` | type declaration | a type with a two-way conversion pair (spec 32.6) |
+| `affinity` / `hot` / `cold` | `affinity { ... }` block | field layout / cache-locality hints (spec 32.9) |
+| `within` | `defer within ...` | `defer within 5 seconds { ... }` — a deferred action with a timeout (spec 32.10) |
+| `library` | `extern` clause | `extern ... library "name"` — names the native library to link |
+| `bump` / `pool` / `stack` / `fixedslot` / `ring` | `region` declaration | the region's allocator flavor (spec 17.11); default is `bump` |
+| `growable` | `region` declaration | a region that chains a new block when the current one is full |
+| `mark` / `rollback` | region ops | `mark of region R` / `rollback region R to m` (stack regions) |
+| `extract` | `extract X from region R` | relocate an object out of a region onto the heap |
 
 > `carrying`/`leaving`/`releasing` are **removed in freestanding** (they depend on persistents).
 > The contextual type names (`ubyte`/`ushort`/`uint`/`ulong`/`smallfloat`/`quadruple`/`address`) are
@@ -590,15 +611,9 @@ for completeness — they do not work today.
 | `const` | compile-time constant | **Replaced by `fixed`** in the implementation; `const` is not reserved. |
 | `module` | future organizational unit | Reserved in the spec only; not implemented. |
 | `package` | future package system | Reserved in the spec only; not implemented. |
-| `library` | future library system | Reserved in the spec only; not implemented. |
-| `partial` | a class split across files | Documented; not recognized by the compiler. |
 | `delegate` | a method-reference type | Not implemented — use `methodref`/`lambda`. |
-| `affinity` / `hot` / `cold` | layout hints (cache locality) | Documented; not recognized. |
-| `bidirectional` | a type with two-way conversion | Not implemented. |
-| `within` | a timeout in `defer within ...` | Documented in the spec; not recognized. |
 | `force` | an `unimport` modifier | Contextual in the spec; not recognized. |
 | `timeout` | an `unimport` modifier | Not recognized as an unimport keyword (exists only as a `Channel.select` method). |
-| `deprecated` | marks something deprecated | Documented; not recognized (use `annotation`). |
 | `serializable` | marks something serializable | Documented; not recognized. |
 | `version` | bundle versioning | Reserved in the spec only; not implemented. |
 | `checked` / `saturating` / `wrapping` / `unchecked` | arithmetic modes | `checked(expr)` exists as a **builtin**, not a keyword; the others became stdlib methods. |
@@ -629,8 +644,8 @@ bit-counted type names.
 
 **Removed (hard keywords forbidden in freestanding):**
 ```
-async  await  catch  delegate  finally  lazy  persistent
-throw  throws  try  unimport  reimport  using  within
+async  await  catch  finally  lazy  persistent
+throw  throws  try  unimport  reimport  using
 expecting  onFailure
 onClassUnload  onLastInstanceDestroyed
 ```
