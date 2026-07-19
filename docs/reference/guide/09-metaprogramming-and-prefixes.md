@@ -367,6 +367,55 @@ Each hook fires at a precise moment:
 The counter-based hooks make a common pattern trivial: a connection pool sets up on the first live
 object and tears down when the last one dies, without any global flag written by hand.
 
+### `unimport` and `reimport`: hot unloading a class
+
+LDP3's managed runtime can unload a class's *code* at runtime and load it back. This is the
+basis for hot-reload and plugin systems.
+
+**`unimport X`** does two things: it marks the class dead, and it physically overwrites its
+machine code in memory with trap instructions (`int3`, byte `0xCC`) — the code is really gone,
+not just flagged. Any later use of the type — a `new`, or a method call on a surviving
+instance — is caught by the alive guard and throws `UnimportedTypeException`, so control never
+branches into the destroyed code. `onClassUnload` (above) fires just before the code is torn
+out.
+
+```ldp3
+import System.Runtime.UnimportedTypeException;
+
+unimport Dog;
+try {
+    a.bark();                       // a survives, but Dog's code is gone
+} catch (UnimportedTypeException e) {
+    System.IO.Console.println("Dog is unloaded");
+}
+```
+
+**`reimport X`** brings the code back by reloading the class's original bytes from the
+program's own file on disk, after which the type works normally again.
+
+For safe hot-reload you usually want to *verify* that the reloaded code is the version you
+expect. The `expecting` challenge–response does this: `unimport X expecting using <inputs> { ... }`
+runs a block in the **old** code to produce a validation value, and the matching
+`reimport X expecting <value> using <inputs> { ... } onFailure { ... }` runs the block in the
+**new** code and compares its result, bit for bit, with the saved value. On a match the program
+continues; on a mismatch the `onFailure` block runs instead.
+
+```ldp3
+int salt = 7;
+var proof = unimport Plugin expecting using salt {
+    return Plugin.fingerprint(salt);
+};
+
+reimport Plugin expecting proof using salt {
+    return Plugin.fingerprint(salt);       // new code must reproduce `proof`
+} onFailure {
+    System.IO.Console.println("rejected: the reloaded code is not the expected version");
+};
+```
+
+Because unimport/reimport depend on the managed runtime, they are unavailable in freestanding
+mode (see [§9.6](#96-availability-in-freestanding-mode)).
+
 ---
 
 ## 9.5 The universal prefixes
