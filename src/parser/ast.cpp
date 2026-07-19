@@ -83,6 +83,11 @@ void MoveExpr::dump(std::string& out, int indent) const {
     operand->dump(out, indent + 1);
 }
 
+void ExtractExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Extract from region " + region);
+    if (target) target->dump(out, indent + 1);
+}
+
 void RegionInitExpr::dump(std::string& out, int indent) const {
     std::string head = "RegionInit";
     for (const auto& a : accepts) head += " accepts " + a;
@@ -251,9 +256,11 @@ void SynchronizedStmt::dump(std::string& out, int indent) const {
 void VarDeclStmt::dump(std::string& out, int indent) const {
     std::string head = "VarDecl '" + name + "'";
     if (isMutable) head += " mutable";
+    if (regionGrowable) head += " growable";
+    if (!regionFlavor.empty()) head += " flavor=" + regionFlavor;
     head += isVar ? " var" : (" : " + typeText(type));
     line(out, indent, head);
-    init->dump(out, indent + 1);
+    if (init) init->dump(out, indent + 1);  // an empty region decl (`region r;`) has no initializer
 }
 
 void TupleDeclStmt::dump(std::string& out, int indent) const {

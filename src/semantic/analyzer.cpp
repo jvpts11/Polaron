@@ -1642,9 +1642,11 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<const ast::Expr*>& contracts) {
     scopes_.clear();
     moved_.clear();
+    extracted_.clear();
     deleted_.clear();
     catchStack_.clear();
     regionConstraints_.clear();
+    regionFlavor_.clear();
     methodLabels_.clear();
     comefromTargets_.clear();
     collectMethodLabels(body);  // chaos tetrad targets are validated against these (spec 7.9-7.11)
@@ -2161,6 +2163,30 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const std::string initType = vd->init ? typeOf(*vd->init) : std::string();
         const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);
         if (!vd->isVar) checkTypeAccessible(declType, vd->loc);
+        // Region flavor / growth modifiers (spec 17, flavors expansion): a flavor word only qualifies a
+        // region (LDP3-1719), and a region has exactly one flavor (LDP3-1710). The parser space-joins two
+        // flavor words into regionFlavor so both names surface here.
+        if (!vd->regionFlavor.empty() || vd->regionGrowable) {
+            if (declType != "region") {
+                const std::string w = !vd->regionFlavor.empty()
+                                          ? vd->regionFlavor.substr(0, vd->regionFlavor.find(' '))
+                                          : std::string("growable");
+                error("'" + w + "' only qualifies a region (spec 17), not a '" + declType +
+                          "' declaration",
+                      vd->loc);
+            } else {
+                const std::size_t sp = vd->regionFlavor.find(' ');
+                if (sp != std::string::npos) {
+                    const std::string a = vd->regionFlavor.substr(0, sp);
+                    const std::string b = vd->regionFlavor.substr(sp + 1);
+                    error("a region has exactly one flavor, but region '" + vd->name +
+                              "' was given two ('" + a + "' and '" + b + "')",
+                          vd->loc);
+                } else {
+                    regionFlavor_[vd->name] = vd->regionFlavor;  // record for extract/delete checks
+                }
+            }
+        }
         if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType) &&
             !intLiteralFits(*vd->init, declType)) {
             error("cannot initialize variable '" + vd->name + "' of type '" + declType +
@@ -2212,6 +2238,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         checkAssignTarget(*assign->target, vt, assign->loc, assign->value.get());
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get())) {
             moved_.erase(id->name);  // reassignment reactivates the variable
+            extracted_.erase(id->name);  // ... including after an `x = extract x from region R;`
             const LocalVar* var = lookupLocal(id->name);
             if (var != nullptr) checkOwnershipAssign(var->type, *assign->value, assign->loc);
         }
@@ -2310,6 +2337,12 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
+        // LDP3-1720: `extract` transfers ownership to its result, so a bare `extract ...;` statement leaks
+        // the object it just relocated. Its result must be bound to a variable or field.
+        if (dynamic_cast<const ast::ExtractExpr*>(es->expr.get()) != nullptr)
+            error("an extract result must be bound to a variable or field (spec 17): "
+                  "write `T* out = extract ...;`, or use `delete X from region R;` to just destroy it",
+                  es->expr->loc);
         typeOf(*es->expr);
         return;
     }
@@ -2813,7 +2846,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                   id->loc);
             return "";
         }
-        if (moved_.count(id->name) > 0) {
+        if (auto ex = extracted_.find(id->name); ex != extracted_.end()) {
+            error("variable '" + id->name + "' was extracted from its region (line " +
+                      std::to_string(ex->second) + ") and cannot be used again; use the value extract "
+                      "returned",
+                  id->loc);
+        } else if (moved_.count(id->name) > 0) {
             error("use of variable '" + id->name +
                       "' after it was moved (reassign it before using)",
                   id->loc);
@@ -2959,6 +2997,23 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
         }
         return mv->castType.empty() ? t : mv->castType;  // `move x as T` reinterprets to T (spec 19.3)
+    }
+    if (const auto* ex = dynamic_cast<const ast::ExtractExpr*>(&expr)) {
+        // `extract X from region R` (spec 17): the region must exist; the object type is the result type
+        // (an owning pointer to the relocated object). The source variable is spent afterwards (like move).
+        const std::string t = typeOf(*ex->target);  // also checks the target's first (valid) use
+        const LocalVar* r = lookupLocal(ex->region);
+        if (r == nullptr)
+            error("unknown region '" + ex->region + "' in extract", ex->loc);
+        else if (r->type != "region")
+            error("'" + ex->region + "' is not a region", ex->loc);
+        // LDP3-1717: mark the source spent so a later read is rejected with the extract-specific message.
+        // Only a plain variable can be flow-tracked; an element/field target is nulled at run time instead.
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(ex->target.get())) {
+            extracted_[id->name] = ex->loc.line;
+            moved_.insert(id->name);
+        }
+        return t;
     }
     if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
         // try? Result<T,E>/Option<T> yields T (the first type arg of the operand's instantiation).

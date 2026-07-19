@@ -310,6 +310,13 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->operand = cloneExpr(x->operand.get(), s);
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::ExtractExpr*>(e)) {
+        auto n = std::make_unique<ast::ExtractExpr>();
+        n->loc = x->loc;
+        n->target = cloneExpr(x->target.get(), s);
+        n->region = x->region;
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::TryExpr*>(e)) {
         auto n = std::make_unique<ast::TryExpr>();
         n->loc = x->loc;
@@ -800,6 +807,7 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
     if (const auto* x = dynamic_cast<const ast::UnaryExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::IndexExpr*>(e)) { collectExpr(x->array.get(), g, out); collectExpr(x->index.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::MoveExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::ExtractExpr*>(e)) { collectExpr(x->target.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::TryExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::CastExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::InterpStringExpr*>(e)) { for (const auto& ex : x->exprs) collectExpr(ex.get(), g, out); return; }
@@ -898,6 +906,7 @@ void collectMethExpr(const ast::Expr* e, MethInsts& out) {
     if (const auto* x = dynamic_cast<const ast::UnaryExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::IndexExpr*>(e)) { collectMethExpr(x->array.get(), out); collectMethExpr(x->index.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::MoveExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::ExtractExpr*>(e)) { collectMethExpr(x->target.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::TryExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::CastExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::NewExpr*>(e)) { for (const auto& a : x->args) collectMethExpr(a.get(), out); return; }
@@ -967,6 +976,7 @@ void rewriteMethExpr(ast::Expr* e) {
     if (auto* x = dynamic_cast<ast::UnaryExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
     if (auto* x = dynamic_cast<ast::IndexExpr*>(e)) { rewriteMethExpr(x->array.get()); rewriteMethExpr(x->index.get()); return; }
     if (auto* x = dynamic_cast<ast::MoveExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
+    if (auto* x = dynamic_cast<ast::ExtractExpr*>(e)) { rewriteMethExpr(x->target.get()); return; }
     if (auto* x = dynamic_cast<ast::TryExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
     if (auto* x = dynamic_cast<ast::CastExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
     if (auto* x = dynamic_cast<ast::NewExpr*>(e)) { for (auto& a : x->args) rewriteMethExpr(a.get()); return; }

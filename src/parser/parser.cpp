@@ -216,6 +216,15 @@ bool isTypeKeyword(TokenKind k) {
     }
 }
 
+// Region flavor / growth soft keywords (spec 17, flavors expansion). These are contextual: they act
+// as modifiers only immediately before a `region` type, and stay ordinary identifiers everywhere else.
+bool isRegionFlavorWord(const Token& t) {
+    if (t.kind != TokenKind::Identifier) return false;
+    const std::string& s = t.lexeme;
+    return s == "bump" || s == "pool" || s == "stack" || s == "fixedslot" ||
+           s == "ring" || s == "growable";
+}
+
 // Binary operator precedence (higher binds tighter); 0 means "not a binary op".
 int binaryPrec(TokenKind k) {
     switch (k) {
@@ -2318,6 +2327,11 @@ ast::StmtPtr Parser::parseStatement() {
     if (looksLikeTupleDestructuring()) {
         return parseTupleDecl();
     }
+    // A bare `extract X from region R;` -- parse it as an expression statement (not a `ClassName name`
+    // declaration) so the analyzer can reject the unbound extract result (LDP3-1720).
+    if (looksLikeExtractStmt()) {
+        return parseExprStatement();
+    }
     // A class-typed local: `ClassName name`, `ClassName* p`, `ClassName& r`,
     // or `ClassName[] a` (the receiver of a member access starts with '.', so it
     // never matches these shapes).
@@ -2335,7 +2349,7 @@ ast::StmtPtr Parser::parseStatement() {
         check(TokenKind::KwFunction) ||  // function<Ret, Params...> local
         check(TokenKind::KwNullable) ||  // spec 3.7: `nullable T x` local
         isTypeKeyword(current().kind) || classVarDecl || looksLikeGenericVarDecl() ||
-        looksLikeQualifiedVarDecl()) {
+        looksLikeQualifiedVarDecl() || looksLikeFlavoredRegionDecl()) {
         return parseVarDecl();
     }
     return parseExprStatement();
@@ -2391,6 +2405,45 @@ bool Parser::looksLikeQualifiedVarDecl() const {
         i += 2;
     }
     return peek(i).kind == TokenKind::Identifier;
+}
+
+// A region declaration carrying a flavor / growth modifier: `pool region R`, `growable region R`,
+// `growable pool region R`. Recognized only when, after skipping one or more flavor/growth soft
+// keywords, the next token is a *type keyword* -- normally `region`, but also a non-region type
+// (e.g. `pool int x`) so the analyzer can reject the misuse with LDP3-1719. A flavor word followed by
+// an ordinary identifier (e.g. `pool x`, a variable of a class named `pool`) is NOT a flavored decl,
+// which keeps the words usable as identifiers.
+bool Parser::looksLikeFlavoredRegionDecl() const {
+    if (!isRegionFlavorWord(current())) return false;
+    int i = 0;
+    while (isRegionFlavorWord(peek(i))) ++i;
+    return isTypeKeyword(peek(i).kind);
+}
+
+// A bare `extract <lvalue> from region R;` statement. Detected before the `ClassName name` var-decl
+// dispatch so `extract d from ...` is not mis-parsed as declaring a variable `d` of a class `extract`
+// (the analyzer then rejects the unbound extract with LDP3-1720). Requires `from` to follow the lvalue,
+// so `extract d = ...` (a real declaration of a class named `extract`) is left to the var-decl path.
+bool Parser::looksLikeExtractStmt() const {
+    if (!(check(TokenKind::Identifier) && current().lexeme == "extract")) return false;
+    int i = 1;
+    if (peek(i).kind != TokenKind::Identifier && peek(i).kind != TokenKind::KwThis) return false;
+    ++i;
+    for (;;) {  // skip a member/index lvalue chain: .name, [ ... ]
+        if (peek(i).kind == TokenKind::Dot && peek(i + 1).kind == TokenKind::Identifier) { i += 2; continue; }
+        if (peek(i).kind == TokenKind::LBracket) {
+            int depth = 1;
+            ++i;
+            while (depth > 0 && peek(i).kind != TokenKind::EndOfFile) {
+                if (peek(i).kind == TokenKind::LBracket) ++depth;
+                else if (peek(i).kind == TokenKind::RBracket) --depth;
+                ++i;
+            }
+            continue;
+        }
+        break;
+    }
+    return peek(i).kind == TokenKind::Identifier && peek(i).lexeme == "from";
 }
 
 // Distinguishes a generic method call `obj.m<int>(...)` from a comparison
@@ -2708,6 +2761,20 @@ std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
         decl->isMutable = false;
     } else {
         decl->isMutable = match(TokenKind::KwMutable);
+    }
+    // Region flavor / growth soft keywords (spec 17, flavors expansion), consumed just before the type.
+    // A second flavor word is space-joined into `regionFlavor` so the analyzer can report LDP3-1710 with
+    // both names; `growable` sets its own flag. These stay ordinary identifiers unless a type follows.
+    while (isRegionFlavorWord(current())) {
+        const std::string w = current().lexeme;
+        advance();
+        if (w == "growable") {
+            decl->regionGrowable = true;
+        } else if (decl->regionFlavor.empty()) {
+            decl->regionFlavor = w;
+        } else {
+            decl->regionFlavor += " " + w;  // two flavors -> LDP3-1710 in the analyzer
+        }
     }
     if (match(TokenKind::KwVar)) {
         decl->isVar = true;
@@ -3059,6 +3126,23 @@ ast::ExprPtr Parser::parseUnary() {
         c->operand = parseExpression();
         expect(TokenKind::RParen, "')'");
         return c;
+    }
+    // `extract X from region R` (spec 17, flavors expansion): relocate X out of a region and yield the
+    // owning pointer. `extract` is a soft keyword -- treated as this operator only when it directly
+    // precedes the start of an lvalue (an identifier or `this`); everywhere else it stays an identifier.
+    // A class-typed declaration `extract x = ...` is routed to parseVarDecl before reaching here.
+    if (check(TokenKind::Identifier) && current().lexeme == "extract" &&
+        (peek(1).kind == TokenKind::Identifier || peek(1).kind == TokenKind::KwThis)) {
+        auto ex = std::make_unique<ast::ExtractExpr>();
+        ex->loc = current().loc;
+        advance();  // 'extract'
+        ex->target = parsePostfix();  // an lvalue: identifier / this.field / a[i]
+        if (!(check(TokenKind::Identifier) && current().lexeme == "from"))
+            fail("expected 'from region <name>' after the object to extract (spec 17)", current().loc);
+        advance();  // 'from'
+        expect(TokenKind::KwRegion, "'region' after 'from' in an extract");
+        ex->region = expect(TokenKind::Identifier, "the region name").lexeme;
+        return ex;
     }
     // `move x` transfers ownership (the source becomes invalid); `move x as T` also reinterprets the
     // moved value (spec 19.3, e.g. upgrading a movable to a unique).

@@ -150,6 +150,8 @@ private:
     std::vector<ParseError> errors_;
     ast::TypeRef currentMethodReturnType_;  // for the Ok(x)/Err(x)/... return-value sugar (spec 21.2)
     bool looksLikeQualifiedVarDecl() const;  // `app.Box b` / `app.Box* p`
+    bool looksLikeFlavoredRegionDecl() const;  // `pool region R` / `growable pool region R`
+    bool looksLikeExtractStmt() const;  // a bare `extract <lvalue> from region R;` statement
     bool sawQualifiedType_ = false;         // a `ns.Type` reference was parsed (spec 15)
     bool parsingEnsures_ = false;           // inside an `ensures` clause -> `old(...)` is allowed (spec 29)
     bool headerMode_ = false;               // parsing a .ldh: method/constructor bodies may be absent

@@ -99,10 +99,16 @@ void __ldp3_panic(const char* msg) {
 // pool. Thread-local free-lists need no lock; a block freed on any thread is simply reused there.
 #define LDP3_MAGIC 0x4C44503341313142ULL  // arbitrary 64-bit tag; collision with libc data ~2^-64
 #define LDP3_FREED 0x4C44503346524545ULL  // stamped into a pool block's header while it sits freed
+#define LDP3_RMAGIC 0x4C4450335247314EULL // a live slot inside a `pool`/`fixedslot` region (spec 17 flavors)
+#define LDP3_RFREED 0x4C4450335246524EULL // a region slot sitting on its region's free-list (double-free guard)
 #define LDP3_POOL_MAX 512u                 // requests above this go straight to libc malloc
 #define LDP3_NCLASSES 32                   // size classes 16,32,...,512 (step 16)
 #define LDP3_SLAB (1u << 20)               // 1 MiB slabs, bump-allocated then recycled via free-list
 #define LDP3_LARGE 0xFFFFFFFFu
+// A flavored region (pool/fixedslot/ring) block begins with an Ldp3RegionDesc header; its object data
+// starts LDP3_REGION_HDR bytes in. Kept a fixed 16-aligned constant so the compiler and the runtime agree
+// on the data offset without the compiler needing sizeof(Ldp3RegionDesc). A static_assert below pins it.
+#define LDP3_REGION_HDR 384u
 
 typedef struct Ldp3Hdr {
     unsigned long long magic;
@@ -288,6 +294,10 @@ void __ldp3_free(void* ptr) {
     // LDP3_MAGIC, so a header already stamped LDP3_FREED means a double free -- stop deterministically
     // rather than corrupt the heap (no UB). One compare on the free path; perf is unchanged.
     if (h->magic == LDP3_FREED) __ldp3_panic("double free of a heap block");
+    // A pool/fixedslot region slot carries LDP3_RMAGIC/RFREED. It lives INSIDE a region block, so pushing
+    // it onto the global free-list (or handing it to libc free) would corrupt the heap. Trap with a fix.
+    if (h->magic == LDP3_RMAGIC || h->magic == LDP3_RFREED)
+        __ldp3_panic("delete of a region object: use `delete X from region R` (or `extract X from region R`), not a plain delete");
     if (h->magic != LDP3_MAGIC) {  // foreign pointer (libc) -- forward
         free(ptr);
         return;
@@ -315,7 +325,8 @@ void __ldp3_free(void* ptr) {
 void __ldp3_check_live(void* ptr) {
     if (ptr == NULL) return;
     Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
-    if (h->magic == LDP3_FREED) __ldp3_panic("use of a freed object (double delete)");
+    if (h->magic == LDP3_FREED || h->magic == LDP3_RFREED)
+        __ldp3_panic("use of a freed object (double delete)");
 }
 
 // Region backing-memory cache (hosted). A region's data block is often multi-megabyte, which libc
@@ -363,6 +374,112 @@ void __ldp3_region_release(void* block) {
         return;
     }
     __ldp3_free(block);
+}
+
+// ---- Flavored regions (spec 17, flavors expansion): pool / fixedslot (Wave 1), stack / ring (later) ----
+// A flavored region's block starts with this descriptor and its object data follows LDP3_REGION_HDR bytes
+// in. The first three fields deliberately mirror the lean bump header ([used][cap][dataBase] at 0/8/16) so
+// __ldp3_region_release reads cap/dataBase the same way for every flavor (a flavored dataBase != block+24,
+// so release just frees the whole block -- correct, since the block is one __ldp3_malloc allocation).
+//
+// pool/fixedslot allocate a slot per object: [16-byte Ldp3Hdr][payload], the payload 16-aligned. A freed
+// slot goes on freelists[class]; a later same-class allocation pops it (pointers never move). Slots carry
+// LDP3_RMAGIC (distinct from heap LDP3_MAGIC) so a mistaken plain `delete`/`free` traps instead of
+// splicing a region-interior pointer onto the global heap free-list (no exploitable UB).
+typedef struct Ldp3RegionDesc {
+    unsigned long long used;      // +0  bump cursor over the data area, in bytes (mirrors lean header)
+    unsigned long long cap;       // +8  data-area capacity in bytes (mirrors lean header)
+    void*              dataBase;  // +16 = (char*)block + LDP3_REGION_HDR (mirrors lean header)
+    unsigned long long flavor;    // +24 1=pool, 3=fixedslot, 4=ring (bump/stack never use this desc)
+    unsigned long long entrySize; // +32 fixedslot/ring slot payload size (0 for a general pool)
+    unsigned long long ringHead;  // +40 ring: index of the oldest entry (later wave)
+    unsigned long long ringCount; // +48 ring: number of live entries (later wave)
+    unsigned long long ringCap;   // +56 ring: capacity in entries (later wave)
+    Ldp3FreeNode*      freelists[LDP3_NCLASSES + 1];  // +64 per size class; [LDP3_NCLASSES] = large (>512)
+} Ldp3RegionDesc;
+// The compiler hardcodes LDP3_REGION_HDR as the data offset; keep the struct within it.
+typedef char Ldp3RegionDescFits[(sizeof(Ldp3RegionDesc) <= LDP3_REGION_HDR) ? 1 : -1];
+
+// Payload size class for a region slot: 0..LDP3_NCLASSES-1 for <=512 (step 16), LDP3_NCLASSES for large.
+static inline unsigned ldp3_region_class(unsigned long long payload) {
+    if (payload <= LDP3_POOL_MAX) return (unsigned)((payload + 15) / 16) - 1;
+    return LDP3_NCLASSES;  // large: reused only on exact-size match
+}
+
+// Initialize a freshly acquired flavored region block (called by codegen right after acquire).
+void __ldp3_region_init(void* block, unsigned long long flavor, unsigned long long cap) {
+    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
+    d->used = 0;
+    d->cap = cap;
+    d->dataBase = (char*)block + LDP3_REGION_HDR;
+    d->flavor = flavor;
+    d->entrySize = 0;
+    d->ringHead = 0;
+    d->ringCount = 0;
+    d->ringCap = 0;
+    for (int i = 0; i <= LDP3_NCLASSES; i++) d->freelists[i] = NULL;
+}
+
+// Allocate `size` bytes of object storage from a pool/fixedslot region. Pops a same-class free slot when
+// available, otherwise bumps a fresh one; traps (no UB) when the fixed region is full.
+void* __ldp3_region_new(void* block, unsigned long long size) {
+    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
+    unsigned long long payload = (size + 15) & ~15ULL;  // 16-align
+    if (payload == 0) payload = 16;
+    unsigned cls = ldp3_region_class(payload);
+    if (cls < LDP3_NCLASSES) {
+        Ldp3FreeNode* n = d->freelists[cls];
+        if (n != NULL) {  // reuse: the [16-byte header][payload] is still just before the node
+            d->freelists[cls] = n->next;
+            ((Ldp3Hdr*)((char*)n - 16))->magic = LDP3_RMAGIC;  // live again
+            if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)payload); prof_add(&g_prof_class_live[cls], 1); }
+            return (void*)n;
+        }
+    } else {
+        // large: first-fit exact-size match on the large list (homogeneous churn hits the head every time)
+        Ldp3FreeNode** pp = &d->freelists[LDP3_NCLASSES];
+        while (*pp != NULL) {
+            Ldp3Hdr* h = (Ldp3Hdr*)((char*)(*pp) - 16);
+            if (h->pad == (unsigned)payload) {
+                Ldp3FreeNode* n = *pp;
+                *pp = n->next;
+                h->magic = LDP3_RMAGIC;
+                if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)payload); prof_add(&g_prof_class_live[32], 1); }
+                return (void*)n;
+            }
+            pp = &(*pp)->next;
+        }
+    }
+    unsigned long long slotBytes = 16 + payload;
+    if (d->used + slotBytes > d->cap)
+        __ldp3_panic("region out of memory: this fixed region is full -- give itself.allocate a bigger size, delete/extract objects to reclaim slots, or make it a `growable` region");
+    char* slot = (char*)d->dataBase + d->used;
+    d->used += slotBytes;
+    Ldp3Hdr* h = (Ldp3Hdr*)slot;
+    h->magic = LDP3_RMAGIC;
+    h->cls = cls;
+    h->pad = (unsigned)payload;
+    if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)payload); prof_add(&g_prof_class_live[cls < LDP3_NCLASSES ? cls : 32], 1); }
+    return slot + 16;
+}
+
+// Return an object's slot to its pool/fixedslot region's free-list. Traps on a double free or on a
+// pointer that is not a live region slot, rather than corrupting the list (no UB). `size` is unused (the
+// slot header remembers its class) but kept in the ABI for symmetry and future validation.
+void __ldp3_region_free(void* block, void* ptr, unsigned long long size) {
+    (void)size;
+    if (ptr == NULL) return;
+    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
+    Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
+    if (h->magic == LDP3_RFREED) __ldp3_panic("double free of a region object (it was already deleted or extracted)");
+    if (h->magic != LDP3_RMAGIC) __ldp3_panic("region free of a pointer that this region did not allocate");
+    unsigned cls = h->cls;
+    if (g_prof_on) { prof_add(&g_prof_live_count, -1); prof_add(&g_prof_total_free, 1); prof_add(&g_prof_live_bytes, -(long long)h->pad); prof_add(&g_prof_class_live[cls < LDP3_NCLASSES ? cls : 32], -1); }
+    h->magic = LDP3_RFREED;
+    Ldp3FreeNode* n = (Ldp3FreeNode*)ptr;
+    unsigned idx = (cls < LDP3_NCLASSES) ? cls : LDP3_NCLASSES;
+    n->next = d->freelists[idx];
+    d->freelists[idx] = n;
 }
 
 void* __ldp3_realloc(void* ptr, size_t size) {

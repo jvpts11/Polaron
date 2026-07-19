@@ -210,6 +210,16 @@ struct MoveExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// `extract X from region R` (spec 17, flavors expansion) -- relocate object X out of region R to a fresh
+// heap allocation and yield the owning pointer. Like `move`, the source variable is spent afterwards
+// (use-after-extract is an error); on a pool/fixedslot region the vacated slot is reclaimed. RHS-only:
+// its result transfers ownership and must be bound to a variable/field (a bare statement leaks it).
+struct ExtractExpr : Expr {
+    ExprPtr target;         // the object to relocate (an lvalue: identifier / a[i] / this.field)
+    std::string region;     // the region it currently lives in
+    void dump(std::string& out, int indent) const override;
+};
+
 // `try? expr` -- if expr is Ok/Some, yields its value; if Err/None, early-returns it (propagates)
 // to the enclosing method's Result/Option (spec 21.2).
 struct TryExpr : Expr {
@@ -416,6 +426,11 @@ struct VarDeclStmt : Stmt {
     bool isVolatile = false;    // spec 37.5: loads/stores are never optimized away
     bool isLazy = false;        // spec 37.3: initializer runs on first access, not here
     bool isComptime = false;    // spec 28.3: `comptime` local -- value computed at compile time
+    // Region flavor axis (spec 17, flavors expansion): the reclaim strategy of a `region` declaration.
+    // "" == bump == the historical linear/monotonic behavior (byte-identical fast path). The flavor
+    // words are contextual soft keywords recognized only immediately before `region`.
+    std::string regionFlavor;    // "" (=bump) | "bump" | "pool" | "stack" | "fixedslot" | "ring"
+    bool regionGrowable = false; // `growable` modifier: chain a new block on overflow
     TypeRef type;        // used when !isVar
     std::string name;
     ExprPtr init;        // M2: an initializer is required

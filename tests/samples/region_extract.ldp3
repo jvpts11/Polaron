@@ -1,0 +1,31 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionExtract;
+
+public bundle main {
+    public namespace app {
+
+        public class Dog {
+            public mutable int age;
+            public constructor Dog(int a) {
+                this.age = a;
+            }
+            public method getAge() returns int {
+                return this.age;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                pool region kennel = itself.allocate(2 kilobytes);
+                Dog* d = new Dog(42) in region kennel;
+                Dog* out = extract d from region kennel;   // relocate to the heap; kennel slot reclaimed
+                System.IO.Console.printf("out=%d\n", out.getAge());  // out=42, survives release below
+                release region kennel;                      // frees the region; `out` is untouched
+                System.IO.Console.printf("still=%d\n", out.getAge());  // still=42
+                delete out;                                  // out is heap-owned: the caller frees it
+                return;
+            }
+        }
+    }
+}

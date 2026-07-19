@@ -104,6 +104,7 @@ void collectRefs(const ast::Expr* e, std::set<std::string>& out) {
     if (const auto* cst = dynamic_cast<const ast::CastExpr*>(e)) { collectRefs(cst->operand.get(), out); return; }
     if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(e)) { collectRefs(aw->operand.get(), out); return; }
     if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(e)) { collectRefs(mv->operand.get(), out); return; }
+    if (const auto* ex = dynamic_cast<const ast::ExtractExpr*>(e)) { collectRefs(ex->target.get(), out); return; }
     if (const auto* tr = dynamic_cast<const ast::TryExpr*>(e)) { collectRefs(tr->operand.get(), out); return; }
     if (const auto* od = dynamic_cast<const ast::OldExpr*>(e)) { collectRefs(od->inner.get(), out); return; }
     if (const auto* rg = dynamic_cast<const ast::RangeExpr*>(e)) { collectRefs(rg->start.get(), out); collectRefs(rg->end.get(), out); collectRefs(rg->step.get(), out); return; }
@@ -1380,6 +1381,12 @@ struct CodeGenerator::Impl {
     // their `used` header is write-only, so the cursor can live entirely in the alloca.
     std::unordered_map<std::string, llvm::Value*> regionCursorSlot_;
     std::unordered_set<std::string> ownedRegions_;
+    // Region flavor (spec 17, flavors expansion): the reclaim strategy of each region local, keyed by
+    // name; absent/"" == bump (the untouched fast path). "pool"/"fixedslot" allocate slots via the
+    // runtime free-list; "stack" is bump plus mark/rollback; "ring" is a circular buffer. `growable`
+    // regions chain a new block on overflow. Reset per function alongside the other region maps.
+    std::unordered_map<std::string, std::string> regionFlavor_;
+    std::unordered_set<std::string> growableRegions_;
     // `volatile region` (spec 37.5, MMIO): region locals whose objects must be accessed volatilely,
     // and the object locals bound from `new ... in` such a region (their field accesses are volatile).
     std::unordered_set<std::string> volatileRegions_;
@@ -1765,7 +1772,7 @@ struct CodeGenerator::Impl {
                                  SourceLocation loc) {
         auto cit = classes.find(cn);
         if (cit == classes.end()) return src;  // not a class: leave the value as-is
-        llvm::Value* dst = emitRegionBumpAlloc(region, cit->second.type, loc);
+        llvm::Value* dst = emitRegionAlloc(region, cit->second.type, loc);
         if (dst == nullptr) return src;
         builder.CreateCall(memcpyFn(), {dst, src, sizeOf(cit->second.type)});
         std::unordered_set<std::string> seen;
@@ -2369,6 +2376,8 @@ struct CodeGenerator::Impl {
                                   : cst->targetType;
         if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr))
             return mv->castType.empty() ? typeName(*mv->operand) : mv->castType;
+        if (const auto* ex = dynamic_cast<const ast::ExtractExpr*>(&expr))
+            return typeName(*ex->target);  // extract yields an owning pointer to the same object type
         if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
             const std::string ot = baseType(typeName(*tx->operand));  // Result$T$E / Option$T
             const auto p = ot.find('$');
@@ -2501,6 +2510,43 @@ struct CodeGenerator::Impl {
             llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
         return module.getOrInsertFunction("__ldp3_region_release", ty);
     }
+    // Flavored-region allocator (spec 17, flavors expansion). init sets up a pool/fixedslot/ring block's
+    // descriptor; new pops/bumps a slot; free returns a slot to the region's free-list. Bump/stack never
+    // call these -- they keep the inline bump fast path.
+    llvm::FunctionCallee regionInitFn() {  // (block, flavor, cap) -> void
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getInt64Ty(), builder.getInt64Ty()}, false);
+        return module.getOrInsertFunction("__ldp3_region_init", ty);
+    }
+    llvm::FunctionCallee regionNewFn() {  // (block, size) -> ptr
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getPtrTy(), {builder.getPtrTy(), builder.getInt64Ty()}, false);
+        llvm::FunctionCallee c = module.getOrInsertFunction("__ldp3_region_new", ty);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(c.getCallee()))
+            f->addRetAttr(llvm::Attribute::NoAlias);
+        return c;
+    }
+    llvm::FunctionCallee regionFreeFn() {  // (block, ptr, size) -> void
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty()}, false);
+        return module.getOrInsertFunction("__ldp3_region_free", ty);
+    }
+    // Region flavor classification. A pool-like region allocates individual slots from a runtime
+    // free-list (pool / fixedslot); a bump-like region ("" == bump, or stack) uses the inline bump cursor.
+    static bool isPoolLikeFlavor(const std::string& f) { return f == "pool" || f == "fixedslot"; }
+    // The flavored-region data offset -- MUST match LDP3_REGION_HDR in runtime/ldp3_rt.cpp.
+    static constexpr unsigned kRegionHdr = 384u;
+    // The descriptor flavor code stored at block+24 (matches the runtime's reading).
+    static unsigned flavorCode(const std::string& f) {
+        if (f == "pool") return 1;
+        if (f == "stack") return 2;
+        if (f == "fixedslot") return 3;
+        if (f == "ring") return 4;
+        return 0;  // bump
+    }
+    // The flavor threaded into emitRegionAllocate for an eager `<flavor> region r = itself.allocate(...)`
+    // (the init expr itself does not carry the flavor; the VarDecl does). Set around emitExpr(init).
+    std::string pendingRegionFlavor_;
 
     // sizeof(type) in bytes, the target-portable way: gep null + 1, then
     // ptrtoint. The backend folds it to a constant using the real data layout.
@@ -4174,7 +4220,7 @@ struct CodeGenerator::Impl {
             if (!mv->toRegion.empty()) {
                 const std::string cls = baseType(typeName(*mv->operand));
                 if (auto cit = classes.find(cls); cit != classes.end() && cit->second.type != nullptr) {
-                    llvm::Value* dst = emitRegionBumpAlloc(mv->toRegion, cit->second.type, mv->loc);
+                    llvm::Value* dst = emitRegionAlloc(mv->toRegion, cit->second.type, mv->loc);
                     if (dst != nullptr) {
                         builder.CreateCall(memcpyFn(), {dst, src, sizeOf(cit->second.type)});
                         return dst;
@@ -4182,6 +4228,41 @@ struct CodeGenerator::Impl {
                 }
             }
             return src;  // move transfers the pointer (no copy)
+        }
+        if (const auto* ex = dynamic_cast<const ast::ExtractExpr*>(&expr)) {
+            // `extract X from region R` (spec 17): relocate X out of the region to a fresh heap block and
+            // yield the owning pointer. This is a MOVE -- a shallow copy of the object's bytes, so owned
+            // heap fields (String/array backings, whose pointers live in those bytes) travel with it; the
+            // source is not destructed. The vacated slot is reclaimed on pool/fixedslot (dead until release
+            // on bump). The source lvalue is nulled and dropped from region RAII so nothing double-frees it.
+            const std::string cn = baseType(typeName(*ex->target));
+            auto cit = classes.find(cn);
+            if (cit == classes.end() || cit->second.type == nullptr) {
+                error("extract requires a class object (spec 17)", ex->loc);
+                return nullptr;
+            }
+            llvm::Value* addr = emitLValue(*ex->target);       // where the source handle is stored
+            llvm::Value* srcPtr = emitObjectPtr(*ex->target);  // the object's address in the region
+            if (addr == nullptr || srcPtr == nullptr) return nullptr;
+            llvm::Value* heap = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "extract.heap");
+            builder.CreateCall(memcpyFn(), {heap, srcPtr, sizeOf(cit->second.type)});  // shallow move-out
+            // Drop the source object from region RAII tracking so release does not destruct the moved bytes.
+            if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(ex->target.get()))
+                if (auto lit = locals.find(tid->name); lit != locals.end())
+                    for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so)
+                        if (so->slot == lit->second.storage) { scopeObjects.erase(so); break; }
+            // Reclaim the vacated slot on a pool/fixedslot region.
+            const std::string rflavor =
+                regionFlavor_.count(ex->region) ? regionFlavor_[ex->region] : std::string();
+            if (isPoolLikeFlavor(rflavor)) {
+                llvm::Value* block = builder.CreateLoad(
+                    builder.getPtrTy(), regionStorageSlot(ex->region), "region");
+                builder.CreateCall(regionFreeFn(), {block, srcPtr, sizeOf(cit->second.type)});
+            }
+            // Null the source handle: a later read is then a clean null, not a dangling reused slot (the
+            // analyzer already rejects use-after-extract of a plain variable at compile time).
+            builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), addr);
+            return heap;
         }
         if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
             // try? expr (spec 21.2): if Ok/Some, yield the inner value; if Err/None, early-return the
@@ -4227,7 +4308,7 @@ struct CodeGenerator::Impl {
             return builder.CreateLoad(llvmType(vt), vp, "try.value");
         }
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
-            return emitRegionAllocate(ri->size.get(), ri->atAddress.get());
+            return emitRegionAllocate(ri->size.get(), ri->atAddress.get(), pendingRegionFlavor_);
         }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
             // `x is T` (op 1) / `x as? T` (op 2), spec 6.4: a runtime is-a test on a class value.
@@ -4685,15 +4766,18 @@ struct CodeGenerator::Impl {
         builder.CreateStore(builder.getInt64(0), cur);
     }
 
-    // A region block is [ i64 used | i64 capacity | data... ]. Bump-allocates
-    // `objType` bytes (8-aligned) from region variable `name` and returns the slot.
-    llvm::Value* emitRegionBumpAlloc(const std::string& name, llvm::StructType* objType,
-                                     SourceLocation loc) {
+    // Allocate an `objType` object from region variable `name`, dispatching on its flavor (spec 17):
+    // bump/stack use the inline bump cursor (a region block is [ i64 used | i64 cap | ptr dataBase | data ];
+    // 8-aligned bump -- the untouched fast path); pool/fixedslot serve an individual slot from the runtime
+    // free-list via __ldp3_region_new so `delete`/`extract` can reclaim it.
+    llvm::Value* emitRegionAlloc(const std::string& name, llvm::StructType* objType,
+                                 SourceLocation loc) {
         llvm::Value* slot = regionStorageSlot(name);
         if (slot == nullptr) {
             error("unknown region '" + name + "'", loc);
             return nullptr;
         }
+        const std::string flavor = regionFlavor_.count(name) ? regionFlavor_[name] : std::string();
         // An owned local region (not `at address`, not multi-range, not a field) is the hot arena case.
         // Its data begins at block+24 and its `used` header field is write-only (nothing -- runtime
         // release included -- reads it), so we keep the bump cursor in a local i64 alloca (created at the
@@ -4717,13 +4801,18 @@ struct CodeGenerator::Impl {
                 builder.CreateICmpEQ(cur, llvm::ConstantPointerNull::get(builder.getPtrTy())),
                 allocBB, contBB);
             builder.SetInsertPoint(allocBB);
-            llvm::Value* blk = emitRegionAllocate(lazyRegionSize_[name], lazyRegionAt_[name]);
+            llvm::Value* blk = emitRegionAllocate(lazyRegionSize_[name], lazyRegionAt_[name], flavor);
             if (blk != nullptr) builder.CreateStore(blk, slot);
             if (cursorSlot != nullptr) builder.CreateStore(builder.getInt64(0), cursorSlot);  // fresh block: used = 0
             builder.CreateBr(contBB);
             builder.SetInsertPoint(contBB);
         }
         llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
+        // Pool/fixedslot: the runtime serves an individual, reclaimable slot from the region's free-list.
+        // (Placed after any lazy acquire so a lazy pool region's block exists; bump falls through below.)
+        if (isPoolLikeFlavor(flavor)) {
+            return builder.CreateCall(regionNewFn(), {block, sizeOf(objType)}, "rgn.slot");
+        }
         llvm::Value* used;
         llvm::Value* dataBase;
         if (cursorSlot != nullptr) {
@@ -4788,7 +4877,8 @@ struct CodeGenerator::Impl {
     // header in the same malloc'd block; for `at`, the header is malloc'd but dataBase is the fixed
     // address (spec 17.8 / 36.9). `size` is a ByteSize (read .bytes) or a raw byte count;
     // accepts/rejects are compile-time only, so codegen ignores them.
-    llvm::Value* emitRegionAllocate(const ast::Expr* sizeExpr, const ast::Expr* atAddr = nullptr) {
+    llvm::Value* emitRegionAllocate(const ast::Expr* sizeExpr, const ast::Expr* atAddr = nullptr,
+                                    const std::string& flavor = "") {
         llvm::Value* nbytes = builder.getInt64(0);
         if (sizeExpr != nullptr) {
             llvm::Value* arg = emitExpr(*sizeExpr);
@@ -4802,6 +4892,16 @@ struct CodeGenerator::Impl {
             } else {
                 nbytes = fitInt(arg, 64);
             }
+        }
+        // Pool/fixedslot region: a larger block whose Ldp3RegionDesc header (LDP3_REGION_HDR bytes) carries
+        // the per-size-class free-lists; the runtime init lays it out. Individual objects are then served
+        // by __ldp3_region_new (see emitRegionAlloc). `at address` pool is not a Wave-1 combination.
+        if (isPoolLikeFlavor(flavor) && atAddr == nullptr) {
+            llvm::Value* block = builder.CreateCall(
+                regionAcquireFn(), {builder.CreateAdd(builder.getInt64(kRegionHdr), nbytes)}, "region");
+            builder.CreateCall(regionInitFn(),
+                               {block, builder.getInt64(flavorCode(flavor)), nbytes});
+            return block;
         }
         llvm::Value* block;
         llvm::Value* dataBase;
@@ -4897,7 +4997,7 @@ struct CodeGenerator::Impl {
         if (!nw.region.empty()) {
             objPtr = multiRegionRanges_.count(nw.region) > 0
                          ? emitMultiRegionAlloc(nw.region, cn, cit->second.type, nw.loc)
-                         : emitRegionBumpAlloc(nw.region, cit->second.type, nw.loc);
+                         : emitRegionAlloc(nw.region, cit->second.type, nw.loc);
             if (objPtr == nullptr) return nullptr;
         } else if (nw.location == "stack") {
             objPtr = createEntryAlloca(cn + ".obj", cit->second.type);
@@ -8521,6 +8621,13 @@ struct CodeGenerator::Impl {
                         "." + vd->name;
                 }
             }
+            // Region flavor (spec 17, flavors expansion): record this region local's reclaim strategy so
+            // new/delete/extract/release dispatch on it. pool/fixedslot serve reclaimable slots via the
+            // runtime and do NOT get the inline bump cursor (that stays the bump/stack fast path).
+            if (declType == "region" && !vd->regionFlavor.empty())
+                regionFlavor_[vd->name] = vd->regionFlavor;
+            if (declType == "region" && vd->regionGrowable)
+                growableRegions_.insert(vd->name);
             // `lazy region` (spec 37.3): defer the backing allocation until the first object
             // enters. Store null now and remember the size/address to replay on first use.
             if (declType == "region" && vd->isLazy) {
@@ -8551,7 +8658,8 @@ struct CodeGenerator::Impl {
                     if (vd->isVolatile) volatileRegions_.insert(vd->name);  // spec 37.5 (MMIO)
                     // An owned lazy region keeps its bump cursor in a register-promotable alloca; the
                     // lazy-acquire block re-zeros it each time the backing block is (re)allocated.
-                    if (ri->atAddress.get() == nullptr) setupOwnedRegionCursor(vd->name);
+                    if (ri->atAddress.get() == nullptr && !isPoolLikeFlavor(vd->regionFlavor))
+                        setupOwnedRegionCursor(vd->name);
                     if (!vd->isEternal) scopeRegions.push_back(RegionLocal{slot, vd->isEternal, vd->name});
                     return;
                 }
@@ -8569,7 +8677,11 @@ struct CodeGenerator::Impl {
                     scopeRegions.push_back(RegionLocal{slot, vd->isEternal, vd->name});
                 return;
             }
+            // Thread the region flavor into the init expr's RegionInitExpr (the flavor lives on the
+            // VarDecl, not the init). Cleared right after so it never leaks into an unrelated allocate.
+            if (declType == "region") pendingRegionFlavor_ = vd->regionFlavor;
             llvm::Value* initV = emitExpr(*vd->init);
+            pendingRegionFlavor_.clear();
             pendingPersistKey.clear();
             if (initV == nullptr) return;
             // Value semantics: copying a class value from an existing object makes
@@ -8597,7 +8709,9 @@ struct CodeGenerator::Impl {
             declareLocalDebug(slot, vd->name, declType, vd->loc);  // -g: name/read this local in the debugger
             // An eagerly-allocated owned region (`region r = itself.allocate(...)`): give it a
             // register-promotable bump cursor, zeroed now that its block is freshly acquired.
-            if (declType == "region" && isOwnedRegionInit(vd->init.get()))
+            // (pool/fixedslot use the runtime free-list, not an inline cursor -- no cursor for them.)
+            if (declType == "region" && isOwnedRegionInit(vd->init.get()) &&
+                !isPoolLikeFlavor(vd->regionFlavor))
                 setupOwnedRegionCursor(vd->name);
             // RAII: a freshly built `new ... on stack` object with a destructor gets cleaned up
             // when the function returns -- unless it is `eternal` (spec 37.2: lives for the whole
@@ -9044,8 +9158,20 @@ struct CodeGenerator::Impl {
                 // release, so run the destructor now and drop the object from RAII tracking (so the
                 // region release does not run it again), but never free() into the bump allocator.
                 if (!del->fromRegion.empty()) {
+                    // On a pool/fixedslot region the slot is reclaimable: guard against a double
+                    // delete-from-region (no UB), run the destructor, then return the slot to the region's
+                    // free-list so a later `new` reuses it. Bump/stack regions reclaim only on release.
+                    const std::string rflavor =
+                        regionFlavor_.count(del->fromRegion) ? regionFlavor_[del->fromRegion] : std::string();
+                    const bool poolReclaim = isPoolLikeFlavor(rflavor) && cit != classes.end();
+                    if (poolReclaim) builder.CreateCall(checkLiveFn(), {objPtr});
                     if (cit != classes.end() && cit->second.hasDestructor)
                         builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+                    if (poolReclaim) {
+                        llvm::Value* block = builder.CreateLoad(
+                            builder.getPtrTy(), regionStorageSlot(del->fromRegion), "region");
+                        builder.CreateCall(regionFreeFn(), {block, objPtr, sizeOf(cit->second.type)});
+                    }
                     if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(&target))
                         if (auto lit = locals.find(tid->name); lit != locals.end())
                             for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so)
@@ -11022,6 +11148,9 @@ struct CodeGenerator::Impl {
         volatileRegions_.clear();
         regionCursorSlot_.clear();
         ownedRegions_.clear();
+        regionFlavor_.clear();
+        growableRegions_.clear();
+        pendingRegionFlavor_.clear();
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
@@ -11245,6 +11374,9 @@ struct CodeGenerator::Impl {
         volatileRegions_.clear();
         regionCursorSlot_.clear();
         ownedRegions_.clear();
+        regionFlavor_.clear();
+        growableRegions_.clear();
+        pendingRegionFlavor_.clear();
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
@@ -11492,6 +11624,9 @@ struct CodeGenerator::Impl {
         volatileRegions_.clear();
         regionCursorSlot_.clear();
         ownedRegions_.clear();
+        regionFlavor_.clear();
+        growableRegions_.clear();
+        pendingRegionFlavor_.clear();
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();
@@ -11583,6 +11718,9 @@ struct CodeGenerator::Impl {
         volatileRegions_.clear();
         regionCursorSlot_.clear();
         ownedRegions_.clear();
+        regionFlavor_.clear();
+        growableRegions_.clear();
+        pendingRegionFlavor_.clear();
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover

@@ -226,6 +226,28 @@ add_test(NAME immutable_assignment_is_coded
 set_tests_properties(immutable_assignment_is_coded PROPERTIES
     PASS_REGULAR_EXPRESSION "error\\[LDP3-0401\\]: cannot assign to immutable")
 
+# Region flavor / extract diagnostics (spec 17, flavors expansion): each malformed use gets its coded,
+# rich LDP3-17NN diagnostic.
+add_test(NAME sema_rejects_region_two_flavors
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_twoflavors.ldp3")
+set_tests_properties(sema_rejects_region_two_flavors PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-1710\\]")
+
+add_test(NAME sema_rejects_flavor_on_non_region
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_flavor_nonregion.ldp3")
+set_tests_properties(sema_rejects_flavor_on_non_region PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-1719\\]")
+
+add_test(NAME sema_rejects_use_after_extract
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_use_after_extract.ldp3")
+set_tests_properties(sema_rejects_use_after_extract PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-1717\\]")
+
+add_test(NAME sema_rejects_bare_extract
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_bare_extract.ldp3")
+set_tests_properties(sema_rejects_bare_extract PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-1720\\]")
+
 # A catalog `extends` cycle must be reported, not crash (regression: it used to
 # overflow the stack in isSubtype).
 add_test(NAME sema_rejects_catalog_cycle
@@ -3238,6 +3260,35 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/regions.ldp3"
             "-DEXPECTED=a = 3 b = 7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Region flavor (spec 17, flavors expansion): a `pool region` parses, allocates and runs.
+        add_test(NAME codegen_region_pool_parse_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_pool_parse.ldp3"
+            "-DEXPECTED=age=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Pool region reclaim: 200000 objects churned through a 4 KiB region (holds ~128 slots) complete
+        # only because `delete X from region` returns each slot to the free-list -- no overflow panic.
+        add_test(NAME codegen_region_pool_churn_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_pool_churn.ldp3"
+            "-DEXPECTED=sum=9900000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # extract X from region R: relocate an object to the heap; it survives the region's release, and
+        # is then deleted by the caller (spec 17, flavors expansion).
+        add_test(NAME codegen_region_extract_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_extract.ldp3"
+            "-DEXPECTED=out=42 still=42"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

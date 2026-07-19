@@ -1,0 +1,36 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionPoolChurn;
+
+public bundle main {
+    public namespace app {
+
+        public class Dog {
+            public mutable int age;
+            public constructor Dog(int a) {
+                this.age = a;
+            }
+            public method getAge() returns int {
+                return this.age;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // A small pool region churned far past its capacity: without slot reclaim the region
+                // would overflow (a panic) after a few hundred objects; with reclaim it reuses one slot
+                // for all 200000 iterations. The checksum keeps the work from being optimized away.
+                pool region kennel = itself.allocate(4 kilobytes);
+                mutable int sum = 0;
+                for (mutable int i = 0; i < 200000; i++) {
+                    Dog* d = new Dog(i % 100) in region kennel;
+                    sum = sum + d.getAge();
+                    delete d from region kennel;   // returns the slot to the free-list
+                }
+                System.IO.Console.printf("sum=%d\n", sum);   // 2000 * (0+..+99) = 9900000
+                release region kennel;
+                return;
+            }
+        }
+    }
+}

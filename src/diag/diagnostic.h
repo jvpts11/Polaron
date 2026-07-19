@@ -68,6 +68,11 @@ enum class Code {
     OperatorOverload,     // a malformed operator overload
     ReflectionMisuse,     // reflect.* used without the import, or wrongly
     RegionMisuse,         // a region declaration or `new in region` used wrongly
+    RegionTwoFlavors,        // LDP3-1710: two reclaim flavors on one region (e.g. `pool stack region`)
+    RegionFlavorOnNonRegion, // LDP3-1719: a flavor modifier (pool/stack/...) on a non-region declaration
+    RegionUseAfterExtract,   // LDP3-1717: use of a variable after `extract X from region R`
+    RegionExtractInnerField, // LDP3-1718: extract/delete of an object whose field lives in the same region
+    RegionExtractNotBound,   // LDP3-1720: an `extract` result not bound to a variable/field
     VectorMisuse,         // a vec/mat operation with the wrong shape or component
     UnimportMisuse,       // unimport/reimport used wrongly
     StaticAssert,         // a failed or non-constant static_assert

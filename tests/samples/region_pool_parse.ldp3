@@ -1,0 +1,25 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionPoolParse;
+
+public bundle main {
+    public namespace app {
+
+        public class Dog {
+            public mutable int age;
+            public constructor Dog(int a) {
+                this.age = a;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                pool region kennel = itself.allocate(64 kilobytes);   // free-list flavor
+                Dog* rex = new Dog(3) in region kennel;
+                System.IO.Console.printf("age=%d\n", rex.age);
+                release region kennel;
+                return;
+            }
+        }
+    }
+}

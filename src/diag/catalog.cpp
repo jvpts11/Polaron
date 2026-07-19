@@ -299,6 +299,56 @@ constexpr Row kCatalog[] = {
         "Decide what a region holds and where it lives when you declare it; `accepts`/`rejects` then make "
         "the compiler enforce it. Keep allocation and release of a region visibly paired." }},
 
+    {Code::RegionTwoFlavors, {
+        "LDP3-1710", "a region has exactly one flavor",
+        "A region's flavor is its reclaim strategy -- bump, pool, stack, fixedslot or ring (spec 17) -- and "
+        "a region has exactly one. Two flavor words on one declaration (like `pool stack region`) name two "
+        "contradictory strategies, so the compiler cannot pick how the region reclaims memory.",
+        "Keep a single flavor word before `region`. Choose pool for free-list reuse of mixed sizes, "
+        "fixedslot for one repeated type, stack for mark/rollback, ring for a bounded auto-evicting buffer, "
+        "or plain `region` (bump) to free everything at once on release.",
+        "Decide the reclaim discipline once, when you declare the region, from how its objects die: all "
+        "together (bump), individually (pool/fixedslot), newest-first (stack), or oldest-out (ring)." }},
+
+    {Code::RegionFlavorOnNonRegion, {
+        "LDP3-1719", "a flavor modifier only qualifies a region",
+        "Words like `pool`, `stack`, `fixedslot`, `ring` and `growable` are region flavor/growth modifiers "
+        "(spec 17): they only make sense in front of the `region` keyword, where they choose how the arena "
+        "reclaims memory. Here one qualifies an ordinary declaration, which has no arena to reclaim.",
+        "Drop the modifier from this declaration. If you meant to declare an arena, write it as "
+        "`<flavor> region name = itself.allocate(...);`.",
+        "Reserve the flavor words for region declarations; everywhere else they are ordinary identifiers." }},
+
+    {Code::RegionUseAfterExtract, {
+        "LDP3-1717", "use of a variable after it was extracted from its region",
+        "`extract X from region R` relocates the object out of the region and transfers ownership to the "
+        "result. Like `move`, it leaves the source variable empty: the region no longer owns that object, "
+        "so reading the old handle would alias memory the region may already have reused.",
+        "Use the value returned by `extract` from here on. If you still need the original handle, do not "
+        "extract -- read it in place, or `extract` into the same variable (`x = extract x from region R;`).",
+        "Treat `extract` like `move`: the name you extract from is spent afterwards. Bind the result to the "
+        "variable you will keep using." }},
+
+    {Code::RegionExtractInnerField, {
+        "LDP3-1718", "cannot extract an object whose field lives in the same region",
+        "`extract`/`delete from region` relocates or frees one object's own storage. This object owns a "
+        "field allocated in the SAME region, so moving just the object would leave that field behind in the "
+        "region -- a dangling pointer after the region is released, or a leak (spec 17).",
+        "Extract the whole graph with `cascade move X from region A to region B`, or allocate the inner "
+        "field outside this region (on the heap, or in a longer-lived region) so the object can leave alone.",
+        "Keep an object and the sub-objects it owns in the same lifetime: either all in the region (freed "
+        "together on release) or all relocatable together." }},
+
+    {Code::RegionExtractNotBound, {
+        "LDP3-1720", "an `extract` result must be bound",
+        "`extract X from region R` transfers ownership of the relocated object to its result -- the caller "
+        "must then delete it or hand it to something that will. A bare `extract ...;` statement drops that "
+        "owner on the floor, leaking the object it just relocated to the heap (spec 17).",
+        "Bind the result: `T* out = extract X from region R;` (or assign it to a field), then `delete out;` "
+        "when done. If you only want to destroy X, use `delete X from region R;` instead.",
+        "Read `extract` as producing a value you own now -- always on the right-hand side of a binding, "
+        "never as a statement on its own." }},
+
     {Code::VectorMisuse, {
         "LDP3-0804", "vector/matrix operation is malformed",
         "The SIMD vector and matrix types have fixed shapes: a vecN has N numeric lanes, a mat4 has 16 "
@@ -516,6 +566,13 @@ constexpr Rule kRules[] = {
     {"static assertion", Code::StaticAssert},
     {"static_assert", Code::StaticAssert},
     {"operator '", Code::OperatorOverload},
+    // Region flavor / extract diagnostics (spec 17, flavors expansion) -- before the generic "region "
+    // rule so they win. Each needle is a phrase the analyzer/parser guarantees in the matching message.
+    {"exactly one flavor", Code::RegionTwoFlavors},
+    {"only qualifies a region", Code::RegionFlavorOnNonRegion},
+    {"was extracted", Code::RegionUseAfterExtract},
+    {"lives in the same region", Code::RegionExtractInnerField},
+    {"extract result must be bound", Code::RegionExtractNotBound},
     {"region ", Code::RegionMisuse},
     {"vector ", Code::VectorMisuse},
     {"mat4 ", Code::VectorMisuse},
