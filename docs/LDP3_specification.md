@@ -1658,11 +1658,13 @@ destrutor).
 | LDP3-1714 | `rollback` com um checkpoint de outra região |
 | LDP3-1715 | `delete … from region` numa região `ring` (auto-descarta) |
 | LDP3-1717 | uso de uma variável depois de `extract` |
+| LDP3-1718 | `extract` de um objeto cujo campo foi alocado na mesma região (dangling pós-release) |
 | LDP3-1719 | modificador de sabor numa declaração que não é região |
 | LDP3-1720 | resultado de `extract` não ligado (statement solto) |
 
-(LDP3-1718 — extrair um objeto cujo campo vive na mesma região — está reservado; a checagem precisa de
-análise de fluxo de região e chega numa versão futura.)
+(LDP3-1718 usa análise de fluxo intra-método: dispara quando um campo do objeto foi visto sendo alocado
+`new … in region R` na mesma região da qual ele é extraído. A checagem é *sound* — só acusa quando há
+certeza; casos entre métodos não são acusados.)
 
 **Compatibilidade:** `region` puro é `bump`, byte-idêntico ao de antes; as palavras novas são contextuais,
 então nenhum programa existente muda de significado.

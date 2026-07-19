@@ -273,6 +273,11 @@ add_test(NAME sema_rejects_growable_ring
 set_tests_properties(sema_rejects_growable_ring PROPERTIES
     PASS_REGULAR_EXPRESSION "error\\[LDP3-1712\\]")
 
+add_test(NAME sema_rejects_extract_inner_field
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_extract_innerfield.ldp3")
+set_tests_properties(sema_rejects_extract_inner_field PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-1718\\]")
+
 # A catalog `extends` cycle must be reported, not crash (regression: it used to
 # overflow the stack in isSubtype).
 add_test(NAME sema_rejects_catalog_cycle

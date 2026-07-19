@@ -1644,6 +1644,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     moved_.clear();
     extracted_.clear();
     checkpointRegion_.clear();
+    regionOf_.clear();
     deleted_.clear();
     catchStack_.clear();
     regionConstraints_.clear();
@@ -2244,10 +2245,32 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (const auto* mk = dynamic_cast<const ast::MarkExpr*>(vd->init.get())) {
             checkpointRegion_[vd->name] = mk->region;
         }
+        // Remember a local that points into a region (`T* p = new X in region R;`) so extracting the
+        // OWNER of a field holding such a value can be rejected (spec 17, LDP3-1718).
+        regionOf_.erase(vd->name);
+        if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get()); nw != nullptr && !nw->region.empty())
+            regionOf_[vd->name] = nw->region;
         if (vd->init) checkOwnershipAssign(declType, *vd->init, vd->loc);
         return;
     }
     if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
+        // spec 17 LDP3-1718: track a local / `obj.field` (re)assigned a region-allocated object, so
+        // extracting/deleting the owner of a same-region field can be flagged. Any other assignment to
+        // the path clears it.
+        {
+            std::string path;
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get()))
+                path = id->name;
+            else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
+                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
+                    path = oid->name + "." + mem->member;
+            if (!path.empty()) {
+                regionOf_.erase(path);
+                if (const auto* nw = dynamic_cast<const ast::NewExpr*>(assign->value.get());
+                    nw != nullptr && !nw->region.empty())
+                    regionOf_[path] = nw->region;
+            }
+        }
         // atomic<T> assignment (spec 20.6): `counter = counter +/- n` (a lock-free atomicrmw,
         // from `+=`/`-=`) or `counter = v` (atomic store). The atomic<T> <-> T mixing is allowed
         // here rather than through the usual numeric checks (which reject atomic + int). Detect via
@@ -3072,16 +3095,30 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // `extract X from region R` (spec 17): the region must exist; the object type is the result type
         // (an owning pointer to the relocated object). The source variable is spent afterwards (like move).
         const std::string t = typeOf(*ex->target);  // also checks the target's first (valid) use
-        const LocalVar* r = lookupLocal(ex->region);
-        if (r == nullptr)
-            error("unknown region '" + ex->region + "' in extract", ex->loc);
-        else if (r->type != "region")
-            error("'" + ex->region + "' is not a region", ex->loc);
+        if (ex->region.find('.') == std::string::npos) {  // a `this.field` region is validated at codegen
+            const LocalVar* r = lookupLocal(ex->region);
+            if (r == nullptr)
+                error("unknown region '" + ex->region + "' in extract", ex->loc);
+            else if (r->type != "region")
+                error("'" + ex->region + "' is not a region", ex->loc);
+        }
         // LDP3-1717: mark the source spent so a later read is rejected with the extract-specific message.
         // Only a plain variable can be flow-tracked; an element/field target is nulled at run time instead.
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(ex->target.get())) {
+            // LDP3-1718: if a field of the object being extracted was allocated in the SAME region, moving
+            // just the object leaves that field behind -- a dangling pointer after release. Reject it.
+            const std::string prefix = id->name + ".";
+            for (const auto& [path, rgn] : regionOf_)
+                if (rgn == ex->region && path.rfind(prefix, 0) == 0) {
+                    error("cannot extract '" + id->name + "': its field '" + path.substr(prefix.size()) +
+                              "' lives in the same region '" + ex->region +
+                              "' -- extract the graph (cascade move) or allocate the field elsewhere",
+                          ex->loc);
+                    break;
+                }
             extracted_[id->name] = ex->loc.line;
             moved_.insert(id->name);
+            regionOf_.erase(id->name);  // the object left the region; its recorded fields are stale
         }
         return t;
     }
