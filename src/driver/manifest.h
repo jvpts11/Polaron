@@ -24,6 +24,9 @@ struct Manifest {
     std::string target = "x86_64-windows";
     std::string environment;             // optional shared environment ([build] environment = "...")
     bool freestanding = false;
+    // [build] subsystem = "windows": link a GUI program (no console window). Default "" = console, so a
+    // normal program keeps its stdout/stderr console. A GUI app (draws its own window) opts in.
+    std::string subsystem;
     bool isLibrary = false;              // [library] instead of [program]: build emits a .ldb bundle
     bool singleFile = false;             // loose file (ephemeral): compile only the entry, not its siblings
     std::vector<Dependency> dependencies;  // from [dependencies]

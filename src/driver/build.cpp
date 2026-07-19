@@ -281,6 +281,12 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         linkArgs.push_back("ws2_32.lib");
         for (const auto& lib : m.nativeLibs)  // FFI: system libs the program links against (opengl32, ...)
             linkArgs.push_back(lib + ".lib");
+        // A GUI program (subsystem = "windows") links without a console window. The program still enters
+        // through `main`, so keep the C entry point (WINDOWS default would look for WinMain).
+        if (m.subsystem == "windows") {
+            linkArgs.push_back("-subsystem:windows");
+            linkArgs.push_back("-entry:mainCRTStartup");
+        }
         if (int rc = runProcess(tc.lldLink, linkArgs); rc != 0) {
             std::fprintf(stderr, "ldp3: link failed\n");
             return rc == -1 ? 1 : rc;
@@ -310,6 +316,13 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
 #endif
         for (const auto& lib : m.nativeLibs)  // FFI: system libs the program links against (opengl32, ...)
             linkArgs.push_back("-l" + lib);
+#ifdef _WIN32
+        // A GUI program (subsystem = "windows") links without a console window; keep `main` as the entry.
+        if (m.subsystem == "windows") {
+            linkArgs.push_back("-Wl,-subsystem:windows");
+            linkArgs.push_back("-Wl,-entry:mainCRTStartup");
+        }
+#endif
         linkArgs.push_back("-o");
         linkArgs.push_back(exe.string());
         if (int rc = runProcess(tc.clang, linkArgs); rc != 0) {
