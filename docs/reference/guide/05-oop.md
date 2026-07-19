@@ -499,6 +499,34 @@ most-derived accessor for the object's real type. A property is not a second-cla
 citizen that quietly bypasses polymorphism — it is a method pair wearing a field's
 clothes.
 
+### Bidirectional properties
+
+The getter/setter pair above converts *one way each*. When a property is really two
+representations of the same datum — Celsius/Fahrenheit, radians/degrees, bytes/kilobytes — a
+**`bidirectional`** property expresses both conversions over a backing field, as a pair of
+`X to Y:` rules. Reading computes the property from the field; assigning computes the field
+from the property:
+
+```ldp3
+public class Temperature {
+    private mutable double celsius;
+    public constructor Temperature(double c) { this.celsius = c; }
+
+    public bidirectional double fahrenheit {
+        celsius to fahrenheit: celsius * 9.0 / 5.0 + 32.0;
+        fahrenheit to celsius: (fahrenheit - 32.0) * 5.0 / 9.0;
+    }
+}
+
+Temperature* t = new Temperature(100.0) on heap;
+double f = t.fahrenheit;     // reads celsius, converts -> 212.0
+t.fahrenheit = 32.0;         // converts and stores -> celsius = 0.0
+```
+
+Each rule names the source and destination and gives the expression; the backing field and
+the property name are both in scope inside the rules, so the two directions read as the plain
+formulas they are.
+
 ## 5.11 Operator Overloading
 
 A class can give meaning to the built-in operators when applied to its instances. You
@@ -615,8 +643,37 @@ public class Main {
 }
 ```
 
-With classes, inheritance, interfaces, virtual dispatch, properties, operators, and
-enums in hand, you have the whole object model LDP3 offers. The recurring themes —
+## 5.13 Field Layout: `affinity`
+
+By default a class's fields are laid out in declaration order. For data-oriented code — where
+a tight loop touches a few fields of every object, every frame — you often want the *hot*
+fields packed together so a pass pulls in fewer cache lines, and the *cold* ones (debug ids,
+bookkeeping) pushed to the end. `affinity` blocks express that intent without hand-splitting
+the class into parallel arrays:
+
+```ldp3
+public class Particle {
+    public affinity cold {
+        mutable int id;
+        mutable int spawnFrame;
+    }
+    public affinity hot {
+        mutable float x;
+        mutable float y;
+        mutable float vx;
+        mutable float vy;
+    }
+    // The emitted object is { vtable, x, y, vx, vy, id, spawnFrame } -- hot first, regardless
+    // of the order the blocks appear in.
+}
+```
+
+Only the *layout* changes; the fields, their access, and the class's semantics are exactly as
+if they were declared plainly. Affinity is inherited safely: a subclass's object still begins
+with exactly the base's layout, and only the subclass's own fields are grouped.
+
+With classes, inheritance, interfaces, virtual dispatch, properties, operators, enums, and
+field-layout hints in hand, you have the whole object model LDP3 offers. The recurring themes —
 explicit over implicit (visibility, `this.`, `override`), value semantics with opt-in
 sharing, and immutability by default — are worth keeping in mind as you read the
 chapters that follow, because the rest of the language is built on top of exactly these
