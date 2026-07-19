@@ -25,8 +25,6 @@ CMakeUserPresets.json
 .vscode/
 *.user
 
-# Note: CLAUDE.md and docs/ are intentionally NOT ignored here; they are simply
-# never added to commits.
 dist/
 
 # kernel build artifacts

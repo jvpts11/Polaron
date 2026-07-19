@@ -2,6 +2,8 @@
 //
 // Run with:  powershell -ExecutionPolicy Bypass -File scripts\run.ps1 examples\variables.ldp3
 
+import System.IO.Console;
+
 program Variables;
 
 public bundle main {
@@ -19,7 +21,7 @@ public bundle main {
                 mutable int score = 0;
                 score = count * 5;
 
-                System.IO.printf("answer=%d ready=%d count=%d score=%d\n",
+                System.IO.Console.printf("answer=%d ready=%d count=%d score=%d\n",
                                  answer, ready, count, score);
             }
         }

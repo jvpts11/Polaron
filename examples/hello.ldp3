@@ -2,14 +2,16 @@
 //
 // Build & run:  powershell -ExecutionPolicy Bypass -File scripts\run.ps1 examples\hello.ldp3
 
+import System.IO.Console;
+
 program Hello;
 
 public bundle main {
     public namespace examples {
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.printf("Hello, world!\n");
-                System.IO.printf("This is LDP3, the beginning of something greater.\n");
+                System.IO.Console.printf("Hello, world!\n");
+                System.IO.Console.printf("This is LDP3, the beginning of something greater.\n");
             }
         }
     }

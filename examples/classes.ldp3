@@ -1,20 +1,22 @@
-program Classes;
-
-// Demonstra o núcleo OOP da LDP3 (M4): classes, campos, construtor com
-// parâmetro, destructor (RAII), métodos de instância, método static que recebe
-// objetos como argumento, new on stack / on heap, e delete.
+// Demonstrates LDP3's OOP core: classes, fields, a constructor with a parameter, a
+// destructor (RAII), instance methods, a static method that takes objects as arguments,
+// new on stack / on heap, and delete.
 //
-// Saída esperada:
-//   transferiu? 1
+// Expected output:
+//   transferred? 1
 //   alice = 50
 //   bob = 120
-//   fechando conta com saldo 120   <- delete bob (heap)
-//   fechando conta com saldo 50    <- fim do main: alice (stack) é destruída
+//   closing account with balance 120   <- delete bob (heap)
+//   closing account with balance 50    <- end of main: alice (stack) is destroyed
+
+import System.IO.Console;
+
+program Classes;
 
 public bundle main {
     public namespace examples {
 
-        // Uma conta bancária simples.
+        // A simple bank account.
         public class Account {
             private mutable int balance;
 
@@ -40,11 +42,11 @@ public bundle main {
             }
 
             public destructor ~Account() returns void {
-                System.IO.println($"fechando conta com saldo {this.balance}");
+                System.IO.Console.println($"closing account with balance {this.balance}");
             }
         }
 
-        // Utilidade static: opera sobre duas contas, sem instância de Bank.
+        // A static utility: operates on two accounts, with no Bank instance.
         public class Bank {
             public static method transfer(Account from, Account to, int amount) returns boolean {
                 if (from.withdraw(amount)) {
@@ -57,15 +59,15 @@ public bundle main {
 
         public class Main {
             public static method main(string[] args) returns void {
-                Account alice = new Account(100) on stack;  // destruída no fim do main
-                Account bob = new Account(50) on heap;       // destruída no delete
+                Account alice = new Account(100) on stack;  // destroyed at end of main
+                Account bob = new Account(50) on heap;       // destroyed on delete
 
                 alice.deposit(20);
                 boolean ok = Bank.transfer(alice, bob, 70);
 
-                System.IO.println($"transferiu? {ok}");
-                System.IO.println($"alice = {alice.balanceOf()}");
-                System.IO.println($"bob = {bob.balanceOf()}");
+                System.IO.Console.println($"transferred? {ok}");
+                System.IO.Console.println($"alice = {alice.balanceOf()}");
+                System.IO.Console.println($"bob = {bob.balanceOf()}");
 
                 delete bob;
                 return;

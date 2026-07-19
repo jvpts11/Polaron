@@ -1,22 +1,24 @@
-program IO;
+// I/O in LDP3: System.IO.Console.printf is a C-style formatter. The FIRST argument is
+// always a LITERAL string (the "format"). Printing plain text is just a string with no
+// specifiers. To print values, they go into the format: %d (int/boolean), %c (char),
+// with the escapes \n and \t.
 
-// I/O na 0.1: System.IO.printf é um builtin estilo C. O PRIMEIRO argumento é
-// sempre uma string LITERAL (o "formato"). Imprimir texto puro é só passar uma
-// string sem formatadores. Para imprimir valores, eles entram no formato:
-// %d (int/boolean), %c (char), com escapes \n e \t.
+import System.IO.Console;
+
+program IO;
 
 public bundle main {
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
-                // 1) Só texto, sem nenhum formatador: totalmente OK.
-                System.IO.printf("Ola, mundo!\n");
+                // 1) Plain text, no specifiers: perfectly fine.
+                System.IO.Console.printf("Hello, world!\n");
 
-                // 2) Texto com um valor interpolado via formato.
-                System.IO.printf("Soma: %d\n", 2 + 3);
+                // 2) Text with one value interpolated through the format.
+                System.IO.Console.printf("Sum: %d\n", 2 + 3);
 
-                // 3) char com %c e escape \t (tab).
-                System.IO.printf("Letra:\t%c\n", 'A');
+                // 3) A char with %c and the \t (tab) escape.
+                System.IO.Console.printf("Letter:\t%c\n", 'A');
 
                 return;
             }
