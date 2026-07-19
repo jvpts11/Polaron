@@ -330,9 +330,9 @@ thereafter. The chapters build on one another:
 
 Throughout, code appears in fenced ` ```ldp3 ` blocks and reflects what the compiler accepts
 today. When a feature is planned but not yet fully implemented, the text will say so, so that you
-are never left guessing whether an example will actually run. The source of truth for the
-language is the specification (`docs/LDP3_specification.md`); this reference exists to *explain*
-that specification and to teach the language to a human reader.
+are never left guessing whether an example will actually run. This reference is the canonical
+description of the language, cross-checked against the compiler; it exists to *explain* the
+language and teach it to a human reader, not merely to enumerate it.
 
 With the philosophy in hand, turn to Chapter 2 to see how a program is assembled from bundles and
 namespaces.

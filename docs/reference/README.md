@@ -6,10 +6,9 @@ code through LLVM. Created by João Victor Pereira Tavares.
 
 This reference is written to *teach*, not just to enumerate. Every feature is explained in terms of
 what it does, why it exists, how it fits LDP3's philosophy, and how it interacts with the rest of the
-language — each illustrated with short, runnable examples. It is cross-checked against the actual
-compiler and the embedded standard-library prelude, so where the written specification and the
-implementation ever diverge, these pages describe **what the compiler accepts today** and flag the
-difference. For the formal design document, see [`../LDP3_specification.md`](../LDP3_specification.md).
+language — each illustrated with short, runnable examples. It is the canonical description of the
+language, cross-checked against the actual compiler and the embedded standard-library prelude, so
+these pages describe **what the compiler accepts today**.
 
 A single typeset PDF of everything below:
 **[LDP3-Language-Reference-1.0.0.pdf](LDP3-Language-Reference-1.0.0.pdf)**.

@@ -4,8 +4,8 @@ This chapter catalogs every reserved word LDP3 recognizes. Each entry gives what
 its **status**, and — where it clarifies — a short example. Use it as a lookup companion to the
 preceding chapters, which explain each feature in depth.
 
-**Sources of truth.** Language design comes from the spec (`docs/LDP3_specification.md`). What is
-*reserved today* comes from the compiler itself: `src/lexer/lexer.cpp` + `src/lexer/token.h` (hard
+**Source of truth.** What is *reserved today* comes from the compiler itself:
+`src/lexer/lexer.cpp` + `src/lexer/token.h` (hard
 keywords) and `src/parser` + `src/semantic/analyzer.cpp` (soft/contextual keywords and
 semantically-resolved type names). Where the written spec and the implementation diverge, this
 chapter documents what the compiler accepts today and flags the difference.
@@ -672,6 +672,6 @@ for the divergences).
 | Primitive types (also keywords) | 20 |
 | Freestanding mode | 112–115 keywords |
 
-> **Accuracy note.** This chapter prioritizes what the compiler **recognizes today** (lexer + parser
-> + semantic) and flags each divergence from the spec/catalog explicitly. For the canonical language
-> design, the spec (`docs/LDP3_specification.md`) is the source of truth.
+> **Accuracy note.** This is the canonical keyword reference: it lists what the compiler
+> **recognizes today** (lexer + parser + semantic), which is the authority on the language's
+> keywords. It is kept in sync with the compiler as the language evolves.
