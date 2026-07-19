@@ -1588,6 +1588,87 @@ public struct ByteSize {
 
 ---
 
+### 17.11 Sabores de região (estratégia de recuperação)
+
+Uma região tem um **sabor** (*flavor*): a estratégia com que ela recupera memória. Todo sabor é uma
+palavra-chave **contextual** — reconhecida só imediatamente antes de `region`, e identificador normal em
+qualquer outro lugar. `region` puro é `bump` (o padrão histórico, byte-idêntico ao que sempre foi).
+
+```ldp3
+region R           = itself.allocate(64 kilobytes);                       // bump (padrão)
+bump region R      = itself.allocate(64 kilobytes);                       // bump explícito
+pool region R      = itself.allocate(64 kilobytes);                       // free-list, recupera por objeto
+stack region R     = itself.allocate(64 kilobytes);                       // LIFO: mark/rollback
+fixedslot region R = itself.allocate(64 kilobytes).accepts({Particle});  // pool de um só tamanho
+ring region R      = itself.allocate(64 kilobytes).accepts({LogLine});   // circular, descarta o mais antigo
+growable pool region R = itself.allocate(64 kilobytes);                   // encadeia um novo bloco ao encher
+```
+
+Gramática: `region-decl := [ 'growable' ] [ flavor ] 'region' NOME [ '=' region-init ] ';'` onde
+`flavor := 'bump' | 'pool' | 'stack' | 'fixedslot' | 'ring'`. Prefixos universais precedem tudo
+(`public eternal lazy growable pool region cache = …`). O sabor vale também em **campo de classe**
+(`private pool region den;`).
+
+**Semântica de cada sabor:**
+
+- **bump** — linear/monotônico. Aloca avançando um cursor; não libera objeto individual; `release`/`.clear()`
+  libera tudo de uma vez. Alocação mais rápida (caminho inline, byte-idêntico). Uso: alocar-muitos-liberar-junto.
+- **pool** — free-list segregada por classe de tamanho. `new … in R` reusa um slot livre ou avança um novo;
+  `delete … from R` / `extract` devolvem o slot; `new` posterior reusa. Ponteiros nunca movem. Uso: churn de
+  tamanhos variados (terminais, entidades).
+- **stack** — bump mais `mark`/`rollback` (LIFO). `checkpoint m = mark of region R;` grava o cursor;
+  `rollback region R to m;` roda os destrutores de tudo alocado após `m` (do mais novo pro mais velho) e
+  rebobina o cursor. Uso: escopos aninhados, checkpoints por-frame/por-request.
+- **fixedslot** — pool de um único tamanho, de um **único tipo aceito** (`accepts({T})` é obrigatório).
+  Todos os slots idênticos → alocação/liberação O(1), zero fragmentação. Uso: churn homogêneo (um pool de `Particle`).
+- **ring** — buffer circular de capacidade fixa; ao encher, uma nova alocação **sobrescreve a mais antiga**
+  (rodando o destrutor dela antes). Sem `delete` individual (auto-descarta). Uso: histórico/streaming limitado.
+
+**Crescimento (`growable`):** por padrão a região é fixa e uma região cheia **trapa** (sem UB) com um
+diagnóstico claro. `growable` encadeia um novo bloco no overflow (lista ligada de blocos; alocação
+amortizada O(1); `release` libera a cadeia inteira). Compõe com bump/pool/fixedslot; é **contraditória**
+com `ring` (limitado por definição) e com `at address` (memória externa não cresce).
+
+**Operações:**
+
+```ldp3
+Terminal* t = extract terminals[i] from region R;   // relocar pro heap, destrackear, recuperar o slot
+checkpoint m = mark of region R;                     // só stack: grava o cursor
+rollback region R to m;                              // só stack: destrói + rebobina
+```
+
+`extract` é um operador prefixo sobre um lvalue, **só do lado direito**: relocar o objeto pra uma alocação
+heap nova, transferir a posse ao chamador (que deve `delete` ou ligar a um valor/`T*`), tirá-lo do
+rastreamento da região (o `release` não o destrói de novo) e marcar a origem como **movida**
+(use-after-extract é erro de compilação, como `move`). Em pool/fixedslot o slot vago é recuperado; em bump
+ele fica morto até o `release`. `checkpoint` é o único **tipo embutido novo** (um cursor opaco; copiável, sem
+destrutor).
+
+**Introspecção** — métodos comuns, sem palavras-chave: `R.used()`, `R.capacity()`, `R.remaining()`,
+`R.contains(ptr)`, `R.grow(N bytes)`.
+
+**Diagnósticos** (todos ricos, roteados por `diag::classify`, com *why*/*fix*/*prevent*):
+
+| código | condição |
+|---|---|
+| LDP3-1710 | dois sabores numa região (`pool stack region`) |
+| LDP3-1711 | `fixedslot`/`ring` sem `.accepts({T})` de exatamente um tipo |
+| LDP3-1712 | `growable` com `ring` / `at address` / `stack` |
+| LDP3-1713 | `mark`/`rollback` numa região não-`stack` |
+| LDP3-1714 | `rollback` com um checkpoint de outra região |
+| LDP3-1715 | `delete … from region` numa região `ring` (auto-descarta) |
+| LDP3-1717 | uso de uma variável depois de `extract` |
+| LDP3-1719 | modificador de sabor numa declaração que não é região |
+| LDP3-1720 | resultado de `extract` não ligado (statement solto) |
+
+(LDP3-1718 — extrair um objeto cujo campo vive na mesma região — está reservado; a checagem precisa de
+análise de fluxo de região e chega numa versão futura.)
+
+**Compatibilidade:** `region` puro é `bump`, byte-idêntico ao de antes; as palavras novas são contextuais,
+então nenhum programa existente muda de significado.
+
+---
+
 ## 18. Persistents
 
 `persistent` é um modificador que vive **dentro de classes**: pode marcar campos, variáveis internas, classes internas, structs internas. Marca que o elemento desacopla seu tempo de vida do tempo de vida da instância que o contém: sobrevive ao destrutor do objeto-pai e pode reataca quando uma variável "equivalente" é criada de novo.
