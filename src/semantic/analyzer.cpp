@@ -1967,8 +1967,8 @@ bool SemanticAnalyzer::classHasUniqueField(const std::string& className) {
     return false;
 }
 
-// spec 27: "Aritmética de ponteiro é permitida em todos os tipos mas o compilador emite warning, pois
-// em ponteiros pra classe avançar não faz sentido semântico e pode corromper memória."
+// spec 27: "Pointer arithmetic is allowed on every type, but the compiler emits a warning, because
+// advancing a pointer to a class makes no semantic sense and can corrupt memory."
 void SemanticAnalyzer::warnClassPointerArith(const std::string& ptrType, SourceLocation loc) {
     if (lookupClass(baseType(ptrType)) == nullptr) return;  // a pointer into an array of primitives
     warn("pointer arithmetic on '" + ptrType +
