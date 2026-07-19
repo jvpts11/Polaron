@@ -107,27 +107,27 @@ public bundle main {
                 mutable char current = 'X';
                 mutable boolean over = false;
 
-                System.IO.Console.println("Jogo da Velha! Escolha posicoes de 1 a 9.");
+                System.IO.Console.println("Tic-Tac-Toe! Choose positions 1 to 9.");
 
                 while (!over) {
                     board.show();
-                    System.IO.Console.println($"Vez do jogador {current}. Posicao (1-9):");
+                    System.IO.Console.println($"Player {current}'s turn. Position (1-9):");
 
                     int pos = System.IO.Console.read().toInt();
                     boolean ok = board.place(pos - 1, current);
 
                     if (!ok) {
-                        System.IO.Console.println("Jogada invalida, tente de novo.");
+                        System.IO.Console.println("Invalid move, try again.");
                     } else {
                         char w = board.winner();
                         if (w != ' ') {
                             board.show();
-                            System.IO.Console.println($"Jogador {w} venceu!");
+                            System.IO.Console.println($"Player {w} wins!");
                             over = true;
                         } else {
                             if (board.isFull()) {
                                 board.show();
-                                System.IO.Console.println("Deu velha! Empate.");
+                                System.IO.Console.println("It's a draw!");
                                 over = true;
                             } else {
                                 if (current == 'X') {

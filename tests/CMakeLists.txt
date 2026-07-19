@@ -3066,17 +3066,17 @@ if(LDP3_WITH_LLVM)
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interpolation.ldp3"
-            "-DEXPECTED=placar: 10 x 7 vez do X soma = 17"
+            "-DEXPECTED=score: 10 x 7 turn of X sum = 17"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # Console.read() reads a line as a String; toInt() parses it. stdin "3\n4" -> a=3 b=4 soma=7.
+        # Console.read() reads a line as a String; toInt() parses it. stdin "3\n4" -> a=3 b=4 sum=7.
         add_test(NAME codegen_readint_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/read_echo.ldp3"
             "-DINPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/samples/read_echo.in"
-            "-DEXPECTED=a=3 b=4 soma=7"
+            "-DEXPECTED=a=3 b=4 sum=7"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -3086,7 +3086,7 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tic_tac_toe.ldp3"
             "-DINPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/samples/tic_tac_toe.in"
-            "-DCONTAINS=Jogador X venceu!"
+            "-DCONTAINS=Player X wins!"
             "-DEXPECTED="
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
