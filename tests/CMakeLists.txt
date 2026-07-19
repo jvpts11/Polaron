@@ -258,6 +258,16 @@ add_test(NAME sema_rejects_rollback_wrong_region
 set_tests_properties(sema_rejects_rollback_wrong_region PROPERTIES
     PASS_REGULAR_EXPRESSION "error\\[LDP3-1714\\]")
 
+add_test(NAME sema_rejects_fixedslot_no_accepts
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_fixedslot_noaccepts.ldp3")
+set_tests_properties(sema_rejects_fixedslot_no_accepts PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-1711\\]")
+
+add_test(NAME sema_rejects_ring_delete
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_ring_delete.ldp3")
+set_tests_properties(sema_rejects_ring_delete PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-1715\\]")
+
 # A catalog `extends` cycle must be reported, not crash (regression: it used to
 # overflow the stack in isSubtype).
 add_test(NAME sema_rejects_catalog_cycle
@@ -3310,6 +3320,25 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_stack.ldp3"
             "-DEXPECTED=destroyed=100000 final=100001"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # fixedslot region (single-size pool, spec 17): the pool churn through a one-type region reclaims.
+        add_test(NAME codegen_region_fixedslot_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_fixedslot.ldp3"
+            "-DEXPECTED=sum=9900000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ring region (circular buffer, spec 17): 10 writes into a 3-entry ring evict the oldest 7 (their
+        # destructors run); release destructs the 3 still live.
+        add_test(NAME codegen_region_ring_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_ring.ldp3"
+            "-DEXPECTED=evicted=7 final=10"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

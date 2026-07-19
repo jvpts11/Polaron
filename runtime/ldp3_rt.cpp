@@ -403,7 +403,8 @@ typedef struct Ldp3RegionDesc {
     void**             trackDtor; // +72 parallel destructor function pointers (void(*)(void*))
     unsigned long long trackCount;// +80
     unsigned long long trackCap;  // +88
-    Ldp3FreeNode*      freelists[LDP3_NCLASSES + 1];  // +96 per size class; [LDP3_NCLASSES] = large (>512)
+    void*              ringDtor;  // +96 ring: the single element type's destructor (all entries share it)
+    Ldp3FreeNode*      freelists[LDP3_NCLASSES + 1];  // +104 per size class; [LDP3_NCLASSES] = large (>512)
 } Ldp3RegionDesc;
 // The compiler hardcodes LDP3_REGION_HDR as the data offset; keep the struct within it.
 typedef char Ldp3RegionDescFits[(sizeof(Ldp3RegionDesc) <= LDP3_REGION_HDR) ? 1 : -1];
@@ -429,6 +430,7 @@ void __ldp3_region_init(void* block, unsigned long long flavor, unsigned long lo
     d->trackDtor = NULL;
     d->trackCount = 0;
     d->trackCap = 0;
+    d->ringDtor = NULL;
     for (int i = 0; i <= LDP3_NCLASSES; i++) d->freelists[i] = NULL;
 }
 
@@ -558,6 +560,66 @@ void __ldp3_region_teardown(void* block) {
     d->trackPtr = NULL;
     d->trackDtor = NULL;
     d->trackCap = 0;
+}
+
+// ---- ring flavor (spec 17): a fixed-capacity circular buffer of one element type ----
+// All entries share a single element type, so the region stores its one destructor. Set once, at the ring
+// region's declaration, from its `.accepts({T})` type (null when that type has no destructor).
+void __ldp3_ring_set_dtor(void* block, void* dtor) {
+    if (block == NULL) return;
+    ((Ldp3RegionDesc*)block)->ringDtor = dtor;
+}
+
+// Allocate the next ring slot. Slots are fixed-size ([16-byte header][payload]); when the ring is full a
+// new allocation overwrites the oldest entry -- its destructor runs first (no leak), then the memory is
+// reused in place. Returns the slot payload (the caller's constructor writes it).
+void* __ldp3_ring_new(void* block, unsigned long long size) {
+    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
+    if (d->entrySize == 0) {  // first allocation fixes the entry size and capacity in entries
+        unsigned long long payload = (size + 15) & ~15ULL;
+        if (payload == 0) payload = 16;
+        d->entrySize = 16 + payload;
+        d->ringCap = d->cap / d->entrySize;
+        if (d->ringCap == 0)
+            __ldp3_panic("ring region is too small to hold even one entry -- give itself.allocate a bigger size");
+    }
+    unsigned long long widx = (d->ringHead + d->ringCount) % d->ringCap;
+    char* slot = (char*)d->dataBase + widx * d->entrySize;
+    if (d->ringCount < d->ringCap) {
+        d->ringCount++;
+        if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); }
+    } else {  // full: evict the oldest (this same slot), running its destructor before reuse
+        Ldp3Hdr* oh = (Ldp3Hdr*)slot;
+        if (d->ringDtor != NULL && oh->magic == LDP3_RMAGIC) {
+            oh->magic = LDP3_RFREED;
+            ((void (*)(void*))d->ringDtor)(slot + 16);
+        }
+        d->ringHead = (d->ringHead + 1) % d->ringCap;
+        if (g_prof_on) { prof_add(&g_prof_total_alloc, 1); }
+    }
+    unsigned long long payload = d->entrySize - 16;
+    Ldp3Hdr* h = (Ldp3Hdr*)slot;
+    h->magic = LDP3_RMAGIC;
+    h->cls = ldp3_region_class(payload);
+    h->pad = (unsigned)payload;
+    return slot + 16;
+}
+
+// Destruct a ring region's live entries (oldest to newest) before its block is freed.
+void __ldp3_ring_teardown(void* block) {
+    if (block == NULL) return;
+    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
+    if (d->ringDtor == NULL || d->ringCap == 0) return;  // no destructor / never used
+    for (unsigned long long i = 0; i < d->ringCount; i++) {
+        unsigned long long idx = (d->ringHead + i) % d->ringCap;
+        char* slot = (char*)d->dataBase + idx * d->entrySize;
+        Ldp3Hdr* h = (Ldp3Hdr*)slot;
+        if (h->magic == LDP3_RMAGIC) {
+            h->magic = LDP3_RFREED;
+            ((void (*)(void*))d->ringDtor)(slot + 16);
+        }
+    }
+    d->ringCount = 0;
 }
 
 void* __ldp3_realloc(void* ptr, size_t size) {

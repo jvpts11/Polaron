@@ -2185,6 +2185,16 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                           vd->loc);
                 } else {
                     regionFlavor_[vd->name] = vd->regionFlavor;  // record for extract/delete checks
+                    // fixedslot/ring hold one element type, so they need `.accepts({T})` of exactly one
+                    // type (LDP3-1711): a single-size pool / a fixed-purpose circular buffer.
+                    if (vd->regionFlavor == "fixedslot" || vd->regionFlavor == "ring") {
+                        const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get());
+                        if (ri == nullptr || ri->accepts.size() != 1)
+                            error("a " + vd->regionFlavor +
+                                      " region needs its single element type: add .accepts({T}) with "
+                                      "exactly one type (spec 17)",
+                                  vd->loc);
+                    }
                 }
             }
         }
@@ -2392,6 +2402,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         };
         checkTarget(*del->target);
         for (const auto& mt : del->moreTargets) checkTarget(*mt);
+        // `delete X from region R` on a ring region is rejected -- a ring auto-evicts (LDP3-1715).
+        if (!del->fromRegion.empty() &&
+            (regionFlavor_.count(del->fromRegion) ? regionFlavor_[del->fromRegion] : std::string()) ==
+                "ring")
+            error("a ring region auto-evicts; individual delete is not allowed on '" + del->fromRegion +
+                      "' (spec 17)",
+                  del->loc);
         return;
     }
     if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {

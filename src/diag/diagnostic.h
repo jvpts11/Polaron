@@ -75,6 +75,8 @@ enum class Code {
     RegionExtractNotBound,   // LDP3-1720: an `extract` result not bound to a variable/field
     RegionMarkNonStack,      // LDP3-1713: mark/rollback on a non-stack region
     RegionCheckpointWrongRegion,  // LDP3-1714: rollback with a checkpoint from another region
+    RegionFixedslotAcceptsRequired,  // LDP3-1711: fixedslot/ring without .accepts({T}) of one type
+    RegionRingNoDelete,      // LDP3-1715: delete X from a ring region (it auto-evicts)
     VectorMisuse,         // a vec/mat operation with the wrong shape or component
     UnimportMisuse,       // unimport/reimport used wrongly
     StaticAssert,         // a failed or non-constant static_assert

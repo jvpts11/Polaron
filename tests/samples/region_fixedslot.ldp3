@@ -1,0 +1,35 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionFixedslot;
+
+public bundle main {
+    public namespace app {
+
+        public class Dog {
+            public mutable int age;
+            public constructor Dog(int a) {
+                this.age = a;
+            }
+            public method getAge() returns int {
+                return this.age;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // A fixedslot region (single-size pool): the same 200000-object churn as the pool test,
+                // through a 4 KiB region, works only because each `delete` returns the one-size slot.
+                fixedslot region pen = itself.allocate(4 kilobytes).accepts({Dog});
+                mutable int sum = 0;
+                for (mutable int i = 0; i < 200000; i++) {
+                    Dog* d = new Dog(i % 100) in region pen;
+                    sum = sum + d.getAge();
+                    delete d from region pen;
+                }
+                System.IO.Console.printf("sum=%d\n", sum);   // 9900000
+                release region pen;
+                return;
+            }
+        }
+    }
+}

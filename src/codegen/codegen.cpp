@@ -2549,13 +2549,33 @@ struct CodeGenerator::Impl {
             llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
         return module.getOrInsertFunction("__ldp3_region_teardown", ty);
     }
+    llvm::FunctionCallee ringNewFn() {  // (block, size) -> ptr  (circular; evicts oldest when full)
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getPtrTy(), {builder.getPtrTy(), builder.getInt64Ty()}, false);
+        llvm::FunctionCallee c = module.getOrInsertFunction("__ldp3_ring_new", ty);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(c.getCallee()))
+            f->addRetAttr(llvm::Attribute::NoAlias);
+        return c;
+    }
+    llvm::FunctionCallee ringSetDtorFn() {  // (block, dtor) -> void  (the ring's single element dtor)
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_ring_set_dtor", ty);
+    }
+    llvm::FunctionCallee ringTeardownFn() {  // (block) -> void  (destruct live entries before free)
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_ring_teardown", ty);
+    }
     // Region flavor classification. bump ("") uses the inline cursor fast path. pool/fixedslot/stack use
     // the runtime Ldp3RegionDesc: pool/fixedslot allocate reclaimable slots from a free-list, stack bumps
     // with mark/rollback. (ring joins usesRuntimeDesc in a later wave.)
     static bool isPoolLikeFlavor(const std::string& f) { return f == "pool" || f == "fixedslot"; }
     static bool isStackFlavor(const std::string& f) { return f == "stack"; }
+    static bool isRingFlavor(const std::string& f) { return f == "ring"; }
+    // A runtime-desc flavor uses the Ldp3RegionDesc header (not the inline bump cursor): everything but bump.
     static bool usesRuntimeDesc(const std::string& f) {
-        return f == "pool" || f == "fixedslot" || f == "stack";
+        return f == "pool" || f == "fixedslot" || f == "stack" || f == "ring";
     }
     // The flavored-region data offset -- MUST match LDP3_REGION_HDR in runtime/ldp3_rt.cpp.
     static constexpr unsigned kRegionHdr = 384u;
@@ -4839,9 +4859,13 @@ struct CodeGenerator::Impl {
             builder.SetInsertPoint(contBB);
         }
         llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
-        // pool/fixedslot serve a reclaimable slot from a free-list; stack bumps a slot (reclaimed via
-        // mark/rollback). All go through the runtime allocator. (Placed after any lazy acquire so the
-        // block exists; bump falls through to the inline fast path below.)
+        // ring: a circular buffer -- the runtime allocates the next slot, evicting (and destructing) the
+        // oldest when full. pool/fixedslot serve a reclaimable free-list slot; stack bumps a slot
+        // (reclaimed via mark/rollback). All go through the runtime allocator. (After any lazy acquire so
+        // the block exists; bump falls through to the inline fast path below.)
+        if (isRingFlavor(flavor)) {
+            return builder.CreateCall(ringNewFn(), {block, sizeOf(objType)}, "ring.slot");
+        }
         if (usesRuntimeDesc(flavor)) {
             return builder.CreateCall(regionNewFn(), {block, sizeOf(objType)}, "rgn.slot");
         }
@@ -8753,6 +8777,19 @@ struct CodeGenerator::Impl {
             if (declType == "region" && isOwnedRegionInit(vd->init.get()) &&
                 !usesRuntimeDesc(vd->regionFlavor))
                 setupOwnedRegionCursor(vd->name);
+            // A ring region records its single element type's destructor (from `.accepts({T})`), so
+            // eviction of the oldest entry and release can run it. Set once, here at the declaration.
+            if (declType == "region" && isRingFlavor(vd->regionFlavor)) {
+                llvm::Value* dtor = llvm::ConstantPointerNull::get(builder.getPtrTy());
+                if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get());
+                    ri != nullptr && !ri->accepts.empty()) {
+                    const std::string acn = baseType(ri->accepts[0]);
+                    if (auto cit = classes.find(acn); cit != classes.end() && cit->second.hasDestructor)
+                        dtor = functions[acn + ".~" + acn];
+                }
+                llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
+                builder.CreateCall(ringSetDtorFn(), {block, dtor});
+            }
             // RAII: a freshly built `new ... on stack` object with a destructor gets cleaned up
             // when the function returns -- unless it is `eternal` (spec 37.2: lives for the whole
             // program, no cleanup).
@@ -8761,11 +8798,11 @@ struct CodeGenerator::Impl {
                 if (cit != classes.end() && cit->second.hasDestructor && !vd->isEternal) {
                     // A region object's destructor runs when the region is released/freed (spec
                     // 17.7); a plain stack object's runs at scope exit. A heap object is manual.
-                    // A STACK-region object is NOT tracked here: the runtime registry (see emitNew) owns
-                    // its destructor for mark/rollback and release, so scopeObjects would double-destruct it.
+                    // A STACK- or RING-region object is NOT tracked here: the runtime owns its destructor
+                    // (the stack registry / the ring teardown), so scopeObjects would double-destruct it.
                     const std::string rfl =
                         regionFlavor_.count(nw->region) ? regionFlavor_[nw->region] : std::string();
-                    if (!nw->region.empty() && !isStackFlavor(rfl))
+                    if (!nw->region.empty() && !isStackFlavor(rfl) && !isRingFlavor(rfl))
                         scopeObjects.push_back(ScopeObject{slot, nw->className, nw->region});
                     else if (nw->region.empty() && nw->location == "stack")
                         scopeObjects.push_back(ScopeObject{slot, nw->className, ""});
@@ -9272,10 +9309,12 @@ struct CodeGenerator::Impl {
             if (it != locals.end()) {
                 runRegionObjectDtors(rel->region);
                 llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage);
-                // A stack region's live objects + its off-arena registry are torn down by the runtime
-                // (rollback-to-0 + free the registry) before the block itself is freed.
-                if (isStackFlavor(regionFlavor_.count(rel->region) ? regionFlavor_[rel->region] : std::string()))
-                    builder.CreateCall(regionTeardownFn(), {block});
+                // A stack region tears down its registry (rollback-to-0 + free it); a ring region destructs
+                // its live entries -- both before the block is freed.
+                const std::string relFlavor =
+                    regionFlavor_.count(rel->region) ? regionFlavor_[rel->region] : std::string();
+                if (isStackFlavor(relFlavor)) builder.CreateCall(regionTeardownFn(), {block});
+                else if (isRingFlavor(relFlavor)) builder.CreateCall(ringTeardownFn(), {block});
                 builder.CreateCall(regionReleaseFn(), {block});
                 builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()),
                                     it->second.storage);
@@ -9560,10 +9599,11 @@ struct CodeGenerator::Impl {
             runRegionObjectDtors(rname);  // destruct objects before freeing (17.7)
             llvm::Value* block =
                 builder.CreateLoad(builder.getPtrTy(), scopeRegions[i - 1].slot, "region");
-            // A stack region tears down its runtime registry (all remaining destructors + free it) here
-            // too, so scope exit and exception unwind reclaim its objects (spec 17.7).
-            if (isStackFlavor(regionFlavor_.count(rname) ? regionFlavor_[rname] : std::string()))
-                builder.CreateCall(regionTeardownFn(), {block});
+            // stack tears down its registry, ring destructs its live entries -- on scope exit and
+            // exception unwind alike, so region objects are reclaimed either way (spec 17.7).
+            const std::string rfl = regionFlavor_.count(rname) ? regionFlavor_[rname] : std::string();
+            if (isStackFlavor(rfl)) builder.CreateCall(regionTeardownFn(), {block});
+            else if (isRingFlavor(rfl)) builder.CreateCall(ringTeardownFn(), {block});
             builder.CreateCall(regionReleaseFn(), {block});  // cache the block for reuse (see runtime)
         }
     }

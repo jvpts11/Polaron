@@ -368,6 +368,24 @@ constexpr Row kCatalog[] = {
         "checkpoint variable per region so it is obvious which pairs with which.",
         "Name checkpoints after their region, and mark/rollback the same region in a matched pair." }},
 
+    {Code::RegionFixedslotAcceptsRequired, {
+        "LDP3-1711", "a fixedslot/ring region needs its single element type",
+        "A `fixedslot` region is a single-size pool and a `ring` region is a fixed-purpose circular buffer "
+        "(spec 17): both hold exactly one element type, which sets the slot size. Without it the compiler "
+        "cannot size the slots or know what to allocate.",
+        "Constrain the region to one type: `fixedslot region R = itself.allocate(N).accepts({Particle});`. "
+        "For a heterogeneous churn use a plain `pool region` instead (no accepts required).",
+        "Pick fixedslot/ring when the region holds many of ONE type; name that type in `.accepts({T})`." }},
+
+    {Code::RegionRingNoDelete, {
+        "LDP3-1715", "a ring region auto-evicts; individual delete is not allowed",
+        "A `ring` region is a bounded circular buffer: a new allocation past its capacity overwrites the "
+        "oldest entry (running its destructor first). Deleting an individual entry would leave a hole in "
+        "the ring and break that oldest-out discipline (spec 17).",
+        "Let the ring evict on its own -- just keep allocating; the oldest entries fall off. To drop "
+        "everything, `release region R` (or `.clear()`). Use a `pool region` if you need individual delete.",
+        "Reach for a ring only for bounded history/streaming where losing the oldest is the intent." }},
+
     {Code::VectorMisuse, {
         "LDP3-0804", "vector/matrix operation is malformed",
         "The SIMD vector and matrix types have fixed shapes: a vecN has N numeric lanes, a mat4 has 16 "
@@ -594,6 +612,8 @@ constexpr Rule kRules[] = {
     {"extract result must be bound", Code::RegionExtractNotBound},
     {"mark/rollback need a", Code::RegionMarkNonStack},
     {"this checkpoint belongs to region", Code::RegionCheckpointWrongRegion},
+    {"needs its single element type", Code::RegionFixedslotAcceptsRequired},
+    {"a ring region auto-evicts", Code::RegionRingNoDelete},
     {"region ", Code::RegionMisuse},
     {"vector ", Code::VectorMisuse},
     {"mat4 ", Code::VectorMisuse},

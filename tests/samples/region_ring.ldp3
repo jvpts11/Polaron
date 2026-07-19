@@ -1,0 +1,34 @@
+import System.IO.Console;
+import System.Memory.Units.bytes;
+program RegionRing;
+
+public bundle main {
+    public namespace app {
+
+        public class Log {
+            public static mutable int destroyed;
+            public mutable int id;
+            public constructor Log(int i) {
+                this.id = i;
+            }
+            public destructor ~Log() returns void {
+                Log.destroyed = Log.destroyed + 1;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // A ring holding 3 entries (96 bytes / 32-byte slots). Writing 10 entries overwrites the
+                // oldest 7 (their destructors run on eviction); release destructs the 3 still live.
+                ring region hist = itself.allocate(96 bytes).accepts({Log});
+                for (mutable int i = 0; i < 10; i++) {
+                    Log* e = new Log(i) in region hist;
+                }
+                System.IO.Console.printf("evicted=%d\n", Log.destroyed);   // 7
+                release region hist;                                       // 3 live destructed
+                System.IO.Console.printf("final=%d\n", Log.destroyed);     // 10
+                return;
+            }
+        }
+    }
+}
