@@ -431,6 +431,99 @@ region hw = itself.at(0xB8000, 4000 bytes).accepts({VGAChar});
 Regions are LDP3's answer to "GC-like ergonomics without a GC": batch the lifetime, and a
 whole graph of objects becomes as cheap to reclaim as a single free.
 
+### 4.7.1 Region flavors
+
+The plain `region` above is a **bump** allocator: allocation just advances a cursor, and
+nothing is reclaimed piecemeal — the whole slab goes back at once. That is the right shape
+for "everything dies together," but not every arena has that shape. LDP3 lets you pick the
+allocator's *flavor* by writing a soft keyword **before** `region`:
+
+```ldp3
+region a = itself.allocate(64 kilobytes);              // bump (the default)
+pool region b = itself.allocate(64 kilobytes);         // free-list
+stack region c = itself.allocate(64 kilobytes);        // mark / rollback (LIFO)
+fixedslot region d = itself.allocate(64 kilobytes).accepts({Dog});  // one fixed-size type
+ring region e = itself.allocate(96 bytes).accepts({Log});           // circular, auto-evicting
+```
+
+- **bump** (default) — advance a pointer; the cheapest possible allocation. Reclaimed only
+  when the whole region is released. Best when the objects share one lifetime.
+- **pool** — a free list. `delete x from region r` runs `x`'s destructor and returns its
+  slot to the free list, so a pool sustains an endless churn of allocate/delete without the
+  region growing. (See "Reclaiming one object" below.)
+- **stack** — LIFO reclamation with explicit marks: allocate, then rewind the cursor to an
+  earlier point to free everything allocated since, all at once.
+- **fixedslot** — a pool specialized to a *single* type, so every slot is the same size and
+  both allocation and free are O(1) index math. It **requires** `.accepts({T})` naming that
+  one type; without it the compiler reports an error.
+- **ring** — a fixed circle of slots. When it fills, the *oldest* live object is evicted
+  (its destructor runs) to make room for the new one — a bounded "most recent N" buffer.
+  You never `delete` from a ring; it evicts on its own.
+
+A region carries exactly one flavor — writing two (`pool stack region ...`) is an error, and
+a flavor keyword only qualifies a `region` (`pool int x` is an error).
+
+**`growable`.** Any flavor except `ring` can be made `growable`, which chains a fresh block
+when the current one fills instead of failing the allocation (a ring is inherently bounded,
+so `growable ring` is rejected):
+
+```ldp3
+growable pool region g = itself.allocate(256 bytes);   // grows in 256-byte blocks as needed
+```
+
+Flavors work on **region fields**, too — the pattern behind Forge's terminal pool, where a
+long-lived object churns short-lived ones through its own free list:
+
+```ldp3
+public class Kennel {
+    private pool region den;
+    public constructor Kennel() { this.den = itself.allocate(4 kilobytes); }
+    public method adopt(int n) returns void {
+        Dog* d = new Dog(n) in region this.den;
+        // ... use d ...
+        delete d from region this.den;   // reclaims the slot for the next dog
+    }
+}
+```
+
+#### Reclaiming one object
+
+- **`delete x from region r`** — on a **pool** or **fixedslot** region, runs `x`'s destructor
+  and returns its slot to the free list for reuse. On a bump region it runs the destructor
+  and marks the slot dead, but the space is not reclaimed (bump has no free list). On a ring
+  it is an error — rings evict automatically.
+- **`extract x from region r`** — moves `x` *out* of the region onto the heap (a deep
+  relocation) and returns the new heap pointer, which you must bind:
+
+  ```ldp3
+  pool region kennel = itself.allocate(2 kilobytes);
+  Dog* d = new Dog(7) in region kennel;
+  Dog* out = extract d from region kennel;   // relocate to the heap; the kennel slot is reclaimed
+  // `d` is now moved-from; use `out`. Delete `out` yourself later.
+  ```
+
+  Extract is how you let a single object *survive* an arena that is about to go away. The
+  compiler rejects an extract whose object still holds a pointer into the same region (that
+  pointer would dangle after the move), and rejects a bare `extract` whose result isn't bound.
+
+#### Marks and rollback (stack regions)
+
+A `stack` region reclaims in LIFO order. Take a **`checkpoint`** with `mark`, allocate scratch,
+then `rollback` to that checkpoint to free everything since — destructors run in reverse:
+
+```ldp3
+stack region tmp = itself.allocate(1 megabytes);
+checkpoint m = mark of region tmp;   // remember the cursor
+Node* scratch = new Node(1) in region tmp;
+// ... build a throwaway working set ...
+rollback region tmp to m;            // reclaim everything allocated since m
+```
+
+`checkpoint` is a built-in cursor type. `mark` requires a stack region, and a checkpoint may
+only be rolled back on the region it came from — mixing them is a compile error. Marks nest,
+so a hot loop can `mark` / build / `rollback` each iteration and reuse the same memory every
+time.
+
 ---
 
 ## 4.8 Ownership disciplines: `movable`, `unique`, `partitionable`
