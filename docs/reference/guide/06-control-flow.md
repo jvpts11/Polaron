@@ -272,6 +272,89 @@ public bundle main {
 }
 ```
 
+### 6.4.4 Generators: producing a sequence with `yield`
+
+The other side of `foreach` is *producing* the sequence. A method that returns `Iterator<T>`
+and whose body contains `yield` is a **generator**: instead of building a whole collection
+and returning it, its body runs *lazily* — one element per `yield`, suspending right there
+and resuming on the consumer's next request.
+
+```ldp3
+import System.Collections.Iterator;
+
+public static method evens(int limit) returns Iterator<int> {
+    mutable int n = 0;
+    while (n <= limit) {
+        yield n;          // hand back n, suspend here
+        n = n + 2;        // resumes here on the next request
+    }
+}
+```
+
+You consume a generator like any iterable — with `foreach`:
+
+```ldp3
+mutable int sum = 0;
+for (int e in Sequences.evens(8)) {
+    sum = sum + e;        // 0 + 2 + 4 + 6 + 8
+}
+```
+
+Because generation is lazy, a generator can be **infinite** — the consumer decides when to
+stop, and `break` simply leaves the body suspended forever:
+
+```ldp3
+public static method primes() returns Iterator<int> {
+    mutable int n = 2;
+    while (true) {                  // never ends on its own
+        if (Sequences.isPrime(n)) {
+            yield n;
+        }
+        n = n + 1;
+    }
+}
+
+for (int p in Sequences.primes()) {
+    if (p > 30) {
+        break;                      // the loop stops; the generator is abandoned
+    }
+    // ... use p ...
+}
+```
+
+An **instance** generator captures `this`, so its body can read the object's fields, and an
+early `return;` ends the sequence:
+
+```ldp3
+public method ticks() returns Iterator<int> {
+    mutable int t = this.from;
+    while (t > 0) {
+        yield t;
+        t = t - 1;
+    }
+    yield 0;
+    return;                         // ends the sequence
+}
+```
+
+Under the hood the compiler lowers the body to a heap state machine (the same coroutine
+lowering `async`/`await` uses) wrapped in a synthesized class that implements `Iterator<T>`.
+So a generator *is* an ordinary iterator: you can hold it in an `Iterator<T>` variable,
+drive it by hand with `hasNext()`/`next()`, and `delete` it when done.
+
+```ldp3
+Iterator<int> it = Sequences.evens(4);
+if (it.hasNext()) {
+    int first = it.next();
+}
+delete it;
+```
+
+> `yield` has a second, unrelated use — the value of a block arm in a `match` expression
+> (see [§6.7.2](#672-the-expression-form---and-yield)). The compiler tells them apart by
+> context: `yield` inside a method that returns `Iterator<T>` is a generator; `yield` inside
+> a `match` arm is that arm's value.
+
 ---
 
 ## 6.5 `break` and `continue`, plain and labelled
