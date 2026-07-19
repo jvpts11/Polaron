@@ -11,7 +11,7 @@ compiler and the embedded standard-library prelude, so where the written specifi
 implementation ever diverge, these pages describe **what the compiler accepts today** and flag the
 difference. For the formal design document, see [`../LDP3_specification.md`](../LDP3_specification.md).
 
-A single typeset PDF of everything below is built by [`make-pdf.py`](make-pdf.py):
+A single typeset PDF of everything below:
 **[LDP3-Language-Reference-1.0.0.pdf](LDP3-Language-Reference-1.0.0.pdf)**.
 
 ---
