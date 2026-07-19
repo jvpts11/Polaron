@@ -29,7 +29,8 @@ trap 'rm -f "$ll"' EXIT
 "$ldp3c" "$src" --target=x86_64-unknown-linux-gnu -O2 -o "$ll"
 
 # 2) IR + the single-source runtime -> ELF. -lpthread for the Thread/async runtime; -ldl for
-#    dl_iterate_phdr (reimport). The static libc bits are the platform's own -- nothing to bundle.
-"$cc" -O2 -w "$ll" "$root/runtime/ldp3_rt.cpp" -o "$out" -lpthread -ldl -lm
+#    dl_iterate_phdr (reimport); -lstdc++ for the Itanium EH runtime (__cxa_*, personality, typeinfo)
+#    a program's exceptions lower to. The static libc bits are the platform's own -- nothing to bundle.
+"$cc" -O2 -w "$ll" "$root/runtime/ldp3_rt.cpp" -o "$out" -lpthread -ldl -lm -lstdc++
 
 echo "wrote $out"
