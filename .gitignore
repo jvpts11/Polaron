@@ -26,6 +26,7 @@ CMakeUserPresets.json
 *.user
 
 dist/
+installer/.cache/
 
 # kernel build artifacts
 kernel/*.o
