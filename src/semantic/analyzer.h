@@ -292,6 +292,7 @@ private:
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state
     std::unordered_map<std::string, int> extracted_;  // extracted vars -> line (spec 17: use-after-extract)
+    std::unordered_map<std::string, std::string> checkpointRegion_;  // checkpoint var -> region it marked
     std::unordered_map<std::string, RegionConstraints> regionConstraints_;  // region var -> accepts/rejects
     std::unordered_map<std::string, std::string> regionFlavor_;  // region var -> flavor (spec 17 expansion)
     // Persistent fields (spec 18.15): each must be released somewhere unless eternal.

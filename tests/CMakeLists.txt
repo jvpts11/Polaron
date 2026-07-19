@@ -248,6 +248,16 @@ add_test(NAME sema_rejects_bare_extract
 set_tests_properties(sema_rejects_bare_extract PROPERTIES
     PASS_REGULAR_EXPRESSION "error\\[LDP3-1720\\]")
 
+add_test(NAME sema_rejects_mark_nonstack
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_mark_nonstack.ldp3")
+set_tests_properties(sema_rejects_mark_nonstack PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-1713\\]")
+
+add_test(NAME sema_rejects_rollback_wrong_region
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_rollback_wrongregion.ldp3")
+set_tests_properties(sema_rejects_rollback_wrong_region PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[LDP3-1714\\]")
+
 # A catalog `extends` cycle must be reported, not crash (regression: it used to
 # overflow the stack in isSubtype).
 add_test(NAME sema_rejects_catalog_cycle
@@ -3289,6 +3299,17 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_extract.ldp3"
             "-DEXPECTED=out=42 still=42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # stack region mark/rollback (spec 17): 100000 objects churn through an 8 KiB stack region across
+        # 1000 mark/rollback rounds -- works only via cursor rewind, and every object is destructed
+        # (runtime registry), so the counter is exact.
+        add_test(NAME codegen_region_stack_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_stack.ldp3"
+            "-DEXPECTED=destroyed=100000 final=100001"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

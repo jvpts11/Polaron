@@ -1643,6 +1643,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     scopes_.clear();
     moved_.clear();
     extracted_.clear();
+    checkpointRegion_.clear();
     deleted_.clear();
     catchStack_.clear();
     regionConstraints_.clear();
@@ -2212,6 +2213,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get())) {
             regionConstraints_[vd->name] = RegionConstraints{ri->accepts, ri->rejects};
         }
+        // Remember which region a `checkpoint m = mark of region R;` came from (spec 17, LDP3-1714).
+        if (const auto* mk = dynamic_cast<const ast::MarkExpr*>(vd->init.get())) {
+            checkpointRegion_[vd->name] = mk->region;
+        }
         if (vd->init) checkOwnershipAssign(declType, *vd->init, vd->loc);
         return;
     }
@@ -2412,6 +2417,31 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             error("unknown region '" + rel->region + "'", rel->loc);
         } else if (r->type != "region") {
             error("'" + rel->region + "' is not a region", rel->loc);
+        }
+        return;
+    }
+    if (const auto* rb = dynamic_cast<const ast::RollbackStmt*>(&stmt)) {
+        // `rollback region R to m` needs a stack region (LDP3-1713) and a checkpoint captured from that
+        // same region (LDP3-1714).
+        const LocalVar* r = lookupLocal(rb->region);
+        if (r == nullptr)
+            error("unknown region '" + rb->region + "'", rb->loc);
+        else if (r->type != "region")
+            error("'" + rb->region + "' is not a region", rb->loc);
+        else if ((regionFlavor_.count(rb->region) ? regionFlavor_[rb->region] : std::string()) != "stack")
+            error("mark/rollback need a `stack region`, but '" + rb->region + "' is not one (spec 17)",
+                  rb->loc);
+        const std::string ct = rb->checkpoint ? typeOf(*rb->checkpoint) : std::string();
+        if (!ct.empty() && ct != "checkpoint")
+            error("`rollback ... to` expects a checkpoint (from `mark of region`), not a '" + ct + "'",
+                  rb->loc);
+        // If the checkpoint is a plain variable, it must have been marked from THIS region (LDP3-1714).
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(rb->checkpoint.get())) {
+            auto cr = checkpointRegion_.find(id->name);
+            if (cr != checkpointRegion_.end() && cr->second != rb->region)
+                error("this checkpoint belongs to region '" + cr->second +
+                          "', not '" + rb->region + "'; roll back the region it came from",
+                      rb->loc);
         }
         return;
     }
@@ -3014,6 +3044,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             moved_.insert(id->name);
         }
         return t;
+    }
+    if (const auto* mk = dynamic_cast<const ast::MarkExpr*>(&expr)) {
+        // `mark of region R` yields a `checkpoint`; mark/rollback need a `stack region` (LDP3-1713).
+        const LocalVar* r = lookupLocal(mk->region);
+        if (r == nullptr)
+            error("unknown region '" + mk->region + "' in mark", mk->loc);
+        else if (r->type != "region")
+            error("'" + mk->region + "' is not a region", mk->loc);
+        else if ((regionFlavor_.count(mk->region) ? regionFlavor_[mk->region] : std::string()) != "stack")
+            error("mark/rollback need a `stack region`, but '" + mk->region + "' is not one (spec 17)",
+                  mk->loc);
+        return "checkpoint";
     }
     if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
         // try? Result<T,E>/Option<T> yields T (the first type arg of the operand's instantiation).

@@ -1,0 +1,42 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionStack;
+
+public bundle main {
+    public namespace app {
+
+        public class Noisy {
+            public static mutable int destroyed;
+            public mutable int id;
+            public constructor Noisy(int i) {
+                this.id = i;
+            }
+            public destructor ~Noisy() returns void {
+                Noisy.destroyed = Noisy.destroyed + 1;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // A small stack region churned across 1000 mark/rollback rounds of 100 objects each.
+                // 100000 allocations pass through a region that holds only ~256 slots, so it works only
+                // because rollback rewinds the cursor. Each rollback also destructs the round's objects
+                // (via the runtime registry -- even though they were allocated in a loop), so the counter
+                // proves both reclaim and newest-first destruction.
+                stack region r = itself.allocate(8 kilobytes);
+                Noisy* base = new Noisy(0) in region r;   // outlives every rollback
+                for (mutable int round = 0; round < 1000; round++) {
+                    checkpoint m = mark of region r;
+                    for (mutable int i = 0; i < 100; i++) {
+                        Noisy* t = new Noisy(i) in region r;
+                    }
+                    rollback region r to m;
+                }
+                System.IO.Console.printf("destroyed=%d\n", Noisy.destroyed);   // 100000
+                release region r;                                              // destructs base
+                System.IO.Console.printf("final=%d\n", Noisy.destroyed);       // 100001
+                return;
+            }
+        }
+    }
+}

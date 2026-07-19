@@ -220,6 +220,14 @@ struct ExtractExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// `mark of region R` (spec 17, stack flavor) -- capture region R's current allocation cursor as a
+// `checkpoint` value. A later `rollback region R to m` destructs everything allocated after the mark
+// (newest first) and rewinds the cursor. `checkpoint` is a built-in value type (an opaque i64 cursor).
+struct MarkExpr : Expr {
+    std::string region;
+    void dump(std::string& out, int indent) const override;
+};
+
 // `try? expr` -- if expr is Ok/Some, yields its value; if Err/None, early-returns it (propagates)
 // to the enclosing method's Result/Option (spec 21.2).
 struct TryExpr : Expr {
@@ -366,6 +374,14 @@ struct ReleaseStmt : Stmt {
     std::string region;       // set for `release region R`
     bool isPersistent = false;  // set for `release [persistent|eternal] <expr>`
     ExprPtr target;           // the persistent lvalue (obj.field), when isPersistent
+    void dump(std::string& out, int indent) const override;
+};
+
+// `rollback region R to m;` (spec 17, stack flavor) -- run destructors newest-first for everything
+// allocated in stack region R after checkpoint m, then rewind R's cursor to m.
+struct RollbackStmt : Stmt {
+    std::string region;
+    ExprPtr checkpoint;       // the `checkpoint` value captured by an earlier `mark of region R`
     void dump(std::string& out, int indent) const override;
 };
 

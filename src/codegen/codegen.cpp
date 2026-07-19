@@ -874,6 +874,7 @@ struct CodeGenerator::Impl {
         if (t == "mat4") return llvm::FixedVectorType::get(builder.getFloatTy(), 16);  // SIMD 4x4 matrix
         if (isArrayType(t) || isRefType(t)) return builder.getPtrTy();
         if (t == "region") return builder.getPtrTy();  // pointer to the region block
+        if (t == "checkpoint") return builder.getInt64Ty();  // spec 17 stack flavor: an opaque cursor value
         if (t.rfind("function<", 0) == 0) return builder.getPtrTy();  // a function value (pointer)
         if (t.rfind("funcptr<", 0) == 0) return builder.getPtrTy();   // a bare C function pointer
         if (t == "String" || t == "string") return builder.getPtrTy();  // ptr to {i64 len, ptr data}
@@ -2378,6 +2379,8 @@ struct CodeGenerator::Impl {
             return mv->castType.empty() ? typeName(*mv->operand) : mv->castType;
         if (const auto* ex = dynamic_cast<const ast::ExtractExpr*>(&expr))
             return typeName(*ex->target);  // extract yields an owning pointer to the same object type
+        if (dynamic_cast<const ast::MarkExpr*>(&expr) != nullptr)
+            return "checkpoint";  // spec 17 stack flavor: a cursor value
         if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
             const std::string ot = baseType(typeName(*tx->operand));  // Result$T$E / Option$T
             const auto p = ot.find('$');
@@ -2531,9 +2534,29 @@ struct CodeGenerator::Impl {
             builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty()}, false);
         return module.getOrInsertFunction("__ldp3_region_free", ty);
     }
-    // Region flavor classification. A pool-like region allocates individual slots from a runtime
-    // free-list (pool / fixedslot); a bump-like region ("" == bump, or stack) uses the inline bump cursor.
+    llvm::FunctionCallee regionTrackFn() {  // (block, ptr, dtor) -> void  (stack: record for rollback)
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_region_track", ty);
+    }
+    llvm::FunctionCallee regionRollbackFn() {  // (block, mark) -> void  (stack: destruct + reset cursor)
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getInt64Ty()}, false);
+        return module.getOrInsertFunction("__ldp3_region_rollback", ty);
+    }
+    llvm::FunctionCallee regionTeardownFn() {  // (block) -> void  (stack: run all dtors + free registry)
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_region_teardown", ty);
+    }
+    // Region flavor classification. bump ("") uses the inline cursor fast path. pool/fixedslot/stack use
+    // the runtime Ldp3RegionDesc: pool/fixedslot allocate reclaimable slots from a free-list, stack bumps
+    // with mark/rollback. (ring joins usesRuntimeDesc in a later wave.)
     static bool isPoolLikeFlavor(const std::string& f) { return f == "pool" || f == "fixedslot"; }
+    static bool isStackFlavor(const std::string& f) { return f == "stack"; }
+    static bool usesRuntimeDesc(const std::string& f) {
+        return f == "pool" || f == "fixedslot" || f == "stack";
+    }
     // The flavored-region data offset -- MUST match LDP3_REGION_HDR in runtime/ldp3_rt.cpp.
     static constexpr unsigned kRegionHdr = 384u;
     // The descriptor flavor code stored at block+24 (matches the runtime's reading).
@@ -4251,10 +4274,11 @@ struct CodeGenerator::Impl {
                 if (auto lit = locals.find(tid->name); lit != locals.end())
                     for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so)
                         if (so->slot == lit->second.storage) { scopeObjects.erase(so); break; }
-            // Reclaim the vacated slot on a pool/fixedslot region.
+            // Reclaim/untrack the vacated slot on a pool/fixedslot/stack region (the runtime free untracks
+            // a stack object so rollback/release never re-destructs the bytes that moved to the heap).
             const std::string rflavor =
                 regionFlavor_.count(ex->region) ? regionFlavor_[ex->region] : std::string();
-            if (isPoolLikeFlavor(rflavor)) {
+            if (usesRuntimeDesc(rflavor)) {
                 llvm::Value* block = builder.CreateLoad(
                     builder.getPtrTy(), regionStorageSlot(ex->region), "region");
                 builder.CreateCall(regionFreeFn(), {block, srcPtr, sizeOf(cit->second.type)});
@@ -4263,6 +4287,13 @@ struct CodeGenerator::Impl {
             // analyzer already rejects use-after-extract of a plain variable at compile time).
             builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), addr);
             return heap;
+        }
+        if (const auto* mk = dynamic_cast<const ast::MarkExpr*>(&expr)) {
+            // `mark of region R`: capture the stack region's cursor (desc->used at offset 0) as a checkpoint.
+            llvm::Value* slot = regionStorageSlot(mk->region);
+            if (slot == nullptr) { error("unknown region '" + mk->region + "'", mk->loc); return nullptr; }
+            llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
+            return builder.CreateLoad(builder.getInt64Ty(), block, "mark");
         }
         if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
             // try? expr (spec 21.2): if Ok/Some, yield the inner value; if Err/None, early-return the
@@ -4808,9 +4839,10 @@ struct CodeGenerator::Impl {
             builder.SetInsertPoint(contBB);
         }
         llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
-        // Pool/fixedslot: the runtime serves an individual, reclaimable slot from the region's free-list.
-        // (Placed after any lazy acquire so a lazy pool region's block exists; bump falls through below.)
-        if (isPoolLikeFlavor(flavor)) {
+        // pool/fixedslot serve a reclaimable slot from a free-list; stack bumps a slot (reclaimed via
+        // mark/rollback). All go through the runtime allocator. (Placed after any lazy acquire so the
+        // block exists; bump falls through to the inline fast path below.)
+        if (usesRuntimeDesc(flavor)) {
             return builder.CreateCall(regionNewFn(), {block, sizeOf(objType)}, "rgn.slot");
         }
         llvm::Value* used;
@@ -4893,10 +4925,10 @@ struct CodeGenerator::Impl {
                 nbytes = fitInt(arg, 64);
             }
         }
-        // Pool/fixedslot region: a larger block whose Ldp3RegionDesc header (LDP3_REGION_HDR bytes) carries
-        // the per-size-class free-lists; the runtime init lays it out. Individual objects are then served
-        // by __ldp3_region_new (see emitRegionAlloc). `at address` pool is not a Wave-1 combination.
-        if (isPoolLikeFlavor(flavor) && atAddr == nullptr) {
+        // pool/fixedslot/stack region: a larger block whose Ldp3RegionDesc header (LDP3_REGION_HDR bytes)
+        // carries the free-lists / stack registry; the runtime init lays it out. Individual objects are
+        // then served by __ldp3_region_new (see emitRegionAlloc). `at address` + flavor is not supported.
+        if (usesRuntimeDesc(flavor) && atAddr == nullptr) {
             llvm::Value* block = builder.CreateCall(
                 regionAcquireFn(), {builder.CreateAdd(builder.getInt64(kRegionHdr), nbytes)}, "region");
             builder.CreateCall(regionInitFn(),
@@ -5091,6 +5123,14 @@ struct CodeGenerator::Impl {
             }
             emitMaybeInvoke(fnit->second, args);
             for (const auto& [idx, acn] : freeAfter) emitDeleteObject(args[idx], acn);
+        }
+        // A stack region records each constructed object that has a destructor, so `rollback`/`release`
+        // can run those destructors newest-first (the runtime registry, not scopeObjects, owns them).
+        if (!nw.region.empty() && cit->second.hasDestructor &&
+            isStackFlavor(regionFlavor_.count(nw.region) ? regionFlavor_[nw.region] : std::string())) {
+            llvm::Value* block =
+                builder.CreateLoad(builder.getPtrTy(), regionStorageSlot(nw.region), "region");
+            builder.CreateCall(regionTrackFn(), {block, objPtr, functions[cn + ".~" + cn]});
         }
         return objPtr;
     }
@@ -8658,7 +8698,7 @@ struct CodeGenerator::Impl {
                     if (vd->isVolatile) volatileRegions_.insert(vd->name);  // spec 37.5 (MMIO)
                     // An owned lazy region keeps its bump cursor in a register-promotable alloca; the
                     // lazy-acquire block re-zeros it each time the backing block is (re)allocated.
-                    if (ri->atAddress.get() == nullptr && !isPoolLikeFlavor(vd->regionFlavor))
+                    if (ri->atAddress.get() == nullptr && !usesRuntimeDesc(vd->regionFlavor))
                         setupOwnedRegionCursor(vd->name);
                     if (!vd->isEternal) scopeRegions.push_back(RegionLocal{slot, vd->isEternal, vd->name});
                     return;
@@ -8711,7 +8751,7 @@ struct CodeGenerator::Impl {
             // register-promotable bump cursor, zeroed now that its block is freshly acquired.
             // (pool/fixedslot use the runtime free-list, not an inline cursor -- no cursor for them.)
             if (declType == "region" && isOwnedRegionInit(vd->init.get()) &&
-                !isPoolLikeFlavor(vd->regionFlavor))
+                !usesRuntimeDesc(vd->regionFlavor))
                 setupOwnedRegionCursor(vd->name);
             // RAII: a freshly built `new ... on stack` object with a destructor gets cleaned up
             // when the function returns -- unless it is `eternal` (spec 37.2: lives for the whole
@@ -8721,9 +8761,13 @@ struct CodeGenerator::Impl {
                 if (cit != classes.end() && cit->second.hasDestructor && !vd->isEternal) {
                     // A region object's destructor runs when the region is released/freed (spec
                     // 17.7); a plain stack object's runs at scope exit. A heap object is manual.
-                    if (!nw->region.empty())
+                    // A STACK-region object is NOT tracked here: the runtime registry (see emitNew) owns
+                    // its destructor for mark/rollback and release, so scopeObjects would double-destruct it.
+                    const std::string rfl =
+                        regionFlavor_.count(nw->region) ? regionFlavor_[nw->region] : std::string();
+                    if (!nw->region.empty() && !isStackFlavor(rfl))
                         scopeObjects.push_back(ScopeObject{slot, nw->className, nw->region});
-                    else if (nw->location == "stack")
+                    else if (nw->region.empty() && nw->location == "stack")
                         scopeObjects.push_back(ScopeObject{slot, nw->className, ""});
                 }
                 // An object placed in a `volatile region` (MMIO): its field accesses are volatile.
@@ -9158,16 +9202,17 @@ struct CodeGenerator::Impl {
                 // release, so run the destructor now and drop the object from RAII tracking (so the
                 // region release does not run it again), but never free() into the bump allocator.
                 if (!del->fromRegion.empty()) {
-                    // On a pool/fixedslot region the slot is reclaimable: guard against a double
-                    // delete-from-region (no UB), run the destructor, then return the slot to the region's
-                    // free-list so a later `new` reuses it. Bump/stack regions reclaim only on release.
+                    // On a pool/fixedslot/stack region the slot is reclaimable: guard against a double
+                    // delete-from-region (no UB), run the destructor, then hand the slot back to the runtime
+                    // (pool/fixedslot: free-list; stack: untrack + LIFO reclaim). A bump region reclaims
+                    // only on release.
                     const std::string rflavor =
                         regionFlavor_.count(del->fromRegion) ? regionFlavor_[del->fromRegion] : std::string();
-                    const bool poolReclaim = isPoolLikeFlavor(rflavor) && cit != classes.end();
-                    if (poolReclaim) builder.CreateCall(checkLiveFn(), {objPtr});
+                    const bool runtimeReclaim = usesRuntimeDesc(rflavor) && cit != classes.end();
+                    if (runtimeReclaim) builder.CreateCall(checkLiveFn(), {objPtr});
                     if (cit != classes.end() && cit->second.hasDestructor)
                         builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
-                    if (poolReclaim) {
+                    if (runtimeReclaim) {
                         llvm::Value* block = builder.CreateLoad(
                             builder.getPtrTy(), regionStorageSlot(del->fromRegion), "region");
                         builder.CreateCall(regionFreeFn(), {block, objPtr, sizeOf(cit->second.type)});
@@ -9227,10 +9272,26 @@ struct CodeGenerator::Impl {
             if (it != locals.end()) {
                 runRegionObjectDtors(rel->region);
                 llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage);
+                // A stack region's live objects + its off-arena registry are torn down by the runtime
+                // (rollback-to-0 + free the registry) before the block itself is freed.
+                if (isStackFlavor(regionFlavor_.count(rel->region) ? regionFlavor_[rel->region] : std::string()))
+                    builder.CreateCall(regionTeardownFn(), {block});
                 builder.CreateCall(regionReleaseFn(), {block});
                 builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()),
                                     it->second.storage);
             }
+            return;
+        }
+        if (const auto* rb = dynamic_cast<const ast::RollbackStmt*>(&stmt)) {
+            // `rollback region R to m`: run destructors newest-first for everything allocated after the
+            // checkpoint, then rewind the cursor (the runtime does both from the stack registry).
+            llvm::Value* slot = regionStorageSlot(rb->region);
+            if (slot == nullptr) { error("unknown region '" + rb->region + "'", rb->loc); return; }
+            llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
+            llvm::Value* m =
+                rb->checkpoint ? fitInt(emitExpr(*rb->checkpoint), 64) : builder.getInt64(0);
+            if (m == nullptr) return;
+            builder.CreateCall(regionRollbackFn(), {block, m});
             return;
         }
         if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {
@@ -9495,9 +9556,14 @@ struct CodeGenerator::Impl {
 
     void freeRegionsFrom(std::size_t base) {
         for (std::size_t i = scopeRegions.size(); i > base; --i) {
-            runRegionObjectDtors(scopeRegions[i - 1].name);  // destruct objects before freeing (17.7)
+            const std::string& rname = scopeRegions[i - 1].name;
+            runRegionObjectDtors(rname);  // destruct objects before freeing (17.7)
             llvm::Value* block =
                 builder.CreateLoad(builder.getPtrTy(), scopeRegions[i - 1].slot, "region");
+            // A stack region tears down its runtime registry (all remaining destructors + free it) here
+            // too, so scope exit and exception unwind reclaim its objects (spec 17.7).
+            if (isStackFlavor(regionFlavor_.count(rname) ? regionFlavor_[rname] : std::string()))
+                builder.CreateCall(regionTeardownFn(), {block});
             builder.CreateCall(regionReleaseFn(), {block});  // cache the block for reuse (see runtime)
         }
     }

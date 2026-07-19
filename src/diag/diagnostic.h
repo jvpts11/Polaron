@@ -73,6 +73,8 @@ enum class Code {
     RegionUseAfterExtract,   // LDP3-1717: use of a variable after `extract X from region R`
     RegionExtractInnerField, // LDP3-1718: extract/delete of an object whose field lives in the same region
     RegionExtractNotBound,   // LDP3-1720: an `extract` result not bound to a variable/field
+    RegionMarkNonStack,      // LDP3-1713: mark/rollback on a non-stack region
+    RegionCheckpointWrongRegion,  // LDP3-1714: rollback with a checkpoint from another region
     VectorMisuse,         // a vec/mat operation with the wrong shape or component
     UnimportMisuse,       // unimport/reimport used wrongly
     StaticAssert,         // a failed or non-constant static_assert

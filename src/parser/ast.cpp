@@ -88,6 +88,15 @@ void ExtractExpr::dump(std::string& out, int indent) const {
     if (target) target->dump(out, indent + 1);
 }
 
+void MarkExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Mark of region " + region);
+}
+
+void RollbackStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Rollback region " + region);
+    if (checkpoint) checkpoint->dump(out, indent + 1);
+}
+
 void RegionInitExpr::dump(std::string& out, int indent) const {
     std::string head = "RegionInit";
     for (const auto& a : accepts) head += " accepts " + a;

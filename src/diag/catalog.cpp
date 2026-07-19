@@ -349,6 +349,25 @@ constexpr Row kCatalog[] = {
         "Read `extract` as producing a value you own now -- always on the right-hand side of a binding, "
         "never as a statement on its own." }},
 
+    {Code::RegionMarkNonStack, {
+        "LDP3-1713", "mark/rollback need a stack region",
+        "`mark of region R` and `rollback region R to m` are the LIFO checkpoint operations of a `stack "
+        "region` (spec 17): they record and rewind a single allocation cursor. A bump/pool/fixedslot/ring "
+        "region has no LIFO cursor to mark, so these operations do not apply to it.",
+        "Declare the region `stack` (`stack region R = itself.allocate(...)`). To reclaim individual "
+        "objects from a pool region instead, use `delete X from region R` or `extract`.",
+        "Choose the flavor from how the region reclaims: stack for nested/per-frame checkpoints (mark/"
+        "rollback), pool for free-list reuse of individual objects." }},
+
+    {Code::RegionCheckpointWrongRegion, {
+        "LDP3-1714", "this checkpoint belongs to another region",
+        "A `checkpoint` records a cursor position in the specific `stack region` it was marked from. Rolling "
+        "a different region back to it would rewind that region to an offset that means nothing there -- "
+        "reviving or dropping the wrong objects (spec 17).",
+        "Roll back the region the checkpoint came from: `rollback region <that region> to m;`. Keep one "
+        "checkpoint variable per region so it is obvious which pairs with which.",
+        "Name checkpoints after their region, and mark/rollback the same region in a matched pair." }},
+
     {Code::VectorMisuse, {
         "LDP3-0804", "vector/matrix operation is malformed",
         "The SIMD vector and matrix types have fixed shapes: a vecN has N numeric lanes, a mat4 has 16 "
@@ -573,6 +592,8 @@ constexpr Rule kRules[] = {
     {"was extracted", Code::RegionUseAfterExtract},
     {"lives in the same region", Code::RegionExtractInnerField},
     {"extract result must be bound", Code::RegionExtractNotBound},
+    {"mark/rollback need a", Code::RegionMarkNonStack},
+    {"this checkpoint belongs to region", Code::RegionCheckpointWrongRegion},
     {"region ", Code::RegionMisuse},
     {"vector ", Code::VectorMisuse},
     {"mat4 ", Code::VectorMisuse},

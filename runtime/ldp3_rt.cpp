@@ -376,26 +376,34 @@ void __ldp3_region_release(void* block) {
     __ldp3_free(block);
 }
 
-// ---- Flavored regions (spec 17, flavors expansion): pool / fixedslot (Wave 1), stack / ring (later) ----
+// ---- Flavored regions (spec 17, flavors expansion): pool / fixedslot / stack (ring later) ----
 // A flavored region's block starts with this descriptor and its object data follows LDP3_REGION_HDR bytes
 // in. The first three fields deliberately mirror the lean bump header ([used][cap][dataBase] at 0/8/16) so
 // __ldp3_region_release reads cap/dataBase the same way for every flavor (a flavored dataBase != block+24,
 // so release just frees the whole block -- correct, since the block is one __ldp3_malloc allocation).
 //
-// pool/fixedslot allocate a slot per object: [16-byte Ldp3Hdr][payload], the payload 16-aligned. A freed
-// slot goes on freelists[class]; a later same-class allocation pops it (pointers never move). Slots carry
-// LDP3_RMAGIC (distinct from heap LDP3_MAGIC) so a mistaken plain `delete`/`free` traps instead of
-// splicing a region-interior pointer onto the global heap free-list (no exploitable UB).
+// pool/fixedslot/stack allocate a slot per object: [16-byte Ldp3Hdr][payload], the payload 16-aligned.
+// pool/fixedslot: a freed slot goes on freelists[class]; a later same-class allocation pops it (pointers
+// never move). stack: pure bump (no free-list) plus mark/rollback; objects with destructors are recorded
+// in a runtime registry so rollback/release can run them newest-first. Slots carry LDP3_RMAGIC (distinct
+// from heap LDP3_MAGIC) so a mistaken plain `delete`/`free` traps instead of splicing a region-interior
+// pointer onto the global heap free-list (no exploitable UB).
 typedef struct Ldp3RegionDesc {
     unsigned long long used;      // +0  bump cursor over the data area, in bytes (mirrors lean header)
     unsigned long long cap;       // +8  data-area capacity in bytes (mirrors lean header)
     void*              dataBase;  // +16 = (char*)block + LDP3_REGION_HDR (mirrors lean header)
-    unsigned long long flavor;    // +24 1=pool, 3=fixedslot, 4=ring (bump/stack never use this desc)
+    unsigned long long flavor;    // +24 1=pool, 2=stack, 3=fixedslot, 4=ring (bump never uses this desc)
     unsigned long long entrySize; // +32 fixedslot/ring slot payload size (0 for a general pool)
     unsigned long long ringHead;  // +40 ring: index of the oldest entry (later wave)
     unsigned long long ringCount; // +48 ring: number of live entries (later wave)
     unsigned long long ringCap;   // +56 ring: capacity in entries (later wave)
-    Ldp3FreeNode*      freelists[LDP3_NCLASSES + 1];  // +64 per size class; [LDP3_NCLASSES] = large (>512)
+    // stack registry: objects with destructors, in allocation order (== address order, since stack bumps).
+    // rollback/release walk it newest-first. Backed by libc malloc/realloc (small metadata, off the arena).
+    void**             trackPtr;  // +64 live object payload pointers
+    void**             trackDtor; // +72 parallel destructor function pointers (void(*)(void*))
+    unsigned long long trackCount;// +80
+    unsigned long long trackCap;  // +88
+    Ldp3FreeNode*      freelists[LDP3_NCLASSES + 1];  // +96 per size class; [LDP3_NCLASSES] = large (>512)
 } Ldp3RegionDesc;
 // The compiler hardcodes LDP3_REGION_HDR as the data offset; keep the struct within it.
 typedef char Ldp3RegionDescFits[(sizeof(Ldp3RegionDesc) <= LDP3_REGION_HDR) ? 1 : -1];
@@ -417,6 +425,10 @@ void __ldp3_region_init(void* block, unsigned long long flavor, unsigned long lo
     d->ringHead = 0;
     d->ringCount = 0;
     d->ringCap = 0;
+    d->trackPtr = NULL;
+    d->trackDtor = NULL;
+    d->trackCount = 0;
+    d->trackCap = 0;
     for (int i = 0; i <= LDP3_NCLASSES; i++) d->freelists[i] = NULL;
 }
 
@@ -427,7 +439,9 @@ void* __ldp3_region_new(void* block, unsigned long long size) {
     unsigned long long payload = (size + 15) & ~15ULL;  // 16-align
     if (payload == 0) payload = 16;
     unsigned cls = ldp3_region_class(payload);
-    if (cls < LDP3_NCLASSES) {
+    // A stack region never reuses a free-list -- it bumps and reclaims LIFO via mark/rollback -- so skip
+    // straight to the bump below. pool/fixedslot try their size-class free-list first.
+    if (d->flavor != 2 && cls < LDP3_NCLASSES) {
         Ldp3FreeNode* n = d->freelists[cls];
         if (n != NULL) {  // reuse: the [16-byte header][payload] is still just before the node
             d->freelists[cls] = n->next;
@@ -476,10 +490,74 @@ void __ldp3_region_free(void* block, void* ptr, unsigned long long size) {
     unsigned cls = h->cls;
     if (g_prof_on) { prof_add(&g_prof_live_count, -1); prof_add(&g_prof_total_free, 1); prof_add(&g_prof_live_bytes, -(long long)h->pad); prof_add(&g_prof_class_live[cls < LDP3_NCLASSES ? cls : 32], -1); }
     h->magic = LDP3_RFREED;
+    if (d->flavor == 2) {  // stack: no free-list. Untrack, and reclaim LIFO if this was the top slot.
+        for (unsigned long long i = d->trackCount; i > 0; --i) {
+            if (d->trackPtr[i - 1] == ptr) {  // drop it so rollback/release never re-destructs it
+                for (unsigned long long j = i - 1; j + 1 < d->trackCount; ++j) {
+                    d->trackPtr[j] = d->trackPtr[j + 1];
+                    d->trackDtor[j] = d->trackDtor[j + 1];
+                }
+                d->trackCount--;
+                break;
+            }
+        }
+        unsigned long long slotBytes = 16 + (unsigned long long)h->pad;
+        if ((char*)h + slotBytes == (char*)d->dataBase + d->used) d->used -= slotBytes;  // top: reclaim
+        return;
+    }
     Ldp3FreeNode* n = (Ldp3FreeNode*)ptr;
     unsigned idx = (cls < LDP3_NCLASSES) ? cls : LDP3_NCLASSES;
     n->next = d->freelists[idx];
     d->freelists[idx] = n;
+}
+
+// Record a stack-region object that has a destructor, so mark/rollback and release can run it (newest
+// first). Only objects with destructors are tracked; the registry lives off the arena (libc malloc).
+void __ldp3_region_track(void* block, void* ptr, void* dtor) {
+    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
+    if (d->trackCount == d->trackCap) {
+        unsigned long long ncap = d->trackCap == 0 ? 16 : d->trackCap * 2;
+        d->trackPtr = (void**)realloc(d->trackPtr, ncap * sizeof(void*));
+        d->trackDtor = (void**)realloc(d->trackDtor, ncap * sizeof(void*));
+        if (d->trackPtr == NULL || d->trackDtor == NULL) __ldp3_panic("out of memory tracking a stack region object");
+        d->trackCap = ncap;
+    }
+    d->trackPtr[d->trackCount] = ptr;
+    d->trackDtor[d->trackCount] = dtor;
+    d->trackCount++;
+}
+
+// Roll a stack region back to a mark: run destructors newest-first for every tracked object allocated at
+// or after `mark` (byte offset into the data area), then reset the cursor. `mark == 0` destructs all (used
+// by release). Objects without destructors are not tracked; the cursor reset reclaims their memory anyway.
+void __ldp3_region_rollback(void* block, unsigned long long mark) {
+    if (block == NULL) return;  // an unallocated / already-released region
+    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
+    char* threshold = (char*)d->dataBase + mark;  // slots at or after this are being rolled back
+    while (d->trackCount > 0) {
+        void* ptr = d->trackPtr[d->trackCount - 1];
+        if ((char*)ptr - 16 < threshold) break;  // older than the mark: keep it (registry is in alloc order)
+        Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
+        d->trackCount--;
+        if (h->magic == LDP3_RMAGIC) {  // still live (not already deleted): destruct it once
+            h->magic = LDP3_RFREED;
+            ((void (*)(void*))d->trackDtor[d->trackCount])(ptr);
+        }
+    }
+    d->used = mark;
+}
+
+// Tear a stack region down before its block is freed: run all remaining destructors and free the
+// off-arena registry arrays. Codegen calls this for a stack region right before __ldp3_region_release.
+void __ldp3_region_teardown(void* block) {
+    if (block == NULL) return;  // an unallocated / already-released region (explicit release nulled it)
+    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
+    __ldp3_region_rollback(block, 0);  // destruct everything still live
+    free(d->trackPtr);
+    free(d->trackDtor);
+    d->trackPtr = NULL;
+    d->trackDtor = NULL;
+    d->trackCap = 0;
 }
 
 void* __ldp3_realloc(void* ptr, size_t size) {

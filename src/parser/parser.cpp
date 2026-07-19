@@ -2314,6 +2314,22 @@ ast::StmtPtr Parser::parseStatement() {
         expect(TokenKind::Semicolon, "';'");
         return rel;
     }
+    // `rollback region R to m;` (spec 17, stack flavor): destruct everything above the checkpoint and
+    // rewind. `rollback` is a soft keyword -- only this statement when directly followed by `region`.
+    if (check(TokenKind::Identifier) && current().lexeme == "rollback" &&
+        peek(1).kind == TokenKind::KwRegion) {
+        auto rb = std::make_unique<ast::RollbackStmt>();
+        rb->loc = current().loc;
+        advance();  // 'rollback'
+        advance();  // 'region'
+        rb->region = expect(TokenKind::Identifier, "the region name after 'rollback region'").lexeme;
+        if (!(check(TokenKind::Identifier) && current().lexeme == "to"))
+            fail("expected 'to <checkpoint>' after 'rollback region <name>' (spec 17)", current().loc);
+        advance();  // 'to'
+        rb->checkpoint = parseExpression();
+        expect(TokenKind::Semicolon, "';'");
+        return rb;
+    }
     if (check(TokenKind::KwDefer)) {
         return parseDefer();
     }
@@ -3126,6 +3142,18 @@ ast::ExprPtr Parser::parseUnary() {
         c->operand = parseExpression();
         expect(TokenKind::RParen, "')'");
         return c;
+    }
+    // `mark of region R` (spec 17, stack flavor): capture R's cursor as a checkpoint. `mark` is a soft
+    // keyword -- only this operator when directly followed by `of region`; otherwise an identifier.
+    if (check(TokenKind::Identifier) && current().lexeme == "mark" &&
+        peek(1).kind == TokenKind::KwOf && peek(2).kind == TokenKind::KwRegion) {
+        auto mk = std::make_unique<ast::MarkExpr>();
+        mk->loc = current().loc;
+        advance();  // 'mark'
+        advance();  // 'of'
+        advance();  // 'region'
+        mk->region = expect(TokenKind::Identifier, "the region name after 'mark of region'").lexeme;
+        return mk;
     }
     // `extract X from region R` (spec 17, flavors expansion): relocate X out of a region and yield the
     // owning pointer. `extract` is a soft keyword -- treated as this operator only when it directly
