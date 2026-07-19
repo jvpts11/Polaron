@@ -6,9 +6,9 @@ parameters, same checksum) in all three languages so the comparison is fair and 
 checksums confirm correctness.
 
 - **LDP3 sources:** this folder (`*.ldp3`).
-- **C / C++ sources:** the Visual Studio solution at
-  `C:\Users\jvpts\Documents\GitHub\C and C++ perf tests\ConsoleApplication1`, one project
-  per benchmark, prefixed `C_` (C) and `Cpp_` (C++).
+- **C / C++ sources:** a sibling Visual Studio solution,
+  `C and C++ perf tests/ConsoleApplication1`, one project per benchmark, prefixed `C_` (C)
+  and `Cpp_` (C++).
 
 ## Benchmarks
 

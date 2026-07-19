@@ -202,8 +202,8 @@ int selftest(const std::string& mode) {
         s.toolchain.ldp3c = "C:/tools/ldp3/ldp3c.exe";
         s.toolchain.clang = "C:/Program Files/LLVM/bin/clang.exe";
         s.toolchain.runtime = "C:/tools/ldp3/ldp3_rt.lib";
-        s.toolchain.home = "C:/Users/jvpts/.ldp3";
-        s.toolchain.environments = "C:/Users/jvpts/.ldp3/environments";
+        s.toolchain.home = "C:/Users/dev/.ldp3";
+        s.toolchain.environments = "C:/Users/dev/.ldp3/environments";
         s.toolchain.target = "x86_64-windows";
     } else if (mode == "plug") {
         s.screen = studio::Screen::ProjectDetail;
