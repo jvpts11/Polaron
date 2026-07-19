@@ -1,0 +1,37 @@
+import System.IO.Console;
+program TryBodyCleanup;
+
+// When a throw is caught by an enclosing try, the block-scoped teardown of the scopes unwound to
+// reach the catch runs first (spec 23.1): the `defer` and the stack-object destructor here fire on
+// the way to the catch. Expected: start defer dtor 1 caught after (previously: start caught after).
+
+public bundle main {
+    public namespace app {
+        public class Noisy {
+            private int id;
+            public constructor Noisy(int i) { this.id = i; }
+            public destructor ~Noisy() returns void {
+                System.IO.Console.printf("dtor %d\n", this.id);
+            }
+        }
+        public class MyError {
+            public constructor MyError() {}
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("start\n");
+                try {
+                    if (1 < 2) {
+                        Noisy n = new Noisy(1) on stack;
+                        defer { System.IO.Console.printf("defer\n"); }
+                        throw new MyError() on heap;
+                    }
+                } catch (MyError e) {
+                    System.IO.Console.printf("caught\n");
+                }
+                System.IO.Console.printf("after\n");
+                return;
+            }
+        }
+    }
+}

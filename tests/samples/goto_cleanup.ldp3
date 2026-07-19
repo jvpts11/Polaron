@@ -1,0 +1,37 @@
+import System.IO.Console;
+program GotoCleanup;
+
+// A `goto` that leaves one or more lexical scopes runs their `defer`s and stack-object
+// destructors first, innermost scope first, LIFO within a scope (spec 7.9 + block RAII).
+// Here `goto out` leaves both the for-body and the if-body, so the output is:
+//   start defer dtor 2 dtor 1 after
+// (defer of the for-body, then its object dtor 2, then the if-body's dtor 1.)
+
+public bundle main {
+    public namespace app {
+        public class Noisy {
+            private int id;
+            public constructor Noisy(int i) { this.id = i; }
+            public destructor ~Noisy() returns void {
+                System.IO.Console.printf("dtor %d\n", this.id);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("start\n");
+                if (1 < 2) {
+                    Noisy a = new Noisy(1) on stack;
+                    for (mutable int i = 0; i < 1; i++) {
+                        Noisy b = new Noisy(2) on stack;
+                        defer { System.IO.Console.printf("defer\n"); }
+                        goto out;
+                    }
+                    System.IO.Console.printf("unreachable\n");
+                }
+                label out;
+                System.IO.Console.printf("after\n");
+                return;
+            }
+        }
+    }
+}

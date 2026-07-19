@@ -11,7 +11,7 @@ set_tests_properties(cli_version PROPERTIES
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.0")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.3")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -4033,6 +4033,26 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/block_raii.ldp3"
             "-DEXPECTED=start dtor 0 dtor 1 dtor 2 body 0 defer 0 body 1 defer 1 end"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # a goto that leaves scopes runs their defers + destructors first (spec 7.9), innermost
+        # scope first and LIFO within a scope -- previously the skipped scopes leaked.
+        add_test(NAME codegen_goto_cleanup_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/goto_cleanup.ldp3"
+            "-DEXPECTED=start defer dtor 2 dtor 1 after"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # a throw caught by an enclosing try runs the try-body's block-scoped defers + destructors
+        # while unwinding to the catch (spec 23.1) -- previously they were skipped on the caught path.
+        add_test(NAME codegen_try_body_cleanup_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/try_body_cleanup.ldp3"
+            "-DEXPECTED=start defer dtor 1 caught after"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
