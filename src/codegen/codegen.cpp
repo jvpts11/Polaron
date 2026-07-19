@@ -765,6 +765,15 @@ struct CodeGenerator::Impl {
     llvm::StructType* annotationStructTy = nullptr;  // reflection Annotation layout { ptr name }
     std::unordered_map<std::string, llvm::GlobalVariable*> typeGlobals;  // class name -> its Type global
     std::unordered_map<std::string, llvm::BasicBlock*> labelBlocks;  // `label name;` targets (comefrom)
+    // For `goto` (spec 7.9): a goto that jumps out of one or more lexical blocks must run those blocks'
+    // defers + stack-object destructors (+ region/String cleanup) first, exactly as a structured exit
+    // does -- otherwise the skipped scopes leak. `labelBlock_` maps each label to the block it is declared
+    // in (pre-scanned per function body); `blockScopes` is the stack of currently-open blocks with the
+    // cleanup bases captured at each one's entry. At a goto we clean every scope nested inside the target
+    // label's scope, from innermost out, then branch.
+    struct BlockScope { const ast::Block* block; std::size_t so, df, rg, st; };
+    std::vector<BlockScope> blockScopes;
+    std::unordered_map<std::string, const ast::Block*> labelBlock_;
     std::unordered_set<std::string> abstainedLabels;  // qualified labels named by some `abstainfrom`
     std::unordered_map<std::string, llvm::GlobalVariable*> abstainCounters;  // qualified label -> counter
     std::string scanClass_;   // (class, method) context while scanning for abstained labels, so the
@@ -777,6 +786,12 @@ struct CodeGenerator::Impl {
     llvm::GlobalVariable* fnTableGlobal = nullptr;  // all function addresses (for physical unload)
     long long fnTableCount = 0;
     std::vector<llvm::BasicBlock*> ehPadStack;   // active try landing pads (catchswitch blocks)
+    // Parallel to ehPadStack: the cleanup bases (scopeObjects/deferred/scopeRegions sizes) captured when
+    // each active try's body began. When a throw inside a try body unwinds to that try's handler, the
+    // block-scoped teardown declared since these bases must run first (spec 23.1) -- so `defer`/`using`/
+    // destructors in the try body are honoured on the caught path, not just the normal-exit path.
+    struct EhBase { std::size_t so, df, rg; };
+    std::vector<EhBase> ehBaseStack;
     llvm::Constant* ehThrowInfoCache = nullptr;  // shared carrier-ptr ThrowInfo (_TI1PEAX), lazy
     llvm::Constant* ehTypeDescCache = nullptr;   // shared carrier-ptr type descriptor, lazy
 
@@ -8110,6 +8125,16 @@ struct CodeGenerator::Impl {
                 return true;
         return false;
     }
+    // Like hasUnwindCleanup, but only for entries added since the given bases -- i.e. the teardown a throw
+    // must run to unwind out to an enclosing try whose body started at these sizes.
+    bool hasUnwindCleanupAbove(std::size_t soBase, std::size_t dfBase, std::size_t rgBase) {
+        if (deferred.size() > dfBase || scopeRegions.size() > rgBase) return true;
+        for (std::size_t i = soBase; i < scopeObjects.size(); ++i)
+            if (scopeObjects[i].region.empty() &&
+                functions.count(scopeObjects[i].className + ".~" + scopeObjects[i].className) > 0)
+                return true;
+        return false;
+    }
     // Runs the full scope teardown -- defer/using blocks (LIFO), then stack-object destructors (reverse
     // declaration order), then region frees -- as ordinary code, mirroring emitScopeCleanup. Used on the
     // unwind path so `defer`/`using`/regions are honoured when an exception propagates (spec 23.1), not
@@ -8146,25 +8171,31 @@ struct CodeGenerator::Impl {
     // Itanium unwind cleanup: one `landingpad cleanup` block that runs the full scope teardown as
     // ordinary code, then `resume`s to keep unwinding toward the caller. Materialized lazily and mutually
     // exclusive with the normal-path emitScopeCleanup (a landing pad is only reached via unwind).
-    llvm::BasicBlock* buildCleanupChainItanium() {
-        if (!hasUnwindCleanup()) return nullptr;
+    llvm::BasicBlock* buildCleanupChainItanium(std::size_t soBase = 0, std::size_t dfBase = 0,
+                                               std::size_t rgBase = 0) {
+        soBase = std::min(soBase, scopeObjects.size());  // defensive: never form a past-the-end iterator
+        dfBase = std::min(dfBase, deferred.size());
+        rgBase = std::min(rgBase, scopeRegions.size());
+        if (!hasUnwindCleanupAbove(soBase, dfBase, rgBase)) return nullptr;
         llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
         ensurePersonality();
-        auto objs = std::move(scopeObjects);  // snapshot + clear so cleanup actions don't re-target here
-        auto defs = std::move(deferred);
-        auto regs = std::move(scopeRegions);
-        scopeObjects.clear();
-        deferred.clear();
-        scopeRegions.clear();
+        // Snapshot only the entries added since the bases (the scopes being unwound), and drop them from
+        // the live vectors during emission so a cleanup action / re-raise never re-targets this same pad.
+        std::vector<ScopeObject> objs(scopeObjects.begin() + soBase, scopeObjects.end());
+        std::vector<Cleanup> defs(deferred.begin() + dfBase, deferred.end());
+        std::vector<RegionLocal> regs(scopeRegions.begin() + rgBase, scopeRegions.end());
+        scopeObjects.resize(soBase);
+        deferred.resize(dfBase);
+        scopeRegions.resize(rgBase);
         llvm::BasicBlock* pad = llvm::BasicBlock::Create(context, "cleanup", currentFn);
         builder.SetInsertPoint(pad);
         llvm::LandingPadInst* lp = builder.CreateLandingPad(landingPadType(), 0);
         lp->setCleanup(true);
         emitUnwindCleanupBody(objs, defs, regs);
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateResume(lp);
-        scopeObjects = std::move(objs);  // restore for the normal path
-        deferred = std::move(defs);
-        scopeRegions = std::move(regs);
+        scopeObjects.insert(scopeObjects.end(), objs.begin(), objs.end());  // restore for the normal path
+        deferred.insert(deferred.end(), defs.begin(), defs.end());
+        scopeRegions.insert(scopeRegions.end(), regs.begin(), regs.end());
         builder.restoreIP(saved);
         return pad;
     }
@@ -8174,12 +8205,17 @@ struct CodeGenerator::Impl {
     // inside a funclet -- a catch-all pad catches the exception, `catchret`s to ordinary code that runs
     // the full teardown, and re-throws the same carrier, exactly like the emitTry uncaught-with-finally
     // path. Materialized lazily; mutually exclusive with emitScopeCleanup.
-    llvm::BasicBlock* buildCleanupChain(llvm::BasicBlock* finalUnwind) {
-        if (isItaniumEH()) return buildCleanupChainItanium();
-        if (deferred.empty() && scopeRegions.empty()) {  // pure destructors: unchanged funclet chain
+    llvm::BasicBlock* buildCleanupChain(llvm::BasicBlock* finalUnwind, std::size_t soBase = 0,
+                                        std::size_t dfBase = 0, std::size_t rgBase = 0) {
+        if (isItaniumEH()) return buildCleanupChainItanium(soBase, dfBase, rgBase);
+        soBase = std::min(soBase, scopeObjects.size());  // defensive: never form a past-the-end iterator
+        dfBase = std::min(dfBase, deferred.size());
+        rgBase = std::min(rgBase, scopeRegions.size());
+        if (deferred.size() <= dfBase && scopeRegions.size() <= rgBase) {  // pure destructors: funclet chain
             llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
             llvm::BasicBlock* succ = finalUnwind;
-            for (const ScopeObject& so : scopeObjects) {
+            for (std::size_t i = soBase; i < scopeObjects.size(); ++i) {
+                const ScopeObject& so = scopeObjects[i];
                 auto fnit = functions.find(so.className + ".~" + so.className);
                 if (fnit == functions.end()) continue;  // no destructor: not part of the chain
                 ensurePersonality();
@@ -8198,15 +8234,18 @@ struct CodeGenerator::Impl {
             builder.restoreIP(saved);
             return succ;
         }
-        // Defer/using/regions present: catch-all -> run teardown in normal context -> re-throw.
+        // Defer/using/regions present: catch-all -> run teardown in normal context -> re-throw. Snapshot
+        // only the entries since the bases; drop them from the live vectors during emission so the
+        // teardown and the re-raise don't re-target this same cleanup (and the re-raise reaches the
+        // enclosing try's handler, not this pad again).
         llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
         ensurePersonality();
-        auto objs = std::move(scopeObjects);  // snapshot + clear so teardown/rethrow don't re-target here
-        auto defs = std::move(deferred);
-        auto regs = std::move(scopeRegions);
-        scopeObjects.clear();
-        deferred.clear();
-        scopeRegions.clear();
+        std::vector<ScopeObject> objs(scopeObjects.begin() + soBase, scopeObjects.end());
+        std::vector<Cleanup> defs(deferred.begin() + dfBase, deferred.end());
+        std::vector<RegionLocal> regs(scopeRegions.begin() + rgBase, scopeRegions.end());
+        scopeObjects.resize(soBase);
+        deferred.resize(dfBase);
+        scopeRegions.resize(rgBase);
         llvm::PointerType* ptrTy = builder.getPtrTy();
         llvm::BasicBlock* pad = llvm::BasicBlock::Create(context, "cleanup", currentFn);
         builder.SetInsertPoint(pad);
@@ -8224,20 +8263,29 @@ struct CodeGenerator::Impl {
         llvm::Value* carrier = builder.CreateLoad(ptrTy, caughtSlot, "cleanup.obj");
         emitUnwindCleanupBody(objs, defs, regs);
         if (builder.GetInsertBlock()->getTerminator() == nullptr) emitThrowObject(carrier);
-        scopeObjects = std::move(objs);  // restore for the normal path
-        deferred = std::move(defs);
-        scopeRegions = std::move(regs);
+        scopeObjects.insert(scopeObjects.end(), objs.begin(), objs.end());  // restore for the normal path
+        deferred.insert(deferred.end(), defs.begin(), defs.end());
+        scopeRegions.insert(scopeRegions.end(), regs.begin(), regs.end());
         builder.restoreIP(saved);
         return pad;
     }
     // Where a faulting call/throw at the current point must unwind to: the enclosing try's landing pad
     // if inside a try; else, if the scope has any teardown (defer/using, live region, or a stack object
     // with a destructor), a fresh cleanup pad that runs it before propagating to the caller; else null.
-    // MVP note: inside a try we go straight to the catchswitch -- teardown declared in the try body is
-    // run only on the normal/return path (emitScopeCleanup) and on the try's own rethrow, not on the
-    // caught-exception path. Full block-scoped unwind cleanup within a try is a later slice.
+    // Inside a try, teardown declared in the try body (defer/using/destructors) must run on the
+    // caught-exception path too, not only on the normal/return path (spec 23.1). So a faulting point runs
+    // the block-scoped cleanup for the scopes opened since the try body began, then unwinds to the try's
+    // handler. (WinEH only for now; the Itanium in-try path stays as-is -- it needs a Linux environment to
+    // validate the resume-into-enclosing-landingpad behaviour, so it is a later slice.)
     llvm::BasicBlock* computeUnwindDest() {
-        if (!ehPadStack.empty()) return ehPadStack.back();
+        if (!ehPadStack.empty()) {
+            if (!isItaniumEH() && !ehBaseStack.empty()) {
+                const EhBase& b = ehBaseStack.back();
+                if (hasUnwindCleanupAbove(b.so, b.df, b.rg))
+                    return buildCleanupChain(ehPadStack.back(), b.so, b.df, b.rg);
+            }
+            return ehPadStack.back();
+        }
         if (!hasUnwindCleanup()) return nullptr;
         return buildCleanupChain(nullptr);
     }
@@ -8383,9 +8431,11 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* ehpad = llvm::BasicBlock::Create(context, "ehpad", currentFn);
         llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "try.cont", currentFn);
         ehPadStack.push_back(ehpad);
+        ehBaseStack.push_back({scopeObjects.size(), deferred.size(), scopeRegions.size()});
         if (s.finallyBlock != nullptr) finallyStack.push_back(s.finallyBlock.get());
         emitBlock(s.body);
         ehPadStack.pop_back();
+        ehBaseStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(contBB);
 
         builder.SetInsertPoint(ehpad);
@@ -8441,11 +8491,13 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* ehpad = llvm::BasicBlock::Create(context, "ehpad", currentFn);
         llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "try.cont", currentFn);
         ehPadStack.push_back(ehpad);
+        ehBaseStack.push_back({scopeObjects.size(), deferred.size(), scopeRegions.size()});
         // Pending finally for early exits (return/break/continue/try?) within the body
         // and catch handlers; popped before the normal-path finally at contBB.
         if (s.finallyBlock != nullptr) finallyStack.push_back(s.finallyBlock.get());
         emitBlock(s.body);
         ehPadStack.pop_back();
+        ehBaseStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(contBB);
         builder.SetInsertPoint(ehpad);
         llvm::Value* caughtSlot = createEntryAlloca("exc.caught", ptrTy);
@@ -8589,7 +8641,9 @@ struct CodeGenerator::Impl {
                 builder.CreateUnreachable();
                 return;
             }
-            // `goto label;` -- branch to the label's block in the same method.
+            // `goto label;` -- branch to the label's block in the same method. First run the cleanup for
+            // any scopes this jump leaves (defers + destructors), so goto-out-of-scope doesn't leak.
+            emitGotoScopeCleanup(g->name);
             llvm::BasicBlock*& bb = labelBlocks[g->name];
             if (bb == nullptr) bb = llvm::BasicBlock::Create(context, "label." + g->name, currentFn);
             builder.CreateBr(bb);
@@ -9697,11 +9751,68 @@ struct CodeGenerator::Impl {
     // that actually ran the declaration (no dtor on uninitialized memory), runs once
     // per loop iteration (no leak), and a defer fires per iteration. The function
     // body passes newScope=false: emitBody owns that teardown (with contracts).
+    // Pre-scan a function body so every `label name;` is mapped to the block it is declared in. A forward
+    // `goto` (the common case) needs to know its target's scope before the label is emitted, so this runs
+    // once, up front, over the whole body.
+    void scanLabelBlocks(const ast::Block& b) {
+        for (const auto& sp : b.statements) scanStmtLabels(sp.get(), b);
+    }
+    void scanStmtLabels(const ast::Stmt* s, const ast::Block& owner) {
+        if (s == nullptr) return;
+        if (const auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(s)) { labelBlock_[lm->name] = &owner; return; }
+        if (const auto* is = dynamic_cast<const ast::IfStmt*>(s)) {
+            scanLabelBlocks(is->thenBlock);
+            if (is->elseBlock) scanLabelBlocks(*is->elseBlock);
+            return;
+        }
+        if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(s)) { scanLabelBlocks(ws->body); return; }
+        if (const auto* ds = dynamic_cast<const ast::DoWhileStmt*>(s)) { scanLabelBlocks(ds->body); return; }
+        if (const auto* fs = dynamic_cast<const ast::ForStmt*>(s)) { scanLabelBlocks(fs->body); return; }
+        if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(s)) { scanLabelBlocks(fe->body); return; }
+        if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(s)) { scanLabelBlocks(sy->body); return; }
+        if (const auto* df = dynamic_cast<const ast::DeferStmt*>(s)) { scanLabelBlocks(df->body); return; }
+        if (const auto* us = dynamic_cast<const ast::UsingStmt*>(s)) { scanLabelBlocks(us->body); return; }
+        if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(s)) {
+            for (const auto& c : sw->cases) scanLabelBlocks(c.body);
+            if (sw->defaultBody) scanLabelBlocks(*sw->defaultBody);
+            return;
+        }
+        if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(s)) {
+            for (const auto& c : ms->cases) scanLabelBlocks(c.body);
+            if (ms->defaultBody) scanLabelBlocks(*ms->defaultBody);
+            return;
+        }
+        if (const auto* ts = dynamic_cast<const ast::TryStmt*>(s)) {
+            scanLabelBlocks(ts->body);
+            for (const auto& c : ts->catches) scanLabelBlocks(c.body);
+            if (ts->finallyBlock) scanLabelBlocks(*ts->finallyBlock);
+            return;
+        }
+        if (const auto* la = dynamic_cast<const ast::LabeledStmt*>(s)) { scanStmtLabels(la->stmt.get(), owner); return; }
+    }
+
+    // Run the defers/destructors/regions/Strings for every open scope nested inside the target label's
+    // scope, innermost first, before a `goto` branches there. No-op if the label is in the current scope
+    // (nothing nested is being left) or is not on the open-scope stack.
+    void emitGotoScopeCleanup(const std::string& label) {
+        auto lit = labelBlock_.find(label);
+        if (lit == labelBlock_.end()) return;
+        const ast::Block* target = lit->second;
+        int fi = -1;
+        for (int i = static_cast<int>(blockScopes.size()) - 1; i >= 0; --i)
+            if (blockScopes[i].block == target) { fi = i; break; }
+        if (fi < 0 || fi + 1 >= static_cast<int>(blockScopes.size())) return;  // same scope / not open
+        const BlockScope& inner = blockScopes[fi + 1];  // first scope nested inside the label's scope
+        emitBlockCleanup(inner.so, inner.df, inner.rg, inner.st);
+    }
+
     void emitBlock(const ast::Block& block, bool newScope = true) {
         const std::size_t soBase = scopeObjects.size();
         const std::size_t dfBase = deferred.size();
         const std::size_t regBase = scopeRegions.size();
         const std::size_t strBase = scopeStrings.size();
+        if (blockScopes.empty()) { labelBlock_.clear(); scanLabelBlocks(block); }  // function-body entry
+        blockScopes.push_back({&block, soBase, dfBase, regBase, strBase});
         for (const auto& stmt : block.statements) {
             // Don't stop at a terminator: a later `label` (the target of a forward goto/comefrom)
             // must still be placed. emitStatement skips genuinely dead statements but always emits
@@ -9720,6 +9831,7 @@ struct CodeGenerator::Impl {
             scopeRegions.resize(regBase);
             scopeStrings.resize(strBase);
         }
+        blockScopes.pop_back();
     }
 
     void emitIf(const ast::IfStmt& s) {
@@ -10785,6 +10897,7 @@ struct CodeGenerator::Impl {
     void emitDynamicThunks() {
         if (dynamicBundles.empty()) return;
         ehPadStack.clear();    // thunks are standalone: no enclosing try / RAII scope
+        ehBaseStack.clear();
         scopeObjects.clear();
         llvm::PointerType* ptrTy = builder.getPtrTy();
         llvm::FunctionCallee loadFn = module.getOrInsertFunction(
@@ -11284,6 +11397,16 @@ struct CodeGenerator::Impl {
         // debug scope, or the enclosing method's later instructions get a mismatched scope (verifier error).
         llvm::DISubprogram* savedDiSP = diCurrentSP;
         auto diRestore = llvm::make_scope_exit([this, savedDiSP]() { diCurrentSP = savedDiSP; });
+        // A nested emitBody (a lambda emitted mid-method) gets its own goto scope stack + label map, so it
+        // does not clobber the enclosing method's; restored when this body finishes.
+        std::vector<BlockScope> savedBS = std::move(blockScopes);
+        std::unordered_map<std::string, const ast::Block*> savedLB = std::move(labelBlock_);
+        blockScopes.clear();
+        labelBlock_.clear();
+        auto bsRestore = llvm::make_scope_exit([this, &savedBS, &savedLB]() {
+            blockScopes = std::move(savedBS);
+            labelBlock_ = std::move(savedLB);
+        });
         currentFn = fn;
         currentClass = thisClass;
         currentRetType = retType;
@@ -11556,8 +11679,13 @@ struct CodeGenerator::Impl {
                 typeRefName(m.params[i].type)};
         llvm::BasicBlock* guard = buildAsyncGuardPad();  // a throw completes the task with the error
         ehPadStack.push_back(guard);
+        // Sentinel base: the async guard covers the whole body and does its own completion; the in-try
+        // block cleanup pass must not inject here, so keep it disabled for this pad.
+        ehBaseStack.push_back({static_cast<std::size_t>(-1), static_cast<std::size_t>(-1),
+                               static_cast<std::size_t>(-1)});
         emitBlock(m.body, /*newScope=*/false);
         ehPadStack.pop_back();
+        ehBaseStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             emitTaskComplete(nullptr);
             builder.CreateRetVoid();
@@ -11924,8 +12052,11 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(bodyStart);
         llvm::BasicBlock* guard = buildAsyncGuardPad();  // a throw completes the task with the error
         ehPadStack.push_back(guard);
+        ehBaseStack.push_back({static_cast<std::size_t>(-1), static_cast<std::size_t>(-1),
+                               static_cast<std::size_t>(-1)});  // sentinel: async guard, no in-try inject
         emitBlock(m.body, /*newScope=*/false);  // natural control flow; awaits split their blocks
         ehPadStack.pop_back();
+        ehBaseStack.pop_back();
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
             emitTaskComplete(nullptr);
             builder.CreateRetVoid();
