@@ -9,6 +9,9 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
+# WiX resolves the .wxs's relative paths (../branding/icon.ico, install-vscode.cmd) against the CWD,
+# not the .wxs location -- so this script must run from installer/, regardless of the caller's CWD.
+Set-Location $here
 
 Write-Host "== staging bundle =="
 & "$here\pack-bundle.ps1" -Config $Config
