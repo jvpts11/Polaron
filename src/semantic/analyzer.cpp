@@ -1579,10 +1579,21 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
         for (std::size_t i = 0; i + 1 < imp.path.size(); ++i)
             prefix += (i > 0 ? "." : "") + imp.path[i];
         auto nsIt = typeNamespace_.find(symbol);
+        // An import path may name the bundle first (`forge.app.Controller` = bundle forge, namespace
+        // app, type Controller). The standard library is the exception -- a `System.*` path carries no
+        // bundle, since `System` already identifies it. Both spellings are accepted: the prefix matches
+        // either as-is (stdlib / bundle-less) or with its leading bundle segment stripped. Which one
+        // applies is unambiguous, because only the true namespace matches.
+        std::string afterBundle;
+        if (imp.path.size() >= 2)
+            for (std::size_t i = 1; i + 1 < imp.path.size(); ++i)
+                afterBundle += (afterBundle.empty() ? "" : ".") + imp.path[i];
         if (nsIt == typeNamespace_.end()) {
             error("import of unknown symbol '" + full + "'", imp.loc);
-        } else if (!prefix.empty() && prefix != nsIt->second) {
-            error("'" + symbol + "' is in namespace '" + nsIt->second + "', not '" + prefix + "'",
+        } else if (!prefix.empty() && prefix != nsIt->second && afterBundle != nsIt->second) {
+            error("'" + symbol + "' is in namespace '" + nsIt->second + "'; write it as '" +
+                      nsIt->second + "." + symbol + "' or '<bundle>." + nsIt->second + "." + symbol +
+                      "'",
                   imp.loc);
         } else {
             importedSuffixes_.insert(symbol);  // harmless for non-literals

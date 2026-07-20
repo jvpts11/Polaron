@@ -1,0 +1,18 @@
+import System.IO.Console;
+import main.lib.Calc;      // bundle-first: bundle `main`, namespace `lib`, type `Calc`
+
+program BundleImport;
+
+// Part B: the entry point in namespace `app`, reaching Calc in namespace `lib` through the import
+// above. The import names the bundle first (`main.`), the new spelling; the stdlib stays `System.*`.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Calc c = new Calc();
+                System.IO.Console.println($"sum = {c.add(40, 2)}");   // sum = 42
+                return;
+            }
+        }
+    }
+}
