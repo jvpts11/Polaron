@@ -1,6 +1,9 @@
 #include "lsp/server.h"
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -374,6 +377,81 @@ ExtractPlan planExtraction(const ast::Program& program, const std::string& text,
     return plan;
 }
 
+// --- workspace: uri <-> path, and reading files off disk ----------------------------------------
+// Editors send file:// URIs; the index walks the filesystem. Percent-escapes are decoded because a
+// project path containing a space arrives as %20 and would otherwise never be found.
+
+std::string uriToPath(const std::string& uri) {
+    std::string s = uri;
+    const std::string prefix = "file:///";
+    if (s.compare(0, prefix.size(), prefix) == 0) {
+        s = s.substr(prefix.size());
+    } else if (s.compare(0, 7, "file://") == 0) {
+        s = s.substr(7);
+    }
+    std::string out;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size()) {
+            const std::string hex = s.substr(i + 1, 2);
+            try {
+                out += static_cast<char>(std::stoi(hex, nullptr, 16));
+                i += 2;
+                continue;
+            } catch (...) {
+                // not a valid escape: fall through and keep the '%'
+            }
+        }
+        out += s[i];
+    }
+    return out;
+}
+
+std::string pathToUri(const std::string& path) {
+    std::string s = path;
+    for (char& c : s) {
+        if (c == '\\') c = '/';
+    }
+    return "file:///" + s;
+}
+
+std::string readFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return "";
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// Every whole-word occurrence of `name` in `text`, as {line, col} pairs (0-based).
+// Occurrences inside a line comment are skipped, because renaming a word in prose is not a rename;
+// string literals are NOT skipped here, since the caller decides whether those matter.
+std::vector<std::pair<int, int>> occurrences(const std::string& text, const std::string& name) {
+    std::vector<std::pair<int, int>> out;
+    if (name.empty()) return out;
+    int line = 0;
+    std::size_t pos = 0;
+    while (pos <= text.size()) {
+        const std::size_t nl = text.find('\n', pos);
+        const std::string row = text.substr(pos, nl == std::string::npos ? std::string::npos
+                                                                        : nl - pos);
+        const std::size_t comment = row.find("//");
+        std::size_t at = row.find(name);
+        while (at != std::string::npos) {
+            const bool leftOk = at == 0 || !isIdentChar(row[at - 1]);
+            const std::size_t end = at + name.size();
+            const bool rightOk = end >= row.size() || !isIdentChar(row[end]);
+            if (leftOk && rightOk && (comment == std::string::npos || at < comment)) {
+                out.push_back({line, static_cast<int>(at)});
+            }
+            at = row.find(name, at + 1);
+        }
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+        ++line;
+    }
+    return out;
+}
+
 const char* const kKeywords[] = {
     "program", "bundle", "namespace", "class", "interface", "struct", "record", "union", "enum", "catalog",
     "method", "constructor", "destructor", "returns", "return", "public", "private", "protected", "internal",
@@ -426,6 +504,89 @@ void Server::notify(const std::string& method, Json params) {
     writeMessage(msg);
 }
 
+// An open buffer wins over the file on disk: it may hold edits that were never saved, and answering
+// from the stale copy is how a language server tells you about code you already changed.
+std::string Server::textFor(const std::string& uri) const {
+    const auto it = documents_.find(uri);
+    if (it != documents_.end()) return it->second;
+    return readFile(uriToPath(uri));
+}
+
+// Walk the workspace and record every declaration, so definition, references and rename can answer
+// about files the editor never opened. Parsing every file is affordable because it happens at
+// startup and on save, not per keystroke.
+void Server::buildIndex() {
+    index_.clear();
+    projectFiles_.clear();
+    if (rootPath_.empty()) return;
+    std::error_code ec;
+    const std::filesystem::path root(rootPath_);
+    if (!std::filesystem::is_directory(root, ec)) return;
+    for (auto it = std::filesystem::recursive_directory_iterator(
+             root, std::filesystem::directory_options::skip_permission_denied, ec);
+         it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) break;
+        const std::filesystem::path& p = it->path();
+        // Skip build output and version control: their contents are generated or irrelevant, and a
+        // staged copy of the whole project would double every result.
+        const std::string name = p.filename().string();
+        if (it->is_directory(ec) &&
+            (name == ".git" || name == "build" || name == "build-output" || name == "dist" ||
+             name == "node_modules")) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (!it->is_regular_file(ec) || p.extension() != ".ldp3") continue;
+        const std::string path = p.string();
+        const std::string uri = pathToUri(path);
+        projectFiles_.push_back(uri);
+        const std::string text = textFor(uri);
+        if (text.empty()) continue;
+        Lexer lexer(text, uri);
+        Parser parser(lexer.tokenize(), uri);
+        const ast::Program program = parser.parse();
+        for (const ast::Bundle& bundle : program.bundles) {
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ClassDecl& c : ns.classes) {
+                    Found hit;
+                    hit.found = true;
+                    hit.loc = c.loc;
+                    hit.detail = std::string(c.isInterface ? "interface " : "class ") + c.name;
+                    aimAtName(text, c.name, hit);
+                    index_.push_back({c.name, uri, hit.loc.line - 1, hit.loc.col - 1, hit.detail});
+                    for (const ast::MemberPtr& mp : c.members) {
+                        if (const auto* m = dynamic_cast<const ast::MethodDecl*>(mp.get())) {
+                            Found mh;
+                            mh.found = true;
+                            mh.loc = m->loc;
+                            mh.detail = methodSignature(c, *m);
+                            aimAtName(text, m->name, mh);
+                            index_.push_back({m->name, uri, mh.loc.line - 1, mh.loc.col - 1,
+                                              mh.detail});
+                        } else if (const auto* f = dynamic_cast<const ast::FieldDecl*>(mp.get())) {
+                            Found fh;
+                            fh.found = true;
+                            fh.loc = f->loc;
+                            fh.detail = fieldSignature(c, *f);
+                            aimAtName(text, f->name, fh);
+                            index_.push_back({f->name, uri, fh.loc.line - 1, fh.loc.col - 1,
+                                              fh.detail});
+                        }
+                    }
+                }
+                for (const ast::EnumDecl& e : ns.enums) {
+                    Found eh;
+                    eh.found = true;
+                    eh.loc = e.loc;
+                    eh.detail = "enum " + e.name;
+                    aimAtName(text, e.name, eh);
+                    index_.push_back({e.name, uri, eh.loc.line - 1, eh.loc.col - 1, eh.detail});
+                }
+            }
+        }
+    }
+}
+
 void Server::publishDiagnostics(const std::string& uri) {
     const std::string& text = documents_[uri];
     Json diags = Json::makeArray();
@@ -455,12 +616,24 @@ void Server::handle(const Json& message) {
         caps.set("documentSymbolProvider", Json::of(true));
         caps.set("definitionProvider", Json::of(true));
         caps.set("hoverProvider", Json::of(true));
+        caps.set("referencesProvider", Json::of(true));
+        caps.set("renameProvider", Json::of(true));
         Json completion = Json::makeObject();
         caps.set("completionProvider", std::move(completion));
         Json result = Json::makeObject();
         result.set("capabilities", std::move(caps));
+        // The workspace root makes cross-file answers possible: without it the server can only
+        // speak about documents the editor happens to have open.
+        const std::string rootUri = params.getString("rootUri");
+        if (!rootUri.empty()) {
+            rootPath_ = uriToPath(rootUri);
+        } else {
+            const std::string rootPath = params.getString("rootPath");
+            if (!rootPath.empty()) rootPath_ = rootPath;
+        }
         if (idPtr) reply(*idPtr, std::move(result));
         initialized_ = true;
+        buildIndex();
         return;
     }
     if (method == "shutdown") {
@@ -483,6 +656,10 @@ void Server::handle(const Json& message) {
             documents_[uri] = changes->arr.back().getString("text");  // Full sync: last change is the text
             publishDiagnostics(uri);
         }
+        return;
+    }
+    if (method == "textDocument/didSave") {
+        buildIndex();          // a saved edit may have added or renamed a declaration
         return;
     }
     if (method == "textDocument/didClose") {
@@ -551,6 +728,71 @@ void Server::handle(const Json& message) {
         reply(*idPtr, std::move(result));
         return;
     }
+    // references and rename both need every occurrence of the name across the project, so they share
+    // the same sweep and differ only in what they return.
+    if (method == "textDocument/references" || method == "textDocument/rename") {
+        const std::string uri = uriOf(params);
+        const Json* posPtr = params.get("position");
+        if (!idPtr) return;
+        if (!posPtr) {
+            reply(*idPtr, Json{});
+            return;
+        }
+        const std::string name = wordAt(textFor(uri), posPtr->getInt("line"),
+                                        posPtr->getInt("character"));
+        if (name.empty()) {
+            reply(*idPtr, Json{});
+            return;
+        }
+        // Every project file, plus the current one even when it sits outside the indexed root.
+        std::vector<std::string> files = projectFiles_;
+        bool haveCurrent = false;
+        for (const std::string& f : files) {
+            if (f == uri) haveCurrent = true;
+        }
+        if (!haveCurrent) files.push_back(uri);
+
+        if (method == "textDocument/references") {
+            Json out = Json::makeArray();
+            for (const std::string& f : files) {
+                const std::string body = textFor(f);
+                for (const auto& [line, col] : occurrences(body, name)) {
+                    Json loc = Json::makeObject();
+                    loc.set("uri", Json::of(f));
+                    loc.set("range", range(line, col, col + static_cast<int>(name.size())));
+                    out.push(std::move(loc));
+                }
+            }
+            reply(*idPtr, std::move(out));
+            return;
+        }
+
+        // rename: a WorkspaceEdit grouping the edits per file. The editor applies them atomically,
+        // which is why this returns edits rather than writing files itself.
+        const std::string newName = params.getString("newName");
+        if (newName.empty()) {
+            reply(*idPtr, Json{});
+            return;
+        }
+        Json changes = Json::makeObject();
+        for (const std::string& f : files) {
+            const std::string body = textFor(f);
+            const auto hits = occurrences(body, name);
+            if (hits.empty()) continue;
+            Json edits = Json::makeArray();
+            for (const auto& [line, col] : hits) {
+                Json e = Json::makeObject();
+                e.set("range", range(line, col, col + static_cast<int>(name.size())));
+                e.set("newText", Json::of(newName));
+                edits.push(std::move(e));
+            }
+            changes.set(f, std::move(edits));
+        }
+        Json result = Json::makeObject();
+        result.set("changes", std::move(changes));
+        reply(*idPtr, std::move(result));
+        return;
+    }
     if (method == "textDocument/definition" || method == "textDocument/hover") {
         const std::string uri = uriOf(params);
         const Json* posPtr = params.get("position");
@@ -566,23 +808,46 @@ void Server::handle(const Json& message) {
         const ast::Program program = parser.parse();
         Found hit = findDeclaration(program, name);
         aimAtName(text, name, hit);
+        // Declared in this file? Answer from it. Otherwise consult the workspace index, which is
+        // what makes go-to-definition work across files.
+        std::string targetUri = uri;
+        int targetLine = hit.loc.line - 1;
+        int targetCol = hit.loc.col - 1;
+        std::string detail = hit.detail;
+        std::size_t width = hit.width;
         if (!hit.found) {
-            reply(*idPtr, Json{});   // null: the client falls back to its own search
-            return;
+            const IndexEntry* found = nullptr;
+            for (const IndexEntry& e : index_) {
+                if (e.name == name) {
+                    found = &e;
+                    break;
+                }
+            }
+            if (found == nullptr) {
+                reply(*idPtr, Json{});   // null: the client falls back to its own search
+                return;
+            }
+            targetUri = found->uri;
+            targetLine = found->line;
+            targetCol = found->col;
+            detail = found->detail;
+            width = name.size();
         }
         if (method == "textDocument/definition") {
             Json loc = Json::makeObject();
-            loc.set("uri", Json::of(uri));
-            loc.set("range", pointRange(hit.loc, static_cast<int>(hit.width)));
+            loc.set("uri", Json::of(targetUri));
+            loc.set("range", range(targetLine, targetCol, targetCol + static_cast<int>(width)));
             reply(*idPtr, std::move(loc));
             return;
         }
+        // `detail` -- not hit.detail -- because the declaration may have come from the index rather
+        // than from this file, in which case hit is empty and hovering would show a blank box.
         Json contents = Json::makeObject();
         contents.set("kind", Json::of(std::string("markdown")));
-        contents.set("value", Json::of("```ldp3\n" + hit.detail + "\n```"));
+        contents.set("value", Json::of("```ldp3\n" + detail + "\n```"));
         Json result = Json::makeObject();
         result.set("contents", std::move(contents));
-        result.set("range", pointRange(hit.loc, static_cast<int>(hit.width)));
+        result.set("range", range(targetLine, targetCol, targetCol + static_cast<int>(width)));
         reply(*idPtr, std::move(result));
         return;
     }
