@@ -4391,6 +4391,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # System.SQL's little-endian byte codec round-trips (the CI-safe check for the pure-LDP3 TDS
+        # client; a live query needs a server -- see tests/samples/sql_query.ldp3).
+        add_test(NAME codegen_sql_codec_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sql_codec.ldp3"
+            "-DEXPECTED=65 4660 168496141 Hi"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # A `transient` field resets (does not copy) on a value copy (spec: derived/scratch state).
         add_test(NAME codegen_transient_copy_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

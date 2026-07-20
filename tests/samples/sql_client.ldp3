@@ -1,0 +1,563 @@
+import System.IO.Console;
+import System.Net.Socket;
+import System.Text.StringBuilder;
+import System.Collections.ArrayList;
+
+program SqlClient;
+
+// A pure-LDP3 TDS client (MS-TDS 7.4) talking to SQL Server over a raw TCP socket. No FFI, no TLS
+// (PRELOGIN advertises ENCRYPT_NOT_SUP, so the dev server allows a fully-plaintext session). Proves
+// the protocol end to end before folding into the standard library as System.SQL.
+
+public bundle main {
+    public namespace app {
+
+        // Builds a binary buffer one byte at a time on a StringBuilder (each byte is a char 0..255).
+        // The finished String carries the exact bytes because String is length-prefixed, and the
+        // socket sends its real length rather than stopping at the first null.
+        public class TdsWriter {
+            private mutable StringBuilder sb;
+
+            public constructor TdsWriter() {
+                this.sb = new StringBuilder() on heap;
+            }
+            public destructor ~TdsWriter() returns void {
+                delete this.sb;
+            }
+            public method u8(int v) returns void {
+                this.sb.appendChar(cast<char>(v & 255));
+            }
+            public method u16le(int v) returns void {
+                this.u8(v & 255);
+                this.u8((v >> 8) & 255);
+            }
+            public method u16be(int v) returns void {
+                this.u8((v >> 8) & 255);
+                this.u8(v & 255);
+            }
+            public method u32le(int v) returns void {
+                this.u8(v & 255);
+                this.u8((v >> 8) & 255);
+                this.u8((v >> 16) & 255);
+                this.u8((v >> 24) & 255);
+            }
+            public method ucs2(String s) returns void {
+                mutable int i = 0;
+                while (i < s.length()) {
+                    this.u16le(cast<int>(s.charAt(i)) & 255);
+                    i = i + 1;
+                }
+            }
+            public method raw(String bytes) returns void {
+                mutable int i = 0;
+                while (i < bytes.length()) {
+                    this.u8(cast<int>(bytes.charAt(i)) & 255);
+                    i = i + 1;
+                }
+            }
+            public method build() returns String {
+                return this.sb.toString();
+            }
+        }
+
+        // A forward cursor over a received byte buffer (a String whose chars are bytes 0..255).
+        public class TdsReader {
+            private String data;
+            private mutable int pos;
+
+            public constructor TdsReader(String d) {
+                this.data = d;
+                this.pos = 0;
+            }
+            public method position() returns int {
+                return this.pos;
+            }
+            public method remaining() returns int {
+                return this.data.length() - this.pos;
+            }
+            public method atEnd() returns boolean {
+                return this.pos >= this.data.length();
+            }
+            public method u8() returns int {
+                int v = cast<int>(this.data.charAt(this.pos)) & 255;
+                this.pos = this.pos + 1;
+                return v;
+            }
+            public method u16le() returns int {
+                int lo = this.u8();
+                int hi = this.u8();
+                return lo | (hi << 8);
+            }
+            public method u32le() returns int {
+                int a = this.u8();
+                int b = this.u8();
+                int c = this.u8();
+                int d = this.u8();
+                return a | (b << 8) | (c << 16) | (d << 24);
+            }
+            public method skip(int n) returns void {
+                this.pos = this.pos + n;
+            }
+            // Read n bytes and keep only the low byte of each UTF-16 unit (ASCII/Latin-1 range).
+            public method ucs2(int nbytes) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int end = this.pos + nbytes;
+                while (this.pos + 1 < end + 1 && this.pos + 1 <= this.data.length()) {
+                    if (this.pos + 2 > end) {
+                        this.pos = end;
+                    } else {
+                        int lo = this.u8();
+                        this.u8();                       // high byte (dropped)
+                        sb.appendChar(cast<char>(lo));
+                    }
+                }
+                String out = sb.toString();
+                delete sb;
+                return out;
+            }
+            public method ascii(int nbytes) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < nbytes) {
+                    sb.appendChar(cast<char>(this.u8()));
+                    i = i + 1;
+                }
+                String out = sb.toString();
+                delete sb;
+                return out;
+            }
+        }
+
+        public class Column {
+            public mutable String name;
+            public mutable int typeCode;
+
+            public constructor Column(String n, int t) {
+                this.name = n;
+                this.typeCode = t;
+            }
+        }
+
+        public class Row {
+            public mutable ArrayList<String>* values;
+
+            public constructor Row() {
+                this.values = new ArrayList<String>() on heap;
+            }
+            public destructor ~Row() returns void {
+                delete this.values;
+            }
+            public method get(int i) returns String {
+                return this.values.get(i);
+            }
+            public method size() returns int {
+                return this.values.size();
+            }
+        }
+
+        public class ResultSet {
+            public mutable ArrayList<Column*>* columns;
+            public mutable ArrayList<Row*>* rows;
+            public mutable String error;
+
+            public constructor ResultSet() {
+                this.columns = new ArrayList<Column*>() on heap;
+                this.rows = new ArrayList<Row*>() on heap;
+                this.error = "";
+            }
+            public destructor ~ResultSet() returns void {
+                delete this.columns;
+                delete this.rows;
+            }
+            public method columnCount() returns int {
+                return this.columns.size();
+            }
+            public method rowCount() returns int {
+                return this.rows.size();
+            }
+            public method hasError() returns boolean {
+                return this.error.length() > 0;
+            }
+        }
+
+        public class Connection {
+            private mutable Socket sock;
+            private mutable boolean open;
+
+            public constructor Connection() {
+                this.open = false;
+            }
+
+            public method connect(String host, int port, String user, String password, String database)
+                returns boolean {
+                this.sock = Socket.connect(host, port);
+                if (!this.sock.isOpen()) {
+                    return false;
+                }
+                this.open = true;
+                this.preLogin();
+                return this.login(user, password, database);
+            }
+
+            public method close() returns void {
+                if (this.open) {
+                    this.sock.close();
+                    this.open = false;
+                }
+                return;
+            }
+
+            // Send one TDS message with an 8-byte packet header (single packet, EOM).
+            private method sendPacket(int type, String payload) returns void {
+                mutable TdsWriter h = new TdsWriter() on heap;
+                int total = 8 + payload.length();
+                h.u8(type);
+                h.u8(1);                 // status: EOM
+                h.u16be(total);
+                h.u16be(0);              // SPID
+                h.u8(0);                 // packet id
+                h.u8(0);                 // window
+                h.raw(payload);
+                String pkt = h.build();
+                delete h;
+                this.sock.send(pkt);
+                return;
+            }
+
+            // Receive a full TDS message: accumulate packet bodies (stripping the 8-byte header of
+            // each) until a packet carries the EOM status bit.
+            private method recvMessage() returns String {
+                mutable String buf = "";
+                mutable String body = "";
+                mutable boolean done = false;
+                while (!done) {
+                    while (buf.length() < 8) {
+                        String chunk = this.sock.receive(8192);
+                        if (chunk.length() == 0) {
+                            return body;
+                        }
+                        buf = buf + chunk;
+                    }
+                    int status = cast<int>(buf.charAt(1)) & 255;
+                    int plen = ((cast<int>(buf.charAt(2)) & 255) << 8) | (cast<int>(buf.charAt(3)) & 255);
+                    while (buf.length() < plen) {
+                        String chunk = this.sock.receive(8192);
+                        if (chunk.length() == 0) {
+                            done = true;
+                            break;
+                        }
+                        buf = buf + chunk;
+                    }
+                    if (buf.length() >= plen) {
+                        body = body + buf.substring(8, plen);
+                        buf = buf.substring(plen, buf.length());
+                    }
+                    if ((status & 1) == 1) {
+                        done = true;
+                    }
+                }
+                return body;
+            }
+
+            private method preLogin() returns void {
+                mutable TdsWriter p = new TdsWriter() on heap;
+                // options table: VERSION(0x00) off 11 len 6, ENCRYPTION(0x01) off 17 len 1, TERMINATOR
+                p.u8(0);   p.u16be(11); p.u16be(6);
+                p.u8(1);   p.u16be(17); p.u16be(1);
+                p.u8(255);
+                p.u8(9); p.u8(0); p.u8(0); p.u8(0); p.u8(0); p.u8(0);   // VERSION data
+                p.u8(2);                                                // ENCRYPTION = NOT_SUP
+                String payload = p.build();
+                delete p;
+                this.sendPacket(18, payload);
+                String resp = this.recvMessage();
+                return;
+            }
+
+            private method login(String user, String password, String database) returns boolean {
+                // obfuscated password: UCS2 bytes, each nibble-swapped then XOR 0xA5
+                mutable TdsWriter pw = new TdsWriter() on heap;
+                mutable int pi = 0;
+                while (pi < password.length()) {
+                    int cp = cast<int>(password.charAt(pi)) & 255;
+                    pw.u8(this.obf(cp));
+                    pw.u8(this.obf(0));
+                    pi = pi + 1;
+                }
+                String passEnc = pw.build();
+                delete pw;
+
+                String host = "ldp3host";
+                String app = "LDP3";
+                String server = "localhost";
+                String lib = "LDP3-SQL";
+                int varBase = 94;
+                // variable-data offsets (bytes), each UCS2 field = 2 * chars
+                int oHost = 0;
+                int oUser = oHost + host.length() * 2;
+                int oPass = oUser + user.length() * 2;
+                int oApp = oPass + passEnc.length();
+                int oServer = oApp + app.length() * 2;
+                int oLib = oServer + server.length() * 2;
+                int oDb = oLib + lib.length() * 2;
+
+                mutable TdsWriter b = new TdsWriter() on heap;
+                b.u32le(0);                 // Length placeholder (patched after)
+                b.u8(4); b.u8(0); b.u8(0); b.u8(116);   // TDS version 7.4 (0x74000004 LE)
+                b.u32le(4096);              // packet size
+                b.u32le(117440512);         // client prog version (0x07000000)
+                b.u32le(100);               // client PID
+                b.u32le(0);                 // connection id
+                b.u8(0); b.u8(0); b.u8(0); b.u8(0);     // option flags 1/2, type, flags3
+                b.u32le(0);                 // client time zone
+                b.u32le(0);                 // client LCID
+                b.u16le(varBase + oHost);   b.u16le(host.length());
+                b.u16le(varBase + oUser);   b.u16le(user.length());
+                b.u16le(varBase + oPass);   b.u16le(password.length());
+                b.u16le(varBase + oApp);    b.u16le(app.length());
+                b.u16le(varBase + oServer); b.u16le(server.length());
+                b.u16le(0);               b.u16le(0);             // unused / extension
+                b.u16le(varBase + oLib);    b.u16le(lib.length());
+                b.u16le(0);               b.u16le(0);             // language
+                b.u16le(varBase + oDb);     b.u16le(database.length());
+                b.u8(0); b.u8(0); b.u8(0); b.u8(0); b.u8(0); b.u8(0);  // client id (MAC)
+                b.u16le(0); b.u16le(0);    // SSPI
+                b.u16le(0); b.u16le(0);    // AtchDBFile
+                b.u16le(0); b.u16le(0);    // ChangePassword
+                b.u32le(0);                // cbSSPILong
+                // variable data
+                b.ucs2(host);
+                b.ucs2(user);
+                b.raw(passEnc);
+                b.ucs2(app);
+                b.ucs2(server);
+                b.ucs2(lib);
+                b.ucs2(database);
+                String bodyStr = b.build();
+                delete b;
+                // patch total length into the first 4 bytes
+                int total = bodyStr.length();
+                mutable TdsWriter fix = new TdsWriter() on heap;
+                fix.u32le(total);
+                String lenBytes = fix.build();
+                delete fix;
+                String finalBody = lenBytes + bodyStr.substring(4, bodyStr.length());
+                this.sendPacket(16, finalBody);
+                String resp = this.recvMessage();
+                // scan for LOGINACK (0xAD); treat ERROR (0xAA) as failure
+                mutable TdsReader r = new TdsReader(resp) on heap;
+                mutable boolean ok = false;
+                while (!r.atEnd()) {
+                    int tok = r.u8();
+                    if (tok == 173) {          // LOGINACK
+                        ok = true;
+                        int len = r.u16le();
+                        r.skip(len);
+                    } else if (tok == 170 || tok == 171) {   // ERROR / INFO
+                        int len = r.u16le();
+                        r.skip(len);
+                    } else if (tok == 227) {   // ENVCHANGE
+                        int len = r.u16le();
+                        r.skip(len);
+                    } else if (tok == 253 || tok == 254 || tok == 255) {   // DONE*
+                        r.skip(12);
+                    } else {
+                        r.skip(r.remaining());
+                    }
+                }
+                delete r;
+                return ok;
+            }
+
+            private method obf(int b) returns int {
+                int sw = ((b & 15) << 4) | ((b >> 4) & 15);
+                return sw ^ 165;
+            }
+
+            // Run a SQL batch and decode the result set.
+            public method query(String sql) returns ResultSet* {
+                mutable ResultSet* rs = new ResultSet() on heap;
+                mutable TdsWriter b = new TdsWriter() on heap;
+                b.u32le(22);   // ALL_HEADERS total length
+                b.u32le(18);   // header length
+                b.u16le(2);    // header type: transaction descriptor
+                b.u32le(0); b.u32le(0);   // transaction descriptor (8 bytes = 0)
+                b.u32le(1);    // outstanding request count
+                b.ucs2(sql);
+                String payload = b.build();
+                delete b;
+                this.sendPacket(1, payload);
+                String resp = this.recvMessage();
+                this.parseResult(resp, rs);
+                return rs;
+            }
+
+            private method parseResult(String resp, ResultSet* rs) returns void {
+                mutable TdsReader r = new TdsReader(resp) on heap;
+                while (!r.atEnd()) {
+                    int tok = r.u8();
+                    if (tok == 129) {          // COLMETADATA
+                        this.parseColMeta(r, rs);
+                    } else if (tok == 209) {   // ROW
+                        this.parseRow(r, rs);
+                    } else if (tok == 170) {   // ERROR
+                        int len = r.u16le();
+                        int start = r.position();
+                        r.skip(8);
+                        int mlen = r.u16le();
+                        rs.error = r.ucs2(mlen * 2);
+                        r.skip(len - (r.position() - start));
+                    } else if (tok == 171 || tok == 227) {   // INFO / ENVCHANGE
+                        int len = r.u16le();
+                        r.skip(len);
+                    } else if (tok == 253 || tok == 254 || tok == 255) {   // DONE*
+                        r.skip(12);
+                    } else if (tok == 121) {   // RETURNSTATUS
+                        r.skip(4);
+                    } else if (tok == 169) {   // ORDER
+                        int len = r.u16le();
+                        r.skip(len);
+                    } else {
+                        r.skip(r.remaining());
+                    }
+                }
+                delete r;
+                return;
+            }
+
+            private method parseColMeta(TdsReader* r, ResultSet* rs) returns void {
+                int count = r.u16le();
+                mutable int c = 0;
+                while (c < count) {
+                    r.skip(4);                 // usertype
+                    r.skip(2);                 // flags
+                    int typ = r.u8();
+                    if (this.isCharType(typ)) {
+                        r.skip(2);             // max length
+                        r.skip(5);             // collation
+                    } else if (this.isVarType(typ)) {
+                        r.skip(1);             // length in metadata
+                    }
+                    int nameLen = r.u8();      // colname length in chars
+                    String name = r.ucs2(nameLen * 2);
+                    rs.columns.add(new Column(name, typ) on heap);
+                    c = c + 1;
+                }
+                return;
+            }
+
+            private method parseRow(TdsReader* r, ResultSet* rs) returns void {
+                mutable Row* row = new Row() on heap;
+                mutable int c = 0;
+                while (c < rs.columns.size()) {
+                    Column* col = rs.columns.get(c);
+                    int typ = col.typeCode;
+                    row.values.add(this.readValue(r, typ));
+                    c = c + 1;
+                }
+                rs.rows.add(row);
+                return;
+            }
+
+            private method readValue(TdsReader* r, int typ) returns String {
+                if (this.isCharType(typ)) {
+                    int len = r.u16le();
+                    if (len == 65535) {
+                        return "";        // null
+                    }
+                    if (typ == 231 || typ == 239) {   // NVARCHAR / NCHAR
+                        return r.ucs2(len);
+                    }
+                    return r.ascii(len);
+                }
+                if (typ == 56) {                       // INT4 fixed
+                    return this.intStr(r.u32le());
+                }
+                if (typ == 52) {                       // INT2 fixed
+                    int v = r.u16le();
+                    return this.intStr(v);
+                }
+                if (typ == 48) {                       // INT1 fixed
+                    return this.intStr(r.u8());
+                }
+                if (typ == 50) {                       // BIT fixed
+                    return this.intStr(r.u8());
+                }
+                if (typ == 38 || typ == 104) {   // INTN / BITN (little-endian integer, len bytes)
+                    int len = r.u8();
+                    if (len == 0) {
+                        return "";
+                    }
+                    mutable long val = cast<long>(0);
+                    mutable int k = 0;
+                    while (k < len) {
+                        val = val | (cast<long>(r.u8() & 255) << (8 * k));
+                        k = k + 1;
+                    }
+                    return val.toString();
+                }
+                // unknown: best-effort skip one length byte
+                int len = r.u8();
+                r.skip(len);
+                return "?";
+            }
+
+            private method intStr(int v) returns String {
+                return v.toString();
+            }
+            private method isCharType(int typ) returns boolean {
+                return typ == 167 || typ == 175 || typ == 231 || typ == 239;   // BIGVARCHAR/BIGCHAR/NVARCHAR/NCHAR
+            }
+            private method isVarType(int typ) returns boolean {
+                return typ == 38 || typ == 104 || typ == 109 || typ == 110 || typ == 111;   // INTN/BITN/FLTN/MONEYN/DATETIMN
+            }
+        }
+
+        public class Main {
+            public static method run(Connection* db, String sql) returns void {
+                System.IO.Console.println("> " + sql);
+                ResultSet* rs = db.query(sql);
+                if (rs.hasError()) {
+                    System.IO.Console.println("  error: " + rs.error);
+                } else {
+                    System.IO.Console.println("  cols=" + rs.columnCount().toString()
+                                              + " rows=" + rs.rowCount().toString());
+                    mutable int i = 0;
+                    while (i < rs.rowCount()) {
+                        Row* row = rs.rows.get(i);
+                        mutable String line = "";
+                        mutable int j = 0;
+                        while (j < row.size()) {
+                            if (j > 0) {
+                                line = line + " | ";
+                            }
+                            line = line + row.get(j);
+                            j = j + 1;
+                        }
+                        System.IO.Console.println("  row: " + line);
+                        i = i + 1;
+                    }
+                }
+                delete rs;
+                return;
+            }
+            public static method main(string[] args) returns void {
+                mutable Connection* db = new Connection() on heap;
+                boolean ok = db.connect("localhost", 1433, "sa", "1234", "master");
+                if (!ok) {
+                    System.IO.Console.println("connect/login FAILED");
+                    delete db;
+                    return;
+                }
+                System.IO.Console.println("login OK");
+                Main.run(db, "SELECT 1 AS n, 'hi' AS s");
+                Main.run(db, "SELECT CAST(42 AS bigint) AS big, CAST(NULL AS int) AS z, CAST(1 AS bit) AS b");
+                Main.run(db, "SELECT name FROM sys.databases ORDER BY database_id");
+                Main.run(db, "SELECT @@VERSION AS v");
+                db.close();
+                delete db;
+                return;
+            }
+        }
+    }
+}
