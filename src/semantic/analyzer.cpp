@@ -1173,7 +1173,13 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
     pushScope();
     for (const ast::MemberPtr& member : cls.members) {
         const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
-        if (f == nullptr || !f->init) continue;
+        if (f == nullptr) continue;
+        // `transient` marks derived/scratch state, excluded from the object's canonical value (reset,
+        // not copied, on a value copy; and not captured by serialization). `persistent` is the exact
+        // opposite -- state that outlives the instance -- so the pair is a contradiction (spec).
+        if (f->isTransient && f->isPersistent)
+            error("field '" + f->name + "' cannot be both 'transient' and 'persistent'", f->loc);
+        if (!f->init) continue;
         const std::string initType = typeOf(*f->init);
         const std::string ft = typeRefStr(f->type);
         if (!initType.empty() && !isSubtype(initType, ft) && !intLiteralFits(*f->init, ft)) {

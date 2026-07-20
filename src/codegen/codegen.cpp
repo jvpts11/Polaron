@@ -382,6 +382,7 @@ struct ClassLayout {
     std::unordered_set<std::string> volatileFields;  // fields whose accesses are volatile (spec 37.5)
     std::unordered_set<std::string> externalFields;  // `external` fields: associations, not owned (spec 37.1)
     std::unordered_set<std::string> uniqueFields;  // `unique T*` fields: single-owner, so cascade-safe forest edges
+    std::unordered_set<std::string> transientFields;  // `transient` fields: derived/scratch, reset (not copied) on a value copy
     // Lazy class-typed fields (spec 28.4): field name -> deferred initializer. Null in the
     // field means "not yet initialized" (the sentinel), so no extra flag is needed.
     std::unordered_map<std::string, const ast::Expr*> lazyFieldInit;
@@ -2925,6 +2926,16 @@ struct CodeGenerator::Impl {
         if (!copyChain_.insert(className).second) return dest;
         for (const auto& [fname, ftype] : collectFields(className)) {
             const unsigned idx = cit->second.fieldIndex[fname];
+            // A `transient` field is derived/scratch state, not part of the object's canonical value:
+            // a copy begins clean and rebuilds it lazily, rather than inheriting the source's (which
+            // for an owned pointer/String/array would also alias its storage). Reset to the type's
+            // default (null/0), overwriting the shallow memcpy, and skip the deep copy.
+            if (cit->second.transientFields.count(fname) > 0) {
+                llvm::Type* et = st->getElementType(idx);
+                builder.CreateStore(llvm::Constant::getNullValue(et),
+                                    builder.CreateStructGEP(st, dest, idx));
+                continue;
+            }
             llvm::Value* deep = nullptr;
             if (isArrayType(ftype)) {
                 llvm::Value* srcSlot = builder.CreateStructGEP(st, srcPtr, idx);
@@ -10768,6 +10779,7 @@ struct CodeGenerator::Impl {
                                 if (f->isVolatile) layout.volatileFields.insert(f->name);
                                 if (f->isExternal) layout.externalFields.insert(f->name);
                                 if (f->isUnique) layout.uniqueFields.insert(f->name);
+                                if (f->isTransient) layout.transientFields.insert(f->name);
                                 if (f->isLazy && f->init) layout.lazyFieldInit[f->name] = f->init.get();
                             }
                         } else if (const auto* m =
