@@ -1242,6 +1242,27 @@ struct CodeGenerator::Impl {
 
     // Runs a heap object's destructor (virtually, if the class is polymorphic) and
     // frees it. The single lowering used by both `delete` and `cascade delete`.
+    // Release the object's String fields before its block goes away. Copy-on-store gave each field its
+    // own buffer that nothing else can reclaim, so without this every class holding a String leaked it
+    // on destruction (a TreeMap<String,int> kept climbing even after the map itself freed its nodes).
+    // Skipped for unions, whose fields share one storage, and for `external` fields, which are
+    // associations the object does not own.
+    void freeStringFields(llvm::Value* objPtr, const std::string& cn) {
+        auto cit = classes.find(cn);
+        if (cit == classes.end()) return;
+        const ClassLayout& cl = cit->second;
+        if (cl.isUnion || cl.type == nullptr || cl.imported) return;
+        for (const auto& [fname, ftype] : cl.fieldType) {
+            if (ftype != "String") continue;
+            if (cl.externalFields.count(fname) > 0) continue;
+            auto idxIt = cl.fieldIndex.find(fname);
+            if (idxIt == cl.fieldIndex.end()) continue;
+            llvm::Value* slot =
+                builder.CreateStructGEP(cl.type, objPtr, idxIt->second, fname + ".sfree");
+            builder.CreateCall(strFreeFn(), {builder.CreateLoad(builder.getPtrTy(), slot)});
+        }
+    }
+
     void emitDeleteObject(llvm::Value* objPtr, const std::string& cn) {
         // No-UB double-delete guard: a freed pool block's field 0 (the vtable slot) has been overwritten
         // by the free-list link, so the destructor lookup below would call through garbage. Panic first
@@ -1267,11 +1288,13 @@ struct CodeGenerator::Impl {
             builder.CreateCall(dtorTy, fnPtr, {objPtr});
             builder.CreateBr(freeBB);
             builder.SetInsertPoint(freeBB);
+            freeStringFields(objPtr, cn);
             builder.CreateCall(freeFn(), {objPtr});
             return;
         }
         if (cit != classes.end() && cit->second.hasDestructor)
             builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+        freeStringFields(objPtr, cn);
         builder.CreateCall(freeFn(), {objPtr});
     }
 
@@ -6057,7 +6080,7 @@ struct CodeGenerator::Impl {
                 llvm::Value* buf = builder.CreateCall(module.getOrInsertFunction("__ldp3_ipc_recv", ft),
                                                       {fitInt(conn, 64), lenSlot});
                 llvm::Value* len = builder.CreateLoad(i64, lenSlot, "ipc.n");
-                return emitStringFromParts(len, buf);
+                return ownedStr(emitStringFromParts(len, buf));
             }
             if (fn == "close") {
                 llvm::Value* h = emitExpr(*call.args[0]);
@@ -6102,7 +6125,7 @@ struct CodeGenerator::Impl {
                     builder.CreateICmpSLT(n, builder.getInt64(0)), builder.getInt64(0), n);
                 builder.CreateStore(builder.getInt8(0),
                                     builder.CreateGEP(builder.getInt8Ty(), buf, len));  // NUL
-                return emitStringFromParts(len, buf);
+                return ownedStr(emitStringFromParts(len, buf));
             }
             if (fn == "close") {
                 llvm::Value* sock = emitExpr(*call.args[0]);
@@ -6158,7 +6181,7 @@ struct CodeGenerator::Impl {
                     builder.CreateICmpSLT(n, builder.getInt64(0)), builder.getInt64(0), n);
                 builder.CreateStore(builder.getInt8(0),
                                     builder.CreateGEP(builder.getInt8Ty(), buf, len));  // NUL
-                return emitStringFromParts(len, buf);
+                return ownedStr(emitStringFromParts(len, buf));
             }
             if (fn == "udpPeerHost") {  // () -> last datagram's sender IP
                 llvm::FunctionType* ft = llvm::FunctionType::get(p, {}, false);
@@ -6236,7 +6259,7 @@ struct CodeGenerator::Impl {
                 llvm::FunctionType* ft = llvm::FunctionType::get(p, {i64, p}, false);
                 llvm::Value* buf = builder.CreateCall(
                     module.getOrInsertFunction("__ldp3_subproc_read", ft), {fitInt(h, 64), lenSlot});
-                return emitStringFromParts(builder.CreateLoad(i64, lenSlot, "sp.n"), buf);
+                return ownedStr(emitStringFromParts(builder.CreateLoad(i64, lenSlot, "sp.n"), buf));
             }
             if (fn == "isAlive" || fn == "canRead") {
                 llvm::Value* h = emitExpr(*call.args[0]);
@@ -6289,7 +6312,7 @@ struct CodeGenerator::Impl {
                 llvm::FunctionType* ft = llvm::FunctionType::get(p, {i64, p}, false);
                 llvm::Value* buf = builder.CreateCall(
                     module.getOrInsertFunction("__ldp3_conpty_read", ft), {fitInt(h, 64), lenSlot});
-                return emitStringFromParts(builder.CreateLoad(i64, lenSlot, "pty.n"), buf);
+                return ownedStr(emitStringFromParts(builder.CreateLoad(i64, lenSlot, "pty.n"), buf));
             }
             if (fn == "isAlive" || fn == "canRead") {
                 llvm::Value* h = emitExpr(*call.args[0]);
@@ -6327,7 +6350,7 @@ struct CodeGenerator::Impl {
             llvm::FunctionType* ft = llvm::FunctionType::get(p, {p, p}, false);
             llvm::Value* buf = builder.CreateCall(module.getOrInsertFunction("__ldp3_env_get", ft),
                                                   {stringData(nm), lenSlot});
-            return emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot, "ev.n"), buf);
+            return ownedStr(emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot, "ev.n"), buf));
         }
         if (name == "Env.set") {
             llvm::Value* nm = emitExpr(*call.args[0]);
@@ -6347,7 +6370,7 @@ struct CodeGenerator::Impl {
                 builder.CreateCall(module.getOrInsertFunction("__ldp3_executable_path", ft), {});
             llvm::FunctionCallee strlenFn =
                 module.getOrInsertFunction("strlen", llvm::FunctionType::get(i64, {p}, false));
-            return emitStringFromParts(builder.CreateCall(strlenFn, {cstr}, "exe.len"), cstr);
+            return ownedStr(emitStringFromParts(builder.CreateCall(strlenFn, {cstr}, "exe.len"), cstr));
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio helpers.
         if (name.rfind("File.", 0) == 0) {
@@ -6361,7 +6384,7 @@ struct CodeGenerator::Impl {
                 llvm::Value* buf = builder.CreateCall(
                     module.getOrInsertFunction("__ldp3_file_read_all", ft), {stringData(s), lenSlot});
                 llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(), lenSlot, "fr.n");
-                return emitStringFromParts(len, buf);
+                return ownedStr(emitStringFromParts(len, buf));
             }
             if (fn == "writeAll" || fn == "appendAll") {
                 llvm::Value* path = emitExpr(*call.args[0]);
@@ -6389,7 +6412,7 @@ struct CodeGenerator::Impl {
                 llvm::FunctionType* ft = llvm::FunctionType::get(p, {p, p}, false);
                 llvm::Value* buf = builder.CreateCall(
                     module.getOrInsertFunction("__ldp3_dir_list", ft), {stringData(path), lenSlot});
-                return emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot, "dl.n"), buf);
+                return ownedStr(emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot, "dl.n"), buf));
             }
             if (fn == "size") {
                 llvm::Value* path = emitExpr(*call.args[0]);
@@ -6446,7 +6469,10 @@ struct CodeGenerator::Impl {
             builder.CreateCall(memcpyFn(), {buf, src, len});
             builder.CreateStore(builder.getInt8(0),
                                 builder.CreateGEP(builder.getInt8Ty(), buf, len));  // NUL
-            return emitStringFromParts(len, buf);
+            // Owned like every other String producer: this allocation belongs to the expression that
+            // built it, so it has to be tracked or the temporary is never released. StringBuilder
+            // .toString() goes through here, which made every builder-built String leak.
+            return ownedStr(emitStringFromParts(len, buf));
         }
         if (name == "System.Concurrency.__chanNew") {  // used by the Channel prelude class
             llvm::Value* cap = emitExpr(*call.args[0]);
@@ -6483,7 +6509,7 @@ struct CodeGenerator::Impl {
                     llvm::FunctionType::get(builder.getPtrTy(), {builder.getPtrTy()}, false);
                 llvm::Value* buf = builder.CreateCall(
                     module.getOrInsertFunction("ldp3_read_line", ft), {lenSlot}, "line");
-                return emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot), buf);
+                return ownedStr(emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot), buf));
             }
             if (isPrintf || isPrintln || isPrint) {
                 const bool nl = isPrintln;
