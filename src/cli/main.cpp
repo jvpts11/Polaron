@@ -7983,6 +7983,44 @@ R"LDP3(
                 Subproc.kill(this.handle);
             }
         }
+        // A child attached to a pseudo-console (ConPTY on Windows): unlike Subprocess (a plain line pipe),
+        // the child believes it is on a real terminal, so it emits ANSI colour/cursor sequences -- what an
+        // integrated terminal needs to run interactive/full-screen tools. Give the initial size in cells.
+        // Require `import System.OS.Pty;`.
+        public class Pty {
+            private mutable long handle;
+            private constructor Pty(long h) {
+                this.handle = h;
+            }
+            public static method start(String command, int cols, int rows) returns Pty {
+                return new Pty(Conpty.spawn(command, cols, rows)) on heap;
+            }
+            public method isValid() returns boolean {
+                return this.handle != cast<long>(0);
+            }
+            public method write(String data) returns int {
+                return Conpty.writeStr(this.handle, data);
+            }
+            // The next available chunk of the child's output (raw, ANSI included). Empty when nothing is ready.
+            public method read() returns String {
+                return Conpty.readChunk(this.handle);
+            }
+            public method canRead() returns boolean {
+                return Conpty.canRead(this.handle);
+            }
+            public method isAlive() returns boolean {
+                return Conpty.isAlive(this.handle);
+            }
+            // Tell the pseudo-console the viewport changed size (cells), so the child re-wraps its output.
+            public method resize(int cols, int rows) returns void {
+                Conpty.resize(this.handle, cols, rows);
+                return;
+            }
+            public method close() returns void {
+                Conpty.close(this.handle);
+                return;
+            }
+        }
     }
     public namespace System.Security {
         // A cryptographically secure random source (spec 34): 64 bits per draw from the OS CSPRNG,

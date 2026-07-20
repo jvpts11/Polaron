@@ -2247,6 +2247,13 @@ struct CodeGenerator::Impl {
                 if (sc == "Subproc.isAlive" || sc == "Subproc.canRead") return "boolean";
                 if (sc == "Subproc.closeStdin" || sc == "Subproc.kill") return "void";
             }
+            if (const std::string pc = flattenCallee(*call->callee); pc.rfind("Conpty.", 0) == 0) {
+                if (pc == "Conpty.spawn") return "long";
+                if (pc == "Conpty.writeStr") return "int";
+                if (pc == "Conpty.readChunk") return "String";
+                if (pc == "Conpty.isAlive" || pc == "Conpty.canRead") return "boolean";
+                if (pc == "Conpty.resize" || pc == "Conpty.close") return "void";
+            }
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("File.", 0) == 0) {
                 if (fc == "File.readAll" || fc == "File.list") return "String";  // spec 34.4
                 if (fc == "File.size") return "long";
@@ -6246,6 +6253,68 @@ struct CodeGenerator::Impl {
                     fn == "closeStdin" ? "__ldp3_subproc_close_stdin" : "__ldp3_subproc_close";
                 llvm::FunctionType* ft = llvm::FunctionType::get(builder.getVoidTy(), {i64}, false);
                 builder.CreateCall(module.getOrInsertFunction(sym, ft), {fitInt(h, 64)});
+                return nullptr;
+            }
+        }
+        // Pseudo-console for the integrated terminal: low-level builtins behind System.OS.Pty. Handle is a
+        // long (the runtime's LdpPty pointer). See runtime/ldp3_rt.cpp __ldp3_conpty_*.
+        if (name.rfind("Conpty.", 0) == 0) {
+            const std::string fn = name.substr(7);
+            llvm::Type* p = builder.getPtrTy();
+            llvm::Type* i64 = builder.getInt64Ty();
+            llvm::Type* i32 = builder.getInt32Ty();
+            if (fn == "spawn") {
+                llvm::Value* cmd = emitExpr(*call.args[0]);
+                llvm::Value* cols = emitExpr(*call.args[1]);
+                llvm::Value* rows = emitExpr(*call.args[2]);
+                if (cmd == nullptr || cols == nullptr || rows == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {p, i32, i32}, false);
+                return builder.CreateCall(module.getOrInsertFunction("__ldp3_conpty_spawn", ft),
+                                          {stringData(cmd), fitInt(cols, 32), fitInt(rows, 32)});
+            }
+            if (fn == "writeStr") {
+                llvm::Value* h = emitExpr(*call.args[0]);
+                llvm::Value* data = emitExpr(*call.args[1]);
+                if (h == nullptr || data == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64, p, i64}, false);
+                llvm::Value* n = builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_conpty_write", ft),
+                    {fitInt(h, 64), stringData(data), stringLen(data)});
+                return builder.CreateTrunc(n, i32);
+            }
+            if (fn == "readChunk") {
+                llvm::Value* h = emitExpr(*call.args[0]);
+                if (h == nullptr) return nullptr;
+                llvm::Value* lenSlot = createEntryAlloca("pty.len", i64);
+                llvm::FunctionType* ft = llvm::FunctionType::get(p, {i64, p}, false);
+                llvm::Value* buf = builder.CreateCall(
+                    module.getOrInsertFunction("__ldp3_conpty_read", ft), {fitInt(h, 64), lenSlot});
+                return emitStringFromParts(builder.CreateLoad(i64, lenSlot, "pty.n"), buf);
+            }
+            if (fn == "isAlive" || fn == "canRead") {
+                llvm::Value* h = emitExpr(*call.args[0]);
+                if (h == nullptr) return nullptr;
+                const char* sym =
+                    fn == "canRead" ? "__ldp3_conpty_can_read" : "__ldp3_conpty_alive";
+                llvm::FunctionType* ft = llvm::FunctionType::get(i32, {i64}, false);
+                return builder.CreateCall(module.getOrInsertFunction(sym, ft), {fitInt(h, 64)});
+            }
+            if (fn == "resize") {
+                llvm::Value* h = emitExpr(*call.args[0]);
+                llvm::Value* cols = emitExpr(*call.args[1]);
+                llvm::Value* rows = emitExpr(*call.args[2]);
+                if (h == nullptr || cols == nullptr || rows == nullptr) return nullptr;
+                llvm::FunctionType* ft =
+                    llvm::FunctionType::get(builder.getVoidTy(), {i64, i32, i32}, false);
+                builder.CreateCall(module.getOrInsertFunction("__ldp3_conpty_resize", ft),
+                                   {fitInt(h, 64), fitInt(cols, 32), fitInt(rows, 32)});
+                return nullptr;
+            }
+            if (fn == "close") {
+                llvm::Value* h = emitExpr(*call.args[0]);
+                if (h == nullptr) return nullptr;
+                llvm::FunctionType* ft = llvm::FunctionType::get(builder.getVoidTy(), {i64}, false);
+                builder.CreateCall(module.getOrInsertFunction("__ldp3_conpty_close", ft), {fitInt(h, 64)});
                 return nullptr;
             }
         }
