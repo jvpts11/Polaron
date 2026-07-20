@@ -1,0 +1,42 @@
+import System.Text.StringBuilder;
+import System.IO.Console;
+
+program StringBuilderLifetime;
+
+// A StringBuilder owns a raw Memory.alloc buffer that only its destructor can reclaim, and toString()
+// hands back a String the caller owns. This exercises every path where those run -- an explicit
+// delete, a scope exit with no delete, and a thousand short-lived builders -- so that a double free
+// or a use-after-free surfaces as a crash here instead of as silent corruption in a real program.
+// Prints: s=abc scoped=6 total=3890.
+public bundle main {
+    public namespace app {
+        public class Main {
+            // Goes out of scope without an explicit delete: the scope cleanup has to free the buffer.
+            private static method scoped() returns int {
+                StringBuilder sb = new StringBuilder();
+                sb.append("scoped");
+                return sb.length();
+            }
+            public static method main(string[] args) returns void {
+                StringBuilder a = new StringBuilder() on heap;
+                a.append("ab");
+                a.appendChar('c');
+                String s = a.toString();      // the String must outlive the builder
+                delete a;
+
+                mutable int total = 0;
+                mutable int i = 0;
+                while (i < 1000) {
+                    StringBuilder t = new StringBuilder() on heap;
+                    t.append("x");
+                    t.appendInt(i);
+                    total = total + t.toString().length();
+                    delete t;
+                    i = i + 1;
+                }
+                System.IO.Console.printf("s=%s scoped=%d total=%d\n", s, Main.scoped(), total);
+                return;
+            }
+        }
+    }
+}

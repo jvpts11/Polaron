@@ -4637,6 +4637,28 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # StringBuilder lifetime: the destructor that reclaims its raw buffer must run on an explicit
+        # delete AND on scope exit, and toString()'s result must outlive the builder. Guards the fix
+        # for the leak where the builder had no destructor at all -- a double free crashes this.
+        add_test(NAME codegen_stringbuilder_lifetime_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/stringbuilder_lifetime.ldp3"
+            "-DEXPECTED=s=abc scoped=6 total=3890"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Collection lifetime: every collection's destructor reclaims its backing -- an array for most,
+        # a node chain or tree for the rest -- and String elements are released with it. Guards the fix
+        # for nine collections that had no destructor at all; a double free crashes this.
+        add_test(NAME codegen_collection_lifetime_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/collection_lifetime.ldp3"
+            "-DEXPECTED=sizes=4000 ok=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Collections of class-typed elements (ArrayList<Class>, HashMap<K,Object>) -- regression.
         add_test(NAME codegen_object_collections_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

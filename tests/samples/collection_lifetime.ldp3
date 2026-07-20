@@ -1,0 +1,94 @@
+import System.Collections.ArrayList;
+import System.Collections.HashMap;
+import System.Collections.HashSet;
+import System.Collections.Stack;
+import System.Collections.Queue;
+import System.Collections.Deque;
+import System.Collections.PriorityQueue;
+import System.Collections.LinkedList;
+import System.Collections.TreeMap;
+import System.Collections.TreeSet;
+import System.IO.Console;
+
+program CollectionLifetime;
+
+// Every collection owns its backing -- an array for most, a node chain or tree for the rest -- and its
+// destructor is the only thing that reclaims it. This creates and deletes each kind, with String keys
+// so the element Strings are released too, and reads each one before dropping it. A double free or a
+// use-after-free in any of those destructors crashes here rather than corrupting a real program.
+// Prints: sizes=2,2,2,2,2,2,2,2,2,2 ok=1.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int n = 0;
+                mutable int rounds = 0;
+                while (rounds < 200) {
+                    ArrayList<String>* list = new ArrayList<String>() on heap;
+                    list.add("alpha");
+                    list.add("beta");
+                    n = n + list.size();
+                    delete list;
+
+                    HashMap<String, int>* map = new HashMap<String, int>() on heap;
+                    map.put("alpha", 1);
+                    map.put("beta", 2);
+                    n = n + map.size();
+                    delete map;
+
+                    HashSet<String>* set = new HashSet<String>() on heap;
+                    set.add("alpha");
+                    set.add("beta");
+                    n = n + set.size();
+                    delete set;
+
+                    Stack<int>* stack = new Stack<int>() on heap;
+                    stack.push(1);
+                    stack.push(2);
+                    n = n + stack.size();
+                    delete stack;
+
+                    Queue<int>* queue = new Queue<int>() on heap;
+                    queue.enqueue(1);
+                    queue.enqueue(2);
+                    n = n + queue.size();
+                    delete queue;
+
+                    Deque<int>* deque = new Deque<int>() on heap;
+                    deque.addLast(1);
+                    deque.addLast(2);
+                    n = n + deque.size();
+                    delete deque;
+
+                    PriorityQueue<int>* pq = new PriorityQueue<int>() on heap;
+                    pq.add(2);
+                    pq.add(1);
+                    n = n + pq.size();
+                    delete pq;
+
+                    LinkedList<String>* linked = new LinkedList<String>() on heap;
+                    linked.add("alpha");
+                    linked.add("beta");
+                    n = n + linked.size();
+                    delete linked;
+
+                    TreeMap<String, int>* tree = new TreeMap<String, int>() on heap;
+                    tree.put("alpha", 1);
+                    tree.put("beta", 2);
+                    n = n + tree.size();
+                    delete tree;
+
+                    TreeSet<String>* tset = new TreeSet<String>() on heap;
+                    tset.add("alpha");
+                    tset.add("beta");
+                    n = n + tset.size();
+                    delete tset;
+
+                    rounds = rounds + 1;
+                }
+                System.IO.Console.printf("sizes=%d ok=%d\n", n, n == 4000 ? 1 : 0);
+                return;
+            }
+        }
+    }
+}
