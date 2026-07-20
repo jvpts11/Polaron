@@ -2932,6 +2932,12 @@ struct CodeGenerator::Impl {
             } else if (isClassValue(ftype) && isCopyDiscipline(ftype)) {
                 llvm::Value* srcSlot = builder.CreateStructGEP(st, srcPtr, idx);
                 deep = emitClassCopy(ftype, builder.CreateLoad(builder.getPtrTy(), srcSlot), heap);
+            } else if (ftype == "String") {
+                // A String field is owned storage like an array is, so the copy needs its own buffer.
+                // Sharing it made the two objects' lifetimes depend on each other: whichever died first
+                // took the other's text with it (null-safe -- the helper passes null through).
+                llvm::Value* srcSlot = builder.CreateStructGEP(st, srcPtr, idx);
+                deep = emitStringCopy(builder.CreateLoad(builder.getPtrTy(), srcSlot));
             }
             if (deep != nullptr) builder.CreateStore(deep, builder.CreateStructGEP(st, dest, idx));
         }
@@ -2953,6 +2959,9 @@ struct CodeGenerator::Impl {
             llvm::Value* slot = builder.CreateStructGEP(st, ptr, idx);
             if (isArrayType(ftype)) {
                 builder.CreateCall(freeFn(), {builder.CreateLoad(builder.getPtrTy(), slot)});
+            } else if (ftype == "String") {
+                // Symmetric with emitClassCopy: the copy owns its String, so the overwrite releases it.
+                builder.CreateCall(strFreeFn(), {builder.CreateLoad(builder.getPtrTy(), slot)});
             } else if (isClassValue(ftype) && isCopyDiscipline(ftype)) {
                 llvm::Value* sub = builder.CreateLoad(builder.getPtrTy(), slot);
                 llvm::Value* isNull = builder.CreateICmpEQ(

@@ -1,0 +1,50 @@
+import System.Collections.ArrayList;
+import System.IO.Console;
+
+program ValueCopyStringField;
+
+// Copying a value object has to duplicate its String fields, exactly as it duplicates array fields:
+// a String field is owned storage, not a borrowed view. When the copy shared the pointer, the two
+// objects' lifetimes became entangled -- whichever died first took the other's text with it.
+// The shape that exposed it is the common one: a container of value elements fed with
+// `add(new T(...) on heap)`, where the heap temporary is released after the call while the container
+// keeps a copy. Reading the elements back afterwards must still give the original text.
+// Prints: count=5 total=75 first=snapshot body 0 survived.
+public bundle main {
+    public namespace app {
+        public class Snap {
+            public mutable String text;
+            public mutable int row;
+            public constructor Snap(String t, int r) {
+                this.text = t;
+                this.row = r;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<Snap>* snaps = new ArrayList<Snap>() on heap;
+                mutable int i = 0;
+                while (i < 5) {
+                    snaps.add(new Snap("snapshot body " + i.toString(), i) on heap);
+                    i = i + 1;
+                }
+                mutable int total = 0;
+                mutable int k = 0;
+                while (k < snaps.size()) {
+                    total = total + snaps.get(k).text.length();
+                    k = k + 1;
+                }
+                System.IO.Console.printf("count=%d total=%d first=%s ", snaps.size(), total,
+                                         snaps.get(0).text);
+                delete snaps;
+
+                // Plain value copy: the two objects must own separate text after the assignment.
+                Snap a = new Snap("independent", 1);
+                Snap b = a;
+                b.row = 2;
+                System.IO.Console.printf("copy=%s/%s survived\n", a.text, b.text);
+                return;
+            }
+        }
+    }
+}
