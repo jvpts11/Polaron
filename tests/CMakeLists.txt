@@ -4659,6 +4659,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Value copy duplicates String fields, as it already did array fields. Sharing them entangled
+        # the objects' lifetimes: `add(new T(...) on heap)` released the temporary's text while the
+        # stored copy still pointed at it (read-back garbage, then a double free).
+        add_test(NAME codegen_value_copy_string_field_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/value_copy_string_field.ldp3"
+            "-DEXPECTED=count=5 total=75 first=snapshot body 0 copy=independent/independent survived"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Collections of class-typed elements (ArrayList<Class>, HashMap<K,Object>) -- regression.
         add_test(NAME codegen_object_collections_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
