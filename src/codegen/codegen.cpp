@@ -4825,9 +4825,19 @@ struct CodeGenerator::Impl {
         };
         const bool javaEnumCmp = javaEnums.count(baseType(lt)) > 0 || javaEnums.count(baseType(rt)) > 0;
         if (javaEnumCmp && op != "==" && op != "!=") {
-            error("ordering comparison '" + op + "' is not supported on Java-style enum values; "
-                  "use == / != or compare a field",
-                  bin.loc);
+            // Order Java-style enums by ordinal (declaration order), matching Java's compareTo. Both
+            // sides are the same enum for a well-typed program; recover each value's ordinal from its
+            // singleton identity and compare those.
+            const std::string en = javaEnums.count(baseType(lt)) > 0 ? baseType(lt) : baseType(rt);
+            llvm::Value* oa = emitJavaEnumOrdinal(l, en);
+            llvm::Value* ob = emitJavaEnumOrdinal(r, en);
+            llvm::Value* cmp = nullptr;
+            if (op == "<") cmp = builder.CreateICmpSLT(oa, ob);
+            else if (op == ">") cmp = builder.CreateICmpSGT(oa, ob);
+            else if (op == "<=") cmp = builder.CreateICmpSLE(oa, ob);
+            else if (op == ">=") cmp = builder.CreateICmpSGE(oa, ob);
+            if (cmp != nullptr) return builder.CreateZExt(cmp, builder.getInt32Ty());
+            error("unsupported comparison '" + op + "' on Java-style enum values", bin.loc);
             return nullptr;
         }
         if ((op == "==" || op == "!=") && (isPtrish(lt) || isPtrish(rt))) {
@@ -5264,6 +5274,36 @@ struct CodeGenerator::Impl {
     // refinement (would need a global + eager init).
     // A Java-style enum constant is a singleton (spec 12.2): the instance is built once into a
     // private global on first use and reused after, so `==`/`!=` are correct identity comparisons.
+    // The private global caching a Java-style enum constant's singleton (null until first use).
+    // Shared by constant materialization and ordinal recovery so both name the same slot.
+    llvm::GlobalVariable* enumSingletonGlobal(const std::string& enumName, const std::string& constName) {
+        const std::string gname = enumName + "." + constName + ".__inst";
+        if (staticGlobals.count(gname) == 0) {
+            staticGlobals[gname] = new llvm::GlobalVariable(
+                module, builder.getPtrTy(), /*isConstant=*/false,
+                llvm::GlobalValue::PrivateLinkage,
+                llvm::ConstantPointerNull::get(builder.getPtrTy()), gname);
+        }
+        return staticGlobals[gname];
+    }
+
+    // The ordinal (declaration index) of a Java-style enum value at runtime. Each constant is a
+    // cached singleton, so identity against each singleton recovers the index -- the basis for
+    // ordering comparisons (spec 12.2: enum order is declaration order, like Java's compareTo).
+    // Yields -1 for a value that matches no constant (e.g. null), which orders below every constant.
+    llvm::Value* emitJavaEnumOrdinal(llvm::Value* v, const std::string& enumName) {
+        llvm::Value* ord = builder.getInt32(-1);
+        auto eit = enums.find(enumName);
+        if (eit == enums.end()) return ord;
+        for (std::size_t i = 0; i < eit->second.size(); ++i) {
+            llvm::GlobalVariable* g = enumSingletonGlobal(enumName, eit->second[i]);
+            llvm::Value* cur = builder.CreateLoad(builder.getPtrTy(), g, "enum.ord.cur");
+            llvm::Value* eq = builder.CreateICmpEQ(v, cur);
+            ord = builder.CreateSelect(eq, builder.getInt32(static_cast<int>(i)), ord, "enum.ord");
+        }
+        return ord;
+    }
+
     llvm::Value* emitEnumConstant(const ast::EnumDecl& en, const std::string& constName) {
         auto pos = std::find(en.constants.begin(), en.constants.end(), constName);
         if (pos == en.constants.end()) {
@@ -5273,14 +5313,7 @@ struct CodeGenerator::Impl {
         const std::size_t idx = static_cast<std::size_t>(pos - en.constants.begin());
         auto cit = classes.find(en.name);
         if (cit == classes.end()) return nullptr;
-        const std::string gname = en.name + "." + constName + ".__inst";
-        if (staticGlobals.count(gname) == 0) {
-            staticGlobals[gname] = new llvm::GlobalVariable(
-                module, builder.getPtrTy(), /*isConstant=*/false,
-                llvm::GlobalValue::PrivateLinkage,
-                llvm::ConstantPointerNull::get(builder.getPtrTy()), gname);
-        }
-        llvm::GlobalVariable* g = staticGlobals[gname];
+        llvm::GlobalVariable* g = enumSingletonGlobal(en.name, constName);
         llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
         llvm::Value* cur = builder.CreateLoad(builder.getPtrTy(), g, "enum.cur");
         llvm::Function* fn = currentFn;

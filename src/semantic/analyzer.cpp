@@ -966,6 +966,7 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                                       en.name + "'",
                                   en.loc);
                 enums_[en.name] = en.constants;
+                if (en.isJavaStyle) javaEnums_.insert(en.name);
                 if (!en.extendsCatalogs.empty()) enumCatalogs_[en.name] = en.extendsCatalogs;
                 // Methods declared on the enum (e.g. catalog method impls) -- recorded so
                 // `value.method()` resolves and the bodies get type-checked.
@@ -3317,7 +3318,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return intBits(lt) >= intBits(rt) ? lt : rt;
         }
         if (op == "<" || op == ">" || op == "<=" || op == ">=") {
-            if ((!lt.empty() && !numOk(lt)) || (!rt.empty() && !numOk(rt))) {
+            // Java-style enums order by ordinal (spec 12.2), like Java's compareTo: allow ordering when
+            // both sides are the same such enum.
+            const bool sameJavaEnum = baseType(lt) == baseType(rt) && javaEnums_.count(baseType(lt)) > 0;
+            if (!sameJavaEnum &&
+                ((!lt.empty() && !numOk(lt)) || (!rt.empty() && !numOk(rt)))) {
                 error("operator '" + op + "' requires numeric operands", bin->loc);
             }
             return "boolean";

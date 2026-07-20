@@ -241,6 +241,7 @@ private:
     EntryPoint entry_;
     std::unordered_map<std::string, ClassInfo> classes_;
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants
+    std::unordered_set<std::string> javaEnums_;  // enums with fields/methods (spec 12.2), orderable by ordinal
     // `newtype Name = Underlying;` (spec 24): a distinct nominal type. Maps the newtype name to its
     // underlying type. Distinct for type-checking (no implicit conversion either way), but shares
     // the underlying's representation (codegen) and casts freely to/from it.
