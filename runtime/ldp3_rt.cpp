@@ -9,6 +9,12 @@
 #endif
 #define _CRT_RAND_S              // enables rand_s (cryptographically secure RNG, spec 34)
 #define WIN32_LEAN_AND_MEAN
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00        // Windows 10 -- required to declare the ConPTY API (the pty terminal)
+#endif
+#ifndef NTDDI_VERSION
+#define NTDDI_VERSION 0x0A000006   // NTDDI_WIN10_RS5 -- CreatePseudoConsole/HPCON need RS5 or later
+#endif
 #include <winsock2.h>   // must precede <windows.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -1817,6 +1823,145 @@ void __ldp3_subproc_close(long long h) {
     if (waitpid(s->pid, &status, WNOHANG) == 0) { kill(-s->pid, SIGTERM); waitpid(s->pid, &status, 0); }
     free(s);
 }
+#endif
+
+// ---- Pseudo-console for the integrated terminal (spec 34): the child runs attached to a real console
+// (ConPTY on Windows), so it emits the ANSI colour/cursor sequences an IDE terminal parses, rather than
+// the plain line pipe a normal subprocess gets. The handle is an opaque pointer returned as an i64. ----
+#ifdef _WIN32
+struct LdpPty {
+    HPCON hpc;
+    HANDLE proc;
+    HANDLE toChild;    // our write end -> the child's input
+    HANDLE fromChild;  // our read end  <- the child's output
+    HANDLE ptyIn;      // the pseudoconsole's input read end -- kept open for the console's lifetime
+    HANDLE ptyOut;     // the pseudoconsole's output write end -- ditto (closing it early stops output)
+};
+extern "C" long long __ldp3_conpty_spawn(const char* cmdline, int cols, int rows) {
+    HANDLE inRead = NULL, inWrite = NULL, outRead = NULL, outWrite = NULL;
+    if (!CreatePipe(&inRead, &inWrite, NULL, 0)) return 0;
+    if (!CreatePipe(&outRead, &outWrite, NULL, 0)) {
+        CloseHandle(inRead); CloseHandle(inWrite);
+        return 0;
+    }
+    COORD size;
+    size.X = (SHORT)(cols > 0 ? cols : 80);
+    size.Y = (SHORT)(rows > 0 ? rows : 25);
+    HPCON hpc = NULL;
+    HRESULT hr = CreatePseudoConsole(size, inRead, outWrite, 0, &hpc);
+    if (FAILED(hr)) {
+        CloseHandle(inRead); CloseHandle(outWrite);
+        CloseHandle(inWrite); CloseHandle(outRead);
+        return 0;
+    }
+    // Keep inRead/outWrite open: the pseudoconsole writes the child's rendered output to outWrite for the
+    // console's whole lifetime, so closing it here would cut the output off after the initial bytes.
+    STARTUPINFOEXA si;
+    ZeroMemory(&si, sizeof(si));
+    si.StartupInfo.cb = sizeof(si);
+    SIZE_T bytes = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &bytes);
+    si.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(bytes);
+    if (si.lpAttributeList == NULL
+        || !InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &bytes)
+        || !UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                                      hpc, sizeof(hpc), NULL, NULL)) {
+        if (si.lpAttributeList) free(si.lpAttributeList);
+        ClosePseudoConsole(hpc);
+        CloseHandle(inRead); CloseHandle(outWrite);
+        CloseHandle(inWrite); CloseHandle(outRead);
+        return 0;
+    }
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
+    char* mut = _strdup(cmdline);
+    BOOL ok = CreateProcessA(NULL, mut, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT,
+                             NULL, NULL, &si.StartupInfo, &pi);
+    free(mut);
+    DeleteProcThreadAttributeList(si.lpAttributeList);
+    free(si.lpAttributeList);
+    if (!ok) {
+        ClosePseudoConsole(hpc);
+        CloseHandle(inRead); CloseHandle(outWrite);
+        CloseHandle(inWrite); CloseHandle(outRead);
+        return 0;
+    }
+    CloseHandle(pi.hThread);
+    LdpPty* p = (LdpPty*)malloc(sizeof(LdpPty));
+    p->hpc = hpc;
+    p->proc = pi.hProcess;
+    p->toChild = inWrite;
+    p->fromChild = outRead;
+    p->ptyIn = inRead;
+    p->ptyOut = outWrite;
+    return (long long)(intptr_t)p;
+}
+extern "C" long long __ldp3_conpty_write(long long h, const char* data, long long len) {
+    if (h == 0) return -1;
+    LdpPty* p = (LdpPty*)(intptr_t)h;
+    DWORD written = 0;
+    if (!WriteFile(p->toChild, data, (DWORD)len, &written, NULL)) return -1;
+    return (long long)written;
+}
+extern "C" char* __ldp3_conpty_read(long long h, long long* outLen) {
+    *outLen = 0;
+    if (h == 0) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    LdpPty* p = (LdpPty*)(intptr_t)h;
+    DWORD n = 0;
+    char* buf = (char*)malloc(8193);
+    if (!ReadFile(p->fromChild, buf, 8192, &n, NULL) || n == 0) { buf[0] = 0; return buf; }
+    buf[n] = 0;
+    *outLen = (long long)n;
+    return buf;
+}
+extern "C" int __ldp3_conpty_can_read(long long h) {
+    if (h == 0) return 0;
+    LdpPty* p = (LdpPty*)(intptr_t)h;
+    DWORD avail = 0;
+    if (!PeekNamedPipe(p->fromChild, NULL, 0, NULL, &avail, NULL)) return 0;
+    return avail > 0 ? 1 : 0;
+}
+extern "C" int __ldp3_conpty_alive(long long h) {
+    if (h == 0) return 0;
+    LdpPty* p = (LdpPty*)(intptr_t)h;
+    return WaitForSingleObject(p->proc, 0) == WAIT_TIMEOUT ? 1 : 0;
+}
+extern "C" void __ldp3_conpty_resize(long long h, int cols, int rows) {
+    if (h == 0) return;
+    LdpPty* p = (LdpPty*)(intptr_t)h;
+    COORD size;
+    size.X = (SHORT)(cols > 0 ? cols : 80);
+    size.Y = (SHORT)(rows > 0 ? rows : 25);
+    ResizePseudoConsole(p->hpc, size);
+}
+extern "C" void __ldp3_conpty_close(long long h) {
+    if (h == 0) return;
+    LdpPty* p = (LdpPty*)(intptr_t)h;
+    ClosePseudoConsole(p->hpc);   // documented order: close the pseudoconsole first, then the pipes
+    if (p->toChild) CloseHandle(p->toChild);
+    if (p->fromChild) CloseHandle(p->fromChild);
+    if (p->ptyIn) CloseHandle(p->ptyIn);
+    if (p->ptyOut) CloseHandle(p->ptyOut);
+    if (WaitForSingleObject(p->proc, 0) == WAIT_TIMEOUT) TerminateProcess(p->proc, 0);
+    CloseHandle(p->proc);
+    free(p);
+}
+#else
+// POSIX: the pty terminal is a Windows-only feature in Forge today. Stub the builtins so the single-source
+// runtime still links on Linux without pulling in libutil (forkpty). A real pty here is a later slice.
+extern "C" long long __ldp3_conpty_spawn(const char* cmdline, int cols, int rows) {
+    (void)cmdline; (void)cols; (void)rows; return 0;
+}
+extern "C" long long __ldp3_conpty_write(long long h, const char* data, long long len) {
+    (void)h; (void)data; (void)len; return -1;
+}
+extern "C" char* __ldp3_conpty_read(long long h, long long* outLen) {
+    (void)h; *outLen = 0; char* e = (char*)malloc(1); e[0] = 0; return e;
+}
+extern "C" int __ldp3_conpty_can_read(long long h) { (void)h; return 0; }
+extern "C" int __ldp3_conpty_alive(long long h) { (void)h; return 0; }
+extern "C" void __ldp3_conpty_resize(long long h, int cols, int rows) { (void)h; (void)cols; (void)rows; }
+extern "C" void __ldp3_conpty_close(long long h) { (void)h; }
 #endif
 
 // ---- Local time zone (spec 34): the system's current UTC offset in seconds (east positive), including

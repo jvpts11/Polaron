@@ -1329,6 +1329,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     // Subproc: low-level persistent-subprocess builtins behind the System.OS.Subprocess prelude class
     // (bidirectional stdio for the debugger/LSP). Internal -- users go through the Subprocess class.
     typeNamespace_["Subproc"] = "System.OS";
+    // Conpty: low-level pseudo-console builtins behind the System.OS.Pty prelude class (a real terminal for
+    // the IDE). Internal -- users go through the Pty class.
+    typeNamespace_["Conpty"] = "System.OS";
     // reflect (spec 31) is a builtin namespace, not a prelude class; register it so `import reflect;`
     // resolves. Reflection use is gated on this import at the reflect.typeOf call site.
     typeNamespace_["reflect"] = "reflect";
@@ -3839,6 +3842,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (fn == "readChunk") return "String";
             if (fn == "isAlive" || fn == "canRead") return "boolean";
             if (fn == "closeStdin" || fn == "kill") return "void";
+        }
+        // Pseudo-console (the Pty terminal): spawn(cmd,cols,rows) -> handle; writeStr(h,data) -> bytes;
+        // readChunk(h) -> output; isAlive/canRead(h) -> boolean; resize(h,cols,rows)/close(h) -> void.
+        if (name.rfind("Conpty.", 0) == 0) {
+            const std::string fn = name.substr(7);
+            for (const auto& a : call->args) typeOf(*a);
+            if (fn == "spawn") return "long";
+            if (fn == "writeStr") return "int";
+            if (fn == "readChunk") return "String";
+            if (fn == "isAlive" || fn == "canRead") return "boolean";
+            if (fn == "resize" || fn == "close") return "void";
         }
         // File I/O (spec 34.4): static methods lowering to runtime stdio. Require `import System.IO.File;`.
         if (name.rfind("File.", 0) == 0) {
