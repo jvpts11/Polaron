@@ -1,0 +1,110 @@
+import System.IO.Console;
+import System.Text.StringBuilder;
+
+program SqlCodec;
+
+// The little-endian byte codec at the heart of the pure-LDP3 TDS client (tests/samples/sql_client.ldp3):
+// build a binary buffer on a StringBuilder one byte at a time, then read it back with a cursor. This is
+// self-contained (no server) so it can run in CI; the full client needs a reachable SQL Server.
+
+public bundle main {
+    public namespace app {
+
+        public class ByteWriter {
+            private mutable StringBuilder sb;
+
+            public constructor ByteWriter() {
+                this.sb = new StringBuilder() on heap;
+            }
+            public destructor ~ByteWriter() returns void {
+                delete this.sb;
+            }
+            public method u8(int v) returns void {
+                this.sb.appendChar(cast<char>(v & 255));
+            }
+            public method u16le(int v) returns void {
+                this.u8(v & 255);
+                this.u8((v >> 8) & 255);
+            }
+            public method u32le(int v) returns void {
+                this.u8(v & 255);
+                this.u8((v >> 8) & 255);
+                this.u8((v >> 16) & 255);
+                this.u8((v >> 24) & 255);
+            }
+            public method ucs2(String s) returns void {
+                mutable int i = 0;
+                while (i < s.length()) {
+                    this.u16le(cast<int>(s.charAt(i)) & 255);
+                    i = i + 1;
+                }
+            }
+            public method build() returns String {
+                return this.sb.toString();
+            }
+        }
+
+        public class ByteReader {
+            private String data;
+            private mutable int pos;
+
+            public constructor ByteReader(String d) {
+                this.data = d;
+                this.pos = 0;
+            }
+            public method u8() returns int {
+                int v = cast<int>(this.data.charAt(this.pos)) & 255;
+                this.pos = this.pos + 1;
+                return v;
+            }
+            public method u16le() returns int {
+                int lo = this.u8();
+                int hi = this.u8();
+                return lo | (hi << 8);
+            }
+            public method u32le() returns int {
+                int a = this.u8();
+                int b = this.u8();
+                int c = this.u8();
+                int d = this.u8();
+                return a | (b << 8) | (c << 16) | (d << 24);
+            }
+            public method ucs2(int nbytes) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < nbytes) {
+                    int lo = this.u8();
+                    this.u8();
+                    sb.appendChar(cast<char>(lo));
+                    i = i + 2;
+                }
+                String out = sb.toString();
+                delete sb;
+                return out;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ByteWriter* w = new ByteWriter() on heap;
+                w.u8(65);
+                w.u16le(4660);          // 0x1234
+                w.u32le(168496141);     // 0x0A0B0C0D
+                w.ucs2("Hi");
+                String bytes = w.build();
+                delete w;
+
+                mutable ByteReader* r = new ByteReader(bytes) on heap;
+                int a = r.u8();
+                int b = r.u16le();
+                int c = r.u32le();
+                String s = r.ucs2(4);
+                delete r;
+
+                System.IO.Console.println(a.toString() + " " + b.toString() + " "
+                                          + c.toString() + " " + s);
+                return;
+            }
+        }
+    }
+}
