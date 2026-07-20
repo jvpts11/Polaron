@@ -943,6 +943,7 @@ R"LDP3(
             private mutable T[] data;
             private mutable int count;
             public constructor Stack() { this.data = new T[4](); this.count = 0; }
+            public destructor ~Stack() returns void { delete this.data; }
             public method push(T item) returns void {
                 if (this.count >= this.data.length()) {
                     mutable T[] bigger = new T[this.data.length() * 2]();
@@ -972,6 +973,7 @@ R"LDP3(
             private mutable int head;
             private mutable int count;
             public constructor Queue() { this.data = new T[4](); this.head = 0; this.count = 0; }
+            public destructor ~Queue() returns void { delete this.data; }
             public method enqueue(T item) returns void {
                 if (this.count >= this.data.length()) {
                     mutable T[] bigger = new T[this.data.length() * 2]();
@@ -1008,6 +1010,7 @@ R"LDP3(
             private mutable int head;
             private mutable int count;
             public constructor Deque() { this.data = new T[4](); this.head = 0; this.count = 0; }
+            public destructor ~Deque() returns void { delete this.data; }
             private method grow() returns void {
                 if (this.count < this.data.length()) { return; }
                 mutable T[] bigger = new T[this.data.length() * 2]();
@@ -1062,6 +1065,19 @@ R"LDP3(
             private mutable nullable LinkedNode<T>* tail;
             private mutable int count;
             public constructor LinkedList() { this.head = null; this.tail = null; this.count = 0; }
+            // Walk the chain and release every node: nothing else owns them, so without this the whole
+            // list leaked when it was discarded.
+            public destructor ~LinkedList() returns void {
+                mutable nullable LinkedNode<T>* cur = this.head;
+                while (cur != null) {
+                    nullable LinkedNode<T>* nxt = cur.next;
+                    delete cur;
+                    cur = nxt;
+                }
+                this.head = null;
+                this.tail = null;
+                this.count = 0;
+            }
             public method add(T item) returns void {
                 LinkedNode<T>* node = new LinkedNode<T>(item) on heap;
                 if (this.tail == null) { this.head = node; this.tail = node; }
@@ -1119,6 +1135,11 @@ R"LDP3(
                 this.values = new V[8]();
                 this.used = new boolean[8]();
                 this.count = 0;
+            }
+            public destructor ~HashMap() returns void {
+                delete this.keys;
+                delete this.values;
+                delete this.used;
             }
             private method slotFor(K key) returns int {
                 int mask = this.cap - 1;
@@ -1227,6 +1248,10 @@ R"LDP3(
                 this.used = new boolean[8]();
                 this.count = 0;
             }
+            public destructor ~HashSet() returns void {
+                delete this.elems;
+                delete this.used;
+            }
             private method slotFor(T value) returns int {
                 int mask = this.cap - 1;
                 mutable int i = cast<int>(value.hash()) & mask;
@@ -1302,6 +1327,20 @@ R"LDP3(
             private mutable nullable TreeNode<K, V>* root;
             private mutable int count;
             public constructor TreeMap() { this.root = null; this.count = 0; }
+            // Post-order release: children before the parent, so no node is read after it is freed.
+            public destructor ~TreeMap() returns void {
+                this.freeSubtree(this.root);
+                this.root = null;
+                this.count = 0;
+            }
+            private method freeSubtree(nullable TreeNode<K, V>* n) returns void {
+                if (n == null) {
+                    return;
+                }
+                this.freeSubtree(n.left);
+                this.freeSubtree(n.right);
+                delete n;
+            }
             public method put(K key, V value) returns void {
                 this.root = this.insertNode(this.root, key, value);
             }
@@ -1481,6 +1520,20 @@ R"LDP3(
             private mutable nullable TreeSetNode<T>* root;
             private mutable int count;
             public constructor TreeSet() { this.root = null; this.count = 0; }
+            // Post-order release: children before the parent, so no node is read after it is freed.
+            public destructor ~TreeSet() returns void {
+                this.freeSubtree(this.root);
+                this.root = null;
+                this.count = 0;
+            }
+            private method freeSubtree(nullable TreeSetNode<T>* n) returns void {
+                if (n == null) {
+                    return;
+                }
+                this.freeSubtree(n.left);
+                this.freeSubtree(n.right);
+                delete n;
+            }
             public method add(T value) returns void {
                 this.root = this.insertNode(this.root, value);
             }
@@ -1570,6 +1623,7 @@ R"LDP3(
             private mutable T[] heap;
             private mutable int count;
             public constructor PriorityQueue() { this.heap = new T[8](); this.count = 0; }
+            public destructor ~PriorityQueue() returns void { delete this.heap; }
             public method add(T item) returns void {
                 if (this.count >= this.heap.length()) {
                     mutable T[] bigger = new T[this.heap.length() * 2]();
@@ -1625,6 +1679,7 @@ R"LDP3(
                 this.nbits = size;
                 this.words = new int[(size + 31) / 32]();
             }
+            public destructor ~Bitset() returns void { delete this.words; }
             public method set(int i) returns void {
                 this.words[i >> 5] = this.words[i >> 5] | (1 << (i & 31));
                 return;
@@ -3148,6 +3203,15 @@ R"LDP3(
             public method length() returns int { return this.count; }
             public method toString() returns String {
                 return Memory.readString(this.buf, this.count);
+            }
+            // The buffer is raw memory, so nothing else can reclaim it: without this every builder
+            // leaked at least its initial 16 bytes plus whatever it grew to. Guarded and nulled so a
+            // second release (an explicit `delete` followed by scope exit) is harmless.
+            public destructor ~StringBuilder() returns void {
+                if (this.buf != cast<address>(0)) {
+                    Memory.free(this.buf);
+                    this.buf = cast<address>(0);
+                }
             }
         }
         // String utilities that the built-in String type does not carry as methods (spec 4): splitting,
