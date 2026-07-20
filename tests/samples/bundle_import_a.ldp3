@@ -1,0 +1,14 @@
+program BundleImport;
+
+// Part A: a class in namespace `lib` of bundle `main`, used across namespaces by part B via a
+// bundle-first import (`import main.lib.Calc;`).
+public bundle main {
+    public namespace lib {
+        public class Calc {
+            public constructor Calc() {}
+            public method add(int a, int b) returns int {
+                return a + b;
+            }
+        }
+    }
+}

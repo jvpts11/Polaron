@@ -3435,6 +3435,17 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Bundle-first import: `import main.lib.Calc;` names the bundle, and part B (namespace app)
+        # reaches Calc (namespace lib) across namespaces.
+        add_test(NAME codegen_bundle_import_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_import_a.ldp3"
+            "-DINPUT2=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_import_b.ldp3"
+            "-DEXPECTED=sum = 42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # C-style union: fields share storage (write asFloat, read asInt bits).
         add_test(NAME codegen_unions_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

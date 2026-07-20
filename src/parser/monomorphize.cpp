@@ -1362,14 +1362,23 @@ void qualifyNamespaces(ast::Program& program) {
         }
 
     for (auto& b : program.bundles) {
-        // Imported symbols of this bundle: type name -> the namespace it comes from.
-        std::map<std::string, std::string> importNs;
+        // Imported symbols of this bundle: type name -> the namespace(s) it might come from. An import
+        // may name the bundle first (`forge.app.Controller`), so record both the full prefix and the
+        // prefix with its leading bundle segment stripped; the lookup below keeps whichever actually
+        // declares the type.
+        std::map<std::string, std::vector<std::string>> importNs;
         for (auto& imp : b.imports) {
             if (imp.path.size() < 2) continue;
             std::string nsPrefix;
             for (std::size_t i = 0; i + 1 < imp.path.size(); ++i)
                 nsPrefix += (i ? "." : "") + imp.path[i];
-            importNs[imp.path.back()] = nsPrefix;
+            importNs[imp.path.back()].push_back(nsPrefix);
+            if (imp.path.size() >= 3) {
+                std::string afterBundle;
+                for (std::size_t i = 1; i + 1 < imp.path.size(); ++i)
+                    afterBundle += (afterBundle.empty() ? "" : ".") + imp.path[i];
+                importNs[imp.path.back()].push_back(afterBundle);
+            }
         }
         for (auto& ns : b.namespaces) {
             std::set<std::string> ownNames;
@@ -1381,11 +1390,12 @@ void qualifyNamespaces(ast::Program& program) {
             Subst subst;
             for (const std::string& amb : ambiguous) {
                 std::string owner;
-                if (ownNames.count(amb) > 0)
+                if (ownNames.count(amb) > 0) {
                     owner = ns.name;
-                else if (auto it = importNs.find(amb);
-                         it != importNs.end() && declNs[amb].count(it->second) > 0)
-                    owner = it->second;
+                } else if (auto it = importNs.find(amb); it != importNs.end()) {
+                    for (const std::string& cand : it->second)
+                        if (declNs[amb].count(cand) > 0) { owner = cand; break; }
+                }
                 if (!owner.empty()) {
                     subst[amb] = qualified(owner, amb);
                     program.qualifiedTypes.insert(qualified(owner, amb));
