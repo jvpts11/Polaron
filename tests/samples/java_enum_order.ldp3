@@ -1,0 +1,36 @@
+import System.IO.Console;
+program JavaEnumOrder;
+
+// Java-style enum values order by ordinal -- their declaration index (spec 12.2), like Java's
+// compareTo. LOW is 0, MEDIUM is 1, HIGH is 2, so <, >, <= and >= follow that order regardless of
+// each constant's fields.
+
+public bundle main {
+    public namespace app {
+        public enum Priority {
+            LOW(1), MEDIUM(5), HIGH(9);
+
+            private int score;
+
+            public constructor Priority(int score) {
+                this.score = score;
+            }
+
+            public method score() returns int {
+                return this.score;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Priority a = Priority.LOW;
+                Priority b = Priority.HIGH;
+                Priority c = Priority.MEDIUM;
+                // LOW < HIGH, HIGH > MEDIUM, MEDIUM <= MEDIUM, HIGH >= LOW  ->  1 1 1 1
+                System.IO.Console.printf("%d %d %d %d\n",
+                    a < b, b > c, c <= Priority.MEDIUM, b >= a);
+                return;
+            }
+        }
+    }
+}
