@@ -234,6 +234,146 @@ Found findDeclaration(const ast::Program& program, const std::string& name) {
     return out;
 }
 
+// --- extract method -----------------------------------------------------------------------------
+// Pulling lines out into a method is only safe if the new signature is right, and that needs types:
+// a body using locals needs them as typed parameters, and a local it assigns that is read afterwards
+// has to come back as the return value. The server has the parsed method, so it knows those types --
+// which is exactly what an editor guessing from text cannot do.
+//
+// Types come from the AST; which names the selection actually uses is decided by scanning the
+// selected text. That mix is deliberate: walking every expression to collect uses would be a lot of
+// code for little gain, and over-reporting a use only adds a parameter that is passed and ignored,
+// which still compiles. Under-reporting a TYPE would produce code that does not, so types are never
+// guessed.
+
+struct ExtractParam {
+    std::string name;
+    std::string type;
+};
+
+struct ExtractPlan {
+    bool ok = false;
+    std::string reason;                  // why not, when !ok -- shown to the user
+    std::vector<ExtractParam> params;
+    std::string returnType = "void";
+    std::string returnName;              // the local handed back, when there is one
+};
+
+// Does `name` appear as a whole identifier anywhere in `text`?
+bool mentions(const std::string& text, const std::string& name) {
+    if (name.empty()) return false;
+    std::size_t at = text.find(name);
+    while (at != std::string::npos) {
+        const bool leftOk = at == 0 || !isIdentChar(text[at - 1]);
+        const std::size_t end = at + name.size();
+        const bool rightOk = end >= text.size() || !isIdentChar(text[end]);
+        if (leftOk && rightOk) return true;
+        at = text.find(name, at + 1);
+    }
+    return false;
+}
+
+// The [first, last] lines of `text`, 1-based and inclusive.
+std::string linesOf(const std::string& text, int first, int last) {
+    std::string out;
+    int line = 1;
+    std::size_t pos = 0;
+    while (pos <= text.size() && line <= last) {
+        const std::size_t nl = text.find('\n', pos);
+        const std::string row = text.substr(pos, nl == std::string::npos ? std::string::npos
+                                                                         : nl - pos);
+        if (line >= first) out += row + "\n";
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+        ++line;
+    }
+    return out;
+}
+
+// Work out the signature for extracting [startLine, endLine] (1-based) out of whichever method
+// contains them.
+ExtractPlan planExtraction(const ast::Program& program, const std::string& text, int startLine,
+                           int endLine) {
+    ExtractPlan plan;
+    const ast::MethodDecl* owner = nullptr;
+    const ast::ClassDecl* ownerClass = nullptr;
+    int ownerEnd = 0;
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& c : ns.classes) {
+                for (const ast::MemberPtr& mp : c.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(mp.get());
+                    if (m == nullptr || m->body.statements.empty()) continue;
+                    const int first = m->loc.line;
+                    int last = first;
+                    for (const ast::StmtPtr& s : m->body.statements) {
+                        if (s && s->loc.line > last) last = s->loc.line;
+                    }
+                    if (startLine >= first && endLine <= last + 1) {
+                        owner = m;
+                        ownerClass = &c;
+                        ownerEnd = last + 1;
+                    }
+                }
+            }
+        }
+    }
+    if (owner == nullptr) {
+        plan.reason = "the selection is not inside a method body";
+        return plan;
+    }
+
+    const std::string selected = linesOf(text, startLine, endLine);
+    const std::string after = linesOf(text, endLine + 1, ownerEnd);
+
+    // Anything in scope before the selection and used inside it becomes a parameter: the method's
+    // own parameters first, then locals declared above the selection.
+    for (const ast::Param& p : owner->params) {
+        if (mentions(selected, p.name)) plan.params.push_back({p.name, typeText(p.type)});
+    }
+    for (const ast::StmtPtr& s : owner->body.statements) {
+        const auto* v = dynamic_cast<const ast::VarDeclStmt*>(s.get());
+        if (v == nullptr) continue;
+        if (v->loc.line >= startLine) continue;                 // declared after: not in scope yet
+        if (!mentions(selected, v->name)) continue;
+        if (v->isVar) {
+            // `var` records no type, and a parameter cannot be `var`. Refusing beats emitting a
+            // signature that does not compile.
+            plan.reason = "cannot extract: '" + v->name +
+                          "' is declared with var, so its type is not written down";
+            return plan;
+        }
+        plan.params.push_back({v->name, typeText(v->type)});
+    }
+
+    // A local declared inside the selection and still read afterwards has to be returned.
+    std::vector<ExtractParam> escaping;
+    for (const ast::StmtPtr& s : owner->body.statements) {
+        const auto* v = dynamic_cast<const ast::VarDeclStmt*>(s.get());
+        if (v == nullptr) continue;
+        if (v->loc.line < startLine || v->loc.line > endLine) continue;
+        if (!mentions(after, v->name)) continue;
+        if (v->isVar) {
+            plan.reason = "cannot extract: '" + v->name +
+                          "' is declared with var and is used after the selection";
+            return plan;
+        }
+        escaping.push_back({v->name, typeText(v->type)});
+    }
+    if (escaping.size() > 1) {
+        plan.reason = "cannot extract: the selection defines " + std::to_string(escaping.size()) +
+                      " values used afterwards, and a method returns one";
+        return plan;
+    }
+    if (escaping.size() == 1) {
+        plan.returnType = escaping[0].type;
+        plan.returnName = escaping[0].name;
+    }
+    plan.ok = true;
+    (void)ownerClass;
+    return plan;
+}
+
 const char* const kKeywords[] = {
     "program", "bundle", "namespace", "class", "interface", "struct", "record", "union", "enum", "catalog",
     "method", "constructor", "destructor", "returns", "return", "public", "private", "protected", "internal",
@@ -364,6 +504,51 @@ void Server::handle(const Json& message) {
     }
     if (method == "textDocument/completion") {
         if (idPtr) reply(*idPtr, keywordCompletion());
+        return;
+    }
+    // A Forge extension, not standard LSP: given a line range, say what the extracted method's
+    // signature has to be. The editor cannot work this out, because it does not know the types.
+    if (method == "ldp3/extractMethod") {
+        const std::string uri = uriOf(params);
+        if (!idPtr) return;
+        if (documents_.find(uri) == documents_.end()) {
+            reply(*idPtr, Json{});
+            return;
+        }
+        const std::string& text = documents_[uri];
+        Lexer lexer(text, uri);
+        Parser parser(lexer.tokenize(), uri);
+        const ast::Program program = parser.parse();
+        const ExtractPlan plan = planExtraction(program, text, params.getInt("startLine"),
+                                                params.getInt("endLine"));
+        Json result = Json::makeObject();
+        result.set("ok", Json::of(plan.ok));
+        if (!plan.ok) {
+            result.set("reason", Json::of(plan.reason));
+            reply(*idPtr, std::move(result));
+            return;
+        }
+        Json ps = Json::makeArray();
+        std::string paramList;
+        std::string argList;
+        for (std::size_t i = 0; i < plan.params.size(); ++i) {
+            Json p = Json::makeObject();
+            p.set("name", Json::of(plan.params[i].name));
+            p.set("type", Json::of(plan.params[i].type));
+            ps.push(std::move(p));
+            if (i > 0) {
+                paramList += ", ";
+                argList += ", ";
+            }
+            paramList += plan.params[i].type + " " + plan.params[i].name;
+            argList += plan.params[i].name;
+        }
+        result.set("params", std::move(ps));
+        result.set("paramList", Json::of(paramList));
+        result.set("argList", Json::of(argList));
+        result.set("returnType", Json::of(plan.returnType));
+        result.set("returnName", Json::of(plan.returnName));
+        reply(*idPtr, std::move(result));
         return;
     }
     if (method == "textDocument/definition" || method == "textDocument/hover") {
