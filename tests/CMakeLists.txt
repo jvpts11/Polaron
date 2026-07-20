@@ -5045,6 +5045,15 @@ add_executable(ldp3_unit_tests
 target_link_libraries(ldp3_unit_tests PRIVATE ldp3_core ldp3_driver doctest::doctest)
 add_test(NAME unit_tests COMMAND ldp3_unit_tests)
 
+# The language server as a PROCESS: headers, dispatch, and the shape of definition/hover replies.
+# The unit tests cover its JSON layer; this covers what an editor actually talks to. Skipped when no
+# Python is available rather than failing a build that is otherwise fine.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+    add_test(NAME lsp_protocol COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/lsp_probe.py" $<TARGET_FILE:ldp3-lsp>)
+endif()
+
 # The bundle tests build fixed-name .ldb/.ldh artifacts in a shared directory, so they cannot run
 # concurrently with each other under `ctest -j`. A shared resource lock serializes them among themselves
 # while they still overlap the (parallel-safe) codegen tests. The `if(TEST ...)` guard keeps this valid
