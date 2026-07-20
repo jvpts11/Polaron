@@ -92,6 +92,148 @@ Json documentSymbols(const ast::Program& program) {
     return out;
 }
 
+// --- go-to-definition and hover -----------------------------------------------------------------
+// Both answer the same question -- "what is the name under the cursor?" -- so they share one lookup
+// over the parsed file. This resolves against the AST rather than by matching text, so it lands on a
+// declaration rather than on the next occurrence of the same word.
+//
+// SCOPE: the current document only. Resolving across files needs a project-wide index that this
+// server does not build yet, so a name declared elsewhere returns nothing and the editor falls back
+// to its own textual search.
+
+bool isIdentChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+// The identifier at (line, character) in `text`, both 0-based, or "" when the cursor is not on one.
+std::string wordAt(const std::string& text, int line, int character) {
+    std::size_t pos = 0;
+    for (int l = 0; l < line; ++l) {
+        const std::size_t nl = text.find('\n', pos);
+        if (nl == std::string::npos) return "";
+        pos = nl + 1;
+    }
+    const std::size_t lineEnd = text.find('\n', pos);
+    const std::string row = text.substr(pos, lineEnd == std::string::npos ? std::string::npos
+                                                                          : lineEnd - pos);
+    if (character < 0 || static_cast<std::size_t>(character) > row.size()) return "";
+    std::size_t start = static_cast<std::size_t>(character);
+    // A cursor just past the end of a word should still find it, which is where a click usually lands.
+    if (start > 0 && (start == row.size() || !isIdentChar(row[start]))) --start;
+    if (start >= row.size() || !isIdentChar(row[start])) return "";
+    std::size_t end = start;
+    while (start > 0 && isIdentChar(row[start - 1])) --start;
+    while (end + 1 < row.size() && isIdentChar(row[end + 1])) ++end;
+    return row.substr(start, end - start + 1);
+}
+
+std::string typeText(const ast::TypeRef& t) {
+    std::string s = t.name;
+    for (int i = 0; i < t.arrayDims; ++i) s += "[]";
+    if (t.isPointer) s += "*";
+    if (t.isRef) s += "&";
+    if (t.isNullable) s = "nullable " + s;
+    return s;
+}
+
+// The declaration line, as it would be written -- what hover shows.
+std::string methodSignature(const ast::ClassDecl& c, const ast::MethodDecl& m) {
+    std::string s;
+    if (!m.visibility.empty()) s += m.visibility + " ";
+    if (m.isStatic) s += "static ";
+    if (m.isAbstract) s += "abstract ";
+    s += "method " + c.name + "." + m.name + "(";
+    for (std::size_t i = 0; i < m.params.size(); ++i) {
+        if (i > 0) s += ", ";
+        s += typeText(m.params[i].type) + " " + m.params[i].name;
+    }
+    s += ") returns " + typeText(m.returnType);
+    return s;
+}
+
+std::string fieldSignature(const ast::ClassDecl& c, const ast::FieldDecl& f) {
+    std::string s;
+    if (!f.visibility.empty()) s += f.visibility + " ";
+    if (f.isStatic) s += "static ";
+    if (f.isMutable) s += "mutable ";
+    s += typeText(f.type) + " " + c.name + "." + f.name;
+    return s;
+}
+
+// Where `name` is declared in this program, and how to describe it. Found is false when the name is
+// not declared here (a local, an import, or something in another file).
+struct Found {
+    bool found = false;
+    SourceLocation loc;
+    std::string detail;
+    std::size_t width = 1;
+};
+
+// A declaration's `loc` marks where the declaration STARTS (the `method` or `class` keyword), not
+// where its name is. Highlighting that span would underline the wrong word, so the column is nudged
+// to the name itself when it can be found on that line.
+void aimAtName(const std::string& text, const std::string& name, Found& hit) {
+    if (!hit.found || name.empty()) return;
+    std::size_t pos = 0;
+    for (int l = 1; l < hit.loc.line; ++l) {
+        const std::size_t nl = text.find('\n', pos);
+        if (nl == std::string::npos) return;
+        pos = nl + 1;
+    }
+    const std::size_t lineEnd = text.find('\n', pos);
+    const std::string row = text.substr(pos, lineEnd == std::string::npos ? std::string::npos
+                                                                          : lineEnd - pos);
+    const std::size_t at = row.find(name);
+    if (at != std::string::npos) hit.loc.col = static_cast<int>(at) + 1;   // locations are 1-based
+}
+
+Found findDeclaration(const ast::Program& program, const std::string& name) {
+    Found out;
+    if (name.empty()) return out;
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& c : ns.classes) {
+                if (c.name == name) {
+                    out.found = true;
+                    out.loc = c.loc;
+                    out.detail = std::string(c.isInterface ? "interface " : "class ") + c.name;
+                    out.width = c.name.size();
+                    return out;
+                }
+                for (const ast::MemberPtr& mp : c.members) {
+                    if (const auto* m = dynamic_cast<const ast::MethodDecl*>(mp.get())) {
+                        if (m->name == name) {
+                            out.found = true;
+                            out.loc = m->loc;
+                            out.detail = methodSignature(c, *m);
+                            out.width = m->name.size();
+                            return out;
+                        }
+                    } else if (const auto* f = dynamic_cast<const ast::FieldDecl*>(mp.get())) {
+                        if (f->name == name) {
+                            out.found = true;
+                            out.loc = f->loc;
+                            out.detail = fieldSignature(c, *f);
+                            out.width = f->name.size();
+                            return out;
+                        }
+                    }
+                }
+            }
+            for (const ast::EnumDecl& e : ns.enums) {
+                if (e.name == name) {
+                    out.found = true;
+                    out.loc = e.loc;
+                    out.detail = "enum " + e.name;
+                    out.width = e.name.size();
+                    return out;
+                }
+            }
+        }
+    }
+    return out;
+}
+
 const char* const kKeywords[] = {
     "program", "bundle", "namespace", "class", "interface", "struct", "record", "union", "enum", "catalog",
     "method", "constructor", "destructor", "returns", "return", "public", "private", "protected", "internal",
@@ -171,6 +313,8 @@ void Server::handle(const Json& message) {
         Json caps = Json::makeObject();
         caps.set("textDocumentSync", Json::of(1));  // Full
         caps.set("documentSymbolProvider", Json::of(true));
+        caps.set("definitionProvider", Json::of(true));
+        caps.set("hoverProvider", Json::of(true));
         Json completion = Json::makeObject();
         caps.set("completionProvider", std::move(completion));
         Json result = Json::makeObject();
@@ -220,6 +364,41 @@ void Server::handle(const Json& message) {
     }
     if (method == "textDocument/completion") {
         if (idPtr) reply(*idPtr, keywordCompletion());
+        return;
+    }
+    if (method == "textDocument/definition" || method == "textDocument/hover") {
+        const std::string uri = uriOf(params);
+        const Json* posPtr = params.get("position");
+        if (!idPtr) return;
+        if (!posPtr || documents_.find(uri) == documents_.end()) {
+            reply(*idPtr, Json{});
+            return;
+        }
+        const std::string& text = documents_[uri];
+        const std::string name = wordAt(text, posPtr->getInt("line"), posPtr->getInt("character"));
+        Lexer lexer(text, uri);
+        Parser parser(lexer.tokenize(), uri);
+        const ast::Program program = parser.parse();
+        Found hit = findDeclaration(program, name);
+        aimAtName(text, name, hit);
+        if (!hit.found) {
+            reply(*idPtr, Json{});   // null: the client falls back to its own search
+            return;
+        }
+        if (method == "textDocument/definition") {
+            Json loc = Json::makeObject();
+            loc.set("uri", Json::of(uri));
+            loc.set("range", pointRange(hit.loc, static_cast<int>(hit.width)));
+            reply(*idPtr, std::move(loc));
+            return;
+        }
+        Json contents = Json::makeObject();
+        contents.set("kind", Json::of(std::string("markdown")));
+        contents.set("value", Json::of("```ldp3\n" + hit.detail + "\n```"));
+        Json result = Json::makeObject();
+        result.set("contents", std::move(contents));
+        result.set("range", pointRange(hit.loc, static_cast<int>(hit.width)));
+        reply(*idPtr, std::move(result));
         return;
     }
     // Unknown request: reply null so the client is not left waiting.
