@@ -87,10 +87,46 @@ std::vector<Environment> loadEnvironments(const std::vector<ldp3::driver::Discov
 }
 
 ActionResult runCaptured(const std::vector<std::string>& args, const std::filesystem::path& projectDir) {
-    std::string output;
     ActionResult r;
-    r.exitCode = ldp3::driver::runProcessCapture(ldp3Cli().string(), args, output, projectDir.string(),
+    std::error_code ec;
+
+    // Pre-flight the toolchain before spawning. A missing or misconfigured install (a wrong path, an
+    // incomplete package) must fail here with a clear message rather than launch something that stalls
+    // forever or returns nothing -- there is deliberately no response timeout, so this check is what
+    // keeps a broken toolchain from hanging the studio.
+    const std::filesystem::path cli = ldp3Cli();
+    if (!std::filesystem::exists(cli, ec)) {
+        r.exitCode = -1;
+        r.lines = {"toolchain error: the ldp3 CLI is not next to LDP3 Studio.",
+                   "  expected at: " + cli.string(),
+                   "Reinstall the LDP3 toolchain so ldp3 and ldp3-studio share a directory."};
+        return r;
+    }
+    const std::string verb = args.empty() ? std::string() : args.front();
+    if (verb == "build" || verb == "check" || verb == "run" || verb == "plug") {
+        const ldp3::driver::Toolchain tc = ldp3::driver::locateToolchain();
+        std::vector<std::string> missing;
+        if (tc.ldp3c.empty() || !std::filesystem::exists(tc.ldp3c, ec))
+            missing.push_back("ldp3c (compiler): " + (tc.ldp3c.empty() ? std::string("not located") : tc.ldp3c));
+        if (tc.clang.empty() || !std::filesystem::exists(tc.clang, ec))
+            missing.push_back("clang (linker): " + (tc.clang.empty() ? std::string("not located") : tc.clang));
+        if (!missing.empty()) {
+            r.exitCode = -1;
+            r.lines.push_back("toolchain error: the compiler toolchain is incomplete --");
+            for (const std::string& m : missing) r.lines.push_back("  missing " + m);
+            r.lines.push_back("Check the LDP3 installation, or set $LDP3C / $LDP3_CLANG, then retry.");
+            return r;
+        }
+    }
+
+    std::string output;
+    r.exitCode = ldp3::driver::runProcessCapture(cli.string(), args, output, projectDir.string(),
                                                  /*mergeStderr=*/true);
+    if (r.exitCode == -1 && output.empty()) {  // CreateProcess/exec itself failed to launch the CLI
+        r.lines = {"toolchain error: failed to launch '" + cli.string() + "'.",
+                   "Check the installation and file permissions."};
+        return r;
+    }
     std::stringstream ss(output);
     std::string line;
     while (std::getline(ss, line)) {
