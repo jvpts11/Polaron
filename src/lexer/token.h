@@ -72,7 +72,7 @@ enum class TokenKind : std::uint8_t {
     // (get / set / init are soft keywords -- not reserved; see parser)
 
     // Keywords -- control flow
-    KwIf, KwElse, KwWhile, KwDo, KwFor,
+    KwIf, KwElse, KwWhile, KwDo, KwFor, KwForeach,
     KwSwitch, KwCase, KwDefault, KwBreak, KwContinue,
     KwStep, KwIndex, KwMatch,
 

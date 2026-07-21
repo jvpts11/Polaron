@@ -128,6 +128,7 @@ TokenKind keywordKind(std::string_view text) {
         {"while", TokenKind::KwWhile},
         {"do", TokenKind::KwDo},
         {"for", TokenKind::KwFor},
+        {"foreach", TokenKind::KwForeach},
         {"switch", TokenKind::KwSwitch},
         {"match", TokenKind::KwMatch},
         {"case", TokenKind::KwCase},
