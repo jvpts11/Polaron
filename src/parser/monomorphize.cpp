@@ -1348,13 +1348,10 @@ void qualifyNamespaces(ast::Program& program) {
     for (auto& b : program.bundles)
         for (auto& ns : b.namespaces) {
             auto add = [&](const std::string& name) {
-                if (ambiguous.count(name)) {
-                    const std::string q = qualified(ns.name, name);
-                    dotted[ns.name + "." + name] = q;
-                    program.qualifiedTypes.insert(q);  // explicitly scoped: import-exempt
-                } else {
-                    dotted[ns.name + "." + name] = name;
-                }
+                const std::string concrete = ambiguous.count(name) ? qualified(ns.name, name) : name;
+                if (ambiguous.count(name)) program.qualifiedTypes.insert(concrete);  // scoped: import-exempt
+                dotted[ns.name + "." + name] = concrete;                        // namespace.Type
+                dotted[b.name + "." + ns.name + "." + name] = concrete;         // Bundle.namespace.Type (spec 2.7 full path)
             };
             for (auto& c : ns.classes) add(c.name);
             for (auto& e : ns.enums) add(e.name);

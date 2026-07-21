@@ -31,7 +31,7 @@ file(MAKE_DIRECTORY "${app}/src")
 file(WRITE "${app}/ldp3.toml"
 "[ldp3_project]\n[program]\nname = \"consumer\"\nversion = \"0.1.0\"\nlanguage_version = \"1.0\"\nentry = \"src/main.ldp3\"\n\n[dependencies]\n")
 file(WRITE "${app}/src/main.ldp3"
-"import System.IO.Console;\nimport math.Calc;\nprogram Consumer;\npublic bundle main {\n    public namespace app {\n        public class Main {\n            public static method main(string[] args) returns void {\n                int r = Calc.square(7);\n                System.IO.Console.printf(\"square = %d\\n\", r);\n                return;\n            }\n        }\n    }\n}\n")
+"import System.IO.Console;\nimport mathlib.math.Calc;\nprogram Consumer;\npublic bundle main {\n    public namespace app {\n        public class Main {\n            public static method main(string[] args) returns void {\n                int r = Calc.square(7);\n                System.IO.Console.printf(\"square = %d\\n\", r);\n                return;\n            }\n        }\n    }\n}\n")
 
 execute_process(COMMAND "${LDP3}" plug "${fix}@v1.0.0"
     WORKING_DIRECTORY "${app}" RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)

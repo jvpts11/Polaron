@@ -1,5 +1,5 @@
 import System.IO.Console;
-lazy import lib.Server;
+lazy import main.lib.Server;
 program LazyImport;
 
 // `lazy import` (spec 37.3): a lazily imported class is loaded on its first instance, not at boot.

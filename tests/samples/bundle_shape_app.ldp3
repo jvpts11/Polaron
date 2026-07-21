@@ -1,6 +1,6 @@
 import System.IO.Console;
-import geo.Shape;
-import geo.Square;
+import shapes.geo.Shape;
+import shapes.geo.Square;
 program ShapeApp;
 
 // Creates an imported Square, holds it through a Shape pointer, and calls area() virtually across the

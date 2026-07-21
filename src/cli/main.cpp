@@ -119,8 +119,8 @@ void printSemaDiag(std::string_view severity, const ldp3::SemaError& d, bool con
 // so a plain const string_view over the static literal is all that is needed.
 const std::string_view kPreludeSource = R"LDP3(
 program __prelude;
-public bundle std {
-    public namespace System.Memory.Units {
+public bundle System {
+    public namespace Memory.Units {
         public struct ByteSize {
             public final long bytes;
             public constructor ByteSize(long bytes) { this.bytes = bytes; }
@@ -144,7 +144,7 @@ public bundle std {
             }
         }
     }
-    public namespace System.Concurrency {
+    public namespace Concurrency {
         // An OS thread (spec 20.1). Holds a function<void> and its OS handle; start()/join() call
         // the low-level thread builtins, which lower to CreateThread / WaitForSingleObject.
         public class Thread {
@@ -272,7 +272,7 @@ R"LDP3(
             public method writeUnlock() returns void { this.writeSem.signal(); }
         }
     }
-    public namespace System.Errors {
+    public namespace Errors {
         // Result<T,E> / Option<T> (spec 21.2-21.3): sealed sum types matched with `match`. Ok/Err/
         // Some/None are constructed with the type args taken from the expected type at the use site.
         // The abstract method forces a vtable so `match` can dispatch on the variant.
@@ -302,7 +302,7 @@ R"LDP3(
             public override method isSome() returns boolean { return false; }
         }
     }
-    public namespace System.IO {
+    public namespace IO {
         // Console I/O (spec 2.9 / 4). The methods are recognized by the compiler and lower to
         // libc printf/scanf; this class exists so `import System.IO.Console;` resolves and the
         // usual namespace-visibility rules require importing it before use.
@@ -441,7 +441,7 @@ R"LDP3(
     }
 )LDP3"
 R"LDP3(
-    public namespace System.Math {
+    public namespace Math {
         // Math (spec 34.6) is a compiler builtin (its functions lower to LLVM intrinsics), not a
         // real class -- a real `Math` class would clash with user classes named Math via namespace
         // disambiguation. The name `Math` is registered virtually so `import System.Math.Math;`
@@ -521,7 +521,7 @@ R"LDP3(
             }
         }
     }
-    public namespace System.Runtime {
+    public namespace Runtime {
         // The root of the class hierarchy (spec 3.4): every class implicitly extends Object. equals
         // defaults to identity and hashCode to the object's address; both are virtual so subclasses
         // (e.g. records) override them. toString() returns String and is added with the String type.
@@ -563,7 +563,7 @@ R"LDP3(
 )LDP3"
 // (split 0: keep each literal under MSVC's ~16KB cap.)
 R"LDP3(
-    public namespace System.Collections {
+    public namespace Collections {
         // A cursor over a sequence: hasNext reports whether another element remains, next yields the
         // current one and advances (spec 34). Iterable is anything that can hand out a fresh Iterator
         // over its elements, so a generic algorithm can walk any collection through these two interfaces.
@@ -2928,7 +2928,7 @@ R"LDP3(
 )LDP3"
 // (split: System.Ecs in its own literal.)
 R"LDP3(
-    public namespace System.Ecs {
+    public namespace Ecs {
         // An entity-component-system core (spec 34, data-oriented identity of LDP3). World hands out integer
         // entity ids and recycles destroyed ones; component data lives outside the entity in ComponentStore.
         public class World {
@@ -3047,7 +3047,7 @@ R"LDP3(
 )LDP3"
 // (split: System.Events in its own literal.)
 R"LDP3(
-    public namespace System.Events {
+    public namespace Events {
         // Observer/event dispatch (spec 34): a publisher keeps a list of handler functions and calls them all
         // on emit. Each handler is wrapped in a small object so it can live in an ArrayList (function values
         // are not directly storable in a list yet). These are the concrete payload types; a fully generic
@@ -3162,7 +3162,7 @@ R"LDP3(
 )LDP3"
 // (split 2: another ~16KB literal boundary.)
 R"LDP3(
-    public namespace System.Text {
+    public namespace Text {
         // Growable text buffer (spec 34.5). Bytes live in a raw heap buffer (System.Memory) that
         // doubles on demand, so append is amortized O(1); toString() copies into an owned String.
         public class StringBuilder {
@@ -5944,7 +5944,7 @@ R"LDP3(
             }
         }
     }
-    public namespace System.Time {
+    public namespace Time {
         // A span of time in milliseconds (spec 34). Same namespace as the `Time` builtin, so
         // Instant.now() can call Time.unixMillis() without an import.
         public class Duration {
@@ -6221,7 +6221,7 @@ R"LDP3(
 )LDP3"
 // (split: System.Json in its own literal.)
 R"LDP3(
-    public namespace System.Json {
+    public namespace Json {
         // A JSON value (spec 34). kind: 0=null, 1=bool, 2=number(long), 3=string, 4=array, 5=object.
         // Built and read with pure-LDP3 code over System.Collections + System.Text.
         public class Json {
@@ -6512,7 +6512,7 @@ R"LDP3(
 )LDP3"
 // (split: System.Math reopened for BigInteger, its own literal.)
 R"LDP3(
-    public namespace System.Math {
+    public namespace Math {
         // Arbitrary-precision integer (spec 34): decimal digits (0..9) stored least-significant
         // first in an int[] (arrays of int work; this avoids the ArrayList<class> path). Supports
         // construction from long, same-sign add, multiply, compareTo, toString.
@@ -7989,7 +7989,7 @@ R"LDP3(
 )LDP3"
 // (split: System.OS + System.Net in their own literal.)
 R"LDP3(
-    public namespace System.OS {
+    public namespace OS {
         // The result of running a subprocess (spec 34): its captured stdout and exit code. Built by
         // the `Process.run(cmd)` builtin, which runs the command through the shell.
         public class ProcessResult {
@@ -8086,7 +8086,7 @@ R"LDP3(
             }
         }
     }
-    public namespace System.Security {
+    public namespace Security {
         // A cryptographically secure random source (spec 34): 64 bits per draw from the OS CSPRNG,
         // suitable for keys, tokens and nonces (unlike System.Math.Random, which is a fast PRNG). The
         // extern method links directly to the runtime helper.
@@ -8304,7 +8304,7 @@ R"LDP3(
             }
         }
     }
-    public namespace System.Net {
+    public namespace Net {
         // A blocking TCP socket (spec 34) wrapping an OS handle (or -1 on failure). Build a client with
         // Socket.connect(host, port); a ServerSocket.accept() also hands back a Socket. send/receive/
         // close lower to runtime winsock helpers.
@@ -8421,7 +8421,7 @@ R"LDP3(
 )LDP3"
 // Split only for the MSVC literal-size limit; a new namespace for application-layer utilities.
 R"LDP3(
-    public namespace System.App {
+    public namespace App {
         // Circuit breaker (spec 34): trips to open after threshold consecutive failures and rejects calls
         // until a cooldown passes, then allows one trial (half-open); a success closes it again, a failure
         // reopens it. Time is passed in explicitly (milliseconds) so behavior is deterministic and testable.
@@ -8571,7 +8571,7 @@ R"LDP3(
 )LDP3"
 // System.Test in its own literal (the unit-test framework, spec 34).
 R"LDP3(
-    public namespace System.Test {
+    public namespace Test {
         // Marker annotation (spec 32.11): a public static method returning boolean tagged @Test (or the
         // equivalent [Test] form) is an inline test, discovered and run by `ldp3 test`.
         public annotation Test {}
@@ -8695,7 +8695,7 @@ R"LDP3(
 // System.Ipc in its own literal: the cross-program IPC protocol (spec 2.8) and the capability tokens
 // (spec 32.7) it enforces. The transport (Ipc.*) is a named pipe / Unix socket named after the program.
 R"LDP3(
-    public namespace System.Ipc {
+    public namespace Ipc {
         // A cross-program call failed: the peer threw, refused a capability, or the connection broke.
         public class IpcError extends Exception {
             private mutable String text;

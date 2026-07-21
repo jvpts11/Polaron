@@ -1,5 +1,5 @@
 import System.IO.Console;
-import app.Units;
+import main.app.Units;
 program LiteralSuffixImport;
 
 // Importing the class that owns a `comptime literal` brings its suffixes into scope, so the

@@ -1,5 +1,5 @@
 import System.IO.Console;
-import math.Calc;
+import calc.math.Calc;
 import System.Runtime.BundleNotLoadedException;
 program CalcAppOptional;
 

@@ -817,6 +817,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 }
                 classes_[cls.name] = std::move(info);
                 typeNamespace_[cls.name] = ns.name;
+                typeBundle_[cls.name] = bundle.name;
             }
         }
     }
@@ -979,6 +980,7 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                     }
                 }
                 typeNamespace_[en.name] = ns.name;
+                typeBundle_[en.name] = bundle.name;
             }
         }
     }
@@ -1012,6 +1014,7 @@ void SemanticAnalyzer::registerCatalogs(const ast::Program& program) {
                 }
                 catalogs_[cat.name] = std::move(info);
                 typeNamespace_[cat.name] = ns.name;
+                typeBundle_[cat.name] = bundle.name;
             }
         }
     }
@@ -1202,6 +1205,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
         if (bundle.isPrelude) freestanding_ = false;
         // Imports are written before `program` (file level, spec 2.7); the in-bundle form is still
         // accepted during migration. Collect the imported symbol names from both.
+        currentBundle_ = bundle.name;  // for the stdlib-cohesion visibility check
         currentImports_.clear();
         for (const ast::ImportDecl& imp : program.imports)
             if (!imp.path.empty()) currentImports_.insert(imp.path.back());
@@ -1304,39 +1308,60 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     // Freestanding mode (spec 36): the whole program, or any bundle, may opt out of the managed
     // runtime; here we treat the program as freestanding if it or any bundle declares it.
     freestanding_ = program.isFreestanding;
-    for (const ast::Bundle& b : program.bundles)
+    for (const ast::Bundle& b : program.bundles) {
         if (b.isFreestanding) freestanding_ = true;
-    // Math (spec 34.6) is a virtual builtin type (no prelude class, to avoid clashing with user
-    // classes named Math); register its namespace so `import System.Math.Math;` resolves.
-    typeNamespace_["Math"] = "System.Math";
-    typeNamespace_["Memory"] = "System";   // the low-level memory API class (spec 17.8): System.Memory
-    // File (spec 34.4) is likewise a virtual builtin (static methods lower to runtime stdio calls);
-    // register it so `import System.IO.File;` resolves.
-    typeNamespace_["File"] = "System.IO";
-    // Time (spec 34): clock + sleep builtins; register so `import System.Time.Time;` resolves.
-    typeNamespace_["Time"] = "System.Time";
-    // Net (spec 34): TCP builtins lowering to runtime winsock calls; register for the import.
-    typeNamespace_["Net"] = "System.Net";
-    // Ipc (spec 2.8): the cross-program transport builtins (a named pipe / Unix socket named after the
-    // program). Used by the System.Ipc prelude, not written by hand.
-    typeNamespace_["Ipc"] = "System.Ipc";
-    // Bits: exact reinterpretation between double and long (an IEEE-754 bit pattern). Needed wherever a
-    // double must survive a byte channel bit-for-bit -- the IPC wire format, hashing, binary files.
-    typeNamespace_["Bits"] = "System.Ipc";
-    // Process (spec 34): subprocess builtin (Process.run) lowering to a runtime shell call; register
-    // so `import System.OS.Process;` resolves. ProcessResult is a real prelude class.
-    typeNamespace_["Process"] = "System.OS";
-    // Env (spec 34): environment-variable builtins (Env.get/set); register for `import System.OS.Env;`.
-    typeNamespace_["Env"] = "System.OS";
-    // Subproc: low-level persistent-subprocess builtins behind the System.OS.Subprocess prelude class
-    // (bidirectional stdio for the debugger/LSP). Internal -- users go through the Subprocess class.
-    typeNamespace_["Subproc"] = "System.OS";
-    // Conpty: low-level pseudo-console builtins behind the System.OS.Pty prelude class (a real terminal for
-    // the IDE). Internal -- users go through the Pty class.
-    typeNamespace_["Conpty"] = "System.OS";
+        bundleNames_.insert(b.name);  // every declared/imported bundle: the import path's first segment
+        for (const ast::Namespace& ns : b.namespaces)
+            namespaceBundle_[ns.name] = b.name;  // namespace -> owning bundle (stdlib-cohesion check)
+    }
+    // Virtual builtin types (no prelude class, e.g. to avoid clashing with a user class named Math) live
+    // in the System bundle (spec 34). Registering their (bundle, namespace) lets the strict full-path
+    // import validate, e.g. `import System.Math.Math;` -> bundle System, namespace Math, type Math.
+    auto builtin = [&](const std::string& type, const std::string& ns) {
+        typeNamespace_[type] = ns;
+        typeBundle_[type] = "System";
+    };
+    builtin("Math", "Math");      // spec 34.6: Math.* (no prelude class, avoids a user-Math clash)
+    builtin("Memory", "");        // spec 17.8: low-level memory API class, sits directly in bundle System
+                                  // -> `import System.Memory;` (bundle System, no namespace, type Memory)
+    builtin("File", "IO");        // spec 34.4: static methods lower to runtime stdio
+    builtin("Time", "Time");      // spec 34: clock + sleep builtins
+    builtin("Net", "Net");        // spec 34: TCP builtins over runtime winsock
+    builtin("Ipc", "Ipc");        // spec 2.8: cross-program transport builtins (pipe/socket named after the program)
+    builtin("Bits", "Ipc");       // exact double<->long bit reinterpretation (IEEE-754 pattern)
+    builtin("Process", "OS");     // spec 34: subprocess builtin (Process.run); ProcessResult is a real prelude class
+    builtin("Env", "OS");         // spec 34: environment-variable builtins (Env.get/set)
+    builtin("Subproc", "OS");     // low-level persistent-subprocess builtins (Subprocess class)
+    builtin("Conpty", "OS");      // low-level pseudo-console builtins (Pty class)
     // reflect (spec 31) is a builtin namespace, not a prelude class; register it so `import reflect;`
-    // resolves. Reflection use is gated on this import at the reflect.typeOf call site.
+    // (a bare, bundle-less import) resolves. Reflection use is gated on this import at reflect.typeOf.
     typeNamespace_["reflect"] = "reflect";
+    // Naming convention (spec 2.6): bundle and namespace names are PascalCase. A lowercase initial (on
+    // any dotted segment) is a warning, not an error -- it nudges the convention without breaking code.
+    auto lowerInitial = [](const std::string& name) {
+        bool atStart = true;
+        for (char c : name) {
+            if (atStart) {
+                if (c >= 'a' && c <= 'z') return true;  // a segment starts lowercase
+                atStart = false;
+            }
+            if (c == '.') atStart = true;
+        }
+        return false;
+    };
+    for (const ast::Bundle& b : program.bundles) {
+        if (b.isPrelude || b.isImported) continue;  // warn on the user's own source only
+        if (!b.name.empty() && lowerInitial(b.name))
+            warn("bundle '" + b.name +
+                     "' should start with a capital letter (bundle names are conventionally PascalCase)",
+                 b.loc);
+        for (const ast::Namespace& ns : b.namespaces)
+            if (!ns.name.empty() && lowerInitial(ns.name))
+                warn("namespace '" + ns.name +
+                         "' should start with a capital letter (namespace names are conventionally "
+                         "PascalCase)",
+                     ns.loc);
+    }
     // Generic templates (stdlib collections and user generics alike) are erased by monomorphization,
     // which rewrites each use to an instance (ArrayList$int) in the user's namespace. The base name ->
     // namespace map captured before monomorphization pins each generic to its real home, so a stdlib
@@ -1560,43 +1585,69 @@ void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
     }
 }
 
-// Resolves each `import a.b.c;`: the last component is the symbol. Importing a
-// literal suffix enables its `N suffix` syntax (spec 17.10 rule 5). Importing a
-// type is accepted (names are global in 0.2); an unknown symbol is an error.
+// Resolves each import against the spec 2.7 model: an intra-program import names the FULL path,
+// bundle first, then the namespace, then the symbol (`import Forge.App.Controller;`). The last
+// component is the symbol; the first must be a real bundle. Importing a literal suffix enables its
+// `N suffix` syntax (spec 17.10 rule 5). An unknown symbol, an unknown bundle, or a namespace that
+// does not match the symbol's real home is an error.
 void SemanticAnalyzer::processImports(const ast::Program& program) {
     auto validate = [&](const ast::ImportDecl& imp) {
         if (imp.path.empty()) return;
         const std::string& symbol = imp.path.back();
         std::string full;
         for (std::size_t i = 0; i < imp.path.size(); ++i) full += (i > 0 ? "." : "") + imp.path[i];
-        // The prefix (everything before the symbol) must be the symbol's real namespace.
-        std::string prefix;
-        for (std::size_t i = 0; i + 1 < imp.path.size(); ++i)
-            prefix += (i > 0 ? "." : "") + imp.path[i];
-        auto nsIt = typeNamespace_.find(symbol);
-        // An import path may name the bundle first (`forge.app.Controller` = bundle forge, namespace
-        // app, type Controller). The standard library is the exception -- a `System.*` path carries no
-        // bundle, since `System` already identifies it. Both spellings are accepted: the prefix matches
-        // either as-is (stdlib / bundle-less) or with its leading bundle segment stripped. Which one
-        // applies is unambiguous, because only the true namespace matches.
-        std::string afterBundle;
-        if (imp.path.size() >= 2)
-            for (std::size_t i = 1; i + 1 < imp.path.size(); ++i)
-                afterBundle += (afterBundle.empty() ? "" : ".") + imp.path[i];
-        if (nsIt == typeNamespace_.end()) {
-            error("import of unknown symbol '" + full + "'", imp.loc);
-        } else if (!prefix.empty() && prefix != nsIt->second && afterBundle != nsIt->second) {
-            error("'" + symbol + "' is in namespace '" + nsIt->second + "'; write it as '" +
-                      nsIt->second + "." + symbol + "' or '<bundle>." + nsIt->second + "." + symbol +
-                      "'",
-                  imp.loc);
-        } else {
+        // Bring the symbol's literal suffixes into scope regardless of the path check below, so a
+        // path mistake reports once and does not cascade into "unknown suffix/type" noise. (Type
+        // visibility itself is gated by currentImports_, populated from the path's last segment.)
+        auto bringIntoScope = [&]() {
             importedSuffixes_.insert(symbol);  // harmless for non-literals
-            // Importing the owner class brings its literal suffixes into scope (spec 17.10).
             if (auto cs = classSuffixes_.find(symbol); cs != classSuffixes_.end())
                 for (const std::string& s : cs->second) importedSuffixes_.insert(s);
+            if (imp.isFinal) finalImports_.insert(symbol);  // spec 37.6: not unimportable
+        };
+        // Cross-program (spec 2.7/2.8): reached over IPC, the path rooted at the program name
+        // (`import from program GameEngine GameEngine.audio.mixers.Foo;`). Its types are synthesized as
+        // IPC proxies, so validate leniently -- just require the symbol to exist locally as a proxy.
+        if (!imp.programName.empty()) {
+            if (typeNamespace_.find(symbol) == typeNamespace_.end())
+                error("import of unknown symbol '" + full + "' from program '" + imp.programName + "'",
+                      imp.loc);
+            bringIntoScope();
+            return;
         }
-        if (imp.isFinal) finalImports_.insert(symbol);  // spec 37.6: not unimportable
+        auto nsIt = typeNamespace_.find(symbol);
+        if (nsIt == typeNamespace_.end()) {
+            error("import of unknown symbol '" + full + "'", imp.loc);
+            bringIntoScope();
+            return;
+        }
+        // A bare, bundle-less builtin import (`import reflect;`): a single segment, nothing to qualify.
+        if (imp.path.size() == 1) { bringIntoScope(); return; }
+        // Full path (spec 2.7): Bundle.Namespace[.Sub].Type. The first segment must name a real bundle;
+        // everything between it and the type must be the type's real namespace.
+        const std::string& bundleSeg = imp.path.front();
+        std::string nsPath;  // path[1 .. size-2]
+        for (std::size_t i = 1; i + 1 < imp.path.size(); ++i)
+            nsPath += (nsPath.empty() ? "" : ".") + imp.path[i];
+        const std::string& realNs = nsIt->second;
+        const std::string realBundle = typeBundle_.count(symbol) ? typeBundle_[symbol] : std::string();
+        const std::string want =
+            (realBundle.empty() ? std::string("<bundle>") : realBundle) + "." + realNs + "." + symbol;
+        if (bundleNames_.count(bundleSeg) > 0 && nsPath == realNs) {
+            bringIntoScope();  // well-formed full path
+        } else if (bundleNames_.count(bundleSeg) == 0 && (nsPath == realNs || full == realNs + "." + symbol)) {
+            // Resolves by namespace but names no real bundle first: the pre-2.7 short form. Point at
+            // the full path the type now requires.
+            error("import '" + symbol + "' by its full path: 'import " + want +
+                      ";' -- imports now name the bundle first, then the namespace (spec 2.7)",
+                  imp.loc);
+            bringIntoScope();
+        } else {
+            error("'" + symbol + "' is imported as '" + want + "'; the path '" + full +
+                      "' does not match its bundle/namespace (spec 2.7)",
+                  imp.loc);
+            bringIntoScope();
+        }
     };
     for (const ast::ImportDecl& imp : program.imports) validate(imp);  // file-level (spec 2.7)
     for (const ast::Bundle& bundle : program.bundles)
@@ -1607,6 +1658,7 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
 // scope and treated like a static function (no `this`).
 void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
+        currentBundle_ = bundle.name;  // for the stdlib-cohesion visibility check
         currentImports_.clear();
         for (const ast::ImportDecl& imp : program.imports)
             if (!imp.path.empty()) currentImports_.insert(imp.path.back());
@@ -1913,13 +1965,24 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     if (it == typeNamespace_.end()) return;        // primitive / unknown (other checks catch it)
     if (it->second == currentNamespace_) return;   // same namespace -> visible
     if (currentImports_.count(n) > 0) return;      // brought in by import (incl. stdlib)
-    // The stdlib is internally cohesive: a System.* type may use any other System.* type without an
-    // import (e.g. System.Json's Json uses System.Text's StringBuilder).
-    if (currentNamespace_.rfind("System.", 0) == 0 &&
-        (it->second == "System" || it->second.rfind("System.", 0) == 0)) return;
-    error("type '" + n + "' is in namespace '" + it->second + "'; import it (import " + it->second +
-              "." + n + ";) to use it here",
+    // The stdlib is internally cohesive: a type in the System bundle may use any other System-bundle
+    // type without an import (e.g. Json's Json uses Text's StringBuilder). Keyed on the bundle now that
+    // stdlib namespaces are bare (IO, Text, ...) rather than carrying a System. prefix.
+    if (currentBundle_ == "System") {
+        // A generic template's own bundle is erased (typeBundle_ missing), but its namespace is shared
+        // with real classes, so the namespace->bundle map covers it; a virtual builtin (Memory, Math)
+        // has no namespace block, so its typeBundle_ covers it. Either proves System-bundle membership.
+        auto nb = namespaceBundle_.find(it->second);
+        if (nb != namespaceBundle_.end() && nb->second == "System") return;
+        auto tb = typeBundle_.find(n);
+        if (tb != typeBundle_.end() && tb->second == "System") return;
+    }
+    {
+    const std::string b = typeBundle_.count(n) ? typeBundle_[n] : std::string("<bundle>");
+    error("type '" + n + "' is in namespace '" + it->second + "'; import it (import " + b + "." +
+              it->second + "." + n + ";) to use it here",
           loc);
+    }
 }
 
 void SemanticAnalyzer::checkRegionAccepts(const std::string& region, const std::string& type,
