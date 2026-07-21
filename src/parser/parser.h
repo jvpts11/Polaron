@@ -123,6 +123,7 @@ private:
     ast::StmtPtr parseWhileStatement();
     ast::StmtPtr parseDoStatement();
     ast::StmtPtr parseForStatement();
+    ast::StmtPtr parseForeachStatement();  // C#-style `foreach (T v in coll)` (spec 7.6)
     ast::StmtPtr parseMatch();
     ast::StmtPtr parseSwitch();
     ast::StmtPtr parseDefer();

@@ -2098,6 +2098,9 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwFor)) {
         return parseForStatement();
     }
+    if (check(TokenKind::KwForeach)) {
+        return parseForeachStatement();
+    }
     if (check(TokenKind::KwMatch)) {
         return parseMatch();
     }
@@ -2686,6 +2689,33 @@ ast::StmtPtr Parser::parseForStatement() {
     expect(TokenKind::RParen, "')'");
     s->body = parseBlock();
     return s;
+}
+
+// C#-style iteration: `foreach (T v in coll)`, `foreach (var v in coll)`, or with an index
+// `foreach (index i, T v in coll)` (spec 7.6). Identical in effect to the `for (T v in coll)` form --
+// LDP3 keeps both spellings so C# and Java/C++ programmers each find the one they expect; they lower
+// to the same ForeachStmt.
+ast::StmtPtr Parser::parseForeachStatement() {
+    const SourceLocation loc = current().loc;
+    expect(TokenKind::KwForeach, "'foreach'");
+    expect(TokenKind::LParen, "'('");
+    auto fe = std::make_unique<ast::ForeachStmt>();
+    fe->loc = loc;
+    if (match(TokenKind::KwIndex)) {  // optional index variable: `foreach (index i, T v in coll)`
+        fe->indexName = expect(TokenKind::Identifier, "an index variable name").lexeme;
+        expect(TokenKind::Comma, "',' after the index variable");
+    }
+    if (match(TokenKind::KwVar)) {
+        fe->isVar = true;  // infer the element type
+    } else {
+        fe->elemType = parseTypeRef();
+    }
+    fe->varName = expect(TokenKind::Identifier, "a loop variable name").lexeme;
+    expect(TokenKind::KwIn, "'in' (foreach iterates as 'foreach (T v in collection)')");
+    fe->iterable = parseExpression();
+    expect(TokenKind::RParen, "')'");
+    fe->body = parseBlock();
+    return fe;
 }
 
 // switch (x) { case C { ... } ... default { ... } } with C-style fall-through (spec 7.3).
