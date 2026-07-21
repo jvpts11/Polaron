@@ -1,6 +1,6 @@
 import System.IO.Console;
-import ext.Drawable;
-import ext.Renderer;
+import plugin.ext.Drawable;
+import plugin.ext.Renderer;
 program PluginApp;
 
 // Implements an imported interface locally and hands the object to the bundle's Renderer, which calls

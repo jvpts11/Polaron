@@ -37,7 +37,7 @@ file(MAKE_DIRECTORY "${xrepo}/src")
 file(WRITE "${xrepo}/ldp3.toml"
 "[ldp3_project]\n[program]\nname = \"xlib\"\nlanguage_version = \"1.0\"\nentry = \"src/lib.ldp3\"\n\n[dependencies]\nylib = \"${yrepo}@v1.0.0\"\n")
 file(WRITE "${xrepo}/src/lib.ldp3"
-"import y.YCalc;\nprogram XLib;\npublic bundle xlib {\n    public namespace x {\n        public class XCalc {\n            public static method combine(int n) returns int { return YCalc.square(n) + n; }\n        }\n    }\n}\n")
+"import ylib.y.YCalc;\nprogram XLib;\npublic bundle xlib {\n    public namespace x {\n        public class XCalc {\n            public static method combine(int n) returns int { return YCalc.square(n) + n; }\n        }\n    }\n}\n")
 git_repo("${xrepo}")
 
 # --- consumer (depends on xlib) ---
@@ -45,7 +45,7 @@ file(MAKE_DIRECTORY "${app}/src")
 file(WRITE "${app}/ldp3.toml"
 "[ldp3_project]\n[program]\nname = \"consumer\"\nlanguage_version = \"1.0\"\nentry = \"src/main.ldp3\"\n\n[dependencies]\n")
 file(WRITE "${app}/src/main.ldp3"
-"import System.IO.Console;\nimport x.XCalc;\nprogram Consumer;\npublic bundle main {\n    public namespace app {\n        public class Main {\n            public static method main(string[] args) returns void {\n                int r = XCalc.combine(6);\n                System.IO.Console.printf(\"result = %d\\n\", r);\n                return;\n            }\n        }\n    }\n}\n")
+"import System.IO.Console;\nimport xlib.x.XCalc;\nprogram Consumer;\npublic bundle main {\n    public namespace app {\n        public class Main {\n            public static method main(string[] args) returns void {\n                int r = XCalc.combine(6);\n                System.IO.Console.printf(\"result = %d\\n\", r);\n                return;\n            }\n        }\n    }\n}\n")
 
 execute_process(COMMAND "${LDP3}" plug "${xrepo}@v1.0.0"
     WORKING_DIRECTORY "${app}" RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)

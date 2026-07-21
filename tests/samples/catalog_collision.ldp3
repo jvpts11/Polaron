@@ -1,5 +1,5 @@
 import System.IO.Console;
-import lib.LibHelper;
+import main.lib.LibHelper;
 program CatalogCollision;
 
 // Namespaces scope catalog names too (F4): app and lib each declare a `Tier`

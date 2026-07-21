@@ -1,5 +1,5 @@
 import System.IO.Console;
-import lib.Helper;
+import main.lib.Helper;
 program QualifiedNames;
 
 // Two namespaces each declare a `Box` (spec: namespaces scope type names). They

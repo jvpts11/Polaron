@@ -1,5 +1,5 @@
 import System.IO.Console;
-import count.Counter;
+import counters.count.Counter;
 program CounterApp;
 
 // Creates, uses, and destroys an instance of a class from a separately-compiled bundle. The

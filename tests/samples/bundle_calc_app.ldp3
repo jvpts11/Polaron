@@ -1,5 +1,5 @@
 import System.IO.Console;
-import math.Calc;
+import calc.math.Calc;
 program CalcApp;
 
 // Consumes the separately-compiled `calc` bundle: type-checks against its .ldh, calls the static
