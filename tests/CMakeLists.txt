@@ -473,12 +473,15 @@ add_test(NAME sema_rejects_instance_call_from_static
 set_tests_properties(sema_rejects_instance_call_from_static PROPERTIES
     PASS_REGULAR_EXPRESSION "instance method of 'Main'.*object")
 
-# An async method returning the value form of Result/Option is not supported yet (the value would be
-# corrupted through the Task result slot); it must fail cleanly, pointing at the boxed form.
-add_test(NAME sema_rejects_async_value_result
-    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/async_value_result_bad.ldp3")
-set_tests_properties(sema_rejects_async_value_result PROPERTIES
-    PASS_REGULAR_EXPRESSION "async method returning a value Result/Option is not supported")
+# An async method returns the value form of Result/Option (spec 20.2 + 21.2): codegen boxes the
+# { tag, payload } struct through the Task's 64-bit result slot and unboxes it on await.
+add_test(NAME codegen_async_value_result_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/async_value_result.ldp3"
+    "-DEXPECTED=42 -5"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # TCP server (spec 34): ServerSocket listen/accept + a client over loopback.
 add_test(NAME codegen_tcp_server_runs COMMAND "${CMAKE_COMMAND}"

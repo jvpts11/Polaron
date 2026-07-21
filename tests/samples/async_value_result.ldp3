@@ -1,0 +1,42 @@
+import System.IO.Console;
+import System.Errors.Result;
+import System.Concurrency.Task;
+
+program AsyncValueResult;
+
+// An async method may return a value Result/Option (spec 20.2 + 21.2): the { tag, payload } struct
+// rides the Task's 64-bit result slot boxed -- codegen copies it to the heap on completion and unboxes
+// it on await -- so both the value form (Result<T,E>) and the boxed form (Result<T,E>*) work.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static async method compute(int x) returns Result<int, int> {
+                if (x < 0) {
+                    return Err(0 - x);       // value-form sugar: the error path
+                }
+                return Ok(x * 2);            // value-form sugar: the success path
+            }
+
+            public static method grade(Result<int, int> r) returns int {
+                match (r) {
+                    case Ok(int v) {
+                        return v;
+                    }
+                    case Err(int e) {
+                        return 0 - e;
+                    }
+                }
+                return 0;
+            }
+
+            public static method main(string[] args) returns void {
+                Task<Result<int, int>> t = Main.compute(21);
+                Result<int, int> ok = await t;
+                Task<Result<int, int>> t2 = Main.compute(0 - 5);
+                Result<int, int> err = await t2;
+                System.IO.Console.printf("%d %d\n", Main.grade(ok), Main.grade(err));   // 42 -5
+                return;
+            }
+        }
+    }
+}

@@ -11476,12 +11476,9 @@ struct CodeGenerator::Impl {
         llvm::FunctionType* ft = llvm::FunctionType::get(
             builder.getVoidTy(), {builder.getInt64Ty(), builder.getInt64Ty()}, false);
         llvm::Value* h = builder.CreatePtrToInt(currentAsyncState, builder.getInt64Ty());
-        llvm::Value* v;
-        if (value == nullptr) v = builder.getInt64(0);
-        else if (value->getType()->isPointerTy()) v = builder.CreatePtrToInt(value, builder.getInt64Ty());
-        else if (value->getType()->isIntegerTy()) v = builder.CreateIntCast(value, builder.getInt64Ty(), true);
-        else if (value->getType()->isDoubleTy()) v = builder.CreateBitCast(value, builder.getInt64Ty());
-        else v = builder.getInt64(0);
+        // valueToI64 widens pointers/ints/doubles and boxes a value struct (a value Result/Option), so
+        // an async method returning a value Result/Option completes correctly rather than losing it.
+        llvm::Value* v = (value == nullptr) ? builder.getInt64(0) : valueToI64(value);
         builder.CreateCall(module.getOrInsertFunction("__ldp3_task_complete", ft), {h, v});
     }
 
@@ -11948,6 +11945,15 @@ struct CodeGenerator::Impl {
         if (v->getType()->isPointerTy()) return builder.CreatePtrToInt(v, builder.getInt64Ty());
         if (v->getType()->isDoubleTy()) return builder.CreateBitCast(v, builder.getInt64Ty());
         if (v->getType()->isIntegerTy()) return builder.CreateIntCast(v, builder.getInt64Ty(), true);
+        if (v->getType()->isAggregateType()) {
+            // A value struct -- a value Result/Option { i32 tag, i64 payload } returned from an async
+            // method -- does not fit the 64-bit task slot, so box it: copy it to the heap and carry the
+            // pointer. castTaskResult unboxes it on await. (An async return happens once per call, so
+            // this is one small allocation per awaited value result.)
+            llvm::Value* box = builder.CreateCall(mallocFn(), {sizeOf(v->getType())}, "task.box");
+            builder.CreateStore(v, box);
+            return builder.CreatePtrToInt(box, builder.getInt64Ty());
+        }
         return v;
     }
 
@@ -11957,6 +11963,11 @@ struct CodeGenerator::Impl {
         if (tt->isPointerTy()) return builder.CreateIntToPtr(res64, tt);
         if (tt->isDoubleTy()) return builder.CreateBitCast(res64, tt);
         if (tt->isIntegerTy()) return builder.CreateIntCast(res64, tt, true);
+        if (tt->isAggregateType()) {
+            // Unbox the value struct (a value Result/Option) that the async return boxed into the slot.
+            llvm::Value* box = builder.CreateIntToPtr(res64, builder.getPtrTy());
+            return builder.CreateLoad(tt, box, "task.unbox");
+        }
         return res64;
     }
 
