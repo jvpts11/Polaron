@@ -57,6 +57,63 @@ std::vector<fs::path> collectSources(const fs::path& entry) {
     return all;
 }
 
+// Fold the (already-built) path dependencies of `m` into the link closure, transitively. Used after a
+// dependency library has been built so a program links the code of its dependencies' dependencies too.
+int collectPathClosure(const Manifest& m, const fs::path& projectDir, std::vector<fs::path>& closure,
+                       std::set<fs::path>& seen) {
+    for (const auto& d : m.dependencies) {
+        if (d.path.empty()) continue;
+        const fs::path depDir = fs::absolute(projectDir / d.path);
+        const fs::path depMf = depDir / "ldp3.toml";
+        if (!fs::is_regular_file(depMf)) continue;
+        const Manifest dm = readManifest(depMf);
+        const fs::path depLdb = depDir / dm.outputDir / (dm.name + ".ldb");
+        if (seen.insert(depLdb).second) closure.push_back(depLdb);
+        collectPathClosure(dm, depDir, closure, seen);
+    }
+    return 0;
+}
+
+// Build every path dependency of `m` and gather their bundles. `direct` receives this manifest's
+// immediate path-dep .ldbs (passed to the compiler with --use for type-checking); `closure` receives
+// the full transitive set (linked into the final program). A [library] path dependency is built the
+// same way -- and buildProgram resolves that library's own path dependencies in turn -- so libraries
+// can build on other libraries.
+int buildPathDeps(const Manifest& m, const fs::path& projectDir, bool checkOnly,
+                  std::vector<fs::path>& direct, std::vector<fs::path>& closure,
+                  std::set<fs::path>& seen) {
+    for (const auto& d : m.dependencies) {
+        if (d.path.empty()) continue;  // registry dependencies come from packages/ (handled elsewhere)
+        const fs::path depDir = fs::absolute(projectDir / d.path);
+        const fs::path depMf = depDir / "ldp3.toml";
+        if (!fs::is_regular_file(depMf)) {
+            std::fprintf(stderr, "ldp3: path dependency '%s' has no ldp3.toml at %s\n",
+                         d.name.c_str(), depDir.string().c_str());
+            return 1;
+        }
+        const Manifest dm = readManifest(depMf);
+        if (!dm.isLibrary) {
+            std::fprintf(stderr, "ldp3: path dependency '%s' is not a [library]\n", d.name.c_str());
+            return 1;
+        }
+        const fs::path depLdb = depDir / dm.outputDir / (dm.name + ".ldb");
+        // A check runs on every pause in typing; reuse an existing bundle rather than rebuilding it.
+        if (checkOnly) {
+            if (fs::is_regular_file(depLdb)) direct.push_back(depLdb);
+            continue;
+        }
+        std::printf("ldp3: building path dependency '%s'...\n", d.name.c_str());
+        if (int rc = buildProgram(dm, depDir, BuildOptions{}); rc != 0) {
+            std::fprintf(stderr, "ldp3: building path dependency '%s' failed\n", d.name.c_str());
+            return rc;
+        }
+        direct.push_back(depLdb);
+        if (seen.insert(depLdb).second) closure.push_back(depLdb);
+        if (int rc = collectPathClosure(dm, depDir, closure, seen); rc != 0) return rc;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptions& opts) {
@@ -78,9 +135,18 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     // to be consumed as a path dependency or installed into a packages/ directory.
     if (m.isLibrary) {
         const fs::path ldbOut = outDir / (m.name + ".ldb");
+        // A library may itself depend on other libraries: build them and type-check against their .ldh.
+        std::vector<fs::path> depDirect, depClosure;
+        std::set<fs::path> depSeen;
+        if (int rc = buildPathDeps(m, projectDir, opts.checkOnly, depDirect, depClosure, depSeen); rc != 0)
+            return rc;
         std::vector<std::string> ca = {"--lib"};
         if (m.singleFile) ca.push_back(entry.string());
         else for (const auto& src : collectSources(entry)) ca.push_back(src.string());
+        for (const auto& ldb : depDirect) {
+            ca.push_back("--use");
+            ca.push_back(ldb.string());
+        }
         if (opts.checkOnly) {  // a library type-checks like a program, minus the entry point
             ca.insert(ca.begin(), "--check");
             for (const auto& ov : opts.overlays) {
@@ -109,44 +175,16 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     std::vector<fs::path> directLdbs;  // for --use at compile time
     std::vector<fs::path> allLdbs;     // full closure, for linking
     {
+        // Path dependencies (sibling [library] projects): build each, its own dependencies too, and
+        // gather the transitive closure for linking.
+        std::set<fs::path> pathSeen;
+        if (int rc = buildPathDeps(m, projectDir, opts.checkOnly, directLdbs, allLdbs, pathSeen); rc != 0)
+            return rc;
+        // Registry dependencies (installed under packages/).
         std::set<std::string> visited;
         std::vector<std::string> direct;
         for (const auto& d : m.dependencies) {
-            if (!d.path.empty()) {
-                // Local path dependency: build the sibling [library] from source, then use its .ldb
-                // both for type-checking (--use) and for linking (its extracted code).
-                const fs::path depDir = fs::absolute(projectDir / d.path);
-                const fs::path depMf = depDir / "ldp3.toml";
-                if (!fs::is_regular_file(depMf)) {
-                    std::fprintf(stderr, "ldp3: path dependency '%s' has no ldp3.toml at %s\n",
-                                 d.name.c_str(), depDir.string().c_str());
-                    return 1;
-                }
-                const Manifest dm = readManifest(depMf);
-                if (!dm.isLibrary) {
-                    std::fprintf(stderr, "ldp3: path dependency '%s' is not a [library]\n", d.name.c_str());
-                    return 1;
-                }
-                // A check runs on every pause in typing: rebuilding a whole dependency library each time
-                // would make it useless. If the .ldb is already there, type-check against it as it stands;
-                // the next real build is what refreshes it.
-                if (opts.checkOnly) {
-                    const fs::path built = depDir / dm.outputDir / (dm.name + ".ldb");
-                    if (fs::is_regular_file(built)) {
-                        directLdbs.push_back(built);
-                        continue;
-                    }
-                }
-                std::printf("ldp3: building path dependency '%s'...\n", d.name.c_str());
-                if (int rc = buildProgram(dm, depDir, BuildOptions{}); rc != 0) {
-                    std::fprintf(stderr, "ldp3: building path dependency '%s' failed\n", d.name.c_str());
-                    return rc;
-                }
-                const fs::path depLdb = depDir / dm.outputDir / (dm.name + ".ldb");
-                directLdbs.push_back(depLdb);
-                allLdbs.push_back(depLdb);
-                continue;
-            }
+            if (!d.path.empty()) continue;  // path deps handled above
             direct.push_back(d.name);
             directLdbs.push_back(projectDir / "packages" / d.name / (d.name + ".ldb"));
         }
