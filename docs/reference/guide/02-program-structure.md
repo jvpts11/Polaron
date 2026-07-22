@@ -229,13 +229,19 @@ import System.IO.Console;
 import System.Collections.ArrayList;
 ```
 
-The path is the symbol's full address: everything before the last component is
-the namespace, and the last component is the type (or other importable symbol)
-itself. `import System.IO.Console;` brings the `Console` type from the
-`System.IO` namespace into this file's scope. **Wildcards are not allowed** in
-any form — you cannot write `import System.IO.*;`. Each thing you use is spelled
-out, one import per line. This is verbose on purpose: reading the top of a file
-tells you exactly what it depends on, with no guessing.
+The path is the symbol's full address, and it is always complete: the **bundle**
+first, then the **namespace(s)**, then the symbol itself as the last component.
+`import System.IO.Console;` brings the `Console` type from bundle `System`,
+namespace `IO`, into this file's scope. The standard library lives in the bundle
+`System`; a plugged-in library is imported by its own full path in exactly the
+same shape (`import Opengl.Gl.Gl;`). There is no short form and no bundle-less
+spelling — the first segment must name a real bundle, and the compiler rejects a
+path whose bundle or namespace does not match where the symbol actually lives.
+**Wildcards are not allowed** in any form — you cannot write `import System.IO.*;`.
+Each thing you use is spelled out, one import per line. This is verbose on
+purpose: reading the top of a file tells you exactly where every dependency comes
+from, with no guessing. (By convention bundle and namespace names are
+PascalCase; the compiler warns, but does not error, when they are not.)
 
 Because the rule admits no exceptions, even the most everyday facilities require
 an import. Printing to the console needs `import System.IO.Console;`; there is no
@@ -258,7 +264,7 @@ Consider a program with two namespaces where `app` wants to use a helper from
 
 ```ldp3
 import System.IO.Console;
-import lib.LibHelper;              // reach across the namespace boundary
+import main.lib.LibHelper;         // bundle main, namespace lib, type LibHelper
 program TwoNamespaces;
 
 public bundle main {
