@@ -40,19 +40,20 @@ int warningCount(const std::string& src) {
 }
 
 // Wraps a class member in a minimal program with a public class Main. Imports go before `program`
-// (spec 2.7). Tests run sema without the prelude, so a minimal System.IO.Console stub namespace is
-// included so the import resolves; the I/O calls themselves are compiler builtins.
-const char* kIoHead = "import System.IO.Console; program P; public bundle b { ";
-const char* kIoStub = "public namespace System.IO { public class Console { } } ";
+// (spec 2.7). Tests run sema without the prelude, so a minimal System bundle stub (bundle System,
+// namespace IO, class Console) is included so `import System.IO.Console` resolves by its full
+// bundle-first path, mirroring the real prelude; the I/O calls themselves are compiler builtins.
+const char* kIoHead = "import System.IO.Console; program P; ";
+const char* kIoStub = "public bundle System { public namespace IO { public class Console { } } } ";
 
 std::string wrapMain(const std::string& member) {
     return std::string(kIoHead) + kIoStub +
-           "public namespace n { public class Main { " + member + " } } }";
+           "public bundle b { public namespace n { public class Main { " + member + " } } }";
 }
 
 // A program with a helper class `classDef` plus a Main whose body is `mainBody`.
 std::string withClass(const std::string& classDef, const std::string& mainBody) {
-    return std::string(kIoHead) + kIoStub + "public namespace n { " +
+    return std::string(kIoHead) + kIoStub + "public bundle b { public namespace n { " +
            classDef + " public class Main { public static method main(string[] args) returns void { " +
            mainBody + " } } } }";
 }
@@ -68,7 +69,7 @@ const std::string kCounter =
 // A program with a `comptime literal twice(int)` member of class Sc and `body` inside Main.
 static std::string withLiteral(const std::string& body) {
     return std::string(kIoHead) + kIoStub +
-           "public namespace n { "
+           "public bundle b { public namespace n { "
            "public class Sc { public comptime literal twice(int x) returns int { return x * 2; } } "
            "public class Main { public static method main(string[] args) returns void { " +
            body + " } } } }";
@@ -736,7 +737,7 @@ std::string withSuffix(const std::string& importLine, const std::string& mainBod
 }  // namespace
 
 TEST_CASE("semantic accepts the N-suffix form when the suffix is imported") {
-    CHECK(checkSrc(withSuffix("import n.kib;", "long s = 64 kib;")));
+    CHECK(checkSrc(withSuffix("import b.n.kib;", "long s = 64 kib;")));
 }
 
 TEST_CASE("semantic rejects the N-suffix form without an import") {
@@ -1202,7 +1203,7 @@ TEST_CASE("semantic rejects a type from another namespace without an import") {
 }
 
 TEST_CASE("semantic accepts a type from another namespace when imported") {
-    CHECK(checkSrc(crossNs("import lib.Widget;")));
+    CHECK(checkSrc(crossNs("import b.lib.Widget;")));
 }
 
 TEST_CASE("semantic allows a type from the same namespace without an import") {
@@ -1460,14 +1461,14 @@ TEST_CASE("semantic accepts a class invariant") {
 // `final import` (spec 37.6): the imported symbol cannot be unimported.
 TEST_CASE("semantic rejects unimport of a final-imported symbol") {
     CHECK_FALSE(checkSrc(
-        "final import lib.Widget; program P; public bundle b {"
+        "final import b.lib.Widget; program P; public bundle b {"
         " public namespace lib { public class Widget { public constructor Widget() {} } }"
         " public namespace app { public class Main {"
         " public static method main(string[] args) returns void { unimport Widget; return; } } } }"));
 }
 TEST_CASE("semantic allows unimport of a plainly-imported symbol") {
     CHECK(checkSrc(
-        "import lib.Widget; program P; public bundle b {"
+        "import b.lib.Widget; program P; public bundle b {"
         " public namespace lib { public class Widget { public constructor Widget() {} } }"
         " public namespace app { public class Main {"
         " public static method main(string[] args) returns void { unimport Widget; return; } } } }"));
@@ -1690,7 +1691,7 @@ TEST_CASE("awaiting while holding a mutex is rejected (spec 22)") {
 
 TEST_CASE("an undeclared, uncaught throw warns (spec 21.1)") {
     const char* head =
-        "program P; public bundle b { public namespace n {"
+        "program P; public bundle B { public namespace N {"
         " public interface Throwable { }"
         " public class Err implements Throwable {"
         "   public mutable int c; public constructor Err() { this.c = 1; } }"
