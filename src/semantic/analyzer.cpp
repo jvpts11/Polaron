@@ -1633,9 +1633,14 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
         const std::string realBundle = typeBundle_.count(symbol) ? typeBundle_[symbol] : std::string();
         const std::string want =
             (realBundle.empty() ? std::string("<bundle>") : realBundle) + "." + realNs + "." + symbol;
-        if (bundleNames_.count(bundleSeg) > 0 && nsPath == realNs) {
+        // The first segment is valid if it names a declared/imported bundle, or the symbol's own
+        // registered bundle -- the latter covers a virtual builtin (System.Memory) whose bundle exists
+        // even when the prelude that declares it is not part of this compilation.
+        const bool bundleOk =
+            bundleNames_.count(bundleSeg) > 0 || (!realBundle.empty() && bundleSeg == realBundle);
+        if (bundleOk && nsPath == realNs) {
             bringIntoScope();  // well-formed full path
-        } else if (bundleNames_.count(bundleSeg) == 0 && (nsPath == realNs || full == realNs + "." + symbol)) {
+        } else if (!bundleOk && (nsPath == realNs || full == realNs + "." + symbol)) {
             // Resolves by namespace but names no real bundle first: the pre-2.7 short form. Point at
             // the full path the type now requires.
             error("import '" + symbol + "' by its full path: 'import " + want +
