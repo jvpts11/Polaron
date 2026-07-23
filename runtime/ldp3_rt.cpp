@@ -1666,7 +1666,10 @@ long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr) {
     PROCESS_INFORMATION pi;
     memset(&pi, 0, sizeof(pi));
     char* mutableCmd = _strdup(cmdline);  // CreateProcessA may modify the command line in place
-    BOOL ok = CreateProcessA(NULL, mutableCmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+    // CREATE_NO_WINDOW: a background tool (git, the LSP, the checker) is spawned with its stdio piped to us,
+    // so it never needs a console -- without this flag a console window flashes on every spawn (e.g. a git
+    // diff on every file open).
+    BOOL ok = CreateProcessA(NULL, mutableCmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
     free(mutableCmd);
     CloseHandle(inRd);   // the child owns these now
     CloseHandle(outWr);
