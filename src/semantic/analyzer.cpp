@@ -3924,7 +3924,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             const std::string fn = name.substr(8);
             for (const auto& a : call->args) typeOf(*a);
             // spawnCombined: same, but the child's stderr shares its stdout pipe (a compiler's diagnostics).
-            if (fn == "spawn" || fn == "spawnCombined") return "long";
+            // spawnVisible: the child gets its own console window instead of being windowless.
+            if (fn == "spawn" || fn == "spawnCombined" || fn == "spawnVisible") return "long";
             if (fn == "writeStr") return "int";
             if (fn == "readChunk") return "String";
             if (fn == "isAlive" || fn == "canRead") return "boolean";

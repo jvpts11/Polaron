@@ -2265,7 +2265,8 @@ struct CodeGenerator::Impl {
                 if (ec == "Env.executablePath") return "String";
             }
             if (const std::string sc = flattenCallee(*call->callee); sc.rfind("Subproc.", 0) == 0) {
-                if (sc == "Subproc.spawn" || sc == "Subproc.spawnCombined") return "long";
+                if (sc == "Subproc.spawn" || sc == "Subproc.spawnCombined"
+                    || sc == "Subproc.spawnVisible") return "long";
                 if (sc == "Subproc.writeStr") return "int";
                 if (sc == "Subproc.readChunk") return "String";
                 if (sc == "Subproc.isAlive" || sc == "Subproc.canRead") return "boolean";
@@ -6285,15 +6286,18 @@ struct CodeGenerator::Impl {
             llvm::Type* p = builder.getPtrTy();
             llvm::Type* i64 = builder.getInt64Ty();
             llvm::Type* i32 = builder.getInt32Ty();
-            if (fn == "spawn" || fn == "spawnCombined") {
+            if (fn == "spawn" || fn == "spawnCombined" || fn == "spawnVisible") {
                 llvm::Value* cmd = emitExpr(*call.args[0]);
                 if (cmd == nullptr) return nullptr;
                 // spawnCombined: the child's stderr shares its stdout pipe, so one read() sees everything
                 // it printed -- what a caller wants from a compiler, and what would corrupt a DAP stream.
-                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {p, i64}, false);
+                // spawnVisible: give the child its own console window (an interactive tool the user should
+                // see); spawn/spawnCombined are windowless (a background tool piped to us).
+                llvm::FunctionType* ft = llvm::FunctionType::get(i64, {p, i64, i64}, false);
                 return builder.CreateCall(module.getOrInsertFunction("__ldp3_subproc_spawn_ex", ft),
                                           {stringData(cmd),
-                                           llvm::ConstantInt::get(i64, fn == "spawnCombined" ? 1 : 0)});
+                                           llvm::ConstantInt::get(i64, fn == "spawnCombined" ? 1 : 0),
+                                           llvm::ConstantInt::get(i64, fn == "spawnVisible" ? 1 : 0)});
             }
             if (fn == "writeStr") {
                 llvm::Value* h = emitExpr(*call.args[0]);

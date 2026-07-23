@@ -1645,7 +1645,7 @@ struct LdpSubproc {
 // child says. A compiler prints its diagnostics on stderr, and a caller that only reads stdout would call
 // a failing build silent. It is not the default: a child speaking a framed protocol (DAP) would have its
 // stream corrupted by stray log lines, which is exactly the bug this flag lets each caller decide about.
-long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr) {
+long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr, long long showWindow) {
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
@@ -1666,10 +1666,11 @@ long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr) {
     PROCESS_INFORMATION pi;
     memset(&pi, 0, sizeof(pi));
     char* mutableCmd = _strdup(cmdline);  // CreateProcessA may modify the command line in place
-    // CREATE_NO_WINDOW: a background tool (git, the LSP, the checker) is spawned with its stdio piped to us,
-    // so it never needs a console -- without this flag a console window flashes on every spawn (e.g. a git
-    // diff on every file open).
-    BOOL ok = CreateProcessA(NULL, mutableCmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    // Windowless by default: a background tool (git, the LSP, the checker) has its stdio piped to us and
+    // never needs a console -- without CREATE_NO_WINDOW a console flashes on every spawn (e.g. a git diff on
+    // each file open). showWindow lets the caller opt into a visible console for an interactive child.
+    DWORD creationFlags = showWindow != 0 ? 0 : CREATE_NO_WINDOW;
+    BOOL ok = CreateProcessA(NULL, mutableCmd, NULL, NULL, TRUE, creationFlags, NULL, NULL, &si, &pi);
     free(mutableCmd);
     CloseHandle(inRd);   // the child owns these now
     CloseHandle(outWr);
@@ -1683,7 +1684,7 @@ long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr) {
 }
 
 long long __ldp3_subproc_spawn(const char* cmdline) {
-    return __ldp3_subproc_spawn_ex(cmdline, 0);
+    return __ldp3_subproc_spawn_ex(cmdline, 0, 0);
 }
 
 long long __ldp3_subproc_write(long long h, const char* data, long long len) {
@@ -1741,7 +1742,8 @@ void __ldp3_subproc_close(long long h) {
     free(s);
 }
 #else
-long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr) {
+long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr, long long showWindow) {
+    (void)showWindow;  // no console-window concept on POSIX; the flag is a Windows affordance
     int inPipe[2], outPipe[2];  // inPipe: parent writes [1] -> child reads [0]; outPipe: child writes [1] -> parent reads [0]
     if (pipe(inPipe) != 0) return 0;
     if (pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return 0; }
@@ -1770,7 +1772,7 @@ long long __ldp3_subproc_spawn_ex(const char* cmdline, long long mergeErr) {
 }
 
 long long __ldp3_subproc_spawn(const char* cmdline) {
-    return __ldp3_subproc_spawn_ex(cmdline, 0);
+    return __ldp3_subproc_spawn_ex(cmdline, 0, 0);
 }
 
 long long __ldp3_subproc_write(long long h, const char* data, long long len) {
