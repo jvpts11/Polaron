@@ -8020,6 +8020,12 @@ R"LDP3(
             public static method startCombined(String command) returns Subprocess {
                 return new Subprocess(Subproc.spawnCombined(command)) on heap;
             }
+            // Same as start(), but the child gets its OWN console window (Windows). start()/startCombined()
+            // are windowless -- a background tool piped to us. startVisible() is for launching an interactive
+            // console tool the user is meant to see and drive; its stdio is still piped, so you can read it too.
+            public static method startVisible(String command) returns Subprocess {
+                return new Subprocess(Subproc.spawnVisible(command)) on heap;
+            }
             public method isValid() returns boolean {
                 return this.handle != cast<long>(0);
             }

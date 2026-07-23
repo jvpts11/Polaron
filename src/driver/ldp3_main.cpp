@@ -18,7 +18,7 @@
 #include "driver/toolchain.h"
 
 namespace {
-constexpr const char* kVersion = "ldp3 1.0.6";
+constexpr const char* kVersion = "ldp3 1.0.7";
 
 int printHelp() {
     std::printf(
