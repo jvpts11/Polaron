@@ -4008,6 +4008,35 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("reflect.typeOf<T>: '" + t + "' is not a class", call->loc);
             return "Type";
         }
+        // Fully-qualified static call to a stdlib/user class: `bundle.namespace...Class.staticMethod(...)`.
+        // Only the `Console`/`File` builtins are recognized by their full path; other classes must be
+        // called by the short name `Class.method` after importing (BUG3). Rather than the misleading
+        // "use of undeclared variable 'System'", point the user at the short form. Fires only when the
+        // receiver is a dotted path whose head is NOT a local and whose last segment is a known class
+        // with a static method by this name.
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+            mem != nullptr && dynamic_cast<const ast::MemberExpr*>(mem->object.get()) != nullptr) {
+            const std::string flat = flattenCallee(*mem->object);
+            const std::size_t dot = flat.rfind('.');
+            if (dot != std::string::npos && !flat.empty()) {
+                const std::string cls = flat.substr(dot + 1);
+                const std::string head = flat.substr(0, flat.find('.'));
+                if (head != "this" && lookupLocal(head) == nullptr) {
+                    if (const ClassInfo* sc = lookupClass(cls)) {
+                        if (auto mit = sc->methods.find(mem->member);
+                            mit != sc->methods.end() && mit->second.isStatic) {
+                            error("call '" + cls + "." + mem->member + "' by its short name after "
+                                  "importing it (e.g. `import " + flat + ";` then `" + cls + "." +
+                                  mem->member + "(...)`); the fully-qualified path is only resolved for "
+                                  "the Console/File builtins",
+                                  call->loc);
+                            for (const auto& arg : call->args) typeOf(*arg);
+                            return mit->second.returnType;
+                        }
+                    }
+                }
+            }
+        }
         // Otherwise the callee should be a method: obj.method(...) or, when the
         // receiver names a class, a static call ClassName.method(...).
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {

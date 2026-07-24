@@ -1,0 +1,30 @@
+import System.IO.Console;
+program AbstainNextLabel;
+
+// abstainfrom disables the code from its label up to the NEXT label (spec 7.11), not to the method end.
+// run(1) abstains `a`, so the `a` block (A) is skipped but the `b` block (B) still runs. Before the fix
+// abstainfrom ran all the way to the return, so run(1) printed nothing. Regression guard.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method run(int mode) returns void {
+                if (mode == 1) {
+                    abstainfrom a;
+                }
+                label a;
+                System.IO.Console.print("A");
+                label b;
+                System.IO.Console.print("B");
+                return;
+            }
+            public static method main(string[] args) returns void {
+                Main.run(0);
+                System.IO.Console.print("|");
+                Main.run(1);
+                System.IO.Console.println("");
+                return;
+            }
+        }
+    }
+}

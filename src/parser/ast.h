@@ -26,6 +26,19 @@ inline std::string mangleGeneric(const std::string& base, const std::vector<std:
         // token has no '$' (so the base-name split on the first '$' still works) and no trailing
         // brackets. The real "int[]" argument is still used for type substitution; only the name changes.
         std::string enc = a;
+        // Canonicalize the `string` alias to `String`: they are the same runtime type ({i64 len, ptr
+        // data}) and convert freely, so `Box<string>` and `Box<String>` must be the SAME instantiation.
+        // Otherwise a stdlib method taking `ArrayList<String>` rejects an `ArrayList<string>` argument
+        // ("type ArrayList$string but parameter is ArrayList$String"). Whole-word replace only.
+        for (std::size_t p = enc.find("string"); p != std::string::npos; p = enc.find("string", p + 6)) {
+            auto ident = [](char c) {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                       c == '_';
+            };
+            bool wb = (p == 0) || !ident(enc[p - 1]);
+            bool we = (p + 6 >= enc.size()) || !ident(enc[p + 6]);
+            if (wb && we) enc.replace(p, 6, "String");
+        }
         for (std::size_t p = enc.find("[]"); p != std::string::npos; p = enc.find("[]", p))
             enc.replace(p, 2, "~arr");
         s += "$" + enc;

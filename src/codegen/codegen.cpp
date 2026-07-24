@@ -777,6 +777,9 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, const ast::Block*> labelBlock_;
     std::unordered_set<std::string> abstainedLabels;  // qualified labels named by some `abstainfrom`
     std::unordered_map<std::string, llvm::GlobalVariable*> abstainCounters;  // qualified label -> counter
+    // The next top-level label after each one (spec 7.11): an abstained region ends at the next label,
+    // not the method end. Key = "class.method.label"; value = the next label's short name.
+    std::unordered_map<std::string, std::string> nextAbstainLabel_;
     std::string scanClass_;   // (class, method) context while scanning for abstained labels, so the
     std::string scanMethod_;  // scan can build the same qualified "class.method.label" key as codegen
     std::string enclosingClass_;   // (class, method) of the function being emitted; set even for a
@@ -2770,6 +2773,13 @@ struct CodeGenerator::Impl {
             builder.getInt32Ty(), {builder.getPtrTy(), builder.getPtrTy()}, false);
         return module.getOrInsertFunction("strcmp", ty);
     }
+    // Length-aware content equality of two String objects -> i32 (1 equal, 0 not). Correct even when the
+    // data buffer is not NUL-terminated (unlike strcmp), and null-safe. Backs String `==`/`!=` (spec 4).
+    llvm::FunctionCallee strEqFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getInt32Ty(), {builder.getPtrTy(), builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_str_eq", ty);
+    }
     // Cached FNV-1a hash of a String object (runtime helper reads/fills the object's hash field), for
     // Hashable<String>. Takes the String object pointer so repeated hashing of the same immutable String
     // (the HashMap<String,...> hot path) is a single field read after the first call.
@@ -4762,6 +4772,17 @@ struct CodeGenerator::Impl {
         // String concatenation: + on String/string operands builds a fresh String (spec 4).
         if (op == "+" && (lt == "String" || lt == "string") && (rt == "String" || rt == "string"))
             return ownedStr(emitStringConcat(l, r));
+        // String equality (spec 4): ==/!= on String/string operands compares CONTENT (immutable value
+        // semantics), lowering to strcmp -- the same runtime String.equals uses. Without this the string
+        // operands would fall through to the integer comparison path below, which sign-extends the
+        // string pointers to i32 (invalid IR: "SExt only operates on integer").
+        if ((op == "==" || op == "!=") && (lt == "String" || lt == "string") &&
+            (rt == "String" || rt == "string")) {
+            llvm::Value* eq = builder.CreateCall(strEqFn(), {l, r});  // i32: 1 equal, 0 not
+            if (op == "==") return eq;
+            return builder.CreateZExt(builder.CreateICmpEQ(eq, builder.getInt32(0)),
+                                      builder.getInt32Ty());
+        }
         // Decimal fixed-point arithmetic (spec 34): i128 mantissa, scale 10^18. Multiply and divide
         // rescale through a 256-bit intermediate so the product does not overflow.
         if (lt == "Decimal" && rt == "Decimal") {
@@ -8089,6 +8110,21 @@ struct CodeGenerator::Impl {
         if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e))
             scanExprForUnimport(u->operand.get());
     }
+    // Chain top-level labels in source order so each label's abstain region ends at the NEXT top-level
+    // label (spec 7.11), not the method end. Labels nested inside control-flow blocks are not chained --
+    // their region conservatively runs to the method end (a forward branch into a nested block, past its
+    // condition, would be unsafe).
+    void scanLabelChainTopLevel(const ast::Block& body) {
+        std::string last;
+        for (const auto& s : body.statements) {
+            const ast::Stmt* st = s.get();
+            if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) st = lb->stmt.get();
+            if (const auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(st)) {
+                if (!last.empty()) nextAbstainLabel_[last] = lm->name;
+                last = scanClass_ + "." + scanMethod_ + "." + lm->name;
+            }
+        }
+    }
     void collectAbstainedLabels() {
         for (const ast::Bundle& bundle : program.bundles)
             for (const ast::Namespace& ns : bundle.namespaces)
@@ -8098,14 +8134,17 @@ struct CodeGenerator::Impl {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             scanMethod_ = m->name;  // function name is "class.method"
                             for (const auto& s : m->body.statements) scanAbstained(s.get());
+                            scanLabelChainTopLevel(m->body);
                         } else if (const auto* c =
                                        dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                             scanMethod_ = cls.name;  // function name is "class.class"
                             for (const auto& s : c->body.statements) scanAbstained(s.get());
+                            scanLabelChainTopLevel(c->body);
                         } else if (const auto* d =
                                        dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                             scanMethod_ = "~" + cls.name;  // function name is "class.~class"
                             for (const auto& s : d->body.statements) scanAbstained(s.get());
+                            scanLabelChainTopLevel(d->body);
                         }
                     }
     }
@@ -8835,7 +8874,17 @@ struct CodeGenerator::Impl {
                 llvm::BasicBlock* skip = llvm::BasicBlock::Create(context, "label.off", currentFn);
                 builder.CreateCondBr(builder.CreateICmpNE(c, builder.getInt32(0)), skip, body);
                 builder.SetInsertPoint(skip);
-                emitDefaultReturn();  // disabled: skip the guarded region (to method end)
+                // While abstained, skip the guarded region. Its end is the NEXT top-level label (spec
+                // 7.11): branch there so control resumes at that label (whose own guard then runs). Only
+                // if there is no next label does the region run to the method end (default return).
+                if (auto nit = nextAbstainLabel_.find(akey); nit != nextAbstainLabel_.end()) {
+                    llvm::BasicBlock*& nb = labelBlocks[nit->second];
+                    if (nb == nullptr)
+                        nb = llvm::BasicBlock::Create(context, "label." + nit->second, currentFn);
+                    builder.CreateBr(nb);
+                } else {
+                    emitDefaultReturn();  // no next label: the region runs to the method end
+                }
                 builder.SetInsertPoint(body);
             }
             return;
@@ -9081,6 +9130,10 @@ struct CodeGenerator::Impl {
             // freed at scope exit. Only a plain `String` value -- not `String*` (an alias), a `String[]`,
             // nor the mutable `string` (whose coerce shares the data pointer and whose append reallocs it,
             // so it carries a separate copy/free lifecycle we must not double-free here).
+            // KNOWN GAP (task #252): `string d = ownedStringExpr` (e.g. concat) shares a temporary that is
+            // freed at the statement end, so the local reads empty. Copying+tracking `string` here fixes
+            // the read but double-frees on mutable reassign/append -- it needs the coordinated
+            // mutable-string lifecycle pass, not a piecemeal change here.
             bool declIsString = (declType == "String");
             if (declIsString) initV = emitStringCopy(initV);
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));

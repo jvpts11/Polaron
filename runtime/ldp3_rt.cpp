@@ -2236,6 +2236,19 @@ void __ldp3_str_free(void* src) {
     __ldp3_free(s);
 }
 
+// Content equality of two String objects, length-aware (the data buffer need not be NUL-terminated,
+// so this is correct where strcmp is not). Returns 1 if equal, 0 otherwise. Null-safe: two nulls are
+// equal; null vs non-null is not. Backs the `==`/`!=` operators on String/string (spec 4).
+int __ldp3_str_eq(void* a, void* b) {
+    if (a == b) return 1;
+    if (a == 0 || b == 0) return 0;
+    struct Ldp3Str { long long len; char* data; long long hash; };
+    Ldp3Str* x = (Ldp3Str*)a;
+    Ldp3Str* y = (Ldp3Str*)b;
+    if (x->len != y->len) return 0;
+    return memcmp(x->data, y->data, (size_t)x->len) == 0 ? 1 : 0;
+}
+
 // FNV-1a hash of `len` bytes, for Hashable<String> (collections).
 long long __ldp3_str_hash(const char* data, long long len) {
     unsigned long long h = 1469598103934665603ULL;  // FNV offset basis

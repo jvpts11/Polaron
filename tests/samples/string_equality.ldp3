@@ -1,0 +1,19 @@
+import System.IO.Console;
+program StringEquality;
+
+// String ==/!= compares CONTENT (immutable value semantics, spec 4), not the buffer pointer. Before the
+// 2026-07 fix this either emitted invalid IR (sext of a pointer) or compared identities. Regression guard.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String a = "weld";
+                String b = "we".concat("ld");   // same content, a distinct buffer
+                String c = "weldx";
+                System.IO.Console.println($"eq={a == b} ne={a != c} same={a == c}");
+                return;
+            }
+        }
+    }
+}
