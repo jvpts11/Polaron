@@ -11441,6 +11441,59 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // Does this statement (recursively) whole-assign `this.<field>` -- i.e. a `this.field = ...`
+    // that sets the field itself, not a member of it (`this.field.x = ...`)? Mirrors the block-walk
+    // used elsewhere (scanAbstained). Used to decide whether a value-struct field needs a default
+    // heap allocation so its members can be written before any whole-value assignment.
+    bool stmtWholeAssignsField(const ast::Stmt* st, const std::string& field) {
+        if (st == nullptr) return false;
+        if (const auto* as = dynamic_cast<const ast::AssignStmt*>(st)) {
+            const auto* mt = dynamic_cast<const ast::MemberExpr*>(as->target.get());
+            if (mt != nullptr && mt->member == field)
+                if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mt->object.get()))
+                    return id->name == "this";
+            return false;
+        }
+        auto blk = [&](const ast::Block& b) {
+            for (const auto& s : b.statements)
+                if (stmtWholeAssignsField(s.get(), field)) return true;
+            return false;
+        };
+        if (const auto* i = dynamic_cast<const ast::IfStmt*>(st))
+            return blk(i->thenBlock) || (i->elseBlock && blk(*i->elseBlock));
+        if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) return blk(w->body);
+        if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) return blk(d->body);
+        if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) return blk(f->body);
+        if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) return blk(fe->body);
+        if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) {
+            for (const auto& c : sw->cases) if (blk(c.body)) return true;
+            return sw->defaultBody && blk(*sw->defaultBody);
+        }
+        if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) {
+            for (const auto& c : ms->cases) if (blk(c.body)) return true;
+            return ms->defaultBody && blk(*ms->defaultBody);
+        }
+        if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) {
+            if (blk(tr->body)) return true;
+            for (const auto& c : tr->catches) if (blk(c.body)) return true;
+            return tr->finallyBlock && blk(*tr->finallyBlock);
+        }
+        if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) return blk(df->body);
+        if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) return blk(us->body);
+        if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st))
+            return stmtWholeAssignsField(lb->stmt.get(), field);
+        return false;
+    }
+    // True when some constructor of `cls` assigns the whole field (`this.field = ...`), meaning it
+    // will set the field itself and no default allocation is needed.
+    bool anyCtorWholeAssignsField(const ast::ClassDecl& cls, const std::string& field) {
+        for (const auto& m : cls.members)
+            if (const auto* ctor = dynamic_cast<const ast::ConstructorDecl*>(m.get()))
+                for (const auto& s : ctor->body.statements)
+                    if (stmtWholeAssignsField(s.get(), field)) return true;
+        return false;
+    }
+
     // Applies every inline field initializer to `thisPtr`, in declaration order.
     // Run at the start of each constructor, before its body (spec 940).
     void emitFieldInits(const ast::ClassDecl& cls, llvm::Value* thisPtr) {
@@ -11460,6 +11513,21 @@ struct CodeGenerator::Impl {
             auto di = layout.fieldIndex.find(f->name);
             if (di == layout.fieldIndex.end()) continue;
             if (!llvmType(ft)->isPointerTy()) continue;  // only pointer-stored owned fields
+            if (auto sit = classes.find(ft);
+                sit != classes.end() && sit->second.isStruct &&
+                !anyCtorWholeAssignsField(cls, f->name)) {
+                // A value-struct field that no constructor sets as a whole (only its members are
+                // written, e.g. `this.cap.x = ...`) needs backing storage up front, or that member
+                // write would dereference a null slot and crash. Default it to a zeroed owned heap
+                // instance (value types default to zero); it is freed with the object like any owned
+                // field, and no whole-assignment overwrites it, so there is nothing to leak.
+                llvm::Type* sty = sit->second.type;
+                llvm::Value* inst = builder.CreateCall(mallocFn(), {sizeOf(sty)}, f->name + ".dflt");
+                builder.CreateCall(memsetFn(), {inst, builder.getInt32(0), sizeOf(sty)});
+                builder.CreateStore(
+                    inst, builder.CreateStructGEP(layout.type, thisPtr, di->second, f->name));
+                continue;
+            }
             builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()),
                                 builder.CreateStructGEP(layout.type, thisPtr, di->second, f->name));
         }
