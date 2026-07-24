@@ -1,0 +1,57 @@
+import System.IO.Console;
+program StructInAggregate;
+
+// Value structs used inside aggregates (spec 11): as a class field, as an array element, nested in
+// another struct, and returned by value from an overloaded operator. Regression guard for the
+// 2026-07 codegen fixes -- operator overloads now route through the sret wrapper (a value-struct
+// return no longer crashes), and a `new X()` assigned into a value-aggregate slot is promoted to the
+// heap so the owned child stays live (embedded value-struct fields/elements no longer read garbage).
+
+public bundle main {
+    public namespace app {
+
+        public struct Coord {
+            public mutable int x;
+            public mutable int y;
+            public constructor Coord(int x, int y) {
+                this.x = x;
+                this.y = y;
+            }
+            public operator - (Coord o) returns Coord {
+                return new Coord(this.x - o.x, this.y - o.y);
+            }
+        }
+
+        public struct Rect {
+            public mutable Coord tl;
+            public mutable int w;
+            public constructor Rect(int x, int y, int w) {
+                this.tl = new Coord(x, y);
+                this.w = w;
+            }
+        }
+
+        public class Holder {
+            public mutable Coord cap;
+            public constructor Holder(int x, int y) {
+                this.cap = new Coord(x, y);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Holder h = new Holder(10, 20) on heap;     // value struct as a class field
+                mutable Coord[] cs = new Coord[2]();        // array of value structs
+                cs[0] = new Coord(3, 4);
+                cs[1] = new Coord(30, 40);
+                Rect r = new Rect(5, 6, 7);                 // value struct nested in a struct
+                Coord d = h.cap - cs[0];                     // operator returns a struct by value
+                System.IO.Console.printf("field=%d,%d elem=%d,%d nested=%d,%d op=%d,%d\n",
+                    h.cap.x, h.cap.y, cs[1].x, cs[1].y, r.tl.x, r.w, d.x, d.y);
+                delete h;
+                delete cs;
+                return;
+            }
+        }
+    }
+}

@@ -4318,7 +4318,7 @@ struct CodeGenerator::Impl {
                     if (fnit != functions.end() && fnit->second->arg_size() == 1) {
                         llvm::Value* recv = emitExpr(*un->operand);
                         if (recv == nullptr) return nullptr;
-                        return builder.CreateCall(fnit->second, {recv});
+                        return emitMaybeInvoke(fnit->second, {recv});
                     }
                 }
             }
@@ -4515,7 +4515,7 @@ struct CodeGenerator::Impl {
                 if (recv == nullptr || idx == nullptr) return nullptr;
                 if (fnit->second->arg_size() >= 2)
                     idx = coerceToType(idx, fnit->second->getArg(1)->getType());
-                return builder.CreateCall(fnit->second, {recv, idx});
+                return emitMaybeInvoke(fnit->second, {recv, idx});
             }
             // SIMD vector/matrix index: v[i] / m[i] -> extractelement, bounds-checked (no UB).
             if (int w = (at == "mat4" ? 16 : vecWidth(at)); w > 0) {
@@ -4745,7 +4745,10 @@ struct CodeGenerator::Impl {
                 if (fnit->second->arg_size() >= 2) {
                     arg = coerceToType(arg, fnit->second->getArg(1)->getType());
                 }
-                return builder.CreateCall(fnit->second, {recv, arg});
+                // Route through the sret-aware wrapper: an operator returning a value struct is an
+                // sret function (extra trailing result-slot argument), so a raw 2-arg call would have
+                // the wrong signature and crash. emitMaybeInvoke handles both sret and plain returns.
+                return emitMaybeInvoke(fnit->second, {recv, arg});
             }
         }
         const std::string rt = typeName(*bin.rhs);
@@ -9161,7 +9164,7 @@ struct CodeGenerator::Impl {
                         idx = coerceToType(idx, fnit->second->getArg(1)->getType());
                         val = coerceToType(val, fnit->second->getArg(2)->getType());
                     }
-                    builder.CreateCall(fnit->second, {recv, idx, val});
+                    emitMaybeInvoke(fnit->second, {recv, idx, val});
                     return;
                 }
             }
@@ -9303,6 +9306,18 @@ struct CodeGenerator::Impl {
                     }
                 }
             }
+            // A value-struct / value-class field or array element is an owned heap child (spec 11 /
+            // 37.1): its slot holds a pointer to a separately-allocated object. A plain `new X()`
+            // defaults to the stack (parser default), so storing it into such a slot would leave the
+            // field pointing at the constructor's reclaimed frame -> garbage / heap corruption. Promote
+            // a directly-assigned stack `new X()` to the heap, exactly as a returned `new` is promoted
+            // (see ReturnStmt), so the owned child stays live. Region-targeted news keep their region.
+            if ((dynamic_cast<const ast::MemberExpr*>(assign->target.get()) != nullptr ||
+                 dynamic_cast<const ast::IndexExpr*>(assign->target.get()) != nullptr) &&
+                isClassValue(targetType))
+                if (const auto* anw = dynamic_cast<const ast::NewExpr*>(assign->value.get());
+                    anw != nullptr && anw->location == "stack" && anw->region.empty())
+                    const_cast<ast::NewExpr*>(anw)->location = "heap";
             llvm::Value* slot = emitLValue(*assign->target);
             if (slot == nullptr) return;
             // A `this.field = itself.allocate(...)` init of a flavored region field: thread the field's
@@ -9432,7 +9447,7 @@ struct CodeGenerator::Impl {
                     if (fnit != functions.end() && fnit->second->arg_size() == 1) {
                         llvm::Value* recv = emitExpr(*incdec->target);
                         if (recv == nullptr) return;
-                        llvm::Value* res = builder.CreateCall(fnit->second, {recv});
+                        llvm::Value* res = emitMaybeInvoke(fnit->second, {recv});
                         llvm::Value* dst = emitLValue(*incdec->target);
                         if (dst != nullptr) builder.CreateStore(res, dst);
                         return;
