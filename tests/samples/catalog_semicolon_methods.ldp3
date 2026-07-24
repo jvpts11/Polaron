@@ -1,0 +1,46 @@
+import System.IO.Console;
+program CatalogSemicolonMethods;
+
+// A catalog-implementing enum is a plain ordinal enum that may declare methods. Those methods may be
+// separated from the constants by a `;` (the same shape a stateless enum uses elsewhere) -- this does
+// NOT make the enum object-backed, so catalog dispatch still works. Regression guard for the 2026-07
+// fix that stopped rejecting such enums with the misleading "constructor-argument constants" error.
+
+public bundle main {
+    public namespace app {
+        public catalog Named {
+            method label() returns String;
+        }
+        public enum Mood extends Named {
+            CALM,
+            ANGRY;
+            public method label() returns String {
+                if (this == Mood.ANGRY) {
+                    return "angry";
+                }
+                return "calm";
+            }
+        }
+        public enum Rank extends Named {
+            LOW,
+            HIGH;
+            public method label() returns String {
+                if (this == Rank.HIGH) {
+                    return "high";
+                }
+                return "low";
+            }
+        }
+        public class Main {
+            public static method describe(Named n) returns String {
+                return n.label();
+            }
+            public static method main(string[] args) returns void {
+                Named a = Mood.ANGRY;              // catalog-typed receiver, first implementer
+                Named b = Rank.HIGH;               // catalog-typed receiver, second implementer
+                System.IO.Console.println($"a={Main.describe(a)} b={Main.describe(b)}");
+                return;
+            }
+        }
+    }
+}

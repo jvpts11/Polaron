@@ -2718,6 +2718,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A catalog-implementing ordinal enum may separate its methods from the constants with a `;`
+        # (regression guard: this stateless form was wrongly rejected as java-style). Multi-implementer.
+        add_test(NAME codegen_catalog_semicolon_methods_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_semicolon_methods.ldp3"
+            "-DEXPECTED=a=angry b=high"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # multi-implementer catalog dispatch (spec 12.4): a runtime type tag picks the right enum's
         # method when several enums implement the catalog.
         add_test(NAME codegen_catalog_multi_dispatch_runs COMMAND "${CMAKE_COMMAND}"
