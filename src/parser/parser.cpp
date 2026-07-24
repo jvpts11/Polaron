@@ -746,13 +746,41 @@ ast::EnumDecl Parser::parseEnum() {
         }
     }
     expect(TokenKind::RBrace, "'}'");
-    // A catalog-implementing enum stays a plain ordinal enum (its constants are
-    // i32 ordinals with value semantics); it cannot also be java-style (per-constant
-    // constructor args or a `;` body), whose constants are heap objects.
-    if (!e.extendsCatalogs.empty() && e.isJavaStyle) {
-        fail("a catalog-implementing enum cannot use java-style constructor-argument "
-             "constants (it must be a plain ordinal enum)",
-             e.loc);
+    // A catalog-implementing enum stays a plain ordinal enum (its constants are i32 ordinals with
+    // value semantics), so catalog dispatch can tag them (typeId<<32 | ordinal). It may still declare
+    // METHODS (dispatched on the ordinal) -- with or without a leading `;` -- but it cannot give its
+    // constants per-constant constructor arguments, instance fields, or a constructor, since those make
+    // each constant a distinct heap object with no ordinal to dispatch on. Only the latter is rejected;
+    // a `;` used merely to separate methods does not make the enum object-backed.
+    if (!e.extendsCatalogs.empty()) {
+        bool hasCtorArgs = false;
+        for (const auto& a : e.constantArgs) {
+            if (!a.empty()) {
+                hasCtorArgs = true;
+                break;
+            }
+        }
+        bool hasStateOrCtor = false;
+        for (const auto& m : e.members) {
+            if (dynamic_cast<const ast::ConstructorDecl*>(m.get()) != nullptr) {
+                hasStateOrCtor = true;
+                break;
+            }
+            if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get())) {
+                if (!fd->isStatic) {
+                    hasStateOrCtor = true;
+                    break;
+                }
+            }
+        }
+        if (hasCtorArgs || hasStateOrCtor) {
+            fail("a catalog-implementing enum must be a plain ordinal enum: it cannot give its "
+                 "constants constructor arguments, instance fields, or a constructor",
+                 e.loc);
+        }
+        // A methods-only enum is ordinal even if a `;` separated its methods -- normalise it so
+        // codegen keeps it an ordinal enum (not desugared to a heap class) and dispatch works.
+        e.isJavaStyle = false;
     }
     return e;
 }
