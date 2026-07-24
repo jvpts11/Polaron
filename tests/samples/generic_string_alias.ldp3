@@ -1,0 +1,24 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program GenericStringAlias;
+
+// `string` is the mutable alias of the immutable `String` and lowers to the same runtime type, so
+// ArrayList<string> and ArrayList<String> are the SAME instantiation: one is accepted where the other
+// is expected. Before the fix they mangled to distinct ArrayList$string / ArrayList$String. Regression.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method count(ArrayList<String> xs) returns int {
+                return xs.size();
+            }
+            public static method main(string[] args) returns void {
+                ArrayList<string> xs = new ArrayList<string>() on heap;
+                xs.add("a");
+                xs.add("b");
+                System.IO.Console.println($"n={Main.count(xs)}");
+                return;
+            }
+        }
+    }
+}
