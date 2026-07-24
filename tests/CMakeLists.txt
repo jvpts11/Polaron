@@ -11,7 +11,7 @@ set_tests_properties(cli_version PROPERTIES
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.5")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.8")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1321,6 +1321,17 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/struct_return.ldp3"
             "-DEXPECTED=a=100 b=200"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Value structs inside aggregates (spec 11): a class field, an array element, a nested struct,
+        # and an operator returning a struct by value. Regression guard for the 2026-07 codegen fixes
+        # (operator sret dispatch + owned-heap promotion of `new` into a value-aggregate slot).
+        add_test(NAME codegen_struct_in_aggregate_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/struct_in_aggregate.ldp3"
+            "-DEXPECTED=field=10,20 elem=30,40 nested=5,7 op=7,16"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
