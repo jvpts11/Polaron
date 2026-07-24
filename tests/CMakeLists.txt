@@ -1331,7 +1331,7 @@ if(LDP3_WITH_LLVM)
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/struct_in_aggregate.ldp3"
-            "-DEXPECTED=field=10,20 elem=30,40 nested=5,7 op=7,16 fbf=99,88"
+            "-DEXPECTED=field=10,20 elem=30,40 nested=5,7 op=7,16 fbf=99,88 mret=77,66"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

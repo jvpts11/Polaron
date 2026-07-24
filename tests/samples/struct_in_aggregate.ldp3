@@ -46,7 +46,17 @@ public bundle main {
             }
         }
 
+        public class Holder3 {
+            public mutable Coord cap;
+            public constructor Holder3(int x, int y) {
+                this.cap = Main.origin(x, y);   // struct field from a method's by-value (sret) return
+            }
+        }
+
         public class Main {
+            public static method origin(int x, int y) returns Coord {
+                return new Coord(x, y);
+            }
             public static method main(string[] args) returns void {
                 Holder h = new Holder(10, 20) on heap;     // value struct as a class field
                 mutable Coord[] cs = new Coord[2]();        // array of value structs
@@ -54,11 +64,14 @@ public bundle main {
                 cs[1] = new Coord(30, 40);
                 Rect r = new Rect(5, 6, 7);                 // value struct nested in a struct
                 Holder2 h2 = new Holder2(99, 88) on heap;    // field-by-field struct field init
+                Holder3 h3 = new Holder3(77, 66) on heap;    // struct field from a method's sret return
                 Coord d = h.cap - cs[0];                     // operator returns a struct by value
-                System.IO.Console.printf("field=%d,%d elem=%d,%d nested=%d,%d op=%d,%d fbf=%d,%d\n",
-                    h.cap.x, h.cap.y, cs[1].x, cs[1].y, r.tl.x, r.w, d.x, d.y, h2.cap.x, h2.cap.y);
+                System.IO.Console.printf("field=%d,%d elem=%d,%d nested=%d,%d op=%d,%d fbf=%d,%d mret=%d,%d\n",
+                    h.cap.x, h.cap.y, cs[1].x, cs[1].y, r.tl.x, r.w, d.x, d.y, h2.cap.x, h2.cap.y,
+                    h3.cap.x, h3.cap.y);
                 delete h;
                 delete h2;
+                delete h3;
                 delete cs;
                 return;
             }

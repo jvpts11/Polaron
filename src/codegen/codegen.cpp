@@ -9334,10 +9334,21 @@ struct CodeGenerator::Impl {
             if (v == nullptr) return;
             pendingPersistIndex = nullptr;  // defensive: never leak into the next new
             // Value semantics: assigning a class value makes the target an independent copy.
+            const bool tgtFieldOrElem =
+                dynamic_cast<const ast::MemberExpr*>(assign->target.get()) != nullptr ||
+                dynamic_cast<const ast::IndexExpr*>(assign->target.get()) != nullptr;
+            // A value struct produced by an rvalue (e.g. a method's or operator's sret return) lives in
+            // a stack slot in this frame; storing it straight into a field/array element -- which
+            // outlives the frame -- would dangle. Deep-copy such a struct rvalue into the owned heap
+            // slot too. (A `new` RHS is already heap-promoted above; a copyable lvalue is handled by the
+            // existing branch; a local target is same-frame, so it needs neither.)
+            const bool structRvalueToSlot =
+                tgtFieldOrElem && isClassValue(targetType) && isCopyDiscipline(targetType) &&
+                classes.count(targetType) > 0 && classes[targetType].isStruct &&
+                dynamic_cast<const ast::NewExpr*>(assign->value.get()) == nullptr;
             if (isClassValue(targetType) && isCopyDiscipline(targetType) &&
-                isCopyableLValue(*assign->value)) {
-                if (dynamic_cast<const ast::MemberExpr*>(assign->target.get()) != nullptr ||
-                    dynamic_cast<const ast::IndexExpr*>(assign->target.get()) != nullptr) {
+                (isCopyableLValue(*assign->value) || structRvalueToSlot)) {
+                if (tgtFieldOrElem) {
                     // A class-value field or array element is a pointer slot with no backing object
                     // (a fresh array's elements are null), so deep-copy into a fresh heap object and
                     // store the pointer rather than memcpy'ing into a (possibly null) existing object.
