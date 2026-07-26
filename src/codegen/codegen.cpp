@@ -670,6 +670,12 @@ struct CodeGenerator::Impl {
     // boundary; a conditional-arm temp is dropped). scopeStrings: String local SLOTS, freed at scope exit.
     std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> stringTemps;
     std::vector<llvm::Value*> scopeStrings;
+    // A value struct heap-promoted into the async/generator coroutine state object (its stack home is
+    // gone once an await suspends) is owned by the coroutine but has no destructor, so nothing else frees
+    // it. Track each such local's slot + type; free its owned fields and block at scope/coroutine exit,
+    // mirroring scopeStrings. Only the async/gen var-decl path populates this (a sync value struct lives
+    // on the frame stack -- no heap block to free).
+    std::vector<std::pair<llvm::Value*, std::string>> scopeValueStructs;
     bool checkedArith_ = false;
     // spec 36.4: `[[no_bounds_check]]` on a method -- its array indexing drops the runtime bounds check.
     // An EXPLICIT, named opt-out for a hot path: LDP3 has no implicit UB, but it does hand you the cannon.
@@ -772,7 +778,7 @@ struct CodeGenerator::Impl {
     // in (pre-scanned per function body); `blockScopes` is the stack of currently-open blocks with the
     // cleanup bases captured at each one's entry. At a goto we clean every scope nested inside the target
     // label's scope, from innermost out, then branch.
-    struct BlockScope { const ast::Block* block; std::size_t so, df, rg, st; };
+    struct BlockScope { const ast::Block* block; std::size_t so, df, rg, st, vs; };
     std::vector<BlockScope> blockScopes;
     std::unordered_map<std::string, const ast::Block*> labelBlock_;
     std::unordered_set<std::string> abstainedLabels;  // qualified labels named by some `abstainfrom`
@@ -3016,6 +3022,24 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // Free a heap value-struct held in `slot` (a coroutine-state field): its owned fields, then the block
+    // itself. Null-guarded, so an unreached declaration (a suspend before the store) frees nothing. Used
+    // for the async/gen value-struct locals tracked in scopeValueStructs, which have no destructor.
+    void emitFreeValueStructSlot(llvm::Value* slot, const std::string& type) {
+        if (classes.find(type) == classes.end()) return;
+        llvm::Value* obj = builder.CreateLoad(builder.getPtrTy(), slot);
+        llvm::Value* isNull =
+            builder.CreateICmpEQ(obj, llvm::ConstantPointerNull::get(builder.getPtrTy()));
+        auto* freeBB = llvm::BasicBlock::Create(context, "freevs", currentFn);
+        auto* contBB = llvm::BasicBlock::Create(context, "freevs.cont", currentFn);
+        builder.CreateCondBr(isNull, contBB, freeBB);
+        builder.SetInsertPoint(freeBB);
+        emitFreeOwnedFields(type, obj);
+        builder.CreateCall(freeFn(), {obj});
+        builder.CreateBr(contBB);
+        builder.SetInsertPoint(contBB);
+    }
+
     // Array memory layout: one heap block [ i64 length | elem 0 | elem 1 | ... ].
     // The array value is a pointer to the length header (element count); elements
     // start 8 bytes in and are sized by the element type.
@@ -3904,7 +3928,8 @@ struct CodeGenerator::Impl {
         auto sLoc = locals; auto sScope = scopeObjects; auto sDef = deferred;
         auto sRegions = scopeRegions; auto sDtorChain = currentDtorChain; auto sOld = oldValues_;
         auto sStr = scopeStrings; auto sTmp = stringTemps;  // String RAII: nested body gets its own set
-        scopeStrings.clear(); stringTemps.clear();
+        auto sVals = scopeValueStructs;
+        scopeStrings.clear(); stringTemps.clear(); scopeValueStructs.clear();
         auto sIP = builder.saveIP();
         emitBody(fn, lam.body, lam.params, "", rt, nullptr, nullptr, nullptr, nullptr,
                  /*hasEnv=*/false);
@@ -3912,7 +3937,7 @@ struct CodeGenerator::Impl {
         currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
         currentDtorChain = sDtorChain; oldValues_ = sOld;
         locals = sLoc; scopeObjects = sScope; deferred = sDef; scopeRegions = sRegions;
-        scopeStrings = sStr; stringTemps = sTmp;
+        scopeStrings = sStr; stringTemps = sTmp; scopeValueStructs = sVals;
         builder.restoreIP(sIP);
         return fn;
     }
@@ -3988,7 +4013,8 @@ struct CodeGenerator::Impl {
             auto sDtorChain = currentDtorChain;
             auto sOld = oldValues_;  // emitBody clears these; the enclosing method's old() slots must survive
             auto sStr = scopeStrings; auto sTmp = stringTemps;  // String RAII: nested body gets its own set
-            scopeStrings.clear(); stringTemps.clear();
+            auto sVals = scopeValueStructs;
+            scopeStrings.clear(); stringTemps.clear(); scopeValueStructs.clear();
             auto sIP = builder.saveIP();
             emitBody(fn, lam->body, lam->params, "", rt, nullptr, nullptr, nullptr, nullptr,
                      /*hasEnv=*/true, &eff, &capTypes);
@@ -3998,7 +4024,7 @@ struct CodeGenerator::Impl {
             oldValues_ = sOld;
             locals = sLoc; scopeObjects = sScope; deferred = sDef;
             scopeRegions = sRegions;
-            scopeStrings = sStr; stringTemps = sTmp;
+            scopeStrings = sStr; stringTemps = sTmp; scopeValueStructs = sVals;
             builder.restoreIP(sIP);
             // No captures: the closure {code, null} is a compile-time constant. Emit it as a private
             // unnamed constant global instead of a heap allocation. Two wins: a no-capture lambda never
@@ -7875,6 +7901,9 @@ struct CodeGenerator::Impl {
         // (like scopeObjects) -- the unwinding emitBlock calls resize away the tracking entries.
         for (auto it = scopeStrings.rbegin(); it != scopeStrings.rend(); ++it)
             builder.CreateCall(strFreeFn(), {builder.CreateLoad(builder.getPtrTy(), *it)});
+        // Async/gen value-struct RAII: free every coroutine-state value struct at this exit (spec 11/20).
+        for (auto it = scopeValueStructs.rbegin(); it != scopeValueStructs.rend(); ++it)
+            emitFreeValueStructSlot(it->first, it->second);
         freeRegionsFrom(0);  // region RAII (spec 17.7): free every live region at this exit
         // Inside a destructor: chain to the base class destructor last (derived-then-base),
         // so the inherited part is torn down at every exit of this destructor.
@@ -9141,6 +9170,17 @@ struct CodeGenerator::Impl {
                             v = emitClassCopy(it->second.type, v, /*heap=*/true);
                         builder.CreateStore(coerceToType(v, llvmType(it->second.type)),
                                             it->second.storage);
+                        // A heap-owned value struct in the coroutine state has no destructor and nothing
+                        // else frees it -- track it so the coroutine/scope exit reclaims its block and
+                        // owned fields (B9). A region-targeted `new` is excluded (the region reclaims it);
+                        // a call-returned struct is not owned here.
+                        if (isClassValue(it->second.type) && isCopyDiscipline(it->second.type)) {
+                            const auto* initNw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+                            const bool heapOwned = (initNw != nullptr && initNw->region.empty()) ||
+                                                   (initNw == nullptr && isCopyableLValue(*vd->init));
+                            if (heapOwned)
+                                scopeValueStructs.push_back({it->second.storage, it->second.type});
+                        }
                     }
                     if (isRegion && !vd->isEternal)
                         scopeRegions.push_back(RegionLocal{it->second.storage, vd->isEternal, vd->name});
@@ -10186,7 +10226,8 @@ struct CodeGenerator::Impl {
     }
 
     void emitBlockCleanup(std::size_t soBase, std::size_t dfBase, std::size_t regBase,
-                          std::size_t strBase = static_cast<std::size_t>(-1)) {
+                          std::size_t strBase = static_cast<std::size_t>(-1),
+                          std::size_t vsBase = static_cast<std::size_t>(-1)) {
         for (std::size_t i = deferred.size(); i > dfBase; --i) {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
             emitCleanupAction(deferred[i - 1]);
@@ -10206,6 +10247,11 @@ struct CodeGenerator::Impl {
             for (std::size_t i = scopeStrings.size(); i > strBase; --i)
                 builder.CreateCall(strFreeFn(),
                                    {builder.CreateLoad(builder.getPtrTy(), scopeStrings[i - 1])});
+        // Async/gen value structs declared in this block (LIFO); the -1 sentinel means "leave them" for
+        // an outer/function exit to free (break/continue), never double-freeing here.
+        if (vsBase != static_cast<std::size_t>(-1))
+            for (std::size_t i = scopeValueStructs.size(); i > vsBase; --i)
+                emitFreeValueStructSlot(scopeValueStructs[i - 1].first, scopeValueStructs[i - 1].second);
         freeRegionsFrom(regBase);  // region RAII (spec 17.7)
     }
 
@@ -10267,7 +10313,7 @@ struct CodeGenerator::Impl {
             if (blockScopes[i].block == target) { fi = i; break; }
         if (fi < 0 || fi + 1 >= static_cast<int>(blockScopes.size())) return;  // same scope / not open
         const BlockScope& inner = blockScopes[fi + 1];  // first scope nested inside the label's scope
-        emitBlockCleanup(inner.so, inner.df, inner.rg, inner.st);
+        emitBlockCleanup(inner.so, inner.df, inner.rg, inner.st, inner.vs);
     }
 
     void emitBlock(const ast::Block& block, bool newScope = true) {
@@ -10275,8 +10321,9 @@ struct CodeGenerator::Impl {
         const std::size_t dfBase = deferred.size();
         const std::size_t regBase = scopeRegions.size();
         const std::size_t strBase = scopeStrings.size();
+        const std::size_t vsBase = scopeValueStructs.size();
         if (blockScopes.empty()) { labelBlock_.clear(); scanLabelBlocks(block); }  // function-body entry
-        blockScopes.push_back({&block, soBase, dfBase, regBase, strBase});
+        blockScopes.push_back({&block, soBase, dfBase, regBase, strBase, vsBase});
         for (const auto& stmt : block.statements) {
             // Don't stop at a terminator: a later `label` (the target of a forward goto/comefrom)
             // must still be placed. emitStatement skips genuinely dead statements but always emits
@@ -10289,11 +10336,12 @@ struct CodeGenerator::Impl {
             // we skip emission but still drop the entries so they are not re-run or
             // run on a stale slot at an outer/function exit.
             if (builder.GetInsertBlock()->getTerminator() == nullptr)
-                emitBlockCleanup(soBase, dfBase, regBase, strBase);
+                emitBlockCleanup(soBase, dfBase, regBase, strBase, vsBase);
             scopeObjects.resize(soBase);
             deferred.resize(dfBase);
             scopeRegions.resize(regBase);
             scopeStrings.resize(strBase);
+            scopeValueStructs.resize(vsBase);
         }
         blockScopes.pop_back();
     }
@@ -11959,6 +12007,7 @@ struct CodeGenerator::Impl {
         scopeObjects.clear();
         scopeRegions.clear();
         scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
+        scopeValueStructs.clear();  // same, for coroutine-state value structs (B9)
         stringTemps.clear();
         lazyRegions_.clear();  // region/volatile tracking is keyed by local name; reset per function
         lazyRegionSize_.clear();
@@ -12185,6 +12234,7 @@ struct CodeGenerator::Impl {
         scopeObjects.clear();
         scopeRegions.clear();
         scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
+        scopeValueStructs.clear();  // same, for coroutine-state value structs (B9)
         stringTemps.clear();
         lazyRegions_.clear();  // region/volatile tracking is keyed by local name; reset per function
         lazyRegionSize_.clear();
@@ -12456,6 +12506,7 @@ struct CodeGenerator::Impl {
         scopeObjects.clear();
         scopeRegions.clear();
         scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
+        scopeValueStructs.clear();  // same, for coroutine-state value structs (B9)
         stringTemps.clear();
         lazyRegions_.clear();
         lazyRegionSize_.clear();
@@ -12550,6 +12601,7 @@ struct CodeGenerator::Impl {
         scopeObjects.clear();
         scopeRegions.clear();
         scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
+        scopeValueStructs.clear();  // same, for coroutine-state value structs (B9)
         stringTemps.clear();
         lazyRegions_.clear();  // region/volatile tracking is keyed by local name; reset per function
         lazyRegionSize_.clear();

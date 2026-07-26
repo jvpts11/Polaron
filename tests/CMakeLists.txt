@@ -1214,6 +1214,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Regression (B9): a value struct owning a heap field, live across an await, is heap-promoted into
+        # the coroutine state and freed (block + owned fields) at completion -- 200x guards leak/double-free.
+        add_test(NAME codegen_async_value_struct_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/async_value_struct.ldp3"
+            "-DEXPECTED=total=39800"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # F8 + F6: async/await combined with try/catch/finally (spec 20.2 + 21.1) -- awaits inside
         # the try and catch, a thrown error caught, and a value live across the try's invoke edges.
         add_test(NAME codegen_async_try_runs COMMAND "${CMAKE_COMMAND}"
