@@ -2516,8 +2516,12 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
         auto checkTarget = [&](const ast::Expr& target) {
             const std::string t = typeOf(target);
-            // `delete p` where p is a class, or a pointer/reference to one (see through T*/T&).
-            if (!t.empty() && lookupClass(baseType(t)) == nullptr && !isArrayType(t)) {
+            // `delete p` where p is a class, or a pointer/reference to one (see through T*/T&). Try the
+            // full type too, not only baseType: a generic instantiated with a pointer type argument mangles
+            // to a name that ends in '*' (e.g. `ArrayList$Node*` for ArrayList<Node*>), which baseType would
+            // wrongly strip -- but the class is registered under the full name, so `delete` must accept it.
+            if (!t.empty() && lookupClass(baseType(t)) == nullptr && lookupClass(t) == nullptr &&
+                !isArrayType(t)) {
                 error("'delete' expects a heap object or array; got a value of type '" + t + "'",
                       del->loc);
             }
