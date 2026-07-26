@@ -2033,6 +2033,25 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Regression: a value struct that OWNS an int[] compiles (synthesized equalsKey no longer crashes
+        # on `array == array`) and `v++` moves the owned array correctly over 1000 iterations.
+        add_test(NAME codegen_struct_incr_owned_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/struct_incr_owned.ldp3"
+            "-DEXPECTED=n=1000 first=1000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Regression: == / != on arrays is identity comparison (heap-block pointer), not a codegen crash.
+        add_test(NAME codegen_array_equality_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/array_equality.ldp3"
+            "-DEXPECTED=r=1011"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # A record may implement a generic interface (spec 10): record Point3D implements Ordered<Point3D>.
         add_test(NAME codegen_record_generic_iface_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

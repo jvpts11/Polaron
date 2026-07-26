@@ -1,0 +1,34 @@
+import System.IO.Console;
+program ArrayEquality;
+
+// Regression: `==` / `!=` on array operands is identity comparison (same heap block), like any
+// reference. It used to fall through to the integer path and crash codegen (a pointer fitInt'd as an
+// int). Prints: r=1011 (a==a: +1, a==c alias: +10, a==b distinct: +0, a!=b: +1000).
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] a = new int[3]();
+                mutable int[] b = new int[3]();
+                mutable int[] c = a;
+                mutable int r = 0;
+                if (a == a) {
+                    r = r + 1;
+                }
+                if (a == c) {
+                    r = r + 10;
+                }
+                if (a == b) {
+                    r = r + 100;
+                }
+                if (a != b) {
+                    r = r + 1000;
+                }
+                System.IO.Console.printf("r=%d\n", r);
+                delete a;
+                delete b;
+                return;
+            }
+        }
+    }
+}

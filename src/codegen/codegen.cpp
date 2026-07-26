@@ -4917,6 +4917,10 @@ struct CodeGenerator::Impl {
             if (t == "null" || (!t.empty() && (t.back() == '*' || t.back() == '&'))) return true;
             if (!t.empty() && t.back() == '?' && isBoxablePrimitive(t.substr(0, t.size() - 1)))
                 return true;
+            // An array is a pointer to its heap block, so == / != is identity comparison (like any
+            // reference). Without this it falls through to the integer path, which fitInt()s the block
+            // pointer as an integer and crashes codegen.
+            if (isArrayType(t)) return true;
             return javaEnums.count(baseType(t)) > 0 || classes.count(baseType(t)) > 0;
         };
         const bool javaEnumCmp = javaEnums.count(baseType(lt)) > 0 || javaEnums.count(baseType(rt)) > 0;
