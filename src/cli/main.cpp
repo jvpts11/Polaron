@@ -9093,67 +9093,153 @@ void assignObjectRoot(ldp3::ast::Program& program) {
     }
 }
 
-// A value type (struct/record) has no vtable and no implicit Object base, so it has no equalsKey --
-// yet ArrayList<T>.indexOf/contains/remove call this.data[i].equalsKey(item), and eager
-// monomorphization compiles those methods even when unused, so ArrayList<Point> would fail to codegen
-// ("unknown method 'equalsKey'"). Synthesize a structural equalsKey (field-by-field ==), matching how a
-// record's auto-generated equals compares fields. Collection-keying hook only; no public equals() added.
-void synthesizeValueEqualsKey(ldp3::ast::Program& program) {
+// A value type (struct/record) has no vtable and no implicit Object base, so it has none of the
+// collection-keying hooks the stdlib containers call on their keys/elements: ArrayList/HashMap/HashSet
+// need equalsKey (and HashMap/HashSet also key.hash()); TreeMap/TreeSet/PriorityQueue need
+// key.compareTo(). Eager monomorphization compiles those container methods even when unused, so e.g.
+// HashMap<Point> or TreeSet<Point> would fail to codegen ("unknown method 'hash'/'compareTo'").
+// Synthesize each missing hook structurally (field by field), matching a record's auto-generated equals:
+// == for equalsKey, a 31-mixed field hash for hash(), and lexicographic field order for compareTo().
+// Collection-keying hooks only; no public equals() is added.
+void synthesizeValueKeyHooks(ldp3::ast::Program& program) {
+    using namespace ldp3::ast;
+    // Fields whose type has its own hash()/compareTo() (String and other value types) are keyed through
+    // those methods; primitive numeric/char fields are compared/hashed directly; anything else (class
+    // references, arrays, pointers, enums) is skipped -- the hook still compiles, just ignores that field.
+    static const std::set<std::string> numeric = {
+        "byte", "short", "int", "long", "smallfloat", "float", "double", "quadruple", "char",
+        "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+        "float32", "float64", "usize", "isize"};
+    std::set<std::string> valueTypeNames = {"String"};
+    for (auto& bundle : program.bundles)
+        for (auto& ns : bundle.namespaces)
+            for (auto& cls : ns.classes)
+                if ((cls.isStruct || cls.isRecord) && !cls.isUnion) valueTypeNames.insert(cls.name);
+
     for (auto& bundle : program.bundles) {
         for (auto& ns : bundle.namespaces) {
             for (auto& cls : ns.classes) {
                 if (!(cls.isStruct || cls.isRecord) || cls.isUnion) continue;  // unions overlap storage
-                bool has = false;
-                std::vector<const ldp3::ast::FieldDecl*> fields;
+                bool hasEq = false, hasHash = false, hasCmp = false;
+                std::vector<const FieldDecl*> fields;
                 for (const auto& m : cls.members) {
-                    if (const auto* md = dynamic_cast<const ldp3::ast::MethodDecl*>(m.get())) {
-                        if (md->name == "equalsKey") { has = true; break; }
-                    } else if (const auto* f = dynamic_cast<const ldp3::ast::FieldDecl*>(m.get())) {
+                    if (const auto* md = dynamic_cast<const MethodDecl*>(m.get())) {
+                        if (md->name == "equalsKey") hasEq = true;
+                        else if (md->name == "hash") hasHash = true;
+                        else if (md->name == "compareTo") hasCmp = true;
+                    } else if (const auto* f = dynamic_cast<const FieldDecl*>(m.get())) {
                         if (!f->isStatic) fields.push_back(f);
                     }
                 }
-                if (has) continue;  // user/interface already provides one
+                const auto loc = cls.loc;
+                // --- small AST builders (capture loc) ---
+                auto ident = [&](const std::string& n) -> ExprPtr {
+                    auto e = std::make_unique<IdentifierExpr>(); e->loc = loc; e->name = n; return e;
+                };
+                auto field = [&](const std::string& recv, const std::string& fn) -> ExprPtr {
+                    auto e = std::make_unique<MemberExpr>(); e->loc = loc; e->member = fn;
+                    e->object = ident(recv); return e;
+                };
+                auto intLit = [&](const char* t) -> ExprPtr {
+                    auto e = std::make_unique<IntLiteralExpr>(); e->loc = loc; e->text = t; return e;
+                };
+                auto cast = [&](const std::string& ty, ExprPtr op) -> ExprPtr {
+                    auto e = std::make_unique<CastExpr>(); e->loc = loc; e->targetType = ty;
+                    e->operand = std::move(op); return e;
+                };
+                auto binary = [&](const std::string& op, ExprPtr l, ExprPtr r) -> ExprPtr {
+                    auto e = std::make_unique<BinaryExpr>(); e->loc = loc; e->op = op;
+                    e->lhs = std::move(l); e->rhs = std::move(r); return e;
+                };
+                auto call0 = [&](ExprPtr recv, const std::string& m) -> ExprPtr {
+                    auto callee = std::make_unique<MemberExpr>(); callee->loc = loc; callee->member = m;
+                    callee->object = std::move(recv);
+                    auto c = std::make_unique<CallExpr>(); c->loc = loc; c->callee = std::move(callee);
+                    return c;
+                };
+                auto call1 = [&](ExprPtr recv, const std::string& m, ExprPtr arg) -> ExprPtr {
+                    auto callee = std::make_unique<MemberExpr>(); callee->loc = loc; callee->member = m;
+                    callee->object = std::move(recv);
+                    auto c = std::make_unique<CallExpr>(); c->loc = loc; c->callee = std::move(callee);
+                    c->args.push_back(std::move(arg)); return c;
+                };
+                auto ret = [&](ExprPtr v) -> ldp3::ast::StmtPtr {
+                    auto s = std::make_unique<ReturnStmt>(); s->loc = loc; s->value = std::move(v); return s;
+                };
 
-                auto method = std::make_unique<ldp3::ast::MethodDecl>();
-                method->loc = cls.loc;
-                method->visibility = "public";
-                method->name = "equalsKey";
-                ldp3::ast::Param p;
-                p.loc = cls.loc;
-                p.type.name = cls.name;   // by value, same type -- matches indexOf's `T item`
-                p.name = "other";
-                method->params.push_back(std::move(p));
-                method->returnType.name = "boolean";
-
-                ldp3::ast::ExprPtr expr;
-                for (const ldp3::ast::FieldDecl* f : fields) {
-                    auto lhs = std::make_unique<ldp3::ast::MemberExpr>();
-                    lhs->loc = cls.loc; lhs->member = f->name;
-                    { auto id = std::make_unique<ldp3::ast::IdentifierExpr>();
-                      id->loc = cls.loc; id->name = "this"; lhs->object = std::move(id); }
-                    auto rhs = std::make_unique<ldp3::ast::MemberExpr>();
-                    rhs->loc = cls.loc; rhs->member = f->name;
-                    { auto id = std::make_unique<ldp3::ast::IdentifierExpr>();
-                      id->loc = cls.loc; id->name = "other"; rhs->object = std::move(id); }
-                    auto cmp = std::make_unique<ldp3::ast::BinaryExpr>();
-                    cmp->loc = cls.loc; cmp->op = "==";
-                    cmp->lhs = std::move(lhs); cmp->rhs = std::move(rhs);
-                    if (!expr) { expr = std::move(cmp); }
-                    else {
-                        auto conj = std::make_unique<ldp3::ast::BinaryExpr>();
-                        conj->loc = cls.loc; conj->op = "&&";
-                        conj->lhs = std::move(expr); conj->rhs = std::move(cmp);
-                        expr = std::move(conj);
+                // --- equalsKey: field-by-field == (&&) ---
+                if (!hasEq) {
+                    auto method = std::make_unique<MethodDecl>();
+                    method->loc = loc; method->visibility = "public"; method->name = "equalsKey";
+                    Param p; p.loc = loc; p.type.name = cls.name; p.name = "other";
+                    method->params.push_back(std::move(p));
+                    method->returnType.name = "boolean";
+                    ExprPtr expr;
+                    for (const FieldDecl* f : fields) {
+                        auto cmp = binary("==", field("this", f->name), field("other", f->name));
+                        expr = expr ? binary("&&", std::move(expr), std::move(cmp)) : std::move(cmp);
                     }
+                    if (!expr) { auto b = std::make_unique<BoolLiteralExpr>(); b->loc = loc; b->value = true; expr = std::move(b); }
+                    method->body.statements.push_back(ret(std::move(expr)));
+                    cls.members.push_back(std::move(method));
                 }
-                if (!expr) {  // a field-less value type: all instances are equal
-                    auto b = std::make_unique<ldp3::ast::BoolLiteralExpr>();
-                    b->loc = cls.loc; b->value = true; expr = std::move(b);
+
+                // --- hash: acc = acc*31 + <per-field contribution>, seeded at 17 (all long) ---
+                if (!hasHash) {
+                    auto method = std::make_unique<MethodDecl>();
+                    method->loc = loc; method->visibility = "public"; method->name = "hash";
+                    method->returnType.name = "long";
+                    ExprPtr acc = cast("long", intLit("17"));
+                    for (const FieldDecl* f : fields) {
+                        // Array/pointer/ref/nullable fields are not scalar-hashable (and their base name
+                        // may look numeric, e.g. `int[]`), so they don't participate in the structural hash.
+                        if (f->type.isArray || f->type.isPointer || f->type.isRef || f->type.isNullable) continue;
+                        const std::string& ft = f->type.name;
+                        ExprPtr contrib;
+                        if (valueTypeNames.count(ft) > 0) contrib = call0(field("this", f->name), "hash");
+                        else if (numeric.count(ft) > 0 || ft == "boolean") contrib = cast("long", field("this", f->name));
+                        else continue;  // reference/array/enum field: not part of the structural hash
+                        acc = binary("+", binary("*", std::move(acc), cast("long", intLit("31"))),
+                                     std::move(contrib));
+                    }
+                    method->body.statements.push_back(ret(std::move(acc)));
+                    cls.members.push_back(std::move(method));
                 }
-                auto ret = std::make_unique<ldp3::ast::ReturnStmt>();
-                ret->loc = cls.loc; ret->value = std::move(expr);
-                method->body.statements.push_back(std::move(ret));
-                cls.members.push_back(std::move(method));
+
+                // --- compareTo: lexicographic over the fields; first non-equal field decides ---
+                if (!hasCmp) {
+                    auto method = std::make_unique<MethodDecl>();
+                    method->loc = loc; method->visibility = "public"; method->name = "compareTo";
+                    Param p; p.loc = loc; p.type.name = cls.name; p.name = "other";
+                    method->params.push_back(std::move(p));
+                    method->returnType.name = "int";
+                    for (const FieldDecl* f : fields) {
+                        // Array/pointer/ref/nullable fields have no scalar ordering (and their base name
+                        // may look numeric, e.g. `int[]`), so they don't participate in the ordering.
+                        if (f->type.isArray || f->type.isPointer || f->type.isRef || f->type.isNullable) continue;
+                        const std::string& ft = f->type.name;
+                        if (valueTypeNames.count(ft) > 0) {
+                            // if (this.f.compareTo(other.f) != 0) return this.f.compareTo(other.f);
+                            auto cond = binary("!=", call1(field("this", f->name), "compareTo", field("other", f->name)), intLit("0"));
+                            auto ifs = std::make_unique<IfStmt>(); ifs->loc = loc; ifs->cond = std::move(cond);
+                            ifs->thenBlock.statements.push_back(ret(call1(field("this", f->name), "compareTo", field("other", f->name))));
+                            method->body.statements.push_back(std::move(ifs));
+                        } else if (numeric.count(ft) > 0) {
+                            // Numeric/char fields order directly with </>. (boolean fields have no </>
+                            // and cannot cast to int, so they don't participate in the ordering.)
+                            auto ltIf = std::make_unique<IfStmt>(); ltIf->loc = loc;
+                            ltIf->cond = binary("<", field("this", f->name), field("other", f->name));
+                            ltIf->thenBlock.statements.push_back(ret(intLit("-1")));
+                            method->body.statements.push_back(std::move(ltIf));
+                            auto gtIf = std::make_unique<IfStmt>(); gtIf->loc = loc;
+                            gtIf->cond = binary(">", field("this", f->name), field("other", f->name));
+                            gtIf->thenBlock.statements.push_back(ret(intLit("1")));
+                            method->body.statements.push_back(std::move(gtIf));
+                        }
+                    }
+                    method->body.statements.push_back(ret(intLit("0")));
+                    cls.members.push_back(std::move(method));
+                }
             }
         }
     }
@@ -9549,7 +9635,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     if (!ldp3::synthesizeIpc(program)) return 1;  // spec 2.8: IPC proxies + this program's dispatcher
     ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
     assignObjectRoot(program);                   // a class with no `extends` implicitly extends Object
-    synthesizeValueEqualsKey(program);           // value types get a structural equalsKey (collection keying)
+    synthesizeValueKeyHooks(program);            // value types get structural equalsKey/hash/compareTo (collection keying)
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     if (optLevel > 0) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
     if (optLevel > 0) ldp3::hoistBoundsChecks(program);          // bounds-check hoisting (sema re-checks it)

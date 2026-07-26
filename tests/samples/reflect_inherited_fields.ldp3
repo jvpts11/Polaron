@@ -1,0 +1,35 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import reflect;
+program ReflectInheritedFields;
+
+// Regression: reflection fields() must include inherited fields (not just own), and Field.get() must
+// read them. Prints: count=2 inherited a=11 own b=22.
+public bundle main {
+    public namespace app {
+        public class Base {
+            public mutable int a;
+            public constructor Base() {
+                this.a = 11;
+            }
+        }
+        public class Derived extends Base {
+            public mutable int b;
+            public constructor Derived() {
+                this.b = 22;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Derived d = new Derived() on heap;
+                Type t = reflect.typeOf<Derived>();
+                ArrayList<Field> fs = t.fields();
+                int a = cast<int>(fs.get(0).get(d));
+                int b = cast<int>(fs.get(1).get(d));
+                System.IO.Console.printf("count=%d inherited a=%d own b=%d\n", fs.size(), a, b);
+                delete d;
+                return;
+            }
+        }
+    }
+}

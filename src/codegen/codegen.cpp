@@ -3096,6 +3096,10 @@ struct CodeGenerator::Impl {
         if (elemType == "String") return true;
         if (elemType == "string" || isArrayType(elemType)) return false;
         if (elemType.find('*') != std::string::npos) return false;
+        // A Java-style enum array holds shared singletons -- the same constant may sit in many
+        // slots -- so its elements are borrowed references, not owned objects. Freeing them on
+        // `delete arr` would double-free the singleton the first duplicate slot already freed.
+        if (javaEnums.count(baseType(elemType)) > 0 || javaEnums.count(clsKey(elemType)) > 0) return false;
         return classes.count(clsKey(elemType)) > 0 && arrayStorageTy(elemType)->isPointerTy();
     }
 
@@ -3744,12 +3748,16 @@ struct CodeGenerator::Impl {
                             builder.getInt64(returnTag(typeRefName(md->returnType))));
                         methodDecls.push_back(md);
                         methodOwners.push_back(cn);
-                    } else if (cn == className) {  // fields: own class only (current behavior)
-                        if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()))
-                            fieldNames.push_back(fd->name);
                     }
                 }
                 cn = cit->second.superclass;
+            }
+            // Fields: own + inherited (from user base classes), in the same physical order as the
+            // object layout (collectFields drives fieldIndex too), so every per-field boxing accessor
+            // lines up with its fieldIndex slot and Field.get/set read the right offset.
+            for (const auto& [fname, ftype] : collectFields(className)) {
+                (void)ftype;
+                fieldNames.push_back(fname);
             }
             if (auto cit = classes.find(className); cit != classes.end() && cit->second.decl != nullptr)
                 for (const ast::AnnotationUse& a : cit->second.decl->annotations)
@@ -7444,6 +7452,10 @@ struct CodeGenerator::Impl {
                         llvm::Value* slot = createEntryAlloca("parse.opt", variantStructType());
                         llvm::Function* pf = currentFn;
                         llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(context, "parse.done", pf);
+                        // A Java-style enum is a reference type: its Option<Enum> payload must be the
+                        // singleton pointer, not the ordinal, so `case Some(Planet p)` binds a usable
+                        // reference. An int-style enum IS its ordinal, so the ordinal is the payload.
+                        auto pJit = javaEnums.find(eid->name);
                         for (int i = 0; i < n; ++i) {
                             llvm::Value* nm = stringData(emitStringObject(eit->second[i]));
                             llvm::Value* cmp = builder.CreateCall(strcmpFn(), {sData, nm}, "parse.cmp");
@@ -7452,7 +7464,16 @@ struct CodeGenerator::Impl {
                             auto* nb = llvm::BasicBlock::Create(context, "parse.next", pf);
                             builder.CreateCondBr(eq, mb, nb);
                             builder.SetInsertPoint(mb);
-                            builder.CreateStore(emitOptionVariant("Some", eid->name, i), slot);
+                            if (pJit != javaEnums.end()) {
+                                llvm::Value* agg = llvm::UndefValue::get(variantStructType());
+                                agg = builder.CreateInsertValue(agg, builder.getInt32(0), {0u}, "some.tag");
+                                agg = builder.CreateInsertValue(
+                                    agg, variantEncode(emitEnumConstant(*pJit->second, eit->second[i])),
+                                    {1u}, "some.singleton");
+                                builder.CreateStore(agg, slot);
+                            } else {
+                                builder.CreateStore(emitOptionVariant("Some", eid->name, i), slot);
+                            }
                             builder.CreateBr(doneBB);
                             builder.SetInsertPoint(nb);
                         }
@@ -9638,9 +9659,13 @@ struct CodeGenerator::Impl {
                         if (dst != nullptr) {
                             if (opSret) {
                                 // `c++` == `c = c.operator++()`: the overload returns a fresh value struct
-                                // in an sret slot; copy its bytes into the target's backing storage (value
-                                // semantics), like the struct-assignment path, not the slot pointer.
+                                // in an sret temp. Move it into the target's backing storage (value
+                                // semantics): free the target's old owned fields first -- otherwise an
+                                // owned String/array/child-struct in the previous value leaks -- then
+                                // memcpy the new bytes in. The temp is abandoned, so its owned fields
+                                // transfer to the target with no deep copy and no double free.
                                 llvm::Value* destStruct = builder.CreateLoad(builder.getPtrTy(), dst);
+                                emitFreeOwnedFields(tt, destStruct);
                                 builder.CreateCall(memcpyFn(), {destStruct, res, sizeOf(classes[tt].type)});
                             } else {
                                 builder.CreateStore(res, dst);

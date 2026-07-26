@@ -1,0 +1,39 @@
+import System.IO.Console;
+program EnumArrayDelete;
+
+// Regression: `delete arr` where arr is an array of a Java-style enum must not free the shared
+// singletons (the same constant sits in many slots). Before the fix this double-freed and panicked.
+public bundle main {
+    public namespace app {
+
+        public enum Biome {
+            OCEAN(1),
+            GRASS(2),
+            MOUNTAIN(3);
+
+            private final int code;
+
+            public constructor Biome(int code) {
+                this.code = code;
+            }
+
+            public method code() returns int {
+                return this.code;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Biome[] cells = new Biome[4]();
+                cells[0] = Biome.OCEAN;
+                cells[1] = Biome.GRASS;
+                cells[2] = Biome.OCEAN;
+                cells[3] = Biome.MOUNTAIN;
+                System.IO.Console.println($"cells[2] code = {cells[2].code()}");
+                delete cells;
+                System.IO.Console.println("deleted ok");
+                return;
+            }
+        }
+    }
+}

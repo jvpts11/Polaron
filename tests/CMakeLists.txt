@@ -1385,7 +1385,7 @@ if(LDP3_WITH_LLVM)
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/enum_parse.ldp3"
-            "-DEXPECTED=r1=1 r2=-1"
+            "-DEXPECTED=r1=1 r2=-1 mars=10 pluto=-1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -2020,6 +2020,16 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/operator_incr.ldp3"
             "-DCONTAINS=n=6"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Regression: `v++` on a value struct moves the operator's sret result back into the variable's
+        # storage (freeing the old value's owned fields first) -- 1000 iterations must not corrupt.
+        add_test(NAME codegen_struct_incr_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/struct_incr.ldp3"
+            "-DEXPECTED=n=1000"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -3446,6 +3456,42 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/enum_java.ldp3"
             "-DEXPECTED=earth = 5 mars = 10"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Regression: `delete` of a Java-style enum array must not double-free the shared singletons.
+        add_test(NAME codegen_enum_array_delete_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/enum_array_delete.ldp3"
+            "-DCONTAINS=deleted ok"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Regression: reflection Field.get() reads int fields after reference/wide fields at the right offset.
+        add_test(NAME codegen_reflect_field_after_ref_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/reflect_field_after_ref.ldp3"
+            "-DEXPECTED=capX=111 capY=222 leaderIdx=333"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Regression: reflection fields() enumerates inherited fields too, and Field.get() reads them.
+        add_test(NAME codegen_reflect_inherited_fields_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/reflect_inherited_fields.ldp3"
+            "-DEXPECTED=count=2 inherited a=11 own b=22"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Regression: a value struct works as a HashMap key and TreeSet element (synthesized hash/equalsKey/compareTo).
+        add_test(NAME codegen_value_struct_keys_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/value_struct_keys.ldp3"
+            "-DEXPECTED=get=100 has55=no treesize=2"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
