@@ -68,43 +68,52 @@ The first three levels are purely organizational — they hold no fields and run
 code of their own. They exist to give every type a precise address and to make
 the reach of every name explicit rather than accidental.
 
-### The two declaration styles
+### The shape of the declarations
 
-LDP3 accepts a hybrid syntax for the outer declarations. The **long form** braces
-the program and each bundle explicitly, nesting everything visually:
+The outer declarations follow one fixed shape, and it pays to have it exact:
+
+- The **`program` declaration is always terminated by a semicolon** — `program
+  Name;`. It never takes a brace block. It names the whole compilation and then
+  stands alone on its line.
+- Every **bundle and namespace is always a brace block** — `public bundle X { ...
+  }`, `public namespace Y { ... }`. They are never written with a trailing
+  semicolon.
+
+So a file is a single `program Name;` line, followed by one or more braced
+bundles, each holding one or more braced namespaces:
 
 ```ldp3
-program GameEngine {
-    public bundle audio {
-        public namespace mixers {
-            public class StereoMixer { /* ... */ }
-        }
+program GameEngine;
+
+public bundle audio {
+    public namespace mixers {
+        public class StereoMixer { /* ... */ }
+    }
+    public namespace effects {
+        public class Reverb { /* ... */ }
     }
 }
 ```
 
-The **short form** declares the program (and, if you like, the bundle) with a
-trailing semicolon instead of a brace block, letting the namespaces sit at the
-top level of the file:
+A program may declare **several bundles**, each its own brace block, one after the
+other under the same `program` line:
 
 ```ldp3
 program GameEngine;
-bundle audio;
 
-public namespace mixers {
-    public class StereoMixer { /* ... */ }
+public bundle audio {
+    public namespace mixers { public class StereoMixer { /* ... */ } }
 }
 
-public namespace effects {
-    public class Reverb { /* ... */ }
+public bundle physics {
+    public namespace world { public class RigidBody { /* ... */ } }
 }
 ```
 
-Both forms describe the same hierarchy; they differ only in how much you indent.
-Throughout this reference — and in the compiler's own sample suite — the common
-idiom is the short `program Name;` line followed by a braced `public bundle`, as
-in the Hello, world program above. Use whichever reads better for the file at
-hand.
+There is deliberately no second syntax to remember: `program Name;` opens the
+file, and everything below it — bundles, namespaces, types — nests with braces.
+This is the same skeleton as the Hello, world program above, just with more than
+one namespace or bundle inside it.
 
 ## The entry point
 

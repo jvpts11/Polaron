@@ -6,8 +6,8 @@ machine code. Every example in these pages is written in the language the compil
 accepts, and the features described are the features it actually implements. Where the design
 reaches further than the current implementation, the text says so plainly.
 
-LDP3 was created by **João Victor Pereira Tavares**. This reference tracks language
-version **1.0.0**.
+LDP3 was created by **João Victor Pereira Tavares**. This reference tracks toolchain
+version **1.0.11**.
 
 ## 1.1 What LDP3 is
 
@@ -308,25 +308,29 @@ thereafter. The chapters build on one another:
 
 1. **Introduction & Philosophy** *(this chapter)* — what LDP3 is, why it is shaped the way it is,
    and a first taste of real code.
-2. **Program Structure** — programs, bundles, namespaces, imports, visibility, and the entry
-   point in depth.
-3. **Primitive Types & Literals** — the integer and floating-point families, `boolean`, `char`,
-   `String`/`string`, and the rules for literals and explicit conversion.
-4. **Memory & Value Semantics** — stack versus heap, `new`/`delete`, deep-copy assignment,
-   pointers and references, and deterministic destruction.
-5. **Classes & Object Orientation** — fields, constructors and destructors, instance and static
-   methods, `this`, and encapsulation.
-6. **Inheritance, Interfaces & Polymorphism** — `extends`, `implements`, `abstract`, mandatory
-   `override`, and virtual dispatch.
-7. **Enums and the Richer Type System** — enums, records, structs, unions, and generics.
-8. **Control Flow** — conditionals, loops, ranges, and `switch`/`match`.
-9. **Error Handling** — exceptions, `Result`/`Option`, and defined-behavior traps.
-10. **Ownership & Regions** — the explicit memory-control tools you opt into when the common case
-    is not enough.
-11. **Concurrency** — threads, channels, and `async`/`await`.
-12. **Freestanding Mode** — writing systems and kernel code in the OOP subset.
-13. **Standard Library & Toolchain** — the collections, I/O, and text facilities, and how to
-    build, run, and package LDP3 programs.
+2. **Program Structure & Modules** — programs, bundles, namespaces, imports, visibility, and the
+   entry point in depth.
+3. **Values & the Type System** — the primitive families, `boolean`, `char`, `String`/`string`,
+   literals and explicit conversion, plus records, structs, unions, enums, and generics.
+4. **Memory & Ownership** — stack versus heap, `new`/`delete`, deep-copy assignment, pointers and
+   references, deterministic destruction, and the ownership and region tools you opt into.
+5. **Object-Oriented Programming** — fields, constructors and destructors, instance and static
+   methods, `this`, calling methods, encapsulation, inheritance, interfaces, `override`, and
+   virtual dispatch.
+6. **Control Flow** — conditionals, loops, ranges, `switch`/`match`, and the "chaos tetrad".
+7. **Errors, Results & Contracts** — exceptions, `Result`/`Option`, contracts, and
+   defined-behavior traps.
+8. **Concurrency** — threads, channels, mutexes, and `async`/`await`.
+9. **Compile-Time, Reflection & Prefixes** — `comptime`, reflection, the universal prefixes, and
+   the managed-runtime features (persistents, `unimport`).
+10. **Systems Programming** — freestanding mode, raw pointers, the low-level `Memory` API, and FFI.
+11. **Keyword Reference** — every reserved word, its status, and a short example.
+12. **Diagnostics** — how to read an LDP3 error, its structure, and `ldp3 explain`.
+13. **Functions & Lambdas** — `lambda`, `function<...>` types, and method references.
+14. **Toolchain** — how to build, run, package, and test LDP3 programs.
+
+Six **Standard Library** chapters follow the guide: concurrency & core, collections, data
+structures, text/encoding/crypto, parsing/time/JSON, and math/net/misc.
 
 Throughout, code appears in fenced ` ```ldp3 ` blocks and reflects what the compiler accepts
 today. When a feature is planned but not yet fully implemented, the text will say so, so that you

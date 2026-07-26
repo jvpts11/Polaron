@@ -97,8 +97,8 @@ public interface Drawable { method draw() returns void; }
 **hard.** A value-type composite; supports bit fields (`field : N`).
 ```ldp3
 public struct PacketHeader {
-    public mutable uint8 version : 4;
-    public mutable uint8 kind : 4;
+    public mutable ubyte version : 4;
+    public mutable ubyte kind : 4;
 }
 ```
 
@@ -339,7 +339,13 @@ defer { file.close(); }
 **hard.** A do-while loop: runs at least once, tests at the end.
 
 #### `for`
-**hard.** The classic `for` and the for-in (ranges / collections). See `in`, `index`, `step`.
+**hard.** The classic three-clause `for` and the for-in over ranges / collections
+(`for (int x in items) { ... }`). See `in`, `index`, `step`.
+
+#### `foreach`
+**hard.** Iterates a range or collection: `foreach (int x in items) { ... }`. A C#-style
+spelling of the for-in loop; `for (x in items)` and `foreach (x in items)` are both accepted.
+See `in`, `index`, `step`.
 
 #### `switch`
 **hard.** A switch with fall-through. **Braces are mandatory on each `case`** (spec 7.3).
