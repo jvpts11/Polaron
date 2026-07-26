@@ -11861,20 +11861,35 @@ struct CodeGenerator::Impl {
     // the task and return normally instead of letting it escape the worker thread. Pushed onto
     // ehPadStack around the body so any uncaught throw unwinds here (defers/using still run first, since
     // the cleanup pads chain into this one). Returns the pad to push.
-    llvm::BasicBlock* buildAsyncGuardPad() {
+    // On Itanium the guard also exposes a "record" block and a carrier slot (via the out-params): a
+    // cleanup landing pad that runs pending defers/destructors on the throw path (computeUnwindDest, using
+    // the guard's itDispatch/itCarrier) branches there after the teardown, so defers run on an uncaught
+    // async throw too -- not just on WinEH (task B8). null out-params => WinEH, which needs neither.
+    llvm::BasicBlock* buildAsyncGuardPad(llvm::BasicBlock** itDispatchOut = nullptr,
+                                         llvm::Value** itCarrierOut = nullptr) {
         ensurePersonality();
         llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
         llvm::PointerType* ptrTy = builder.getPtrTy();
         llvm::BasicBlock* pad = llvm::BasicBlock::Create(context, "async.guard", currentFn);
         if (isItaniumEH()) {
+            // The shared record block: complete the task with the carrier and return. Both the direct guard
+            // pad and any cleanup-dispatch pad (which runs defers first) converge here.
+            llvm::Value* carrierSlot = createEntryAlloca("async.err.slot", ptrTy);
+            llvm::BasicBlock* recordBB = llvm::BasicBlock::Create(context, "async.record", currentFn);
+            builder.SetInsertPoint(recordBB);
+            emitTaskCompleteError(builder.CreateLoad(ptrTy, carrierSlot, "async.err.v"));
+            builder.CreateRetVoid();
+            // The direct pad (no pending cleanup): catch, stash the carrier, converge on the record block.
             builder.SetInsertPoint(pad);
             llvm::LandingPadInst* lp = builder.CreateLandingPad(landingPadType(), 1);
             lp->addClause(itaniumVoidPtrTypeInfo());
             llvm::Value* exc = builder.CreateExtractValue(lp, 0, "exc");
             llvm::Value* carrier = builder.CreateCall(cxaBeginCatch(), {exc}, "async.err");
-            emitTaskCompleteError(carrier);
+            builder.CreateStore(carrier, carrierSlot);
             builder.CreateCall(cxaEndCatch(), {});
-            builder.CreateRetVoid();
+            builder.CreateBr(recordBB);
+            if (itDispatchOut != nullptr) *itDispatchOut = recordBB;
+            if (itCarrierOut != nullptr) *itCarrierOut = carrierSlot;
         } else {
             builder.SetInsertPoint(pad);
             llvm::Value* caughtSlot = createEntryAlloca("exc.async", ptrTy);
@@ -12257,14 +12272,19 @@ struct CodeGenerator::Impl {
             locals[m.params[i].name] = LocalSlot{
                 builder.CreateStructGEP(stateTy, st, 2 + i, m.params[i].name),
                 typeRefName(m.params[i].type)};
-        llvm::BasicBlock* guard = buildAsyncGuardPad();  // a throw completes the task with the error
+        // A throw completes the task with the error. On Itanium the guard also hands back a record block
+        // and carrier slot so a cleanup pad can run pending defers/destructors first (B8).
+        llvm::BasicBlock* guardDispatch = nullptr;
+        llvm::Value* guardCarrier = nullptr;
+        llvm::BasicBlock* guard = buildAsyncGuardPad(&guardDispatch, &guardCarrier);
         ehPadStack.push_back(guard);
-        // Sentinel base: the async guard covers the whole body and does its own completion; the in-try
-        // block cleanup pass must not inject here, so keep it disabled for this pad.
-        // Real (freshly-cleared) base sizes so a throw with a pending defer/using/region/stack-dtor
-        // chains its cleanup into the async guard before completing the Task with the error (spec 21).
-        // {0,0,0} in practice -> adds cleanup only when there IS something pending; else == the guard.
-        ehBaseStack.push_back({scopeObjects.size(), deferred.size(), scopeRegions.size()});
+        // Real (freshly-cleared) base sizes so a throw with a pending defer/using/region/stack-dtor chains
+        // its cleanup before completing the Task with the error (spec 21). On WinEH the cleanup funclet
+        // chain feeds the guard directly; on Itanium the guard's itDispatch/itCarrier let the cleanup
+        // landing pad run the teardown, then branch to the record block. Adds cleanup only when something
+        // is pending; otherwise the throw unwinds straight to the guard.
+        ehBaseStack.push_back({scopeObjects.size(), deferred.size(), scopeRegions.size(),
+                               guardDispatch, guardCarrier});
         emitBlock(m.body, /*newScope=*/false);
         ehPadStack.pop_back();
         ehBaseStack.pop_back();
@@ -12648,12 +12668,19 @@ struct CodeGenerator::Impl {
         asyncSMCases.clear();
 
         builder.SetInsertPoint(bodyStart);
-        llvm::BasicBlock* guard = buildAsyncGuardPad();  // a throw completes the task with the error
+        // A throw completes the task with the error. On Itanium the guard also hands back a record block
+        // and carrier slot so a cleanup pad can run pending defers/destructors first (B8).
+        llvm::BasicBlock* guardDispatch = nullptr;
+        llvm::Value* guardCarrier = nullptr;
+        llvm::BasicBlock* guard = buildAsyncGuardPad(&guardDispatch, &guardCarrier);
         ehPadStack.push_back(guard);
-        // Real (freshly-cleared) base sizes so a throw with a pending defer/using/region/stack-dtor
-        // chains its cleanup into the async guard before completing the Task with the error (spec 21).
-        // {0,0,0} in practice -> adds cleanup only when there IS something pending; else == the guard.
-        ehBaseStack.push_back({scopeObjects.size(), deferred.size(), scopeRegions.size()});  // sentinel: async guard, no in-try inject
+        // Real (freshly-cleared) base sizes so a throw with a pending defer/using/region/stack-dtor chains
+        // its cleanup before completing the Task with the error (spec 21). On WinEH the cleanup funclet
+        // chain feeds the guard directly; on Itanium the guard's itDispatch/itCarrier let the cleanup
+        // landing pad run the teardown, then branch to the record block. Adds cleanup only when something
+        // is pending; otherwise the throw unwinds straight to the guard.
+        ehBaseStack.push_back({scopeObjects.size(), deferred.size(), scopeRegions.size(),
+                               guardDispatch, guardCarrier});
         emitBlock(m.body, /*newScope=*/false);  // natural control flow; awaits split their blocks
         ehPadStack.pop_back();
         ehBaseStack.pop_back();

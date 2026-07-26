@@ -1224,6 +1224,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Regression (B8): a defer runs when an async body throws an uncaught exception (unwind to the guard),
+        # not just on a normal return -- the awaiter re-throws and catches. Prints "defer ran" then "caught".
+        add_test(NAME codegen_async_defer_throw_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/async_defer_throw.ldp3"
+            "-DCONTAINS=defer ran"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # F8 + F6: async/await combined with try/catch/finally (spec 20.2 + 21.1) -- awaits inside
         # the try and catch, a thrown error caught, and a value live across the try's invoke edges.
         add_test(NAME codegen_async_try_runs COMMAND "${CMAKE_COMMAND}"

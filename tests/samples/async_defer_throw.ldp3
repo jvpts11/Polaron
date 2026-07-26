@@ -1,0 +1,42 @@
+import System.IO.Console;
+import System.Concurrency.Task;
+program AsyncDeferThrow;
+
+// Regression (B8): a `defer` in an async method must run when the body throws an UNCAUGHT exception that
+// unwinds to the coroutine's guard -- not just on a normal return. The awaiter re-throws the error and
+// catches it. On Windows (WinEH) the cleanup funclet always chained the defer; on Itanium/Linux the throw
+// used to unwind straight to the guard, skipping the defer -- now the guard exposes a record block so the
+// cleanup landing pad runs the defer first. Prints: defer ran / caught code=7.
+public bundle main {
+    public namespace app {
+        public interface Throwable { }
+        public class MyError implements Throwable {
+            public mutable int code;
+            public constructor MyError() {
+                this.code = 7;
+            }
+        }
+        public class Main {
+            public static async method val(int n) returns int {
+                return n;
+            }
+            public static async method work() returns int {
+                int base = await Main.val(10);
+                defer {
+                    System.IO.Console.println("defer ran");
+                }
+                throw new MyError() on heap;
+            }
+            public static method main(string[] args) returns void {
+                Task<int> t = Main.work();
+                try {
+                    int r = await t;
+                    System.IO.Console.printf("r=%d\n", r);
+                } catch (MyError e) {
+                    System.IO.Console.printf("caught code=%d\n", e.code);
+                }
+                return;
+            }
+        }
+    }
+}
