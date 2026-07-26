@@ -2947,6 +2947,26 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Regression: a `comefrom` that leaves a scope runs its teardown (destructors/defers/String/region),
+        # like `goto` -- Noisy's dtor fires when comefrom exits the if-body. Prints start / ~1 / after.
+        add_test(NAME codegen_comefrom_cleanup_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/comefrom_cleanup.ldp3"
+            "-DCONTAINS=~1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Regression: abstainfrom that skips a stack-object decl also skips its destructor -- no dtor on
+        # unconstructed memory (no-UB). run(0)=cbd (ctor/body/dtor), run(1) abstained=nothing. Prints cbd|!
+        add_test(NAME codegen_abstain_raii_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/abstain_raii.ldp3"
+            "-DEXPECTED=cbd|!"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # generic constraint (spec 15.2) satisfied + a chained call on a generic method result.
         add_test(NAME codegen_generic_constraint_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

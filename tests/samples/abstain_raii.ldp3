@@ -1,0 +1,38 @@
+import System.IO.Console;
+program AbstainRaii;
+
+// Regression: when abstainfrom skips a range that declares a stack object, the construction is skipped --
+// so its scope-exit destructor must be skipped too, not run on unconstructed memory (no-UB). Noisy's
+// ctor prints "c", its dtor "d", the body "b". run(0) is normal (c b ... d); run(1) abstains the lbl..next
+// range, so nothing constructs and nothing destructs. Prints: cbd|! (before the fix: cbd|d!).
+public bundle main {
+    public namespace app {
+        public class Noisy {
+            public constructor Noisy() {
+                System.IO.Console.print("c");
+            }
+            public destructor ~Noisy() returns void {
+                System.IO.Console.print("d");
+            }
+        }
+        public class Main {
+            public static method run(int mode) returns void {
+                if (mode == 1) {
+                    abstainfrom lbl;
+                }
+                label lbl;
+                Noisy a = new Noisy() on stack;
+                System.IO.Console.print("b");
+                label next;
+                return;
+            }
+            public static method main(string[] args) returns void {
+                Main.run(0);
+                System.IO.Console.print("|");
+                Main.run(1);
+                System.IO.Console.println("!");
+                return;
+            }
+        }
+    }
+}

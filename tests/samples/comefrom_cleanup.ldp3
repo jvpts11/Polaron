@@ -1,0 +1,33 @@
+import System.IO.Console;
+program ComefromCleanup;
+
+// Regression: a `comefrom` that leaves a lexical scope runs that scope's teardown (destructors, defers,
+// String/region/value-struct frees) first -- exactly like `goto` does. Before the fix, comefrom branched
+// straight to the label and skipped the cleanup, leaking the scope's objects. Here `comefrom out` leaves
+// the if-body holding `Noisy a`, so its destructor runs. Prints: start / ~1 / after.
+public bundle main {
+    public namespace app {
+        public class Noisy {
+            private int id;
+            public constructor Noisy(int i) {
+                this.id = i;
+            }
+            public destructor ~Noisy() returns void {
+                System.IO.Console.printf("~%d\n", this.id);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("start\n");
+                if (1 < 2) {
+                    Noisy a = new Noisy(1) on stack;
+                    comefrom out;
+                    System.IO.Console.printf("unreachable\n");
+                }
+                label out;
+                System.IO.Console.printf("after\n");
+                return;
+            }
+        }
+    }
+}
