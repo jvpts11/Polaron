@@ -1,0 +1,40 @@
+import System.IO.Console;
+import System.Concurrency.Task;
+program AsyncValueStruct;
+
+// Regression (B9): a value struct that owns a heap field (int[]), declared in an async method before an
+// await, is heap-promoted into the coroutine state so it survives the suspend -- and is freed (its block
+// and owned fields) when the coroutine completes. 200 iterations guard against a leak or a double-free.
+// Prints: total=39800  (sum of work(i) = i + i = 2i over 0..199 = 2 * 19900).
+public bundle main {
+    public namespace app {
+        public struct Vec {
+            public mutable int[] data;
+            public mutable int n;
+            public constructor Vec(int n) {
+                this.data = new int[3]();
+                this.data[0] = n;
+                this.n = n;
+            }
+        }
+        public class Main {
+            public static async method val(int n) returns int {
+                return n;
+            }
+            public static async method work(int n) returns int {
+                Vec v = new Vec(n);
+                int x = await Main.val(n);
+                return v.data[0] + x;
+            }
+            public static method main(string[] args) returns void {
+                mutable int total = 0;
+                for (mutable int i = 0; i < 200; i++) {
+                    Task<int> r = Main.work(i);
+                    total = total + await r;
+                }
+                System.IO.Console.printf("total=%d\n", total);
+                return;
+            }
+        }
+    }
+}
