@@ -1,0 +1,38 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.HashMap;
+program DeletePointerCollection;
+
+// Regression: `delete` of a generic collection instantiated with a pointer type argument (ArrayList<Node*>,
+// HashMap<int,Node*>). The instantiation mangles to a name ending in '*' (ArrayList$Node*), which the
+// delete check's baseType wrongly stripped, so `delete list` was rejected as "not a heap object". Deleting
+// the collection frees the collection (and its backing array), but NOT the borrowed pointees -- so the two
+// Nodes are destructed exactly once, at scope exit. Prints: deleted / ~2 / ~1.
+public bundle main {
+    public namespace app {
+        public class Node {
+            private int id;
+            public constructor Node(int i) {
+                this.id = i;
+            }
+            public destructor ~Node() returns void {
+                System.IO.Console.printf("~%d\n", this.id);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node a = new Node(1) on stack;
+                Node b = new Node(2) on stack;
+                mutable ArrayList<Node*> list = new ArrayList<Node*>() on heap;
+                list.add(&a);
+                list.add(&b);
+                mutable HashMap<int, Node*> byId = new HashMap<int, Node*>() on heap;
+                byId.put(1, &a);
+                delete list;
+                delete byId;
+                System.IO.Console.printf("deleted\n");
+                return;
+            }
+        }
+    }
+}

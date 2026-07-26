@@ -1737,6 +1737,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Regression: `delete` of a generic collection with a pointer type argument (ArrayList<Node*>,
+        # HashMap<int,Node*>) is accepted, frees the collection, and leaves the borrowed pointees alone.
+        add_test(NAME codegen_delete_pointer_collection_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/delete_pointer_collection.ldp3"
+            "-DCONTAINS=deleted"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Arbitrary-base integer conversion (spec 4), bases 2..36, pure LDP3.
         add_test(NAME codegen_radix_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
