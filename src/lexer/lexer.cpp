@@ -474,13 +474,27 @@ Token Lexer::scanInterpString() {
     advance();  // '$'
     advance();  // '"'
     std::string value;
-    while (!atEnd() && peek() != '"' && peek() != '\n') {
-        if (peek() == '\\') {
-            value += advance();                // backslash
-            if (!atEnd()) value += advance();  // escaped char
-        } else {
-            value += advance();
+    int braceDepth = 0;  // >0 while inside a {expr} region
+    while (!atEnd() && peek() != '\n') {
+        char c = peek();
+        if (c == '"' && braceDepth == 0) break;  // the interp string's own closing quote
+        if (c == '\\') {                         // escape (in literal text or in an expr)
+            value += advance();                  // backslash
+            if (!atEnd()) value += advance();    // escaped char
+            continue;
         }
+        if (c == '{') { ++braceDepth; value += advance(); continue; }
+        if (c == '}') { if (braceDepth > 0) --braceDepth; value += advance(); continue; }
+        if (c == '"') {                          // braceDepth>0: a nested string literal inside {expr}
+            value += advance();                  // opening quote, kept verbatim
+            while (!atEnd() && peek() != '"' && peek() != '\n') {
+                if (peek() == '\\') { value += advance(); if (!atEnd()) value += advance(); }
+                else                { value += advance(); }
+            }
+            if (!atEnd() && peek() == '"') value += advance();  // closing quote
+            continue;
+        }
+        value += advance();
     }
     if (!match('"')) {
         error("unterminated interpolated string", loc);

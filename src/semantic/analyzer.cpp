@@ -3254,7 +3254,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // later refinement and are skipped here).
         for (const auto& list : {ri->accepts, ri->rejects}) {
             for (const std::string& t : list) {
-                if (t.find('.') == std::string::npos && lookupClass(t) == nullptr) {
+                // A generic constraint type (Box<?>, ArrayList<int>) names a template, not a plain
+                // class; skip the plain-class existence check for those (spec 17.3, best-effort filter).
+                if (t.find('<') == std::string::npos && t.find('.') == std::string::npos &&
+                    lookupClass(t) == nullptr) {
                     error("region accepts/rejects references unknown type '" + t + "'", ri->loc);
                 }
             }
@@ -3267,7 +3270,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("region range address must be a number or address, got '" + at + "'", ri->loc);
             for (const auto& list : {r.accepts, r.rejects})
                 for (const std::string& t : list)
-                    if (t.find('.') == std::string::npos && lookupClass(t) == nullptr)
+                    if (t.find('<') == std::string::npos && t.find('.') == std::string::npos &&
+                        lookupClass(t) == nullptr)
                         error("region range accepts/rejects references unknown type '" + t + "'", ri->loc);
         }
         return "region";
@@ -4065,6 +4069,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                         }
                         auto mit = sc->methods.find(mem->member);
                         if (mit == sc->methods.end()) {
+                            // A java-style enum desugars to a class of the same name; its auto-generated
+                            // built-ins (values/count/random/parse, spec 12.5) are NOT class methods, so
+                            // fall through to the enum built-in resolver below instead of erroring.
+                            if (enums_.count(objId->name) > 0) goto enumBuiltin;
                             error("class '" + objId->name + "' has no method '" + mem->member + "'",
                                   call->loc);
                             return "";
@@ -4100,7 +4108,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     }
                 }
             }
-            // Enum built-ins: EnumName.count() / EnumName.values() (spec 12.5).
+        enumBuiltin:;
+            // Enum built-ins: EnumName.count() / EnumName.values() (spec 12.5). Reached directly, or via
+            // fall-through from the class branch for a java-style enum (desugared to a same-named class).
             if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 if (lookupLocal(oid->name) == nullptr && enums_.count(oid->name) > 0) {
                     if (mem->member == "count" && call->args.empty()) return "int";

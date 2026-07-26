@@ -89,7 +89,8 @@ private:
                               bool isVolatile = false, bool isLazy = false,
                               bool isExternal = false, bool isMovable = false,
                               bool isUnique = false, bool isAbstract = false,
-                              bool isOverride = false, bool isFinal = false);
+                              bool isOverride = false, bool isFinal = false,
+                              bool inInterface = false);
     // Optional `cascade(...)` parameters (spec 37.1): `(depth: N)`, `(unlimited)`,
     // `(types: {A,B})`, `(except: {A,B})`, or combinations. Returns defaults if no `(`.
     ast::CascadeParams parseCascadeParamsOpt();
@@ -101,7 +102,7 @@ private:
     ast::MemberPtr parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
                                  const std::string& name, SourceLocation loc,
                                  bool isAbstract = false, bool isOverride = false,
-                                 bool isFinal = false);
+                                 bool isFinal = false, bool inInterface = false);
     std::vector<ast::MemberPtr> extraMembers_;  // members synthesized by parseProperty (setters)
     std::unique_ptr<ast::ConstructorDecl> parseConstructor(std::string visibility);
     std::unique_ptr<ast::DestructorDecl> parseDestructor(std::string visibility);

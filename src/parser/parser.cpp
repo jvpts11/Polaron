@@ -1242,7 +1242,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         // Otherwise it is a field:  <type> <name> ;
         member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
                             isTransient, isVolatile, isLazy, isExternal, isMovableField,
-                            isUniqueField, isAbstract, isOverride, isFinal);
+                            isUniqueField, isAbstract, isOverride, isFinal, inInterface);
     }
     if (!anns.empty()) {  // attach leading annotations to the declaration they precede
         if (auto* m = dynamic_cast<ast::MethodDecl*>(member.get())) m->annotations = std::move(anns);
@@ -1380,7 +1380,8 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
 ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable,
                                   bool isPersistent, bool isEternal, bool isTransient,
                                   bool isVolatile, bool isLazy, bool isExternal, bool isMovable,
-                                  bool isUnique, bool isAbstract, bool isOverride, bool isFinal) {
+                                  bool isUnique, bool isAbstract, bool isOverride, bool isFinal,
+                                  bool inInterface) {
     const SourceLocation loc = current().loc;
     // Region flavor / growth soft keywords (spec 17 flavors) on a `region` field, before the type.
     std::string fieldRegionFlavor;
@@ -1398,7 +1399,7 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     // (override/abstract/final) apply to the property's synthesized accessors, not a plain field.
     if (check(TokenKind::LBrace)) {
         return parseProperty(std::move(visibility), isStatic, std::move(type), name, loc, isAbstract,
-                             isOverride, isFinal);
+                             isOverride, isFinal, inInterface);
     }
     auto f = std::make_unique<ast::FieldDecl>();
     f->loc = loc;
@@ -1565,7 +1566,7 @@ ast::MemberPtr Parser::parseBidirectional(std::string visibility, bool isStatic)
 
 ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast::TypeRef type,
                                      const std::string& name, SourceLocation loc, bool isAbstract,
-                                     bool isOverride, bool isFinal) {
+                                     bool isOverride, bool isFinal, bool inInterface) {
     expect(TokenKind::LBrace, "'{'");
     bool hasSet = false;
     bool getHasBody = false;
@@ -1681,6 +1682,27 @@ ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast:
         m->name = name;
         m->returnType = std::move(type);
         m->body = std::move(getBody);
+        return m;
+    }
+    // In an interface a bodyless auto-property is an abstract property CONTRACT, not data: emit an
+    // abstract property getter method (+ an abstract `name$set` when it has `set`) so implementers
+    // dispatch through the vtable -- exactly like a `get { ... }` interface property (spec 8.4/32).
+    // (A plain field here would make interface access read the object's first data slot -- BUG 5.)
+    if (inInterface) {
+        if (hasSet) {
+            auto setter = std::make_unique<ast::MethodDecl>();
+            setter->loc = loc; setter->visibility = visibility; setter->isStatic = isStatic;
+            setter->isAbstract = true; setter->name = name + "$set";
+            ast::Param sp; sp.loc = loc; sp.type = type; sp.name = "value";
+            setter->params.push_back(std::move(sp));
+            setter->returnType.name = "void";
+            extraMembers_.push_back(std::move(setter));
+        }
+        auto m = std::make_unique<ast::MethodDecl>();
+        m->loc = loc; m->visibility = std::move(visibility); m->isStatic = isStatic;
+        m->isAbstract = true; m->isProperty = true; m->name = name;
+        m->returnType = std::move(type);
+        if (hasSet) m->propertySetter = name + "$set";
         return m;
     }
     // Auto-property -> a field (set => mutable; init / get-only => immutable).
@@ -3369,6 +3391,20 @@ void Parser::parseTypeSet(std::vector<std::string>& out) {
             std::string name = expect(TokenKind::Identifier, "a type name").lexeme;
             while (match(TokenKind::Dot)) {
                 name += "." + expect(TokenKind::Identifier, "a name after '.'").lexeme;
+            }
+            // Generic type arguments in a constraint set (spec 17.3): Box<int>, ArrayList<?>,
+            // Pair<int,String>, nested Box<List<int>>. Consumed as a balanced <...> span (the '?'
+            // wildcard is accepted here, unlike parseTypeRef).
+            if (check(TokenKind::Lt)) {
+                int depth = 0;
+                do {
+                    const Token& tk = current();
+                    if (tk.kind == TokenKind::Lt)       { ++depth;    name += "<"; }
+                    else if (tk.kind == TokenKind::Gt)  { --depth;    name += ">"; }
+                    else if (tk.kind == TokenKind::Shr) { depth -= 2; name += ">>"; }  // '>>' closes two
+                    else                                {             name += tk.lexeme; }
+                    advance();
+                } while (depth > 0 && !check(TokenKind::EndOfFile));
             }
             out.push_back(std::move(name));
         } while (match(TokenKind::Comma));

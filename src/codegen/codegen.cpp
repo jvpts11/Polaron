@@ -1894,6 +1894,21 @@ struct CodeGenerator::Impl {
         return "";
     }
 
+    // The `name$set` setter for property `member` on `className` or any ancestor, or "" if none.
+    // Walks the superclass chain so an inherited property's setter is found through the derived type,
+    // matching findMethodDecl on the read path (spec 8.4/32).
+    std::string propertySetterName(const std::string& className, const std::string& member) {
+        std::string c = clsKey(className);
+        while (!c.empty()) {
+            auto it = classes.find(c);
+            if (it == classes.end()) break;
+            auto sit = it->second.propertySetters.find(member);
+            if (sit != it->second.propertySetters.end()) return sit->second;
+            c = it->second.superclass;
+        }
+        return "";
+    }
+
     // Fields in layout order: inherited (base-first, in the base's own layout order, so a subclass's
     // object still starts with exactly the base's prefix), then own.
     //
@@ -3707,18 +3722,38 @@ struct CodeGenerator::Impl {
         auto it = typeGlobals.find(className);
         if (it != typeGlobals.end()) return it->second;
         std::vector<std::string> methodNames, fieldNames, annotationNames;
-        std::vector<llvm::Constant*> methodRetTags;  // parallel to methodNames (for invoke, spec 31)
-        if (auto cit = classes.find(className); cit != classes.end() && cit->second.decl != nullptr) {
-            for (const ast::MemberPtr& m : cit->second.decl->members) {
-                if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get())) {
-                    methodNames.push_back(md->name);
-                    methodRetTags.push_back(
-                        builder.getInt64(returnTag(typeRefName(md->returnType))));
-                } else if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()))
-                    fieldNames.push_back(fd->name);
+        std::vector<llvm::Constant*> methodRetTags;      // parallel to methodNames (invoke, spec 31)
+        std::vector<const ast::MethodDecl*> methodDecls; // parallel: for per-method annotations
+        std::vector<std::string> methodOwners;           // parallel: class providing the impl
+        // Enumerate methods across the whole inheritance chain, most-derived first so an override
+        // shadows its base declaration -- reflection reports inherited methods too, each pointing at
+        // its most-derived implementation (spec 31). Fields/annotations stay own-class.
+        {
+            std::unordered_set<std::string> seenMethods;
+            for (std::string cn = className; !cn.empty();) {
+                // Stop at the implicit universal root: reflection reports the type's own methods and
+                // those inherited from USER base classes, not Object's equals/hashCode/equalsKey.
+                if (cn == "Object" && cn != className) break;
+                auto cit = classes.find(cn);
+                if (cit == classes.end() || cit->second.decl == nullptr) break;
+                for (const ast::MemberPtr& m : cit->second.decl->members) {
+                    if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get())) {
+                        if (!seenMethods.insert(md->name).second) continue;  // overridden in a subclass
+                        methodNames.push_back(md->name);
+                        methodRetTags.push_back(
+                            builder.getInt64(returnTag(typeRefName(md->returnType))));
+                        methodDecls.push_back(md);
+                        methodOwners.push_back(cn);
+                    } else if (cn == className) {  // fields: own class only (current behavior)
+                        if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()))
+                            fieldNames.push_back(fd->name);
+                    }
+                }
+                cn = cit->second.superclass;
             }
-            for (const ast::AnnotationUse& a : cit->second.decl->annotations)
-                annotationNames.push_back(a.name);  // applied [Name(...)] annotations (spec 14.3, 31)
+            if (auto cit = classes.find(className); cit != classes.end() && cit->second.decl != nullptr)
+                for (const ast::AnnotationUse& a : cit->second.decl->annotations)
+                    annotationNames.push_back(a.name);  // applied [Name(...)] annotations (spec 14.3, 31)
         }
         auto* nameStr = llvm::cast<llvm::Constant>(emitStringObject(className));
         auto [mcount, mnames] = nameArray(methodNames, "methods." + className);
@@ -3726,8 +3761,10 @@ struct CodeGenerator::Impl {
         auto [acount, anames] = nameArray(annotationNames, "annotations." + className);
         // Parallel array of method function pointers (null where there is no body).
         std::vector<llvm::Constant*> fns;
-        for (const std::string& mn : methodNames) {
-            auto fit = functions.find(className + "." + mn);
+        for (std::size_t mi = 0; mi < methodNames.size(); ++mi) {
+            // Resolve each method's impl in its OWNING class so an override wins and an inherited
+            // (non-overridden) method points at the base body.
+            auto fit = functions.find(methodOwners[mi] + "." + methodNames[mi]);
             fns.push_back(fit != functions.end()
                               ? llvm::cast<llvm::Constant>(fit->second)
                               : llvm::ConstantPointerNull::get(builder.getPtrTy()));
@@ -3754,18 +3791,12 @@ struct CodeGenerator::Impl {
         // Per-method annotation arrays (spec 31), parallel to methodNames: for each method, its own
         // applied annotations as {count, String[]}, so a Method token can report them.
         std::vector<llvm::Constant*> mAnnCounts, mAnnPtrs;
-        if (auto cit = classes.find(className); cit != classes.end() && cit->second.decl != nullptr) {
-            std::size_t mi = 0;
-            for (const ast::MemberPtr& m : cit->second.decl->members) {
-                if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get())) {
-                    std::vector<std::string> anns;
-                    for (const ast::AnnotationUse& a : md->annotations) anns.push_back(a.name);
-                    auto [cnt, arr] = nameArray(anns, "methodann." + className + "." + std::to_string(mi));
-                    mAnnCounts.push_back(cnt);
-                    mAnnPtrs.push_back(arr);
-                    ++mi;
-                }
-            }
+        for (std::size_t mi = 0; mi < methodDecls.size(); ++mi) {  // parallel to methodNames
+            std::vector<std::string> anns;
+            for (const ast::AnnotationUse& a : methodDecls[mi]->annotations) anns.push_back(a.name);
+            auto [cnt, arr] = nameArray(anns, "methodann." + className + "." + std::to_string(mi));
+            mAnnCounts.push_back(cnt);
+            mAnnPtrs.push_back(arr);
         }
         llvm::ArrayType* mAnnCountArrTy = llvm::ArrayType::get(builder.getInt64Ty(), mAnnCounts.size());
         auto* mAnnCountsG = new llvm::GlobalVariable(
@@ -4108,6 +4139,13 @@ struct CodeGenerator::Impl {
                 llvm::Value* v = emitExpr(*tup->elements[i]);
                 if (v == nullptr) return nullptr;
                 v = coerce(v, typeName(*tup->elements[i]), comps[i]);
+                // A value-struct element is a bare `ptr`; storing it as-is captures a pointer into this
+                // frame (a param/local copy) that dangles once the tuple is returned by value. Deep-copy
+                // it onto the heap so the tuple owns an independent object outliving the frame (spec 11
+                // value semantics), matching the field/array/param copy discipline.
+                if (i < comps.size() && classes.count(comps[i]) > 0 && classes[comps[i]].isStruct &&
+                    isCopyDiscipline(comps[i]))
+                    v = emitClassCopy(comps[i], v, /*heap=*/true);
                 agg = builder.CreateInsertValue(agg, v, {static_cast<unsigned>(i)});
             }
             return agg;
@@ -4204,11 +4242,21 @@ struct CodeGenerator::Impl {
                     llvm::Value* slotPtr = builder.CreateConstGEP2_64(
                         vtArrTy, vtbl, 0, static_cast<std::uint64_t>(slot), "slot");
                     llvm::Value* fnPtr = builder.CreateLoad(builder.getPtrTy(), slotPtr, "fn");
+                    // A value-struct property return goes through the vtable as an sret call too:
+                    // allocate the result slot and pass it as the trailing arg (spec 11/32).
+                    if (returnsValueStruct(typeName(*mem))) {
+                        llvm::Value* sslot =
+                            createEntryAlloca("sret", classes[baseType(typeName(*mem))].type);
+                        builder.CreateCall(methodFnType(pm), fnPtr, {recv, sslot});
+                        return sslot;
+                    }
                     return builder.CreateCall(methodFnType(pm), fnPtr, {recv});
                 }
                 const std::string owner = methodOwner(ot, mem->member);
                 auto fnit = functions.find(owner + "." + mem->member);
-                if (fnit != functions.end()) return builder.CreateCall(fnit->second, {recv});
+                // A value-struct getter is an sret function (trailing result-slot arg); emitMaybeInvoke
+                // allocates and appends the slot, exactly as for a regular method call (spec 11/32).
+                if (fnit != functions.end()) return emitMaybeInvoke(fnit->second, {recv});
             }
             llvm::Value* fieldPtr = emitLValue(*mem);
             if (fieldPtr == nullptr) return nullptr;
@@ -4325,7 +4373,11 @@ struct CodeGenerator::Impl {
                     methodOwner(baseType(typeName(*un->operand)), "operator" + un->op);
                 if (!owner.empty()) {
                     auto fnit = functions.find(owner + ".operator" + un->op);
-                    if (fnit != functions.end() && fnit->second->arg_size() == 1) {
+                    // A unary overload has no explicit params: LLVM arg count is 1 (`this`), or 2 when
+                    // the operator returns a value struct (a trailing sret result slot is appended).
+                    // The bare `== 1` check skipped struct-returning unary operators (spec 6.5/11).
+                    if (fnit != functions.end() &&
+                        fnit->second->arg_size() == (sretFns_.count(fnit->second) > 0 ? 2u : 1u)) {
                         llvm::Value* recv = emitExpr(*un->operand);
                         if (recv == nullptr) return nullptr;
                         return emitMaybeInvoke(fnit->second, {recv});
@@ -5436,6 +5488,12 @@ struct CodeGenerator::Impl {
                         v = builder.CreateZExt(v, builder.getInt32Ty());  // varargs promotion
                     }
                 }
+            } else if (javaEnums.count(baseType(et)) > 0) {
+                // A java-style enum value is a singleton pointer; print its ordinal so it matches
+                // simple/ordinal enums (which already interpolate to their i32 ordinal) instead of
+                // the raw pointer bits (spec 12.2/12.5).
+                fmt += "%d";
+                v = emitJavaEnumOrdinal(v, baseType(et));
             } else if (intBits(et) == 64) {
                 fmt += "%lld";
             } else {
@@ -7025,10 +7083,13 @@ struct CodeGenerator::Impl {
                     auto* hit = llvm::BasicBlock::Create(context, "m.hit", fn);
                     auto* nxt = llvm::BasicBlock::Create(context, "m.next", fn);
                     auto* end = llvm::BasicBlock::Create(context, "m.end", fn);
+                    auto* miss = llvm::BasicBlock::Create(context, "m.miss", fn);
                     builder.CreateBr(hdr);
                     builder.SetInsertPoint(hdr);
                     llvm::Value* i = builder.CreateLoad(builder.getInt64Ty(), iSlot, "i");
-                    builder.CreateCondBr(builder.CreateICmpSLT(i, mcount), body, end);
+                    // No method with that name: fail deterministically (no-UB) instead of returning a
+                    // null-name/null-fn token that later derefs to garbage (spec 31 reflection).
+                    builder.CreateCondBr(builder.CreateICmpSLT(i, mcount), body, miss);
                     builder.SetInsertPoint(body);
                     llvm::Value* mn = builder.CreateLoad(
                         builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), mnamesArr, i), "mn");
@@ -7050,6 +7111,8 @@ struct CodeGenerator::Impl {
                     builder.SetInsertPoint(nxt);
                     builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
                     builder.CreateBr(hdr);
+                    builder.SetInsertPoint(miss);
+                    emitPanic("reflection: Type.method(name) found no method with that name");
                     builder.SetInsertPoint(end);
                     return result;
                 }
@@ -7337,10 +7400,30 @@ struct CodeGenerator::Impl {
                         llvm::FunctionType* rt = llvm::FunctionType::get(builder.getInt32Ty(), false);
                         llvm::Value* r =
                             builder.CreateCall(module.getOrInsertFunction("rand", rt), {}, "rand");
-                        return builder.CreateSRem(r, builder.getInt32(n), "enum.random");
+                        llvm::Value* ord = builder.CreateSRem(r, builder.getInt32(n), "enum.random");
+                        auto jit = javaEnums.find(eid->name);
+                        if (jit == javaEnums.end()) return ord;  // int-style: the ordinal IS the value
+                        // java-style: return the singleton at the chosen ordinal (a ptr), not the int.
+                        llvm::Value* sel = llvm::ConstantPointerNull::get(builder.getPtrTy());
+                        for (int i = 0; i < n; ++i)
+                            sel = builder.CreateSelect(
+                                builder.CreateICmpEQ(ord, builder.getInt32(i)),
+                                emitEnumConstant(*jit->second, eit->second[i]), sel);
+                        return sel;
                     }
                     if (mem->member == "values") {
-                        // Build an int[] of ordinals [0 .. n-1].
+                        auto jit = javaEnums.find(eid->name);
+                        if (jit != javaEnums.end()) {  // java-style: array of singleton ptrs (8-byte stride)
+                            llvm::Value* total = builder.getInt64(8 + static_cast<long long>(n) * 8);
+                            llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "enum.vals");
+                            builder.CreateStore(builder.getInt64(n), block);  // length header
+                            for (int i = 0; i < n; ++i)
+                                builder.CreateStore(
+                                    emitEnumConstant(*jit->second, eit->second[i]),
+                                    arrayElemPtr(block, builder.getInt32(i), builder.getPtrTy()));
+                            return block;
+                        }
+                        // int-style: build an int[] of ordinals [0 .. n-1].
                         llvm::Value* total = builder.getInt64(8 + static_cast<long long>(n) * 4);
                         llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "enum.vals");
                         builder.CreateStore(builder.getInt64(n), block);  // length header
@@ -8171,10 +8254,17 @@ struct CodeGenerator::Impl {
     // exit edge has its own predecessor. Used by return/break/continue/try? so finally
     // runs on every structured exit, not only the normal/caught fall-through.
     void emitPendingFinallys(std::size_t downTo) {
-        for (std::size_t i = finallyStack.size(); i > downTo; --i) {
-            if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
-            emitBlock(*finallyStack[i - 1]);
+        // While emitting a finally, mask it (and inner ones) off the stack: a `return`/exit INSIDE a
+        // finally must run only the ENCLOSING finallys, not re-enter itself. Without this, a
+        // `try { return; } finally { return; }` recursed forever (emitBlock -> return -> here -> ...)
+        // and overflowed the stack. The full stack is restored for emitTry's own pop/normal-path emit.
+        std::vector<const ast::Block*> saved = finallyStack;
+        for (std::size_t i = saved.size(); i > downTo; --i) {
+            if (builder.GetInsertBlock()->getTerminator() != nullptr) break;
+            finallyStack.resize(i - 1);
+            emitBlock(*saved[i - 1]);
         }
+        finallyStack = saved;
     }
 
     // Finds the loop targeted by break/continue: the named loop, or the innermost.
@@ -8994,10 +9084,37 @@ struct CodeGenerator::Impl {
             if (asyncSM || genSM) {
                 auto it = locals.find(vd->name);
                 if (it != locals.end()) {
+                    // The async/gen fast-path pre-binds each local to a field in the coroutine state
+                    // object, but must still do the type-specific setup the sync path does, or region and
+                    // value-struct locals break across a suspend:
+                    //  - BUG 8: a `region` local needs its flavor/growable recorded and pending-flavor set
+                    //    so `itself.allocate` lays the right descriptor and its objects get tracked (else a
+                    //    later rollback runs no destructors).
+                    //  - BUG 7: a value-struct `new ... on stack` lives on THIS resume invocation's stack,
+                    //    which is gone once the await returns; heap-promote it (and deep-copy a copy-init)
+                    //    so the state field's pointer stays valid across the suspend/resume split.
+                    const bool isRegion = (it->second.type == "region");
+                    if (isRegion) {
+                        if (!vd->regionFlavor.empty()) regionFlavor_[vd->name] = vd->regionFlavor;
+                        if (vd->regionGrowable) growableRegions_.insert(vd->name);
+                        pendingRegionFlavor_ = vd->regionFlavor;
+                        pendingRegionGrowable_ = vd->regionGrowable;
+                    }
+                    if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+                        nw != nullptr && nw->location == "stack" && nw->region.empty() &&
+                        isClassValue(it->second.type))
+                        const_cast<ast::NewExpr*>(nw)->location = "heap";
                     llvm::Value* v = emitExpr(*vd->init);
-                    if (v != nullptr)
+                    if (isRegion) { pendingRegionFlavor_.clear(); pendingRegionGrowable_ = false; }
+                    if (v != nullptr) {
+                        if (isClassValue(it->second.type) && isCopyDiscipline(it->second.type) &&
+                            isCopyableLValue(*vd->init))
+                            v = emitClassCopy(it->second.type, v, /*heap=*/true);
                         builder.CreateStore(coerceToType(v, llvmType(it->second.type)),
                                             it->second.storage);
+                    }
+                    if (isRegion && !vd->isEternal)
+                        scopeRegions.push_back(RegionLocal{it->second.storage, vd->isEternal, vd->name});
                     return;
                 }
             }
@@ -9226,10 +9343,10 @@ struct CodeGenerator::Impl {
             if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
                 const std::string oc = baseType(typeName(*mt->object));
                 if (auto cit = classes.find(oc); cit != classes.end()) {
-                    auto sit = cit->second.propertySetters.find(mt->member);
-                    if (sit != cit->second.propertySetters.end()) {
-                        const std::string owner = methodOwner(oc, sit->second);
-                        const std::string setterFn = owner + "." + sit->second;
+                    const std::string setterName = propertySetterName(oc, mt->member);
+                    if (!setterName.empty()) {
+                        const std::string owner = methodOwner(oc, setterName);
+                        const std::string setterFn = owner + "." + setterName;
                         const bool inOwnSetter =
                             currentFn != nullptr && currentFn->getName().str() == setterFn;
                         if (!inOwnSetter) {
@@ -9241,11 +9358,11 @@ struct CodeGenerator::Impl {
                                 // just like the getter and any method -- so `base.prop = v` runs the
                                 // most-derived setter; a concrete un-subclassed receiver stays a direct
                                 // call.
-                                const ast::MethodDecl* sdecl = findMethodDecl(oc, sit->second);
+                                const ast::MethodDecl* sdecl = findMethodDecl(oc, setterName);
                                 const bool mayBeSubtype =
                                     subclassed_.count(oc) > 0 || cit->second.isInterface ||
                                     cit->second.isAbstract || cit->second.imported;
-                                const int slot = slotIndex(oc, sit->second);
+                                const int slot = slotIndex(oc, setterName);
                                 if (sdecl != nullptr && cit->second.hasVtable && mayBeSubtype && slot >= 0) {
                                     llvm::Value* vtblField =
                                         builder.CreateStructGEP(cit->second.type, recv, 0, "vtbl.addr");
@@ -9508,12 +9625,27 @@ struct CodeGenerator::Impl {
                 const std::string owner = methodOwner(tt, opName);
                 if (!owner.empty()) {
                     auto fnit = functions.find(owner + "." + opName);
-                    if (fnit != functions.end() && fnit->second->arg_size() == 1) {
+                    const bool opSret = fnit != functions.end() && sretFns_.count(fnit->second) > 0;
+                    // No explicit params: arg count 1 (`this`), or 2 when the operator returns a value
+                    // struct (a trailing sret result slot is appended). The bare `== 1` skipped
+                    // struct-returning ++/-- overloads (spec 6.5/11) and fell through to the builtin path.
+                    if (fnit != functions.end() &&
+                        fnit->second->arg_size() == (opSret ? 2u : 1u)) {
                         llvm::Value* recv = emitExpr(*incdec->target);
                         if (recv == nullptr) return;
                         llvm::Value* res = emitMaybeInvoke(fnit->second, {recv});
                         llvm::Value* dst = emitLValue(*incdec->target);
-                        if (dst != nullptr) builder.CreateStore(res, dst);
+                        if (dst != nullptr) {
+                            if (opSret) {
+                                // `c++` == `c = c.operator++()`: the overload returns a fresh value struct
+                                // in an sret slot; copy its bytes into the target's backing storage (value
+                                // semantics), like the struct-assignment path, not the slot pointer.
+                                llvm::Value* destStruct = builder.CreateLoad(builder.getPtrTy(), dst);
+                                builder.CreateCall(memcpyFn(), {destStruct, res, sizeOf(classes[tt].type)});
+                            } else {
+                                builder.CreateStore(res, dst);
+                            }
+                        }
                         return;
                     }
                 }
@@ -12045,8 +12177,10 @@ struct CodeGenerator::Impl {
         ehPadStack.push_back(guard);
         // Sentinel base: the async guard covers the whole body and does its own completion; the in-try
         // block cleanup pass must not inject here, so keep it disabled for this pad.
-        ehBaseStack.push_back({static_cast<std::size_t>(-1), static_cast<std::size_t>(-1),
-                               static_cast<std::size_t>(-1)});
+        // Real (freshly-cleared) base sizes so a throw with a pending defer/using/region/stack-dtor
+        // chains its cleanup into the async guard before completing the Task with the error (spec 21).
+        // {0,0,0} in practice -> adds cleanup only when there IS something pending; else == the guard.
+        ehBaseStack.push_back({scopeObjects.size(), deferred.size(), scopeRegions.size()});
         emitBlock(m.body, /*newScope=*/false);
         ehPadStack.pop_back();
         ehBaseStack.pop_back();
@@ -12430,8 +12564,10 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(bodyStart);
         llvm::BasicBlock* guard = buildAsyncGuardPad();  // a throw completes the task with the error
         ehPadStack.push_back(guard);
-        ehBaseStack.push_back({static_cast<std::size_t>(-1), static_cast<std::size_t>(-1),
-                               static_cast<std::size_t>(-1)});  // sentinel: async guard, no in-try inject
+        // Real (freshly-cleared) base sizes so a throw with a pending defer/using/region/stack-dtor
+        // chains its cleanup into the async guard before completing the Task with the error (spec 21).
+        // {0,0,0} in practice -> adds cleanup only when there IS something pending; else == the guard.
+        ehBaseStack.push_back({scopeObjects.size(), deferred.size(), scopeRegions.size()});  // sentinel: async guard, no in-try inject
         emitBlock(m.body, /*newScope=*/false);  // natural control flow; awaits split their blocks
         ehPadStack.pop_back();
         ehBaseStack.pop_back();
