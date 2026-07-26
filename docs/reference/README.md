@@ -21,16 +21,17 @@ A single typeset PDF of everything below:
 |---|---------|----------------|
 | 1 | [Introduction & Philosophy](guide/01-introduction.md) | What LDP3 is, its design pillars (OOP-mandatory, no GC, value semantics, no exploitable UB), and a first taste. |
 | 2 | [Program Structure & Modules](guide/02-program-structure.md) | `program`/`bundle`/`namespace`, the entry point, visibility, imports, multi-file programs. |
-| 3 | [Values & the Type System](guide/03-type-system.md) | Primitives and their names, literals, `String`/`string`, `nullable`, arrays, generics + variance, `record`/`struct`/`union`/`enum`/`catalog`, casting. |
-| 4 | [Memory & Ownership](guide/04-memory-and-ownership.md) | Value semantics and deep copy, `T*`/`T&`, stack/heap, RAII, regions, `move`/`movable`/`unique`/`partitionable`, `defer`/`using`, persistents. |
-| 5 | [Object-Oriented Programming](guide/05-oop.md) | Classes, inheritance, interfaces, `abstract`/`override`/vtables, properties, operators, enums, `sealed`/`permits`. |
-| 6 | [Control Flow](guide/06-control-flow.md) | `if`/`while`/`for`/`foreach`/ranges, `switch`, `match`, labelled `break`/`continue`, and the chaos tetrad. |
-| 7 | [Errors, Results & Contracts](guide/07-errors-and-contracts.md) | Exceptions, `Result`/`Option`/`try?`, `requires`/`ensures`/`invariant`, and the no-UB principle. |
-| 8 | [Concurrency](guide/08-concurrency.md) | `async`/`await` + `Task`, `Thread`, `Mutex`/`synchronized`, `atomic`, `Channel`/`select`. |
-| 9 | [Compile-Time, Reflection & Universal Prefixes](guide/09-metaprogramming-and-prefixes.md) | `comptime`, `static_assert`, reflection, annotations, lifecycle hooks, and `cascade`/`eternal`/`lazy`/`comptime`/`volatile`/`final`. |
-| 10 | [Systems Programming](guide/10-systems-programming.md) | Compiler builtins (`String`, `Decimal`, `Memory`/`address`, SIMD, `Console`), FFI (`extern` + `native_libs`), and freestanding mode. |
-| 11 | [Keyword Reference](guide/11-keyword-reference.md) | Every reserved word, grouped by role, with its meaning, syntax, an example, and its exact status. |
-| 13 | [Functions, Lambdas & Tuples](guide/13-functions-and-lambdas.md) | First-class functions, the `function<>` type, lambdas + `byvalue`/`byref` captures, `methodref`, `funcptr<>` for FFI, tuple returns, and named arguments. |
+| 3 | [Expressions, Statements & Method Calls](guide/03-expressions-statements.md) | The everyday mechanics: variables and assignment, the operator set, expressions, statement kinds, and calling methods (instance, `this`, static, chained). |
+| 4 | [Values & the Type System](guide/04-type-system.md) | Primitives and their names, literals, `String`/`string`, `nullable`, arrays, generics + variance, `record`/`struct`/`union`/`enum`/`catalog`, casting. |
+| 5 | [Memory & Ownership](guide/05-memory-and-ownership.md) | Value semantics and deep copy, `T*`/`T&`, stack/heap, RAII, regions, `move`/`movable`/`unique`/`partitionable`, `defer`/`using`, persistents. |
+| 6 | [Object-Oriented Programming](guide/06-oop.md) | Classes, inheritance, interfaces, `abstract`/`override`/vtables, properties, operators, enums, `sealed`/`permits`. |
+| 7 | [Control Flow](guide/07-control-flow.md) | `if`/`while`/`for`/`foreach`/ranges, `switch`, `match`, labelled `break`/`continue`, and the chaos tetrad. |
+| 8 | [Errors, Results & Contracts](guide/08-errors-and-contracts.md) | Exceptions, `Result`/`Option`/`try?`, `requires`/`ensures`/`invariant`, and the no-UB principle. |
+| 9 | [Concurrency](guide/09-concurrency.md) | `async`/`await` + `Task`, `Thread`, `Mutex`/`synchronized`, `atomic`, `Channel`/`select`. |
+| 10 | [Compile-Time, Reflection & Universal Prefixes](guide/10-metaprogramming-and-prefixes.md) | `comptime`, `static_assert`, reflection, annotations, lifecycle hooks, and `cascade`/`eternal`/`lazy`/`comptime`/`volatile`/`final`. |
+| 11 | [Systems Programming](guide/11-systems-programming.md) | Compiler builtins (`String`, `Decimal`, `Memory`/`address`, SIMD, `Console`), FFI (`extern` + `native_libs`), and freestanding mode. |
+| 12 | [Keyword Reference](guide/12-keyword-reference.md) | Every reserved word, grouped by role, with its meaning, syntax, an example, and its exact status. |
+| 14 | [Functions, Lambdas & Tuples](guide/14-functions-and-lambdas.md) | First-class functions, the `function<>` type, lambdas + `byvalue`/`byref` captures, `methodref`, `funcptr<>` for FFI, tuple returns, and named arguments. |
 
 ## Part II — The Standard Library
 
@@ -49,8 +50,8 @@ verbatim member signatures with explanatory prose.
 
 | # | Chapter | What it covers |
 |---|---------|----------------|
-| 12 | [Diagnostics](guide/12-diagnostics.md) | The `LDP3-NNNN` code system, the rich why/fix/prevent format, `ldp3 explain`, the code ranges, and editor integration. |
-| 14 | [The Toolchain & Projects](guide/14-toolchain.md) | The `ldp3` driver and its commands, project layout, the `ldp3.toml` manifest, dependencies, and environments. |
+| 13 | [Diagnostics](guide/13-diagnostics.md) | The `LDP3-NNNN` code system, the rich why/fix/prevent format, `ldp3 explain`, the code ranges, and editor integration. |
+| 15 | [The Toolchain & Projects](guide/15-toolchain.md) | The `ldp3` driver and its commands, project layout, the `ldp3.toml` manifest, dependencies, and environments. |
 
 ---
 
