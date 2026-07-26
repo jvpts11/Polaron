@@ -2,7 +2,7 @@
   "name": "ldp3",
   "displayName": "LDP3",
   "description": "Language support and project tooling for LDP3.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "ldp3",
   "license": "SEE LICENSE IN ../../LICENSE",
   "engines": {

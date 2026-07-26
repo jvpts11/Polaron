@@ -89,11 +89,11 @@
       "patterns": [
         {
           "name": "keyword.control.ldp3",
-          "match": "\\b(if|else|while|do|for|switch|match|case|default|break|continue|return|yield|try|catch|finally|throw|throws|goto|comefrom|abstainfrom|reinstate|step|defer|using|await|async|synchronized|expecting|onFailure)\\b"
+          "match": "\\b(if|else|while|do|foreach|for|switch|match|case|default|break|continue|return|yield|try|catch|finally|throw|throws|goto|comefrom|abstainfrom|reinstate|step|index|defer|using|await|async|synchronized|expecting|onFailure)\\b"
         },
         {
           "name": "storage.modifier.ldp3",
-          "match": "\\b(public|private|protected|internal|static|abstract|final|override|mutable|nullable|sealed|permits|var|move|movable|unique|partitionable|extern|cdecl|stdcall|fastcall|freestanding|persistent|eternal|transient|comptime|literal|fixed|volatile|cascade|lazy|external|release|reimport|unimport|requires|ensures|invariant|static_assert|extends|implements|bump|pool|stack|fixedslot|ring|growable)\\b"
+          "match": "\\b(public|private|protected|internal|static|abstract|final|override|mutable|nullable|sealed|permits|var|move|movable|unique|partitionable|partial|deprecated|extern|cdecl|stdcall|fastcall|freestanding|persistent|eternal|transient|comptime|literal|fixed|volatile|cascade|lazy|external|release|reimport|unimport|requires|ensures|invariant|static_assert|extends|implements|bump|pool|stack|fixedslot|ring|growable)\\b"
         },
         {
           "name": "keyword.operator.word.ldp3",
@@ -113,7 +113,7 @@
       "patterns": [
         {
           "name": "storage.type.primitive.ldp3",
-          "match": "\\b(void|boolean|char|string|String|int8|int16|int32|int64|int|uint8|uint16|uint32|uint64|short|long|byte|float32|float64|float|double|Decimal|checkpoint)\\b"
+          "match": "\\b(void|boolean|char|string|String|int8|int16|int32|int64|int|uint8|uint16|uint32|uint64|uint|short|long|byte|ubyte|ushort|ulong|usize|isize|smallfloat|float32|float64|float|double|quadruple|Decimal|address|checkpoint)\\b"
         }
       ]
     },
