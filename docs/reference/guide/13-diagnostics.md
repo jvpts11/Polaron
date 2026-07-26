@@ -50,9 +50,8 @@ game/Board.ldp3:42:17: error[LDP3-0101]: use of undeclared variable 'coutn'
 To read the full why / fix / prevent for a code without triggering it, ask the driver:
 
 ```
-ldp3 explain LDP3-0101      # the canonical explanation for one code
-ldp3 explain 0101           # the LDP3- prefix is optional
-ldp3 explain                # list every code the compiler knows
+ldp3 explain LDP3-0101      # the canonical explanation for one code (use the full LDP3- code)
+ldp3c --explain             # list every code the compiler knows
 ```
 
 `ldp3 explain` forwards to the compiler, which owns the catalog, so the text is always in
