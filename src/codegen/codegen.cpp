@@ -3277,6 +3277,32 @@ struct CodeGenerator::Impl {
         llvm::IRBuilder<> tmp(&entryBB, entryBB.begin());
         return tmp.CreateAlloca(type, nullptr, name);
     }
+    // Null out a stack-object's pointer slot in the entry block, right after its alloca, so it dominates
+    // every path. A construction that a runtime control-flow keyword skips (abstainfrom past the decl, or
+    // a goto/comefrom into the middle of the block) then leaves the slot null instead of garbage, and the
+    // null-guarded scope-exit destructor skips it -- no destructor on unconstructed memory (no-UB).
+    void zeroStackObjectSlot(llvm::Value* slot) {
+        auto* alloca = llvm::dyn_cast<llvm::AllocaInst>(slot);
+        if (alloca == nullptr) return;
+        llvm::IRBuilder<> tmp(alloca->getParent(), std::next(alloca->getIterator()));
+        tmp.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
+    }
+    // Run a tracked stack object's destructor only if its slot is live (non-null). Paired with
+    // zeroStackObjectSlot: a construction skipped by a control-flow keyword leaves the slot null, so the
+    // scope-exit teardown must not destruct it. The optimizer folds the check away when the object is
+    // provably constructed (the common case, no abstain/skip in the function).
+    void emitDtorIfLive(llvm::Value* objPtr, llvm::FunctionCallee dtor) {
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* callBB = llvm::BasicBlock::Create(context, "dtor.live", fn);
+        llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "dtor.done", fn);
+        builder.CreateCondBr(
+            builder.CreateICmpNE(objPtr, llvm::ConstantPointerNull::get(builder.getPtrTy())), callBB,
+            contBB);
+        builder.SetInsertPoint(callBB);
+        builder.CreateCall(dtor, {objPtr});
+        builder.CreateBr(contBB);
+        builder.SetInsertPoint(contBB);
+    }
 
     // Pointer to the struct of an object expression (`this` or a class variable).
     // If `mem` is a static-field reference `ClassName.field` (the receiver names a
@@ -7895,7 +7921,7 @@ struct CodeGenerator::Impl {
             auto fnit = functions.find(it->className + ".~" + it->className);
             if (fnit == functions.end()) continue;
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), it->slot);
-            builder.CreateCall(fnit->second, {objPtr});
+            emitDtorIfLive(objPtr, fnit->second);
         }
         // String RAII: release every live String local at this function exit (spec 4). Not cleared here
         // (like scopeObjects) -- the unwinding emitBlock calls resize away the tracking entries.
@@ -9038,8 +9064,12 @@ struct CodeGenerator::Impl {
             return;
         }
         // `comefrom name;` -- transfer control to label name (forward or backward). Code after is
-        // dead (the terminator guard above skips it).
+        // dead (the terminator guard above skips it). Like `goto`, it can leave lexical scopes, so run
+        // their teardown first (defers, destructors, String/region/value-struct frees) -- otherwise a
+        // comefrom out of a scope leaks what goto correctly cleans. Only scopes nested inside the target's
+        // scope are torn down; the target scope's own locals are kept (a backward comefrom is a retry).
         if (const auto* cf = dynamic_cast<const ast::ComefromStmt*>(&stmt)) {
+            emitGotoScopeCleanup(cf->name);
             llvm::BasicBlock*& bb = labelBlocks[cf->name];
             if (bb == nullptr) bb = llvm::BasicBlock::Create(context, "label." + cf->name, currentFn);
             builder.CreateBr(bb);
@@ -9359,8 +9389,10 @@ struct CodeGenerator::Impl {
                         flavorOfRegion(nw->region);
                     if (!nw->region.empty() && !isStackFlavor(rfl) && !isRingFlavor(rfl))
                         scopeObjects.push_back(ScopeObject{slot, nw->className, nw->region});
-                    else if (nw->region.empty() && nw->location == "stack")
+                    else if (nw->region.empty() && nw->location == "stack") {
+                        zeroStackObjectSlot(slot);  // abstain/skip past this decl -> null -> no dtor on uninit
                         scopeObjects.push_back(ScopeObject{slot, nw->className, ""});
+                    }
                 }
                 // An object placed in a `volatile region` (MMIO): its field accesses are volatile.
                 if (!nw->region.empty() && volatileRegions_.count(nw->region) > 0)
@@ -10238,7 +10270,7 @@ struct CodeGenerator::Impl {
             auto fnit = functions.find(so.className + ".~" + so.className);
             if (fnit == functions.end()) continue;
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
-            builder.CreateCall(fnit->second, {objPtr});
+            emitDtorIfLive(objPtr, fnit->second);
         }
         // String RAII: free String locals declared in this block (LIFO). The sentinel base means "leave
         // them" -- break/continue pass it so the outer scope-exit / function return frees them, never us
