@@ -310,24 +310,26 @@ thereafter. The chapters build on one another:
    and a first taste of real code.
 2. **Program Structure & Modules** — programs, bundles, namespaces, imports, visibility, and the
    entry point in depth.
-3. **Values & the Type System** — the primitive families, `boolean`, `char`, `String`/`string`,
+3. **Expressions, Statements & Method Calls** — the everyday mechanics of code inside a method:
+   declaring and assigning variables, the operators, forming expressions, the statement kinds, and
+   how you call methods (on an object, on `this`, on a class, and chained).
+4. **Values & the Type System** — the primitive families, `boolean`, `char`, `String`/`string`,
    literals and explicit conversion, plus records, structs, unions, enums, and generics.
-4. **Memory & Ownership** — stack versus heap, `new`/`delete`, deep-copy assignment, pointers and
+5. **Memory & Ownership** — stack versus heap, `new`/`delete`, deep-copy assignment, pointers and
    references, deterministic destruction, and the ownership and region tools you opt into.
-5. **Object-Oriented Programming** — fields, constructors and destructors, instance and static
-   methods, `this`, calling methods, encapsulation, inheritance, interfaces, `override`, and
-   virtual dispatch.
-6. **Control Flow** — conditionals, loops, ranges, `switch`/`match`, and the "chaos tetrad".
-7. **Errors, Results & Contracts** — exceptions, `Result`/`Option`, contracts, and
+6. **Object-Oriented Programming** — fields, constructors and destructors, instance and static
+   methods, `this`, encapsulation, inheritance, interfaces, `override`, and virtual dispatch.
+7. **Control Flow** — conditionals, loops, ranges, `switch`/`match`, and the "chaos tetrad".
+8. **Errors, Results & Contracts** — exceptions, `Result`/`Option`, contracts, and
    defined-behavior traps.
-8. **Concurrency** — threads, channels, mutexes, and `async`/`await`.
-9. **Compile-Time, Reflection & Prefixes** — `comptime`, reflection, the universal prefixes, and
-   the managed-runtime features (persistents, `unimport`).
-10. **Systems Programming** — freestanding mode, raw pointers, the low-level `Memory` API, and FFI.
-11. **Keyword Reference** — every reserved word, its status, and a short example.
-12. **Diagnostics** — how to read an LDP3 error, its structure, and `ldp3 explain`.
-13. **Functions & Lambdas** — `lambda`, `function<...>` types, and method references.
-14. **Toolchain** — how to build, run, package, and test LDP3 programs.
+9. **Concurrency** — threads, channels, mutexes, and `async`/`await`.
+10. **Compile-Time, Reflection & Prefixes** — `comptime`, reflection, the universal prefixes, and
+    the managed-runtime features (persistents, `unimport`).
+11. **Systems Programming** — freestanding mode, raw pointers, the low-level `Memory` API, and FFI.
+12. **Keyword Reference** — every reserved word, its status, and a short example.
+13. **Diagnostics** — how to read an LDP3 error, its structure, and `ldp3 explain`.
+14. **Functions & Lambdas** — `lambda`, `function<...>` types, and method references.
+15. **Toolchain** — how to build, run, package, and test LDP3 programs.
 
 Six **Standard Library** chapters follow the guide: concurrency & core, collections, data
 structures, text/encoding/crypto, parsing/time/JSON, and math/net/misc.
