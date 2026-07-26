@@ -22,6 +22,7 @@ struct Manifest {
     std::string entry;
     std::string outputDir = "build-output/";
     std::string target = "x86_64-windows";
+    std::string sysroot;                 // cross-compile sysroot ([build] sysroot = "..."); empty = host
     std::string environment;             // optional shared environment ([build] environment = "...")
     bool freestanding = false;
     // [build] subsystem = "windows": link a GUI program (no console window). Default "" = console, so a
