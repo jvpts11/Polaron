@@ -187,6 +187,7 @@ The **`Memory` API** is the typed front door to a raw block:
 
 ```ldp3
 import System.IO.Console;
+import System.Memory;
 program LowLevelMemory;
 
 public bundle main {

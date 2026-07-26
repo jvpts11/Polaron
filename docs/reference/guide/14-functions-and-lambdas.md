@@ -142,6 +142,12 @@ intent and frees you from remembering positional order:
 validate(value: 100, errorMessage: "name too long");
 ```
 
-A parameter can be *required* to be passed by name with `requires named` on the declaration
-(spec 22.4), so callers can never pass it positionally — useful for boolean flags and other
-arguments whose meaning isn't obvious from position alone.
+A parameter can be *required* to be passed by name by prefixing its declaration with
+`requires named` (spec 22.4), so callers can never pass it positionally — useful for boolean
+flags and other arguments whose meaning isn't obvious from position alone:
+
+```ldp3
+public static method spawn(requires named boolean detached) returns void { /* ... */ }
+// Main.spawn(true);            // error: 'detached' must be passed by name
+Main.spawn(detached: true);     // ok
+```
