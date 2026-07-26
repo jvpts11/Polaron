@@ -541,7 +541,7 @@ dereference, so a null receiver traps deterministically with a message instead o
 segfaulting:
 
 ```ldp3
-Dog? maybe = this.find(name);
+nullable Dog maybe = this.find(name);
 maybe.bark();   // if maybe is null, this traps deterministically, not a wild segfault
 ```
 

@@ -186,7 +186,7 @@ The standard library's `System.Memory.Units` namespace provides six size
 suffixes that all return a `ByteSize`:
 
 ```ldp3
-import System.Memory.Units;
+import System.Memory.Units.kilobytes;
 
 region cache = itself.allocate(64 kilobytes);   // expands to kilobytes(64)
 ```
@@ -228,24 +228,26 @@ byte  x = 999;    // ERROR: 999 does not fit in a byte
 Nothing about this applies to *variables*; only literals whose value the compiler
 can see get this treatment.
 
-### Overflow: checked by default
+### Overflow: a defined wrap by default
 
-By default, integer arithmetic that overflows **throws an exception** rather than
-silently wrapping — LDP3 refuses to let a wraparound corrupt your data unseen.
-When you *want* a different behavior, you ask for it explicitly through
-standard-library methods that exist on every integer type:
+By default, integer arithmetic that overflows **wraps** with two's-complement
+semantics — the zero-overhead choice. Crucially, this wrap is *defined behavior*,
+not the undefined behavior C leaves it as, so an overflow can never be steered into
+memory corruption; it just produces the wrapped value. When you want overflow to be
+an **error** instead, wrap the expression in `checked(...)`, and signed `+`, `-`,
+and `*` trap deterministically on overflow. For per-operation control, every integer
+type carries explicit methods:
 
 ```ldp3
-int a = x.wrappingAdd(y);      // C-style wraparound
+int fast = a + b;              // defined two's-complement wrap, no overhead (the default)
+int safe = checked(a * b);     // signed overflow here traps deterministically
+int a = x.wrappingAdd(y);      // explicit wrap
 int b = x.saturatingAdd(y);    // clamps to the type's MIN/MAX
-int c = x.uncheckedAdd(y);     // no check (use with care)
-int d = checked(x + y);        // explicitly the default: throws on overflow
+int c = x.uncheckedAdd(y);     // wrap, no check
 ```
 
 The full family covers add/sub/mul (and div where meaningful) under each policy.
-The keyword `checked` survives as a way to make the default behavior explicit in
-a stretch of code where nearby operations use one of the unchecked variants — a
-legitimate defensive marker.
+(Unsigned arithmetic, and all arithmetic in freestanding mode, always wraps.)
 
 ---
 

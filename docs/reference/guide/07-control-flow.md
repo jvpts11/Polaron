@@ -205,9 +205,12 @@ public bundle main {
 ```
 
 A range is not just loop sugar; it is a first-class `Range<T>` value you can name, store,
-and pass around, then iterate later:
+and pass around, then iterate later. Naming the type requires importing it, like any
+standard-library type:
 
 ```ldp3
+import System.Collections.Range;
+
 Range<int> r = 0..100 step 5;
 for (int i in r) { /* ... */ }
 ```
