@@ -19,6 +19,18 @@ Manifest readManifest(const fs::path& mf) {
     return parseManifestText(ss.str());
 }
 
+// Map a manifest `target` to a clang/LLVM triple. The short forms are the ones a manifest uses; a value
+// already containing a dash-separated triple (e.g. "x86_64-pc-windows-msvc") is passed through unchanged.
+std::string targetTriple(const std::string& t) {
+    if (t == "x86_64-windows" || t.empty()) return "x86_64-pc-windows-msvc";
+    if (t == "aarch64-windows") return "aarch64-pc-windows-msvc";
+    if (t == "x86_64-linux") return "x86_64-unknown-linux-gnu";
+    if (t == "aarch64-linux") return "aarch64-unknown-linux-gnu";
+    if (t == "x86_64-macos") return "x86_64-apple-darwin";
+    if (t == "aarch64-macos") return "aarch64-apple-darwin";
+    return t;  // already a full triple
+}
+
 // Collect the transitive closure of dependency bundles reachable from `direct`, walking each installed
 // package's own manifest. Appends each package's .ldb to `out`. On a missing package, sets `missing`.
 void collectClosure(const fs::path& packagesDir, const std::vector<std::string>& direct,
@@ -218,6 +230,13 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     }
     const std::vector<fs::path>& ldbs = allLdbs;  // extracted + linked below (the full closure)
 
+    // Cross-compile plumbing (task #240): honor the manifest's target + sysroot. The default
+    // "x86_64-windows" maps to the host Windows triple, so a normal build stays byte-identical; the target
+    // and sysroot flow through the compile and link steps only for a non-default target, where the user
+    // supplies the matching cross toolchain/libs.
+    const std::string triple = targetTriple(m.target);
+    const bool crossTarget = !m.target.empty() && m.target != "x86_64-windows";
+
     // Freestanding (spec 36): there is no hosted runtime to link and no C entry, so compile to a
     // bare-metal object and stop. The user links that object with their own boot stub and linker script
     // (see kernel/ for a worked example). Dependencies are not supported in this mode yet.
@@ -268,6 +287,7 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     // A debug build emits DWARF and skips ldp3c's middle-end so lines/variables survive; otherwise
     // optimize by default (a passthrough -O still overrides).
     compileArgs.push_back(opts.debug ? "-g" : "-O2");
+    if (crossTarget) compileArgs.push_back("--target=" + triple);  // codegen for the requested target
     for (const auto& p : opts.passthrough) compileArgs.push_back(p);
     if (int rc = runProcess(tc.ldp3c, compileArgs); rc != 0) {
         std::fprintf(stderr, "ldp3: compilation failed\n");
@@ -298,7 +318,8 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     // runs on a bare Windows 10/11 x64 machine. Otherwise clang drives the link against the system SDK.
     if (!tc.libDir.empty()) {
         const fs::path mainObj = outDir / (ll.stem().string() + ".main.obj");
-        std::vector<std::string> mainCompile = {"--target=x86_64-pc-windows-msvc"};
+        std::vector<std::string> mainCompile = {"--target=" + triple};
+        if (!m.sysroot.empty()) mainCompile.push_back("--sysroot=" + m.sysroot);
         if (opts.debug) { mainCompile.push_back("-g"); mainCompile.push_back("-O0"); }
         else mainCompile.push_back("-O2");
         mainCompile.push_back("-Wno-override-module");
@@ -331,6 +352,8 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         }
     } else {
         std::vector<std::string> linkArgs;
+        if (crossTarget) linkArgs.push_back("--target=" + triple);  // cross-compile (task #240)
+        if (!m.sysroot.empty()) linkArgs.push_back("--sysroot=" + m.sysroot);
         if (opts.debug) { linkArgs.push_back("-g"); linkArgs.push_back("-O0"); }
         else linkArgs.push_back("-O2");
 #ifdef _WIN32

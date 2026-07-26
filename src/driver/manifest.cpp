@@ -74,6 +74,7 @@ Manifest parseManifestText(const std::string& text) {
         } else if (section == "build") {
             if (key == "output") m.outputDir = val;
             else if (key == "target") m.target = val;
+            else if (key == "sysroot") m.sysroot = val;  // cross-compile: clang/lld --sysroot for a non-host target
             else if (key == "environment") m.environment = val;
             else if (key == "freestanding") m.freestanding = (val == "true");
             else if (key == "subsystem") m.subsystem = val;  // "windows" = GUI app, no console window
