@@ -927,10 +927,11 @@ struct CodeGenerator::Impl {
         const std::string from = repType(fromRaw), to = repType(toRaw);  // newtype -> underlying
         // A primitive flowing to Object is boxed (spec 3.4): every value is an Object.
         if (to == "Object" && isBoxablePrimitive(from)) return emitBox(v, from);
-        // A mutable `string` owns its struct: copy it on assignment so a later append does not alias
-        // the source (value semantics; spec 4). The data pointer is shared until an append replaces it.
-        if (to == "string" && (from == "string" || from == "String"))
-            return emitStringFromParts(stringLen(v), stringData(v));
+        // String and mutable `string` share one representation ({len, data} pointer), so a coerce
+        // between them is a no-op here. Ownership/isolation for a `string` (its own buffer, freed at
+        // scope exit, no aliasing of the source) is applied at the STORE sites -- VarDecl, assignment,
+        // and return -- exactly as for an immutable String (see declIsString / the String assign path).
+        if (to == "string" && (from == "string" || from == "String")) return v;
         // Boxing a nullable primitive (spec 3.7): a primitive value flowing into `T?` is stored in a
         // heap cell so the pointer can be null. A null literal or an already-boxed nullable passes
         // through as the pointer. (Unboxing happens only via `??` / an explicit null check.)
@@ -1257,7 +1258,7 @@ struct CodeGenerator::Impl {
         const ClassLayout& cl = cit->second;
         if (cl.isUnion || cl.type == nullptr || cl.imported) return;
         for (const auto& [fname, ftype] : cl.fieldType) {
-            if (ftype != "String") continue;
+            if (ftype != "String" && ftype != "string") continue;  // both own their buffer (spec 4)
             if (cl.externalFields.count(fname) > 0) continue;
             auto idxIt = cl.fieldIndex.find(fname);
             if (idxIt == cl.fieldIndex.end()) continue;
@@ -2969,10 +2970,10 @@ struct CodeGenerator::Impl {
             } else if (isClassValue(ftype) && isCopyDiscipline(ftype)) {
                 llvm::Value* srcSlot = builder.CreateStructGEP(st, srcPtr, idx);
                 deep = emitClassCopy(ftype, builder.CreateLoad(builder.getPtrTy(), srcSlot), heap);
-            } else if (ftype == "String") {
-                // A String field is owned storage like an array is, so the copy needs its own buffer.
-                // Sharing it made the two objects' lifetimes depend on each other: whichever died first
-                // took the other's text with it (null-safe -- the helper passes null through).
+            } else if (ftype == "String" || ftype == "string") {
+                // A String / mutable string field is owned storage like an array is, so the copy needs its
+                // own buffer. Sharing it made the two objects' lifetimes depend on each other: whichever
+                // died first took the other's text with it (null-safe -- the helper passes null through).
                 llvm::Value* srcSlot = builder.CreateStructGEP(st, srcPtr, idx);
                 deep = emitStringCopy(builder.CreateLoad(builder.getPtrTy(), srcSlot));
             }
@@ -2996,8 +2997,8 @@ struct CodeGenerator::Impl {
             llvm::Value* slot = builder.CreateStructGEP(st, ptr, idx);
             if (isArrayType(ftype)) {
                 builder.CreateCall(freeFn(), {builder.CreateLoad(builder.getPtrTy(), slot)});
-            } else if (ftype == "String") {
-                // Symmetric with emitClassCopy: the copy owns its String, so the overwrite releases it.
+            } else if (ftype == "String" || ftype == "string") {
+                // Symmetric with emitClassCopy: the copy owns its String/string, so the overwrite releases it.
                 builder.CreateCall(strFreeFn(), {builder.CreateLoad(builder.getPtrTy(), slot)});
             } else if (isClassValue(ftype) && isCopyDiscipline(ftype)) {
                 llvm::Value* sub = builder.CreateLoad(builder.getPtrTy(), slot);
@@ -3571,8 +3572,10 @@ struct CodeGenerator::Impl {
         if (auto eit = enumMethodDecls.find(enumRecv); eit != enumMethodDecls.end()) {
             for (const ast::MemberPtr& member : eit->second->members) {
                 const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
-                if (m != nullptr && m->name == mem->member)
-                    return typeRefName(m->returnType) == "String";
+                if (m != nullptr && m->name == mem->member) {
+                    const std::string mrt = typeRefName(m->returnType);
+                    return mrt == "String" || mrt == "string";
+                }
             }
             return false;
         }
@@ -3584,7 +3587,8 @@ struct CodeGenerator::Impl {
         // An async method yields a Task<...>, not an owned String; leave it alone.
         const ast::MethodDecl* md = findMethodDecl(owner, mem->member);
         if (md != nullptr && md->isAsync) return false;
-        return classes[owner].methodReturnType[mem->member] == "String";
+        const std::string mrt = classes[owner].methodReturnType[mem->member];
+        return mrt == "String" || mrt == "string";
     }
 
     // The reflection Type token layout (spec 31): { ptr name, i64 methodCount,
@@ -9268,15 +9272,13 @@ struct CodeGenerator::Impl {
                                       /*heap=*/escapingLocals_.count(vd->name) > 0);
             }
             initV = coerce(initV, typeName(*vd->init), declType);  // int -> float widening
-            // String RAII: an immutable `String` local owns its own buffer (deep-copy on init) and is
-            // freed at scope exit. Only a plain `String` value -- not `String*` (an alias), a `String[]`,
-            // nor the mutable `string` (whose coerce shares the data pointer and whose append reallocs it,
-            // so it carries a separate copy/free lifecycle we must not double-free here).
-            // KNOWN GAP (task #252): `string d = ownedStringExpr` (e.g. concat) shares a temporary that is
-            // freed at the statement end, so the local reads empty. Copying+tracking `string` here fixes
-            // the read but double-frees on mutable reassign/append -- it needs the coordinated
-            // mutable-string lifecycle pass, not a piecemeal change here.
-            bool declIsString = (declType == "String");
+            // String RAII (spec 4): a `String` or mutable `string` local owns its own buffer (deep-copy
+            // on init, distinct from any source or freed-at-statement-end temporary) and is freed at scope
+            // exit. Both share one representation, so both take this path -- unlike `String*`/`String&` (an
+            // alias) or `String[]` (the array owns its elements). Copy-on-init also isolates a `string`
+            // from its source so a later in-place append never aliases it. Reassignment frees the old
+            // buffer first (the String assign path), so the copy here never double-frees.
+            bool declIsString = (declType == "String" || declType == "string");
             if (declIsString) initV = emitStringCopy(initV);
             llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
             builder.CreateStore(initV, slot, vd->isVolatile);  // spec 37.5
@@ -9587,11 +9589,12 @@ struct CodeGenerator::Impl {
                 }
             } else {
                 llvm::Value* sv = coerce(v, typeName(*assign->value), targetType);
-                // String RAII: assigning a `String` deep-copies so the target owns an independent buffer
-                // (value semantics; spec 4). For a tracked local we also free its previous copy first --
-                // sound because copy-on-store guarantees the slot owned a fresh, unshared, heap buffer
-                // (null-safe; the fresh copy is distinct from the old value, so self-assign is fine too).
-                if (targetType == "String") {
+                // String RAII: assigning a `String` or mutable `string` deep-copies so the target owns an
+                // independent buffer (value semantics; spec 4). For a tracked local we also free its
+                // previous copy first -- sound because copy-on-store guarantees the slot owned a fresh,
+                // unshared, heap buffer (null-safe; the fresh copy is distinct from the old value, so a
+                // self-assign is fine too). The RHS producer temp is freed at the statement end below.
+                if (targetType == "String" || targetType == "string") {
                     sv = emitStringCopy(sv);
                     const ast::Expr* tgt = assign->target.get();
                     if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(tgt)) {
@@ -10097,7 +10100,9 @@ struct CodeGenerator::Impl {
                 // Key on the DECLARED return type too: `return "literal"` (a `string`-typed expression)
                 // from a `returns String` method must still hand back an owned copy, or the caller's
                 // stage-2 free would free a string-literal global (heap corruption).
-                if ((currentRetTypeName_ == "String" || typeName(*rs->value) == "String") && v != nullptr)
+                if ((currentRetTypeName_ == "String" || currentRetTypeName_ == "string" ||
+                     typeName(*rs->value) == "String" || typeName(*rs->value) == "string") &&
+                    v != nullptr)
                     v = emitStringCopy(v);
                 freeStringTemps();
                 // A value struct returned by value uses sret: copy it into the caller-provided

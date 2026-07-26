@@ -1,0 +1,49 @@
+import System.IO.Console;
+program StringMutableLifetime;
+
+// Regression (task #252): a mutable `string` gets the same ownership lifecycle as an immutable String --
+// copy-on-init/assign/return so it owns its own buffer, freed at scope exit, with the previous value
+// freed on reassignment. Before the fix `string d = a.concat(b)` shared a temporary freed at the
+// statement end and read empty. Covers a local, reassignment, a 500x reassign loop (double-free/leak
+// guard), a method returning string, and a string field via setter/getter + delete.
+// Prints: foobar|foobarfoo|foobar|n!|foobar
+public bundle main {
+    public namespace app {
+        public class Box {
+            private mutable string tag;
+            public constructor Box() {
+                this.tag = "init";
+            }
+            public method setTag(string s) returns void {
+                this.tag = s;
+            }
+            public method getTag() returns string {
+                return this.tag;
+            }
+        }
+        public class Main {
+            public static method mk() returns string {
+                string s = "n";
+                return s.concat("!");
+            }
+            public static method main(string[] args) returns void {
+                String a = "foo";
+                String b = "bar";
+                string d = a.concat(b);
+                mutable string e = "x";
+                e = a.concat(b);
+                e = e.concat(a);
+                mutable string acc = "";
+                for (mutable int i = 0; i < 500; i++) {
+                    acc = a.concat(b);
+                }
+                string m = Main.mk();
+                Box box = new Box() on heap;
+                box.setTag(a.concat(b));
+                System.IO.Console.printf("%s|%s|%s|%s|%s\n", d, e, acc, m, box.getTag());
+                delete box;
+                return;
+            }
+        }
+    }
+}

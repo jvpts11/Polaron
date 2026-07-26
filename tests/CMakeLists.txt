@@ -4834,6 +4834,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # Regression (#252): a mutable `string` owns its buffer through the full lifecycle (init/assign/
+        # return/field), like an immutable String -- `string d = concat(...)` no longer reads empty.
+        add_test(NAME codegen_string_mutable_lifetime_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/string_mutable_lifetime.ldp3"
+            "-DEXPECTED=foobar|foobarfoo|foobar|n!|foobar"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Collections of class-typed elements (ArrayList<Class>, HashMap<K,Object>) -- regression.
         add_test(NAME codegen_object_collections_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
