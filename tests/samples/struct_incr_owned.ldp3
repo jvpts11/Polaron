@@ -1,0 +1,32 @@
+import System.IO.Console;
+program StructIncrOwned;
+
+// Regression: a value struct that OWNS a heap field (int[]) compiles (the synthesized equalsKey used to
+// crash codegen on `array == array`), and `v++` moves the operator's sret result in -- freeing the
+// previous value's owned array first. 1000 iterations must not crash, leak, or corrupt. Prints: n=1000 first=1000.
+public bundle main {
+    public namespace app {
+        public struct Vec {
+            public mutable int[] data;
+            public mutable int n;
+            public constructor Vec(int n) {
+                this.data = new int[3]();
+                this.data[0] = n;
+                this.n = n;
+            }
+            public operator ++ () returns Vec {
+                return new Vec(this.n + 1);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Vec v = new Vec(0);
+                for (mutable int i = 0; i < 1000; i++) {
+                    v++;
+                }
+                System.IO.Console.printf("n=%d first=%d\n", v.n, v.data[0]);
+                return;
+            }
+        }
+    }
+}
