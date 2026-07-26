@@ -9093,6 +9093,72 @@ void assignObjectRoot(ldp3::ast::Program& program) {
     }
 }
 
+// A value type (struct/record) has no vtable and no implicit Object base, so it has no equalsKey --
+// yet ArrayList<T>.indexOf/contains/remove call this.data[i].equalsKey(item), and eager
+// monomorphization compiles those methods even when unused, so ArrayList<Point> would fail to codegen
+// ("unknown method 'equalsKey'"). Synthesize a structural equalsKey (field-by-field ==), matching how a
+// record's auto-generated equals compares fields. Collection-keying hook only; no public equals() added.
+void synthesizeValueEqualsKey(ldp3::ast::Program& program) {
+    for (auto& bundle : program.bundles) {
+        for (auto& ns : bundle.namespaces) {
+            for (auto& cls : ns.classes) {
+                if (!(cls.isStruct || cls.isRecord) || cls.isUnion) continue;  // unions overlap storage
+                bool has = false;
+                std::vector<const ldp3::ast::FieldDecl*> fields;
+                for (const auto& m : cls.members) {
+                    if (const auto* md = dynamic_cast<const ldp3::ast::MethodDecl*>(m.get())) {
+                        if (md->name == "equalsKey") { has = true; break; }
+                    } else if (const auto* f = dynamic_cast<const ldp3::ast::FieldDecl*>(m.get())) {
+                        if (!f->isStatic) fields.push_back(f);
+                    }
+                }
+                if (has) continue;  // user/interface already provides one
+
+                auto method = std::make_unique<ldp3::ast::MethodDecl>();
+                method->loc = cls.loc;
+                method->visibility = "public";
+                method->name = "equalsKey";
+                ldp3::ast::Param p;
+                p.loc = cls.loc;
+                p.type.name = cls.name;   // by value, same type -- matches indexOf's `T item`
+                p.name = "other";
+                method->params.push_back(std::move(p));
+                method->returnType.name = "boolean";
+
+                ldp3::ast::ExprPtr expr;
+                for (const ldp3::ast::FieldDecl* f : fields) {
+                    auto lhs = std::make_unique<ldp3::ast::MemberExpr>();
+                    lhs->loc = cls.loc; lhs->member = f->name;
+                    { auto id = std::make_unique<ldp3::ast::IdentifierExpr>();
+                      id->loc = cls.loc; id->name = "this"; lhs->object = std::move(id); }
+                    auto rhs = std::make_unique<ldp3::ast::MemberExpr>();
+                    rhs->loc = cls.loc; rhs->member = f->name;
+                    { auto id = std::make_unique<ldp3::ast::IdentifierExpr>();
+                      id->loc = cls.loc; id->name = "other"; rhs->object = std::move(id); }
+                    auto cmp = std::make_unique<ldp3::ast::BinaryExpr>();
+                    cmp->loc = cls.loc; cmp->op = "==";
+                    cmp->lhs = std::move(lhs); cmp->rhs = std::move(rhs);
+                    if (!expr) { expr = std::move(cmp); }
+                    else {
+                        auto conj = std::make_unique<ldp3::ast::BinaryExpr>();
+                        conj->loc = cls.loc; conj->op = "&&";
+                        conj->lhs = std::move(expr); conj->rhs = std::move(cmp);
+                        expr = std::move(conj);
+                    }
+                }
+                if (!expr) {  // a field-less value type: all instances are equal
+                    auto b = std::make_unique<ldp3::ast::BoolLiteralExpr>();
+                    b->loc = cls.loc; b->value = true; expr = std::move(b);
+                }
+                auto ret = std::make_unique<ldp3::ast::ReturnStmt>();
+                ret->loc = cls.loc; ret->value = std::move(expr);
+                method->body.statements.push_back(std::move(ret));
+                cls.members.push_back(std::move(method));
+            }
+        }
+    }
+}
+
 int printUsage(const char* prog) {
     std::fprintf(stderr,
                  "usage: %s <input.ldp3> [-o <output.ll>] [--use <dep.ldb>] [--use-dynamic <dep.ldb>]\n"
@@ -9483,6 +9549,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     if (!ldp3::synthesizeIpc(program)) return 1;  // spec 2.8: IPC proxies + this program's dispatcher
     ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
     assignObjectRoot(program);                   // a class with no `extends` implicitly extends Object
+    synthesizeValueEqualsKey(program);           // value types get a structural equalsKey (collection keying)
     if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
     if (optLevel > 0) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
     if (optLevel > 0) ldp3::hoistBoundsChecks(program);          // bounds-check hoisting (sema re-checks it)
