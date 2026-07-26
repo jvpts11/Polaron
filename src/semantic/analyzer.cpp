@@ -70,14 +70,17 @@ bool isRefType(const std::string& t) {
 std::string baseType(const std::string& t) {
     std::string s = t;
     if (!s.empty() && s.back() == '?') s.pop_back();  // strip nullable marker (spec 3.7)
-    if (!s.empty() && (s.back() == '*' || s.back() == '&')) s.pop_back();  // strip pointer/reference
+    // Strip ONE trailing pointer/reference marker: a generic with a pointer type argument mangles to a
+    // name ending in '*', and only the outermost '*' is the receiver's own pointer (see codegen baseType).
+    if (!s.empty() && (s.back() == '*' || s.back() == '&')) s.pop_back();
     return s;
 }
 // True if the type is declared `nullable` (canonical "T?").
 inline bool isNullableType(const std::string& t) { return !t.empty() && t.back() == '?'; }
 std::string typeRefStr(const ast::TypeRef& t) {
-    return ast::mangleGeneric(t.name, t.typeArgs) + ast::arrayDimsSuffix(t.arrayDims) +
-           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
+    return ast::mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
+           ast::arrayDimsSuffix(t.arrayDims) + (t.isPointer ? "*" : "") + (t.doublePointer ? "*" : "") +
+           (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 bool isFloatType(const std::string& t) {
     // Normal names: smallfloat(16)/float(32)/double(64)/quadruple(128). Bit-counted float32/float64

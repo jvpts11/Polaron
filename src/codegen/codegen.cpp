@@ -359,15 +359,20 @@ std::vector<std::string> tupleElems(const std::string& t) {
 std::string baseType(const std::string& t) {
     std::string s = t;
     if (!s.empty() && s.back() == '?') s.pop_back();  // strip nullable marker (spec 3.7)
-    if (!s.empty() && (s.back() == '*' || s.back() == '&')) s.pop_back();  // strip pointer/reference
+    // Strip ONE trailing pointer/reference marker (the outer T*/T&). Not a loop: a generic instantiated
+    // with a pointer type argument mangles to a name that itself ends in '*' (e.g. HashMap<..,ArrayList<int>*>*
+    // -> "HashMap$..$ArrayList$int**"), and only the outermost '*' is the receiver's own pointer; the rest
+    // belong to the registered instantiation's name.
+    if (!s.empty() && (s.back() == '*' || s.back() == '&')) s.pop_back();
     return s;
 }
 
 // The LDP3 type name of a declaration, including array / pointer / ref markers.
 // Generic arguments are mangled into the name (Box<int> -> "Box$int").
 std::string typeRefName(const ast::TypeRef& t) {
-    return ast::mangleGeneric(t.name, t.typeArgs) + ast::arrayDimsSuffix(t.arrayDims) +
-           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
+    return ast::mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
+           ast::arrayDimsSuffix(t.arrayDims) + (t.isPointer ? "*" : "") + (t.doublePointer ? "*" : "") +
+           (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 
 // Layout of a class: its LLVM struct, field indices/types, and method returns.

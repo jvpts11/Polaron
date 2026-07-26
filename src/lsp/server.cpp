@@ -132,8 +132,10 @@ std::string wordAt(const std::string& text, int line, int character) {
 
 std::string typeText(const ast::TypeRef& t) {
     std::string s = t.name;
+    if (t.arrayElemPointer) s += "*";
     for (int i = 0; i < t.arrayDims; ++i) s += "[]";
     if (t.isPointer) s += "*";
+    if (t.doublePointer) s += "*";
     if (t.isRef) s += "&";
     if (t.isNullable) s = "nullable " + s;
     return s;

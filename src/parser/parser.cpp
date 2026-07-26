@@ -1909,12 +1909,20 @@ ast::TypeRef Parser::parseTypeRef() {
             expect(TokenKind::Gt, "'>' to close type arguments");
         }
     }
+    // `T*[]`: a '*' right before '[' makes the array's ELEMENT a pointer (an array of pointers), distinct
+    // from `T[]*` (a pointer to an array). A bare '*' with no following '[' is the ordinary pointer below.
+    if (check(TokenKind::Star) && peek(1).kind == TokenKind::LBracket) {
+        advance();  // consume the element '*'
+        t.arrayElemPointer = true;
+    }
     while (match(TokenKind::LBracket)) {  // T[], T[][], ... -- multi-dimensional (spec 25)
         expect(TokenKind::RBracket, "']'");
         t.isArray = true;
         t.arrayDims++;
     }
-    // Pointer / reference: share the object instead of copying it.
+    // Pointer / reference: share the object instead of copying it. (A double pointer T** is not
+    // representable in the mangled type string -- its trailing '*' would collide with a pointer type
+    // argument, e.g. HashMap<..,T*>* -- so it is intentionally not accepted.)
     if (match(TokenKind::Star)) {
         t.isPointer = true;
     } else if (match(TokenKind::Amp)) {
@@ -2420,6 +2428,8 @@ ast::StmtPtr Parser::parseStatement() {
         check(TokenKind::Identifier) &&
         (peek(1).kind == TokenKind::Identifier ||
          (peek(1).kind == TokenKind::Star && peek(2).kind == TokenKind::Identifier) ||
+         (peek(1).kind == TokenKind::Star && peek(2).kind == TokenKind::LBracket &&
+          peek(3).kind == TokenKind::RBracket && peek(4).kind == TokenKind::Identifier) ||  // ClassName*[] a
          (peek(1).kind == TokenKind::Amp && peek(2).kind == TokenKind::Identifier) ||
          (peek(1).kind == TokenKind::LBracket && peek(2).kind == TokenKind::RBracket &&
           peek(3).kind == TokenKind::Identifier));
@@ -3728,6 +3738,12 @@ ast::ExprPtr Parser::parseNew() {
         fail("expected a type after 'new' but found '" + current().lexeme + "'", current().loc);
     }
 
+    // Element-pointer array: new T*[n]() -- an array whose elements are pointers (T*), distinct from a
+    // plain new T[n](). Fold the '*' into the element type name so codegen stores pointer-sized slots.
+    if (check(TokenKind::Star) && peek(1).kind == TokenKind::LBracket) {
+        advance();  // '*'
+        typeName += "*";
+    }
     // Array form: new T[size]() [on stack|heap]
     if (match(TokenKind::LBracket)) {
         auto arr = std::make_unique<ast::NewArrayExpr>();

@@ -13,7 +13,8 @@ void line(std::string& out, int indent, const std::string& text) {
 }
 
 std::string typeText(const TypeRef& t) {
-    return t.name + arrayDimsSuffix(t.arrayDims) + (t.isPointer ? "*" : "") + (t.isRef ? "&" : "");
+    return t.name + (t.arrayElemPointer ? "*" : "") + arrayDimsSuffix(t.arrayDims) +
+           (t.isPointer ? "*" : "") + (t.doublePointer ? "*" : "") + (t.isRef ? "&" : "");
 }
 
 }  // namespace
