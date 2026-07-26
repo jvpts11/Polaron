@@ -105,12 +105,15 @@ free to do anything at all when they do. This is the source of a large fraction 
 vulnerabilities in systems software. LDP3 refuses that bargain.
 
 Every operation that would be undefined in C has a **defined** outcome in LDP3 — it either
-saturates, traps, or is checked deterministically:
+wraps predictably, saturates, traps, or is checked deterministically. The unifying promise
+is not "everything traps" but "nothing is undefined":
 
-- Integer overflow **traps** by default (raises a runtime error rather than silently wrapping).
-  When you genuinely want another behavior, the standard library offers explicit methods:
-  `x.wrappingAdd(y)` for C-style wrap-around, `x.saturatingAdd(y)` to clamp at the type's
-  maximum or minimum.
+- Integer overflow has a **defined two's-complement wrap** by default — the zero-overhead
+  choice, and defined rather than undefined, so it can never be steered into corruption.
+  When you want overflow to be an *error* instead, wrap the expression in `checked(...)`, and
+  signed `+`/`-`/`*` trap deterministically; the standard library also offers per-operation
+  `x.wrappingAdd(y)`, `x.saturatingAdd(y)` (clamp to the type's max/min), and the `unchecked`
+  variants.
 - Array indexing is **bounds-checked**. An out-of-range access halts with a defined
   `array index out of bounds` panic instead of corrupting memory.
 - Division by zero **traps** rather than producing an undefined result.
