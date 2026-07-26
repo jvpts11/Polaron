@@ -4043,6 +4043,15 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `T*[]` (spec 27): a raw array of pointers -- a[i] is a T*, delete frees the array not the pointees.
+        add_test(NAME codegen_ptr_array_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ptr_array.ldp3"
+            "-DCONTAINS=sum=11"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # a generic constraint with type arguments (spec 15.2) is satisfied by the right instantiation.
         add_test(NAME codegen_generic_bound_args_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"

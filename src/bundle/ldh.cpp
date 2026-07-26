@@ -35,8 +35,10 @@ std::string spellType(const TypeRef& t) {
         }
         out += ">";
     }
+    if (t.arrayElemPointer) out += "*";
     out += arrayDimsSuffix(t.arrayDims);
     if (t.isPointer) out += "*";
+    if (t.doublePointer) out += "*";
     if (t.isRef) out += "&";
     if (t.isNullable) out += "?";
     return out;

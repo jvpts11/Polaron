@@ -54,6 +54,10 @@ struct TypeRef {
     bool isArray = false;     // any array (arrayDims >= 1); kept for "is it an array" checks
     int arrayDims = 0;        // number of `[]` (1 = T[], 2 = T[][], ...) -- 0 when not an array
     bool isPointer = false;  // T*
+    bool doublePointer = false;   // reserved: T** is NOT parsed (its trailing '*' would collide with a
+                                  // pointer type argument in the mangled name); the serializers keep the
+                                  // slot so the type string stays stable if it is ever supported.
+    bool arrayElemPointer = false;  // T*[] : array whose ELEMENT is a pointer (not T[]* = pointer to array)
     bool isRef = false;      // T&
     bool isNullable = false;  // `nullable T` (spec 3.7): may hold null; canonical form is "T?"
     bool isMove = false;      // `move T` (spec 19.6): ownership-transfer param/return; transparent
@@ -73,8 +77,9 @@ inline std::string arrayDimsSuffix(int dims) {
 // generic args mangled into the name, then [] / * / & markers (e.g. "Box$int*", "int[][]").
 // A tuple type already carries its full spelling in `name` (e.g. "(int,int)").
 inline std::string canonicalType(const TypeRef& t) {
-    return mangleGeneric(t.name, t.typeArgs) + arrayDimsSuffix(t.arrayDims) +
-           (t.isPointer ? "*" : "") + (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
+    return mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
+           arrayDimsSuffix(t.arrayDims) + (t.isPointer ? "*" : "") + (t.doublePointer ? "*" : "") +
+           (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 
 // ---- Expressions ----

@@ -1,0 +1,39 @@
+import System.IO.Console;
+program PtrArray;
+
+// `T*[]` (spec 27): a raw array whose ELEMENTS are pointers. Reading a[i] gives a T*, so a[i].method()
+// mutates the shared target; `delete` frees the array block but not the borrowed pointees. Prints:
+// sum=11 / ok / ~2 / ~1 (the two Nodes are destructed once, at scope exit).
+public bundle main {
+    public namespace app {
+        public class Node {
+            private mutable int id;
+            public constructor Node(int i) {
+                this.id = i;
+            }
+            public method get() returns int {
+                return this.id;
+            }
+            public method set(int x) returns void {
+                this.id = x;
+            }
+            public destructor ~Node() returns void {
+                System.IO.Console.printf("~%d\n", this.id);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node a = new Node(1) on stack;
+                Node b = new Node(2) on stack;
+                mutable Node*[] arr = new Node*[2]();
+                arr[0] = &a;
+                arr[1] = &b;
+                arr[0].set(9);
+                System.IO.Console.printf("sum=%d\n", arr[0].get() + arr[1].get());
+                delete arr;
+                System.IO.Console.printf("ok\n");
+                return;
+            }
+        }
+    }
+}
