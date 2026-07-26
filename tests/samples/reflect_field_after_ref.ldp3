@@ -1,0 +1,38 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import reflect;
+program ReflectFieldAfterRef;
+
+// Regression: reflection Field.get() must read int fields located AFTER reference (String) and
+// wider (double) fields at the right offset -- earlier it returned a neighbouring float's bits.
+public bundle main {
+    public namespace app {
+        public class Nation {
+            public mutable String name;
+            public mutable double ratio;
+            public mutable int capX;
+            public mutable int capY;
+            public mutable int leaderIdx;
+            public constructor Nation() {
+                this.name = "Rome";
+                this.ratio = 2.25;
+                this.capX = 111;
+                this.capY = 222;
+                this.leaderIdx = 333;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Nation n = new Nation() on heap;
+                Type t = reflect.typeOf<Nation>();
+                ArrayList<Field> fs = t.fields();
+                int capX = cast<int>(fs.get(2).get(n));
+                int capY = cast<int>(fs.get(3).get(n));
+                int leaderIdx = cast<int>(fs.get(4).get(n));
+                System.IO.Console.printf("capX=%d capY=%d leaderIdx=%d\n", capX, capY, leaderIdx);
+                delete n;
+                return;
+            }
+        }
+    }
+}

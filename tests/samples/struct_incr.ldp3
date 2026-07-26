@@ -1,0 +1,29 @@
+import System.IO.Console;
+program StructIncr;
+
+// Regression: `v++` on a value struct routes through the operator's sret result and moves it back into
+// the variable's storage (value semantics) -- the store-back frees the previous value's owned fields
+// first, then copies the new bytes. Looping guards the store-back path against corruption. Prints: n=1000.
+public bundle main {
+    public namespace app {
+        public struct Counter {
+            public mutable int n;
+            public constructor Counter(int n) {
+                this.n = n;
+            }
+            public operator ++ () returns Counter {
+                return new Counter(this.n + 1);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Counter c = new Counter(0);
+                for (mutable int i = 0; i < 1000; i++) {
+                    c++;
+                }
+                System.IO.Console.printf("n=%d\n", c.n);
+                return;
+            }
+        }
+    }
+}

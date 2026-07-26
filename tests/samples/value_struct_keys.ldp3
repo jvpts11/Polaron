@@ -1,0 +1,48 @@
+import System.IO.Console;
+import System.Collections.HashMap;
+import System.Collections.TreeSet;
+program ValueStructKeys;
+
+// Regression: a value struct used as a HashMap key needs a structural hash()+equalsKey, and as a
+// TreeSet element needs a structural compareTo -- the compiler synthesizes all three. Two equal-by-value
+// Points collide as the same key; the TreeSet dedups them. Prints: get=100 has55=no treesize=2.
+public bundle main {
+    public namespace app {
+        public struct Point {
+            public mutable int x;
+            public mutable int y;
+            public constructor Point(int x, int y) {
+                this.x = x;
+                this.y = y;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable HashMap<Point, int> m = new HashMap<Point, int>();
+                Point a = new Point(1, 2);
+                Point b = new Point(1, 2);
+                Point d = new Point(9, 9);
+                m.put(a, 100);
+                m.put(d, 7);
+                mutable int got = -1;
+                if (m.containsKey(b)) {
+                    got = m.get(b);
+                }
+                mutable int has55 = 0;
+                if (m.containsKey(new Point(5, 5))) {
+                    has55 = 1;
+                }
+                mutable TreeSet<Point> s = new TreeSet<Point>();
+                s.add(a);
+                s.add(b);
+                s.add(d);
+                if (has55 == 0) {
+                    System.IO.Console.printf("get=%d has55=no treesize=%d\n", got, s.size());
+                } else {
+                    System.IO.Console.printf("get=%d has55=yes treesize=%d\n", got, s.size());
+                }
+                return;
+            }
+        }
+    }
+}

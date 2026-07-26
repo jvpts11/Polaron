@@ -3,11 +3,27 @@ import System.Errors.Option;
 program EnumParse;
 
 // Built-in enum parse() (spec 12.5): EnumType.parse(s) returns Option<EnumType> -- Some when the
-// string matches a constant name, None otherwise.
+// string matches a constant name, None otherwise. For an int-style enum the Some payload is the
+// ordinal; for a Java-style enum it must be the singleton, so `case Some(Planet p)` can call p.method().
 
 public bundle main {
     public namespace app {
         public enum Color { RED, GREEN, BLUE }
+
+        public enum Planet {
+            EARTH(10, 2),
+            MARS(30, 3);
+            private final int mass;
+            private final int radius;
+            public constructor Planet(int mass, int radius) {
+                this.mass = mass;
+                this.radius = radius;
+            }
+            public method density() returns int {
+                return this.mass / this.radius;
+            }
+        }
+
         public class Main {
             public static method main(string[] args) returns void {
                 Option<Color> a = Color.parse("GREEN");
@@ -20,7 +36,15 @@ public bundle main {
                     case Some(Color c) -> cast<int>(c);
                     case None() -> -1;
                 };
-                System.IO.Console.printf("r1=%d r2=%d\n", r1, r2);   // 1, -1
+                int mars = match (Planet.parse("MARS")) {
+                    case Some(Planet p) -> p.density();
+                    case None() -> -1;
+                };
+                int pluto = match (Planet.parse("PLUTO")) {
+                    case Some(Planet p) -> p.density();
+                    case None() -> -1;
+                };
+                System.IO.Console.printf("r1=%d r2=%d mars=%d pluto=%d\n", r1, r2, mars, pluto);   // 1, -1, 10, -1
                 return;
             }
         }
