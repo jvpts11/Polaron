@@ -7,7 +7,7 @@ accepts, and the features described are the features it actually implements. Whe
 reaches further than the current implementation, the text says so plainly.
 
 LDP3 was created by **João Victor Pereira Tavares**. This reference tracks toolchain
-version **1.0.11**.
+version **1.0.12**.
 
 ## 1.1 What LDP3 is
 
