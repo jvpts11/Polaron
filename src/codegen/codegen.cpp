@@ -371,7 +371,7 @@ std::string baseType(const std::string& t) {
 // Generic arguments are mangled into the name (Box<int> -> "Box$int").
 std::string typeRefName(const ast::TypeRef& t) {
     return ast::mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
-           ast::arrayDimsSuffix(t.arrayDims) + (t.isPointer ? "*" : "") + (t.doublePointer ? "*" : "") +
+           ast::arrayDimsSuffix(t.arrayDims) + std::string(t.pointerDepth, '*') +
            (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 
@@ -2159,7 +2159,12 @@ struct CodeGenerator::Impl {
             return "int";
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
-            if (un->op == "&") return typeName(*un->operand) + "*";  // address-of
+            if (un->op == "&") return typeName(*un->operand) + "*";  // address-of: one level deeper
+            if (un->op == "*") {  // dereference: peel one '*' off the operand's pointer type
+                const std::string ot = typeName(*un->operand);
+                if (!ot.empty() && ot.back() == '*') return ot.substr(0, ot.size() - 1);
+                return ot;
+            }
             // Unary operator overload (spec 6.5): the operator method's return type.
             if (un->op != "!") {
                 const std::string owner =
@@ -3461,6 +3466,10 @@ struct CodeGenerator::Impl {
             }
             return it->second.storage;
         }
+        // `*p` as an lvalue (`*out = v`): the storage address IS the pointer value p holds.
+        if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
+            if (un->op == "*") return emitExpr(*un->operand);
+        }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
             if (const std::string key = staticFieldKey(*mem); !key.empty()) {
                 return staticGlobals[key];  // the global itself is the address
@@ -4429,10 +4438,31 @@ struct CodeGenerator::Impl {
                 // is what emitLValue yields. Taking emitObjectPtr for those loaded the VALUE and used it
                 // as a pointer: `int* p = &xs[0]` used to produce garbage (a silent memory-safety hole).
                 const std::string ot = typeName(*un->operand);
-                const bool isObject = !ot.empty() && !isArrayType(ot) && !isRefType(ot) &&
+                // A pointer variable is NOT an object here: `&p` on a `T*` must yield the address of the
+                // slot holding p (a `T**`, one level deeper), which is what emitLValue gives -- not the
+                // object p points at.
+                const bool isPtr = !ot.empty() && ot.back() == '*';
+                const bool isObject = !isPtr && !ot.empty() && !isArrayType(ot) && !isRefType(ot) &&
                                       classes.count(baseType(ot)) > 0;
                 if (isObject) return emitObjectPtr(*un->operand, /*derefCheck=*/false);
                 return emitLValue(*un->operand);
+            }
+            if (un->op == "*") {
+                // Pointer dereference: peel one '*'. Every pointer is an LLVM `ptr`, so a deref is one
+                // load of the pointee's type. Exception: a depth-1 pointer to a class/struct value holds
+                // the object pointer directly (`&v == the object ptr`), so `*p` is p itself, no load.
+                const std::string ot = typeName(*un->operand);
+                if (ot.empty() || ot.back() != '*') {
+                    error("cannot dereference '" + ot + "': it is not a pointer", un->loc);
+                    return nullptr;
+                }
+                llvm::Value* pv = emitExpr(*un->operand);
+                if (pv == nullptr) return nullptr;
+                const std::string rt = ot.substr(0, ot.size() - 1);  // one '*' removed
+                const bool classValue = !rt.empty() && rt.back() != '*' && !isArrayType(rt) &&
+                                        classes.count(baseType(rt)) > 0;
+                if (classValue) return pv;
+                return builder.CreateLoad(llvmType(rt), pv, "deref");
             }
             // Unary operator overload (spec 6.5): a.operator<op>() when a's class defines a no-arg
             // one. A unary overload takes only `this` (arg_size 1), which distinguishes it from the

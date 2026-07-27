@@ -1,0 +1,55 @@
+import System.IO.Console;
+program NLevelPointers;
+
+// N-level pointers (spec 17.8): T*, T**, T***, ... to any depth on non-generic base types.
+// Prefix '*' dereferences one level; '&' takes an address (one level deeper). A pointer to a
+// generic type is limited to one level (its mangled name can itself end in '*').
+public bundle main {
+    public namespace app {
+        public class Node {
+            public mutable int value;
+            public constructor Node(int v) { this.value = v; }
+        }
+
+        public class Main {
+            // Out-parameter: rebinds the caller's pointer through a T**.
+            public static method rebind(int** slot, int* target) returns void {
+                *slot = target;
+            }
+
+            public static method main(string[] args) returns void {
+                mutable int x = 5;
+                int* p = &x;
+                int** pp = &p;
+                int*** ppp = &pp;
+
+                // Read through three levels.
+                System.IO.Console.println($"triple deref = {***ppp}");   // 5
+
+                // Write through two levels changes x.
+                **pp = 99;
+                System.IO.Console.println($"x after **pp = {x}");        // 99
+
+                // Rebind p to y through the double pointer, then write through it.
+                mutable int y = 10;
+                int* py = &y;
+                Main.rebind(pp, py);   // *pp = py, so p now aliases y
+                **pp = 123;
+                System.IO.Console.println($"y = {y}, x = {x}");          // y = 123, x = 99
+
+                // Quadruple pointer resolves back to the original storage.
+                int**** pppp = &ppp;
+                System.IO.Console.println($"quad deref = {****pppp}");   // 123 (p -> y now)
+
+                // Class double pointer: peel one level to reach the shared instance.
+                Node n = new Node(1) on stack;
+                Node* np = &n;
+                Node** npp = &np;
+                Node* got = *npp;
+                got.value = 42;
+                System.IO.Console.println($"node = {n.value}");          // 42
+                return;
+            }
+        }
+    }
+}
