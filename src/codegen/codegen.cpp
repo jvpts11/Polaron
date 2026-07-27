@@ -2212,14 +2212,20 @@ struct CodeGenerator::Impl {
         }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
             const std::string& op = bin->op;
+            // Compute the left operand's type ONCE and reuse it. Recomputing typeName(lhs) for both the
+            // operator-overload probe below and the arithmetic path further down makes a left-nested
+            // chain cost O(2^depth) type queries: for `a op b` we would descend the left subtree twice,
+            // and each level does the same, doubling per node. A synthesized structural hash
+            // (`((17*31+f1)*31+f2)*31+...`, two arithmetic nodes per field) then hangs codegen on a
+            // struct with a dozen-plus fields. One descent keeps this linear.
+            const std::string lt = typeName(*bin->lhs);
             // Operator overloading: result type is the operator method's return type.
-            const std::string oowner = methodOwner(baseType(typeName(*bin->lhs)), "operator" + op);
+            const std::string oowner = methodOwner(baseType(lt), "operator" + op);
             if (!oowner.empty()) return classes[oowner].methodReturnType["operator" + op];
             if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" ||
                 op == "&&" || op == "||") {
                 return "boolean";
             }
-            const std::string lt = typeName(*bin->lhs);
             const std::string rt = typeName(*bin->rhs);
             if (op == "+" && (lt == "String" || lt == "string") && (rt == "String" || rt == "string"))
                 return "String";  // string concatenation (spec 4)

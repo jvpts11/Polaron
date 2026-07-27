@@ -1,0 +1,93 @@
+import System.IO.Console;
+import System.Collections.HashMap;
+import System.Collections.TreeSet;
+program StructWideHash;
+
+// Regression: a value struct with many numeric fields gets a synthesized structural hash() whose body
+// is a deep left-nested `((17*31+f1)*31+f2)*31+...` arithmetic chain. Codegen's typeName for a binary
+// node used to re-derive the left operand's type twice (once to probe for an operator overload, once
+// for the arithmetic result), making the chain cost O(2^depth) type queries -- two arithmetic nodes per
+// field, so O(4^fields). A struct with a dozen-plus fields (e.g. OpenGL's 26-field PixelFormatDescriptor)
+// then hung the compiler, especially under --lib which emits every synthesized method. One type query
+// per operand keeps it linear. This 26-field struct compiles instantly and works as a HashMap key.
+// Prints: got=770 size=2.
+public bundle main {
+    public namespace app {
+        public struct Wide {
+            public mutable int f1;
+            public mutable int f2;
+            public mutable int f3;
+            public mutable int f4;
+            public mutable int f5;
+            public mutable int f6;
+            public mutable int f7;
+            public mutable int f8;
+            public mutable int f9;
+            public mutable int f10;
+            public mutable int f11;
+            public mutable int f12;
+            public mutable int f13;
+            public mutable int f14;
+            public mutable int f15;
+            public mutable int f16;
+            public mutable int f17;
+            public mutable int f18;
+            public mutable int f19;
+            public mutable int f20;
+            public mutable int f21;
+            public mutable int f22;
+            public mutable int f23;
+            public mutable int f24;
+            public mutable int f25;
+            public mutable int f26;
+            public constructor Wide(int a, int b) {
+                this.f1 = a + b * 1;
+                this.f2 = a + b * 2;
+                this.f3 = a + b * 3;
+                this.f4 = a + b * 4;
+                this.f5 = a + b * 5;
+                this.f6 = a + b * 6;
+                this.f7 = a + b * 7;
+                this.f8 = a + b * 8;
+                this.f9 = a + b * 9;
+                this.f10 = a + b * 10;
+                this.f11 = a + b * 11;
+                this.f12 = a + b * 12;
+                this.f13 = a + b * 13;
+                this.f14 = a + b * 14;
+                this.f15 = a + b * 15;
+                this.f16 = a + b * 16;
+                this.f17 = a + b * 17;
+                this.f18 = a + b * 18;
+                this.f19 = a + b * 19;
+                this.f20 = a + b * 20;
+                this.f21 = a + b * 21;
+                this.f22 = a + b * 22;
+                this.f23 = a + b * 23;
+                this.f24 = a + b * 24;
+                this.f25 = a + b * 25;
+                this.f26 = a + b * 26;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable HashMap<Wide, int> m = new HashMap<Wide, int>();
+                Wide p = new Wide(3, 5);
+                Wide q = new Wide(3, 5);
+                Wide r = new Wide(9, 1);
+                m.put(p, 770);
+                m.put(r, 42);
+                mutable int got = -1;
+                if (m.containsKey(q)) {
+                    got = m.get(q);
+                }
+                mutable TreeSet<Wide> s = new TreeSet<Wide>();
+                s.add(p);
+                s.add(q);
+                s.add(r);
+                System.IO.Console.printf("got=%d size=%d\n", got, s.size());
+                return;
+            }
+        }
+    }
+}
