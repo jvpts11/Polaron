@@ -53,10 +53,12 @@ struct TypeRef {
     std::string name;
     bool isArray = false;     // any array (arrayDims >= 1); kept for "is it an array" checks
     int arrayDims = 0;        // number of `[]` (1 = T[], 2 = T[][], ...) -- 0 when not an array
-    bool isPointer = false;  // T*
-    bool doublePointer = false;   // reserved: T** is NOT parsed (its trailing '*' would collide with a
-                                  // pointer type argument in the mangled name); the serializers keep the
-                                  // slot so the type string stays stable if it is ever supported.
+    bool isPointer = false;  // T* -- true whenever pointerDepth >= 1 (kept for the many "is it a pointer"
+                             // checks that don't care about depth)
+    int pointerDepth = 0;    // number of trailing '*': 1 = T*, 2 = T** (pointer-to-pointer), 3 = T***, ...
+                             // N-level pointers are supported on non-generic base types only, because a
+                             // generic's mangled name can itself end in '*' (e.g. HashMap<..,T*> ->
+                             // "HashMap$..T*"), which would make counting the outer '*' ambiguous.
     bool arrayElemPointer = false;  // T*[] : array whose ELEMENT is a pointer (not T[]* = pointer to array)
     bool isRef = false;      // T&
     bool isNullable = false;  // `nullable T` (spec 3.7): may hold null; canonical form is "T?"
@@ -78,7 +80,7 @@ inline std::string arrayDimsSuffix(int dims) {
 // A tuple type already carries its full spelling in `name` (e.g. "(int,int)").
 inline std::string canonicalType(const TypeRef& t) {
     return mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
-           arrayDimsSuffix(t.arrayDims) + (t.isPointer ? "*" : "") + (t.doublePointer ? "*" : "") +
+           arrayDimsSuffix(t.arrayDims) + std::string(t.pointerDepth, '*') +
            (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 

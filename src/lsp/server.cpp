@@ -134,8 +134,7 @@ std::string typeText(const ast::TypeRef& t) {
     std::string s = t.name;
     if (t.arrayElemPointer) s += "*";
     for (int i = 0; i < t.arrayDims; ++i) s += "[]";
-    if (t.isPointer) s += "*";
-    if (t.doublePointer) s += "*";
+    for (int i = 0; i < t.pointerDepth; ++i) s += "*";
     if (t.isRef) s += "&";
     if (t.isNullable) s = "nullable " + s;
     return s;

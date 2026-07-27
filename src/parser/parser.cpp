@@ -1920,12 +1920,21 @@ ast::TypeRef Parser::parseTypeRef() {
         t.isArray = true;
         t.arrayDims++;
     }
-    // Pointer / reference: share the object instead of copying it. (A double pointer T** is not
-    // representable in the mangled type string -- its trailing '*' would collide with a pointer type
-    // argument, e.g. HashMap<..,T*>* -- so it is intentionally not accepted.)
-    if (match(TokenKind::Star)) {
+    // Pointer / reference: share the object instead of copying it. `T*` is a pointer, `T**` a
+    // pointer-to-pointer, and so on to any depth (spec 17.8). N-level pointers are supported on
+    // non-generic base types only: a generic's mangled name can itself end in '*' (e.g.
+    // HashMap<..,T*> -> "HashMap$..T*"), so a second outer '*' would be ambiguous to decode.
+    while (match(TokenKind::Star)) {
         t.isPointer = true;
-    } else if (match(TokenKind::Amp)) {
+        t.pointerDepth++;
+    }
+    if (t.pointerDepth >= 2 && !t.typeArgs.empty()) {
+        fail("a pointer to a generic type may be only one level deep; '" + t.name +
+                 "<...>' with " + std::to_string(t.pointerDepth) +
+                 " pointer levels is not representable (its mangled name already ends in '*')",
+             t.loc);
+    }
+    if (t.pointerDepth == 0 && match(TokenKind::Amp)) {
         t.isRef = true;
     }
     return t;
@@ -2428,6 +2437,7 @@ ast::StmtPtr Parser::parseStatement() {
         check(TokenKind::Identifier) &&
         (peek(1).kind == TokenKind::Identifier ||
          (peek(1).kind == TokenKind::Star && peek(2).kind == TokenKind::Identifier) ||
+         (peek(1).kind == TokenKind::Star && peek(2).kind == TokenKind::Star) ||  // ClassName** p (N-level)
          (peek(1).kind == TokenKind::Star && peek(2).kind == TokenKind::LBracket &&
           peek(3).kind == TokenKind::RBracket && peek(4).kind == TokenKind::Identifier) ||  // ClassName*[] a
          (peek(1).kind == TokenKind::Amp && peek(2).kind == TokenKind::Identifier) ||
@@ -3316,9 +3326,12 @@ ast::ExprPtr Parser::parseUnary() {
         }
         return mv;
     }
-    // Prefix '&' is address-of (share the object); '-' negation; '!' logical not; '~' bitwise not.
+    // Prefix '&' is address-of (share the object); prefix '*' is pointer dereference (peel one level,
+    // e.g. `*pp` on a T** yields a T*); '-' negation; '!' logical not; '~' bitwise not. A leading '*'
+    // is only ever a dereference here -- multiplication is binary and never reaches parseUnary in
+    // operator position.
     if (check(TokenKind::Minus) || check(TokenKind::Bang) || check(TokenKind::Amp) ||
-        check(TokenKind::Tilde)) {
+        check(TokenKind::Tilde) || check(TokenKind::Star)) {
         const Token op = advance();
         auto un = std::make_unique<ast::UnaryExpr>();
         un->loc = op.loc;

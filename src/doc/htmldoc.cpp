@@ -32,8 +32,7 @@ std::string renderType(const ast::TypeRef& t) {
     }
     if (t.arrayElemPointer) s += "*";
     for (int i = 0; i < t.arrayDims; ++i) s += "[]";
-    if (t.isPointer) s += "*";
-    if (t.doublePointer) s += "*";
+    for (int i = 0; i < t.pointerDepth; ++i) s += "*";
     if (t.isRef) s += "&";
     if (t.isNullable) s += "?";
     return s;

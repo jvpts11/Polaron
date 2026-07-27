@@ -79,7 +79,7 @@ std::string baseType(const std::string& t) {
 inline bool isNullableType(const std::string& t) { return !t.empty() && t.back() == '?'; }
 std::string typeRefStr(const ast::TypeRef& t) {
     return ast::mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
-           ast::arrayDimsSuffix(t.arrayDims) + (t.isPointer ? "*" : "") + (t.doublePointer ? "*" : "") +
+           ast::arrayDimsSuffix(t.arrayDims) + std::string(t.pointerDepth, '*') +
            (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
 }
 bool isFloatType(const std::string& t) {
@@ -1940,6 +1940,24 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         }
         return;
     }
+    // `*p = value`: dereference-assign through a pointer. The value must fit the pointee type (the
+    // operand's type with one '*' peeled).
+    if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&target); un != nullptr && un->op == "*") {
+        const std::string pt = typeOf(*un->operand);
+        if (!pt.empty() && pt.back() != '*') {
+            error("cannot dereference '" + pt + "': it is not a pointer", loc);
+            return;
+        }
+        const std::string pointee =
+            (pt.empty() || pt.back() != '*') ? std::string() : pt.substr(0, pt.size() - 1);
+        if (!valueType.empty() && !pointee.empty() && !isSubtype(valueType, pointee) &&
+            !fits(pointee)) {
+            error("cannot assign a value of type '" + valueType + "' through a '" + pt +
+                      "' pointer to '" + pointee + "'",
+                  loc);
+        }
+        return;
+    }
     error("invalid assignment target", loc);
 }
 
@@ -3084,6 +3102,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string t = typeOf(*un->operand);
         if (un->op == "&") {
             return t.empty() ? std::string() : t + "*";  // address-of: T -> T*
+        }
+        if (un->op == "*") {  // pointer dereference: T* -> T (peel one '*')
+            if (!t.empty() && t.back() != '*')
+                error("cannot dereference '" + t + "': it is not a pointer", un->loc);
+            return (t.empty() || t.back() != '*') ? std::string() : t.substr(0, t.size() - 1);
         }
         // Unary operator overload (spec 6.5): a class operand whose class defines a no-arg
         // operator<op> dispatches to it (paramCount 0 distinguishes it from the binary form).
