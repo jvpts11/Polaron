@@ -169,6 +169,36 @@ Pointer arithmetic (`p++`) is permitted on any pointer, but the compiler warns o
 pointers, because advancing a pointer into the middle of an object rarely means anything
 and can corrupt memory. The safe, idiomatic use of `T*` is *sharing*, not walking.
 
+### Pointers to pointers: `T**`, `T***`, and the `*` operator
+
+A pointer is itself a value with an address, so you can take a pointer *to* a pointer, to
+any depth: `T**` is a pointer-to-pointer, `T***` a triple pointer, and so on. Each `&`
+adds a level and the prefix **`*`** operator peels one off — `*pp` on a `T**` yields the
+`T*`, and `**pp` reaches the underlying `T`. This is the classic tool for an
+*out-parameter* (a method that rebinds the caller's pointer) and for pointer-based data
+structures:
+
+```ldp3
+mutable int x = 5;
+int* p = &x;          // p -> x
+int** pp = &p;        // pp -> p
+int*** ppp = &pp;     // and so on, to any depth
+
+int v = ***ppp;       // 5 -- read through three levels
+**pp = 99;            // write through two levels: x is now 99
+
+// An out-parameter rebinds the caller's pointer through a T**:
+public static method rebind(int** slot, int* target) returns void {
+    *slot = target;   // *slot as an lvalue: store through the pointer
+}
+```
+
+The one restriction: a pointer to a *generic* type may be only one level deep (`Box<int>*`
+is fine, `Box<int>**` is not), because a generic's internal name can itself end in `*` and
+a second one would be ambiguous. Every non-generic type — primitives, classes, structs —
+supports pointers to any depth. `T&` references, by contrast, are always a single level: a
+reference is a bound alias, not an address you build towers of.
+
 The mental model to carry forward: **value by default, share by exception.** A plain
 variable is an object; a `T*`/`T&` is a way to reach into someone else's object. When
 you read LDP3 and see a `*` or `&`, that is the code announcing "sharing happens here."
