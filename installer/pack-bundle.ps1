@@ -108,8 +108,11 @@ try {
     $eap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     if (-not (Test-Path (Join-Path $extSrc "out\extension.js"))) { & npm.cmd run build; if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = $eap; throw "extension build failed" } }
+    # Name the .vsix after the extension's own version so it never drifts from package.json.
+    # (install-vscode.cmd installs by *.vsix glob, so the exact name is not load-bearing.)
+    $extVer = (Get-Content (Join-Path $extSrc "package.json") -Raw | ConvertFrom-Json).version
     # Quote the scoped package: a bare @vscode/vsce would be mangled by PowerShell's @ splat operator.
-    & npx.cmd --yes '@vscode/vsce' package --no-dependencies -o (Join-Path $vscode "ldp3-0.1.0.vsix")
+    & npx.cmd --yes '@vscode/vsce' package --no-dependencies -o (Join-Path $vscode "ldp3-$extVer.vsix")
     $rc = $LASTEXITCODE
     $ErrorActionPreference = $eap
     if ($rc -ne 0) { throw "vsce package failed (is Node/npm installed?)" }
