@@ -3519,6 +3519,16 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # record with float/double fields: the synthesized toString() renders each field through
+        # that field's toString(), so this regressed the whole declaration when float had none.
+        add_test(NAME codegen_record_float_field_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/record_float_field.ldp3"
+            "-DEXPECTED=Sample(3, 1.5, 2.25) 0.5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Java-style enum: constants with constructor args, fields and methods.
         add_test(NAME codegen_enum_java_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
@@ -3609,6 +3619,18 @@ if(LDP3_WITH_LLVM)
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/multifile_a.ldp3"
             "-DINPUT2=${CMAKE_CURRENT_SOURCE_DIR}/samples/multifile_b.ldp3"
             "-DEXPECTED=greet = 7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Same type name in two namespaces of a multi-file program: legal (namespaces scope type
+        # names), disambiguated internally to <ns>__Type. The import validator used to look up only
+        # the bare name, miss it after the rename, and reject the import as an unknown symbol.
+        add_test(NAME codegen_ns_collision_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ns_collision_a.ldp3"
+            "-DINPUT2=${CMAKE_CURRENT_SOURCE_DIR}/samples/ns_collision_b.ldp3"
+            "-DEXPECTED=geo=7 phys=20"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

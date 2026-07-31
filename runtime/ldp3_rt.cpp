@@ -2152,6 +2152,16 @@ long long __ldp3_file_size(const char* path) {
 }
 #endif
 
+// Decimal text of `v` into `buf` (no NUL needed), returns the length. For float.toString() and
+// double.toString(). %g is the same format string interpolation already uses for a float, so
+// `$"{x}"` and `x.toString()` never disagree about how a number looks.
+long long __ldp3_ftoa(double v, char* buf) {
+    int n = snprintf(buf, 32, "%g", v);
+    if (n < 0) { n = 0; }
+    if (n > 31) { n = 31; }
+    return (long long)n;
+}
+
 // Decimal text of `n` into `buf` (signed, no NUL needed), returns the digit count. For int.toString().
 long long __ldp3_itoa(long long n, char* buf) {
     char tmp[24];

@@ -1620,6 +1620,23 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
         }
         auto nsIt = typeNamespace_.find(symbol);
         if (nsIt == typeNamespace_.end()) {
+            // A type name declared in MORE THAN ONE namespace is renamed to `<ns>__<Type>` by the
+            // namespace-disambiguation pass (monomorphize.cpp), so the bare name is no longer in the
+            // registry -- and this validator would report the import of a perfectly good type as an
+            // unknown symbol. Retry with the disambiguated name built from this import's own
+            // namespace path: if that exists, the import names a real type and is well-formed.
+            std::string disambiguated;
+            for (std::size_t i = 1; i + 1 < imp.path.size(); ++i)
+                disambiguated += (disambiguated.empty() ? "" : "_") + imp.path[i];
+            if (!disambiguated.empty()) {
+                disambiguated += "__" + symbol;
+                if (typeNamespace_.count(disambiguated) > 0) {
+                    importedSuffixes_.insert(disambiguated);
+                    if (imp.isFinal) finalImports_.insert(disambiguated);
+                    bringIntoScope();
+                    return;
+                }
+            }
             error("import of unknown symbol '" + full + "'", imp.loc);
             bringIntoScope();
             return;
@@ -4244,6 +4261,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             if (objType == "Decimal" && mem->member == "toString" && call->args.empty()) {
                 return "String";  // formats the i128 fixed-point value (codegen emitDecimalToString)
+            }
+            // Floating-point types render themselves as text, the same way int does. Without this a
+            // `record` with a float field cannot even be declared: its synthesized toString() calls
+            // toString() on every field. (Only toString -- floats are deliberately NOT hashable or
+            // comparable keys, since float equality is not an identity anyone should key a map on.)
+            if (isFloatType(objType) && mem->member == "toString" && call->args.empty()) {
+                return "String";
             }
             // Integer types satisfy Hashable<T>/Comparable<T> via builtins, so they can be used as
             // map/set keys without boxing (collections, spec 34).
