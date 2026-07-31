@@ -2362,6 +2362,7 @@ struct CodeGenerator::Impl {
                     if (mem->member == "toDouble") return "double";
                 }
                 if (typeName(*mem->object) == "Decimal" && mem->member == "toString") return "String";
+                if (isFloatType(typeName(*mem->object)) && mem->member == "toString") return "String";
                 // Integer keys: Hashable/Comparable builtins (collections) + toString (itoa).
                 if (const std::string ot = typeName(*mem->object); isIntName(ot)) {
                     if (mem->member == "hash") return "long";
@@ -2831,6 +2832,13 @@ struct CodeGenerator::Impl {
         llvm::FunctionType* ty = llvm::FunctionType::get(
             builder.getInt64Ty(), {builder.getInt64Ty(), builder.getPtrTy()}, false);
         return module.getOrInsertFunction("__ldp3_itoa", ty);
+    }
+
+    // ftoa runtime helper (writes %g text to a buffer, returns length), for float.toString().
+    llvm::FunctionCallee ftoaFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getInt64Ty(), {builder.getDoubleTy(), builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_ftoa", ty);
     }
 
     // Builds a String object on the heap from a length and a null-terminated byte buffer.
@@ -7060,6 +7068,19 @@ struct CodeGenerator::Impl {
                     if (o == nullptr) return nullptr;
                     return builder.CreateCall(strcmpFn(), {stringData(s), stringData(o)});  // sign matters
                 }
+            }
+            // float.toString() / double.toString(): %g text, matching what string interpolation
+            // prints for the same value. A record with a float field depends on this -- its
+            // synthesized toString() calls toString() on every field.
+            if (isFloatType(typeName(*mem->object)) && mem->member == "toString" &&
+                call.args.empty()) {
+                llvm::Value* a = emitExpr(*mem->object);
+                if (a == nullptr) return nullptr;
+                a = coerce(a, typeName(*mem->object), "double");
+                llvm::Value* buf =
+                    builder.CreateCall(mallocFn(), {builder.getInt64(32)}, "ftoa.buf");
+                llvm::Value* len = builder.CreateCall(ftoaFn(), {a, buf});
+                return ownedStr(emitStringFromParts(len, buf));
             }
             // Integer keys satisfy Hashable<T>/Comparable<T> via builtins (collections). Gate on the
             // builtin member names so this never intercepts ClassName.staticMethod() (whose receiver

@@ -1,0 +1,29 @@
+program NsCollision;
+
+// The two same-named types the companion file imports and uses.
+public bundle main {
+
+    public namespace geo {
+        public class Shape {
+            private mutable int n;
+            public constructor Shape(int n) {
+                this.n = n;
+            }
+            public method size() returns int {
+                return this.n;
+            }
+        }
+    }
+
+    public namespace phys {
+        public class Shape {
+            private mutable int n;
+            public constructor Shape(int n) {
+                this.n = n * 10;
+            }
+            public method size() returns int {
+                return this.n;
+            }
+        }
+    }
+}

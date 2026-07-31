@@ -1,0 +1,24 @@
+import System.IO.Console;
+program RecordFloatField;
+
+// A record with float fields. Its synthesized toString() renders every field through that field's
+// own toString(), so this only compiles because float/double have one -- before that builtin
+// existed, a record with ANY float field could not be declared at all.
+public bundle main {
+    public namespace app {
+
+        public record Sample(int n, float ratio, double scale) {
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Sample s = new Sample(3, 1.5, 2.25);
+                System.IO.Console.println(s.toString());
+                // the same builtin, called directly
+                float f = 0.5;
+                System.IO.Console.println(f.toString());
+                return;
+            }
+        }
+    }
+}
