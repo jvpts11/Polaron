@@ -1,0 +1,56 @@
+import System.IO.Console;
+program WideStructHash;
+
+// COMPILE-TIME REGRESSION TEST, not a value test. The synthesized `hash` for a value type is a
+// left-nested chain `((((17*31)+f1)*31)+f2)...`, two levels deep per field. codegen's typeName()
+// used to recurse into a BinaryExpr's LHS TWICE (once to look for an `operator+` overload, once to
+// compute the arithmetic result type), making it 2^depth. A 13-field struct took 181 SECONDS; this
+// 20-field one would take roughly a day. So if the double-recursion ever comes back, this test does
+// not fail on a wrong number -- it fails on the ctest timeout, loudly.
+//
+// The deep member chain below guards the same bug in the other two places it lived: the unary
+// operand and the call receiver (which was asked for its type NINE times per level, i.e. 9^depth).
+
+public bundle main {
+    public namespace app {
+
+        public struct Wide {
+            public mutable int f00; public mutable int f01; public mutable int f02;
+            public mutable int f03; public mutable int f04; public mutable int f05;
+            public mutable int f06; public mutable int f07; public mutable int f08;
+            public mutable int f09; public mutable int f10; public mutable int f11;
+            public mutable int f12; public mutable int f13; public mutable int f14;
+            public mutable int f15; public mutable int f16; public mutable int f17;
+            public mutable int f18; public mutable int f19;
+            public constructor Wide(int seed) {
+                this.f00 = seed;      this.f01 = seed + 1;  this.f02 = seed + 2;
+                this.f03 = seed + 3;  this.f04 = seed + 4;  this.f05 = seed + 5;
+                this.f06 = seed + 6;  this.f07 = seed + 7;  this.f08 = seed + 8;
+                this.f09 = seed + 9;  this.f10 = seed + 10; this.f11 = seed + 11;
+                this.f12 = seed + 12; this.f13 = seed + 13; this.f14 = seed + 14;
+                this.f15 = seed + 15; this.f16 = seed + 16; this.f17 = seed + 17;
+                this.f18 = seed + 18; this.f19 = seed + 19;
+            }
+        }
+
+        // A receiver whose type only resolves by recursing through the whole chain.
+        public class Link {
+            public method next() returns Link { return this; }
+            public method value() returns int { return 7; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Wide a = new Wide(1);
+                Wide b = new Wide(1);
+                Wide c = new Wide(2);
+                Link l = new Link();
+                int chain = l.next().next().next().next().next().next()
+                             .next().next().next().next().next().next().value();
+                System.IO.Console.printf("same=%d diff=%d chain=%d\n",
+                    a.hash() == b.hash(), a.hash() == c.hash(), chain);
+                return;
+            }
+        }
+    }
+}

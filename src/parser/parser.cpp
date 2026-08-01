@@ -210,6 +210,7 @@ bool isTypeKeyword(TokenKind k) {
         case TokenKind::KwFloat32:
         case TokenKind::KwFloat64:
         case TokenKind::KwRegion:
+        case TokenKind::KwUnknown:  // [unknown-abi] `unknown <world> funcptr<...>` starts a type
             return true;
         default:
             return false;
@@ -510,7 +511,10 @@ void Parser::parseExternInto(std::vector<ast::ExternDecl>& out) {
     if (match(TokenKind::KwCdecl)) conv = "cdecl";
     else if (match(TokenKind::KwStdcall)) conv = "stdcall";
     else if (match(TokenKind::KwFastcall)) conv = "fastcall";
-    else fail("expected a calling convention (cdecl/stdcall/fastcall) after 'extern'", current().loc);
+    else if (match(TokenKind::KwUnknown))  // `unknown <world>`: adopt a foreign binary's ABI (world required)
+        conv = "unknown:" + expect(TokenKind::Identifier,
+                   "the foreign world (pe/elf/macho, or raw win64/sysv/aapcs) after 'unknown'").lexeme;
+    else fail("expected a calling convention (cdecl/stdcall/fastcall/unknown) after 'extern'", current().loc);
     if (check(TokenKind::Identifier) && current().lexeme == "library") {
         advance();  // 'library'
         expect(TokenKind::Identifier, "the library name");  // linked externally; not used here yet
@@ -831,6 +835,13 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         c.isUnique = true;
     }
     if (match(TokenKind::KwPartitionable)) c.isPartitionable = true;  // spec 19.9
+    // `heap class X` (spec 36): X provides the program's heap. A soft keyword -- `heap` stays usable as
+    // an identifier everywhere else, notably in `new T() on heap`.
+    if (check(TokenKind::Identifier) && current().lexeme == "heap" &&
+        peek(1).kind == TokenKind::KwClass) {
+        advance();
+        c.isHeap = true;
+    }
     if (match(TokenKind::KwInterface)) {
         c.isInterface = true;
         c.isAbstract = true;  // interfaces are abstract by nature
@@ -1110,9 +1121,11 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isComptime = false;
     bool isLazy = false;
     bool isAsync = false;
+    bool isNaked = false;
     bool isExternal = false;
     bool isMovableField = false;
     bool isUniqueField = false;
+    bool isWeakField = false;
     bool isExtern = false;          // spec 26: extern C method member
     std::string externConvention;
     for (;;) {
@@ -1190,6 +1203,11 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isAsync = true;
             continue;
         }
+        if (!isNaked && check(TokenKind::KwNaked)) {  // spec 36: no prologue/epilogue, body is raw asm
+            advance();
+            isNaked = true;
+            continue;
+        }
         if (!isExternal && check(TokenKind::KwExternal)) {
             advance();
             isExternal = true;
@@ -1205,14 +1223,31 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isUniqueField = true;
             continue;
         }
+        if (!isWeakField && check(TokenKind::KwWeak)) {  // `weak T*` field: non-owning, auto-nulled on death
+            advance();
+            isWeakField = true;
+            continue;
+        }
         if (!isExtern && check(TokenKind::KwExtern)) {  // spec 26: extern <conv> [static] method ...
             advance();
             if (match(TokenKind::KwCdecl)) externConvention = "cdecl";
             else if (match(TokenKind::KwStdcall)) externConvention = "stdcall";
             else if (match(TokenKind::KwFastcall)) externConvention = "fastcall";
-            else fail("expected a calling convention (cdecl/stdcall/fastcall) after 'extern'",
+            else if (match(TokenKind::KwUnknown))
+                externConvention = "unknown:" + expect(TokenKind::Identifier,
+                    "the foreign world (pe/elf/macho, or raw win64/sysv/aapcs) after 'unknown'").lexeme;
+            else fail("expected a calling convention (cdecl/stdcall/fastcall/unknown) after 'extern'",
                       current().loc);
             isExtern = true;
+            continue;
+        }
+        // `unknown <world>` as a standalone modifier: emit this (non-extern) method with the calling
+        // convention of a foreign binary's world, so that binary can call it across the boundary (e.g.
+        // a Windows PE through its IAT). The world is REQUIRED -- the compiler never infers it.
+        if (externConvention.empty() && check(TokenKind::KwUnknown)) {
+            advance();
+            externConvention = "unknown:" + expect(TokenKind::Identifier,
+                "the foreign world (pe/elf/macho, or raw win64/sysv/aapcs) after 'unknown'").lexeme;
             continue;
         }
         break;
@@ -1227,7 +1262,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     if (check(TokenKind::KwMethod)) {
         member = parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
                              inInterface, isComptime, isAsync, isVolatile, isExtern,
-                             std::move(externConvention), isDeprecated);
+                             std::move(externConvention), isDeprecated, isNaked);
     } else if (check(TokenKind::KwConstructor)) {
         member = parseConstructor(std::move(visibility));
     } else if (check(TokenKind::KwDestructor)) {
@@ -1242,7 +1277,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         // Otherwise it is a field:  <type> <name> ;
         member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
                             isTransient, isVolatile, isLazy, isExternal, isMovableField,
-                            isUniqueField, isAbstract, isOverride, isFinal, inInterface);
+                            isUniqueField, isWeakField, isAbstract, isOverride, isFinal, inInterface);
     }
     if (!anns.empty()) {  // attach leading annotations to the declaration they precede
         if (auto* m = dynamic_cast<ast::MethodDecl*>(member.get())) m->annotations = std::move(anns);
@@ -1300,7 +1335,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
                                                      bool isAbstract, bool isOverride, bool isFinal,
                                                      bool inInterface, bool isComptime,
                                                      bool isAsync, bool isVolatile, bool isExtern,
-                                                     std::string externConvention, bool isDeprecated) {
+                                                     std::string externConvention, bool isDeprecated, bool isNaked) {
     auto m = std::make_unique<ast::MethodDecl>();
     m->loc = current().loc;
     m->visibility = std::move(visibility);
@@ -1315,6 +1350,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     m->isAsync = isAsync;
     m->isVolatile = isVolatile;  // spec 37.5: always executed; never inlined/elided
     m->isDeprecated = isDeprecated;  // spec 14.2: warn at every call site
+    m->isNaked = isNaked;            // spec 36: no prologue/epilogue; the body is raw assembly
     expect(TokenKind::KwMethod, "'method'");
     m->name = expectMemberName("the method name");
     // Generic method type parameters: method identity<T>(...) (spec 15). Each
@@ -1344,6 +1380,22 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     expect(TokenKind::KwReturns, "'returns'");
     m->returnType = parseTypeRef();
     if (match(TokenKind::KwComptime)) m->isComptime = true;  // suffix form (spec 28.3)
+    // region-binder escape summary carried in the .ldh: `escapes(i:slot, ...)`, slot -1 = receiver, j = param
+    // j. A soft keyword (only meaningful here); harmless elsewhere. Round-trips a library method's summary.
+    if (check(TokenKind::Identifier) && current().lexeme == "escapes" &&
+        peek(1).kind == TokenKind::LParen) {
+        advance();  // 'escapes'
+        advance();  // '('
+        if (!check(TokenKind::RParen))
+            do {
+                int pi = std::stoi(expect(TokenKind::IntLiteral, "a parameter index in escapes(...)").lexeme);
+                expect(TokenKind::Colon, "':' in escapes(i:slot)");
+                bool neg = match(TokenKind::Minus);
+                int slot = std::stoi(expect(TokenKind::IntLiteral, "a slot in escapes(...)").lexeme);
+                m->escapeSummary.emplace_back(pi, neg ? -slot : slot);
+            } while (match(TokenKind::Comma));
+        expect(TokenKind::RParen, "')' to close escapes(...)");
+    }
     currentMethodReturnType_ = m->returnType;  // enables the Ok(x)/.. return-value sugar
     // Contract clauses (spec 29): `requires <expr>` / `ensures <expr>`, between the
     // signature and the body, no separators. `old(...)` is recognized inside `ensures`.
@@ -1380,7 +1432,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
 ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable,
                                   bool isPersistent, bool isEternal, bool isTransient,
                                   bool isVolatile, bool isLazy, bool isExternal, bool isMovable,
-                                  bool isUnique, bool isAbstract, bool isOverride, bool isFinal,
+                                  bool isUnique, bool isWeak, bool isAbstract, bool isOverride, bool isFinal,
                                   bool inInterface) {
     const SourceLocation loc = current().loc;
     // Region flavor / growth soft keywords (spec 17 flavors) on a `region` field, before the type.
@@ -1414,6 +1466,7 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->isExternal = isExternal;
     f->isMovable = isMovable;
     f->isUnique = isUnique;
+    f->isWeak = isWeak;
     f->regionFlavor = fieldRegionFlavor;
     f->regionGrowable = fieldRegionGrowable;
     f->type = std::move(type);
@@ -1861,6 +1914,30 @@ ast::TypeRef Parser::parseTypeRef() {
         t.name = nm + ">";
         return t;
     }
+    // [unknown-abi] `unknown <world> funcptr<...>` -- a function pointer INTO a foreign binary; a call
+    // THROUGH it uses that world's ABI (e.g. jumping to a Windows PE entry point, or a callback the
+    // foreign code will invoke). The world is REQUIRED (never inferred) and is encoded as a leading
+    // "$unknown:<world>" element so it survives into the flattened canonical string.
+    if (tok.kind == TokenKind::KwUnknown) {
+        advance();
+        std::string world = expect(TokenKind::Identifier,
+            "the foreign world (pe/elf/macho, or raw win64/sysv/aapcs) after 'unknown'").lexeme;
+        if (!(current().kind == TokenKind::Identifier && current().lexeme == "funcptr"))
+            fail("`unknown <world>` on a type applies only to funcptr (e.g. `unknown pe funcptr<...>`)",
+                 current().loc);
+        advance();  // 'funcptr'
+        std::string nm = "funcptr<$unknown:" + world + ",";
+        expect(TokenKind::Lt, "'<' after funcptr");
+        std::size_t fn = 0;
+        do {
+            ast::TypeRef arg = parseTypeRef();
+            nm += (fn++ ? "," : "") + ast::canonicalType(arg);
+        } while (match(TokenKind::Comma));
+        if (current().kind == TokenKind::Shr) { tokens_[pos_].kind = TokenKind::Gt; }
+        else { expect(TokenKind::Gt, "'>' to close funcptr type"); }
+        t.name = nm + ">";
+        return t;
+    }
     // funcptr<Ret, Params...> -- a bare C function pointer (no closure environment), for dynamic FFI:
     // an address obtained at runtime (e.g. wglGetProcAddress / GetProcAddress) cast to this type and
     // called with the plain C ABI. `funcptr` is a contextual type name (only special before '<'), so it
@@ -2224,11 +2301,43 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::AsmBlock)) {  // `asm("arch") { raw }` inline assembly (spec issue 1)
         auto a = std::make_unique<ast::AsmStmt>();
         a->loc = current().loc;
-        const std::string& lex = current().lexeme;  // arch + '\x1f' + body
+        const std::string& lex = current().lexeme;  // arch + '\x1e' + dialect + '\x1f' + body
         const std::size_t sep = lex.find('\x1f');
-        a->arch = sep == std::string::npos ? std::string() : lex.substr(0, sep);
+        const std::string head = sep == std::string::npos ? std::string() : lex.substr(0, sep);
         a->body = sep == std::string::npos ? lex : lex.substr(sep + 1);
+        if (const std::size_t d = head.find('\x1e'); d != std::string::npos) {
+            a->arch = head.substr(0, d);
+            a->dialect = head.substr(d + 1);  // asm("x86_64", "att") -- explicit dialect
+        } else {
+            a->arch = head;
+        }
         advance();
+        // Optional operand clauses, in any order: `out (lv, ...)`, `in (e, ...)`, `clobber ("r", ...)`.
+        // Without them the block is a bare instruction sequence (cli/hlt/...), as before.
+        for (bool more = true; more;) {
+            if (check(TokenKind::Identifier) && current().lexeme == "out") {
+                advance();
+                expect(TokenKind::LParen, "'(' after 'out' in an asm operand list");
+                do { a->outputs.push_back(parseExpression()); } while (match(TokenKind::Comma));
+                expect(TokenKind::RParen, "')' to close the asm 'out' list");
+            } else if (check(TokenKind::KwIn)) {
+                advance();
+                expect(TokenKind::LParen, "'(' after 'in' in an asm operand list");
+                do { a->inputs.push_back(parseExpression()); } while (match(TokenKind::Comma));
+                expect(TokenKind::RParen, "')' to close the asm 'in' list");
+            } else if (check(TokenKind::Identifier) && current().lexeme == "clobber") {
+                advance();
+                expect(TokenKind::LParen, "'(' after 'clobber' in an asm operand list");
+                do {
+                    a->clobbers.push_back(current().lexeme);
+                    expect(TokenKind::StringLiteral, "a register name string in 'clobber'");
+                } while (match(TokenKind::Comma));
+                expect(TokenKind::RParen, "')' to close the asm 'clobber' list");
+            } else {
+                more = false;
+            }
+        }
+        match(TokenKind::Semicolon);  // optional -- a bare block needs none
         return a;
     }
     // `cascade [(params)] <operation>` (spec 37.1): propagate an operation through the object's
@@ -2920,12 +3029,27 @@ std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
         decl->type = parseTypeRef();
     }
     decl->name = expect(TokenKind::Identifier, "a variable name").lexeme;
-    // A region may be declared empty (`region r;`, spec 17.2 form 3) and allocated later via
-    // `r = itself.allocate(...)`; it is the one declaration form that omits the initializer.
-    if (!decl->isVar && decl->type.name == "region" && check(TokenKind::Semicolon)) {
-        return decl;  // init stays null
+    // A DECLARATION WITHOUT AN INITIALIZER leaves the variable in the *uninitialized* state -- which is
+    // not null and not a zero, but a third state the analyzer tracks until something assigns to it
+    // (guide 05-memory-and-ownership.md:640). Reading it before that is a compile error, so nothing is
+    // lost by allowing the form; what is gained is the ability to choose a value in a branch without
+    // making the binding `mutable` forever.
+    //
+    // `region r;` (spec 17.2 form 3) used to be the sole special case here, carved out because the
+    // general rule was "every variable needs an initializer". It is now just an instance of the rule.
+    //
+    // `var x;` stays illegal, and for a different reason: `var` infers the type FROM the initializer, so
+    // without one there is nothing to infer and the declaration says nothing at all.
+    if (check(TokenKind::Semicolon)) {
+        if (decl->isVar) {
+            fail("'var' infers the type from the initializer, so `var " + decl->name +
+                     ";` has nothing to infer from -- write the type (`int " + decl->name +
+                     ";`) to declare it uninitialized, or give it a value",
+                 decl->loc);
+        }
+        return decl;  // init stays null: the uninitialized state
     }
-    expect(TokenKind::Assign, "'=' (variables require an initializer)");
+    expect(TokenKind::Assign, "'=' (a variable is either initialized here or declared without a value)");
     decl->init = parseExpression();
     if (!decl->isVar) rewriteVariantCtor(decl->init, decl->type);
     return decl;
@@ -3245,11 +3369,13 @@ ast::ExprPtr Parser::parseUnary() {
         c->loc = current().loc;
         advance();  // 'cast'
         expect(TokenKind::Lt, "'<' after 'cast'");
+        if (match(TokenKind::KwVolatile)) c->targetVolatile = true;  // cast<volatile T*>: MMIO (spec 37.5)
         const Token& tt = current();
-        if (tt.kind == TokenKind::KwFunction ||
+        if (tt.kind == TokenKind::KwFunction || tt.kind == TokenKind::KwUnknown ||  // [unknown-abi]
             (tt.kind == TokenKind::Identifier && tt.lexeme == "funcptr" &&
              peek(1).kind == TokenKind::Lt)) {
-            // A function<...> / funcptr<...> target carries its own angle brackets: parse the full
+            // A function<...> / funcptr<...> / unknown-world-funcptr target carries its own angle
+            // brackets: parse the full
             // type (it also splits the trailing '>>', leaving one '>' for the cast to close).
             c->targetType = parseTypeRef().name;
         } else if (isTypeKeyword(tt.kind) || tt.kind == TokenKind::Identifier) {
@@ -3263,7 +3389,7 @@ ast::ExprPtr Parser::parseUnary() {
         expect(TokenKind::LParen, "'(' after cast<T>");
         c->operand = parseExpression();
         expect(TokenKind::RParen, "')'");
-        return c;
+        return parsePostfixOps(std::move(c));  // allow cast<T*>(x)[i], cast<T>(x).field, cast<T>(x)(args)
     }
     // `mark of region R` (spec 17, stack flavor): capture R's cursor as a checkpoint. `mark` is a soft
     // keyword -- only this operator when directly followed by `of region`; otherwise an identifier.
@@ -3343,7 +3469,14 @@ ast::ExprPtr Parser::parseUnary() {
 }
 
 ast::ExprPtr Parser::parsePostfix() {
-    ast::ExprPtr expr = parsePrimary();
+    return parsePostfixOps(parsePrimary());
+}
+
+// Apply postfix operators -- .member / obj.m<T>(args) / (call) / [index] -- to an already-parsed base
+// expression, left to right. Shared by parsePostfix and by cast<T>(x), so `cast<T*>(x)[i]`,
+// `cast<T>(x).field` and `cast<T>(x)(args)` all chain like any other primary.
+ast::ExprPtr Parser::parsePostfixOps(ast::ExprPtr base) {
+    ast::ExprPtr expr = std::move(base);
     for (;;) {
         if (check(TokenKind::Dot) || check(TokenKind::QuestionDot)) {
             auto m = std::make_unique<ast::MemberExpr>();
@@ -3632,10 +3765,12 @@ ast::ExprPtr Parser::parsePrimary() {
             e->method = name;
             return e;
         }
-        case TokenKind::StringLiteral: {
+        case TokenKind::StringLiteral:
+        case TokenKind::BytesLiteral: {
             auto e = std::make_unique<ast::StringLiteralExpr>();
             e->loc = tok.loc;
             e->value = tok.lexeme;
+            e->isBytes = (tok.kind == TokenKind::BytesLiteral);
             advance();
             return e;
         }

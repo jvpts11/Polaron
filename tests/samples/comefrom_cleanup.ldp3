@@ -1,10 +1,16 @@
 import System.IO.Console;
 program ComefromCleanup;
 
-// Regression: a `comefrom` that leaves a lexical scope runs that scope's teardown (destructors, defers,
-// String/region/value-struct frees) first -- exactly like `goto` does. Before the fix, comefrom branched
-// straight to the label and skipped the cleanup, leaking the scope's objects. Here `comefrom out` leaves
-// the if-body holding `Noisy a`, so its destructor runs. Prints: start / ~1 / after.
+// Regression: a hijack that LEAVES a lexical scope runs that scope's teardown (destructors, defers,
+// String/region/value-struct frees) first, exactly as `goto` does. Skipping it leaks whatever the scope
+// was holding.
+//
+// The shape is the mirror of what it used to be, because comefrom now works the way it reads: the LABEL
+// is the source of the jump and the comefrom is the destination. So the scope being escaped is the one
+// holding the label -- here the if-body, which owns `Noisy a`. Reaching `label out` steals control out of
+// that scope, and `a`'s destructor has to run on the way out.
+//
+// Prints: start / ~1 / after.
 public bundle main {
     public namespace app {
         public class Noisy {
@@ -21,10 +27,13 @@ public bundle main {
                 System.IO.Console.printf("start\n");
                 if (1 < 2) {
                     Noisy a = new Noisy(1) on stack;
-                    comefrom out;
+                    label out;                                  // control is stolen here ...
                     System.IO.Console.printf("unreachable\n");
                 }
-                label out;
+                System.IO.Console.printf("also unreachable\n");
+                return;
+
+                comefrom out;                                   // ... and lands here
                 System.IO.Console.printf("after\n");
                 return;
             }

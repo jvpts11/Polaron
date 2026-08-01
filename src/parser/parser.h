@@ -83,12 +83,12 @@ private:
                                                  bool isAsync = false, bool isVolatile = false,
                                                  bool isExtern = false,
                                                  std::string externConvention = "",
-                                                 bool isDeprecated = false);
+                                                 bool isDeprecated = false, bool isNaked = false);
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
                               bool isPersistent, bool isEternal, bool isTransient,
                               bool isVolatile = false, bool isLazy = false,
                               bool isExternal = false, bool isMovable = false,
-                              bool isUnique = false, bool isAbstract = false,
+                              bool isUnique = false, bool isWeak = false, bool isAbstract = false,
                               bool isOverride = false, bool isFinal = false,
                               bool inInterface = false);
     // Optional `cascade(...)` parameters (spec 37.1): `(depth: N)`, `(unlimited)`,
@@ -140,6 +140,7 @@ private:
     ast::ExprPtr parseBinary(int minPrec);
     ast::ExprPtr parseUnary();
     ast::ExprPtr parsePostfix();
+    ast::ExprPtr parsePostfixOps(ast::ExprPtr base);  // apply .member / (call) / [index] to an existing base
     ast::ExprPtr parsePrimary();
     ast::ExprPtr maybeLiteralSuffix(ast::ExprPtr literal);
     ast::ExprPtr parseRegionInit();

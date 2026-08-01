@@ -1,0 +1,33 @@
+import System.Errors.Result;
+program TryErrorTypeBad;
+
+// `try?` forwards the failure value UNCHANGED -- codegen emits `CreateRet(val)` on the very value it
+// tested. So the operand's error type has to be the one the enclosing method returns.
+//
+// It used to be checked by BASE NAME only ("Result" == "Result"), which is the one comparison that can
+// never fail here. A `Result<int, IoError>` propagated out of a method returning `Result<int, Code>`
+// therefore reached the binary and was reinterpreted: at the LLVM level every value-form Result is one
+// StructType and every boxed one an opaque `ptr`, so nothing downstream could catch it either.
+public bundle main {
+    public namespace app {
+        public class IoError {
+            public mutable int code;
+            public constructor IoError(int c) { this.code = c; }
+        }
+        public class Main {
+            public static method read(int n) returns Result<int, IoError>* {
+                if (n < 0) { return Err(new IoError(5) on heap); }
+                return Ok(n);
+            }
+            // returns a DIFFERENT error type: the propagated IoError* would land here as an int
+            public static method use(int n) returns Result<int, int>* {
+                int v = try? Main.read(n);
+                return Ok(v + 1);
+            }
+            public static method main(string[] args) returns void {
+                Main.use(1);
+                return;
+            }
+        }
+    }
+}

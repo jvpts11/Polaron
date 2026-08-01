@@ -31,6 +31,41 @@ struct LocalVar {
     std::string type;
     bool isMutable = false;
     bool isStackObject = false;  // bound to a `new ... on stack` class value (RAII; not throwable)
+    // Bound to a `new ... on heap`. Note this is NOT the same question as "is the type a pointer":
+    // `Car c = new Car() on heap;` has type `Car` and owns heap memory, while `Result<int,int> v = ...`
+    // has a class type and owns none. Only the first makes `delete` actually free something -- which is
+    // what decides whether reading the name afterwards is a use-after-free or a documented no-op.
+    bool isHeapObject = false;
+    // Declared without an initializer (`int x;`). Its FIRST assignment initializes it, so that write is
+    // allowed even on a non-mutable binding: the value is still written exactly once, which is what
+    // "immutable" actually promises. Every later write is an ordinary assignment and needs `mutable`.
+    bool deferredInit = false;
+};
+
+// What the compiler knows about a variable AT A POINT IN THE PROGRAM, as opposed to what its declaration
+// says. This is the state the guide has always described (05-memory-and-ownership.md:640) and the
+// implementation never had -- it took the shortcut of forbidding uninitialized variables in the PARSER,
+// so the state could not arise and nothing had to track it.
+//
+// One machine for all four facts, because they are the same question asked about different properties and
+// every one of them needs the same three operations: save/restore across a scope, join at a branch merge,
+// and invalidate on a loop back-edge. Written separately they would be three subtly different traversals
+// that disagree at the edges.
+struct FlowFacts {
+    // Definite assignment. `T x;` starts Uninit and reading it there is an error. Assigned on only one
+    // side of an `if`, it joins to Maybe -- still an error to read, but a different message, because
+    // "initialized in one branch" is a different mistake from "never initialized".
+    enum class Init { Uninit, Maybe, Init };
+    std::unordered_map<std::string, Init> init;
+    // Names PROVEN non-null here by a check the compiler could verify. A proof lives only as long as
+    // nothing can falsify it: assigning to the name kills it, and so does a loop back-edge.
+    std::unordered_set<std::string> nonNull;
+    // Ownership, kept here rather than in flat sets so it saves, restores and joins with everything else.
+    std::unordered_set<std::string> moved;
+    std::unordered_set<std::string> deleted;
+    // Deleted AND actually freed. `deleted` exists for the spec-18.2 redeclaration rule and
+    // includes no-op deletes; only this one means reading the name reads freed memory.
+    std::unordered_set<std::string> freed;
 };
 
 // Class members collected in pass 1, for name resolution / type checking.
@@ -117,6 +152,10 @@ public:
     // a library has no entry point.
     bool analyze(const ast::Program& program, bool libraryMode = false, bool testMode = false);
 
+    // Enable the region binder (--region-binder): static, zero-runtime temporal-safety checks that reject
+    // storing a reference to a shorter-lived object into a longer-lived location (the dangling store).
+    void setRegionBinder(bool on) { regionBinder_ = on; }
+
     bool hasErrors() const { return !errors_.empty(); }
     // Classes whose dispatch table is patched at runtime (spec 32.8). Codegen must give them a vtable
     // and never devirtualize their calls, or a replacement would not be seen at the call sites.
@@ -187,6 +226,9 @@ private:
     // A type from another namespace must be imported (or be a primitive / a
     // monomorphized generic). Errors otherwise (namespace visibility).
     void checkTypeAccessible(const std::string& typeName, SourceLocation loc);
+    // cast<Wide>(narrow arithmetic): the bits are gone before the cast runs. See the definition.
+    void checkWideningLostBits(const ast::CastExpr& cst, const std::string& src,
+                               const std::string& dst);
     void checkBitCounted(const std::string& typeName, SourceLocation loc);
     void checkIncDecTarget(const ast::Expr& target, bool isIncrement, SourceLocation loc);
     std::string typeOf(const ast::Expr& expr);  // "" on error
@@ -236,6 +278,28 @@ private:
     const LocalVar* lookupLocal(const std::string& name) const;
     void declareLocal(const std::string& name, LocalVar info);
 
+    // ---- flow-sensitive facts (see FlowFacts) ----
+    FlowFacts snapshotFlow() const;
+    void restoreFlow(const FlowFacts& f);
+    // Merge two branch outcomes into the state after the branch. A fact survives only if it holds on
+    // BOTH paths -- that is what makes the analysis sound rather than optimistic: a proof established in
+    // the `then` arm says nothing about the program that took the `else`.
+    void joinFlow(const FlowFacts& a, const FlowFacts& b);
+    // A loop body may run again, so any proof its own body can falsify must not survive to the top. The
+    // cheap and correct answer is to drop what the body could have changed, which is what this does.
+    void invalidateAcrossBackEdge(const FlowFacts& before);
+    FlowFacts::Init initStateOf(const std::string& name) const;
+    void markInitialized(const std::string& name);
+    // Called on every write to `name`: a stored proof of non-nullness is only about the value that WAS
+    // there. This is the invalidation João asked for -- the reason a narrowing cannot derail a program.
+    void killProofsFor(const std::string& name);
+    // Every path out of this block leaves it (return/throw/break/continue), so it contributes nothing to
+    // the state after the branch -- which is what makes a guard clause narrow the code below it.
+    static bool blockAlwaysExits(const ast::Block& b);
+    // What a null test proves, and for which arm. Only unambiguous shapes are recognised; being
+    // incomplete costs a cast, being wrong would cost the guarantee.
+    void proofFromCondition(const ast::Expr& cond, std::string& provenThen, std::string& provenElse);
+
     std::vector<SemaError> errors_;
     std::vector<SemaError> warnings_;
     EntryPoint entry_;
@@ -280,6 +344,7 @@ private:
     std::string currentNamespace_;  // namespace being analyzed (visibility checks)
     std::string currentBundle_;     // bundle being analyzed (stdlib-cohesion visibility)
     bool freestanding_ = false;     // spec 36: no managed-runtime features in this program
+    bool regionBinder_ = false;     // --region-binder: static escape checks (Rust-level temporal safety)
     bool libraryMode_ = false;      // compiling a bundle to a .ldb: a missing `main` is allowed
     bool testMode_ = false;         // `ldp3c --test`: a missing `main` is allowed (runner is synthetic)
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
@@ -287,6 +352,7 @@ private:
     std::string enclosingClass_;  // class the current method belongs to, set even for static methods
                                   // (unlike currentClass_) -- used to point unqualified calls at their owner
     std::unordered_set<std::string> deleted_;  // locals deleted in this scope (spec 18.2 reattach)
+    std::unordered_set<std::string> freed_;    // ... of those, the ones whose memory is gone
     std::vector<std::string> currentThrows_;  // base names in the method's `throws` clause (spec 21.1)
     std::vector<std::vector<std::string>> catchStack_;  // enclosing try's caught types (base names)
     std::string currentReturnType_;  // declared return type of the method being analyzed (null-safety)
@@ -296,6 +362,37 @@ private:
     std::set<std::string> patchedClasses_;  // spec 32.8: classes with a runtime-replaced method
     bool inConstructor_ = false;  // immutable fields may be initialized here
     std::unordered_set<std::string> moved_;  // variables in the "moved" state
+    // Definite assignment (`T x;` then `x = ...`). Absent from the map means "declared with an
+    // initializer", i.e. Init -- only deferred declarations ever enter it.
+    std::unordered_map<std::string, FlowFacts::Init> init_;
+    // Names proven non-null at this point. See FlowFacts::nonNull.
+    std::unordered_set<std::string> nonNull_;
+    // Set while typing the operands of a null TEST, so `b != null` sees the declared type rather than
+    // the narrowed one -- testing something already proven non-null is redundant, not ill-typed.
+    bool suppressNarrowing_ = false;
+    std::unordered_set<std::string> activationOwned_;  // locals bound to a no-region `new` (own the object,
+                                                       // die at method return) -- region-binder escape check
+    std::unordered_map<std::string, const ast::LambdaExpr*> lambdaLocals_;  // local -> the lambda it holds
+                                                       // (so `new Thread(work)` can inspect its captures, §14)
+    // region-binder escape SUMMARY (interprocedural, §8): "Class.method" -> per value-parameter flag, true
+    // when that parameter is stored into the receiver (`this.field = param`, directly or via an alias). A
+    // call site can then reject passing an activation-owned argument to such a parameter of a longer-lived
+    // receiver. Computed by a pre-pass before the checking pass, so forward calls see it.
+    std::unordered_map<std::string, std::vector<bool>> escapesToReceiver_;
+    // §8 extended: "Class.method" -> per value-parameter, the set of OTHER parameter indices it is stored
+    // into (`paramJ.field = paramI` -> escapesToParam[i] contains j). Checked at the call site against the
+    // corresponding argument's lifetime, so `link(longLived, activationLocal)` is rejected.
+    std::unordered_map<std::string, std::vector<std::vector<int>>> escapesToParam_;
+    std::string escapeScanClass_;   // class of the method currently being scanned (resolves this.field types)
+    const std::vector<ast::Param>* escapeScanParams_ = nullptr;  // its parameters (resolve param.field types)
+    std::vector<std::vector<int>> escapeScanParamTargets_;  // accumulator: param i -> param slots it escapes to
+    bool escapeSummaryChanged_ = false;  // fixpoint flag: a summary grew during the last pass
+    void computeEscapeSummaries(const ast::Program& program);
+    void scanEscapes(const ast::Block& body, std::unordered_map<std::string, int>& alias,
+                     std::vector<bool>& esc);
+    void scanStmt(const ast::Stmt* s, std::unordered_map<std::string, int>& alias,
+                  std::vector<bool>& esc);
+    std::string fieldTypeOf(const ast::MemberExpr& mem);  // the declared type of `recv.field`, or ""
     std::unordered_map<std::string, int> extracted_;  // extracted vars -> line (spec 17: use-after-extract)
     std::unordered_map<std::string, std::string> checkpointRegion_;  // checkpoint var -> region it marked
     // spec 17 LDP3-1718: paths (a local `p`, or a field `obj.f`) known to hold an object allocated

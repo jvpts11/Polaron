@@ -216,6 +216,24 @@ bool synthesizeIpc(ast::Program& program) {
                 src += "    }\n";
                 src += "    public method __ipcId() returns long {\n        return this.__id;\n    }\n";
                 src += "    public method __ipcConn() returns long {\n        return this.__conn;\n    }\n";
+                // Give the remote object back. The id is a capability, and a capability that is never
+                // returned is just a permanent address -- so a proxy that is done with its object says
+                // so, and the far side revokes the id. Explicit rather than implicit in the destructor:
+                // the release is a round trip over a connection that may already be gone, and a
+                // destructor is the one place where a throw has nowhere to go.
+                src += "    public method release() throws(IpcError) returns void {\n";
+                src += "        if (this.__id == cast<long>(0)) { return; }\n";
+                src += "        IpcWriter w = new IpcWriter() on heap;\n";
+                src += "        w.putByte(IpcProto.kRelease());\n";
+                src += "        w.putLong(this.__id);\n";
+                src += "        IpcChannel ch = new IpcChannel(this.__conn) on heap;\n";
+                src += "        IpcReader r = ch.request(w.toFrame());\n";
+                src += "        delete r;\n";
+                src += "        delete ch;\n";
+                src += "        delete w;\n";
+                src += "        this.__id = cast<long>(0);\n";   // a released proxy names nothing
+                src += "        return;\n";
+                src += "    }\n";
                 for (const MemberPtr& m : c.members) {
                     const auto* meth = dynamic_cast<const MethodDecl*>(m.get());
                     if (meth == nullptr || !exported(*meth)) continue;
@@ -317,6 +335,16 @@ bool synthesizeIpc(ast::Program& program) {
     d += "        " + disp + ".ensure();\n";
     d += "        return " + disp + ".live.contains(id);\n";
     d += "    }\n";
+    // REVOCATION. Without it an id was added by `lend` and never removed, so a peer that kept an old
+    // number still passed `known(id)` after the object was gone -- a use-after-free reachable from
+    // network input, in the one feature whose whole argument is capability tokens. Dropping the id is
+    // what makes the number a capability rather than a permanent address.
+    d += "    public static method revoke(long id) returns boolean {\n";
+    d += "        " + disp + ".ensure();\n";
+    d += "        if (!" + disp + ".live.contains(id)) { return false; }\n";
+    d += "        " + disp + ".live.remove(id);\n";
+    d += "        return true;\n";
+    d += "    }\n";
     d += "    public static method handle(String frame) returns String {\n";
     d += "        IpcReader r = new IpcReader(frame) on heap;\n";
     d += "        int kind = r.getByte();\n";
@@ -344,6 +372,17 @@ bool synthesizeIpc(ast::Program& program) {
         d += "            }\n";
     }
     d += "            return IpcProto.errorFrame(\"no such type: \" + type);\n";
+    d += "        }\n";
+    // `kRelease` was defined in the protocol from the start and never handled, so nothing could ever
+    // give an object back. Revoking FIRST and deleting second is the order that cannot be raced: an id
+    // that is no longer in `live` is already unreachable through `known`, whatever arrives next.
+    d += "        if (kind == IpcProto.kRelease()) {\n";
+    d += "            long id = r.getLong();\n";
+    d += "            delete r;\n";
+    d += "            if (!" + disp + ".revoke(id)) {\n";
+    d += "                return IpcProto.errorFrame(\"unknown object\");\n";
+    d += "            }\n";
+    d += "            return IpcProto.okFrame();\n";
     d += "        }\n";
     d += "        if (kind == IpcProto.kCall()) {\n";
     d += "            long id = r.getLong();\n";
@@ -467,10 +506,21 @@ bool synthesizeIpc(ast::Program& program) {
     }
 
     // --- 3. the seam: IpcRuntime.handle (in the prelude) now answers through this program's dispatcher.
+    //
+    // The namespace is matched by SUFFIX, not equality. This pass runs BEFORE qualifyNamespaces, so the
+    // prelude's namespace is still written as it is declared -- `Ipc`, nested in bundle `System` -- while
+    // this looked for the qualified `System.Ipc` and therefore never matched. The seam was silently never
+    // installed, so every server answered every request with the prelude's default
+    // "this program exports nothing over IPC", and the client raised an uncaught IpcError and died with
+    // its stdout still buffered. That is the whole of the IPC hang.
+    bool seamInstalled = false;
+    auto isIpcNamespace = [](const std::string& n) {
+        return n == "Ipc" || n == "System.Ipc" || (n.size() > 4 && n.compare(n.size() - 4, 4, ".Ipc") == 0);
+    };
     for (Bundle& b : program.bundles) {
         if (!b.isPrelude) continue;
         for (Namespace& ns : b.namespaces) {
-            if (ns.name != "System.Ipc") continue;
+            if (!isIpcNamespace(ns.name)) continue;
             for (ClassDecl& c : ns.classes) {
                 if (c.name != "IpcRuntime") continue;
                 for (MemberPtr& m : c.members) {
@@ -485,11 +535,23 @@ bool synthesizeIpc(ast::Program& program) {
                     if (sparser.hasErrors()) return false;
                     for (MemberPtr& sm : seam.members) {
                         auto* smeth = dynamic_cast<MethodDecl*>(sm.get());
-                        if (smeth != nullptr && smeth->name == "handle") meth->body = std::move(smeth->body);
+                        if (smeth != nullptr && smeth->name == "handle") {
+                            meth->body = std::move(smeth->body);
+                            seamInstalled = true;
+                        }
                     }
                 }
             }
         }
+    }
+    // A dispatcher nothing routes to is a program that silently refuses every request -- the failure this
+    // pass just spent its work preventing. If the seam could not be installed, say so loudly here rather
+    // than let it surface as a peer that answers "this program exports nothing" for reasons no one can see.
+    if (!seamInstalled) {
+        fail(program.loc,
+             "internal error: the IPC dispatcher was synthesized but IpcRuntime.handle could not be "
+             "rewritten to call it, so this program would refuse every request it serves");
+        return false;
     }
     return true;
 }

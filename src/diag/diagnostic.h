@@ -30,6 +30,11 @@ enum class Code {
     NotAccessible,        // a private/internal member reached from outside its allowed scope
 
     // 03xx -- types
+    // Null safety has its own code because it has its own REMEDY. Folded into TypeMismatch it inherited
+    // "convert explicitly with cast<T>(value)", which is advice that cannot work: null does not become a
+    // non-nullable value by casting. The fix is always one of three specific things, and the code is what
+    // lets us say which.
+    NullSafety,           // null (or a `nullable T`) reaching a non-nullable type
     TypeMismatch,         // a value of one type where another is required
     ArgCount,             // a call with the wrong number of arguments
     ReturnTypeMismatch,   // a return value that does not match the method's declared return type
@@ -48,6 +53,7 @@ enum class Code {
     MissingReturn,        // a non-void method that can reach its end without returning
     MatchNotExhaustive,   // a match/switch that does not cover every case and has no default
     TryContext,           // `try?` used outside a method returning Result/Option
+    TryErrorType,         // `try?` propagates a failure the enclosing method's type cannot carry
 
     // 06xx -- declarations and inheritance
     Redeclaration,        // two declarations of the same name in the same scope

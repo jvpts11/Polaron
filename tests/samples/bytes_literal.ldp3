@@ -1,0 +1,30 @@
+import System.IO.Console;
+program BytesLiteral;
+
+// b"..." (spec 36): the BYTES themselves, NUL-terminated, typed `byte*` -- not a String object. It exists
+// for freestanding, where there is no runtime to build a String and the things a kernel handles (a path,
+// a device name, a PE import name) are byte sequences it compares directly. It works in hosted code too,
+// which is what lets this test exercise it end to end.
+//
+// The last check matters as much as the others: `b` on its own must still be an ordinary identifier. The
+// literal is only recognized when the quote follows IMMEDIATELY, so adding it took no keyword away.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            // Walk to the NUL, proving the terminator is really there.
+            static method len(byte* p) returns int {
+                mutable int n = 0;
+                while (p[n] != cast<byte>(0)) { n = n + 1; }
+                return n;
+            }
+            public static method main(string[] args) returns void {
+                byte* path = b"/HELLO.ELF";
+                int b = 5;                        // `b` is still just an identifier
+                System.IO.Console.printf("len=%d first=%d last=%d ident=%d\n",
+                    Main.len(path), cast<int>(path[0]), cast<int>(path[9]), b);
+                return;
+            }
+        }
+    }
+}

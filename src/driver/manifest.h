@@ -35,6 +35,22 @@ struct Manifest {
     // Native system libraries to link, from [build] native_libs = "opengl32, user32, ...". These are the
     // libraries an FFI (`extern`) program calls into -- e.g. opengl32/user32/gdi32 for a GL program.
     std::vector<std::string> nativeLibs;
+    // [freestanding] bare-metal build (spec 36). Presence of the section implies freestanding = true.
+    // The driver then drives the whole pipeline (ldp3c --target -> clang -c -> ld.lld -T script) with no
+    // hosted runtime/CRT -- see buildProgram's freestanding branch.
+    bool hasFreestandingSection = false;  // a real [freestanding] section (vs legacy [build] freestanding=true)
+    std::string fsTarget = "x86_64-unknown-none-elf";  // [freestanding] target = "..." (bare-metal triple)
+    std::string linkerScript;                          // [freestanding] linker_script = "kernel.ld" (override)
+    std::vector<std::string> bootSources;              // [freestanding] boot = "boot.s, ..." (asm linked in)
+    // With no explicit `linker_script` the driver GENERATES one from these two. A bare-metal image's
+    // layout is boilerplate -- entry symbol, load address, then the standard text/rodata/data/bss order --
+    // so it should no more be hand-written than the memcpy/memset stubs the driver already generates.
+    std::string loadAddress = "1M";     // [freestanding] load_address = "0x100000" | "1M" (default 1 MiB)
+    // [freestanding] image = "elf" (default) | "bin" | "iso". The linked ELF is always produced; `bin`
+    // additionally flattens it (llvm-objcopy -O binary) for a BIOS/UEFI/embedded payload, and `iso`
+    // wraps it in a bootable El Torito CD image (GRUB + xorriso).
+    std::string imageFormat = "elf";
+    std::string bootProtocol;           // [freestanding] boot_protocol = "pvh" -> emit .note.Xen first
 };
 
 // Parse the supported TOML subset ([program]/[build]/[dependencies]) from text.

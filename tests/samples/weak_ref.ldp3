@@ -1,0 +1,33 @@
+import System.IO.Console;
+program WeakRef;
+
+// A `weak T*` reads as the live target, and auto-nulls the instant that target is deleted --
+// zero per-access cost, no refcount, no GC. `before` sees the live node's id; after `delete n`
+// the weak reference has become null on its own, so `after` reports -1.
+public bundle Main {
+    public namespace App {
+        public class Node {
+            public mutable int id;
+            public constructor Node(int id) { this.id = id; }
+        }
+        public class Watcher {
+            public mutable weak Node* target;
+            public constructor Watcher() { }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Watcher* w = new Watcher() on heap;
+                Node* n = new Node(42) on heap;
+                w.target = n;
+                mutable int before = 0;
+                if (w.target == null) { before = -1; } else { before = w.target.id; }
+                delete n;                       // target dies -> every weak ref to it auto-nulls
+                mutable int after = 0;
+                if (w.target == null) { after = -1; } else { after = 999; }
+                System.IO.Console.println($"before={before} after={after}");
+                delete w;
+                return;
+            }
+        }
+    }
+}

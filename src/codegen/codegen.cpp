@@ -9,6 +9,7 @@
 #include <llvm/IR/DIBuilder.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/CallingConv.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
@@ -27,9 +28,14 @@
 #include <llvm/Transforms/Utils/Cloning.h>
 
 #include <algorithm>
+#include <chrono>
+#include <functional>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>  // embed("path"): resolve the path relative to the source file
+#include <fstream>     // embed("path"): read the bytes at compile time
+#include <iterator>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -257,11 +263,9 @@ unsigned intBits(const std::string& t) {
     return 32;
 }
 
-// Unsigned integer types. `byte` is int8 (signed) per spec 5.
-bool isUnsigned(const std::string& t) {
-    return t.rfind("uint", 0) == 0 || t == "address" || t == "ubyte" || t == "ushort" ||
-           t == "ulong";
-}
+// Unsigned integer types. One definition, in ast.h, because the analyzer needs the same answer and a
+// second copy of "is `byte` signed?" is a disagreement waiting to happen (it is: int8, spec 5).
+bool isUnsigned(const std::string& t) { return ast::isUnsignedIntName(t); }
 
 // Integer-family type names (matches the analyzer's isIntName).
 bool isIntName(const std::string& t) {
@@ -326,7 +330,7 @@ bool isValueVariant(const std::string& t) {
     // payloads (also mangling-ambiguous), Decimal (i128), and tuple payloads (an aggregate). A proper
     // per-instance sized payload (sret) for these is deferred.
     return t.find('*') == std::string::npos && t.find('&') == std::string::npos &&
-           t.find('?') == std::string::npos && t.find("Decimal") == std::string::npos &&
+           !ast::typeIsNullable(t) && t.find("Decimal") == std::string::npos &&
            t.find('(') == std::string::npos;
 }
 
@@ -357,8 +361,7 @@ std::vector<std::string> tupleElems(const std::string& t) {
     return out;
 }
 std::string baseType(const std::string& t) {
-    std::string s = t;
-    if (!s.empty() && s.back() == '?') s.pop_back();  // strip nullable marker (spec 3.7)
+    std::string s = ast::stripNullable(t);     // drop the `nullable ` prefix (spec 3.7)
     // Strip ONE trailing pointer/reference marker (the outer T*/T&). Not a loop: a generic instantiated
     // with a pointer type argument mangles to a name that itself ends in '*' (e.g. HashMap<..,ArrayList<int>*>*
     // -> "HashMap$..$ArrayList$int**"), and only the outermost '*' is the receiver's own pointer; the rest
@@ -369,11 +372,7 @@ std::string baseType(const std::string& t) {
 
 // The LDP3 type name of a declaration, including array / pointer / ref markers.
 // Generic arguments are mangled into the name (Box<int> -> "Box$int").
-std::string typeRefName(const ast::TypeRef& t) {
-    return ast::mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
-           ast::arrayDimsSuffix(t.arrayDims) + std::string(t.pointerDepth, '*') +
-           (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
-}
+std::string typeRefName(const ast::TypeRef& t) { return ast::canonicalType(t); }
 
 // Layout of a class: its LLVM struct, field indices/types, and method returns.
 // Polymorphic classes (in a hierarchy) carry a vtable pointer at field 0.
@@ -387,6 +386,11 @@ struct ClassLayout {
     std::unordered_set<std::string> volatileFields;  // fields whose accesses are volatile (spec 37.5)
     std::unordered_set<std::string> externalFields;  // `external` fields: associations, not owned (spec 37.1)
     std::unordered_set<std::string> uniqueFields;  // `unique T*` fields: single-owner, so cascade-safe forest edges
+    std::unordered_set<std::string> weakFields;  // `weak T*` fields: non-owning, laid out as a 3-ptr WeakSlot
+                                                 // {ptr, prev, next}, intrusively linked into the pointee's
+                                                 // weak-list and auto-nulled when the pointee is destroyed
+    bool needsWeakHead = false;   // this class is targeted by some `weak T*` -> carries a weak-list head
+    unsigned weakHeadIdx = 0;     // struct index of the appended weak-list head (a ptr), when needsWeakHead
     std::unordered_set<std::string> transientFields;  // `transient` fields: derived/scratch, reset (not copied) on a value copy
     // Lazy class-typed fields (spec 28.4): field name -> deferred initializer. Null in the
     // field means "not yet initialized" (the sentinel), so no extra flag is needed.
@@ -584,6 +588,190 @@ struct CodeGenerator::Impl {
     // representation, so codegen lowers it exactly like the underlying type.
     std::unordered_map<std::string, std::string> newtypes_;
     std::unordered_map<std::string, llvm::StructType*> tupleTypes;  // "(int,int)" -> { i32, i32 }
+    // `weak T*` support: classes targeted by some weak pointer (so they carry a weak-list head), and the
+    // shared 2-pointer WeakSlot layout {ptr, next} that a weak field occupies (intrusive singly-linked,
+    // no alloc -- the node lives in the field itself; unlink is an O(n) scan, link/nullify are O(1)/O(list)).
+    std::unordered_set<std::string> weaklyReferenced_;
+    llvm::StructType* weakSlotTy_ = nullptr;
+    llvm::StructType* weakSlotType() {  // {ptr -> pointee, next -> next slot in the pointee's weak-list}
+        if (weakSlotTy_ == nullptr)
+            weakSlotTy_ = llvm::StructType::create(
+                context, {builder.getPtrTy(), builder.getPtrTy()}, "WeakSlot");
+        return weakSlotTy_;
+    }
+    // True if `fname` is a `weak` field of `cls` or any ancestor.
+    bool fieldIsWeak(const std::string& cls, const std::string& fname) {
+        for (std::string cur = cls; !cur.empty();) {
+            auto it = classes.find(cur);
+            if (it == classes.end()) return false;
+            if (it->second.weakFields.count(fname) > 0) return true;
+            cur = baseType(it->second.superclass);
+        }
+        return false;
+    }
+    // ---- `weak T*` runtime: intrusive singly-linked list of WeakSlots hung off each pointee's weak-list
+    // head. Emitted once as internal IR functions; the codegen just calls them. slot = a WeakSlot* {ptr,
+    // next}; headOff = the byte offset of the pointee's weak-list head field. ----
+    llvm::Function* weakLinkFn() {  // link slot into (target + headOff)'s list, recording slot.ptr = target
+        if (auto* f = module.getFunction("__ldp3_weak_link")) return f;
+        llvm::Type* p = builder.getPtrTy();
+        auto* f = llvm::Function::Create(
+            llvm::FunctionType::get(builder.getVoidTy(), {p, p, builder.getInt64Ty()}, false),
+            llvm::Function::InternalLinkage, "__ldp3_weak_link", module);
+        auto ip = builder.saveIP();
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", f));
+        auto a = f->arg_begin();
+        llvm::Value* slot = &*a++; llvm::Value* target = &*a++; llvm::Value* off = &*a++;
+        builder.CreateStore(target, builder.CreateStructGEP(weakSlotType(), slot, 0));   // slot.ptr = target
+        llvm::Value* head = builder.CreateGEP(builder.getInt8Ty(), target, off);         // &target.weakHead
+        builder.CreateStore(builder.CreateLoad(p, head),
+                            builder.CreateStructGEP(weakSlotType(), slot, 1));           // slot.next = *head
+        builder.CreateStore(slot, head);                                                // *head = slot
+        builder.CreateRetVoid();
+        builder.restoreIP(ip);
+        return f;
+    }
+    llvm::Function* weakNullifyFn() {  // walk (*headAddr) list, null each slot's ptr+next; then *headAddr=null
+        if (auto* f = module.getFunction("__ldp3_weak_nullify")) return f;
+        llvm::Type* p = builder.getPtrTy();
+        llvm::Value* nul = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        auto* f = llvm::Function::Create(llvm::FunctionType::get(builder.getVoidTy(), {p}, false),
+                                         llvm::Function::InternalLinkage, "__ldp3_weak_nullify", module);
+        auto ip = builder.saveIP();
+        llvm::Value* headAddr = &*f->arg_begin();
+        auto* entry = llvm::BasicBlock::Create(context, "entry", f);
+        auto* loop = llvm::BasicBlock::Create(context, "loop", f);
+        auto* body = llvm::BasicBlock::Create(context, "body", f);
+        auto* done = llvm::BasicBlock::Create(context, "done", f);
+        builder.SetInsertPoint(entry);
+        llvm::Value* first = builder.CreateLoad(p, headAddr);
+        builder.CreateBr(loop);
+        builder.SetInsertPoint(loop);
+        auto* n = builder.CreatePHI(p, 2);
+        n->addIncoming(first, entry);
+        builder.CreateCondBr(builder.CreateICmpEQ(n, nul), done, body);
+        builder.SetInsertPoint(body);
+        llvm::Value* next = builder.CreateLoad(p, builder.CreateStructGEP(weakSlotType(), n, 1));
+        builder.CreateStore(nul, builder.CreateStructGEP(weakSlotType(), n, 0));
+        builder.CreateStore(nul, builder.CreateStructGEP(weakSlotType(), n, 1));
+        n->addIncoming(next, body);
+        builder.CreateBr(loop);
+        builder.SetInsertPoint(done);
+        builder.CreateStore(nul, headAddr);
+        builder.CreateRetVoid();
+        builder.restoreIP(ip);
+        return f;
+    }
+    llvm::Function* weakUnlinkFn() {  // remove slot from (slot.ptr + headOff)'s list; clear slot
+        if (auto* f = module.getFunction("__ldp3_weak_unlink")) return f;
+        llvm::Type* p = builder.getPtrTy();
+        llvm::Value* nul = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        auto* f = llvm::Function::Create(
+            llvm::FunctionType::get(builder.getVoidTy(), {p, builder.getInt64Ty()}, false),
+            llvm::Function::InternalLinkage, "__ldp3_weak_unlink", module);
+        auto ip = builder.saveIP();
+        auto a = f->arg_begin();
+        llvm::Value* slot = &*a++; llvm::Value* off = &*a++;
+        auto* entry = llvm::BasicBlock::Create(context, "entry", f);
+        auto* has = llvm::BasicBlock::Create(context, "has", f);
+        auto* first_is = llvm::BasicBlock::Create(context, "first", f);
+        auto* scan = llvm::BasicBlock::Create(context, "scan", f);
+        auto* found = llvm::BasicBlock::Create(context, "found", f);
+        auto* advance = llvm::BasicBlock::Create(context, "advance", f);
+        auto* clear = llvm::BasicBlock::Create(context, "clear", f);
+        auto* done = llvm::BasicBlock::Create(context, "done", f);
+        builder.SetInsertPoint(entry);
+        llvm::Value* slotNext = builder.CreateLoad(p, builder.CreateStructGEP(weakSlotType(), slot, 1));
+        llvm::Value* target = builder.CreateLoad(p, builder.CreateStructGEP(weakSlotType(), slot, 0));
+        builder.CreateCondBr(builder.CreateICmpEQ(target, nul), clear, has);
+        builder.SetInsertPoint(has);
+        llvm::Value* head = builder.CreateGEP(builder.getInt8Ty(), target, off);
+        llvm::Value* firstV = builder.CreateLoad(p, head);
+        builder.CreateCondBr(builder.CreateICmpEQ(firstV, slot), first_is, scan);
+        builder.SetInsertPoint(first_is);
+        builder.CreateStore(slotNext, head);                       // *head = slot.next
+        builder.CreateBr(clear);
+        builder.SetInsertPoint(scan);
+        auto* n = builder.CreatePHI(p, 2);
+        n->addIncoming(firstV, has);
+        llvm::Value* nNext = builder.CreateLoad(p, builder.CreateStructGEP(weakSlotType(), n, 1));
+        builder.CreateCondBr(builder.CreateICmpEQ(nNext, nul), clear, advance);   // not found -> defensive
+        builder.SetInsertPoint(advance);
+        builder.CreateCondBr(builder.CreateICmpEQ(nNext, slot), found, scan);
+        n->addIncoming(nNext, advance);
+        builder.SetInsertPoint(found);
+        builder.CreateStore(slotNext, builder.CreateStructGEP(weakSlotType(), n, 1));  // n.next = slot.next
+        builder.CreateBr(clear);
+        builder.SetInsertPoint(clear);
+        builder.CreateStore(nul, builder.CreateStructGEP(weakSlotType(), slot, 0));
+        builder.CreateStore(nul, builder.CreateStructGEP(weakSlotType(), slot, 1));
+        builder.CreateBr(done);
+        builder.SetInsertPoint(done);
+        builder.CreateRetVoid();
+        builder.restoreIP(ip);
+        return f;
+    }
+    // The byte offset of `cls`'s weak-list head field, for the runtime helpers.
+    llvm::Value* weakHeadOffset(const std::string& cls) {
+        auto it = classes.find(cls);
+        const llvm::StructLayout* sl = module.getDataLayout().getStructLayout(it->second.type);
+        return builder.getInt64(sl->getElementOffset(it->second.weakHeadIdx));
+    }
+    // Zero the intrusive weak state of a freshly allocated `cn` instance BEFORE its constructor runs: each
+    // `weak T*` field's WeakSlot ({ptr,next} = null, so the first assignment's unlink is a no-op and an
+    // unassigned weak field reads null), and the weak-list head (empty list) if `cn` is itself a weak
+    // target. Objects are malloc'd, not zeroed, so without this the very first weak op walks garbage.
+    void initWeakState(llvm::Value* objPtr, const std::string& cn) {
+        auto cit = classes.find(cn);
+        if (cit == classes.end() || cit->second.type == nullptr) return;
+        const ClassLayout& cl = cit->second;
+        if (cl.weakFields.empty() && !cl.needsWeakHead && !anyWeakField(cn)) return;
+        llvm::Value* nul = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        for (const auto& [fname, idx] : cl.fieldIndex) {
+            if (!fieldIsWeak(cn, fname)) continue;
+            llvm::Value* slot = builder.CreateStructGEP(cl.type, objPtr, idx, fname + ".winit");
+            builder.CreateStore(nul, builder.CreateStructGEP(weakSlotType(), slot, 0));
+            builder.CreateStore(nul, builder.CreateStructGEP(weakSlotType(), slot, 1));
+        }
+        if (cl.needsWeakHead)
+            builder.CreateStore(
+                nul, builder.CreateStructGEP(cl.type, objPtr, cl.weakHeadIdx, "whead.winit"));
+    }
+    // True if `cn` has any `weak T*` field (own or inherited) -- gates the init/cleanup fast path.
+    bool anyWeakField(const std::string& cn) {
+        for (std::string cur = cn; !cur.empty();) {
+            auto it = classes.find(cur);
+            if (it == classes.end()) return false;
+            if (!it->second.weakFields.empty()) return true;
+            cur = baseType(it->second.superclass);
+        }
+        return false;
+    }
+    // True if `cn`'s death must run emitWeakCleanup: it holds a weak field (its slot must unlink from the
+    // target's list) or is itself a weak target (its weak-list must be nulled). Zero cost for other classes
+    // -- the death paths skip emitWeakCleanup entirely, so `weak T*` adds nothing to non-weak teardown.
+    bool weakRelevant(const std::string& cn) {
+        auto cit = classes.find(cn);
+        return anyWeakField(cn) || (cit != classes.end() && cit->second.needsWeakHead);
+    }
+    // At object death (after the destructor, before the block is freed): if `cn` is a weak target, null
+    // every weak pointer aimed at it (auto-deregistration -- this is exactly what lets `weak T*` observe
+    // liveness at zero per-access cost); and for each of `cn`'s `weak T*` fields, unlink its slot from the
+    // (still-live) target's list, so a later target death never writes through this about-to-be-freed slot.
+    void emitWeakCleanup(llvm::Value* objPtr, const std::string& cn) {
+        auto cit = classes.find(cn);
+        if (cit == classes.end() || cit->second.type == nullptr || cit->second.imported) return;
+        const ClassLayout& cl = cit->second;
+        for (const auto& [fname, idx] : cl.fieldIndex) {
+            if (!fieldIsWeak(cn, fname)) continue;
+            llvm::Value* slot = builder.CreateStructGEP(cl.type, objPtr, idx, fname + ".wunlink");
+            builder.CreateCall(weakUnlinkFn(), {slot, weakHeadOffset(baseType(cl.fieldType.at(fname)))});
+        }
+        if (cl.needsWeakHead) {
+            llvm::Value* head = builder.CreateStructGEP(cl.type, objPtr, cl.weakHeadIdx, "whead");
+            builder.CreateCall(weakNullifyFn(), {head});
+        }
+    }
     // Global per-method-name vtable slots. Every distinct virtual method name gets
     // one stable index, and every polymorphic class's vtable is laid out by these
     // indices. Because LDP3 has no method overloading (unique name per method), a
@@ -594,6 +782,9 @@ struct CodeGenerator::Impl {
     // spec 32.8: classes whose dispatch table is patched at runtime (from the analyzer). They always get
     // a vtable, are never devirtualized, and their vtable global is writable.
     std::set<std::string> patchedClasses_;
+    // [unknown-abi] Mangled names of methods declared `unknown <world>`: entry points a foreign world
+    // calls into, so they keep external linkage through internalization/DCE (see stripDeadCode).
+    std::set<std::string> foreignEntryPoints_;
     int patchCounter_ = 0;
     std::vector<std::string> seededSlots;              // slot layout adopted from imported bundles
     std::unordered_set<std::string> subclassed_;       // classes/interfaces that something extends or
@@ -786,6 +977,9 @@ struct CodeGenerator::Impl {
     struct BlockScope { const ast::Block* block; std::size_t so, df, rg, st, vs; };
     std::vector<BlockScope> blockScopes;
     std::unordered_map<std::string, const ast::Block*> labelBlock_;
+    std::unordered_map<std::string, const ast::Block*> comefromBlock_;  // where each comefrom sits
+    std::unordered_set<std::string> comefromTargets_;  // labels some comefrom hijacks
+    std::unordered_map<std::string, llvm::BasicBlock*> comefromBlocks;  // the landing blocks
     std::unordered_set<std::string> abstainedLabels;  // qualified labels named by some `abstainfrom`
     std::unordered_map<std::string, llvm::GlobalVariable*> abstainCounters;  // qualified label -> counter
     // The next top-level label after each one (spec 7.11): an abstained region ends at the next label,
@@ -894,8 +1088,8 @@ struct CodeGenerator::Impl {
         // `nullable T` (spec 3.7): a nullable REFERENCE (class/String/array) already lowers to a
         // pointer, so the marker is a no-op there. A nullable PRIMITIVE has no in-band null, so it is
         // boxed as a null-capable pointer to a heap cell (null = the null pointer).
-        if (!t.empty() && t.back() == '?') {
-            const std::string inner = t.substr(0, t.size() - 1);
+        if (ast::typeIsNullable(t)) {
+            const std::string inner = ast::stripNullable(t);
             if (isBoxablePrimitive(inner)) return builder.getPtrTy();
             return llvmType(inner);
         }
@@ -946,9 +1140,9 @@ struct CodeGenerator::Impl {
         // Boxing a nullable primitive (spec 3.7): a primitive value flowing into `T?` is stored in a
         // heap cell so the pointer can be null. A null literal or an already-boxed nullable passes
         // through as the pointer. (Unboxing happens only via `??` / an explicit null check.)
-        if (!to.empty() && to.back() == '?' && isBoxablePrimitive(to.substr(0, to.size() - 1))) {
+        if (ast::typeIsNullable(to) && isBoxablePrimitive(ast::stripNullable(to))) {
             if (from == "null" || v->getType()->isPointerTy()) return v;
-            const std::string inner = to.substr(0, to.size() - 1);
+            const std::string inner = ast::stripNullable(to);
             llvm::Value* cell = builder.CreateCall(mallocFn(), {builder.getInt64(8)}, "nbox");
             builder.CreateStore(coerce(v, from, inner), cell);
             return cell;
@@ -1078,10 +1272,25 @@ struct CodeGenerator::Impl {
         auto* okBB = llvm::BasicBlock::Create(context, "div.ok", f);
         builder.CreateCondBr(bad, badBB, okBB);
         builder.SetInsertPoint(badBB);
-        emitPanic("integer division by zero or overflow");
+        emitArithFault("DivideByZeroException", "integer division by zero or overflow");
         builder.SetInsertPoint(okBB);
         if (rem) return uns ? builder.CreateURem(l, r) : builder.CreateSRem(l, r);
         return uns ? builder.CreateUDiv(l, r) : builder.CreateSDiv(l, r);
+    }
+
+    // An arithmetic fault, reported the way the target can afford. A hosted program THROWS, so a caller
+    // can decide what a zero divisor means for it; freestanding has no exception machinery (spec 36.3),
+    // so the same fault terminates through `__ldp3_panic`. The failure is identical either way -- only
+    // the reporting differs, exactly as it already did for a bad downcast. Both forms terminate the
+    // current block, so every caller can carry straight on with its `ok` block.
+    void emitArithFault(const std::string& exceptionClass, const std::string& panicMsg) {
+        // LDP3_ARITH_PANIC=1 forces the old always-panic form. It exists to A/B the COST of making these
+        // faults throwable: the guard itself is unchanged, but a cold path that can UNWIND keeps a
+        // function's unwind edges alive, which is the one way this could reach the hot path. Kept so the
+        // question can be re-asked cheaply after any future EH work.
+        static const bool forcePanic = std::getenv("LDP3_ARITH_PANIC") != nullptr;
+        if (program.isFreestanding || forcePanic) emitPanic(panicMsg);
+        else emitThrowNamed(exceptionClass);
     }
 
     // Defined float->int conversion (LDP3 has no undefined behaviour): saturating, so an
@@ -1115,7 +1324,7 @@ struct CodeGenerator::Impl {
                                      : builder.CreateFPExt(v, builder.getDoubleTy());
                 llvm::Value* scaled =
                     builder.CreateFMul(d, llvm::ConstantFP::get(builder.getDoubleTy(), 1e18));
-                return builder.CreateFPToSI(scaled, builder.getInt128Ty());
+                return fpToInt(scaled, builder.getInt128Ty(), /*uns=*/false);  // saturating: no fptosi UB
             }
             return builder.CreateMul(builder.CreateSExt(v, builder.getInt128Ty()), decimalScale());
         }
@@ -1144,7 +1353,13 @@ struct CodeGenerator::Impl {
                 auto* okBB = llvm::BasicBlock::Create(context, "cast.ok", fn);
                 builder.CreateCondBr(bad, badBB, okBB);
                 builder.SetInsertPoint(badBB);
-                emitThrowNamed("ClassCastException");  // terminates this block (throw)
+                // A bad downcast is a hard error either way; only the REPORTING mechanism differs.
+                // Freestanding has no exceptions (spec 36.3), so -- exactly like the div-by-zero,
+                // overflow and bounds guards -- it terminates through `__ldp3_panic` instead. Without
+                // this, any checked downcast in a kernel dragged in the whole Itanium EH runtime
+                // (`__cxa_allocate_exception`, `typeinfo for void*`) and failed to link.
+                if (program.isFreestanding) emitPanic("bad cast to " + bt);
+                else emitThrowNamed("ClassCastException");  // terminates this block (throw)
                 builder.SetInsertPoint(okBB);
             }
             return v;
@@ -1240,6 +1455,14 @@ struct CodeGenerator::Impl {
             auto cit = classes.find(clsKey(typeName(*mem->object)));
             return cit != classes.end() && cit->second.volatileFields.count(mem->member) > 0;
         }
+        // Access THROUGH a volatile pointer (MMIO): `p[i]` is a volatile load/store whenever `p` itself is
+        // a volatile lvalue. A `volatile` raw pointer names hardware (a device register, video memory), so
+        // the access must not be reordered, fused, or elided. Recurse into the base pointer expression --
+        // this reaches a `volatile` local, a `volatile` field, or an anonymous `cast<volatile T*>(...)`.
+        if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr))
+            return isVolatileAccess(*ix->array);
+        if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr))
+            return cst->targetVolatile;  // cast<volatile T*>(addr) -- an MMIO pointer even without a name
         return false;
     }
 
@@ -1304,12 +1527,14 @@ struct CodeGenerator::Impl {
             builder.CreateCall(dtorTy, fnPtr, {objPtr});
             builder.CreateBr(freeBB);
             builder.SetInsertPoint(freeBB);
+            emitWeakCleanup(objPtr, cn);
             freeStringFields(objPtr, cn);
             builder.CreateCall(freeFn(), {objPtr});
             return;
         }
         if (cit != classes.end() && cit->second.hasDestructor)
             builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+        emitWeakCleanup(objPtr, cn);
         freeStringFields(objPtr, cn);
         builder.CreateCall(freeFn(), {objPtr});
     }
@@ -2120,6 +2345,7 @@ struct CodeGenerator::Impl {
     std::string typeName(const ast::Expr& expr) {
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
             const std::int64_t v = parseIntLiteral(n->text);
+            if (ast::intLiteralNeeds64(n->text)) return "long";
             return (v >= INT32_MIN && v <= INT32_MAX) ? "int" : "long";
         }
         if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) return "null";
@@ -2147,7 +2373,8 @@ struct CodeGenerator::Impl {
         if (const auto* fl = dynamic_cast<const ast::FloatLiteralExpr*>(&expr))
             return fl->isDecimal ? "Decimal" : "double";
         if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
-        if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "string";
+        if (const auto* sl = dynamic_cast<const ast::StringLiteralExpr*>(&expr))
+            return sl->isBytes ? "byte*" : "string";   // b"..." is the raw bytes
         if (dynamic_cast<const ast::InterpStringExpr*>(&expr) != nullptr) return "String";  // $"..."
         if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
@@ -2159,16 +2386,15 @@ struct CodeGenerator::Impl {
             return "int";
         }
         if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
-            if (un->op == "&") return typeName(*un->operand) + "*";  // address-of: one level deeper
+            const std::string ot = typeName(*un->operand);  // ONCE -- see the BinaryExpr note below
+            if (un->op == "&") return ot + "*";  // address-of: one level deeper
             if (un->op == "*") {  // dereference: peel one '*' off the operand's pointer type
-                const std::string ot = typeName(*un->operand);
                 if (!ot.empty() && ot.back() == '*') return ot.substr(0, ot.size() - 1);
                 return ot;
             }
             // Unary operator overload (spec 6.5): the operator method's return type.
             if (un->op != "!") {
-                const std::string owner =
-                    methodOwner(baseType(typeName(*un->operand)), "operator" + un->op);
+                const std::string owner = methodOwner(baseType(ot), "operator" + un->op);
                 if (!owner.empty())
                     if (auto rit = classes.find(owner);
                         rit != classes.end() &&
@@ -2178,7 +2404,7 @@ struct CodeGenerator::Impl {
             // Negation and bitwise-not keep the operand's numeric type (int/long/float/double); without
             // this, unary '-' was typed as int, so `-x` on a double misled callers (e.g. a ternary arm's
             // result type), producing a double value under an i32 phi -- an IR type mismatch.
-            if (un->op == "~" || un->op == "-" || un->op == "+") return typeName(*un->operand);
+            if (un->op == "~" || un->op == "-" || un->op == "+") return ot;
             return un->op == "!" ? "boolean" : "int";
         }
         if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
@@ -2205,21 +2431,24 @@ struct CodeGenerator::Impl {
             return typeName(*tern->thenExpr);
         }
         if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(&expr)) {  // a ?? b
-            auto nullable = [](const std::string& s) { return !s.empty() && s.back() == '?'; };
+            auto nullable = [](const std::string& s) { return ast::typeIsNullable(s); };
             const std::string lt = typeName(*nc->lhs);
-            const std::string base = nullable(lt) ? lt.substr(0, lt.size() - 1) : lt;
-            return nullable(typeName(*nc->rhs)) ? base + "?" : base;
+            const std::string base = nullable(lt) ? ast::stripNullable(lt) : lt;
+            return nullable(typeName(*nc->rhs)) ? ast::makeNullable(base) : base;
         }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
             const std::string& op = bin->op;
+            // Recurse into the LHS exactly ONCE. Asking for it twice makes this function 2^depth in a
+            // left-nested arithmetic chain: `((acc*31)+f1)*31)+f2)...` -- the shape the synthesized
+            // `hash` has. A 13-field struct (PageFlags) took 181 SECONDS here before this line existed.
+            const std::string lt = typeName(*bin->lhs);
             // Operator overloading: result type is the operator method's return type.
-            const std::string oowner = methodOwner(baseType(typeName(*bin->lhs)), "operator" + op);
+            const std::string oowner = methodOwner(baseType(lt), "operator" + op);
             if (!oowner.empty()) return classes[oowner].methodReturnType["operator" + op];
             if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" ||
                 op == "&&" || op == "||") {
                 return "boolean";
             }
-            const std::string lt = typeName(*bin->lhs);
             const std::string rt = typeName(*bin->rhs);
             if (op == "+" && (lt == "String" || lt == "string") && (rt == "String" || rt == "string"))
                 return "String";  // string concatenation (spec 4)
@@ -2336,8 +2565,11 @@ struct CodeGenerator::Impl {
                 er != externReturnType.end())
                 return er->second;  // external C function (spec 26)
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
-                if (mem->member == "length" && isArrayType(typeName(*mem->object))) return "int";
-                if (const std::string ot = typeName(*mem->object); ot == "String" || ot == "string") {
+                // The receiver's type, computed ONCE. The builtin tables below ask about it nine times;
+                // recursing nine times per level made this 9^depth on a method chain `a.f().g().h()`.
+                const std::string ot = typeName(*mem->object);
+                if (mem->member == "length" && isArrayType(ot)) return "int";
+                if (ot == "String" || ot == "string") {
                     if (mem->member == "length" || mem->member == "indexOf") return "int";
                     if (mem->member == "charAt") return "char";
                     if (mem->member == "isEmpty" || mem->member == "equals" ||
@@ -2355,15 +2587,15 @@ struct CodeGenerator::Impl {
                     if (mem->member == "toInt") return "int";
                     if (mem->member == "toDouble") return "double";
                 }
-                if (typeName(*mem->object) == "Decimal" && mem->member == "toString") return "String";
+                if (ot == "Decimal" && mem->member == "toString") return "String";
                 // Integer keys: Hashable/Comparable builtins (collections) + toString (itoa).
-                if (const std::string ot = typeName(*mem->object); isIntName(ot)) {
+                if (isIntName(ot)) {
                     if (mem->member == "hash") return "long";
                     if (mem->member == "equalsKey") return "boolean";
                     if (mem->member == "compareTo") return "int";
                     if (mem->member == "toString") return "String";
                 }
-                if (typeName(*mem->object) == "Type") {
+                if (ot == "Type") {
                     if (mem->member == "name" || mem->member == "methodName" ||
                         mem->member == "fieldName")
                         return "String";
@@ -2374,12 +2606,12 @@ struct CodeGenerator::Impl {
                     if (mem->member == "fields") return "ArrayList$Field";
                     if (mem->member == "annotations") return "ArrayList$Annotation";
                 }
-                if (typeName(*mem->object) == "Field") {
+                if (ot == "Field") {
                     if (mem->member == "name") return "String";
                     if (mem->member == "get") return "Object";  // boxed field value (spec 31)
                 }
-                if (typeName(*mem->object) == "Annotation" && mem->member == "name") return "String";
-                if (typeName(*mem->object) == "Method") {
+                if (ot == "Annotation" && mem->member == "name") return "String";
+                if (ot == "Method") {
                     if (mem->member == "name") return "String";
                     if (mem->member == "invoke") return "Object";  // boxed result (spec 31)
                     if (mem->member == "firstByte") return "int";
@@ -2395,7 +2627,7 @@ struct CodeGenerator::Impl {
                 }
                 // Enum (catalog) instance method: m.pick() -> the method's return type. A
                 // catalog-typed receiver resolves to its single implementing enum (spec 12.4).
-                std::string enumRecv = baseType(typeName(*mem->object));
+                std::string enumRecv = baseType(ot);
                 if (enumMethodDecls.find(enumRecv) == enumMethodDecls.end())
                     if (std::string impl = catalogImplementerEnum(enumRecv, mem->member); !impl.empty())
                         enumRecv = impl;
@@ -2406,7 +2638,7 @@ struct CodeGenerator::Impl {
                     }
                 }
                 // instance: search the object's hierarchy; static: the named class.
-                std::string owner = methodOwner(typeName(*mem->object), mem->member);
+                std::string owner = methodOwner(ot, mem->member);
                 if (owner.empty() && classes.count(flattenCallee(*mem->object)) > 0) {
                     owner = methodOwner(flattenCallee(*mem->object), mem->member);
                 }
@@ -2435,7 +2667,8 @@ struct CodeGenerator::Impl {
         }
         if (dynamic_cast<const ast::RegionInitExpr*>(&expr) != nullptr) return "region";
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
-            if (vecWidth(typeName(*mem->object)) > 0 && vecLane(mem->member) >= 0)
+            const std::string objT = typeName(*mem->object);  // ONCE -- see the BinaryExpr note
+            if (vecWidth(objT) > 0 && vecLane(mem->member) >= 0)
                 return "float";  // v.x / v.y / v.z / v.w
             if (const std::string key = staticFieldKey(*mem); !key.empty()) {
                 return staticFieldType[key];
@@ -2448,7 +2681,7 @@ struct CodeGenerator::Impl {
                     ct != namespaceConstTypes.end())
                     return ct->second;  // Type.NAME class const
             }
-            const std::string ot = clsKey(typeName(*mem->object));
+            const std::string ot = clsKey(objT);
             auto cit = classes.find(ot);
             if (cit != classes.end()) {
                 auto ft = cit->second.fieldType.find(mem->member);
@@ -2464,7 +2697,7 @@ struct CodeGenerator::Impl {
         }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr))
             return cst->op == 1 ? std::string("boolean")
-                   : cst->op == 2 ? cst->targetType + "?"
+                   : cst->op == 2 ? ast::makeNullable(cst->targetType)
                                   : cst->targetType;
         if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr))
             return mv->castType.empty() ? typeName(*mv->operand) : mv->castType;
@@ -2541,9 +2774,17 @@ struct CodeGenerator::Impl {
         builder.CreateCondBr(ok, contBB, failBB);
         builder.SetInsertPoint(failBB);
         const std::string msg = std::string("contract violated: ") + kind + "\n";
-        builder.CreateCall(printf(), {createGlobalStringPtr(builder,msg, ".contract")});
-        builder.CreateCall(exitFn(), {builder.getInt32(1)});
-        builder.CreateUnreachable();
+        // Freestanding has no stdio and no exit: report through `__ldp3_panic`, the same deterministic
+        // stop the div-by-zero, overflow and bounds guards use. Without this, a single `requires` in a
+        // kernel pulled in `puts`/`exit` and failed to link -- which made contracts unusable in exactly
+        // the code that benefits from them most.
+        if (program.isFreestanding) {
+            emitPanic(msg);
+        } else {
+            builder.CreateCall(printf(), {createGlobalStringPtr(builder, msg, ".contract")});
+            builder.CreateCall(exitFn(), {builder.getInt32(1)});
+            builder.CreateUnreachable();
+        }
         builder.SetInsertPoint(contBB);
     }
 
@@ -2962,6 +3203,11 @@ struct CodeGenerator::Impl {
         llvm::Value* dest = heap ? builder.CreateCall(mallocFn(), {sizeOf(st)}, className + ".copy")
                                  : createEntryAlloca(className + ".copy", st);
         builder.CreateCall(memcpyFn(), {dest, srcPtr, sizeOf(st)});  // shallow copy first
+        // A deep copy is a fresh object: it has no incoming `weak T*` refs and observes nothing through its
+        // own weak fields, so reset the copied weak-list head and every weak slot to null. Otherwise the
+        // memcpy would (a) duplicate the source's list-head, so a later target death walks a stale slot in
+        // the copy, and (b) leave the copy's weak slots claiming to be linked into a list they aren't in.
+        initWeakState(dest, className);
         // Break self-referential type cycles: if this class is already being copied up the call chain
         // (a field or array/collection element of its own type, directly or transitively), stop at the
         // shallow copy -- the cyclic sub-object is shared. Without this the codegen recurses on the type
@@ -3143,16 +3389,27 @@ struct CodeGenerator::Impl {
     // exception, so the hot path stays a single straight-line op and no invoke is introduced -- fires only
     // on overflow. LLVM elides the whole check where it can prove the operation cannot overflow (loop
     // counters, small constants). Unsigned arithmetic and freestanding mode never reach here (they wrap).
-    llvm::Value* emitCheckedIntArith(const std::string& op, llvm::Value* l, llvm::Value* r) {
+    llvm::Value* emitCheckedIntArith(const std::string& op, llvm::Value* l, llvm::Value* r,
+                                     bool uns = false) {
         llvm::Value* res = nullptr;
         llvm::Value* ovf = nullptr;
         if (op == "*") {
-            // Signed multiply: the intrinsic is the practical detector (a manual check needs a wider
-            // multiply). Multiplies are rarer than add/sub in hot arithmetic, so the intrinsic's cost is
-            // localized.
-            llvm::Value* pair = builder.CreateBinaryIntrinsic(llvm::Intrinsic::smul_with_overflow, l, r);
+            // Multiply: the intrinsic is the practical detector (a manual check needs a wider multiply).
+            // Multiplies are rarer than add/sub in hot arithmetic, so the intrinsic's cost is localized.
+            llvm::Value* pair = builder.CreateBinaryIntrinsic(
+                uns ? llvm::Intrinsic::umul_with_overflow : llvm::Intrinsic::smul_with_overflow, l, r);
             res = builder.CreateExtractValue(pair, 0, "ovf.res");
             ovf = builder.CreateExtractValue(pair, 1, "ovf.bit");
+        } else if (uns) {
+            // Unsigned add/sub: overflow is a carry or a borrow, and each is one comparison against an
+            // operand -- cheaper than the signed sign-juggling below and exactly as exact.
+            if (op == "+") {
+                res = builder.CreateAdd(l, r, "usum");
+                ovf = builder.CreateICmpULT(res, l);      // wrapped past the top
+            } else {
+                res = builder.CreateSub(l, r, "udif");
+                ovf = builder.CreateICmpULT(l, r);        // would go below zero
+            }
         } else {
             // Add/sub: compute the plain wrapping result -- which inlines and vectorizes exactly like any
             // arithmetic (no intrinsic call to block the recursive-inline / loop optimizers) -- then read
@@ -3173,7 +3430,7 @@ struct CodeGenerator::Impl {
         auto* okBB = llvm::BasicBlock::Create(context, "ovf.ok", f);
         builder.CreateCondBr(ovf, badBB, okBB, coldBranchWeights());
         builder.SetInsertPoint(badBB);
-        emitPanic("integer overflow");
+        emitArithFault("OverflowException", "integer overflow");
         builder.SetInsertPoint(okBB);
         return res;
     }
@@ -3301,7 +3558,12 @@ struct CodeGenerator::Impl {
     // zeroStackObjectSlot: a construction skipped by a control-flow keyword leaves the slot null, so the
     // scope-exit teardown must not destruct it. The optimizer folds the check away when the object is
     // provably constructed (the common case, no abstain/skip in the function).
-    void emitDtorIfLive(llvm::Value* objPtr, llvm::FunctionCallee dtor) {
+    // dtor may be null (a class with no user destructor but weak state to tear down); weakClass, when
+    // non-empty, runs emitWeakCleanup for it inside the same live branch (null every weak ref to a dying
+    // stack/region target, unlink a dying holder's slots) -- so `weak T*` is nulled at RAII scope exit too,
+    // not only on heap `delete`.
+    void emitDtorIfLive(llvm::Value* objPtr, llvm::FunctionCallee dtor,
+                        const std::string& weakClass = "") {
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* callBB = llvm::BasicBlock::Create(context, "dtor.live", fn);
         llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "dtor.done", fn);
@@ -3309,7 +3571,8 @@ struct CodeGenerator::Impl {
             builder.CreateICmpNE(objPtr, llvm::ConstantPointerNull::get(builder.getPtrTy())), callBB,
             contBB);
         builder.SetInsertPoint(callBB);
-        builder.CreateCall(dtor, {objPtr});
+        if (dtor) builder.CreateCall(dtor, {objPtr});
+        if (!weakClass.empty()) emitWeakCleanup(objPtr, weakClass);
         builder.CreateBr(contBB);
         builder.SetInsertPoint(contBB);
     }
@@ -3410,7 +3673,7 @@ struct CodeGenerator::Impl {
         llvm::Value* ptr = emitObjectPtrRaw(expr);
         if (ptr != nullptr && derefCheck) {
             const std::string t = typeName(expr);
-            if (!t.empty() && t.back() == '?' && !isBoxablePrimitive(t.substr(0, t.size() - 1)))
+            if (ast::typeIsNullable(t) && !isBoxablePrimitive(ast::stripNullable(t)))
                 emitNullReceiverCheck(ptr);
         }
         return ptr;
@@ -3523,6 +3786,15 @@ struct CodeGenerator::Impl {
 
     // Materializes an immutable String object as a private global { length, data },
     // where data points to a null-terminated byte array. Returns a ptr to the object.
+    // b"...": the bytes themselves as a private constant, yielding `byte*`. NUL-terminated so C-shaped
+    // consumers (and our own scanners) can find the end without carrying a length alongside.
+    llvm::Value* emitBytesLiteral(const std::string& bytes) {
+        llvm::Constant* arr = llvm::ConstantDataArray::getString(context, bytes, /*AddNull=*/true);
+        auto* g = new llvm::GlobalVariable(module, arr->getType(), /*isConstant=*/true,
+                                           llvm::GlobalValue::PrivateLinkage, arr, ".bytes");
+        return g;
+    }
+
     llvm::Value* emitStringObject(const std::string& bytes) {
         llvm::Constant* dataArr = llvm::ConstantDataArray::getString(context, bytes, /*AddNull=*/true);
         auto* dataG = new llvm::GlobalVariable(module, dataArr->getType(), /*isConstant=*/true,
@@ -4000,6 +4272,9 @@ struct CodeGenerator::Impl {
 
     llvm::Value* emitExpr(const ast::Expr& expr) {
         if (const auto* s = dynamic_cast<const ast::StringLiteralExpr*>(&expr)) {
+            // b"...": a private constant array of the bytes, NUL-terminated, and the pointer to it.
+            // No String object, so this works with no runtime -- the freestanding case.
+            if (s->isBytes) return emitBytesLiteral(resolveEscapes(s->value));
             return emitStringObject(resolveEscapes(s->value));
         }
         if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) {
@@ -4179,7 +4454,7 @@ struct CodeGenerator::Impl {
         }
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
             const std::int64_t v = parseIntLiteral(n->text);
-            if (v >= INT32_MIN && v <= INT32_MAX) {
+            if (v >= INT32_MIN && v <= INT32_MAX && !ast::intLiteralNeeds64(n->text)) {
                 return builder.getInt32(static_cast<std::uint32_t>(v));
             }
             return builder.getInt64(static_cast<std::uint64_t>(v));  // literal needs 64 bits
@@ -4657,6 +4932,35 @@ struct CodeGenerator::Impl {
                     }
                 }
             }
+            // ASSERTING NON-NULL. `cast<T*>(p)` where `p` is `nullable T*` is the program stating that
+            // it checked. It used to reinterpret with no check at all, so a wrong assertion produced an
+            // access violation somewhere later with nothing pointing back at who promised what -- while
+            // its sibling `cast<Dog>(animal)` verified and threw. Same syntax, opposite guarantees.
+            //
+            // Free where it does not apply: the condition is entirely static, so a cast between two
+            // non-nullable types emits exactly what it emitted before. And with flow narrowing in place
+            // these casts are the rare deliberate case rather than the price of every null check.
+            {
+                const std::string fromT = typeName(*cst->operand);
+                const std::string toT = cst->targetType;
+                if (cst->op == 0 && ast::typeIsNullable(fromT) && !ast::typeIsNullable(toT)) {
+                    llvm::Value* v = emitExpr(*cst->operand);
+                    if (v == nullptr) return nullptr;
+                    if (v->getType()->isPointerTy()) {
+                        llvm::Value* isNull = builder.CreateICmpEQ(
+                            v, llvm::ConstantPointerNull::get(builder.getPtrTy()), "cast.isnull");
+                        llvm::Function* f = currentFn;
+                        auto* badBB = llvm::BasicBlock::Create(context, "cast.wasnull", f);
+                        auto* okBB = llvm::BasicBlock::Create(context, "cast.ok", f);
+                        builder.CreateCondBr(isNull, badBB, okBB, coldBranchWeights());
+                        builder.SetInsertPoint(badBB);
+                        emitArithFault("NullReferenceException",
+                                       "cast asserted a value but found null");
+                        builder.SetInsertPoint(okBB);
+                    }
+                    return emitCast(v, fromT, toT);
+                }
+            }
             return emitCast(emitExpr(*cst->operand), typeName(*cst->operand), cst->targetType);
         }
         if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
@@ -4697,11 +5001,19 @@ struct CodeGenerator::Impl {
             llvm::Value* elemPtr = emitLValue(*ix);
             if (elemPtr == nullptr) return nullptr;
             const std::string et = isRefType(at) ? baseType(at) : elementOf(at);  // T* -> T
+            const bool vol = isVolatileAccess(*ix);  // spec 37.5: load through a volatile (MMIO) pointer
             if (!isRefType(at) && et == "boolean") {  // boolean array element: 1-byte storage, i32 value
-                llvm::Value* raw = builder.CreateLoad(builder.getInt8Ty(), elemPtr, "elem");
+                llvm::Value* raw = builder.CreateLoad(builder.getInt8Ty(), elemPtr, vol, "elem");
                 return builder.CreateZExt(raw, builder.getInt32Ty());
             }
-            return builder.CreateLoad(llvmType(et), elemPtr, "elem");
+            llvm::LoadInst* ld = builder.CreateLoad(llvmType(et), elemPtr, vol, "elem");
+            // A raw pointer `p[i]` may target ANY address (spec 17.8): never assume the type's natural
+            // alignment -- a misaligned load would be UB. `align 1` makes it total. On x86 this is the same
+            // single instruction (unaligned loads are native) and volatile width is preserved; the backend
+            // still uses wider alignment where it can prove it. Managed arrays are allocator-aligned -> keep
+            // the natural alignment (vectorization, perf).
+            if (isRefType(at)) ld->setAlignment(llvm::Align(1));
+            return ld;
         }
         if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(&expr)) {
             return emitInterp(*is, /*addNewline=*/false, /*asString=*/true);  // $"..." -> String (4.1)
@@ -4793,8 +5105,8 @@ struct CodeGenerator::Impl {
         // pointer itself and passes through.
         const std::string lt = typeName(*nc.lhs);
         const bool nullablePrim =
-            !lt.empty() && lt.back() == '?' && isBoxablePrimitive(lt.substr(0, lt.size() - 1));
-        const std::string inner = nullablePrim ? lt.substr(0, lt.size() - 1) : std::string();
+            ast::typeIsNullable(lt) && isBoxablePrimitive(ast::stripNullable(lt));
+        const std::string inner = nullablePrim ? ast::stripNullable(lt) : std::string();
         llvm::Value* a = emitExpr(*nc.lhs);
         if (a == nullptr) return nullptr;
         llvm::Value* nullp = llvm::ConstantPointerNull::get(builder.getPtrTy());
@@ -4863,6 +5175,20 @@ struct CodeGenerator::Impl {
         phi->addIncoming(tv, thenEnd);
         phi->addIncoming(ev, elseEnd);
         return ownedStr_ ? ownedStr(phi) : static_cast<llvm::Value*>(phi);
+    }
+
+    // True when an expression is built ONLY from integer literals and arithmetic on them -- i.e. a
+    // constant whose type an "untyped literals adapt to their context" rule could freely choose. It has to
+    // be the whole EXPRESSION, not just a bare literal token: `at & (0 - 4096)` is the most common mask
+    // idiom in the kernel, and `(0 - 4096)` is a BinaryExpr of two literals, so a rule that only exempted
+    // single literals would break exactly the code it was meant to keep working.
+    bool isLiteralOnlyExpr(const ast::Expr& e) {
+        if (dynamic_cast<const ast::IntLiteralExpr*>(&e) != nullptr) return true;
+        if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e))
+            return isLiteralOnlyExpr(*u->operand);
+        if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e))
+            return isLiteralOnlyExpr(*b->lhs) && isLiteralOnlyExpr(*b->rhs);
+        return false;
     }
 
     llvm::Value* emitBinary(const ast::BinaryExpr& bin) {
@@ -5006,7 +5332,7 @@ struct CodeGenerator::Impl {
             // nullable primitive is boxed as a pointer (spec 3.7), so it compares as a pointer as well
             // (this is what makes `nullable int x = ...; x == null` work).
             if (t == "null" || (!t.empty() && (t.back() == '*' || t.back() == '&'))) return true;
-            if (!t.empty() && t.back() == '?' && isBoxablePrimitive(t.substr(0, t.size() - 1)))
+            if (ast::typeIsNullable(t) && isBoxablePrimitive(ast::stripNullable(t)))
                 return true;
             // An array is a pointer to its heap block, so == / != is identity comparison (like any
             // reference). Without this it falls through to the integer path, which fitInt()s the block
@@ -5036,18 +5362,48 @@ struct CodeGenerator::Impl {
                                             : builder.CreateICmpNE(l, r);
             return builder.CreateZExt(cmp, builder.getInt32Ty());
         }
-        // Integer path: promote both operands to the wider bit width. If either
-        // side is unsigned the operation is unsigned (zero-extend, udiv/urem,
-        // unsigned comparisons).
+        // Integer path: promote both operands to the wider bit width. If either side is unsigned the
+        // OPERATION is unsigned (udiv/urem, unsigned comparisons) -- but each operand is widened by ITS
+        // OWN signedness, which is a different question.
+        //
+        // Widening both by the result's signedness silently changed the VALUE of a narrower signed
+        // operand: `someAddress & (0 - 4096)` zero-extended the int -4096 to 0x00000000FFFFF000, so a
+        // 64-bit address mask quietly masked 32 bits and dropped everything above 4 GiB. That cost real
+        // debugging time in the pico kernel, where a PE image at ImageBase 0x140000000 was mapped at
+        // 0x40000000. Sign-extending a signed operand is the value-preserving conversion, and it is
+        // already what the explicit-cast path does (see castInt, which uses isUnsigned(from)) -- so this
+        // also removes a disagreement between `cast<address>(i)` and `addr & i` inside one compiler.
+        // ---- MEASUREMENT PROBE (LDP3_MIXED_INT=1): how much would it cost to REQUIRE an explicit cast
+        // when two DIFFERENT integer types meet? Reports every site that a rule change would break, split
+        // by whether the narrower side is a constant expression built only from literals (which an
+        // "untyped literals adapt to context" rule would keep legal) or a real value (which it would not).
+        // Off by default and free then. Delete once the decision is made.
+        if (isIntName(lt) && isIntName(rt) && lt != rt) {
+            static const bool probe = std::getenv("LDP3_MIXED_INT") != nullptr;
+            if (probe) {
+                const bool lLit = isLiteralOnlyExpr(*bin.lhs);
+                const bool rLit = isLiteralOnlyExpr(*bin.rhs);
+                std::fprintf(stderr, "[mixed] %s %.*s:%d  %s %s %s\n",
+                             (lLit || rLit) ? "LITERAL" : "VALUE  ",
+                             (int)bin.loc.file.size(), bin.loc.file.data(), bin.loc.line,
+                             lt.c_str(), op.c_str(), rt.c_str());
+            }
+        }
         const unsigned w = std::max(intBits(lt), intBits(rt));
         const bool uns = isUnsigned(lt) || isUnsigned(rt);
-        l = fitInt(l, w, uns);
-        r = fitInt(r, w, uns);
+        l = fitInt(l, w, isUnsigned(lt));
+        r = fitInt(r, w, isUnsigned(rt));
         if (op == "+" || op == "-" || op == "*") {
             // Integer arithmetic wraps by default (modular, zero-overhead -- overflow checking inhibits
             // the recursive-inline and loop optimizers, ~10x on hot arithmetic). Opt into trap-on-overflow
-            // per expression with `checked(...)`; unsigned and freestanding always wrap.
-            if (checkedArith_ && !uns && !program.isFreestanding) return emitCheckedIntArith(op, l, r);
+            // per expression with `checked(...)`.
+            //
+            // `checked()` used to be dropped SILENTLY for unsigned operands and in freestanding mode --
+            // so the one safety opt-in the language offers disappeared exactly where a kernel wants it,
+            // and unsigned wrap-around went unchecked even when asked for. Neither exclusion was
+            // necessary: unsigned overflow has its own detection (carry/borrow, umul) and freestanding
+            // already has `__ldp3_panic`, which is where contracts and checked downcasts land there.
+            if (checkedArith_) return emitCheckedIntArith(op, l, r, uns);
             if (op == "+") return builder.CreateAdd(l, r);
             if (op == "-") return builder.CreateSub(l, r);
             return builder.CreateMul(l, r);
@@ -5057,8 +5413,27 @@ struct CodeGenerator::Impl {
         if (op == "&") return builder.CreateAnd(l, r);
         if (op == "|") return builder.CreateOr(l, r);
         if (op == "^") return builder.CreateXor(l, r);
-        if (op == "<<") return builder.CreateShl(l, r);
-        if (op == ">>") return uns ? builder.CreateLShr(l, r) : builder.CreateAShr(l, r);
+        if (op == "<<" || op == ">>") {
+            // Shifts are TOTAL in LDP3 -- no UB, so no optimizer can ever exploit an "impossible" count.
+            // A count >= the operand's bit width shifts every bit out: the result is 0 (left shift, or an
+            // unsigned right shift) or the sign fill (a signed right shift). The shl/lshr/ashr these lower
+            // to are poison when the count >= width, so we guard. The common case -- a constant, in-range
+            // count -- emits a bare shift (zero overhead); only a runtime count pays for the range check.
+            const bool left = (op == "<<");
+            auto doShift = [&](llvm::Value* amt) -> llvm::Value* {
+                if (left) return builder.CreateShl(l, amt);
+                return uns ? builder.CreateLShr(l, amt) : builder.CreateAShr(l, amt);
+            };
+            llvm::Value* over = (left || uns)
+                ? llvm::cast<llvm::Value>(llvm::ConstantInt::get(l->getType(), 0))
+                : builder.CreateAShr(l, llvm::ConstantInt::get(l->getType(), w - 1));  // all sign bits
+            if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(r))
+                return c->getValue().uge(w) ? over : doShift(r);
+            llvm::Value* inRange = builder.CreateICmpULT(r, llvm::ConstantInt::get(r->getType(), w));
+            llvm::Value* safe =
+                builder.CreateSelect(inRange, r, llvm::ConstantInt::get(r->getType(), 0));
+            return builder.CreateSelect(inRange, doShift(safe), over);
+        }
 
         llvm::Value* cmp = nullptr;
         if (op == "==") cmp = builder.CreateICmpEQ(l, r);
@@ -5364,6 +5739,9 @@ struct CodeGenerator::Impl {
             error("'new' location must be 'stack' or 'heap', got '" + nw.location + "'", nw.loc);
             return nullptr;
         }
+        // Null the weak intrusive state (WeakSlot fields + weak-list head) BEFORE the constructor runs, so
+        // a ctor that assigns a `weak T*` field unlinks from an empty (null) slot rather than garbage.
+        initWeakState(objPtr, cn);
         // Wire up the persistent block (if any) BEFORE the constructor, so the ctor can read
         // and write this.<persistent field>. Keyed by the binding variable's identity.
         llvm::Value* persistBlockRef = nullptr;
@@ -5678,8 +6056,10 @@ struct CodeGenerator::Impl {
     // Calls a funcptr<Ret, Args...> value -- a bare C function pointer (dynamic FFI, e.g. a
     // wglGetProcAddress result) -- with the plain C ABI: no closure environment, args passed directly.
     llvm::Value* emitFuncptrCall(const std::string& ft, llvm::Value* fnPtr,
-                                 const std::vector<ast::ExprPtr>& callArgs) {
-        const std::string inner = ft.substr(8, ft.size() - 9);  // strip "funcptr<" ... ">"
+                                 const std::vector<ast::ExprPtr>& callArgs, SourceLocation loc) {
+        const std::string raw = ft.substr(8, ft.size() - 9);  // strip "funcptr<" ... ">"
+        const llvm::CallingConv::ID cc = worldToCallConv(ast::funcptrWorld(raw), loc);  // [unknown-abi]
+        const std::string inner = ast::funcptrBody(raw);      // params/return, minus any leading $world
         std::vector<std::string> parts;
         int depth = 0;
         for (std::size_t i = 0, s = 0; i <= inner.size(); i++) {
@@ -5708,7 +6088,9 @@ struct CodeGenerator::Impl {
             }
             args.push_back(v);
         }
-        return builder.CreateCall(fty, fnPtr, args);  // foreign C call; does not throw an LDP3 exception
+        llvm::CallInst* ci = builder.CreateCall(fty, fnPtr, args);  // foreign call; no LDP3 exception
+        ci->setCallingConv(cc);  // [unknown-abi] the foreign world's ABI (default C for a plain funcptr)
+        return ci;
     }
     // Emits a Channel.select as a poll loop: each iteration tries a non-blocking receive on every
     // channel (calling its handler with the value on success), then optionally fires the timeout.
@@ -5972,6 +6354,46 @@ struct CodeGenerator::Impl {
             llvm::Value* sz = cit != classes.end() ? sizeOf(cit->second.type) : sizeOf(llvmType(tn));
             return builder.CreateTrunc(sz, builder.getInt32Ty());
         }
+        // embed("path") (spec 36): read a file AT COMPILE TIME and materialize it as a `byte[]` constant
+        // in the image. This is how a freestanding program carries data it must not load from a
+        // filesystem it does not have -- a guest binary, a font, a firmware blob -- without dropping to an
+        // assembly file just to write `.incbin`. The path is resolved relative to the source file that
+        // wrote the call (like an include), so it moves with the code.
+        if (name == "embed" && call.args.size() == 1) {
+            const auto* lit = dynamic_cast<const ast::StringLiteralExpr*>(call.args[0].get());
+            if (lit == nullptr) {
+                error("embed(...) needs a literal path known at compile time", call.loc);
+                return nullptr;
+            }
+            std::filesystem::path p(lit->value);
+            if (p.is_relative()) {
+                std::error_code ec;
+                const std::filesystem::path base =
+                    std::filesystem::path(std::string(call.loc.file)).parent_path();
+                if (!base.empty() && std::filesystem::exists(base / p, ec)) p = base / p;
+            }
+            std::ifstream f(p, std::ios::binary);
+            if (!f) {
+                error("embed(\"" + lit->value + "\"): cannot open the file", call.loc);
+                return nullptr;
+            }
+            const std::string bytes((std::istreambuf_iterator<char>(f)),
+                                    std::istreambuf_iterator<char>());
+            // Same layout every LDP3 array has: [ i64 length | elements... ], so `.length` and indexing
+            // work on the result with no special case anywhere else.
+            llvm::Constant* len = builder.getInt64(bytes.size());
+            llvm::Constant* data = llvm::ConstantDataArray::get(
+                context, llvm::ArrayRef<std::uint8_t>(
+                             reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()));
+            llvm::StructType* blockTy =
+                llvm::StructType::get(context, {builder.getInt64Ty(), data->getType()});
+            auto* g = new llvm::GlobalVariable(
+                module, blockTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+                llvm::ConstantStruct::get(blockTy, {len, data}),
+                "embed." + p.filename().string());
+            g->setAlignment(llvm::Align(8));
+            return g;
+        }
         // External C function call (spec 26): a bare call to an `extern` declaration.
         if (auto er = externReturnType.find(name); er != externReturnType.end()) {
             llvm::Function* fn = functions[name];
@@ -6005,7 +6427,9 @@ struct CodeGenerator::Impl {
                     v = coerceToType(v, fn->getFunctionType()->getParamType(i));
                 args.push_back(v);
             }
-            llvm::Value* r = builder.CreateCall(fn, args);
+            llvm::CallInst* rc = builder.CreateCall(fn, args);
+            rc->setCallingConv(fn->getCallingConv());  // [unknown-abi] mirror foreign-world extern conv
+            llvm::Value* r = rc;
             // A by-value struct return arrives in a register: store it into a fresh struct object.
             if (llvm::Type* rreg = ffiStructRegType(er->second)) {
                 auto cit = classes.find(clsKey(er->second));
@@ -6054,11 +6478,11 @@ struct CodeGenerator::Impl {
             if (lit != locals.end() && lit->second.type.rfind("funcptr<", 0) == 0)
                 return emitFuncptrCall(lit->second.type,
                                        builder.CreateLoad(builder.getPtrTy(), lit->second.storage, id->name),
-                                       call.args);
+                                       call.args, call.loc);
         }
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get())) {
             const std::string ft = typeName(*mem);
-            if (ft.rfind("funcptr<", 0) == 0) return emitFuncptrCall(ft, emitExpr(*mem), call.args);
+            if (ft.rfind("funcptr<", 0) == 0) return emitFuncptrCall(ft, emitExpr(*mem), call.args, call.loc);
         }
         // Calling a function value: a local of type function<Ret, Params...> -> indirect call.
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(call.callee.get())) {
@@ -7954,9 +8378,11 @@ struct CodeGenerator::Impl {
         for (auto it = scopeObjects.rbegin(); it != scopeObjects.rend(); ++it) {
             if (!it->region.empty()) continue;  // region objects are destructed when the region frees
             auto fnit = functions.find(it->className + ".~" + it->className);
-            if (fnit == functions.end()) continue;
+            const bool weak = weakRelevant(it->className);
+            if (fnit == functions.end() && !weak) continue;
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), it->slot);
-            emitDtorIfLive(objPtr, fnit->second);
+            emitDtorIfLive(objPtr, fnit == functions.end() ? llvm::FunctionCallee() : fnit->second,
+                           weak ? it->className : std::string());
         }
         // String RAII: release every live String local at this function exit (spec 4). Not cleared here
         // (like scopeObjects) -- the unwinding emitBlock calls resize away the tracking entries.
@@ -8066,16 +8492,116 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // `heap class X` (spec 36): bridge the allocator the program declared to the three symbols the rest of
+    // codegen emits (`new ... on heap`, dynamic arrays, `delete`). Without this a freestanding program
+    // COMPILES those constructs and then fails to LINK, because there is no libc to supply them -- the one
+    // silent gap left in freestanding. The bridge is generated, so the kernel writes ordinary LDP3
+    // (`allocate`/`release` on its own class) instead of hand-defining C symbols the compiler happens to
+    // call. `checkLive` is optional: an allocator that does not track liveness just gets a no-op guard.
+    void emitHeapBridge() {
+        const ast::ClassDecl* heapCls = nullptr;
+        for (const ast::Bundle& b : program.bundles)
+            for (const ast::Namespace& ns : b.namespaces)
+                for (const ast::ClassDecl& c : ns.classes)
+                    if (c.isHeap) {
+                        if (heapCls != nullptr)
+                            error("more than one `heap class` in the program (there is one heap): '" +
+                                      heapCls->name + "' and '" + c.name + "'",
+                                  c.loc);
+                        heapCls = &c;
+                    }
+        if (heapCls == nullptr) return;
+        // Freestanding only. In hosted mode `on heap` is the idiomatic allocation and the runtime's
+        // pooled allocator is the right one -- letting a program replace it would be a footgun with no
+        // upside (the pool is what String/array/object lifetime accounting is built on). Bare metal is
+        // the case where there IS no allocator until the program provides one.
+        if (!program.isFreestanding) {
+            error("`heap class` is only available in freestanding mode (spec 36); in a hosted program "
+                  "`on heap` already allocates from the runtime",
+                  heapCls->loc);
+            return;
+        }
+        auto bridge = [&](const char* sym, const char* method, llvm::Type* ret,
+                          llvm::ArrayRef<llvm::Type*> params, bool required) {
+            auto it = functions.find(heapCls->name + "." + method);
+            if (it == functions.end()) {
+                if (required)
+                    error("`heap class " + heapCls->name + "` must define `public static method " +
+                              method + "` (the program's heap)",
+                          heapCls->loc);
+                return;
+            }
+            // The rest of codegen already inserted a DECLARATION of this symbol (mallocFn/freeFn/
+            // checkLiveFn use getOrInsertFunction). Give that declaration a body -- creating a second
+            // function with the same name would just get renamed by LLVM, leaving the real call sites
+            // pointing at an unresolved symbol.
+            llvm::FunctionType* ty = llvm::FunctionType::get(ret, params, false);
+            llvm::Function* f = module.getFunction(sym);
+            if (f == nullptr) f = llvm::Function::Create(ty, llvm::Function::ExternalLinkage, sym, module);
+            if (!f->empty()) return;  // already bridged
+            auto ip = builder.saveIP();
+            builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", f));
+            // The allocator speaks LDP3 types (`address` = i64) while these symbols speak the C shape
+            // (`ptr`), so bridge each value across the two views of a machine word.
+            llvm::Function* target = it->second;
+            std::vector<llvm::Value*> args;
+            unsigned pi = 0;
+            for (auto& a : f->args()) {
+                llvm::Value* v = &a;
+                llvm::Type* want = target->getFunctionType()->getParamType(pi++);
+                if (v->getType() != want)
+                    v = want->isPointerTy() ? builder.CreateIntToPtr(v, want)
+                                            : builder.CreatePtrToInt(v, want);
+                args.push_back(v);
+            }
+            llvm::Value* r = builder.CreateCall(it->second, args);
+            if (ret->isVoidTy()) {
+                builder.CreateRetVoid();
+            } else {
+                if (r->getType() != ret)
+                    r = ret->isPointerTy() ? builder.CreateIntToPtr(r, ret)
+                                           : builder.CreatePtrToInt(r, ret);
+                builder.CreateRet(r);
+            }
+            builder.restoreIP(ip);
+            foreignEntryPoints_.insert(sym);  // reached only from generated code; never internalize away
+        };
+        bridge("__ldp3_malloc", "allocate", builder.getPtrTy(), {builder.getInt64Ty()}, true);
+        bridge("__ldp3_free", "release", builder.getVoidTy(), {builder.getPtrTy()}, true);
+        // No `checkLive`: emit the guard as a no-op so `delete` still links.
+        if (functions.count(heapCls->name + ".checkLive") == 0) {
+            llvm::FunctionType* ty =
+                llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+            llvm::Function* f = module.getFunction("__ldp3_check_live");
+            if (f == nullptr)
+                f = llvm::Function::Create(ty, llvm::Function::ExternalLinkage, "__ldp3_check_live",
+                                           module);
+            if (f->empty()) {
+                auto ip = builder.saveIP();
+                builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", f));
+                builder.CreateRetVoid();
+                builder.restoreIP(ip);
+            }
+            foreignEntryPoints_.insert("__ldp3_check_live");
+        } else {
+            bridge("__ldp3_check_live", "checkLive", builder.getVoidTy(), {builder.getPtrTy()}, false);
+        }
+    }
+
     void stripDeadCode() {
         if (libraryMode) return;
         llvm::ModuleAnalysisManager mam;
         llvm::PassBuilder pb;
         pb.registerModuleAnalyses(mam);
         llvm::ModulePassManager mpm;
-        mpm.addPass(llvm::InternalizePass(  // keep the entry (kmain is the freestanding entry, spec 36)
-            [](const llvm::GlobalValue& gv) {
-                return gv.getName() == "main" || gv.getName() == "kmain";
-            }));
+        // Keep the entry (kmain is the freestanding entry, spec 36) and every `unknown <world>` method --
+        // those are declared entry points for a foreign world (asm, firmware, a foreign binary), so they
+        // must keep their symbol; internalizing them would delete the boundary the declaration promised.
+        const std::set<std::string>& keep = foreignEntryPoints_;
+        mpm.addPass(llvm::InternalizePass([&keep](const llvm::GlobalValue& gv) {
+            return gv.getName() == "main" || gv.getName() == "kmain" ||
+                   keep.count(gv.getName().str()) > 0;
+        }));
         mpm.addPass(llvm::GlobalDCEPass());
         mpm.run(module, mam);
     }
@@ -8531,19 +9057,26 @@ struct CodeGenerator::Impl {
     // block, a live region, or a stack object with a destructor. (Region objects are destructed when the
     // region frees, so they don't count on their own.)
     bool hasUnwindCleanup() {
+        // Freestanding has no exceptions at all (sema rejects `throw` with LDP3-0901), so NOTHING can
+        // unwind: a landing pad here is dead code whose only effect is an undefined `_Unwind_Resume` at
+        // link time. Destructors still run on the normal paths -- this drops the unwind path only.
+        if (program.isFreestanding) return false;
         if (!deferred.empty() || !scopeRegions.empty()) return true;
         for (const ScopeObject& so : scopeObjects)
-            if (so.region.empty() && functions.count(so.className + ".~" + so.className) > 0)
+            if (so.region.empty() &&
+                (functions.count(so.className + ".~" + so.className) > 0 || weakRelevant(so.className)))
                 return true;
         return false;
     }
     // Like hasUnwindCleanup, but only for entries added since the given bases -- i.e. the teardown a throw
     // must run to unwind out to an enclosing try whose body started at these sizes.
     bool hasUnwindCleanupAbove(std::size_t soBase, std::size_t dfBase, std::size_t rgBase) {
+        if (program.isFreestanding) return false;   // see hasUnwindCleanup
         if (deferred.size() > dfBase || scopeRegions.size() > rgBase) return true;
         for (std::size_t i = soBase; i < scopeObjects.size(); ++i)
             if (scopeObjects[i].region.empty() &&
-                functions.count(scopeObjects[i].className + ".~" + scopeObjects[i].className) > 0)
+                (functions.count(scopeObjects[i].className + ".~" + scopeObjects[i].className) > 0 ||
+                 weakRelevant(scopeObjects[i].className)))
                 return true;
         return false;
     }
@@ -8563,8 +9096,11 @@ struct CodeGenerator::Impl {
             if (builder.GetInsertBlock()->getTerminator() != nullptr) return;
             if (!it->region.empty()) continue;  // destructed with the region
             auto fnit = functions.find(it->className + ".~" + it->className);
-            if (fnit == functions.end()) continue;
-            builder.CreateCall(fnit->second, {builder.CreateLoad(builder.getPtrTy(), it->slot)});
+            const bool weak = weakRelevant(it->className);
+            if (fnit == functions.end() && !weak) continue;
+            llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), it->slot);
+            if (fnit != functions.end()) builder.CreateCall(fnit->second, {objPtr});
+            if (weak) emitWeakCleanup(objPtr, it->className);  // null/unlink weak refs on unwind too
         }
         if (builder.GetInsertBlock()->getTerminator() == nullptr && !regs.empty()) {
             // freeRegionsFrom reads scopeRegions, and runRegionObjectDtors (which it calls) reads
@@ -8752,10 +9288,20 @@ struct CodeGenerator::Impl {
     // Builtins that cannot throw (printf/malloc/scanf/...) keep using CreateCall directly.
     llvm::Value* emitMaybeInvoke(llvm::FunctionType* fty, llvm::Value* callee,
                                  llvm::ArrayRef<llvm::Value*> args, const std::string& name = "") {
+        // [unknown-abi] Mirror the callee's calling convention onto the call/invoke, so an `unknown
+        // <world>` callee is called with that foreign world's ABI. Non-Function callees keep default C.
+        llvm::CallingConv::ID cc = llvm::CallingConv::C;
+        if (auto* cf = llvm::dyn_cast<llvm::Function>(callee->stripPointerCasts()))
+            cc = cf->getCallingConv();
         llvm::BasicBlock* ud = computeUnwindDest();
-        if (ud == nullptr) return builder.CreateCall(fty, callee, args, name);
+        if (ud == nullptr) {
+            llvm::CallInst* ci = builder.CreateCall(fty, callee, args, name);
+            ci->setCallingConv(cc);
+            return ci;
+        }
         llvm::BasicBlock* cont = llvm::BasicBlock::Create(context, "invoke.cont", currentFn);
         llvm::InvokeInst* inv = builder.CreateInvoke(fty, callee, cont, ud, args, name);
+        inv->setCallingConv(cc);
         builder.SetInsertPoint(cont);
         return inv;
     }
@@ -9027,10 +9573,14 @@ struct CodeGenerator::Impl {
     }
 
     void emitStatement(const ast::Stmt& stmt) {
-        // No code after a terminator (statements following break/continue/return are dead). A
-        // `label name;` is the exception: it must still place its block so a comefrom can target it.
+        // No code after a terminator (statements following break/continue/return are dead). The two
+        // exceptions are the two LANDING points: `label name;` must place its block so a hijack can be
+        // triggered there, and `comefrom name;` must place its block because control arrives from the
+        // label -- not from the statement above it, which is exactly why an unreachable-looking position
+        // is the normal place to write one.
         if (builder.GetInsertBlock()->getTerminator() != nullptr &&
-            dynamic_cast<const ast::LabelMarkStmt*>(&stmt) == nullptr) {
+            dynamic_cast<const ast::LabelMarkStmt*>(&stmt) == nullptr &&
+            dynamic_cast<const ast::ComefromStmt*>(&stmt) == nullptr) {
             return;
         }
         setDebugLoc(stmt.loc);  // -g: this statement's line, so breakpoints/stepping map to source
@@ -9096,18 +9646,39 @@ struct CodeGenerator::Impl {
                 }
                 builder.SetInsertPoint(body);
             }
+            // THE HIJACK (spec 7.10). If some `comefrom name;` elsewhere in this method names this
+            // label, then REACHING the label transfers control there -- and the statements that follow
+            // the label never run. That inversion is the whole point of comefrom: the jump is written at
+            // the destination, and the label site does not mention it. It reads as action at a distance
+            // because it IS action at a distance.
+            //
+            // Emitted after the abstain guard, so abstaining a label also suspends its hijack: while the
+            // section is off, reaching the label skips to the next one rather than being stolen.
+            if (comefromTargets_.count(lm->name) > 0) {
+                emitComefromCleanup(lm->name);
+                llvm::BasicBlock*& cb = comefromBlocks[lm->name];
+                if (cb == nullptr)
+                    cb = llvm::BasicBlock::Create(context, "comefrom." + lm->name, currentFn);
+                builder.CreateBr(cb);
+                // Anything after the label is unreachable on this path; give it a block so the code that
+                // follows still verifies.
+                builder.SetInsertPoint(
+                    llvm::BasicBlock::Create(context, "label.stolen." + lm->name, currentFn));
+            }
             return;
         }
-        // `comefrom name;` -- transfer control to label name (forward or backward). Code after is
-        // dead (the terminator guard above skips it). Like `goto`, it can leave lexical scopes, so run
-        // their teardown first (defers, destructors, String/region/value-struct frees) -- otherwise a
-        // comefrom out of a scope leaks what goto correctly cleans. Only scopes nested inside the target's
-        // scope are torn down; the target scope's own locals are kept (a backward comefrom is a retry).
+        // `comefrom name;` -- NOT a jump. It marks WHERE control lands when flow reaches `label name;`
+        // (spec 7.10). Falling into it in the ordinary way is a no-op: execution simply continues, which
+        // is what makes it a declaration about the label rather than a statement that does something.
+        //
+        // It used to emit `br label.name`, i.e. it was a goto spelled backwards -- the label was the
+        // destination instead of the source. That is the opposite of what comefrom means.
         if (const auto* cf = dynamic_cast<const ast::ComefromStmt*>(&stmt)) {
-            emitGotoScopeCleanup(cf->name);
-            llvm::BasicBlock*& bb = labelBlocks[cf->name];
-            if (bb == nullptr) bb = llvm::BasicBlock::Create(context, "label." + cf->name, currentFn);
-            builder.CreateBr(bb);
+            llvm::BasicBlock*& bb = comefromBlocks[cf->name];
+            if (bb == nullptr)
+                bb = llvm::BasicBlock::Create(context, "comefrom." + cf->name, currentFn);
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(bb);
+            builder.SetInsertPoint(bb);
             return;
         }
         if (const auto* g = dynamic_cast<const ast::GotoStmt*>(&stmt)) {  // spec 7.9
@@ -9201,6 +9772,24 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
+            // DECLARED WITHOUT A VALUE (`int x;`). The slot exists; nothing is stored into it, not even
+            // a zero -- the *uninitialized* state is a real state, and materialising it as 0 would erase
+            // the distinction the analyzer just spent its effort keeping (a zero is a value; this is the
+            // absence of one). Writing no initializer costs no instruction, and it is SAFE precisely
+            // because the analyzer proved no path reads the slot before something assigns to it.
+            //
+            // A class-typed slot is the one exception: it is left as a null pointer so that scope
+            // teardown, which walks the live stack objects, finds nothing to destruct rather than a
+            // garbage address. `region r;` keeps its own long-standing path further down.
+            if (vd->init == nullptr && !vd->isVar && typeRefName(vd->type) != "region") {
+                const std::string dt = typeRefName(vd->type);
+                llvm::Type* lty = llvmType(dt);
+                llvm::Value* slot = createEntryAlloca(vd->name, lty);
+                if (lty->isPointerTy())
+                    builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
+                locals[vd->name] = LocalSlot{slot, dt};
+                return;
+            }
             const std::string declType = vd->isVar ? typeName(*vd->init) : typeRefName(vd->type);
             // Inside an async/generator state machine the local already lives in the heap state
             // object (pre-bound); just evaluate the initializer and store it, so it survives a suspend.
@@ -9415,7 +10004,11 @@ struct CodeGenerator::Impl {
             // program, no cleanup).
             if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
                 auto cit = classes.find(nw->className);
-                if (cit != classes.end() && cit->second.hasDestructor && !vd->isEternal) {
+                // Track for scope-exit teardown if it has a destructor OR any weak state: a dtor-less weak
+                // target must still null its weak refs when its stack/region storage dies, and a dtor-less
+                // holder must unlink its weak slots -- otherwise a `weak T*` to a stack object would dangle.
+                if (cit != classes.end() &&
+                    (cit->second.hasDestructor || weakRelevant(nw->className)) && !vd->isEternal) {
                     // A region object's destructor runs when the region is released/freed (spec
                     // 17.7); a plain stack object's runs at scope exit. A heap object is manual.
                     // A STACK- or RING-region object is NOT tracked here: the runtime owns its destructor
@@ -9440,7 +10033,8 @@ struct CodeGenerator::Impl {
                 // it for scope-exit destruction so it does not leak, exactly like a `new ... on stack`
                 // object; same ownership and same accepted this-escape risk as any stack object.
                 const std::string cn = baseType(declType);
-                if (auto cit = classes.find(cn); cit != classes.end() && cit->second.hasDestructor)
+                if (auto cit = classes.find(cn);
+                    cit != classes.end() && (cit->second.hasDestructor || weakRelevant(cn)))
                     scopeObjects.push_back(ScopeObject{slot, cn, ""});
             }
             // RAII for regions (spec 17.7): freed at the end of the lexical block
@@ -9454,6 +10048,31 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
+            // `weak T*` field assignment: don't just overwrite the slot -- unlink it from the OLD pointee's
+            // weak-list and link it into the NEW one, so the pointee auto-nulls this field when it dies. The
+            // slot's first word IS the pointer, so plain reads still see the pointee.
+            if (const auto* wt = dynamic_cast<const ast::MemberExpr*>(assign->target.get());
+                wt != nullptr && fieldIsWeak(baseType(typeName(*wt->object)), wt->member)) {
+                llvm::Value* slot = emitLValue(*wt);   // address of the field == the WeakSlot address
+                llvm::Value* nv = emitExpr(*assign->value);
+                if (nv != nullptr) nv = coerce(nv, typeName(*assign->value), typeName(*wt));
+                llvm::Value* off = weakHeadOffset(baseType(typeName(*wt)));  // T's weak-list head offset
+                builder.CreateCall(weakUnlinkFn(), {slot, off});
+                if (nv != nullptr) {
+                    llvm::Value* nn = builder.CreateICmpNE(
+                        nv, llvm::ConstantPointerNull::get(builder.getPtrTy()));
+                    llvm::Function* fn = currentFn;
+                    auto* linkBB = llvm::BasicBlock::Create(context, "weak.link", fn);
+                    auto* doneBB = llvm::BasicBlock::Create(context, "weak.done", fn);
+                    builder.CreateCondBr(nn, linkBB, doneBB);
+                    builder.SetInsertPoint(linkBB);
+                    builder.CreateCall(weakLinkFn(), {slot, nv, off});
+                    builder.CreateBr(doneBB);
+                    builder.SetInsertPoint(doneBB);
+                }
+                freeStringTemps();
+                return;
+            }
             // operator[]= overload: obj[i] = v -> obj.operator[]=(i, v) (spec 6.5).
             if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(assign->target.get())) {
                 const std::string owner = methodOwner(baseType(typeName(*ix->array)), "operator[]=");
@@ -9726,7 +10345,12 @@ struct CodeGenerator::Impl {
                     if (const auto* tix = dynamic_cast<const ast::IndexExpr*>(assign->target.get()))
                         if (!isRefType(typeName(*tix->array)))
                             sv = builder.CreateTrunc(sv, builder.getInt8Ty());
-                builder.CreateStore(sv, slot, isVolatileAccess(*assign->target));  // spec 37.5
+                llvm::StoreInst* st =
+                    builder.CreateStore(sv, slot, isVolatileAccess(*assign->target));  // spec 37.5
+                // A raw pointer `p[i] = v` may target ANY address (spec 17.8): store with `align 1` so a
+                // misaligned write is defined, not UB (same single instruction on x86; volatile-safe).
+                if (const auto* tix = dynamic_cast<const ast::IndexExpr*>(assign->target.get()))
+                    if (isRefType(typeName(*tix->array))) st->setAlignment(llvm::Align(1));
                 // Reassigning an owned region a fresh block (`r = itself.allocate(...)`, including filling
                 // an empty-state region): (re)zero its register bump cursor so allocations restart at 0.
                 if (targetType == "region")
@@ -10132,13 +10756,60 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* as = dynamic_cast<const ast::AsmStmt*>(&stmt)) {
-            // Inline assembly (spec issue 1): emit the raw body as a side-effecting LLVM inline asm
-            // that clobbers memory (so it is not reordered/elided). The target arch comes from the
-            // module triple; `as->arch` is a documentation/intent tag.
-            llvm::FunctionType* aty = llvm::FunctionType::get(builder.getVoidTy(), false);
-            llvm::InlineAsm* ia = llvm::InlineAsm::get(aty, as->body, /*constraints=*/"~{memory}",
-                                                       /*hasSideEffects=*/true);
-            builder.CreateCall(ia, {});
+            // Inline assembly (spec issue 1): the raw body as a side-effecting LLVM inline asm that also
+            // clobbers memory (so it is never reordered or elided). `as->arch` is the intent tag; the real
+            // target comes from the module triple.
+            //
+            // Operands: `out (lv, ...)` -> "=r", `in (e, ...)` -> "r", `clobber ("rax", ...)` -> "~{rax}".
+            // In the body $0.. number the outputs first, then the inputs (GCC/LLVM order). With a single
+            // output the asm returns that value; with several it returns a struct we unpack.
+            std::vector<llvm::Type*> argTys;
+            std::vector<llvm::Value*> args;
+            std::string cons;
+            std::vector<llvm::Type*> outTys;
+            for (const ast::ExprPtr& o : as->outputs) {
+                outTys.push_back(llvmType(typeName(*o)));
+                cons += cons.empty() ? "=r" : ",=r";
+            }
+            for (const ast::ExprPtr& i : as->inputs) {
+                llvm::Value* v = emitExpr(*i);
+                if (v == nullptr) return;
+                args.push_back(v);
+                argTys.push_back(v->getType());
+                cons += cons.empty() ? "r" : ",r";
+            }
+            for (const std::string& c : as->clobbers) cons += (cons.empty() ? "" : ",") + ("~{" + c + "}");
+            cons += cons.empty() ? "~{memory}" : ",~{memory}";
+            llvm::Type* retTy = outTys.empty()  ? builder.getVoidTy()
+                                : outTys.size() == 1 ? outTys[0]
+                                                     : llvm::StructType::get(context, outTys);
+            // Dialect: `asm("x86_64", "att") { ... }` names it explicitly (to paste in a snippet written
+            // the other way); with no second argument it follows the architecture. x86 defaults to INTEL,
+            // because that is what an LDP3 asm block is written in (the spec's own examples). Defaulting
+            // to AT&T made every such block fail to ASSEMBLE -- the feature only looked like it worked
+            // because the IR still emitted.
+            const llvm::Triple tt(module.getTargetTriple());
+            const bool isX86 =
+                tt.getArch() == llvm::Triple::x86 || tt.getArch() == llvm::Triple::x86_64;
+            llvm::InlineAsm::AsmDialect dialect = isX86 ? llvm::InlineAsm::AD_Intel
+                                                        : llvm::InlineAsm::AD_ATT;
+            if (as->dialect == "intel") dialect = llvm::InlineAsm::AD_Intel;
+            else if (as->dialect == "att") dialect = llvm::InlineAsm::AD_ATT;
+            else if (!as->dialect.empty())
+                error("unknown assembly dialect '" + as->dialect + "' (expected \"intel\" or \"att\")",
+                      as->loc);
+            llvm::FunctionType* aty = llvm::FunctionType::get(retTy, argTys, false);
+            llvm::InlineAsm* ia =
+                llvm::InlineAsm::get(aty, as->body, cons, /*hasSideEffects=*/true,
+                                     /*isAlignStack=*/false, dialect);
+            llvm::Value* res = builder.CreateCall(ia, args);
+            for (std::size_t k = 0; k < as->outputs.size(); ++k) {
+                llvm::Value* v = as->outputs.size() == 1
+                                     ? res
+                                     : builder.CreateExtractValue(res, static_cast<unsigned>(k));
+                if (llvm::Value* slot = emitLValue(*as->outputs[k]); slot != nullptr)
+                    builder.CreateStore(v, slot);
+            }
             return;
         }
         if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
@@ -10265,10 +10936,14 @@ struct CodeGenerator::Impl {
         for (std::size_t i = scopeObjects.size(); i > 0; --i) {
             ScopeObject& so = scopeObjects[i - 1];
             if (so.region != name || so.className.empty()) continue;
-            if (auto fnit = functions.find(so.className + ".~" + so.className);
-                fnit != functions.end()) {
+            auto fnit = functions.find(so.className + ".~" + so.className);
+            const bool weak = weakRelevant(so.className);
+            if (fnit != functions.end() || weak) {
                 llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
-                builder.CreateCall(fnit->second, {objPtr});
+                if (fnit != functions.end()) builder.CreateCall(fnit->second, {objPtr});
+                // A region target/holder dying with the arena: null every weak ref to it, unlink its own
+                // weak slots -- before the block is released (17.7), so nothing dangles into freed arena.
+                if (weak) emitWeakCleanup(objPtr, so.className);
             }
             so.className.clear();  // mark done
         }
@@ -10303,9 +10978,11 @@ struct CodeGenerator::Impl {
             const ScopeObject& so = scopeObjects[i - 1];
             if (!so.region.empty()) continue;  // region objects are destructed when the region frees
             auto fnit = functions.find(so.className + ".~" + so.className);
-            if (fnit == functions.end()) continue;
+            const bool weak = weakRelevant(so.className);
+            if (fnit == functions.end() && !weak) continue;
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
-            emitDtorIfLive(objPtr, fnit->second);
+            emitDtorIfLive(objPtr, fnit == functions.end() ? llvm::FunctionCallee() : fnit->second,
+                           weak ? so.className : std::string());
         }
         // String RAII: free String locals declared in this block (LIFO). The sentinel base means "leave
         // them" -- break/continue pass it so the outer scope-exit / function return frees them, never us
@@ -10337,6 +11014,14 @@ struct CodeGenerator::Impl {
     void scanStmtLabels(const ast::Stmt* s, const ast::Block& owner) {
         if (s == nullptr) return;
         if (const auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(s)) { labelBlock_[lm->name] = &owner; return; }
+        // A comefrom may appear either side of its label in the text, so both directions have to be
+        // known before either is emitted: the label needs to know it will be hijacked, and the hijack
+        // needs the block that owns the landing site to tear scopes down correctly.
+        if (const auto* cf = dynamic_cast<const ast::ComefromStmt*>(s)) {
+            comefromTargets_.insert(cf->name);
+            comefromBlock_[cf->name] = &owner;
+            return;
+        }
         if (const auto* is = dynamic_cast<const ast::IfStmt*>(s)) {
             scanLabelBlocks(is->thenBlock);
             if (is->elseBlock) scanLabelBlocks(*is->elseBlock);
@@ -10371,6 +11056,21 @@ struct CodeGenerator::Impl {
     // Run the defers/destructors/regions/Strings for every open scope nested inside the target label's
     // scope, innermost first, before a `goto` branches there. No-op if the label is in the current scope
     // (nothing nested is being left) or is not on the open-scope stack.
+    // The hijack leaves the label's scopes and lands in the comefrom's, so the same teardown `goto`
+    // does has to happen -- just keyed on where control is GOING, which for a comefrom is the site
+    // that declared it rather than the label that triggered it.
+    void emitComefromCleanup(const std::string& name) {
+        auto it = comefromBlock_.find(name);
+        if (it == comefromBlock_.end()) return;
+        const ast::Block* target = it->second;
+        int fi = -1;
+        for (int i = static_cast<int>(blockScopes.size()) - 1; i >= 0; --i)
+            if (blockScopes[i].block == target) { fi = i; break; }
+        if (fi < 0 || fi + 1 >= static_cast<int>(blockScopes.size())) return;
+        const BlockScope& inner = blockScopes[fi + 1];
+        emitBlockCleanup(inner.so, inner.df, inner.rg, inner.st, inner.vs);
+    }
+
     void emitGotoScopeCleanup(const std::string& label) {
         auto lit = labelBlock_.find(label);
         if (lit == labelBlock_.end()) return;
@@ -10389,7 +11089,7 @@ struct CodeGenerator::Impl {
         const std::size_t regBase = scopeRegions.size();
         const std::size_t strBase = scopeStrings.size();
         const std::size_t vsBase = scopeValueStructs.size();
-        if (blockScopes.empty()) { labelBlock_.clear(); scanLabelBlocks(block); }  // function-body entry
+        if (blockScopes.empty()) { labelBlock_.clear(); comefromBlock_.clear(); comefromTargets_.clear(); scanLabelBlocks(block); }  // function-body entry
         blockScopes.push_back({&block, soBase, dfBase, regBase, strBase, vsBase});
         for (const auto& stmt : block.statements) {
             // Don't stop at a terminator: a later `label` (the target of a forward goto/comefrom)
@@ -11143,6 +11843,10 @@ struct CodeGenerator::Impl {
                                 if (f->isVolatile) layout.volatileFields.insert(f->name);
                                 if (f->isExternal) layout.externalFields.insert(f->name);
                                 if (f->isUnique) layout.uniqueFields.insert(f->name);
+                                if (f->isWeak) {
+                                    layout.weakFields.insert(f->name);
+                                    weaklyReferenced_.insert(baseType(ftype));  // T is a weak target
+                                }
                                 if (f->isTransient) layout.transientFields.insert(f->name);
                                 if (f->isLazy && f->init) layout.lazyFieldInit[f->name] = f->init.get();
                             }
@@ -11244,7 +11948,17 @@ struct CodeGenerator::Impl {
                     for (const auto& [fname, ftype] : collectFields(cls.name)) {
                         layout.fieldIndex[fname] = idx++;
                         layout.fieldType[fname] = ftype;
-                        fieldTypes.push_back(llvmType(ftype));
+                        // a `weak T*` field is a 2-ptr WeakSlot {ptr, next}; every other field is its
+                        // own type. (v1 constraint: a weak TARGET should be a concrete/leaf class -- the
+                        // weak-list head is appended per class, so a polymorphic base with a differently-laid
+                        // subclass would place the head at a different offset.)
+                        fieldTypes.push_back(fieldIsWeak(cls.name, fname) ? weakSlotType() : llvmType(ftype));
+                    }
+                    // a class that is the target of some `weak T*` carries a weak-list head (one ptr).
+                    if (weaklyReferenced_.count(cls.name) > 0) {
+                        layout.needsWeakHead = true;
+                        layout.weakHeadIdx = idx++;
+                        fieldTypes.push_back(builder.getPtrTy());
                     }
                     // Persistent instance fields also get an out-of-object block; the object
                     // holds a pointer to it (set at construction) so this.f and var.f both work
@@ -11593,6 +12307,27 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // [unknown-abi] Map a foreign-binary "world" to its LLVM calling convention. The stored
+    // convention string is a foreign boundary only when it has the form "unknown:<world>" (the
+    // world is REQUIRED at the syntax level and is never inferred -- kernel/NT interop is a minefield
+    // and the origin must be stated consciously). Legacy cconv keywords / empty -> the target's
+    // default C ABI (a no-op). Hybrid surface: binary FORMATS (pe/elf/macho, resolved per target)
+    // OR raw ABIs (win64/sysv/aapcs). Adding a new world = one row here.
+    llvm::CallingConv::ID worldToCallConv(const std::string& conv, SourceLocation loc) {
+        if (conv.rfind("unknown:", 0) != 0) return llvm::CallingConv::C;
+        const std::string world = conv.substr(8);
+        // Raw-ABI escape hatches (explicit, architecture-independent):
+        if (world == "win64") return llvm::CallingConv::Win64;
+        if (world == "sysv")  return llvm::CallingConv::X86_64_SysV;
+        if (world == "aapcs") return llvm::CallingConv::ARM_AAPCS;
+        // Binary-format worlds -> the ABI a binary of that format uses on the current target:
+        if (world == "pe")    return llvm::CallingConv::Win64;   // Windows PE (x64; ARM64-Windows differs)
+        if (world == "elf" || world == "macho")                 // Linux ELF / macOS Mach-O (.dmg):
+            return llvm::CallingConv::C;                         //   target-standard C ABI (SysV on x64, AAPCS64 on arm64)
+        error("unknown foreign world '" + world +
+              "' after `unknown` (expected pe/elf/macho, or raw win64/sysv/aapcs)", loc);
+        return llvm::CallingConv::C;
+    }
     void declareFunctions() {
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
@@ -11601,6 +12336,7 @@ struct CodeGenerator::Impl {
                         externFnType(ex.params, ex.returnType, ex.isVariadic, ex.loc);
                     functions[ex.name] =
                         llvm::Function::Create(ty, llvm::Function::ExternalLinkage, ex.name, module);
+                    functions[ex.name]->setCallingConv(worldToCallConv(ex.convention, ex.loc));  // [unknown-abi]
                     externReturnType[ex.name] = typeRefName(ex.returnType);
                 }
                 for (const ast::ClassDecl& cls : ns.classes) {
@@ -11639,6 +12375,7 @@ struct CodeGenerator::Impl {
                                 if (f == nullptr)
                                     f = llvm::Function::Create(ety, llvm::Function::ExternalLinkage,
                                                                m->name, module);
+                                f->setCallingConv(worldToCallConv(m->externConvention, m->loc));  // [unknown-abi]
                                 functions[cls.name + "." + m->name] = f;
                                 functions[m->name] = f;  // also by bare C symbol, for goto (spec 7.9)
                                 externReturnType[cls.name + "." + m->name] =
@@ -11673,8 +12410,29 @@ struct CodeGenerator::Impl {
                             } else {
                                 ty = llvm::FunctionType::get(llvmType(mrt), ptypes, false);
                             }
+                            // [unknown-abi] A method declared `unknown <world>` is a BOUNDARY THE FOREIGN
+                            // WORLD CALLS INTO (the other direction from `unknown <world> funcptr`, which
+                            // is us calling out). Two consequences, both required for the declaration to
+                            // mean anything: it takes its BARE name as the linker symbol (the foreign world
+                            // knows `syscall_entry`, not `Syscall.entry` -- it has no idea our classes
+                            // exist), and it keeps external linkage through internalization/DCE, which
+                            // would otherwise delete the very entry point the declaration promised. This is
+                            // what lets a kernel define `_start`, an ISR, or `__ldp3_malloc` in LDP3.
+                            const bool foreignEntry = m->externConvention.rfind("unknown:", 0) == 0;
+                            const std::string symbol = foreignEntry ? m->name : mangled;
                             llvm::Function* fn = llvm::Function::Create(
-                                ty, llvm::Function::ExternalLinkage, mangled, module);
+                                ty, llvm::Function::ExternalLinkage, symbol, module);
+                            fn->setCallingConv(worldToCallConv(m->externConvention, m->loc));
+                            if (foreignEntry) foreignEntryPoints_.insert(symbol);
+                            // A `naked` method gets no prologue/epilogue: its body is raw assembly that owns
+                            // the machine state exactly as the hardware handed it over (an entry point with
+                            // no valid stack, or one running on the caller's). A compiler-emitted prologue
+                            // would corrupt precisely what such a body exists to control.
+                            if (m->isNaked) {
+                                fn->addFnAttr(llvm::Attribute::Naked);
+                                fn->addFnAttr(llvm::Attribute::NoInline);
+                                fn->addFnAttr(llvm::Attribute::OptimizeNone);
+                            }
                             if (mSret) {
                                 sretFns_.insert(fn);
                                 sretStructType_[fn] = classes[baseType(mrt)].type;
@@ -12063,6 +12821,8 @@ struct CodeGenerator::Impl {
         std::unordered_map<std::string, const ast::Block*> savedLB = std::move(labelBlock_);
         blockScopes.clear();
         labelBlock_.clear();
+        comefromBlock_.clear();
+        comefromTargets_.clear();
         auto bsRestore = llvm::make_scope_exit([this, &savedBS, &savedLB]() {
             blockScopes = std::move(savedBS);
             labelBlock_ = std::move(savedLB);
@@ -12103,7 +12863,7 @@ struct CodeGenerator::Impl {
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
-        labelBlocks.clear();
+        labelBlocks.clear(); comefromBlocks.clear();
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
         builder.SetInsertPoint(block);
         // -g: attach a DISubprogram for this function and give the prologue (arg stores, super/field-init
@@ -12330,7 +13090,7 @@ struct CodeGenerator::Impl {
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
-        labelBlocks.clear();
+        labelBlocks.clear(); comefromBlocks.clear();
         builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", res));
         llvm::Value* st = res->getArg(0);
         currentAsyncState = builder.CreateLoad(
@@ -12607,7 +13367,7 @@ struct CodeGenerator::Impl {
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();
-        labelBlocks.clear();
+        labelBlocks.clear(); comefromBlocks.clear();
         builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", resumeF));
         llvm::Value* rst = builder.CreateIntToPtr(resumeF->getArg(0), builder.getPtrTy(), "gen.st");
         if (hasSelf)
@@ -12702,7 +13462,7 @@ struct CodeGenerator::Impl {
         volatileObjects_.clear();
         deferred.clear();
         escapingLocals_.clear();  // async bodies don't run the sync escape analysis; no stale carryover
-        labelBlocks.clear();
+        labelBlocks.clear(); comefromBlocks.clear();
         builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", res));
         llvm::Value* st = res->getArg(0);
         currentAsyncState = builder.CreateLoad(
@@ -12864,6 +13624,24 @@ struct CodeGenerator::Impl {
                     bool hasCtor = false;
                     enclosingClass_ = cls.name;
                     for (const ast::MemberPtr& member : cls.members) {
+                        // LDP3_PHASE_TIMES=1: report any single body that takes real time, so "codegen is
+                        // slow" becomes "THIS method is slow" -- which is how the 181 s PageFlags.hash
+                        // (an exponential typeName recursion) was found. Off by default, and free then.
+                        static const bool bodyTimes = std::getenv("LDP3_PHASE_TIMES") != nullptr;
+                        const auto bodyStart = bodyTimes ? std::chrono::steady_clock::now()
+                                                         : std::chrono::steady_clock::time_point{};
+                        auto reportBody = [&]() {
+                            if (!bodyTimes) return;
+                            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - bodyStart).count();
+                            if (ms < 200) return;
+                            const auto* md = dynamic_cast<const ast::MethodDecl*>(member.get());
+                            const std::string bodyName =
+                                cls.name + "." + (md != nullptr ? md->name : std::string("<ctor/dtor>"));
+                            std::fprintf(stderr, "[body] %-40s %lld ms\n", bodyName.c_str(),
+                                         (long long)ms);
+                        };
+                        struct Reporter { std::function<void()> f; ~Reporter(){ f(); } } rep{reportBody};
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                             enclosingMethod_ = m->name;
                             noBoundsCheck_ = hasAttribute(*m, "no_bounds_check");  // spec 36.4
@@ -13030,26 +13808,49 @@ bool CodeGenerator::generate() {
     }
     if (impl_->debugInfo) impl_->initDebugInfo();  // -g: set up the DIBuilder before any function is emitted
     if (impl_->testMode) impl_->collectTests();
+    // LDP3_PHASE_TIMES=1: per-step codegen timing, same switch the front end uses.
+    const bool cgTimes = std::getenv("LDP3_PHASE_TIMES") != nullptr;
+    auto cgClock = std::chrono::steady_clock::now();
+    auto cg = [&](const char* name) {
+        if (!cgTimes) return;
+        const auto now = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "[codegen] %-22s %lld ms\n", name,
+                     (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+                         now - cgClock).count());
+        cgClock = now;
+    };
     impl_->declareClasses();
+    cg("declareClasses");
     impl_->collectAbstainedLabels();
+    cg("collectAbstainedLabels");
     impl_->emitNamespaceConsts();
+    cg("emitNamespaceConsts");
     impl_->emitStaticFields();
+    cg("emitStaticFields");
     impl_->declareFunctions();
+    cg("declareFunctions");
     // The address table anchors every function, so only emit it when the program actually uses
     // unimport/reimport (spec 30); otherwise it would defeat dead-code elimination below.
     // unimportableClasses was filled by collectAbstainedLabels() above.
     if (!impl_->unimportableClasses.empty())
         impl_->buildFunctionTable();  // address table for physical unimport (spec 30)
     impl_->emitVtables();
+    cg("emitVtables");
     impl_->emitFunctions();
+    cg("emitFunctions");
     if (impl_->testMode) impl_->emitTestRunner();  // synthetic @entry that runs the [Test] methods
     impl_->emitDynamicThunks();  // runtime-resolving thunks for --use-dynamic bundles
     impl_->emitSpecializations();  // deferred lambda-specialized method copies (inlinable direct calls)
+    cg("emitSpecializations");
     if (impl_->libraryMode) impl_->exportBundleSymbols();  // make the .ldb's functions DLL-loadable
+    impl_->emitHeapBridge();     // `heap class X` -> the __ldp3_malloc/free/check_live the codegen calls
+    cg("emitHeapBridge");
     impl_->finalizeDebugInfo();  // -g: resolve all debug metadata before verification
     if (!errors_.empty()) return false;
     impl_->attachTBAA();     // type-based alias metadata: lets LLVM hoist field loads across opaque calls
+    cg("attachTBAA");
     impl_->stripDeadCode();  // drop unreferenced prelude/user code from executables
+    cg("stripDeadCode");
 
     std::string verifyMsg;
     llvm::raw_string_ostream os(verifyMsg);
