@@ -902,12 +902,41 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ClassDecl& cls : ns.classes) {
-                if (classes_.count(cls.name) > 0) {
-                    error("redeclaration of class '" + cls.name + "'", cls.loc);
+                if (auto prev = classes_.find(cls.name); prev != classes_.end()) {
+                    // Point at whichever of the two the AUTHOR wrote. A user type colliding with a
+                    // stdlib one used to be reported wherever the displaced type was USED, which for
+                    // a stdlib type is inside the prelude -- so declaring `class File` produced four
+                    // errors at `<prelude>:197` telling the standard library to import your class.
+                    const bool mine = !bundle.isPrelude;
+                    const SourceLocation at = mine ? cls.loc : prev->second.declLoc;
+                    const std::string other =
+                        (mine == prev->second.fromPrelude) ? "the standard library" : "your program";
+                    error("'" + cls.name + "' is already declared by " + other +
+                              " -- a type name is unique across the whole program, so this one takes "
+                              "the other over and everything that used it breaks somewhere else. "
+                              "Rename this type",
+                          at);
+                    continue;
+                }
+                // Freestanding has no standard library, so there is nothing for a shadowed builtin
+                // to break: the program simply loses its own access to a builtin it could not have
+                // called anyway (spec 36 rejects the hosted ones outright). The pico kernel declares
+                // `class Process`, which is exactly the right name for a kernel's process, and
+                // forbidding it would be a rule with no reason behind it.
+                if (!bundle.isPrelude && !freestanding_ && builtinTypes_.count(cls.name) > 0) {
+                    // The compiler answers for this name itself; there is no class to redeclare, so
+                    // nothing above catches it and the name is simply taken over.
+                    error("'" + cls.name +
+                              "' is a type the compiler provides (spec 34), so it cannot also be a "
+                              "class here -- declaring it takes the name over for the whole program, "
+                              "including the standard library's own uses of it. Rename this type",
+                          cls.loc);
                     continue;
                 }
                 ClassInfo info;
                 info.name = cls.name;
+                info.declLoc = cls.loc;
+                info.fromPrelude = bundle.isPrelude;
                 info.superclass = cls.superclass;
                 info.interfaces = cls.interfaces;
                 info.isAbstract = cls.isAbstract;
@@ -952,6 +981,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         for (const ast::Param& p : m->params) mi.comptimeParams.push_back(p.isComptime);
                         for (const ast::Param& p : m->params) mi.paramNames.push_back(p.name);
                         for (const ast::Param& p : m->params) mi.namedOnlyParams.push_back(p.requiresNamed);
+                        for (const ast::Param& p : m->params) mi.moveParams.push_back(p.type.isMove);
+                        mi.returnIsMove = m->returnType.isMove;
                         mi.isVariadic = m->isVariadic;
                         mi.isDeprecated = m->isDeprecated;
                         info.methods[m->name] = std::move(mi);
@@ -1625,6 +1656,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
                         for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
                         currentReturnType_ = typeRefStr(m->returnType);  // for the return null check
+                        currentReturnIsMove_ = m->returnType.isMove;
                         currentGenElem_ = m->genElem;  // spec 22.6: the type each `yield` must produce
                         currentThrows_.clear();
                         for (const auto& t : m->throwsTypes)
@@ -1638,12 +1670,14 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         for (const auto& e : c->requiresClauses) contracts.push_back(e.get());
                         for (const auto& e : c->ensuresClauses) contracts.push_back(e.get());
                         currentReturnType_ = "void";
+                        currentReturnIsMove_ = false;
                         currentThrows_.clear();
                         analyzeMethodBody(c->body, c->params, cls.name, /*inConstructor=*/true,
                                           contracts);
                     } else if (const auto* d =
                                    dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                         currentReturnType_ = "void";
+                        currentReturnIsMove_ = false;
                         currentThrows_.clear();
                         analyzeMethodBody(d->body, {}, cls.name, false);
                     }
@@ -1667,6 +1701,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                     // rather than in the class member loop, so `currentReturnType_` still held whatever
                     // the last CLASS method left in it. A method on an enum returns a type like any other.
                     currentReturnType_ = typeRefStr(m->returnType);
+                    currentReturnIsMove_ = m->returnType.isMove;
                     currentThrows_.clear();
                     analyzeMethodBody(m->body, m->params,
                                       m->isStatic ? std::string() : en.name, false, contracts);
@@ -1692,11 +1727,17 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     // Virtual builtin types (no prelude class, e.g. to avoid clashing with a user class named Math) live
     // in the System bundle (spec 34). Registering their (bundle, namespace) lets the strict full-path
     // import validate, e.g. `import System.Math.Math;` -> bundle System, namespace Math, type Math.
-    auto builtin = [&](const std::string& type, const std::string& ns) {
+    // `shadowable`: a builtin the standard library itself never calls, so a user class may take the
+    // name and lose nothing but its own access to the builtin. Math is the one, and deliberately so
+    // -- it exists as a virtual type rather than a prelude class precisely so that a program with its
+    // own Math compiles, which is a common enough name to be worth the exemption. Every other builtin
+    // IS used by the stdlib, so shadowing one breaks code the author never wrote.
+    auto builtin = [&](const std::string& type, const std::string& ns, bool shadowable = false) {
         typeNamespace_[type] = ns;
         typeBundle_[type] = "System";
+        if (!shadowable) builtinTypes_.insert(type);
     };
-    builtin("Math", "Math");      // spec 34.6: Math.* (no prelude class, avoids a user-Math clash)
+    builtin("Math", "Math", /*shadowable=*/true);  // spec 34.6: virtual so a user `class Math` works
     builtin("Memory", "");        // spec 17.8: low-level memory API class, sits directly in bundle System
                                   // -> `import System.Memory;` (bundle System, no namespace, type Memory)
     builtin("File", "IO");        // spec 34.4: static methods lower to runtime stdio
@@ -2073,6 +2114,7 @@ void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
             // moment the return TYPE was checked. A literal suffix returns a type like anything else.
             for (const ast::LiteralDecl& lit : ns.literals) {
                 currentReturnType_ = typeRefStr(lit.returnType);
+                currentReturnIsMove_ = false;
                 currentThrows_.clear();
                 analyzeMethodBody(lit.body, {lit.param}, /*thisClass=*/"", /*inConstructor=*/false);
             }
@@ -3188,6 +3230,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             // A return is the fourth destination: the value lands in the caller. Same rules.
             if (!currentReturnType_.empty() && currentReturnType_ != "void")
                 checkOwnershipAssign(currentReturnType_, *rs->value, rs->loc, "this return");
+            // spec 19.6: `returns move T` hands ownership out, and the return says so.
+            if (currentReturnIsMove_ &&
+                dynamic_cast<const ast::MoveExpr*>(rs->value.get()) == nullptr) {
+                error("this method is declared 'returns move " + currentReturnType_ +
+                          "', so it gives up ownership: write 'return move ...'",
+                      rs->loc);
+            }
             if (regionBinder_ && isRefType(currentReturnType_)) {
                 if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get());
                     rid != nullptr && activationOwned_.count(rid->name) > 0) {
@@ -3555,11 +3604,27 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
 
 void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
                                     const std::vector<std::string>& paramTypes,
-                                    const std::string& desc) {
+                                    const std::string& desc,
+                                    const std::vector<bool>* moveParams) {
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string at = typeOf(*args[i]);
         if (i >= paramTypes.size()) continue;
         const std::string& pt = paramTypes[i];
+        // spec 19.6: `move T` in the signature demands `move` at the call. The whole argument for
+        // the verbosity is that reading the CALL tells you ownership changed hands, without going to
+        // look at the declaration -- so a `move` parameter passed plainly defeats the only thing the
+        // annotation is for. It parsed and meant nothing until now: `isMove` existed in exactly two
+        // places in the compiler, the field and the line the parser wrote it on.
+        if (moveParams != nullptr && i < moveParams->size() && (*moveParams)[i] &&
+            dynamic_cast<const ast::MoveExpr*>(args[i].get()) == nullptr) {
+            const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(args[i].get());
+            error("parameter " + std::to_string(i + 1) + " of " + desc +
+                      " is declared 'move " + pt +
+                      "', so the call has to say so: pass 'move " +
+                      (aid != nullptr ? aid->name : std::string("value")) +
+                      "'. The name is finished after the call",
+                  args[i]->loc);
+        }
         if (at.empty() || pt.empty()) continue;
         if (!isNullableType(pt) && (at == "null" || isNullableType(at))) {
             // The part a reader cannot guess: a direct null test on a NAME narrows the type, but a test of a
@@ -3704,6 +3769,42 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(&expr)) {
         std::string s = "function<" + typeRefStr(lam->returnType);
         for (const auto& p : lam->params) s += "," + typeRefStr(p.type);
+        // ...and CHECK THE BODY. It used to build this signature and return, so a lambda body was a
+        // blind spot the size of every callback in the language: Thread bodies, collection
+        // predicates, FFI trampolines. Anything at all could be written in one -- a call to a method
+        // that does not exist, a return of the wrong type, a name never declared -- and the front
+        // end would hand it to codegen, which assumes a valid AST.
+        //
+        // Analyzed HERE rather than deferred, because a lambda captures the enclosing locals and
+        // this is the only moment they are in scope. The lambda's own return type replaces the
+        // enclosing method's for the duration so `return` inside it is checked against the right
+        // thing, and every flow fact that names a local is saved and restored -- a lambda body is a
+        // separate flow of control, and letting its `delete x` mark the enclosing method's `x` as
+        // freed would be the same cross-contamination that once failed 51 tests on one variable name.
+        if (!analyzingLambda_) {
+            analyzingLambda_ = true;
+            const std::string savedReturn = currentReturnType_;
+            const bool savedReturnMove = currentReturnIsMove_;
+            auto savedMoved = moved_, savedFreed = freed_, savedDeleted = deleted_;
+            auto savedNonNull = nonNull_, savedActivation = activationOwned_;
+            auto savedInit = init_;
+            currentReturnType_ = typeRefStr(lam->returnType);
+            currentReturnIsMove_ = false;
+            pushScope();
+            for (const ast::Param& p : lam->params)
+                declareLocal(p.name, LocalVar{typeRefStr(p.type), false});
+            for (const auto& st : lam->body.statements) analyzeStatement(*st);
+            popScope();
+            currentReturnType_ = savedReturn;
+            currentReturnIsMove_ = savedReturnMove;
+            moved_ = std::move(savedMoved);
+            freed_ = std::move(savedFreed);
+            deleted_ = std::move(savedDeleted);
+            nonNull_ = std::move(savedNonNull);
+            activationOwned_ = std::move(savedActivation);
+            init_ = std::move(savedInit);
+            analyzingLambda_ = false;
+        }
         return s + ">";
     }
     if (const auto* old = dynamic_cast<const ast::OldExpr*>(&expr)) {
@@ -4992,7 +5093,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                                 warn("'" + mem->member + "' is deprecated (spec 14.2)", call->loc);
                             bindNamedArgs(const_cast<ast::CallExpr*>(call), mit->second.paramNames,
                                           mit->second.namedOnlyParams, "method '" + mem->member + "'");
-                            checkCallArgs(call->args, mit->second.paramTypes, "'" + mem->member + "'");
+                            checkCallArgs(call->args, mit->second.paramTypes, "'" + mem->member + "'", &mit->second.moveParams);
                             checkComptimeArgs(call->args, mit->second.comptimeParams,
                                               "'" + mem->member + "'");
                             if (call->args.size() != mit->second.paramCount) {
@@ -5289,7 +5390,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 warn("'" + mem->member + "' is deprecated (spec 14.2)", call->loc);
             bindNamedArgs(const_cast<ast::CallExpr*>(call), m->paramNames, m->namedOnlyParams,
                           "method '" + mem->member + "'");
-            checkCallArgs(call->args, m->paramTypes, "'" + mem->member + "'");
+            checkCallArgs(call->args, m->paramTypes, "'" + mem->member + "'", &m->moveParams);
             // region-binder INTERPROCEDURAL escape check (§8): if the callee stores parameter i into its
             // receiver (per the escape summary) and we pass an activation-owned object there, it dangles
             // once this method returns -- unless the receiver is itself activation-local (same lifetime).
@@ -5373,7 +5474,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                         if (m->isDeprecated) warn("'" + name + "' is deprecated (spec 14.2)", call->loc);
                         bindNamedArgs(const_cast<ast::CallExpr*>(call), m->paramNames, m->namedOnlyParams,
                                       "method '" + name + "'");
-                        checkCallArgs(call->args, m->paramTypes, "'" + name + "'");
+                        checkCallArgs(call->args, m->paramTypes, "'" + name + "'", &m->moveParams);
                         checkComptimeArgs(call->args, m->comptimeParams, "'" + name + "'");
                         if (!m->isProperty && call->args.size() != m->paramCount) {
                             error("method '" + name + "' expects " + std::to_string(m->paramCount) +

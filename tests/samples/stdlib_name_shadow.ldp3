@@ -1,0 +1,52 @@
+import System.IO.Console;
+
+// A user type may share a simple name with a standard-library one. `qualifyNamespaces` makes the two
+// distinct, and each namespace keeps meaning what it wrote.
+//
+// It did not. The stdlib is the one body of code in the program that never imports itself -- its
+// namespaces refer to each other's types directly -- so when a user class made a stdlib name
+// ambiguous, every OTHER stdlib namespace using that name resolved to nothing and kept the bare name,
+// which had just been renamed out from under it. And a renamed class lost its own static
+// self-calls, because a bare identifier in receiver position was not run through the substitution.
+//
+// Declaring `class Regex` produced four "use of undeclared variable 'Regex'" errors inside <prelude>.
+program StdlibNameShadow;
+
+public bundle main {
+    public namespace app {
+
+        // Every one of these is also a standard-library class.
+        public class Regex {
+            public mutable int v;
+            public constructor Regex(int v) { this.v = v; }
+            public method twice() returns int { return this.v * 2; }
+        }
+
+        public class Scanner {
+            public mutable int n;
+            public constructor Scanner(int n) { this.n = n; }
+            public method get() returns int { return this.n; }
+        }
+
+        public class Files {
+            public mutable int k;
+            public constructor Files(int k) { this.k = k; }
+            public method get() returns int { return this.k; }
+        }
+
+        // ...and Math is a virtual builtin precisely so a program may take the name (spec 34.6).
+        public class Math {
+            public static method half(int x) returns int { return x / 2; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Regex r = new Regex(21) on stack;
+                Scanner s = new Scanner(4) on stack;
+                Files f = new Files(5) on stack;
+                System.IO.Console.println($"{r.twice()} {s.get()} {f.get()} {Math.half(10)}");
+                return;
+            }
+        }
+    }
+}

@@ -89,6 +89,11 @@ struct MethodInfo {
     std::vector<bool> comptimeParams;     // spec 32.4: which params are `comptime` (arg must be const)
     std::vector<std::string> paramNames;  // spec 22.4: for matching named arguments at the call site
     std::vector<bool> namedOnlyParams;    // spec 22.4: `requires named` -- must be passed by name
+    // spec 19.6: `move T` on a parameter or return type. Carried as its own flag because
+    // canonicalType() flattens a TypeRef to a string and drops it -- which is why this annotation
+    // parsed and then meant nothing for as long as it existed.
+    std::vector<bool> moveParams;
+    bool returnIsMove = false;
     bool isDeprecated = false;            // spec 14.2: each call site gets a warning
 };
 struct ClassInfo {
@@ -110,6 +115,11 @@ struct ClassInfo {
     bool ctorHasParams = false;        // a constructor with at least one parameter was declared
     std::vector<std::string> ctorParamTypes;  // declared constructor parameter types
     std::vector<std::string> permits;  // sealed permits list
+    // Where this type was declared. Kept so a SECOND declaration of the same simple name can be
+    // reported against the one the author wrote, rather than wherever the displaced type happened to
+    // be used -- which, when the displaced one is a stdlib type, is somewhere inside the prelude.
+    SourceLocation declLoc;
+    bool fromPrelude = false;
 };
 
 // A catalog (spec 12.3): an interface for enums. Records the values an
@@ -236,8 +246,11 @@ private:
     std::string typeOf(const ast::Expr& expr);  // "" on error
     // Type-check call/constructor arguments against declared parameter types (spec 6.4, 3.7):
     // per-argument subtype compatibility and null-safety. `desc` names the callee for messages.
+    // `moveParams` is spec 19.6's `move T` per parameter, when the callee is known. Optional because
+    // a constructor and a methodref reach here without a MethodInfo to read it from.
     void checkCallArgs(const std::vector<ast::ExprPtr>& args,
-                       const std::vector<std::string>& paramTypes, const std::string& desc);
+                       const std::vector<std::string>& paramTypes, const std::string& desc,
+                       const std::vector<bool>* moveParams = nullptr);
     // spec 32.4: the argument to a `comptime` parameter must be a compile-time constant.
     bool isConstArg(const ast::Expr& e);
     void checkComptimeArgs(const std::vector<ast::ExprPtr>& args,
@@ -358,6 +371,16 @@ private:
     std::vector<std::string> currentThrows_;  // base names in the method's `throws` clause (spec 21.1)
     std::vector<std::vector<std::string>> catchStack_;  // enclosing try's caught types (base names)
     std::string currentReturnType_;  // declared return type of the method being analyzed (null-safety)
+    bool currentReturnIsMove_ = false;  // spec 19.6: `returns move T` -- every return must say `move`
+    // Guards the lambda-body check against reentering itself. `typeOf` on a lambda is asked more
+    // than once for the same node (the declaration, then each use), and a lambda inside a lambda
+    // would otherwise nest the save/restore; one level is all the checking needs.
+    bool analyzingLambda_ = false;
+    // Type names the compiler answers for itself (spec 34) -- File, Time, Net, Memory, Math and the
+    // rest. They have no prelude class, so a user class of the same name did not look like a
+    // redeclaration to anything: it simply took the name over, and the failure surfaced as the
+    // PRELUDE being told to import the user's type.
+    std::unordered_set<std::string> builtinTypes_;
     // spec 22.6: inside a generator's parked body, the element type of the Iterator<T> it produces --
     // every `yield` must produce it. Empty in any other method.
     std::string currentGenElem_;

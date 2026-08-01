@@ -505,6 +505,42 @@ add_test(NAME codegen_bce_affine_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# A user type may share a simple name with a stdlib one; the stdlib keeps meaning its own.
+add_test(NAME codegen_stdlib_name_shadow_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/stdlib_name_shadow.ldp3"
+    "-DCONTAINS=42 4 5 5"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# ...but a name the COMPILER provides cannot be taken over, because the stdlib calls it.
+add_test(NAME sema_rejects_builtin_type_name
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/builtin_name_bad.ldp3")
+set_tests_properties(sema_rejects_builtin_type_name PROPERTIES
+    PASS_REGULAR_EXPRESSION "is a type the compiler provides")
+
+# A lone string literal is text, not a printf format: `%` in it is a percent sign.
+add_test(NAME codegen_percent_literal_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/percent_literal.ldp3"
+    "-DCONTAINS=progress: 50% done"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# spec 19.6: `move T` in a signature demands `move` at the call and at the return.
+add_test(NAME sema_rejects_missing_move_at_call
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/move_signature_bad.ldp3")
+set_tests_properties(sema_rejects_missing_move_at_call PROPERTIES
+    PASS_REGULAR_EXPRESSION "has to say so")
+
+# A lambda body is type-checked like any other body.
+add_test(NAME sema_checks_lambda_body
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_body_bad.ldp3")
+set_tests_properties(sema_checks_lambda_body PROPERTIES
+    PASS_REGULAR_EXPRESSION "LDP3-0101")
+
 # `movable` is enforced at all four destinations a value can reach, not only at a local's declaration
 # and reassignment. The sample trips the field, the argument and the return in one file.
 add_test(NAME sema_rejects_movable_without_move
