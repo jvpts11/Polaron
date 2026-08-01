@@ -519,6 +519,23 @@ constexpr Row kCatalog[] = {
         "or allocated setup in `onClassLoad`. The split is the same one the language draws everywhere "
         "else: what the compiler can know goes in the declaration, what needs the machine goes in code." }},
 
+    {Code::MoveRequired, {
+        "LDP3-0404", "a movable value is transferred, never copied -- say so",
+        "`movable` on a class means its instances have exactly one owner at a time and travel by handing "
+        "that ownership over. A plain binding would read as a copy, and for a type whose whole point is a "
+        "single owner there is no such thing as a copy -- so the transfer is written down: `move x`. The "
+        "rule holds at every destination a value can reach, which is a declaration, an assignment to a "
+        "variable or a field, a call argument, and a return. Three of those four were unchecked until "
+        "recently, which meant the modifier was enforced exactly where it did not matter and ignored on "
+        "every path by which a value outlives the method it was written in.",
+        "Write `move` at the binding: `this.field = move t`, `f(move t)`, `return move t`. After it the "
+        "source name is gone, which is the point -- reading it again is a separate diagnostic. If you "
+        "wanted both to keep it and to pass it, the type is telling you it cannot be had: share it by "
+        "pointer or reference instead, or drop `movable` if instances really are copyable.",
+        "Decide per type whether instances are values (copyable), single-owner (`movable`/`unique`), or "
+        "shared (used through `T*`/`T&`), and say it once on the declaration. Every call site then reads "
+        "as what it is." }},
+
     {Code::EscapesFrame, {
         "LDP3-1721", "this hands out a pointer to storage that is about to disappear",
         "An object allocated in a method's own frame -- `new X()`, or `new X() on stack` -- lives exactly as "
@@ -656,6 +673,9 @@ constexpr Rule kRules[] = {
 
     {"initializer for static field", Code::StaticInitNotConst},
     {"region-binder:", Code::EscapesFrame},
+    // Before the generic "cannot move" rule -- first match wins, and that one explains the opposite
+    // mistake (moving something unmovable, not failing to move something movable).
+    {"is movable, so it is transferred", Code::MoveRequired},
 
     {"must return a value", Code::MissingReturn},
     {"paths return", Code::MissingReturn},

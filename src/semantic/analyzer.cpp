@@ -957,6 +957,21 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         info.methods[m->name] = std::move(mi);
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
+                        // One constructor per class, for the same reason there is one method per
+                        // name: LDP3 has no overloading. A second one was accepted in silence and
+                        // its parameters were APPENDED to the first's, so `P(int)` next to
+                        // `P(int, int)` produced a three-parameter phantom and `new P(1)` was
+                        // rejected with "expects 3 arguments" -- a message with no relation to the
+                        // mistake, pointing at the call instead of the declaration. Codegen then
+                        // emitted only the first, so even a program that satisfied the phantom ran
+                        // the wrong body.
+                        if (info.hasConstructor)
+                            error("class '" + cls.name +
+                                      "' already has a constructor -- LDP3 has no overloading, so a "
+                                      "class has exactly one. Give the alternatives distinct names "
+                                      "as static factory methods, or take one constructor with the "
+                                      "widest parameter list",
+                                  c->loc);
                         info.hasConstructor = true;
                         if (!c->params.empty()) info.ctorHasParams = true;
                         for (const ast::Param& p : c->params)
@@ -2488,8 +2503,18 @@ void SemanticAnalyzer::checkRegionAccepts(const std::string& region, const std::
     }
 }
 
+// The ONE place the value-ownership rules are decided, for every place a value can land.
+//
+// It used to be reachable from two: a local's declaration and a local's reassignment. So `movable`
+// meant "you must write move" when the destination was a variable, and meant nothing when it was a
+// field, an argument, or a return -- which is to say it meant nothing where ownership matters, since
+// those three are exactly the ways a value outlives the method it was written in. The argument path
+// had grown its own near-copy of the rules that handled `unique` and skipped `movable` outright.
+//
+// `what` names the destination so the fix reads right at each site; the rules themselves are here
+// and only here.
 void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const ast::Expr& rhs,
-                                            SourceLocation loc) {
+                                            SourceLocation loc, const std::string& what) {
     if (isRefType(targetType)) return;  // pointers/refs share; no move discipline
     const ClassInfo* ci = lookupClass(baseType(targetType));
     if (ci == nullptr) return;  // not a class value
@@ -2499,7 +2524,19 @@ void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const
         rhsId != nullptr || dynamic_cast<const ast::MemberExpr*>(&rhs) != nullptr;
     if (!rhsIsLValue || rhsIsMove) return;  // a fresh `new`, a `move`, or a temporary is fine
     if (ci->isMovable) {
-        error("'" + ci->name + "' is movable; transfer ownership with 'move' (e.g. = move x)",
+        // Name the source as it is WRITTEN, so the hint can be pasted. `move x` where the source was
+        // `this.held` is advice that does not compile.
+        std::string name = "the value";
+        if (rhsId != nullptr) {
+            name = rhsId->name;
+        } else if (const auto* rhsMem = dynamic_cast<const ast::MemberExpr*>(&rhs)) {
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(rhsMem->object.get()))
+                name = oid->name + "." + rhsMem->member;
+            else
+                name = rhsMem->member;
+        }
+        error("'" + ci->name + "' is movable, so it is transferred and never copied: " + what +
+                  " needs an explicit 'move' (move " + name + ")",
               loc);
     } else if (ci->isUnique && rhsId != nullptr) {
         moved_.insert(rhsId->name);  // unique: a plain assignment is an implicit move
@@ -2508,8 +2545,9 @@ void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const
         // cannot be value-copied -- the shallow copy would alias the unique and break its single-owner
         // guarantee (a movable field is deep-copied, but a unique one has no valid copy). Share by
         // pointer/reference instead.
-        error("cannot copy '" + ci->name + "': it owns a 'unique' field, which may not be duplicated "
-              "(spec 19.2) -- share it by pointer ('" + ci->name + "*') or reference",
+        error("cannot copy '" + ci->name + "' into " + what +
+                  ": it owns a 'unique' field, which may not be duplicated (spec 19.2) -- share it "
+                  "by pointer ('" + ci->name + "*') or reference",
               loc);
     }
 }
@@ -2870,7 +2908,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 mid != nullptr && activationOwned_.count(mid->name) > 0)
                 activationOwned_.insert(vd->name);
         }
-        if (vd->init) checkOwnershipAssign(declType, *vd->init, vd->loc);
+        if (vd->init) checkOwnershipAssign(declType, *vd->init, vd->loc, "this declaration");
         return;
     }
     if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
@@ -2938,7 +2976,16 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             activationOwned_.erase(id->name);  // reassigned: no longer the tracked activation-owned object
             extracted_.erase(id->name);  // ... including after an `x = extract x from region R;`
             const LocalVar* var = lookupLocal(id->name);
-            if (var != nullptr) checkOwnershipAssign(var->type, *assign->value, assign->loc);
+            if (var != nullptr) checkOwnershipAssign(var->type, *assign->value, assign->loc, "this assignment");
+        } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
+            // A FIELD is an assignment target too. The ownership rules lived only on the two
+            // narrowest paths -- a local's declaration and a local's reassignment -- so `movable`
+            // meant "you must write move" for a variable and nothing at all for a field, which is
+            // the place ownership actually matters, since a field is what outlives the method.
+            const std::string ft = fieldTypeOf(*mem);
+            if (!ft.empty())
+                checkOwnershipAssign(ft, *assign->value, assign->loc,
+                                     "field '" + mem->member + "'");
         }
         return;
     }
@@ -3138,6 +3185,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             // reference, because the frame goes away the instant the caller has it. A heap object is
             // not caught -- its pointer dies here, its storage does not -- which is exactly the
             // factory idiom and has to keep working.
+            // A return is the fourth destination: the value lands in the caller. Same rules.
+            if (!currentReturnType_.empty() && currentReturnType_ != "void")
+                checkOwnershipAssign(currentReturnType_, *rs->value, rs->loc, "this return");
             if (regionBinder_ && isRefType(currentReturnType_)) {
                 if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get());
                     rid != nullptr && activationOwned_.count(rid->name) > 0) {
@@ -3536,20 +3586,10 @@ void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
         // unique, breaking its single-owner guarantee (the same reason a value assignment is rejected --
         // see checkOwnershipAssign). Reject it for a by-value parameter; a fresh temporary or an explicit
         // `move` is fine, and a pointer/reference parameter shares rather than copies.
-        if (!isRefType(pt)) {
-            const ClassInfo* pci = lookupClass(baseType(pt));
-            const auto* argId = dynamic_cast<const ast::IdentifierExpr*>(args[i].get());
-            const bool argIsMove = dynamic_cast<const ast::MoveExpr*>(args[i].get()) != nullptr;
-            const bool argIsLValue =
-                argId != nullptr || dynamic_cast<const ast::MemberExpr*>(args[i].get()) != nullptr;
-            if (pci != nullptr && !pci->isMovable && !pci->isUnique && argIsLValue && !argIsMove &&
-                classHasUniqueField(baseType(pt))) {
-                error("cannot pass '" + pci->name + "' by value to " + desc +
-                          ": it owns a 'unique' field, which may not be duplicated (spec 19.2) -- "
-                          "pass it by pointer ('" + pci->name + "*') or reference",
-                      args[i]->loc);
-            }
-        }
+        // A by-value parameter is a destination like any other, so it goes through the one place the
+        // ownership rules live rather than the near-copy that used to be inlined here -- a copy that
+        // handled `unique` and skipped `movable` entirely, which is half the feature.
+        checkOwnershipAssign(pt, *args[i], args[i]->loc, "the parameter of " + desc);
     }
 }
 

@@ -505,6 +505,21 @@ add_test(NAME codegen_bce_affine_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# `movable` is enforced at all four destinations a value can reach, not only at a local's declaration
+# and reassignment. The sample trips the field, the argument and the return in one file.
+add_test(NAME sema_rejects_movable_without_move
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/ownership_sites_bad.ldp3")
+set_tests_properties(sema_rejects_movable_without_move PROPERTIES
+    PASS_REGULAR_EXPRESSION "LDP3-0404")
+
+# One constructor per class, for the same reason there is one method per name. A second one used to be
+# accepted and its parameters APPENDED to the first's, so the error landed on the call site as
+# "expects 3 arguments" -- a message with no relation to the mistake.
+add_test(NAME sema_rejects_second_constructor
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/second_constructor_bad.ldp3")
+set_tests_properties(sema_rejects_second_constructor PROPERTIES
+    PASS_REGULAR_EXPRESSION "already has a constructor")
+
 # The region binder is ON by default. Returning a pointer to an object in this method's own frame is
 # rejected -- the gap the analysis was named for and did not close until now.
 add_test(NAME sema_rejects_escape_by_return

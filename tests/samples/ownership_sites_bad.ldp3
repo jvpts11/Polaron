@@ -1,0 +1,55 @@
+import System.IO.Console;
+
+// `movable` means transferred and never copied. It was enforced in exactly two places -- a local's
+// declaration and a local's reassignment -- so it meant something when the destination was a
+// variable and nothing at all when it was a FIELD, an ARGUMENT, or a RETURN.
+//
+// Those three are precisely the ways a value outlives the method it was written in, which is to say
+// the modifier was checked everywhere except where it matters. All four sites go through one rule now.
+program OwnershipSitesBad;
+
+public bundle main {
+    public namespace app {
+
+        public movable class Ticket {
+            public mutable int id;
+            public constructor Ticket(int id) {
+                this.id = id;
+            }
+        }
+
+        public class Desk {
+            private mutable Ticket held;
+
+            public constructor Desk() {
+                this.held = new Ticket(0);
+            }
+
+            // (1) into a field
+            public method keep(Ticket t) returns void {
+                this.held = t;
+                return;
+            }
+
+            // (2) into an argument
+            public method forward(Ticket t) returns void {
+                this.keep(t);
+                return;
+            }
+
+            // (3) out through a return
+            public method release() returns Ticket {
+                Ticket t = this.held;
+                return t;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Desk d = new Desk() on stack;
+                System.IO.Console.println("unreachable");
+                return;
+            }
+        }
+    }
+}

@@ -215,9 +215,11 @@ private:
     void analyzeStatement(const ast::Stmt& stmt);
     void checkAssignTarget(const ast::Expr& target, const std::string& valueType,
                            SourceLocation loc, const ast::Expr* valueExpr = nullptr);
-    // Enforces move discipline when a class value is bound from `rhs`.
+    // Enforces move discipline wherever a class value is bound from `rhs`: a declaration, an
+    // assignment to a variable OR a field, a call argument, a return. `what` names the destination
+    // so the fix reads right at each of them.
     void checkOwnershipAssign(const std::string& targetType, const ast::Expr& rhs,
-                              SourceLocation loc);
+                              SourceLocation loc, const std::string& what);
     // True if `className` owns a `unique` field, directly, through a superclass, or through a value
     // sub-object -- such an object may not be value-copied (spec 19.2).
     bool classHasUniqueField(const std::string& className);
