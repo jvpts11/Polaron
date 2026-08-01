@@ -1,0 +1,34 @@
+import System.IO.Console;
+
+// A static field may be written in terms of literals, consts, comptime methods, and static fields
+// DECLARED EARLIER -- the same declaration-order rule namespace consts follow.
+//
+// This used to fold to nothing and emit `i32 0` with no diagnostic. The number below was the minimum
+// size of a village founding party in a real program; being silently zero meant every lone wanderer
+// founded a village, and thirteen thousand were founded in one run before anybody read the .ll.
+program StaticFromStatic;
+
+public bundle main {
+    public namespace app {
+
+        public class Rules {
+            public static int VILLAGE = 120;
+            public static int HAMLET = Rules.VILLAGE / 4;
+            public static int PAIR = Rules.HAMLET + Rules.VILLAGE;
+            public static float SPAN = 2.5;
+            public static float HALF = Rules.SPAN / 2.0;
+            public static boolean BIG = true;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"village={Rules.VILLAGE} hamlet={Rules.HAMLET} pair={Rules.PAIR}");
+                System.IO.Console.println($"span={Rules.SPAN} half={Rules.HALF}");
+                if (Rules.HAMLET == 30 && Rules.PAIR == 150 && Rules.BIG) {
+                    System.IO.Console.println("statics fold");
+                }
+                return;
+            }
+        }
+    }
+}

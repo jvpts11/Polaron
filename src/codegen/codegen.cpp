@@ -12154,6 +12154,51 @@ struct CodeGenerator::Impl {
     // value at startup and whatever it accumulates for the lifetime of the run, like a static
     // field. Per-variable reattach within a run is via the persist blocks (see getPersistBlock).
     void emitStaticFields() {
+        // Pass one: fold every static field whose initializer IS a compile-time constant into the
+        // same maps the comptime evaluator reads, keyed "Class.field" -- the key it already uses for
+        // a class-level const.
+        //
+        // Without this pass, `public static int HAMLET = Simulation.VILLAGE / 4;` -- with VILLAGE a
+        // static int in the same class -- folded to nothing, and the global below was emitted as
+        // `i32 0` with no diagnostic at all. In agents-exe that number was the minimum size of a
+        // village founding party, so it was zero, so every lone wanderer founded a village and the
+        // world produced thirteen thousand of them in one run. Four separate simulation rules were
+        // rewritten chasing the symptom before anybody read the .ll.
+        //
+        // Iterated to a fixpoint rather than done in declaration order, so the rule is one sentence
+        // and has no exceptions: a static may be written in terms of any other static, and the only
+        // thing rejected is a CYCLE. Order-dependence would be a second rule to learn and a second
+        // way to get a zero -- `A = B / 4;` above `B = 120;` would silently be `A = 0` again, which
+        // is the very failure this is closing. Each round must add at least one value, so the loop
+        // runs at most once per static field.
+        std::vector<std::pair<std::string, const ast::FieldDecl*>> statics;
+        for (const ast::Bundle& bundle : program.bundles)
+            for (const ast::Namespace& ns : bundle.namespaces)
+                for (const ast::ClassDecl& cls : ns.classes)
+                    for (const ast::MemberPtr& member : cls.members)
+                        if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
+                            f != nullptr && f->isStatic && f->init != nullptr)
+                            statics.emplace_back(cls.name + "." + f->name, f);
+        for (std::size_t round = 0; round < statics.size(); ++round) {
+            bool progressed = false;
+            for (const auto& [key, f] : statics) {
+                if (constIntVals.count(key) > 0 || constDblVals.count(key) > 0) continue;
+                if (isFloatType(staticFieldType[key])) {
+                    double d;
+                    if (foldConstDouble(*f->init, d)) {
+                        constDblVals[key] = d;
+                        progressed = true;
+                    }
+                } else {
+                    long long v;
+                    if (foldConstInt(*f->init, v)) {
+                        constIntVals[key] = v;
+                        progressed = true;
+                    }
+                }
+            }
+            if (!progressed) break;
+        }
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
                 for (const ast::ClassDecl& cls : ns.classes) {
@@ -12169,6 +12214,17 @@ struct CodeGenerator::Impl {
                         llvm::Type* lty = llvmType(ftype);
                         llvm::Constant* init =
                             f->init ? constFold(*f->init, ftype) : nullptr;
+                        if (f->init != nullptr && init == nullptr && isNumericStaticType(ftype)) {
+                            // An initializer that was written and cannot be evaluated is the failure
+                            // this whole pass exists to stop being silent. Zeroing it is never what
+                            // was meant, and the resulting program is wrong in a way no test of the
+                            // program's OUTPUT can localise back to this line.
+                            error("the initializer for static field '" + key +
+                                      "' cannot be evaluated before the program starts: it is "
+                                      "neither a constant nor built from other static fields "
+                                      "without a cycle",
+                                  f->init->loc);
+                        }
                         if (init == nullptr) init = llvm::Constant::getNullValue(lty);
                         staticGlobals[key] =
                             new llvm::GlobalVariable(module, lty, /*isConstant=*/false,
@@ -12177,6 +12233,13 @@ struct CodeGenerator::Impl {
                 }
             }
         }
+    }
+
+    // Static fields whose initializer MUST fold: the ones whose LLVM type carries a value rather
+    // than a pointer. A `static String s = "x"` or a `static int[] a` is initialized by other means
+    // (the string pool, an onClassLoad block) and a null global there is correct, not a mistake.
+    bool isNumericStaticType(const std::string& t) const {
+        return isIntName(t) || isFloatType(t) || t == "boolean" || t == "char";
     }
 
     // Prepares the .ldb's symbols for both linking modes. The bundle's own functions are dll-exported

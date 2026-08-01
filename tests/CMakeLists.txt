@@ -490,13 +490,38 @@ add_test(NAME codegen_bom_source_runs COMMAND "${CMAKE_COMMAND}"
 
 # Affine bounds-check hoisting (index `base + i`) in for- and while-loops + a small matmul: the versioned
 # result must equal the fully-checked one.
+#
+# -DOPT=-O2 is the whole point of this test and it was missing. hoistBoundsChecks only runs when
+# optLevel > 0, so at -O0 -- the default -- this compiled a program with every check in place and
+# asserted that it printed the right answer, which it would have with the pass deleted. A bounds check
+# eliminated without proof, the one failure mode that turns a safe language into an unsafe one, could
+# not have been caught here.
 add_test(NAME codegen_bce_affine_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
     "-DCLANG=${LDP3_CLANG}"
+    "-DOPT=-O2"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bce_affine.ldp3"
     "-DCONTAINS=sum=55502"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# A static field may be written in terms of other static fields, in any order. This folded to nothing
+# and emitted `i32 0` with no diagnostic until LDP3-0608 existed -- see the sample for what that cost.
+add_test(NAME codegen_static_from_static_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/static_from_static.ldp3"
+    "-DCONTAINS=statics fold"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# ...and one that cannot be evaluated in any order is an error, not a zero. Pinned on the CODE and
+# not the prose, which is the pattern every new rejection test follows.
+add_test(NAME codegen_rejects_static_init_cycle
+    COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/static_init_not_const_bad.ldp3"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/static_init_not_const_bad.ll")
+set_tests_properties(codegen_rejects_static_init_cycle PROPERTIES
+    PASS_REGULAR_EXPRESSION "LDP3-0608")
 
 # The this./ClassName. receiver on a same-class method call is optional: a bare `name(...)` resolves to
 # this.name / ClassName.name (static, instance, and inside constructors) and runs.
@@ -586,6 +611,7 @@ add_test(NAME codegen_matmul_class_interchange_runs COMMAND "${CMAKE_COMMAND}"
 add_test(NAME codegen_bce_hoist_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
     "-DCLANG=${LDP3_CLANG}"
+    "-DOPT=-O2"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bce_hoist.ldp3"
     "-DCONTAINS=sum=1498500"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"

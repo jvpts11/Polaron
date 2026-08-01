@@ -9737,10 +9737,18 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     for (const auto& [name, path, fp] : dynBundleInfo)
         codegen.addDynamicBundle(name, path, fp);  // runtime-resolving thunks for --use-dynamic
     if (!codegen.generate()) {
+        // Through the SAME renderer the front end uses. Codegen's errors used to be printed raw --
+        // no code, no source line, no caret, no why/fix/prevent, and invisible to `ldp3 explain` --
+        // so which half of the compiler noticed a mistake decided how well it was explained. That is
+        // not a distinction anybody writing LDP3 can see or should have to. `classify` reads the
+        // message the same way it does for a sema error that predates its own code.
         for (const ldp3::CodegenError& e : codegen.errors()) {
-            std::fprintf(stderr, "%.*s:%d:%d: codegen error: %s\n",
-                         static_cast<int>(e.loc.file.size()), e.loc.file.data(), e.loc.line,
-                         e.loc.col, e.message.c_str());
+            const std::string file(e.loc.file);
+            std::fputs(ldp3::diag::render("error", file, e.loc.line, e.loc.col, e.message,
+                                          ldp3::diag::classify(e.message),
+                                          sourceLineAt(e.loc.file, e.loc.line), g_concise)
+                           .c_str(),
+                       stderr);
         }
         return 1;
     }
