@@ -1,0 +1,27 @@
+import System.IO.Console;
+import System.Memory;
+
+// `address` sits in the integer family so the arithmetic on it works, and that made it widen to
+// `long` like any other integer -- so `address a = someLong;` silently turned a number into a
+// pointer and `long n = someAddress;` silently turned a pointer into a number. In a language whose
+// stated rule is that there is no exploitable undefined behaviour, that conversion is exactly the
+// one somebody has to write down.
+//
+// Freestanding is exempt, and not as a concession: on bare metal, making an address out of an
+// integer IS the work (spec 36) -- the memory-mapped register at 0xB8000 is a number until you say
+// otherwise, and no allocator is going to hand you the address instead. Measured before landing:
+// twelve sites in the whole hosted world against two hundred and ten in the pico kernel.
+program AddressIntBad;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable long n = 4096;
+                address a = n;              // <-- a number is not an address
+                System.IO.Console.println($"{a}");
+                return;
+            }
+        }
+    }
+}
