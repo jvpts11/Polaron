@@ -519,6 +519,22 @@ constexpr Row kCatalog[] = {
         "or allocated setup in `onClassLoad`. The split is the same one the language draws everywhere "
         "else: what the compiler can know goes in the declaration, what needs the machine goes in code." }},
 
+    {Code::EscapesFrame, {
+        "LDP3-1721", "this hands out a pointer to storage that is about to disappear",
+        "An object allocated in a method's own frame -- `new X()`, or `new X() on stack` -- lives exactly as "
+        "long as the call. A pointer or reference to it that leaves the call (returned, or stored into "
+        "something that outlives the call) is dangling the instant it arrives: the caller holds an address "
+        "into a frame that has already been reused. Nothing downstream can catch it, because at the machine "
+        "level a live pointer and a dangling one are the same 64 bits.",
+        "Say where the object should live. `on heap` gives it a lifetime longer than the call and makes the "
+        "caller responsible for `delete`; a region gives it the region's lifetime; returning by value gives "
+        "the caller a copy and nobody a lifetime problem at all. If the object genuinely is scratch space "
+        "for this call, keep it here and hand out the RESULT rather than the object.",
+        "Decide an object's lifetime where it is allocated, not where it is used -- the allocation is the "
+        "one place that has to know. If a whole program deliberately traffics in pointers to dead frames, "
+        "`--no-region-binder` turns these checks off for that program; there is no per-line version, "
+        "because a line that looks ordinary is exactly how this mistake survives review." }},
+
     {Code::ComptimeConstant, {
         "LDP3-0807", "this must be a compile-time constant",
         "Some positions are evaluated by the compiler, not at run time -- a `comptime` argument, a `fixed` "
@@ -639,6 +655,7 @@ constexpr Rule kRules[] = {
     {"synchronized requires", Code::TypeMismatch},
 
     {"initializer for static field", Code::StaticInitNotConst},
+    {"region-binder:", Code::EscapesFrame},
 
     {"must return a value", Code::MissingReturn},
     {"paths return", Code::MissingReturn},

@@ -1,0 +1,42 @@
+import System.IO.Console;
+
+// Returning a pointer to an object that lives in this method's own frame. The frame is gone by the
+// time the caller reads it, so the pointer is dangling before it is ever used once.
+//
+// This compiled clean in every configuration until now -- including with the region binder switched
+// on, which is the analysis named for exactly this. Chapter 5 promises the opposite in as many words.
+//
+// `make` allocates on the stack (a bare `new` for an object defaults to stack) and hands the address
+// out. `borrow` does the same thing one alias further along, to show that renaming does not launder it.
+program EscapeReturnBad;
+
+public bundle main {
+    public namespace app {
+
+        public class Point {
+            public mutable int x;
+            public constructor Point(int x) { this.x = x; }
+        }
+
+        public class Factory {
+            public static method make() returns Point* {
+                Point* p = new Point(7);
+                return p;
+            }
+
+            public static method borrow() returns Point* {
+                Point* p = new Point(9);
+                Point* alias = p;
+                return alias;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Point* p = Factory.make();
+                System.IO.Console.println($"{p.x}");
+                return;
+            }
+        }
+    }
+}
