@@ -13,6 +13,9 @@ struct Toolchain {
     // Visual Studio / Windows SDK is required -- LDP3 works on a bare Windows 10/11 x64 machine.
     std::string libDir;      // bundled CRT/import libs directory, or "" (use the system toolchain)
     std::string lldLink;     // bundled lld-link.exe, or ""
+    std::string ldLld;       // ELF linker ld.lld (sibling of clang, or $LDP3_LD_LLD) -- freestanding link
+    std::string objcopy;     // llvm-objcopy (sibling of clang, or $LDP3_OBJCOPY) -- flat/binary images
+    std::string xorriso;     // xorriso (PATH or $LDP3_XORRISO) -- bootable .iso images; may be ""
 };
 
 // Directory containing the running ldp3 executable.

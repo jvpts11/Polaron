@@ -1,22 +1,40 @@
 import System.IO.Console;
 program Comefrom;
 
-// comefrom (spec 7.10, same-method): `comefrom L` transfers control to `label L;`. It serves both
-// directions -- a forward jump (skip ahead) and a backward jump (retry; locals keep their values).
+// comefrom (spec 7.10, same-method). The jump is written at the DESTINATION, not at the source:
+// `comefrom L;` declares that when control reaches `label L;`, it is HIJACKED and lands here instead.
+// The label site says nothing about it -- that inversion is the whole construct, and the reason it reads
+// as action at a distance is that it is action at a distance.
+//
+// It is not a goto spelled backwards. `comefrom L` does not go anywhere; reaching `label L` does.
+//
+// Two shapes, both falling out of the one rule:
+//
+//   FORWARD (steal): the label comes first, so reaching it skips everything between the label and the
+//   comefrom -- the statements after the label never run at all.
+//
+//   BACKWARD (retry): the comefrom comes first, so it is an ordinary no-op on the way down and a landing
+//   point on the way back. Reaching the label sends control up to it again, with the locals keeping their
+//   values -- which makes `comefrom` at the top plus `label` under a condition into a loop whose exit is
+//   written where the condition is.
 public bundle main {
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
-                mutable int a = 1;
-                if (a == 1) { comefrom skip; }     // forward: jump past the next line
-                System.IO.Console.printf("X\n");           // skipped
+                System.IO.Console.printf("start\n");
+
                 label skip;
+                System.IO.Console.printf("X\n");        // never runs: control is stolen at `label skip`
+                return;
+
+                comefrom skip;                          // ... and lands here
                 System.IO.Console.printf("forward ok\n");
+
                 mutable int n = 0;
-                label loop;
+                comefrom loop;                          // first time through, a no-op: fall straight in
                 n = n + 1;
                 System.IO.Console.printf("n=%d\n", n);
-                if (n < 3) { comefrom loop; }       // backward: retry (n is preserved)
+                if (n < 3) { label loop; }              // reaching this sends control back up
                 System.IO.Console.printf("done\n");
                 return;
             }

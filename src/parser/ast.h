@@ -78,10 +78,42 @@ inline std::string arrayDimsSuffix(int dims) {
 // Canonical type string of a TypeRef, matching the form sema/codegen key on:
 // generic args mangled into the name, then [] / * / & markers (e.g. "Box$int*", "int[][]").
 // A tuple type already carries its full spelling in `name` (e.g. "(int,int)").
+// LDP3 spells qualities as PREFIX WORDS, not suffix punctuation (`nullable T`, `mutable T`): a prefix
+// says what kind of thing is coming before you read it, which is why the language has almost no suffixes.
+// The canonical form keeps that shape -- "nullable Dog*", never "Dog*?".
+//
+// It also settles what `nullable T[]` means. With the marker in FRONT, `[]` is the outermost suffix, so
+// "nullable Dog*[]" is an ARRAY (indexable, like any array) whose ELEMENTS may be null -- strip the "[]"
+// and the element type is "nullable Dog*". The old suffix form said the opposite (a nullable array) and
+// could not express element nullability at all.
+inline const char* kNullablePrefix = "nullable ";
+inline bool typeIsNullable(const std::string& t) { return t.rfind(kNullablePrefix, 0) == 0; }
+inline std::string stripNullable(const std::string& t) {
+    return typeIsNullable(t) ? t.substr(9) : t;
+}
+inline std::string makeNullable(const std::string& t) {
+    return typeIsNullable(t) ? t : kNullablePrefix + t;
+}
 inline std::string canonicalType(const TypeRef& t) {
-    return mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
-           arrayDimsSuffix(t.arrayDims) + std::string(t.pointerDepth, '*') +
-           (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
+    const std::string core = mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
+                             arrayDimsSuffix(t.arrayDims) + std::string(t.pointerDepth, '*') +
+                             (t.isRef ? "&" : "");
+    return t.isNullable ? makeNullable(core) : core;
+}
+
+// [unknown-abi] A `funcptr<...>` type may carry a foreign-world calling convention as a leading
+// "$<conv>" element inside its brackets: "funcptr<$unknown:pe,Ret,P0,...>" (from `unknown pe
+// funcptr<...>`). These recover / strip it so every substring-splitter (codegen + sema) stays in
+// sync; a plain funcptr (no leading '$') is returned unchanged. `inner` = text between funcptr< and >.
+inline std::string funcptrWorld(const std::string& inner) {  // "" if none; else e.g. "unknown:pe"
+    if (inner.empty() || inner[0] != '$') return "";
+    std::size_t c = inner.find(',');
+    return inner.substr(1, (c == std::string::npos ? inner.size() : c) - 1);
+}
+inline std::string funcptrBody(const std::string& inner) {   // `inner` with any "$<conv>," removed
+    if (inner.empty() || inner[0] != '$') return inner;
+    std::size_t c = inner.find(',');
+    return c == std::string::npos ? std::string() : inner.substr(c + 1);
 }
 
 // ---- Expressions ----
@@ -109,8 +141,34 @@ struct FloatLiteralExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// True when an integer literal was WRITTEN with more than 32 bits of digits, whatever signed value it
+// happens to equal. `0xFFFFFFFFFFFFF000` is a 64-bit mask that equals -4096 as an int64, so deciding its
+// width by value alone typed it `int` and silently truncated it to 0xFFFFF000 -- an address mask that
+// quietly dropped everything above 4 GiB. Someone who writes sixteen hex digits means sixteen hex digits.
+//
+// It lives here, next to the AST, because it is a fact about the literal's SYNTAX: both the analyzer and
+// the code generator have to reach the same answer, and two copies of this rule would eventually not.
+inline bool intLiteralNeeds64(const std::string& lexeme) {
+    std::string s;
+    for (char c : lexeme) {
+        if (c == '_' || c == 'L' || c == 'l') continue;
+        s += c;
+    }
+    std::size_t start = 0;
+    int bitsPerDigit = 0;
+    if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { start = 2; bitsPerDigit = 4; }
+    else if (s.size() >= 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) { start = 2; bitsPerDigit = 1; }
+    if (bitsPerDigit == 0) return false;      // decimal: its value already decides, and it cannot lie
+    while (start < s.size() && s[start] == '0') ++start;   // leading zeros are not significant
+    return (s.size() - start) * static_cast<std::size_t>(bitsPerDigit) > 32;
+}
+
 struct StringLiteralExpr : Expr {
     std::string value;  // raw content; escapes resolved in a later phase
+    // b"...": the bytes THEMSELVES (NUL-terminated, type `byte*`), not a String object. Freestanding
+    // has no runtime to build a String, and a kernel wants the raw bytes anyway -- a path, a device
+    // name, a PE import name are all things it compares byte by byte.
+    bool isBytes = false;
     void dump(std::string& out, int indent) const override;
 };
 
@@ -183,6 +241,27 @@ struct UnaryExpr : Expr {
     ExprPtr operand;
     void dump(std::string& out, int indent) const override;
 };
+
+// Unsigned integer type names. `byte` is int8 (SIGNED) per spec 5 -- exactly the sort of fact that two
+// copies of this predicate would eventually disagree about, which is why there is one and both the
+// analyzer and the code generator call it.
+inline bool isUnsignedIntName(const std::string& t) {
+    return t.rfind("uint", 0) == 0 || t == "address" || t == "ubyte" || t == "ushort" || t == "ulong";
+}
+
+// True when an expression is built ONLY from integer literals and arithmetic on them -- a constant whose
+// type its context is free to choose, so mixing it with any integer type is safe.
+//
+// It has to be the whole EXPRESSION, not a bare literal token: `addr & (0 - 4096)` is the commonest mask
+// idiom there is, and `(0 - 4096)` is a BinaryExpr of two literals. A rule that exempted only single
+// literals would reject exactly the code it was written to keep working.
+inline bool isLiteralOnlyExpr(const Expr& e) {
+    if (dynamic_cast<const IntLiteralExpr*>(&e) != nullptr) return true;
+    if (const auto* u = dynamic_cast<const UnaryExpr*>(&e)) return isLiteralOnlyExpr(*u->operand);
+    if (const auto* b = dynamic_cast<const BinaryExpr*>(&e))
+        return isLiteralOnlyExpr(*b->lhs) && isLiteralOnlyExpr(*b->rhs);
+    return false;
+}
 
 // await expr (spec 20.2): suspends the enclosing async method until the awaited Task<T>
 // completes, then yields its T. In a non-async context it blocks until the task is done.
@@ -283,6 +362,8 @@ struct CastExpr : Expr {
     std::string targetType;  // simple type name, e.g. "int", "int64", "float"
     ExprPtr operand;
     int op = 0;  // 0 = cast/as, 1 = is, 2 = as?
+    bool targetVolatile = false;  // cast<volatile T*>: the result is an MMIO pointer; accesses through it
+                                  // (indexing/deref) are volatile -- never reordered, fused, or elided.
     void dump(std::string& out, int indent) const override;
 };
 
@@ -362,9 +443,18 @@ struct YieldStmt : Stmt {
 };
 
 // `asm("arch") { raw }` (spec issue 1): inline assembly. `body` is the verbatim text between braces.
+// Optional trailing operand clauses let the assembly exchange values with the surrounding code:
+//   asm("x86_64") { mov cr3, $0 } in (v);
+//   asm("x86_64") { mov $0, cr3 } out (r);
+//   asm("x86_64") { in $0, dx } out (v) in (port) clobber ("rax");
+// In the body `$0`, `$1`, ... number the OUTPUTS first, then the INPUTS (the GCC/LLVM order).
 struct AsmStmt : Stmt {
     std::string arch;
+    std::string dialect;  // "intel" | "att" | "" (follow the architecture: Intel on x86)
     std::string body;
+    std::vector<ExprPtr> outputs;       // lvalues the asm writes  -> "=r" constraints
+    std::vector<ExprPtr> inputs;        // values the asm reads    -> "r"  constraints
+    std::vector<std::string> clobbers;  // registers the asm destroys -> "~{reg}"
     void dump(std::string& out, int /*indent*/) const override { out += "asm"; }
 };
 
@@ -784,6 +874,10 @@ struct MethodDecl : MemberDecl {
     bool isDeprecated = false;  // spec 14.2: every call site gets a warning
     bool isExtern = false;    // spec 26: an external C function (no LDP3 body); links to a C symbol
     bool isVariadic = false;  // spec 26: an extern C function with a trailing `...` (e.g. printf)
+    // spec 36: `naked` -- no prologue/epilogue is emitted; the body is raw assembly that owns the machine
+    // state exactly as the hardware handed it over (a reset vector with no stack, a syscall entry running
+    // on the caller's stack, an ISR that must not disturb the CPU-pushed frame).
+    bool isNaked = false;
     // spec 22.6 generators: a method whose body yields. The synthesis pass (monomorphize) turns the
     // original method into a factory returning a synthesized Iterator class, and parks the original
     // body in a hidden twin flagged here. Codegen emits that twin as four raw functions
@@ -800,6 +894,11 @@ struct MethodDecl : MemberDecl {
     std::vector<Param> params;
     TypeRef returnType;
     std::vector<TypeRef> throwsTypes;  // `throws(...)` declared exceptions (spec 21.1)
+    // region-binder escape summary, so it survives across compilation units in the .ldh. Each entry is a
+    // pair (paramIndex, targetSlot) meaning "parameter paramIndex is stored into targetSlot", where slot
+    // -1 = the receiver (`this`) and j>=0 = parameter j. Emitted as `escapes(i>t, ...)`; parsed back on
+    // import; computed by the analyzer for local methods (written back here for emission).
+    std::vector<std::pair<int, int>> escapeSummary;
     Block body;  // empty when isAbstract
     std::vector<ExprPtr> requiresClauses;  // contracts (spec 29): preconditions
     std::vector<ExprPtr> ensuresClauses;   // contracts (spec 29): postconditions
@@ -819,6 +918,7 @@ struct FieldDecl : MemberDecl {
     bool isExternal = false;    // spec 37.1: an association, not owned; cascade does not follow it
     bool isMovable = false;     // spec 19.9: `movable` field -- movable separately (partitionable class)
     bool isUnique = false;      // spec 19.9: `unique` field -- single live reference, movable separately
+    bool isWeak = false;        // `weak T*` field -- non-owning; auto-nulled when the pointee dies (intrusive)
     // spec 32.9: "hot" / "cold" when the field was declared inside an `affinity` block; "" otherwise.
     // A layout hint only: hot fields are packed first in the object and cold ones last, so a loop that
     // touches only the hot ones touches fewer cache lines.
@@ -866,6 +966,11 @@ struct ClassDecl {
     bool isSealed = false;                // `sealed` -- only `permits` types may extend it
     bool isPartial = false;               // spec 8.3: this is one part of a class split across declarations
     bool isMovable = false;               // `movable class` -- move discipline
+    // spec 36: `heap class X` -- THIS class provides the program's heap. In freestanding there is no libc
+    // to allocate from, so `new T() on heap` (and dynamic arrays) route to its static allocate/release.
+    // Exactly one per program. It is legitimately static: the allocator IS the bottom of the memory
+    // system, so it cannot own heap state -- the same reason the physical frame allocator is static.
+    bool isHeap = false;
     bool isUnique = false;                // `unique class` -- single live reference
     bool isPartitionable = false;         // `partitionable class` -- fields movable separately (spec 19.9)
     std::string superclass;               // "" when none (from `extends`)

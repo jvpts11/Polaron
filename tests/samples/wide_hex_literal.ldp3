@@ -1,0 +1,42 @@
+import System.IO.Console;
+program WideHexLiteral;
+
+// How wide a mask really is. Both halves of this were broken at once, and together they mapped a PE image
+// at ImageBase 0x140000000 to 0x40000000 in the pico kernel, which then page-faulted writing to it.
+//
+// 1. A literal WRITTEN with more than 32 bits of digits is 64-bit, whatever signed value it happens to
+//    equal. `0xFFFFFFFFFFFFF000` equals -4096 as an int64, which fits in an int32 -- so deciding a
+//    literal's width by its value typed it `int` and truncated the mask to 0xFFFFF000.
+//
+// 2. Widening a narrower operand used the RESULT's signedness, not the operand's. Against an unsigned
+//    64-bit value, `(0 - 4096)` was zero-extended to 0x00000000FFFFF000, so the mask covered 32 bits
+//    instead of 64. Sign-extending a signed operand is the value-preserving conversion, and it is what
+//    the explicit-cast path always did -- so `cast<address>(i)` and `addr & i` disagreed inside one
+//    compiler.
+//
+// All six columns must now read 140000000: a mask means the same thing however it is spelled, and whether
+// the value it masks is signed or unsigned.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public fixed long DeclaredLong = 0 - 4096;      // evaluated in the DECLARED type
+            public fixed address DeclaredAddr = 0 - 4096;
+            public static method main(string[] args) returns void {
+                long v = 0x140000000;
+                address u = 0x140000000;
+
+                long litSigned     = v & 0xFFFFFFFFFFFFF000;   // 16 hex digits: stays 64-bit
+                address litUnsign  = u & 0xFFFFFFFFFFFFF000;
+                long declSigned    = v & Main.DeclaredLong;    // a typed constant
+                address declUnsign = u & Main.DeclaredAddr;
+                long exprSigned    = v & (0 - 4096);           // int arithmetic, sign-extended
+                address exprUnsign = u & (0 - 4096);           // ... including against unsigned
+
+                System.IO.Console.printf("lit=%llx/%llx decl=%llx/%llx expr=%llx/%llx\n",
+                    litSigned, litUnsign, declSigned, declUnsign, exprSigned, exprUnsign);
+                return;
+            }
+        }
+    }
+}

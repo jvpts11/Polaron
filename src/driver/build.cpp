@@ -241,13 +241,22 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     // bare-metal object and stop. The user links that object with their own boot stub and linker script
     // (see kernel/ for a worked example). Dependencies are not supported in this mode yet.
     if (m.freestanding) {
-        const std::string tt = "x86_64-unknown-none-elf";
-        std::vector<std::string> ca = {entry.string(), "--target=" + tt, "-o", ll.string(), "-O2"};
+        const std::string tt = m.fsTarget;   // [freestanding] target, default x86_64-unknown-none-elf
+        // 1) LDP3 -> bare-metal LLVM IR. Like the hosted path, a program may span every src/**/*.ldp3
+        //    (the entry first, the rest gathered), not just the entry file.
+        std::vector<std::string> ca;
+        if (m.singleFile) ca.push_back(entry.string());
+        else for (const auto& src : collectSources(entry)) ca.push_back(src.string());
+        ca.push_back("--target=" + tt);
+        ca.push_back("-o");
+        ca.push_back(ll.string());
+        ca.push_back("-O2");
         for (const auto& p : opts.passthrough) ca.push_back(p);
         if (int rc = runProcess(tc.ldp3c, ca); rc != 0) {
             std::fprintf(stderr, "ldp3: compilation failed\n");
             return rc == -1 ? 1 : rc;
         }
+        // 2) IR -> bare-metal object (no CRT, no EH/RTTI, no red zone).
         const fs::path obj = outDir / (entry.stem().string() + ".o");
         if (int rc = runProcess(tc.clang, {"--target=" + tt, "-ffreestanding", "-fno-exceptions",
                                            "-fno-rtti", "-mno-red-zone", "-c", ll.string(), "-o",
@@ -256,8 +265,138 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
             std::fprintf(stderr, "ldp3: bare-metal object compilation failed\n");
             return rc == -1 ? 1 : rc;
         }
-        std::printf("wrote %s (freestanding object; link it with your boot stub and linker script)\n",
-                    obj.string().c_str());
+        // Stop at the object only for the legacy shape: `[build] freestanding=true` with NO [freestanding]
+        // section at all (the old workflow links by hand). A project that declares [freestanding] gets a
+        // linked image -- with a generated linker script when it did not supply one.
+        if (!m.hasFreestandingSection) {
+            std::printf("wrote %s (freestanding object; add a [freestanding] section to link an image)\n",
+                        obj.string().c_str());
+            return 0;
+        }
+        // 3) Assemble each boot stub (.s) -> object (clang's integrated assembler, same triple).
+        std::vector<std::string> linkObjs;
+        // Minimal freestanding runtime: at -O2 LLVM's loop-idiom pass rewrites byte copy/zero loops into
+        // memcpy/memset/memmove calls (the PE-section copy in a loader hits exactly this), which bare
+        // metal must resolve. Provide them as weak symbols (a program may override) via a generated asm
+        // stub, always linked. rep movsb/stosb -- itself immune to loop-idiom.
+        // Also provide `__ldp3_panic`: LDP3's no-UB guards (division by zero, checked-arith overflow, an
+        // out-of-bounds index) lower to a call to it, so a freestanding image that hits any guard must be
+        // able to link + terminate deterministically instead of calling into nothing. The weak stub just
+        // halts (cli; hlt) -- a program can override it to print the message first, then halt.
+        {
+            const fs::path rtS = outDir / "ldp3_fs_rt.s";
+            const fs::path rtO = outDir / "ldp3_fs_rt.o";
+            std::ofstream f(rtS);
+            f << ".intel_syntax noprefix\n.section .text\n"
+                 ".weak memcpy\nmemcpy:\n  mov rax, rdi\n  mov rcx, rdx\n  cld\n  rep movsb\n  ret\n"
+                 ".weak memset\nmemset:\n  mov r8, rdi\n  mov rcx, rdx\n  mov al, sil\n  cld\n  rep stosb\n"
+                 "  mov rax, r8\n  ret\n"
+                 ".weak memmove\nmemmove:\n  mov rax, rdi\n  mov rcx, rdx\n  cmp rdi, rsi\n  jbe 1f\n"
+                 "  lea rdi, [rdi+rcx-1]\n  lea rsi, [rsi+rcx-1]\n  std\n  rep movsb\n  cld\n  ret\n"
+                 "1:\n  cld\n  rep movsb\n  ret\n"
+                 ".weak __ldp3_panic\n__ldp3_panic:\n  cli\n2:\n  hlt\n  jmp 2b\n";
+            f.close();
+            if (int rc = runProcess(tc.clang, {"--target=" + tt, "-c", rtS.string(), "-o", rtO.string()});
+                rc != 0) {
+                std::fprintf(stderr, "ldp3: freestanding runtime (memcpy/memset/panic) failed to assemble\n");
+                return rc == -1 ? 1 : rc;
+            }
+            linkObjs.push_back(rtO.string());
+        }
+        for (const std::string& b : m.bootSources) {
+            const fs::path bo = outDir / (fs::path(b).stem().string() + ".o");
+            if (int rc = runProcess(tc.clang,
+                                    {"--target=" + tt, "-c", (projectDir / b).string(), "-o", bo.string()});
+                rc != 0) {
+                std::fprintf(stderr, "ldp3: boot stub '%s' failed to assemble\n", b.c_str());
+                return rc == -1 ? 1 : rc;
+            }
+            linkObjs.push_back(bo.string());
+        }
+        linkObjs.push_back(obj.string());   // boot objects first so the boot entry (_start) leads
+        // 4) Link into a bare-metal ELF image -- no CRT, no runtime. The linker script is GENERATED from
+        // the manifest unless the project supplied one: a bare-metal layout is boilerplate (entry symbol,
+        // load address, then the standard section order), so hand-writing it is the same busywork as
+        // hand-writing the memcpy/memset stubs the driver already generates. `linker_script = "..."`
+        // remains the escape hatch for a layout this template cannot express.
+        fs::path script;
+        if (!m.linkerScript.empty()) {
+            script = projectDir / m.linkerScript;
+        } else {
+            script = outDir / (m.name + ".ld");
+            std::ofstream ls(script);
+            ls << "/* Generated by `ldp3 build` from [freestanding] in ldp3.toml -- do not edit.\n"
+                  "   Override with `linker_script = \"...\"` if you need a layout this cannot express. */\n"
+                  "ENTRY(_start)\n\nSECTIONS {\n    . = "
+               << m.loadAddress << ";\n\n";
+            // The boot protocol decides what has to come FIRST: a loader scans the head of the image for
+            // its handshake structure, so the section carrying it must lead.
+            if (m.bootProtocol == "pvh") ls << "    .note.Xen : { *(.note.Xen) }\n\n";
+            else if (m.bootProtocol == "multiboot2")  // GRUB scans the first 32 KiB for the header
+                ls << "    .multiboot : { KEEP(*(.multiboot)) }\n\n";
+            ls << "    .text   : { *(.text*) }\n"
+                  "    .rodata : { *(.rodata*) }\n"
+                  "    .data   : { *(.data*) }\n"
+                  "    .bss    : { *(COMMON) *(.bss*) }\n}\n";
+            if (!ls) {
+                std::fprintf(stderr, "ldp3: could not write the generated linker script\n");
+                return 1;
+            }
+        }
+        const fs::path img = outDir / (m.name + ".elf");
+        std::vector<std::string> la = {"-m", "elf_x86_64", "-T", script.string(),
+                                       "--build-id=none", "-o", img.string()};
+        for (const std::string& o : linkObjs) la.push_back(o);
+        if (int rc = runProcess(tc.ldLld, la); rc != 0) {
+            std::fprintf(stderr, "ldp3: freestanding link failed (ld.lld)\n");
+            return rc == -1 ? 1 : rc;
+        }
+        std::printf("wrote %s (bare-metal image)\n", img.string().c_str());
+        // 5) Optional image format on top of the linked ELF (spec 36): the ELF is always produced --
+        // it is what a debugger, `qemu -kernel` and the PVH/multiboot loaders consume -- and these are
+        // additional packagings of the same image.
+        if (m.imageFormat == "bin") {
+            // Flat binary: the loadable sections with no ELF wrapper, for a BIOS/UEFI stage, a ROM burn,
+            // or an embedded target that jumps straight at the load address.
+            const fs::path bin = outDir / (m.name + ".bin");
+            if (int rc = runProcess(tc.objcopy, {"-O", "binary", img.string(), bin.string()}); rc != 0) {
+                std::fprintf(stderr, "ldp3: could not flatten the image to a binary (llvm-objcopy)\n");
+                return rc == -1 ? 1 : rc;
+            }
+            std::printf("wrote %s (flat binary)\n", bin.string().c_str());
+        } else if (m.imageFormat == "iso") {
+            // Bootable El Torito CD: a GRUB rescue tree with the kernel as a multiboot module. The kernel
+            // must carry a multiboot2 header for GRUB to load it (`boot_protocol = "multiboot2"`).
+            const fs::path root = outDir / "iso";
+            const fs::path bootDir = root / "boot";
+            const fs::path grubDir = bootDir / "grub";
+            std::error_code ec;
+            fs::create_directories(grubDir, ec);
+            fs::copy_file(img, bootDir / (m.name + ".elf"), fs::copy_options::overwrite_existing, ec);
+            {
+                std::ofstream cfg(grubDir / "grub.cfg");
+                cfg << "set timeout=0\nset default=0\n\nmenuentry \"" << m.name << "\" {\n"
+                    << "    multiboot2 /boot/" << m.name << ".elf\n    boot\n}\n";
+            }
+            const fs::path iso = outDir / (m.name + ".iso");
+            const int rc = runProcess(tc.xorriso, {"-as", "mkisofs", "-b",
+                                                   "boot/grub/i386-pc/eltorito.img", "-no-emul-boot",
+                                                   "-boot-load-size", "4", "-boot-info-table", "-o",
+                                                   iso.string(), root.string()});
+            if (rc != 0) {
+                std::fprintf(stderr,
+                             "ldp3: could not build the .iso -- xorriso is required (and a GRUB "
+                             "i386-pc tree under %s). Install xorriso + grub-pc-bin, or set "
+                             "$LDP3_XORRISO. The .elf above is complete and boots with `qemu -kernel`.\n",
+                             grubDir.string().c_str());
+                return rc == -1 ? 1 : rc;
+            }
+            std::printf("wrote %s (bootable ISO)\n", iso.string().c_str());
+        } else if (m.imageFormat != "elf") {
+            std::fprintf(stderr, "ldp3: unknown [freestanding] image = \"%s\" (expected elf, bin or iso)\n",
+                         m.imageFormat.c_str());
+            return 1;
+        }
         return 0;
     }
 

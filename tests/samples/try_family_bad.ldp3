@@ -1,0 +1,29 @@
+import System.Errors.Result;
+import System.Errors.Option;
+program TryFamilyBad;
+
+// The other half of the same rule: `try?` returns the operand's failure UNCHANGED, so a None cannot be
+// propagated out of a method that returns Result. A None carries no error value, an Err does -- forwarding
+// one as the other reinterprets a variant whose payload is not there.
+//
+// The old check compared only the base name of the ENCLOSING return type ("is it Result or Option?") and
+// never looked at the operand at all, so crossing the two families compiled clean.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method find(int n) returns Option<int>* {
+                if (n < 0) { return None(); }
+                return Some(n);
+            }
+            // returns Result, propagates an Option: the None has no error to put in the Err
+            public static method use(int n) returns Result<int, int>* {
+                int v = try? Main.find(n);
+                return Ok(v + 1);
+            }
+            public static method main(string[] args) returns void {
+                Main.use(1);
+                return;
+            }
+        }
+    }
+}

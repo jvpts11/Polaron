@@ -1,0 +1,68 @@
+import System.IO.Console;
+program FlowStates;
+
+// The three-state flow analysis the guide has always described (05-memory-and-ownership.md:640) and the
+// implementation did not have: a variable is *uninitialized*, *valid*, or moved/deleted, and the state
+// follows control flow. The parser used to forbid the uninitialized state outright -- every declaration
+// needed an initializer -- so the state could not arise and nothing had to track it.
+//
+// Everything here must COMPILE AND RUN. The rejections live in flow_states_bad.ldp3, so the two files
+// together pin both edges: this one fails if the analysis is too strict, that one if it is too loose.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int age;
+            public constructor Dog() { this.age = 5; }
+            public method bark() returns int { return this.age; }
+        }
+        public class Main {
+            static method takes(Dog* d) returns int { return d.bark(); }
+
+            // DEFERRED INITIALIZATION, without `mutable`. The value is still written exactly once, which
+            // is what immutability actually promises -- so choosing it in a branch does not cost the
+            // binding its immutability for the rest of its life.
+            static method chooseInBranch(boolean c) returns int {
+                int chosen;
+                if (c) { chosen = 10; } else { chosen = 20; }
+                return chosen;
+            }
+
+            // A GUARD CLAUSE narrows the rest of the method: the `then` arm always returns, so the code
+            // below it is only reachable when the test failed, and `d` is known non-null there.
+            static method guard(nullable Dog* d) returns int {
+                if (d == null) { return 0; }
+                return Main.takes(d);
+            }
+
+            // The positive form narrows inside the arm.
+            static method positive(nullable Dog* d) returns int {
+                if (d != null) { return Main.takes(d); }
+                return 0;
+            }
+
+            // An initializer that cannot be null proves it immediately -- no redundant check needed to
+            // use a `nullable` binding that obviously holds something.
+            static method fromInitializer() returns int {
+                Dog dog = new Dog() on stack;
+                nullable Dog* d = &dog;
+                return Main.takes(d);
+            }
+
+            // A null TEST still sees the declared type, so testing something already proven non-null is
+            // redundant rather than ill-typed. This used to break `nullable int` outright.
+            static method testAfterProof() returns int {
+                nullable int n = 7;
+                if (n == null) { return 0; }
+                return 1;
+            }
+
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("branch=%d guard=%d pos=%d init=%d test=%d\n",
+                    Main.chooseInBranch(true), Main.guard(null), Main.positive(null),
+                    Main.fromInitializer(), Main.testAfterProof());
+                return;
+            }
+        }
+    }
+}

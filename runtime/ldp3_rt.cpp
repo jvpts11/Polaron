@@ -27,6 +27,7 @@
 #include <link.h>          // dl_iterate_phdr (reimport's module base)
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>          // poll: bounded IPC reads, so a dead peer cannot hang the program
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>        // kill/SIGTERM (subprocess teardown)
@@ -73,6 +74,23 @@ static void WakeAllConditionVariable(CONDITION_VARIABLE* c) { pthread_cond_broad
 
 // The IR calls these by their plain C names. Keep C linkage even when this file is compiled as part
 // of a C++ link (e.g. alongside the dynamic-bundle loader), so the names are not mangled.
+//
+// LDP3_RT_API exports the symbols a dynamically-loaded bundle must reach BACK into the host for. A
+// bundle is compiled to a shared library at load time, and its allocations have to come from the SAME
+// heap as the host's -- one heap and one `__ldp3_check_live` registry, or an object allocated on one
+// side and freed on the other corrupts both and the double-free trap stops seeing half the program.
+//
+// On POSIX the host is linked -rdynamic and the .so resolves against it; Windows has no equivalent, so
+// the host exports and the bundle imports. THIS COSTS THE HOST NOTHING: `dllexport` on a definition does
+// not make the defining module's own calls indirect, so every direct call in the program stays direct.
+// The single added indirection (through the import table) is inside the bundle, which has already paid
+// for a LoadLibrary to exist at all.
+#if defined(_WIN32)
+#define LDP3_RT_API __declspec(dllexport)
+#else
+#define LDP3_RT_API __attribute__((visibility("default")))
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -80,7 +98,7 @@ extern "C" {
 // Defined-behaviour panic: LDP3 never invokes UB. When a check fails (division by zero,
 // out-of-bounds, etc.) the program terminates deterministically with a message instead of
 // continuing into undefined territory.
-void __ldp3_panic(const char* msg) {
+LDP3_RT_API void __ldp3_panic(const char* msg) {
     fprintf(stderr, "LDP3 panic: %s\n", msg);
 #ifdef _WIN32
     if (getenv("LDP3_BT") != NULL) {  // diagnostic: print the call stack RVAs so a -g build can be symbolized
@@ -253,7 +271,7 @@ struct Ldp3ProfInit {
 static Ldp3ProfInit g_ldp3_prof_init;
 #endif
 
-void* __ldp3_malloc(size_t size) {
+LDP3_RT_API void* __ldp3_malloc(size_t size) {
     if (size == 0) size = 1;
     if (size > LDP3_POOL_MAX) {  // large: a plain libc block tagged so free/realloc recognise it
         char* p = (char*)malloc(size + 16);
@@ -293,7 +311,7 @@ void* __ldp3_malloc(size_t size) {
     return p + 16;
 }
 
-void __ldp3_free(void* ptr) {
+LDP3_RT_API void __ldp3_free(void* ptr) {
     if (ptr == NULL) return;
     Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
     // Freeing a pool block that is already on the free-list would splice it in twice and cycle the list,
@@ -329,7 +347,7 @@ void __ldp3_free(void* ptr) {
 // word holds the free-list link, so looking up the destructor through it would call through garbage. If
 // the block is already freed, stop deterministically instead (no UB). A live pool block carries
 // LDP3_MAGIC; a foreign/stack pointer carries neither stamp and is left alone.
-void __ldp3_check_live(void* ptr) {
+LDP3_RT_API void __ldp3_check_live(void* ptr) {
     if (ptr == NULL) return;
     Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
     if (h->magic == LDP3_FREED || h->magic == LDP3_RFREED)
@@ -668,7 +686,7 @@ void __ldp3_ring_teardown(void* block) {
     d->ringCount = 0;
 }
 
-void* __ldp3_realloc(void* ptr, size_t size) {
+LDP3_RT_API void* __ldp3_realloc(void* ptr, size_t size) {
     if (ptr == NULL) return __ldp3_malloc(size);
     Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
     if (h->magic != LDP3_MAGIC) return realloc(ptr, size);  // foreign pointer
@@ -1414,6 +1432,24 @@ static void ldp3_ipc_path(const char* name, char* out, size_t cap) {
 #endif
 }
 
+// LDP3_IPC_TRACE=1: one unbuffered line per IPC primitive, to stderr. A hang in a two-process protocol
+// cannot be found from stdout, because stdout to a pipe is block-buffered and a process that never exits
+// never flushes it -- so the last thing the program did is exactly the thing you cannot see. stderr is
+// unbuffered, which makes the last line printed the place it stopped.
+static void ldp3_ipc_trace(const char* what, long long n) {
+    static int on = -1;
+    if (on < 0) on = getenv("LDP3_IPC_TRACE") != NULL ? 1 : 0;
+    if (on == 0) return;
+#ifdef _WIN32
+    fprintf(stderr, "[ipc pid=%lu] %s %lld\n", (unsigned long)GetCurrentProcessId(), what, n);
+#else
+    fprintf(stderr, "[ipc pid=%ld] %s %lld\n", (long)getpid(), what, n);
+#endif
+    fflush(stderr);
+}
+
+static void ldp3_ipc_trace_bytes(const char* what, const char* p, long long n);
+
 long long __ldp3_ipc_listen(const char* name) {
     Ldp3Pipe* p = (Ldp3Pipe*)calloc(1, sizeof(Ldp3Pipe));
     if (p == NULL) return -1;
@@ -1444,6 +1480,7 @@ long long __ldp3_ipc_listen(const char* name) {
 }
 
 long long __ldp3_ipc_accept(long long srv) {
+    ldp3_ipc_trace("accept.enter", srv);
     Ldp3Pipe* s = (Ldp3Pipe*)(intptr_t)srv;
     if (s == NULL || !s->isServer) return -1;
     Ldp3Pipe* c = (Ldp3Pipe*)calloc(1, sizeof(Ldp3Pipe));
@@ -1466,10 +1503,12 @@ long long __ldp3_ipc_accept(long long srv) {
     if (fd < 0) { free(c); return -1; }
     c->fd = fd;
 #endif
+    ldp3_ipc_trace("accept.got", (long long)(intptr_t)c);
     return (long long)(intptr_t)c;
 }
 
 long long __ldp3_ipc_connect(const char* name) {
+    ldp3_ipc_trace("connect.enter", 0);
     char path[512];
     ldp3_ipc_path(name, path, sizeof(path));
     Ldp3Pipe* c = (Ldp3Pipe*)calloc(1, sizeof(Ldp3Pipe));
@@ -1480,6 +1519,7 @@ long long __ldp3_ipc_connect(const char* name) {
         HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
         if (h != INVALID_HANDLE_VALUE) {
             c->h = h;
+            ldp3_ipc_trace("connect.ok", (long long)(intptr_t)c);
             return (long long)(intptr_t)c;
         }
         if (GetLastError() != ERROR_PIPE_BUSY && GetLastError() != ERROR_FILE_NOT_FOUND) break;
@@ -1508,6 +1548,7 @@ long long __ldp3_ipc_connect(const char* name) {
 }
 
 static int ldp3_ipc_write_all(Ldp3Pipe* c, const char* data, long long len) {
+    ldp3_ipc_trace("write.enter", len);
     long long done = 0;
     while (done < len) {
 #ifdef _WIN32
@@ -1519,21 +1560,69 @@ static int ldp3_ipc_write_all(Ldp3Pipe* c, const char* data, long long len) {
 #endif
         done += (long long)n;
     }
+    ldp3_ipc_trace("write.done", done);
+    ldp3_ipc_trace_bytes("write.body", data, len);
     return 1;
 }
 
+// Dump a frame's leading bytes. The frame KIND is the first payload byte (kReplyOk=10, kReplyError=11),
+// which is the difference between "the call worked" and "the far side refused" -- and the only way to
+// tell them apart from outside the program.
+static void ldp3_ipc_trace_bytes(const char* what, const char* p, long long n) {
+    static int on = -1;
+    if (on < 0) on = getenv("LDP3_IPC_TRACE") != NULL ? 1 : 0;
+    if (on == 0 || n <= 0) return;
+    const long long show = n < 40 ? n : 40;
+    fprintf(stderr, "    %s [", what);
+    for (long long i = 0; i < show; ++i) {
+        const unsigned char ch = (unsigned char)p[i];
+        fputc(ch >= 32 && ch < 127 ? ch : '.', stderr);
+    }
+    fprintf(stderr, "]  first=%u\n", (unsigned)(unsigned char)p[0]);
+    fflush(stderr);
+}
+
+// How long one IPC read waits for its peer, in milliseconds. A blocking read with no deadline means a
+// peer that died -- or one that is merely wedged -- hangs this program forever, with no error to report
+// and nothing to diagnose. That is not a failure mode a language can ship: the far side of an IPC is
+// another process, and another process can always stop answering.
+//
+// Long enough that a slow reply is not mistaken for a dead peer, short enough that a dead one is noticed
+// while somebody is still watching. The caller already treats a failed read as a failed exchange and
+// raises IpcError, so a timeout arrives as an exception rather than as a silent wrong answer.
+#define LDP3_IPC_READ_TIMEOUT_MS 10000
+
 static int ldp3_ipc_read_all(Ldp3Pipe* c, char* buf, long long len) {
+    ldp3_ipc_trace("read.enter", len);
     long long done = 0;
+    const long long deadline = __ldp3_now_ms() + LDP3_IPC_READ_TIMEOUT_MS;
     while (done < len) {
 #ifdef _WIN32
+        // A named-pipe read cannot carry a deadline, so peek until something is there. Peeking does not
+        // consume, so the ReadFile below always has data waiting and returns immediately.
+        DWORD avail = 0;
+        while (1) {
+            if (!PeekNamedPipe(c->h, NULL, 0, NULL, &avail, NULL)) return 0;  // peer gone / pipe broken
+            if (avail > 0) break;
+            if (__ldp3_now_ms() >= deadline) return 0;                        // stopped answering
+            Sleep(1);
+        }
         DWORD n = 0;
         if (!ReadFile(c->h, buf + done, (DWORD)(len - done), &n, NULL) || n == 0) return 0;
 #else
+        struct pollfd pfd;
+        pfd.fd = c->fd;
+        pfd.events = POLLIN;
+        const long long left = deadline - __ldp3_now_ms();
+        if (left <= 0) return 0;
+        const int pr = poll(&pfd, 1, (int)left);
+        if (pr <= 0) return 0;   // timed out, or the peer is gone
         long n = read(c->fd, buf + done, (size_t)(len - done));
         if (n <= 0) return 0;
 #endif
         done += (long long)n;
     }
+    ldp3_ipc_trace_bytes("read.body", buf, len);
     return 1;
 }
 
