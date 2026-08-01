@@ -505,6 +505,30 @@ add_test(NAME codegen_bce_affine_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# The region binder is ON by default. Returning a pointer to an object in this method's own frame is
+# rejected -- the gap the analysis was named for and did not close until now.
+add_test(NAME sema_rejects_escape_by_return
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/escape_return_bad.ldp3")
+set_tests_properties(sema_rejects_escape_by_return PROPERTIES
+    PASS_REGULAR_EXPRESSION "LDP3-1721")
+
+# ...and `--no-region-binder` compiles that same program. There is no safe dialect in which you hand
+# out a pointer to a dead frame, so the way to do it is to turn the analysis off and mean it.
+add_test(NAME sema_no_region_binder_allows_escape
+    COMMAND ldp3c --check --no-region-binder "${CMAKE_CURRENT_SOURCE_DIR}/samples/escape_return_bad.ldp3")
+set_tests_properties(sema_no_region_binder_allows_escape PROPERTIES
+    PASS_REGULAR_EXPRESSION "OK: entry point")
+
+# What the binder must NOT complain about with it on: a heap object stored into a longer-lived field,
+# and a heap object returned. Getting this wrong is why the analysis stayed switched off.
+add_test(NAME codegen_escape_ok_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/escape_ok.ldp3"
+    "-DCONTAINS=sum=6 loose=10"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # A static field may be written in terms of other static fields, in any order. This folded to nothing
 # and emitted `i32 0` with no diagnostic until LDP3-0608 existed -- see the sample for what that cost.
 add_test(NAME codegen_static_from_static_runs COMMAND "${CMAKE_COMMAND}"

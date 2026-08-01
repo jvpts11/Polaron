@@ -65,6 +65,7 @@ enum class Code {
     ConstraintNotMet,     // a type argument that does not satisfy a generic bound
     ContradictoryModifiers,  // modifiers that cannot combine (e.g. unique + partitionable)
     StaticInitNotConst,   // a static field's initializer cannot be evaluated before the program runs
+    EscapesFrame,         // a pointer/reference to this activation's own storage leaving the activation
 
     // 07xx -- literals and I/O builtins
     LiteralSuffix,        // an unknown or misused literal suffix

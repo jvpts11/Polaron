@@ -9286,7 +9286,11 @@ int printUsage(const char* prog) {
                  "       %s --dump-tokens <input.ldp3>\n"
                  "       %s --dump-ast <input.ldp3>\n"
                  "       %s --check <input.ldp3>\n"
-                 "       %s --version\n",
+                 "       %s --version\n"
+                 "\n"
+                 "  --no-region-binder   turn OFF the escape checks that stop a pointer to a dead\n"
+                 "                       frame from leaving the frame. They are on by default; this\n"
+                 "                       is the way to write one deliberately.\n",
                  prog, prog, prog, prog, prog, prog, prog, prog);
     return 2;
 }
@@ -9476,7 +9480,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             const std::vector<std::string>& deps = {},
             const std::vector<std::string>& dynDeps = {}, bool testMode = false,
             bool debugInfo = false, const std::vector<std::string>& remoteDeps = {},
-            bool checkOnly = false, bool regionBinder = false) {
+            bool checkOnly = false, bool regionBinder = true) {
     ldp3::ast::Program program;
     std::string programName;
     // In check mode a broken file must not hide the others: an editor asks about the whole project and
@@ -9857,9 +9861,17 @@ int main(int argc, char** argv) {
         std::vector<std::string> inputs;
         std::vector<std::string> deps;
         bool libraryMode = false;
+        // Same default as a real build, and the same switch. The editor's live check has to agree
+        // with the compiler about what is an error -- a check that stays quiet and a build that then
+        // fails is worse than either one alone.
+        bool regionBinder = true;
         for (std::size_t i = 1; i < args.size(); ++i) {
             if (args[i] == "--lib") {
                 libraryMode = true;
+            } else if (args[i] == "--region-binder") {
+                regionBinder = true;
+            } else if (args[i] == "--no-region-binder") {
+                regionBinder = false;
             } else if (args[i] == "--use" && i + 1 < args.size()) {
                 deps.emplace_back(args[++i]);
             } else if (args[i] == "--overlay" && i + 1 < args.size()) {
@@ -9882,7 +9894,8 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "error: --check requires an input file\n");
             return printUsage(argv[0]);
         }
-        return compile(inputs, "", "", 0, libraryMode, deps, {}, false, false, {}, /*checkOnly=*/true);
+        return compile(inputs, "", "", 0, libraryMode, deps, {}, false, false, {}, /*checkOnly=*/true,
+                       regionBinder);
     }
 
     if (args[0] == "--fmt") {  // re-format a file's whitespace (in place, or to -o)
@@ -9928,7 +9941,12 @@ int main(int argc, char** argv) {
     bool libraryMode = false;  // --lib: compile a bundle to a .ldb (+ .ldh), no entry point required
     bool testMode = false;     // --test: emit a synthetic runner over the [Test] methods, not main
     bool debugInfo = false;    // -g: emit DWARF debug metadata (for lldb / the Forge debugger)
-    bool regionBinder = false; // --region-binder: static temporal-safety escape checks (opt-in for now)
+    // ON by default: the static temporal-safety escape checks. It was opt-in for as long as it could
+    // not tell a heap object from a stack one -- `Node* n = new Node(v) on heap; this.top = n;`, the
+    // first two lines of every linked structure, was reported as a dangling store, so nobody could
+    // have left it on. With that fixed the whole suite is green with it enabled, so the safe thing
+    // is the default and the unsafe thing is `--no-region-binder`, spelled out loud.
+    bool regionBinder = true;
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "-o") {
             if (i + 1 >= args.size()) {
@@ -9983,7 +10001,14 @@ int main(int argc, char** argv) {
             debugInfo = true;
             optLevel = 0;  // debug info survives best unoptimized (variables, line stepping)
         } else if (args[i] == "--region-binder") {
-            regionBinder = true;  // enable the static temporal-safety escape checks
+            regionBinder = true;  // accepted and a no-op: it is the default. Kept so build scripts
+                                  // written while it was opt-in keep working.
+        } else if (args[i] == "--no-region-binder") {
+            // The escape hatch. There is no dialect of "safe" that lets you deliberately hand out a
+            // pointer to a dead frame, so the way to do it is to turn the analysis off for the
+            // program and mean it -- one flag, visible in the build, rather than a per-line
+            // annotation that reads as ordinary code six months later.
+            regionBinder = false;
         } else if (args[i] == "--concise" || args[i] == "-q") {
             g_concise = true;  // one machine-parseable line per diagnostic (CI / huge broken builds)
         } else {

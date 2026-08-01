@@ -2839,9 +2839,20 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         regionOf_.erase(vd->name);
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get()); nw != nullptr && !nw->region.empty())
             regionOf_[vd->name] = nw->region;
-        // region-binder: a `new X` with NO region names an object owned by this activation -- it dies at
-        // method return. Track the local so storing a reference to it into a longer-lived location can be
-        // rejected (§3). `new X in region R` is region-owned, not activation-owned, so it is excluded.
+        // region-binder: a `new X` that lands in this ACTIVATION's frame names an object that dies at method
+        // return. Track the local so storing a reference to it into a longer-lived location can be rejected
+        // (§3). Two exclusions, and both are about where the object actually lives, not where the pointer to
+        // it does:
+        //
+        //   `new X in region R` -- region-owned; it outlives the method and the region rules govern it.
+        //   `new X() on heap`   -- heap-owned; the POINTER dies at return, the OBJECT lives until `delete`.
+        //
+        // The second one was missing, and it is why this analysis had to stay switched off: `Node* n = new
+        // Node(v) on heap; this.top = n;` -- the first two lines of every linked structure ever written --
+        // was reported as a dangling store. Storing a heap object into a longer-lived field is not an
+        // escape, it is the ownership transfer the whole idiom is made of. A heap object that IS deleted in
+        // this method and then stored is a use-after-free, which the flow machine already catches by name.
+        //
         // Aliasing propagates the tag (`var y = x` / `var y = move x`): an alias to (or the new owner of) an
         // activation-owned object is itself activation-scoped, so the escape check can't be dodged through it.
         if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(vd->init.get()))
@@ -2849,7 +2860,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         else lambdaLocals_.erase(vd->name);
         activationOwned_.erase(vd->name);
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
-            nw != nullptr && nw->region.empty()) {
+            nw != nullptr && nw->region.empty() && nw->location != "heap") {
             activationOwned_.insert(vd->name);
         } else if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(vd->init.get());
                    aid != nullptr && activationOwned_.count(aid->name) > 0) {
@@ -3116,6 +3127,26 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 error("cannot return a value of type '" + vt + "' from a method returning '" +
                           currentReturnType_ + "'",
                       rs->loc);
+            }
+            // region-binder ESCAPE BY RETURN (§8). The gap this analysis was named for and did not
+            // close: `Point* make() { Point p = new Point() on stack; return &p; }` compiled clean in
+            // every configuration, INCLUDING with the binder switched on. Chapter 5 promises the
+            // opposite in as many words, so this was the most explicit unkept promise in the language.
+            //
+            // The rule is the same one the field-store check uses, pointed at the return slot: an
+            // object that lives in this activation's frame cannot leave through a pointer or a
+            // reference, because the frame goes away the instant the caller has it. A heap object is
+            // not caught -- its pointer dies here, its storage does not -- which is exactly the
+            // factory idiom and has to keep working.
+            if (regionBinder_ && isRefType(currentReturnType_)) {
+                if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get());
+                    rid != nullptr && activationOwned_.count(rid->name) > 0) {
+                    error("region-binder: returning '" + rid->name +
+                              "', which names an object living in this method's own frame; the frame "
+                              "is gone by the time the caller reads it. Allocate it with 'on heap' so "
+                              "it outlives the call, or return it by value so the caller gets a copy",
+                          rs->loc);
+                }
             }
         }
         return;

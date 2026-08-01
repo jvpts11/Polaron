@@ -1,0 +1,84 @@
+import System.IO.Console;
+
+// Everything the region binder must NOT complain about, with it switched on.
+//
+// The whole reason this analysis stayed off for so long is the first case here: a local pointer bound
+// to `on heap` is a pointer that dies at return to an object that does not, so storing it into a
+// longer-lived field is the ownership transfer every linked structure is built out of, not an escape.
+// Reported as a dangling store, it made `Node* n = new Node(v) on heap; this.head = n;` uncompilable --
+// which is to say it made the analysis unusable, which is to say nobody ever turned it on.
+program EscapeOk;
+
+public bundle main {
+    public namespace app {
+
+        public class Node {
+            public mutable int val;
+            public mutable nullable Node* next;
+            public constructor Node(int v) {
+                this.val = v;
+                this.next = null;
+            }
+        }
+
+        public class Chain {
+            private mutable nullable Node* head;
+            private mutable int count;
+
+            public constructor Chain() {
+                this.head = null;
+                this.count = 0;
+            }
+
+            // A heap object stored into a field that outlives the method: the idiom, not an escape.
+            public method push(int v) returns void {
+                Node* n = new Node(v) on heap;
+                n.next = this.head;
+                this.head = n;
+                this.count = this.count + 1;
+                return;
+            }
+
+            // A heap object handed OUT of the method: its storage outlives the frame, so this is a
+            // factory and not a dangle.
+            public static method spawn(int v) returns Node* {
+                Node* n = new Node(v) on heap;
+                return n;
+            }
+
+            public method sum() returns int {
+                mutable int total = 0;
+                mutable nullable Node* walk = this.head;
+                while (walk != null) {
+                    total = total + walk.val;
+                    walk = walk.next;
+                }
+                return total;
+            }
+
+            public destructor ~Chain() returns void {
+                mutable nullable Node* walk = this.head;
+                while (walk != null) {
+                    nullable Node* next = walk.next;
+                    delete walk;
+                    walk = next;
+                }
+                this.head = null;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Chain c = new Chain() on stack;
+                c.push(1);
+                c.push(2);
+                c.push(3);
+                Node* loose = Chain.spawn(10);
+                System.IO.Console.println($"sum={c.sum()} loose={loose.val}");
+                delete loose;
+                return;
+            }
+        }
+    }
+}
