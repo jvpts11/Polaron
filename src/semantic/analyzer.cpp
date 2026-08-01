@@ -68,20 +68,15 @@ bool isRefType(const std::string& t) {
     return !t.empty() && (t.back() == '*' || t.back() == '&');
 }
 std::string baseType(const std::string& t) {
-    std::string s = t;
-    if (!s.empty() && s.back() == '?') s.pop_back();  // strip nullable marker (spec 3.7)
+    std::string s = ast::stripNullable(t);           // strip the `nullable ` prefix (spec 3.7)
     // Strip ONE trailing pointer/reference marker: a generic with a pointer type argument mangles to a
     // name ending in '*', and only the outermost '*' is the receiver's own pointer (see codegen baseType).
     if (!s.empty() && (s.back() == '*' || s.back() == '&')) s.pop_back();
     return s;
 }
-// True if the type is declared `nullable` (canonical "T?").
-inline bool isNullableType(const std::string& t) { return !t.empty() && t.back() == '?'; }
-std::string typeRefStr(const ast::TypeRef& t) {
-    return ast::mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
-           ast::arrayDimsSuffix(t.arrayDims) + std::string(t.pointerDepth, '*') +
-           (t.isRef ? "&" : "") + (t.isNullable ? "?" : "");
-}
+// True if the type is declared `nullable` (canonical "nullable T" -- a prefix word, not a suffix mark).
+inline bool isNullableType(const std::string& t) { return ast::typeIsNullable(t); }
+std::string typeRefStr(const ast::TypeRef& t) { return ast::canonicalType(t); }
 bool isFloatType(const std::string& t) {
     // Normal names: smallfloat(16)/float(32)/double(64)/quadruple(128). Bit-counted float32/float64
     // are freestanding-only aliases (enforced elsewhere).
@@ -492,7 +487,7 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     if (isNullableType(sub) || isNullableType(super)) {
         if (isNullableType(sub) && !isNullableType(super)) return false;
         auto strip = [](const std::string& s) {
-            return isNullableType(s) ? s.substr(0, s.size() - 1) : s;
+            return ast::stripNullable(s);
         };
         return isSubtype(strip(sub), strip(super), depth + 1);
     }
@@ -511,8 +506,15 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     if (isIntName(sub) && isIntName(super)) return intBits(sub) <= intBits(super);
     // Pointer/reference compatibility follows the pointee (T*, T& and T mix
     // freely for now; the strict value-vs-reference rules land with deep copy).
-    if (isRefType(sub) || isRefType(super))
-        return isSubtype(baseType(sub), baseType(super), depth + 1);
+    //
+    // ... but try the names AS WRITTEN first. A monomorphized generic can end in a '*' that belongs to
+    // its last TYPE ARGUMENT rather than to the outer type -- `ArrayListIterator$Node*` is
+    // `ArrayListIterator<Node*>`, a value -- so stripping it produces a type that does not exist and the
+    // hierarchy walk below finds nothing. findField already had to learn this; the same trap is here.
+    if (isRefType(sub) || isRefType(super)) {
+        if (lookupClass(sub) == nullptr || lookupClass(super) == nullptr)
+            return isSubtype(baseType(sub), baseType(super), depth + 1);
+    }
     // An enum is a subtype of every catalog it extends (spec 12.4), transitively
     // through catalog->catalog extends.
     if (auto ecit = enumCatalogs_.find(sub); ecit != enumCatalogs_.end()) {
@@ -561,9 +563,22 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     }
     const ClassInfo* c = lookupClass(sub);
     if (c == nullptr) return false;
-    if (!c->superclass.empty() && isSubtype(c->superclass, super, depth + 1)) return true;
+    // A monomorphized instantiation keeps its superclass and interfaces under their BASE names
+    // (`Option`, `Iterator`), while `super` here is a mangled instantiation (`Option$Node`). For the
+    // pass-through case -- `C<T> extends B<T>` / `implements I<T>`, which is what the stdlib's Option,
+    // Some/None and the iterators all are -- the instantiation's own argument suffix is the parent's
+    // too, so retry with it. This can only ever ACCEPT a relation, never reject one, so a wrong guess
+    // costs a missed error rather than a false one.
+    const std::size_t argsAt = sub.find('$');
+    const std::string suffix = (argsAt == std::string::npos) ? std::string() : sub.substr(argsAt);
+    auto relates = [&](const std::string& parent) {
+        if (isSubtype(parent, super, depth + 1)) return true;
+        return !suffix.empty() && parent.find('$') == std::string::npos &&
+               isSubtype(parent + suffix, super, depth + 1);
+    };
+    if (!c->superclass.empty() && relates(c->superclass)) return true;
     for (const std::string& iface : c->interfaces) {
-        if (isSubtype(iface, super, depth + 1)) return true;
+        if (relates(iface)) return true;
     }
     return false;
 }
@@ -726,6 +741,138 @@ void SemanticAnalyzer::pushScope() { scopes_.emplace_back(); }
 
 void SemanticAnalyzer::popScope() {
     if (!scopes_.empty()) scopes_.pop_back();
+}
+
+// ---- the flow machine ----
+// Four facts, one set of operations. Each of them answers "what does the compiler KNOW here", which is a
+// different question from "what does the declaration say", and all four need the same handling at a
+// branch, a loop and a scope boundary. Keeping them together is what stops them drifting apart.
+
+FlowFacts SemanticAnalyzer::snapshotFlow() const {
+    FlowFacts f;
+    f.init = init_;
+    f.nonNull = nonNull_;
+    f.moved = moved_;
+    f.deleted = deleted_;
+    f.freed = freed_;
+    return f;
+}
+
+void SemanticAnalyzer::restoreFlow(const FlowFacts& f) {
+    init_ = f.init;
+    nonNull_ = f.nonNull;
+    moved_ = f.moved;
+    deleted_ = f.deleted;
+    freed_ = f.freed;
+}
+
+void SemanticAnalyzer::joinFlow(const FlowFacts& a, const FlowFacts& b) {
+    // Initialization: Init only where BOTH arms initialized it. Where exactly one did, the result is
+    // Maybe -- deliberately distinguished from Uninit, because "you set it in the `then` and forgot the
+    // `else`" deserves to be told as that, not as "never initialized".
+    init_.clear();
+    for (const auto& [name, sa] : a.init) {
+        const auto ib = b.init.find(name);
+        const FlowFacts::Init sb = ib == b.init.end() ? FlowFacts::Init::Init : ib->second;
+        init_[name] = (sa == sb) ? sa
+                    : (sa == FlowFacts::Init::Uninit && sb == FlowFacts::Init::Uninit)
+                          ? FlowFacts::Init::Uninit
+                          : FlowFacts::Init::Maybe;
+    }
+    for (const auto& [name, sb] : b.init)
+        if (a.init.find(name) == a.init.end() && sb != FlowFacts::Init::Init)
+            init_[name] = FlowFacts::Init::Maybe;
+
+    // A PROOF must hold on both paths to survive; an OBLIGATION (moved, deleted) that holds on either
+    // must survive. The asymmetry is the point: be pessimistic about what you know, pessimistic about
+    // what you owe. Optimism in either direction is how a flow analysis starts lying.
+    nonNull_.clear();
+    for (const std::string& n : a.nonNull)
+        if (b.nonNull.count(n) > 0) nonNull_.insert(n);
+    moved_ = a.moved;
+    moved_.insert(b.moved.begin(), b.moved.end());
+    deleted_ = a.deleted;
+    deleted_.insert(b.deleted.begin(), b.deleted.end());
+    freed_ = a.freed;
+    freed_.insert(b.freed.begin(), b.freed.end());
+}
+
+void SemanticAnalyzer::invalidateAcrossBackEdge(const FlowFacts& before) {
+    // The body may run again with whatever the previous iteration left behind, so a proof the body did
+    // not already have at the top cannot be trusted at the top. Initialization is the opposite: it only
+    // ever moves forward, so what the body initialized stays initialized.
+    std::unordered_set<std::string> kept;
+    for (const std::string& n : nonNull_)
+        if (before.nonNull.count(n) > 0) kept.insert(n);
+    nonNull_ = std::move(kept);
+}
+
+FlowFacts::Init SemanticAnalyzer::initStateOf(const std::string& name) const {
+    const auto it = init_.find(name);
+    return it == init_.end() ? FlowFacts::Init::Init : it->second;
+}
+
+void SemanticAnalyzer::markInitialized(const std::string& name) {
+    if (init_.find(name) != init_.end()) init_[name] = FlowFacts::Init::Init;
+}
+
+// True when every path through this block leaves it -- return, throw, break or continue. Such a block
+// contributes nothing to the state after the branch it belongs to, which is exactly why a guard clause
+// (`if (p == null) { return; }`) can narrow the code that follows it.
+bool SemanticAnalyzer::blockAlwaysExits(const ast::Block& b) {
+    for (const auto& st : b.statements) {
+        const ast::Stmt* s = st.get();
+        if (dynamic_cast<const ast::ReturnStmt*>(s) != nullptr) return true;
+        if (dynamic_cast<const ast::ThrowStmt*>(s) != nullptr) return true;
+        if (dynamic_cast<const ast::BreakStmt*>(s) != nullptr) return true;
+        if (dynamic_cast<const ast::ContinueStmt*>(s) != nullptr) return true;
+        // A nested if counts only when BOTH of its arms exit -- otherwise a path falls through it.
+        if (const auto* nested = dynamic_cast<const ast::IfStmt*>(s)) {
+            if (nested->elseBlock != nullptr && blockAlwaysExits(nested->thenBlock) &&
+                blockAlwaysExits(*nested->elseBlock))
+                return true;
+        }
+    }
+    return false;
+}
+
+// Read a null test and report what it PROVES, and for which arm. Only the shapes whose meaning is
+// unambiguous are recognised -- `x != null` and `x == null` against a plain name. Anything cleverer
+// (`a != null && b != null`, a call that returns a nullable) proves nothing here, which costs a cast at
+// the call site and keeps the analysis honest. Being incomplete is safe; being wrong is not.
+void SemanticAnalyzer::proofFromCondition(const ast::Expr& cond, std::string& provenThen,
+                                          std::string& provenElse) {
+    const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&cond);
+    if (bin == nullptr) return;
+    if (bin->op == "&&") {
+        // `a != null && ...`: whatever the left side proves holds for the whole `then` arm, because the
+        // right side only runs when the left was true. The `else` arm learns nothing.
+        std::string lThen, lElse, rThen, rElse;
+        proofFromCondition(*bin->lhs, lThen, lElse);
+        proofFromCondition(*bin->rhs, rThen, rElse);
+        provenThen = !lThen.empty() ? lThen : rThen;
+        return;
+    }
+    if (bin->op != "==" && bin->op != "!=") return;
+    const auto* lid = dynamic_cast<const ast::IdentifierExpr*>(bin->lhs.get());
+    const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(bin->rhs.get());
+    const bool lNull = dynamic_cast<const ast::NullLiteralExpr*>(bin->lhs.get()) != nullptr;
+    const bool rNull = dynamic_cast<const ast::NullLiteralExpr*>(bin->rhs.get()) != nullptr;
+    std::string name;
+    if (lid != nullptr && rNull) name = lid->name;
+    else if (rid != nullptr && lNull) name = rid->name;
+    if (name.empty()) return;
+    // `x != null` proves it in the `then`; `x == null` proves it in the `else`.
+    if (bin->op == "!=") provenThen = name;
+    else provenElse = name;
+}
+
+void SemanticAnalyzer::killProofsFor(const std::string& name) {
+    nonNull_.erase(name);
+    // A write to `obj` says nothing about `obj.field` any more either.
+    const std::string prefix = name + ".";
+    for (auto it = nonNull_.begin(); it != nonNull_.end();)
+        it = (it->rfind(prefix, 0) == 0) ? nonNull_.erase(it) : std::next(it);
 }
 
 const LocalVar* SemanticAnalyzer::lookupLocal(const std::string& name) const {
@@ -1185,6 +1332,20 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
         // opposite -- state that outlives the instance -- so the pair is a contradiction (spec).
         if (f->isTransient && f->isPersistent)
             error("field '" + f->name + "' cannot be both 'transient' and 'persistent'", f->loc);
+        // A `weak T*` observes an object by identity and auto-nulls when it dies, so its target must be a
+        // heap/stack object with identity -- i.e. a pointer to a class. Reject `weak int`, `weak T` (not a
+        // pointer) and `weak int*` (no identity, no weak-list head): the intrusive auto-null has nowhere to
+        // hook. This keeps `weak` a precise tool rather than a footgun on a nonsensical target.
+        if (f->isWeak) {
+            if (!f->type.isPointer)
+                error("'weak' requires a pointer: write 'weak " + typeRefStr(f->type) + "* " + f->name +
+                          "'. A weak reference observes an object by identity, so it must be a pointer.",
+                      f->loc);
+            else if (classes_.count(baseType(typeRefStr(f->type))) == 0)
+                error("'weak " + typeRefStr(f->type) + "' has no valid target: a weak reference must point "
+                      "at a class instance (an object with identity), not a primitive or non-class type.",
+                      f->loc);
+        }
         if (!f->init) continue;
         const std::string initType = typeOf(*f->init);
         const std::string ft = typeRefStr(f->type);
@@ -1195,6 +1356,197 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
         }
     }
     popScope();
+}
+
+// region-binder (§8): walk a method body collecting which value-parameters get stored into the receiver.
+// `alias` maps a local (or parameter) name to a parameter index it aliases; `this.field = <param/alias>`
+// (or an index-store into a `this` field) marks that parameter escaped. Handles the block-bearing control
+// flow; a store buried in `switch`/`try` is not yet scanned (a v1 soundness gap, tracked).
+// The declared type of `recv.field` -- resolves `this.field` (via the enclosing class) and `local.field`
+// (via the local's type). Returns "" when it can't resolve (a computed receiver, etc.).
+std::string SemanticAnalyzer::fieldTypeOf(const ast::MemberExpr& mem) {
+    std::string cls;
+    if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem.object.get())) {
+        if (oid->name == "this") cls = enclosingClass_;
+        else if (const LocalVar* v = lookupLocal(oid->name)) cls = baseType(v->type);
+    }
+    if (cls.empty()) return "";
+    const FieldInfo* fi = findField(baseType(cls), mem.member);
+    return fi != nullptr ? fi->type : "";
+}
+
+void SemanticAnalyzer::scanEscapes(const ast::Block& body, std::unordered_map<std::string, int>& alias,
+                                   std::vector<bool>& esc) {
+    for (const auto& stmt : body.statements) scanStmt(stmt.get(), alias, esc);
+}
+
+// Process one statement for the escape summary, recursing into EVERY block-bearing statement so a store
+// buried in switch/try/match/using/etc. is never missed (soundness). (Stores buried inside a block-bearing
+// EXPRESSION -- spec 30.18 -- are the one residual, tracked.)
+void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::string, int>& alias,
+                                std::vector<bool>& esc) {
+    if (s == nullptr) return;
+    auto paramOf = [&](const ast::Expr* e) -> int {  // the param index an expression aliases, or -1
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
+            auto it = alias.find(id->name);
+            return it == alias.end() ? -1 : it->second;
+        }
+        return -1;
+    };
+    // The lifetime "slot" a field-store target belongs to: -1 = `this` (receiver), j = parameter j (or an
+    // alias of one), -2 = neither (a local -> same lifetime as us, no escape). We record the store regardless
+    // of the field's type; whether it actually ALIASES (a value copies, a pointer/generic-ref aliases) is
+    // decided at the CALL SITE from the concrete argument's type -- this is what makes it work through
+    // generics (a `T[]` field is not a ref in the template but is when T = Node*).
+    auto storeSlot = [&](const ast::Expr* target) -> int {
+        const ast::Expr* t = target;
+        if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(t)) t = ix->array.get();
+        const auto* mem = dynamic_cast<const ast::MemberExpr*>(t);
+        if (mem == nullptr) return -2;
+        const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+        if (oid == nullptr) return -2;
+        if (oid->name == "this") return -1;
+        auto ta = alias.find(oid->name);              // is the target object a parameter (or its alias)?
+        return (ta != alias.end() && escapeScanParams_ != nullptr &&
+                ta->second < static_cast<int>(escapeScanParams_->size())) ? ta->second : -2;
+    };
+    if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) {
+        int p = vd->init ? paramOf(vd->init.get()) : -1;   // `var y = param/alias` -> y aliases it
+        if (p >= 0) alias[vd->name] = p; else alias.erase(vd->name);
+    } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) {
+        int slot = storeSlot(as->target.get());
+        if (slot != -2) {
+            int p = paramOf(as->value.get());   // storing parameter p into slot's ref field
+            if (p >= 0 && p < static_cast<int>(esc.size())) {
+                if (slot == -1) esc[p] = true;                            // escapes into the receiver
+                else if (p < static_cast<int>(escapeScanParamTargets_.size()) &&
+                         std::find(escapeScanParamTargets_[p].begin(), escapeScanParamTargets_[p].end(),
+                                   slot) == escapeScanParamTargets_[p].end())
+                    escapeScanParamTargets_[p].push_back(slot);          // escapes into parameter `slot`
+            }
+        }
+        if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(as->target.get())) {
+            int p = paramOf(as->value.get());              // reassigning a local: retag or clear
+            if (p >= 0) alias[tid->name] = p; else alias.erase(tid->name);
+        }
+    } else if (const auto* is = dynamic_cast<const ast::IfStmt*>(s)) {
+        scanEscapes(is->thenBlock, alias, esc);
+        if (is->elseBlock) scanEscapes(*is->elseBlock, alias, esc);
+    } else if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(s)) {
+        scanEscapes(ws->body, alias, esc);
+    } else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(s)) {
+        scanEscapes(dw->body, alias, esc);
+    } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(s)) {
+        scanStmt(fs->init.get(), alias, esc); scanStmt(fs->update.get(), alias, esc);
+        scanEscapes(fs->body, alias, esc);
+    } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(s)) {
+        scanEscapes(fe->body, alias, esc);
+    } else if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(s)) {
+        for (const auto& c : ms->cases) scanEscapes(c.body, alias, esc);
+        if (ms->defaultBody) scanEscapes(*ms->defaultBody, alias, esc);
+    } else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(s)) {
+        for (const auto& c : sw->cases) scanEscapes(c.body, alias, esc);
+        if (sw->defaultBody) scanEscapes(*sw->defaultBody, alias, esc);
+    } else if (const auto* ts = dynamic_cast<const ast::TryStmt*>(s)) {
+        scanEscapes(ts->body, alias, esc);
+        for (const auto& c : ts->catches) scanEscapes(c.body, alias, esc);
+        if (ts->finallyBlock) scanEscapes(*ts->finallyBlock, alias, esc);
+    } else if (const auto* df = dynamic_cast<const ast::DeferStmt*>(s)) {
+        scanEscapes(df->body, alias, esc);
+    } else if (const auto* us = dynamic_cast<const ast::UsingStmt*>(s)) {
+        scanStmt(us->decl.get(), alias, esc); scanEscapes(us->body, alias, esc);
+    } else if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(s)) {
+        scanEscapes(sy->body, alias, esc);
+    } else if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(s)) {
+        scanStmt(lb->stmt.get(), alias, esc);
+    } else if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s)) {
+        // TRANSITIVE escape (fixpoint): `this.M(param)` or `this.field.M(param)` where callee M stores that
+        // argument into ITS receiver -- which is part of OUR `this` -- makes the argument escape US too.
+        if (const auto* call = dynamic_cast<const ast::CallExpr*>(es->expr.get()))
+            if (const auto* callee = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+                std::string calleeClass;
+                if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(callee->object.get())) {
+                    if (rid->name == "this") calleeClass = escapeScanClass_;   // this.M(...)
+                } else if (const auto* rmem = dynamic_cast<const ast::MemberExpr*>(callee->object.get())) {
+                    if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(rmem->object.get());
+                        oid != nullptr && oid->name == "this")                 // this.field.M(...)
+                        if (const FieldInfo* fi = findField(escapeScanClass_, rmem->member))
+                            calleeClass = baseType(fi->type);
+                }
+                if (!calleeClass.empty()) {
+                    auto sit = escapesToReceiver_.find(calleeClass + "." + callee->member);
+                    if (sit != escapesToReceiver_.end())
+                        for (std::size_t k = 0; k < call->args.size() && k < sit->second.size(); ++k)
+                            if (sit->second[k])
+                                if (const auto* aid =
+                                        dynamic_cast<const ast::IdentifierExpr*>(call->args[k].get())) {
+                                    auto it = alias.find(aid->name);
+                                    if (it != alias.end() && it->second < static_cast<int>(esc.size()) &&
+                                        !esc[it->second]) {
+                                        esc[it->second] = true;
+                                        escapeSummaryChanged_ = true;  // a summary grew -> another fixpoint round
+                                    }
+                                }
+                }
+            }
+    }
+}
+
+void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
+    // Iterate to a fixpoint: a transitive store (`this.list.add(param)`) can only be seen once the callee's
+    // own summary is known, so re-scan until no summary grows. Monotone (bits only turn on) -> it converges.
+    // IMPORTED bundles (user libraries via .ldb) carry no bodies -- their escape summary rode along in the
+    // .ldh `escapes(...)` clause, parsed onto each MethodDecl. Load it so their container methods are checked.
+    for (const ast::Bundle& bundle : program.bundles) {
+        if (!bundle.isImported) continue;
+        for (const ast::Namespace& ns : bundle.namespaces)
+            for (const ast::ClassDecl& cls : ns.classes)
+                for (const ast::MemberPtr& member : cls.members)
+                    if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                        std::string key = baseType(cls.name) + "." + m->name;
+                        std::vector<bool> rec(m->params.size(), false);
+                        std::vector<std::vector<int>> par(m->params.size(), {});
+                        for (const auto& [i, slot] : m->escapeSummary)
+                            if (i >= 0 && i < static_cast<int>(m->params.size())) {
+                                if (slot == -1) rec[i] = true; else par[i].push_back(slot);
+                            }
+                        escapesToReceiver_[key] = std::move(rec);
+                        escapesToParam_[key] = std::move(par);
+                    }
+    }
+    int guard = 0;
+    do {
+        escapeSummaryChanged_ = false;
+        for (const ast::Bundle& bundle : program.bundles) {
+            if (bundle.isImported) continue;
+            for (const ast::Namespace& ns : bundle.namespaces)
+                for (const ast::ClassDecl& cls : ns.classes)
+                    for (const ast::MemberPtr& member : cls.members)
+                        if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                            if (m->isAbstract || m->isExtern) continue;   // no LDP3 body to scan
+                            escapeScanClass_ = baseType(cls.name);
+                            escapeScanParams_ = &m->params;
+                            escapeScanParamTargets_.assign(m->params.size(), {});
+                            std::unordered_map<std::string, int> alias;   // param/alias name -> param index
+                            for (std::size_t i = 0; i < m->params.size(); ++i)
+                                alias[m->params[i].name] = static_cast<int>(i);
+                            std::string key = escapeScanClass_ + "." + m->name;
+                            std::vector<bool> esc = escapesToReceiver_.count(key) > 0
+                                                        ? escapesToReceiver_[key]  // keep bits from prior round
+                                                        : std::vector<bool>(m->params.size(), false);
+                            scanEscapes(m->body, alias, esc);
+                            escapesToReceiver_[key] = esc;
+                            escapesToParam_[key] = escapeScanParamTargets_;  // param -> param slots it escapes to
+                            // write the summary back onto the AST so the .ldh emitter can serialize it for
+                            // downstream compilation units (an `escapes(i>slot, ...)` clause).
+                            std::vector<std::pair<int, int>> sum;
+                            for (std::size_t i = 0; i < esc.size(); ++i) if (esc[i]) sum.emplace_back((int)i, -1);
+                            for (std::size_t i = 0; i < escapeScanParamTargets_.size(); ++i)
+                                for (int slot : escapeScanParamTargets_[i]) sum.emplace_back((int)i, slot);
+                            const_cast<ast::MethodDecl*>(m)->escapeSummary = std::move(sum);
+                        }
+        }
+    } while (escapeSummaryChanged_ && ++guard < 50);   // 50 = a very high safety bound; real depth is tiny
 }
 
 void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
@@ -1296,6 +1648,11 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                     std::vector<const ast::Expr*> contracts;
                     for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
                     for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
+                    // Same leak as the literal suffixes below: an enum's method bodies are analyzed here
+                    // rather than in the class member loop, so `currentReturnType_` still held whatever
+                    // the last CLASS method left in it. A method on an enum returns a type like any other.
+                    currentReturnType_ = typeRefStr(m->returnType);
+                    currentThrows_.clear();
                     analyzeMethodBody(m->body, m->params,
                                       m->isStatic ? std::string() : en.name, false, contracts);
                 }
@@ -1391,6 +1748,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     validateOverrides(program);
     validateCatalogs(program);
     findEntryPoint(program);
+    // §8: compute the interprocedural escape summary before checking. Also run it when emitting a library
+    // (even without --region-binder) so the summary is serialized into the .ldh for downstream consumers.
+    if (regionBinder_ || libraryMode_) computeEscapeSummaries(program);
     analyzeBodies(program);
     analyzeLiteralBodies(program);
     validateAnnotations(program);  // spec 14.3: applied [Name(...)] match a declared annotation
@@ -1691,15 +2051,26 @@ void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
             if (!imp.path.empty()) currentImports_.insert(imp.path.back());
         for (const ast::Namespace& ns : bundle.namespaces) {
             currentNamespace_ = ns.name;
+            // A LiteralDecl is its own AST node, not a MethodDecl, so the member loop above never set
+            // `currentReturnType_` for one -- its body was analyzed carrying whatever the LAST method
+            // analyzed had left there. Harmless while only nullability was checked (both sides
+            // non-nullable), and a wave of false "cannot return X from a method returning boolean" the
+            // moment the return TYPE was checked. A literal suffix returns a type like anything else.
             for (const ast::LiteralDecl& lit : ns.literals) {
+                currentReturnType_ = typeRefStr(lit.returnType);
+                currentThrows_.clear();
                 analyzeMethodBody(lit.body, {lit.param}, /*thisClass=*/"", /*inConstructor=*/false);
             }
             // Class/struct-owned literal suffix bodies (spec 17.10): static, so no `this`.
             for (const ast::ClassDecl& cls : ns.classes)
                 for (const ast::MemberPtr& m : cls.members)
-                    if (const auto* lit = dynamic_cast<const ast::LiteralDecl*>(m.get()))
+                    if (const auto* lit = dynamic_cast<const ast::LiteralDecl*>(m.get())) {
+                        currentReturnType_ = typeRefStr(lit->returnType);
+                        currentThrows_.clear();
                         analyzeMethodBody(lit->body, {lit->param}, /*thisClass=*/"",
                                           /*inConstructor=*/false);
+                    }
+            currentReturnType_.clear();
         }
     }
 }
@@ -1735,6 +2106,15 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<const ast::Expr*>& contracts) {
     scopes_.clear();
     moved_.clear();
+    // The flow facts describe THIS method's locals and mean nothing in the next one. Leaving them behind
+    // made a `delete b` in one stdlib method report every later method's `b` as a use-after-free -- 51
+    // tests failing on the same variable name, from a file none of them mentions.
+    freed_.clear();
+    init_.clear();
+    nonNull_.clear();
+    suppressNarrowing_ = false;
+    activationOwned_.clear();
+    lambdaLocals_.clear();
     extracted_.clear();
     checkpointRegion_.clear();
     regionOf_.clear();
@@ -1851,10 +2231,28 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         }
         // A region handle may be (re)bound to bind an empty `region r;` to its allocation (spec 17.2
         // form 3), so region locals are assignable without an explicit `mutable`.
-        if (!var->isMutable && var->type != "region") {
-            error("cannot assign to immutable variable '" + id->name + "' (declare it 'mutable')",
+        //
+        // DEFERRED INITIALIZATION: the first write to a variable declared without a value is not a
+        // reassignment, it is the initialization -- the value is still written exactly once, which is
+        // what immutability actually promises. So it is allowed without `mutable`, and the SECOND write
+        // is the one that needs it. This is what lets a value be chosen in a branch without making the
+        // binding mutable for the rest of its life, which is how `mutable` stays meaningful.
+        const bool initializingNow =
+            var->deferredInit && initStateOf(id->name) != FlowFacts::Init::Init;
+        if (!var->isMutable && var->type != "region" && !initializingNow) {
+            error(var->deferredInit
+                      ? "cannot assign to '" + id->name +
+                            "' again: it was declared without a value and has already been initialized, "
+                            "which used up its single write. Declare it 'mutable' if it really needs to "
+                            "change"
+                      : "cannot assign to immutable variable '" + id->name + "' (declare it 'mutable')",
                   loc);
         }
+        markInitialized(id->name);
+        // Whatever was proven about the OLD value says nothing about the new one.
+        killProofsFor(id->name);
+        if (!valueType.empty() && valueType != "null" && !isNullableType(valueType))
+            nonNull_.insert(id->name);
         if (!valueType.empty() && !isSubtype(valueType, var->type) && !fits(var->type)) {
             error("cannot assign a value of type '" + valueType + "' to variable '" + id->name +
                       "' of type '" + var->type + "'",
@@ -1923,9 +2321,21 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
                   loc);
         }
         if (!valueType.empty() && !isSubtype(valueType, f->type) && !fits(f->type)) {
-            error("cannot assign a value of type '" + valueType + "' to field '" + mem->member +
-                      "' of type '" + f->type + "'",
-                  loc);
+            // Say WHY, not just that. A null (or nullable) value reaching a non-nullable field is the
+            // commonest version of this error and the one whose remedy the generic wording gets wrong:
+            // you cannot cast null into a non-nullable type, you declare the field `nullable`.
+            if ((valueType == "null" || isNullableType(valueType)) && !isNullableType(f->type)) {
+                error("cannot assign " + std::string(valueType == "null" ? "null" : "a nullable value") +
+                          " to field '" + mem->member + "': its type '" + f->type +
+                          "' is non-nullable, and every type in LDP3 is non-null unless it says "
+                          "otherwise. Declare the field 'nullable " + f->type +
+                          "' if it can legitimately be absent",
+                      loc);
+            } else {
+                error("cannot assign a value of type '" + valueType + "' to field '" + mem->member +
+                          "' of type '" + f->type + "'",
+                      loc);
+            }
         }
         // Reassigning a partially-moved field reactivates it (spec 19.9).
         if (objId != nullptr) moved_.erase(objId->name + "." + mem->member);
@@ -1980,6 +2390,38 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
 
 // Bit-counted type names (int8..int64, uint8..uint64, float32/64) exist only in freestanding mode
 // (spec 3.1); in normal mode the named types (byte/short/int/long, float/double, ...) are required.
+// Widening the RESULT of a narrow computation is almost always a bug, and a silent one: in
+// `cast<address>(f << 12)` the shift already happened in 32 bits, so the high bits are gone before the
+// cast runs -- the cast only documents the loss. The fix is always to widen the OPERAND first
+// (`cast<address>(f) << 12`), which is one character of difference and a completely different result.
+//
+// This is the compile-time half of LDP3's no-implicit-conversion rule. Refusing implicit narrowing stops
+// a value being silently truncated on the way IN; this stops a value being silently truncated on the way
+// UP. Both exist because the compiler is not allowed to assume which width the author meant -- and in a
+// kernel the wrong answer is a page mapped somewhere else, discovered much later and somewhere unrelated.
+//
+// Only the operators that can carry bits past the narrow width are flagged (`<<`, `*`, `+`, `-`); `&`,
+// `|`, `>>` and comparisons cannot produce a value the narrow type could not already hold.
+void SemanticAnalyzer::checkWideningLostBits(const ast::CastExpr& cst, const std::string& src,
+                                             const std::string& dst) {
+    if (!isIntName(src) || !isIntName(dst)) return;
+    if (intBits(dst) <= intBits(src)) return;                 // not a widening cast
+    const auto* bin = dynamic_cast<const ast::BinaryExpr*>(cst.operand.get());
+    if (bin == nullptr) return;
+    const std::string& op = bin->op;
+    if (op != "<<") return;
+    // `<<` ONLY, and that scope was measured rather than guessed. A left shift pushes bits straight out
+    // of the top, so widening afterwards is essentially always the wrong order -- there is no common
+    // correct code shaped like `cast<long>(x << k)`. `*`, `+` and `-` overflow only when the values are
+    // large, and `cast<long>(i * n)` over loop indices is a correct idiom that appears throughout real
+    // code (it fired on matmul and recursion tests here). Flagging those would make this noise, and a
+    // diagnostic people learn to ignore protects nothing.
+    error("widening the result of a narrow '" + op + "': `" + src + "` arithmetic is evaluated in " +
+              std::to_string(intBits(src)) + " bits, so bits are lost BEFORE this cast to '" + dst +
+              "'. Widen the operand instead: cast<" + dst + ">(x) " + op + " y",
+          cst.loc);
+}
+
 void SemanticAnalyzer::checkBitCounted(const std::string& typeName, SourceLocation loc) {
     if (freestanding_) return;
     std::string n = baseType(typeName);
@@ -2350,6 +2792,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             error("redeclaration or shadowing of variable '" + vd->name + "'", vd->loc);
         } else {
             deleted_.erase(vd->name);  // reborn after delete: persistents reattach (spec 18.2)
+            freed_.erase(vd->name);
             // A class value bound to a `new ... on stack` (the default for objects) is a
             // stack object: RAII frees it, and it is not throwable (its carrier would
             // dangle after unwind).
@@ -2358,8 +2801,30 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 stackObj = nw->location != "heap" && !declType.empty() &&
                            lookupClass(baseType(declType)) != nullptr && !isRefType(declType) &&
                            !isArrayType(declType);
+            // A declaration with no initializer enters the *uninitialized* state. `region r;` keeps its
+            // old behaviour (it is allocated by a later `r = itself.allocate(...)`, which the region
+            // rules already police), so it is not tracked here.
+            const bool deferred = vd->init == nullptr && declType != "region";
+            bool heapObj = false;
+            if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get()))
+                heapObj = nw->location == "heap";
             declareLocal(vd->name, LocalVar{declType.empty() ? std::string("int") : declType,
-                                            vd->isMutable, stackObj});
+                                            vd->isMutable, stackObj, heapObj, deferred});
+            if (deferred) {
+                init_[vd->name] = FlowFacts::Init::Uninit;
+            } else {
+                init_.erase(vd->name);
+                // Redeclaring a name (a fresh scope) must not inherit the old one's proof.
+                killProofsFor(vd->name);
+                // An initializer that is itself non-null proves the variable non-null right away --
+                // this is what makes `nullable T* p = &thing;` usable without a redundant check.
+                //
+                // Uses the type computed ABOVE rather than calling typeOf again: typeOf has side effects
+                // (it records moves and reports errors), so re-typing the initializer made `Handle b =
+                // move a;` report `a` as used-after-move -- against the very move that statement was.
+                if (!initType.empty() && initType != "null" && !isNullableType(initType))
+                    nonNull_.insert(vd->name);
+            }
         }
         // Remember a region's accepts/rejects constraints, keyed by variable.
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get())) {
@@ -2374,6 +2839,26 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         regionOf_.erase(vd->name);
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get()); nw != nullptr && !nw->region.empty())
             regionOf_[vd->name] = nw->region;
+        // region-binder: a `new X` with NO region names an object owned by this activation -- it dies at
+        // method return. Track the local so storing a reference to it into a longer-lived location can be
+        // rejected (§3). `new X in region R` is region-owned, not activation-owned, so it is excluded.
+        // Aliasing propagates the tag (`var y = x` / `var y = move x`): an alias to (or the new owner of) an
+        // activation-owned object is itself activation-scoped, so the escape check can't be dodged through it.
+        if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(vd->init.get()))
+            lambdaLocals_[vd->name] = lam;   // `function<void> work = lambda[...]` -> track for the §14 check
+        else lambdaLocals_.erase(vd->name);
+        activationOwned_.erase(vd->name);
+        if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+            nw != nullptr && nw->region.empty()) {
+            activationOwned_.insert(vd->name);
+        } else if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(vd->init.get());
+                   aid != nullptr && activationOwned_.count(aid->name) > 0) {
+            activationOwned_.insert(vd->name);
+        } else if (const auto* amv = dynamic_cast<const ast::MoveExpr*>(vd->init.get())) {
+            if (const auto* mid = dynamic_cast<const ast::IdentifierExpr*>(amv->operand.get());
+                mid != nullptr && activationOwned_.count(mid->name) > 0)
+                activationOwned_.insert(vd->name);
+        }
         if (vd->init) checkOwnershipAssign(declType, *vd->init, vd->loc);
         return;
     }
@@ -2413,10 +2898,33 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             }
             return;
         }
+        // region-binder ESCAPE CHECK (§3): storing a plain reference to an activation-owned object (a
+        // `new`-here local, or an alias/move of one) into a field of something that OUTLIVES this method
+        // would dangle at return. The target outlives the activation when its base object is not itself
+        // activation-owned -- `this`, a parameter, a static, or an alias to an outer object. Storing into a
+        // fellow activation-owned object (same lifetime) is fine. `x = move y` (a MoveExpr, not a bare
+        // identifier) transfers ownership and is always allowed.
+        if (regionBinder_)
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
+                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                    oid != nullptr && activationOwned_.count(oid->name) == 0)  // target outlives the method
+                    if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(assign->value.get());
+                        rid != nullptr && activationOwned_.count(rid->name) > 0 &&
+                        // only a POINTER/REFERENCE field aliases the object; a value field deep-copies it and
+                        // cannot dangle. Gate on the field being T*/T& (isRefType).
+                        isRefType(fieldTypeOf(*mem))) {
+                        const std::string tgt = oid->name == "this" ? "this" : ("'" + oid->name + "'");
+                        error("region-binder: storing a reference to the method-local object '" + rid->name +
+                                  "' into " + tgt + "'s field '" + mem->member + "', which outlives it, "
+                                  "would dangle when '" + rid->name + "' is freed; transfer ownership with "
+                                  "'move' (= move " + rid->name + ")",
+                              assign->loc);
+                    }
         const std::string vt = typeOf(*assign->value);
         checkAssignTarget(*assign->target, vt, assign->loc, assign->value.get());
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get())) {
             moved_.erase(id->name);  // reassignment reactivates the variable
+            activationOwned_.erase(id->name);  // reassigned: no longer the tracked activation-owned object
             extracted_.erase(id->name);  // ... including after an `x = extract x from region R;`
             const LocalVar* var = lookupLocal(id->name);
             if (var != nullptr) checkOwnershipAssign(var->type, *assign->value, assign->loc);
@@ -2437,8 +2945,41 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_, &constDoubles_))
                 error("'comptime if' requires a compile-time constant condition", ifs->loc);
         }
+        // The branch is where the flow machine earns itself. Each arm is analyzed from the SAME entry
+        // state, and what survives afterwards is the join of the two -- so a proof made in one arm cannot
+        // leak into code the other arm reaches.
+        const FlowFacts entry = snapshotFlow();
+
+        // A condition that PROVES something holds for the arm that ran because of it. `p != null` proves
+        // it in the `then`; `p == null` proves it in the `else`, which is what makes the guard-clause
+        // shape (`if (p == null) { return; }`) work: the proof lands on the continuation.
+        std::string provenThen, provenElse;
+        proofFromCondition(*ifs->cond, provenThen, provenElse);
+
+        if (!provenThen.empty()) nonNull_.insert(provenThen);
         analyzeBlock(ifs->thenBlock);
+        const FlowFacts afterThen = snapshotFlow();
+        const bool thenExits = blockAlwaysExits(ifs->thenBlock);
+
+        restoreFlow(entry);
+        if (!provenElse.empty()) nonNull_.insert(provenElse);
         if (ifs->elseBlock) analyzeBlock(*ifs->elseBlock);
+        const FlowFacts afterElse = snapshotFlow();
+        const bool elseExits = ifs->elseBlock != nullptr && blockAlwaysExits(*ifs->elseBlock);
+
+        // An arm that always exits (return/throw/break/continue) never reaches the code after the `if`,
+        // so it contributes NOTHING to the join. That is both what makes a guard clause narrow the rest
+        // of the method and what removes the ownership false positive the analysis doc calls out: a
+        // branch that moved a value and then returned cannot have moved it for the code below.
+        if (thenExits && elseExits) {
+            restoreFlow(afterThen);
+        } else if (thenExits) {
+            restoreFlow(afterElse);
+        } else if (elseExits) {
+            restoreFlow(afterThen);
+        } else {
+            joinFlow(afterThen, afterElse);
+        }
         return;
     }
     if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(&stmt)) {
@@ -2492,11 +3033,23 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (!ct.empty() && ct != "boolean") {
             error("'while' condition must be boolean, got '" + ct + "'", ws->loc);
         }
+        // The body may not run at all, and it may run again -- so a proof it establishes survives
+        // neither. What it INITIALIZES is different: a second pass cannot un-assign a variable, but a
+        // zero-pass loop means we cannot claim it was assigned either, so the entry state stands.
+        const FlowFacts entry = snapshotFlow();
+        std::string provenBody, unused;
+        proofFromCondition(*ws->cond, provenBody, unused);
+        if (!provenBody.empty()) nonNull_.insert(provenBody);
         analyzeBlock(ws->body);
+        invalidateAcrossBackEdge(entry);
+        restoreFlow(entry);
         return;
     }
     if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&stmt)) {
+        // A do-while body always runs once, so what it initializes really is initialized afterwards.
+        const FlowFacts entry = snapshotFlow();
         analyzeBlock(dw->body);
+        invalidateAcrossBackEdge(entry);
         const std::string ct = typeOf(*dw->cond);
         if (!ct.empty() && ct != "boolean") {
             error("'do-while' condition must be boolean, got '" + ct + "'", dw->loc);
@@ -2511,7 +3064,11 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             error("'for' condition must be boolean, got '" + ct + "'", fs->loc);
         }
         if (fs->update) analyzeStatement(*fs->update);
+        // Same as `while`: zero iterations is possible, so nothing the body establishes escapes it.
+        const FlowFacts entry = snapshotFlow();
         analyzeBlock(fs->body);
+        invalidateAcrossBackEdge(entry);
+        restoreFlow(entry);
         popScope();
         return;
     }
@@ -2531,10 +3088,35 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             // Null safety (spec 3.7): a null/nullable value may not be returned where the declared
             // return type is non-nullable.
             if (!vt.empty() && !currentReturnType_.empty() && !isNullableType(currentReturnType_) &&
-                (vt == "null" || isNullableType(vt)))
-                error("cannot return a " + std::string(vt == "null" ? "null" : "nullable") +
-                          " value from a method returning non-nullable '" + currentReturnType_ + "'",
+                (vt == "null" || isNullableType(vt))) {
+                error("cannot return " + std::string(vt == "null" ? "null" : "a nullable value") +
+                          " from a method declared 'returns " + currentReturnType_ +
+                          "': that type is non-nullable" +
+                          (vt == "null"
+                               ? std::string(". Return a real value, or declare it 'returns nullable " +
+                                             currentReturnType_ + "' if the caller must handle absence")
+                               : std::string(". A direct null test on a NAME narrows it -- after "
+                                             "`if (x == null) { return ...; }` a plain `return x;` "
+                                             "compiles with no cast. This value's test was not a shape "
+                                             "the compiler reads (a field, a call result, a cleverer "
+                                             "condition), so state the check with 'cast<" +
+                                             currentReturnType_ + ">(...)', which is verified at runtime")),
                       rs->loc);
+            } else if (!vt.empty() && !currentReturnType_.empty() && vt != "null" &&
+                       currentReturnType_ != "void" && !isSubtype(vt, currentReturnType_) &&
+                       !intLiteralFits(*rs->value, currentReturnType_)) {
+                // TYPE of the returned value (LDP3-0303). Only nullability was checked here, so
+                // `return someDog;` from a method `returns Cat` produced valid IR and reinterpreted the
+                // object -- vtable pointer included -- because every class is an opaque `ptr` at the LLVM
+                // level. A language that verifies `cast<T>` at runtime had its guard facing the wrong way.
+                //
+                // The same pair of conditions the assignment check uses, deliberately: `isSubtype` for the
+                // relation and `intLiteralFits` so an untyped literal still adapts to the declared type
+                // (`return 0;` from a method returning `byte` stays legal, exactly as `byte b = 0;` is).
+                error("cannot return a value of type '" + vt + "' from a method returning '" +
+                          currentReturnType_ + "'",
+                      rs->loc);
+            }
         }
         return;
     }
@@ -2548,8 +3130,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                   ys->loc);
         return;
     }
-    if (dynamic_cast<const ast::AsmStmt*>(&stmt) != nullptr) {
-        return;  // inline assembly (spec issue 1): a raw body, nothing to type-check
+    if (const auto* asmS = dynamic_cast<const ast::AsmStmt*>(&stmt)) {
+        // Inline assembly (spec issue 1): the body itself is raw text, but its operands are ordinary
+        // expressions and must resolve -- so a typo in `in (v)` is a compile error, not a mystery at
+        // assembly time. An `out (...)` operand is written by the asm, so it must be an assignable lvalue.
+        for (const ast::ExprPtr& i : asmS->inputs) typeOf(*i);
+        for (const ast::ExprPtr& o : asmS->outputs) checkAssignTarget(*o, typeOf(*o), o->loc, nullptr);
+        return;
     }
     if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
         auto checkTarget = [&](const ast::Expr& target) {
@@ -2564,9 +3151,19 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                       del->loc);
             }
             // A deleted variable may be redeclared with the same name, reattaching its persistents
-            // (spec 18.2). Record it so the redeclaration is allowed.
-            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&target))
-                deleted_.insert(id->name);
+            // (spec 18.2). Record it so the redeclaration is allowed -- and so a later READ of it is
+            // caught as a use-after-free.
+            //
+            // ... but only where the delete actually FREES something. `delete v` on a value-form type
+            // (a `Result<int,int>` held by value rather than `Result<int,int>*`) owns no heap and is a
+            // documented no-op, so the variable stays perfectly readable and flagging it would be wrong.
+            // The line is exactly whether the name denotes a reference to a heap object.
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&target)) {
+                deleted_.insert(id->name);   // spec 18.2: the name may be redeclared either way
+                const LocalVar* lv = lookupLocal(id->name);
+                if (isRefType(t) || isArrayType(t) || (lv != nullptr && lv->isHeapObject))
+                    freed_.insert(id->name);
+            }
         };
         checkTarget(*del->target);
         for (const auto& mt : del->moreTargets) checkTarget(*mt);
@@ -2811,9 +3408,17 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         std::vector<std::string> caught;
         for (const ast::CatchClause& cc : tr->catches) caught.push_back(baseType(typeRefStr(cc.type)));
         catchStack_.push_back(std::move(caught));
+        // A catch runs BECAUSE the try failed, and it can fail anywhere -- at the first statement or the
+        // last. So a catch body must be analyzed from the state at try ENTRY, not from the state the try
+        // body left behind: the try's work may not have happened at all. Analyzing them in sequence made
+        // the stdlib's own `try { delete ch; } catch { delete ch; }` look like a use-after-free, which is
+        // correct code and was the first thing the new check reported.
+        const FlowFacts beforeTry = snapshotFlow();
         analyzeBlock(tr->body);
+        const FlowFacts afterTry = snapshotFlow();
         catchStack_.pop_back();
         for (const ast::CatchClause& cc : tr->catches) {
+            restoreFlow(beforeTry);
             const std::string ct = baseType(typeRefStr(cc.type));
             checkTypeAccessible(typeRefStr(cc.type), cc.loc);
             if (lookupClass(ct) == nullptr) {
@@ -2826,6 +3431,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             for (const auto& st : cc.body.statements) analyzeStatement(*st);
             popScope();
         }
+        // After the whole statement, only what the try body established can be relied on -- a catch that
+        // fell through contributes its own state, but the conservative and correct thing for `finally`
+        // and the code below is the try's outcome, since that is the path that did not throw.
+        restoreFlow(afterTry);
         if (tr->finallyBlock) analyzeBlock(*tr->finallyBlock);
         return;
     }
@@ -2872,9 +3481,20 @@ void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
         const std::string& pt = paramTypes[i];
         if (at.empty() || pt.empty()) continue;
         if (!isNullableType(pt) && (at == "null" || isNullableType(at))) {
+            // The part a reader cannot guess: a direct null test on a NAME narrows the type, but a test of a
+            // field or of a call result does not -- so someone who "already checked" can still land here,
+            // and will otherwise conclude the compiler is broken rather than that it wants the cast.
             error("argument " + std::to_string(i + 1) + " to " + desc + " is " +
-                      std::string(at == "null" ? "null" : "nullable") +
-                      " but the parameter type '" + pt + "' is non-nullable",
+                      std::string(at == "null" ? "null" : "'" + at + "', which is nullable") +
+                      ", but the parameter type '" + pt + "' is non-nullable" +
+                      (at == "null"
+                           ? std::string(". Pass a real value, or declare the parameter 'nullable " + pt +
+                                         "' if absence is meaningful to it")
+                           : std::string(". A direct null test on a NAME narrows it -- after "
+                                         "`if (p == null) { return; }` you pass `p` as-is, no cast. This "
+                                         "value's test was not a shape the compiler reads (a field, a call "
+                                         "result, a cleverer condition), so state the check with 'cast<" +
+                                         pt + ">(...)', which is verified at runtime")),
                   args[i]->loc);
         } else if (!isSubtype(at, pt)) {
             error("argument " + std::to_string(i + 1) + " to " + desc + " has type '" + at +
@@ -2997,11 +3617,17 @@ void SemanticAnalyzer::bindNamedArgs(ast::CallExpr* call, const std::vector<std:
 }
 
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
-    if (dynamic_cast<const ast::IntLiteralExpr*>(&expr) != nullptr) return "int";
+    if (const auto* il = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
+        // A literal WRITTEN with more than 32 bits of digits is 64-bit, whatever signed value it
+        // happens to equal -- so `int m = 0xFFFFFFFFFFFFF000;` is the error it should be instead of a
+        // silent truncation. Codegen agrees (see intLiteralNeeds64).
+        return ldp3::ast::intLiteralNeeds64(il->text) ? "long" : "int";
+    }
     if (const auto* fl = dynamic_cast<const ast::FloatLiteralExpr*>(&expr))
         return fl->isDecimal ? "Decimal" : "double";
     if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
-    if (dynamic_cast<const ast::StringLiteralExpr*>(&expr) != nullptr) return "String";
+    if (const auto* sl = dynamic_cast<const ast::StringLiteralExpr*>(&expr))
+        return sl->isBytes ? "byte*" : "String";   // b"..." is the raw bytes
     if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
     if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) return "null";
     if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(&expr)) {
@@ -3076,7 +3702,35 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             error("use of variable '" + id->name +
                       "' after it was moved (reassign it before using)",
                   id->loc);
+        } else if (freed_.count(id->name) > 0) {
+            // USE AFTER FREE, caught at compile time. The machinery was already here -- `deleted_` was
+            // populated by every `delete` and read only to permit redeclaring the name -- so the trap the
+            // guide promises (05:768) was one condition away the whole time.
+            error("use of variable '" + id->name +
+                      "' after it was deleted: the object it named is gone, and reading the variable "
+                      "reads freed memory. Redeclare the name with a new object if you meant to reuse "
+                      "it (spec 18.2), or move the `delete` after this use",
+                  id->loc);
+        } else if (const FlowFacts::Init st = initStateOf(id->name); st != FlowFacts::Init::Init) {
+            // Definite assignment. The two states get different messages because they are different
+            // mistakes: never assigned at all, versus assigned on only one path through a branch.
+            error(st == FlowFacts::Init::Uninit
+                      ? "variable '" + id->name +
+                            "' is used before it is initialized. It was declared without a value, which "
+                            "leaves it in the uninitialized state -- not null, not zero, no value at "
+                            "all -- so assign to it before reading it"
+                      : "variable '" + id->name +
+                            "' may be used before it is initialized: some paths to this point assign it "
+                            "and others do not. Assign it on every path (an `else` branch, or a default "
+                            "before the branch) so it holds a value however control got here",
+                  id->loc);
         }
+        // NARROWING. A name proven non-null here reports the non-nullable type, so every consumer --
+        // argument passing, `return`, field assignment -- sees the proof without any of them knowing the
+        // proof exists. The proof is only ever recorded where nothing can falsify it (see killProofsFor
+        // and invalidateAcrossBackEdge), so this cannot claim more than the compiler actually knows.
+        if (!suppressNarrowing_ && isNullableType(var->type) && nonNull_.count(id->name) > 0)
+            return ast::stripNullable(var->type);
         return var->type;
     }
 
@@ -3276,12 +3930,58 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // try? early-returns the Err/None to the ENCLOSING method, so that method must itself return a
         // Result/Option (spec 21.2). Otherwise codegen would emit a type-mismatched `return`. Take the
         // bare type name (before generic args and any pointer marker), e.g. "Result$int$int*" -> "Result".
-        std::string rb = baseType(currentReturnType_);
-        if (const auto d = rb.find('$'); d != std::string::npos) rb = rb.substr(0, d);
+        const std::string rtm = baseType(currentReturnType_);
+        auto family = [](const std::string& mangled) {
+            const auto d = mangled.find('$');
+            return d == std::string::npos ? mangled : mangled.substr(0, d);
+        };
+        // The error payload of a `Result$T$E`, read off the monomorphized `Err$T$E`'s own `error` field
+        // rather than by splitting the mangled string -- `Result<Map<int,int>, E>` mangles to
+        // `Result$Map$int$int$E` and no amount of `$`-counting recovers E from that. Codegen decodes the
+        // payload the same way (through the variant class, not the string), so the two phases agree by
+        // construction. An unresolvable name yields "" and the check stands down: incomplete is safe.
+        auto errPayload = [&](const std::string& mangled) -> std::string {
+            const auto d = mangled.find('$');
+            if (d == std::string::npos) return {};
+            const ClassInfo* ec = lookupClass("Err" + mangled.substr(d));
+            if (ec == nullptr) return {};
+            const auto f = ec->fields.find("error");
+            return f == ec->fields.end() ? std::string() : f->second.type;
+        };
+        const std::string rb = family(rtm);
+        const std::string ob = family(ot);
         if (!currentReturnType_.empty() && rb != "Result" && rb != "Option") {
             error("'try?' can only be used inside a method that returns Result or Option, but this "
                   "method returns '" + currentReturnType_ + "' (spec 21.2)",
                   tx->loc);
+        } else if (!currentReturnType_.empty() && (ob == "Result" || ob == "Option") && ob != rb) {
+            // Propagation forwards the operand UNCHANGED -- codegen emits `CreateRet(val)` on the very
+            // value it tested. A None cannot stand in for an Err (it carries no payload) and an Err
+            // cannot stand in for a None (it carries one), so the two families may not be crossed.
+            error("'try?' propagates the failure of an operand of type '" + ob +
+                      "', but this method returns '" + rb +
+                      "': the failure value is forwarded unchanged, so the two must be the same family "
+                      "(spec 21.2). Match the method's return type to the operand, or convert "
+                      "explicitly -- " +
+                      std::string(ob == "Option"
+                                      ? "a None carries no error value to put in an Err"
+                                      : "an Err carries an error value that a None would discard"),
+                  tx->loc);
+        } else if (ob == "Result" && rb == "Result") {
+            // The E half. Same reason: the Err travels out byte-for-byte, and at the LLVM level every
+            // value-form Result is ONE StructType and every boxed one an opaque `ptr` -- so a mismatched
+            // error type is not caught downstream by anything. It reaches the binary and is reinterpreted.
+            const std::string oe = errPayload(ot);
+            const std::string re = errPayload(rtm);
+            if (!oe.empty() && !re.empty() && !isSubtype(oe, re))
+                error("'try?' propagates a 'Result' whose error type is '" + oe +
+                          "', but this method returns a 'Result' whose error type is '" + re +
+                          "'. The failure value is forwarded unchanged (spec 21.2), so '" + oe +
+                          "' would be reinterpreted as '" + re +
+                          "'. Convert the error before propagating -- match on the operand and return an "
+                          "`Err(...)` built with the '" + re + "' this method declares -- or declare it "
+                          "'returns Result<..., " + oe + ">' and let the error travel as it is",
+                      tx->loc);
         }
         const auto p = ot.find('$');
         if (p == std::string::npos) return "";
@@ -3328,6 +4028,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string srcRaw = typeOf(*cst->operand);
         const std::string& dst = cst->targetType;
         checkBitCounted(dst, cst->loc);  // reject cast<int64> etc. outside freestanding mode
+        checkWideningLostBits(*cst, srcRaw, dst);  // cast<address>(f << 12): the bits are already gone  // cast<address>(f << 12): the bits are already gone
         // A `newtype` casts to/from its underlying type (spec 24): classify both by the underlying
         // so cast<OrderId>(long) and cast<long>(orderId) are accepted while staying distinct types.
         auto under = [&](const std::string& t) {
@@ -3363,7 +4064,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             error("cast<" + dst + "> is not supported here", cst->loc);
         }
         if (cst->op == 1) return "boolean";        // `x is T` -> boolean test
-        if (cst->op == 2) return dst + "?";        // `x as? T` -> the value or null
+        if (cst->op == 2) return ast::makeNullable(dst);   // `x as? T` -> the value or null
         return dst;                                // cast<T> / `x as T` (checked)
     }
 
@@ -3378,19 +4079,31 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(&expr)) {  // a ?? b (spec 3.7)
         const std::string lt = typeOf(*nc->lhs);
         const std::string rt = typeOf(*nc->rhs);
-        const std::string base = isNullableType(lt) ? lt.substr(0, lt.size() - 1) : lt;
+        const std::string base = ast::stripNullable(lt);
         // The fallback's base must be compatible with the left's base.
         if (!base.empty() && !rt.empty()) {
-            const std::string rbase = isNullableType(rt) ? rt.substr(0, rt.size() - 1) : rt;
+            const std::string rbase = ast::stripNullable(rt);
             if (rbase != "null" && !isSubtype(rbase, base) && !isSubtype(base, rbase))
                 error("'??' fallback of type '" + rt + "' is incompatible with '" + lt + "'", nc->loc);
         }
         // Result is the left's non-null base, but stays nullable if the fallback can be null.
-        return isNullableType(rt) ? base + "?" : base;
+        return isNullableType(rt) ? ast::makeNullable(base) : base;
     }
     if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
+        // A NULL TEST must see the operand un-narrowed. Testing a value the compiler has already proven
+        // non-null is redundant, not wrong -- and the declaration still says `nullable`, so the
+        // comparison is exactly what the author wrote. Narrowing it first turned `nullable int b = 5;
+        // ... b != null` into "operator '!=' requires operands of the same type", because the narrowed
+        // `int` is neither a pointer nor nullable and no longer looks comparable to null.
+        const bool nullTest =
+            (bin->op == "==" || bin->op == "!=") &&
+            (dynamic_cast<const ast::NullLiteralExpr*>(bin->lhs.get()) != nullptr ||
+             dynamic_cast<const ast::NullLiteralExpr*>(bin->rhs.get()) != nullptr);
+        const bool savedSuppress = suppressNarrowing_;
+        suppressNarrowing_ = suppressNarrowing_ || nullTest;
         const std::string lt = typeOf(*bin->lhs);
         const std::string rt = typeOf(*bin->rhs);
+        suppressNarrowing_ = savedSuppress;
         const std::string& op = bin->op;
         // Operator overloading: a OP b where a's class defines `operator OP` (spec 6.5).
         if (const MethodInfo* om = findMethod(baseType(lt), "operator" + op)) {
@@ -3430,6 +4143,35 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         // `char` is an integer (i32) for arithmetic/comparison/bitwise (e.g. c - '0', c >= '0').
         auto numOk = [](const std::string& t) { return isNumeric(t) || t == "char"; };
+        // SIGNEDNESS must agree (spec 3.6). Width does not: a narrower integer widens silently because
+        // that conversion preserves the value. Signedness is different -- there is no common type that
+        // represents every value of a 64-bit unsigned AND every value of a signed one, so the compiler
+        // would have to pick a side and be wrong about the other. It did: `address(1) < int(-1)` answered
+        // TRUE, because -1 sign-extends and then the comparison is unsigned.
+        //
+        // Deliberately NOT a rule about type names: `address` and `ulong` are one type under two
+        // spellings, and demanding a cast between two identically-sized types would be noise. Measured
+        // across the kernel, the stdlib and every sample: 380 mixed-type sites, and this rejects none of
+        // them -- it costs nothing today and closes the one case that gives wrong answers.
+        auto signednessOk = [&](const std::string& a, const std::string& b) {
+            if (!isIntName(a) || !isIntName(b)) return true;              // not the integer path
+            if (ast::isUnsignedIntName(a) == ast::isUnsignedIntName(b)) return true;
+            // Mixed: fine when the SIGNED side is strictly wider, because it then represents every value
+            // of the unsigned one (`uint` + `long`). Equal width cannot: half of each is unrepresentable.
+            const std::string& u = ast::isUnsignedIntName(a) ? a : b;
+            const std::string& s = ast::isUnsignedIntName(a) ? b : a;
+            return intBits(s) > intBits(u);
+        };
+        auto checkSignedness = [&]() {
+            // An untyped literal expression adapts to its context, exactly as it does in an assignment
+            // (`byte b = 0;`), so it never forces a cast.
+            if (ast::isLiteralOnlyExpr(*bin->lhs) || ast::isLiteralOnlyExpr(*bin->rhs)) return;
+            if (signednessOk(lt, rt)) return;
+            error("cannot mix signed and unsigned operands ('" + lt + "' " + op + " '" + rt +
+                      "'): there is no common type that represents both, so convert one explicitly "
+                      "with cast<T>(...)",
+                  bin->loc);
+        };
         if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
             if ((!lt.empty() && !numOk(lt)) || (!rt.empty() && !numOk(rt))) {
                 error("operator '" + op + "' requires numeric operands", bin->loc);
@@ -3441,6 +4183,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 const bool f64 = lt == "double" || lt == "float64" || rt == "double" || rt == "float64";
                 return f64 ? "double" : "float";
             }
+            checkSignedness();
             return intBits(lt) >= intBits(rt) ? lt : rt;  // wider integer wins
         }
         if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
@@ -3448,6 +4191,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 (!rt.empty() && !numOk(rt))) {
                 error("operator '" + op + "' requires integer operands", bin->loc);
             }
+            // A shift's right operand is a COUNT, not a value in the same domain -- `addr >> 12` shifts
+            // by twelve, and twelve is not an address. Only `& | ^` pair two values.
+            if (op != "<<" && op != ">>") checkSignedness();
             return intBits(lt) >= intBits(rt) ? lt : rt;
         }
         if (op == "<" || op == ">" || op == "<=" || op == ">=") {
@@ -3458,9 +4204,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 ((!lt.empty() && !numOk(lt)) || (!rt.empty() && !numOk(rt)))) {
                 error("operator '" + op + "' requires numeric operands", bin->loc);
             }
+            // Ordering is where mixing signedness produced a WRONG ANSWER rather than a surprising one:
+            // `address(1) < int(-1)` was true, because -1 sign-extends and the comparison is unsigned.
+            if (!sameJavaEnum) checkSignedness();
             return "boolean";
         }
         if (op == "==" || op == "!=") {
+            // Same hazard as ordering: the operands widen to one type first, so a negative signed value
+            // and a large unsigned one can come out equal.
+            checkSignedness();
             const bool nullPtr =
                 (lt == "null" && (isRefType(rt) || isNullableType(rt))) ||
                 (rt == "null" && (isRefType(lt) || isNullableType(lt)));
@@ -3483,6 +4235,31 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
+        // region-binder DATA-RACE (§14): a closure handed to a Thread may only capture state that is safe to
+        // share across threads -- atomic<T>/Mutex<T>/Channel<T>, or a copied value. Capturing a plain mutable
+        // reference (byref, or byvalue a pointer) shares mutable state between two threads -> a data race.
+        if (regionBinder_ && nw->className == "Thread" && !nw->args.empty()) {
+            const ast::LambdaExpr* lam = dynamic_cast<const ast::LambdaExpr*>(nw->args[0].get());
+            if (lam == nullptr)
+                if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(nw->args[0].get())) {
+                    auto it = lambdaLocals_.find(aid->name);
+                    if (it != lambdaLocals_.end()) lam = it->second;
+                }
+            if (lam != nullptr)
+                for (const ast::Capture& cap : lam->captures) {
+                    const LocalVar* lv = lookupLocal(cap.name);
+                    if (lv == nullptr) continue;
+                    const std::string b = baseType(lv->type);
+                    const bool safe = b.rfind("atomic", 0) == 0 || b.rfind("Mutex", 0) == 0 ||
+                                      b.rfind("Channel", 0) == 0;
+                    const bool shares = cap.byRef || isRefType(lv->type);  // shares the var / the pointee
+                    if (shares && !safe)
+                        error("region-binder: thread closure captures shared mutable '" + cap.name +
+                                  "' (type '" + lv->type + "') -- a data race; share it via atomic<T> / "
+                                  "Mutex<T> / Channel<T>, or capture an immutable copy (byvalue a value)",
+                              nw->loc);
+                }
+        }
         // Value Result/Option (spec 21, value form): Ok/Err/Some/None with location "value" is a value, not
         // a heap object. Type it as the sealed base (Result$T$E / Option$T, no star) and check the payload
         // against T (Ok/Some) or E (Err); None carries no payload. No class is allocated.
@@ -3671,7 +4448,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (const LocalVar* fv = lookupLocal(cid->name);
                 fv != nullptr && fv->type.rfind("funcptr<", 0) == 0) {
                 for (const auto& arg : call->args) typeOf(*arg);
-                const std::string inner = fv->type.substr(8, fv->type.size() - 9);
+                const std::string inner = ast::funcptrBody(fv->type.substr(8, fv->type.size() - 9));  // [unknown-abi]
                 for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
                     if (inner[i] == '<') depth++;
                     else if (inner[i] == '>') depth--;
@@ -3713,6 +4490,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // sizeof(Type) / sizeof(expr) (spec, issue #7): byte size as an int. The argument may name a
         // type, so it is not type-checked as an ordinary value here.
         if (name == "sizeof" && call->args.size() == 1) return "int";
+        // embed("path") (spec 36): the file's bytes, materialized into the image at compile time.
+        if (name == "embed" && call->args.size() == 1) {
+            if (dynamic_cast<const ast::StringLiteralExpr*>(call->args[0].get()) == nullptr)
+                error("embed(...) needs a literal path known at compile time", call->loc);
+            return "byte[]";
+        }
         if (name == "checked" && call->args.size() == 1)  // checked(expr): overflow-trapping, same type
             return typeOf(*call->args[0]);
         // Type.sizeof() (spec issue #7): the member form on a class type.
@@ -4367,7 +5150,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (const FieldInfo* fpf = findField(objType, mem->member);
                 fpf != nullptr && fpf->type.rfind("funcptr<", 0) == 0) {
                 for (const auto& arg : call->args) typeOf(*arg);
-                const std::string inner = fpf->type.substr(8, fpf->type.size() - 9);
+                const std::string inner = ast::funcptrBody(fpf->type.substr(8, fpf->type.size() - 9));  // [unknown-abi]
                 for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
                     if (inner[i] == '<') depth++;
                     else if (inner[i] == '>') depth--;
@@ -4436,6 +5219,51 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             bindNamedArgs(const_cast<ast::CallExpr*>(call), m->paramNames, m->namedOnlyParams,
                           "method '" + mem->member + "'");
             checkCallArgs(call->args, m->paramTypes, "'" + mem->member + "'");
+            // region-binder INTERPROCEDURAL escape check (§8): if the callee stores parameter i into its
+            // receiver (per the escape summary) and we pass an activation-owned object there, it dangles
+            // once this method returns -- unless the receiver is itself activation-local (same lifetime).
+            if (regionBinder_) {
+                // an argument aliases (rather than copies) only when its own type is a pointer/reference --
+                // this reads the CONCRETE type, so a generic `add(T)` with T = Node* is caught.
+                auto argAliases = [&](const ast::IdentifierExpr* aid) -> bool {
+                    const LocalVar* lv = lookupLocal(aid->name);
+                    return lv != nullptr && isRefType(lv->type);
+                };
+                auto sit = escapesToReceiver_.find(baseType(objType) + "." + mem->member);
+                if (sit != escapesToReceiver_.end()) {
+                    const auto* recvId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                    const bool recvOutlives = recvId == nullptr || activationOwned_.count(recvId->name) == 0;
+                    if (recvOutlives)
+                        for (std::size_t i = 0; i < call->args.size() && i < sit->second.size(); ++i)
+                            if (sit->second[i])
+                                if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(call->args[i].get());
+                                    aid != nullptr && activationOwned_.count(aid->name) > 0 &&
+                                    argAliases(aid))   // only a pointer/reference argument actually aliases
+                                    error("region-binder: '" + mem->member + "' stores argument '" + aid->name +
+                                              "' into a receiver that outlives this method, so the method-local "
+                                              "object would dangle at return; pass ownership with 'move' (move " +
+                                              aid->name + ")",
+                                          call->args[i]->loc);
+                }
+                // escapes-into-parameter (§8): the callee stores argument i into argument j's field. If i is
+                // activation-owned and j outlives it (j is not itself activation-local), i dangles inside j.
+                auto pit = escapesToParam_.find(baseType(objType) + "." + mem->member);
+                if (pit != escapesToParam_.end())
+                    for (std::size_t i = 0; i < call->args.size() && i < pit->second.size(); ++i)
+                            if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(call->args[i].get());
+                                aid != nullptr && activationOwned_.count(aid->name) > 0 && argAliases(aid))
+                                for (int j : pit->second[i]) {
+                                    if (j < 0 || j >= static_cast<int>(call->args.size())) continue;
+                                    const auto* jid =
+                                        dynamic_cast<const ast::IdentifierExpr*>(call->args[j].get());
+                                    if (jid == nullptr || activationOwned_.count(jid->name) == 0)  // j outlives i
+                                        error("region-binder: '" + mem->member + "' stores argument '" +
+                                                  aid->name + "' into argument " + std::to_string(j + 1) +
+                                                  ", which outlives it, so the method-local object would dangle; "
+                                                  "pass ownership with 'move' (move " + aid->name + ")",
+                                              call->args[i]->loc);
+                                }
+            }
             checkComptimeArgs(call->args, m->comptimeParams, "'" + mem->member + "'");
             if (!m->isProperty && call->args.size() != m->paramCount) {
                 error("method '" + mem->member + "' expects " + std::to_string(m->paramCount) +
@@ -4455,7 +5283,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                           call->loc);
                     return m->returnType;
                 }
-                return isNullableType(m->returnType) ? m->returnType : m->returnType + "?";
+                return ast::makeNullable(m->returnType);
             }
             return m->returnType;
         }
@@ -4602,7 +5430,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                   mem->loc);
             return memType;
         }
-        return isNullableType(memType) ? memType : memType + "?";
+        return ast::makeNullable(memType);
     }
 
     if (dynamic_cast<const ast::SuperExpr*>(&expr) != nullptr) {

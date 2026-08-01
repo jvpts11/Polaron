@@ -152,6 +152,42 @@ add_test(NAME sema_rejects_no_entry
 set_tests_properties(sema_rejects_no_entry PROPERTIES
     PASS_REGULAR_EXPRESSION "no entry point")
 
+# The RETURN must check the type of what it returns, not only its nullability (LDP3-0303). Without it,
+# `return someDog;` from a method `returns Cat` produced valid IR and reinterpreted the object -- vtable
+# pointer included -- because every class is an opaque `ptr` at the LLVM level. The sample also holds the
+# three shapes that must KEEP compiling (a literal adapting, a narrower int widening, a subclass), so a
+# fix that over-rejects fails here too instead of quietly costing everyone a cast.
+add_test(NAME sema_rejects_wrong_return_type
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/return_type_bad.ldp3")
+set_tests_properties(sema_rejects_wrong_return_type PROPERTIES
+    PASS_REGULAR_EXPRESSION "cannot return a value of type 'Dog' from a method returning 'Cat'")
+
+# Signed and unsigned operands may not be mixed: `address(1) < int(-1)` answered TRUE, because -1
+# sign-extends and the comparison is then unsigned. WIDTH is deliberately not the rule -- a narrower
+# integer widens silently, and `address`/`ulong` are one type under two names. The sample carries five
+# forms that must keep compiling, so an over-strict rule fails this test too.
+add_test(NAME sema_rejects_mixed_signedness
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/mixed_signedness_bad.ldp3")
+set_tests_properties(sema_rejects_mixed_signedness PROPERTIES
+    PASS_REGULAR_EXPRESSION "cannot mix signed and unsigned operands")
+
+# The three-state flow analysis (uninitialized / valid / moved-deleted) the guide has always described
+# and the implementation did not have. The parser used to forbid the uninitialized state outright, so it
+# could not arise. This file holds the REJECTIONS; flow_states.ldp3 holds the shapes that must keep
+# compiling, so a too-strict analysis fails that one and a too-loose one fails this.
+add_test(NAME sema_rejects_uninitialized_read
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/flow_states_bad.ldp3")
+set_tests_properties(sema_rejects_uninitialized_read PROPERTIES
+    PASS_REGULAR_EXPRESSION "is used before it is initialized")
+
+# Null safety has its OWN code (LDP3-0300). Folded into LDP3-0301 it inherited that code's advice --
+# "convert explicitly with cast<T>(value)" -- which cannot work, because casting does not turn null into
+# a non-nullable value. Pins the CODE, not the prose, so the wording stays free to improve.
+add_test(NAME sema_null_error_has_own_code
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/null_to_nonnullable_bad.ldp3")
+set_tests_properties(sema_null_error_has_own_code PROPERTIES
+    PASS_REGULAR_EXPRESSION "LDP3-0300")
+
 # --check accepts a whole program spanning several files (what an editor checks), not just one file.
 add_test(NAME check_accepts_multifile_program
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/multifile_b.ldp3"
@@ -247,6 +283,12 @@ add_test(NAME sema_rejects_bare_extract
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_bare_extract.ldp3")
 set_tests_properties(sema_rejects_bare_extract PROPERTIES
     PASS_REGULAR_EXPRESSION "error\\[LDP3-1720\\]")
+
+# `weak` must qualify a pointer to a class (an object with identity); `weak int` has no target.
+add_test(NAME sema_rejects_weak_nonpointer
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/weak_bad_nonptr.ldp3")
+set_tests_properties(sema_rejects_weak_nonpointer PROPERTIES
+    PASS_REGULAR_EXPRESSION "'weak' requires a pointer")
 
 add_test(NAME sema_rejects_mark_nonstack
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_bad_mark_nonstack.ldp3")
@@ -688,6 +730,23 @@ add_test(NAME sema_rejects_try_nonresult
 set_tests_properties(sema_rejects_try_nonresult PROPERTIES
     PASS_REGULAR_EXPRESSION "can only be used inside a method that returns Result or Option")
 
+# `try?` forwards the failure value UNCHANGED (codegen: CreateRet on the very value it tested), so the
+# operand's error type must be the one this method returns. The check used to compare base names only --
+# "Result" against "Result" -- which is the one comparison that can never fail here, so a
+# Result<int,IoError> propagated out of a Result<int,int> reached the binary and was reinterpreted.
+# Nothing downstream could catch it: every value-form Result is one LLVM StructType and every boxed one an
+# opaque ptr. Pins the CODE so the wording stays free to improve.
+add_test(NAME sema_rejects_try_error_type
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/try_error_type_bad.ldp3")
+set_tests_properties(sema_rejects_try_error_type PROPERTIES
+    PASS_REGULAR_EXPRESSION "LDP3-0504")
+
+# The same rule's other half: a None carries no error value, so it cannot be propagated out as an Err.
+add_test(NAME sema_rejects_try_family_cross
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/try_family_bad.ldp3")
+set_tests_properties(sema_rejects_try_family_cross PROPERTIES
+    PASS_REGULAR_EXPRESSION "same family")
+
 # a non-terminating comptime evaluation hits the step/recursion budget and is
 # rejected gracefully (spec 28.3), not a hang or crash.
 add_test(NAME sema_rejects_comptime_runaway
@@ -956,6 +1015,15 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/class_dtor.ldp3"
             "-DEXPECTED=ctor hello dtor"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `weak T*` auto-nulls when its target is deleted: before=live id, after=-1 (nulled on its own).
+        add_test(NAME codegen_weak_ref_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/weak_ref.ldp3"
+            "-DEXPECTED=before=42 after=-1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -1497,6 +1565,29 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/collection_functional.ldp3"
             "-DCONTAINS=1 2 3 4 5 evens=2 e0=2 e1=4 d0=2 d4=10 sum=15 anyOdd=1 allEven=0 big=2"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Arithmetic with no correct answer is an EXCEPTION in a hosted program (catchable, so a caller
+        # decides what a bad divisor means) and a PANIC in freestanding, where there is no exception
+        # machinery. Both used to terminate the process even when hosted, so a division whose divisor came
+        # from input could not be handled at all. Also checks the BASE class catches the specific one.
+        add_test(NAME codegen_arith_faults_catchable_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/arith_faults_catchable.ldp3"
+            "-DEXPECTED=div: division by zero ovf: integer overflow survived"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `checked()` must trap on UNSIGNED overflow too (it was silently dropped for unsigned operands)
+        # (`if (checkedArith_ && !uns && ...)`), so the one arithmetic opt-in the language has did nothing
+        # on an unsigned type -- and said nothing about it.
+        add_test(NAME codegen_checked_unsigned_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/checked_unsigned_bad.ldp3"
+            "-DEXPECTED=caught: integer overflow survived"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -2843,6 +2934,79 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A hex literal WRITTEN with more than 32 bits of digits is 64-bit, whatever signed value it
+        # equals. 0xFFFFFFFFFFFFF000 == -4096 as an int64, so typing literals by value truncated the mask
+        # to 0xFFFFF000 -- which silently drops every address above 4 GiB.
+        add_test(NAME codegen_wide_hex_literal_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/wide_hex_literal.ldp3"
+            "-DEXPECTED=lit=140000000/140000000 decl=140000000/140000000 expr=140000000/140000000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # The IPC SEAM: a program that serves must have IpcRuntime.handle rewritten to call the
+        # dispatcher synthesized for its own classes. The rewrite matched the namespace as "System.Ipc"
+        # while the prelude declares it as `Ipc` (this pass runs BEFORE qualifyNamespaces), so it never
+        # fired -- every server answered "this program exports nothing over IPC", the client raised an
+        # uncaught IpcError and died with its stdout still buffered, which is what the 120-second timeout
+        # actually was. Checking the emitted IR pins the seam itself, so the failure cannot come back as a
+        # mysterious hang: no IpcDispatch in a serving program's output means the seam is gone again.
+        add_test(NAME codegen_ipc_seam_installed COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ipc_server.ldp3"
+            "-DNEEDLE=IpcDispatch.handle"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+        # `cast<T*>` on a nullable ASSERTS non-null and now verifies it: an exception when hosted, a
+        # panic in freestanding. It used to reinterpret with no check, so a broken promise surfaced as an
+        # access violation with nothing naming who promised -- while `cast<Dog>(animal)` verified and
+        # threw. The sample also carries the cast-free form the narrowing makes possible.
+        add_test(NAME codegen_null_cast_checked_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/null_cast_checked.ldp3"
+            "-DEXPECTED=caught: null where a value was asserted narrowed: 3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Deferred initialization, guard-clause narrowing, and a proof made by an initializer -- the
+        # shapes the flow analysis must ACCEPT. Runs, so the narrowing is proved not to change behaviour.
+        add_test(NAME codegen_flow_states_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/flow_states.ldp3"
+            "-DEXPECTED=branch=10 guard=0 pos=0 init=5 test=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # b"..." (spec 36): raw NUL-terminated bytes typed `byte*`, not a String object -- what
+        # freestanding needs, since building a String requires a runtime a kernel does not have. Also
+        # asserts `b` is still usable as an ordinary identifier.
+        add_test(NAME codegen_bytes_literal_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bytes_literal.ldp3"
+            "-DEXPECTED=len=10 first=47 last=70 ident=5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # COMPILE-TIME regression guard. The synthesized `hash` of a 20-field value type is a 40-deep
+        # left-nested arithmetic chain, and the deep member chain in the same file is a 12-deep
+        # receiver chain. codegen's typeName() used to recurse into the same subexpression 2x (binary
+        # LHS, unary operand) and 9x (call receiver), making it exponential in depth: a 13-field
+        # struct in the pico kernel took 181 SECONDS to emit. This test compiles in well under a
+        # second now; if the double recursion returns, it fails on the ctest TIMEOUT, not on a value.
+        add_test(NAME codegen_wide_struct_hash_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/wide_struct_hash.ldp3"
+            "-DEXPECTED=same=1 diff=0 chain=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        set_tests_properties(codegen_wide_struct_hash_runs PROPERTIES TIMEOUT 120)
+
         # in-scope persistent reattach (spec 18.2): a deleted variable redeclared with the same name
         # reattaches its persistent, so the new object sees the prior value.
         add_test(NAME codegen_reattach_in_scope_runs COMMAND "${CMAKE_COMMAND}"
@@ -2948,12 +3112,14 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # comefrom (spec 7.10): jump to a label, forward (skip ahead) or backward (retry).
+        # comefrom (spec 7.10): the jump is written at the DESTINATION. Reaching `label L;` is
+        # hijacked to wherever `comefrom L;` sits -- forward it steals (the code after the label
+        # never runs), backward it retries (the comefrom is a no-op on the way down).
         add_test(NAME codegen_comefrom_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/comefrom.ldp3"
-            "-DEXPECTED=forward ok n=1 n=2 n=3 done"
+            "-DEXPECTED=start forward ok n=1 n=2 n=3 done"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

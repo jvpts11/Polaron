@@ -1,0 +1,44 @@
+import System.IO.Console;
+import System.Runtime.NullReferenceException;
+program NullCastChecked;
+
+// `cast<T*>(p)` on a `nullable T*` is the program ASSERTING that it checked. It used to reinterpret with
+// no check whatsoever: passing a real null through it produced an access violation somewhere later, with
+// nothing pointing back at who made the promise. Its sibling `cast<Dog>(animal)` verified and threw --
+// same syntax, opposite guarantees, inside one language.
+//
+// Now it verifies too: an exception in a hosted program (catchable, so a caller can decide what a broken
+// assertion means for it) and a panic in freestanding, where there is no exception machinery.
+//
+// This matters more since flow narrowing landed, not less. Narrowing means an ordinary null check needs
+// NO cast at all -- so a cast that survives in the source is a deliberate claim, and a deliberate claim
+// is exactly the thing worth checking.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int age;
+            public constructor Dog() { this.age = 3; }
+        }
+        public class Main {
+            static method takes(Dog* d) returns int { return d.age; }
+
+            public static method main(string[] args) returns void {
+                nullable Dog* absent = null;
+                try {
+                    int n = Main.takes(cast<Dog*>(absent));   // a promise the program cannot keep
+                    System.IO.Console.printf("unreachable: %d\n", n);
+                } catch (NullReferenceException e) {
+                    System.IO.Console.printf("caught: %s\n", e.message());
+                }
+
+                // The honest form needs no cast: the check narrows the type, so this compiles as-is.
+                Dog real = new Dog() on stack;
+                nullable Dog* present = &real;
+                if (present == null) { return; }
+                System.IO.Console.printf("narrowed: %d\n", Main.takes(present));
+                return;
+            }
+        }
+    }
+}

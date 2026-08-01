@@ -59,6 +59,10 @@ Manifest parseManifestText(const std::string& text) {
         if (s.front() == '[' && s.back() == ']') {
             section = s.substr(1, s.size() - 2);
             if (section == "library") m.isLibrary = true;
+            if (section == "freestanding") {  // [freestanding] section => bare-metal, and link an image
+                m.freestanding = true;
+                m.hasFreestandingSection = true;
+            }
             continue;
         }
         const auto eq = s.find('=');
@@ -84,6 +88,20 @@ Manifest parseManifestText(const std::string& text) {
                 while (std::getline(ls, lib, ',')) {
                     const std::string t = trim(lib);
                     if (!t.empty()) m.nativeLibs.push_back(t);
+                }
+            }
+        } else if (section == "freestanding") {  // bare-metal build inputs (spec 36)
+            if (key == "target") m.fsTarget = val;                // override the default -none triple
+            else if (key == "linker_script") m.linkerScript = val;  // explicit script: skips generation
+            else if (key == "load_address") m.loadAddress = val;    // where the image is linked
+            else if (key == "boot_protocol") m.bootProtocol = val;  // "pvh" -> .note.Xen section first
+            else if (key == "image") m.imageFormat = val;           // elf | bin | iso
+            else if (key == "boot") {  // comma-separated asm boot stubs, assembled with clang and linked in
+                std::stringstream bs(val);
+                std::string b;
+                while (std::getline(bs, b, ',')) {
+                    const std::string t = trim(b);
+                    if (!t.empty()) m.bootSources.push_back(t);
                 }
             }
         } else if (section == "dependencies") {

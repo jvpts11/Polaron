@@ -123,6 +123,16 @@ void emitMethod(Emitter& e, const MethodDecl& m) {
         }
         s += ")";
     }
+    // region-binder escape summary (so imported callers can check container methods): `escapes(i:slot, ...)`
+    // where slot -1 = the receiver, j = parameter j. Omitted when the method stores none of its parameters.
+    if (!m.escapeSummary.empty()) {
+        s += " escapes(";
+        for (std::size_t i = 0; i < m.escapeSummary.size(); ++i) {
+            if (i) s += ", ";
+            s += std::to_string(m.escapeSummary[i].first) + ":" + std::to_string(m.escapeSummary[i].second);
+        }
+        s += ")";
+    }
     e.line(s + ";");
 }
 

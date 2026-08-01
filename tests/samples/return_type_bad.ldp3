@@ -1,0 +1,30 @@
+program ReturnTypeBad;
+
+// The return statement must check the TYPE of what it returns, not only its nullability (LDP3-0303).
+//
+// Without this, `return someDog;` from a method `returns Cat` produced valid IR and reinterpreted the
+// object -- vtable pointer included -- because every class is an opaque `ptr` at the LLVM level. A
+// language that verifies `cast<T>` at RUNTIME had its guard facing the wrong way: the explicit,
+// suspicious conversion was checked and the implicit one was not.
+//
+// This file must be REJECTED. The three methods below it are the ones that must keep compiling, so the
+// check is pinned from both sides: a literal still adapts to the declared type (exactly as `byte b = 0;`
+// does), a narrower integer still widens, and a subclass is still a subtype.
+
+public bundle main {
+    public namespace app {
+        public class Animal { public constructor Animal() { } }
+        public class Cat extends Animal { public constructor Cat() { super(); } }
+        public class Dog extends Animal { public constructor Dog() { super(); } }
+
+        public class Main {
+            static method wrong() returns Cat { return new Dog() on stack; }   // <-- the error
+
+            static method literalAdapts() returns byte { return 0; }
+            static method narrowWidens() returns long { int i = 5; return i; }
+            static method subclassIsFine() returns Animal { return new Cat() on stack; }
+
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

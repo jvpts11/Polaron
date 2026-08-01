@@ -70,6 +70,7 @@ TokenKind keywordKind(std::string_view text) {
         {"move", TokenKind::KwMove},
         {"movable", TokenKind::KwMovable},
         {"unique", TokenKind::KwUnique},
+        {"weak", TokenKind::KwWeak},
         {"partitionable", TokenKind::KwPartitionable},
         {"region", TokenKind::KwRegion},
         {"of", TokenKind::KwOf},
@@ -84,7 +85,9 @@ TokenKind keywordKind(std::string_view text) {
         {"cdecl", TokenKind::KwCdecl},
         {"stdcall", TokenKind::KwStdcall},
         {"fastcall", TokenKind::KwFastcall},
+        {"unknown", TokenKind::KwUnknown},
         {"freestanding", TokenKind::KwFreestanding},
+        {"naked", TokenKind::KwNaked},
         {"itself", TokenKind::KwItself},
         {"release", TokenKind::KwRelease},
         {"persistent", TokenKind::KwPersistent},
@@ -331,6 +334,15 @@ Token Lexer::scanIdentifierOrKeyword() {
     // Inline assembly (spec issue 1): `asm("arch") { raw }` -- only when `(` follows, so `asm` stays
     // usable as an ordinary identifier elsewhere. The raw body is captured verbatim (the LDP3 lexer
     // does not tokenize it); the token's lexeme is arch + '\x1f' + body.
+    // b"..." -- a raw byte-string literal. Only when the quote follows IMMEDIATELY, so an ordinary
+    // identifier named `b` is untouched. Yields `byte*` at the bytes, NUL-terminated: what freestanding
+    // code needs, since a String object requires a runtime that a kernel does not have.
+    if (text == "b" && peek() == '"') {
+        Token str = scanString();
+        if (str.kind == TokenKind::StringLiteral) str.kind = TokenKind::BytesLiteral;
+        str.loc = loc;
+        return str;
+    }
     if (text == "asm") {
         auto skipWs = [&]() {
             while (!atEnd() && (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r'))
@@ -352,6 +364,25 @@ Token Lexer::scanIdentifierOrKeyword() {
             std::string arch(source_.substr(as, pos_ - as));
             if (peek() == '"') advance();  // closing '"'
             skipWs();
+            // Optional second string: the assembly DIALECT -- `asm("x86_64", "att") { ... }`. Without it
+            // the dialect follows the architecture (Intel on x86, the native syntax elsewhere), which is
+            // what an LDP3 asm block is written in; name it explicitly to paste in code written the other
+            // way (a GCC/AT&T snippet, say) instead of hand-translating it.
+            std::string dialect;
+            if (peek() == ',') {
+                advance();  // ','
+                skipWs();
+                if (peek() != '"') {
+                    error("expected a dialect string after ',' in asm(\"arch\", \"dialect\")", loc);
+                } else {
+                    advance();  // opening '"'
+                    std::size_t ds = pos_;
+                    while (!atEnd() && peek() != '"') advance();
+                    dialect = std::string(source_.substr(ds, pos_ - ds));
+                    if (peek() == '"') advance();  // closing '"'
+                    skipWs();
+                }
+            }
             if (peek() == ')') advance();
             else error("expected ')' after the asm target", loc);
             skipWs();
@@ -369,7 +400,8 @@ Token Lexer::scanIdentifierOrKeyword() {
             }
             std::string body(source_.substr(bs, pos_ - bs));
             if (peek() == '}') advance();  // closing '}'
-            return make(TokenKind::AsmBlock, arch + '\x1f' + body, loc);
+            // arch \x1e dialect \x1f body
+            return make(TokenKind::AsmBlock, arch + '\x1e' + dialect + '\x1f' + body, loc);
         }
         pos_ = save;  // not an asm block -- `asm` is a plain identifier here
     }

@@ -74,6 +74,13 @@ Toolchain locateToolchain() {
         t.libDir = bundledLib.string();
         t.lldLink = bundledLld.string();
     }
+    // ELF linker for freestanding: ld.lld sits beside clang (the kernel build uses it the same way).
+    t.ldLld = envOr("LDP3_LD_LLD", (fs::path(t.clang).parent_path() / ("ld.lld" + sfx)).string());
+    // Image-format tools. llvm-objcopy ships beside clang and turns the linked ELF into a flat binary;
+    // xorriso is only needed for a bootable .iso and is looked up on PATH (left empty when absent, so
+    // the driver can report exactly what is missing rather than failing obscurely).
+    t.objcopy = envOr("LDP3_OBJCOPY", (fs::path(t.clang).parent_path() / ("llvm-objcopy" + sfx)).string());
+    t.xorriso = envOr("LDP3_XORRISO", "xorriso" + sfx);
     return t;
 }
 

@@ -91,6 +91,23 @@ constexpr Row kCatalog[] = {
         "Decide a type's public surface up front and keep internals `private`; reach them through methods. "
         "Explicit visibility on every member (LDP3 requires it) keeps the boundary in view." }},
 
+    {Code::NullSafety, {
+        "LDP3-0300", "null where a value is required",
+        "Every type in LDP3 is non-null by default: `Tree*` is a pointer that always points at something. "
+        "`nullable T` is the opt-in that says \"this one may be absent\", and the compiler keeps the two "
+        "apart so an absent value is a case you WROTE, never one you met at runtime.",
+        "Three fixes, and which is right depends on what you meant. (1) If absence is a real state for this "
+        "value, declare it nullable -- `public mutable nullable Tree* left;`. (2) If it cannot be absent, "
+        "produce a real value instead of null. (3) If you already tested it, the CHECK NARROWS THE TYPE: "
+        "after `if (p == null) { return; }`, and inside the `then` of `if (p != null)`, `p` is a plain `T*` "
+        "and needs no cast. Narrowing reads a direct test of a NAME -- `p != null`, `p == null`, and `&&` "
+        "chains of those. A test of anything else (`node.left != null`, the result of a call) proves "
+        "nothing, and there `cast<T*>(p)` states that you checked -- a claim the compiler verifies at "
+        "runtime, so a broken promise raises NullReferenceException instead of corrupting memory.",
+        "Decide per field and per parameter whether absence is meaningful, and let the type say so. A type "
+        "that is `nullable` everywhere teaches nothing; one that is nullable exactly where a value can be "
+        "missing turns every other line into a place null cannot reach." }},
+
     {Code::TypeMismatch, {
         "LDP3-0301", "wrong type here",
         "LDP3 is statically typed: a value's type must match where it is used. Assignment, arguments, and "
@@ -434,6 +451,22 @@ constexpr Row kCatalog[] = {
         "Decide a method's error strategy from its signature: return Result/Option and `try?` composes "
         "cleanly through it. Mixing `try?` into a plain method is the mismatch this catches." }},
 
+    {Code::TryErrorType, {
+        "LDP3-0504", "`try?` propagates a failure this method cannot carry",
+        "On the failure path `try?` does not build a new value -- it returns the operand's failure "
+        "UNCHANGED, byte for byte. So the operand's failure has to be one the enclosing method's return "
+        "type already carries: the same family (a None is not an Err, and an Err's payload is not a "
+        "None's absence) and, for two Results, an error type that fits. Nothing downstream catches a "
+        "mismatch: every value-form Result is one LLVM struct and every boxed one an opaque pointer, so "
+        "a wrong error type is not a link error, it is a reinterpreted object at runtime.",
+        "Convert the failure where the types change, rather than propagating across the boundary: "
+        "`match` on the operand and return an `Err(...)` built from the error type this method declares. "
+        "If the two really are the same error, declare this method to return that error type and let "
+        "`try?` do its job. Crossing Result and Option needs a deliberate step either way -- an Option "
+        "has no error value to promote, and a Result's error is what a None would silently drop.",
+        "Pick one error type per layer and convert at the layer boundary, in one place. `try?` then "
+        "composes freely inside a layer, and every conversion is somewhere you can read." }},
+
     {Code::IllegalExtend, {
         "LDP3-0605", "cannot extend this type",
         "A `final` class forbids any subclass, and a `sealed` type's variants are closed -- only its "
@@ -524,6 +557,13 @@ constexpr Rule kRules[] = {
     {"not available in freestanding", Code::FreestandingRestriction},
     {"freestanding mode", Code::FreestandingRestriction},
 
+    // Null safety BEFORE the general type rules: every one of these is also "a wrong type", but the
+    // remedy is different -- casting cannot turn null into a non-nullable value -- so matching them as
+    // TypeMismatch handed out advice ("convert explicitly with cast<T>") that cannot work.
+    {"is non-nullable", Code::NullSafety},
+    {"cannot assign null", Code::NullSafety},
+    {"cannot return null", Code::NullSafety},
+
     // Operand/type rules before the more general operator/assignment ones.
     {"requires int operands", Code::BadOperand},
     {"requires an integer operand", Code::BadOperand},
@@ -586,6 +626,9 @@ constexpr Rule kRules[] = {
     {"must return a value", Code::MissingReturn},
     {"paths return", Code::MissingReturn},
     {"must return Iterator", Code::ReturnTypeMismatch},
+    // Before the generic `'try?'` rule -- first match wins, and that one would otherwise swallow this
+    // and explain the wrong mistake (the method DOES return a Result; it is the failure that misfits).
+    {"'try?' propagates", Code::TryErrorType},
     {"'try?'", Code::TryContext},
     {"try? can only", Code::TryContext},
 

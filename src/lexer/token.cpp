@@ -12,6 +12,7 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::FloatLiteral: return "FloatLiteral";
         case TokenKind::CharLiteral:  return "CharLiteral";
         case TokenKind::StringLiteral:return "StringLiteral";
+        case TokenKind::BytesLiteral: return "BytesLiteral";
         case TokenKind::InterpString: return "InterpString";
 
         case TokenKind::KwProgram:     return "KwProgram";
@@ -61,6 +62,7 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwMove:          return "KwMove";
         case TokenKind::KwMovable:       return "KwMovable";
         case TokenKind::KwUnique:        return "KwUnique";
+        case TokenKind::KwWeak:          return "KwWeak";
         case TokenKind::KwPartitionable: return "KwPartitionable";
         case TokenKind::KwRegion:        return "KwRegion";
         case TokenKind::KwOf:            return "KwOf";
@@ -75,7 +77,9 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwCdecl:         return "KwCdecl";
         case TokenKind::KwStdcall:       return "KwStdcall";
         case TokenKind::KwFastcall:      return "KwFastcall";
+        case TokenKind::KwUnknown:       return "KwUnknown";
         case TokenKind::KwFreestanding:  return "KwFreestanding";
+        case TokenKind::KwNaked:         return "KwNaked";
         case TokenKind::KwItself:        return "KwItself";
         case TokenKind::KwRelease:       return "KwRelease";
         case TokenKind::KwComptime:      return "KwComptime";
