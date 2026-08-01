@@ -1,0 +1,36 @@
+import System.IO.Console;
+
+// One constructor per class, for the same reason there is one method per name: LDP3 has no
+// overloading. A second one was accepted in silence and its parameters were APPENDED to the first's,
+// producing a three-parameter phantom -- so `new Point(1)` below was rejected with "expects 3
+// arguments", a message pointing at the call site and describing a signature nobody wrote. Codegen
+// then emitted only the first body, so a program that satisfied the phantom ran the wrong one.
+program SecondConstructorBad;
+
+public bundle main {
+    public namespace app {
+
+        public class Point {
+            public mutable int x;
+            public mutable int y;
+
+            public constructor Point(int x) {
+                this.x = x;
+                this.y = 0;
+            }
+
+            public constructor Point(int x, int y) {
+                this.x = x;
+                this.y = y;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Point p = new Point(1) on stack;
+                System.IO.Console.println($"{p.x}");
+                return;
+            }
+        }
+    }
+}
