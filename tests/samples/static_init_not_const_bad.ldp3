@@ -1,0 +1,24 @@
+import System.IO.Console;
+
+// A static field's initializer that cannot be evaluated before the program starts must be an ERROR,
+// not a silent zero. These two are defined in terms of each other, so there is no order in which
+// either has a value -- exactly the shape that used to compile to `i32 0` and take the program's
+// behaviour with it.
+program StaticInitNotConst;
+
+public bundle main {
+    public namespace app {
+
+        public class Rules {
+            public static int EARLY = Rules.LATER / 4;
+            public static int LATER = Rules.EARLY * 2;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"{Rules.EARLY}");
+                return;
+            }
+        }
+    }
+}

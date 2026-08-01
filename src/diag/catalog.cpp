@@ -504,6 +504,21 @@ constexpr Row kCatalog[] = {
         "Choose an ownership discipline per type up front. Each modifier documents one promise; combining "
         "conflicting ones is the contradiction this catches before it can confuse callers." }},
 
+    {Code::StaticInitNotConst, {
+        "LDP3-0608", "this static field's initializer has no value before the program starts",
+        "A static field is one storage location per class, laid down in the binary before `main` runs, so "
+        "whatever it starts as has to be computable by the compiler. It may be written in terms of literals, "
+        "consts, `comptime` methods, and OTHER static fields in any order -- the only thing that cannot work "
+        "is a cycle, where two fields are each defined from the other and neither can go first. Until this "
+        "was checked, an initializer the compiler could not evaluate was silently emitted as ZERO: no error, "
+        "no warning, and a program whose behaviour was wrong in a place no test of its output points back to.",
+        "If the value really is constant, break the cycle -- one of the two has to be a literal. If it is "
+        "not constant, it does not belong in the declaration: move it into an `onClassLoad` block, which "
+        "runs before anything touches the class and may compute anything at all.",
+        "Keep static field initializers to plain arithmetic over other constants, and put every computed "
+        "or allocated setup in `onClassLoad`. The split is the same one the language draws everywhere "
+        "else: what the compiler can know goes in the declaration, what needs the machine goes in code." }},
+
     {Code::ComptimeConstant, {
         "LDP3-0807", "this must be a compile-time constant",
         "Some positions are evaluated by the compiler, not at run time -- a `comptime` argument, a `fixed` "
@@ -622,6 +637,8 @@ constexpr Rule kRules[] = {
     {"cannot initialize variable", Code::TypeMismatch},
     {"cannot initialize field", Code::TypeMismatch},
     {"synchronized requires", Code::TypeMismatch},
+
+    {"initializer for static field", Code::StaticInitNotConst},
 
     {"must return a value", Code::MissingReturn},
     {"paths return", Code::MissingReturn},
