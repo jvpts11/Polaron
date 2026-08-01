@@ -1,0 +1,25 @@
+import System.IO.Console;
+
+// A lone string literal is TEXT, not a printf format.
+//
+// Everything used to go down the format path, so a `%` in an ordinary sentence became a directive
+// with no argument behind it -- undefined behaviour that fail-fasts at run time, from a line with no
+// formatting and no arguments in it. Nothing about `println("...")` suggests its content is a format
+// string, and the one character that makes it one is the ordinary way to write a percentage.
+//
+// A literal WITH further arguments is still a format, which is what System.IO.printf is for.
+program PercentLiteral;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("progress: 50% done");
+                System.IO.Console.print("100%");
+                System.IO.Console.println("");
+                System.IO.Console.printf("%d%% of %d\n", 50, 200);
+                return;
+            }
+        }
+    }
+}

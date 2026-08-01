@@ -1,0 +1,24 @@
+import System.IO.Console;
+
+// A lambda body is type-checked like any other body.
+//
+// `typeOf` on a LambdaExpr used to build the signature string and return, so the body was never
+// visited -- a blind spot the size of every callback in the language: Thread bodies, collection
+// predicates, FFI trampolines. Anything at all could be written inside one, including a name that
+// does not exist, and the front end handed it to codegen, which assumes a valid AST.
+program LambdaBodyBad;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int seed = 3;
+                function<int,int> f = lambda[captures: byvalue seed](int x) returns int {
+                    return notDeclaredAnywhere + x + seed;
+                };
+                System.IO.Console.println($"{f(1)}");
+                return;
+            }
+        }
+    }
+}

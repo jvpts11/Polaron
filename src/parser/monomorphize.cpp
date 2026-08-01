@@ -209,6 +209,24 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         auto n = std::make_unique<ast::MemberExpr>();
         n->loc = x->loc;
         n->member = x->member;
+        // A bare identifier in RECEIVER position may be a type name -- `Regex.matchClass(...)` is a
+        // static call, not a variable read -- so it has to follow a type substitution. A plain
+        // identifier anywhere else is left alone on purpose: this same clone is what monomorphizes
+        // generics, where the substitution maps T to int and must never touch a variable.
+        //
+        // Without this, renaming a type broke its own static self-calls. That only happens when the
+        // name is ambiguous, so the trigger was a user class sharing a name with a stdlib one: the
+        // stdlib's `Regex` became `Text__Regex` and every `Regex.matchHere(...)` inside it stopped
+        // resolving, reported as four undeclared-variable errors inside <prelude>.
+        if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(x->object.get())) {
+            if (auto it = s.find(oid->name); it != s.end()) {
+                auto obj = std::make_unique<ast::IdentifierExpr>();
+                obj->loc = oid->loc;
+                obj->name = it->second;
+                n->object = std::move(obj);
+                return n;
+            }
+        }
         n->object = cloneExpr(x->object.get(), s);
         return n;
     }
@@ -1323,11 +1341,21 @@ void resolveTypeAliases(ast::Program& program) {
 void qualifyNamespaces(ast::Program& program) {
     // 1. Index each simple type name to the set of namespaces declaring it.
     std::map<std::string, std::set<std::string>> declNs;
+    // Which namespaces belong to the standard library, and where in it each name is declared. The
+    // stdlib does not import itself -- its namespaces refer to each other's types directly -- so
+    // without this it is the one body of code in the program that cannot say which `Regex` it means.
+    std::set<std::string> preludeNs;
+    std::map<std::string, std::string> preludeOwner;
     for (auto& b : program.bundles)
         for (auto& ns : b.namespaces) {
-            for (auto& c : ns.classes) declNs[c.name].insert(ns.name);
-            for (auto& e : ns.enums) declNs[e.name].insert(ns.name);
-            for (auto& cat : ns.catalogs) declNs[cat.name].insert(ns.name);
+            if (b.isPrelude) preludeNs.insert(ns.name);
+            auto note = [&](const std::string& n) {
+                declNs[n].insert(ns.name);
+                if (b.isPrelude) preludeOwner[n] = ns.name;
+            };
+            for (auto& c : ns.classes) note(c.name);
+            for (auto& e : ns.enums) note(e.name);
+            for (auto& cat : ns.catalogs) note(cat.name);
         }
     std::set<std::string> ambiguous;
     for (auto& [name, nss] : declNs)
@@ -1393,6 +1421,16 @@ void qualifyNamespaces(ast::Program& program) {
                     for (const std::string& cand : it->second)
                         if (declNs[amb].count(cand) > 0) { owner = cand; break; }
                 }
+                // A standard-library namespace means the standard library's type. The stdlib is one
+                // body of code that never imports itself, so when a user class made a stdlib name
+                // ambiguous, every OTHER stdlib namespace using that name resolved to nothing and
+                // kept the bare name -- which had just been renamed out from under it. Declaring
+                // `class Regex` in your own program produced four errors inside `<prelude>` saying
+                // `Regex` was undeclared, and declaring `class File` produced four saying the
+                // standard library should import YOUR type.
+                if (owner.empty() && preludeNs.count(ns.name) > 0)
+                    if (auto po = preludeOwner.find(amb); po != preludeOwner.end())
+                        owner = po->second;
                 if (!owner.empty()) {
                     subst[amb] = qualified(owner, amb);
                     program.qualifiedTypes.insert(qualified(owner, amb));

@@ -1,0 +1,42 @@
+import System.IO.Console;
+
+// spec 19.6: `move T` on a parameter or a return type. The whole argument for the verbosity is that
+// reading the CALL tells you ownership changed hands without going to look at the declaration -- so a
+// `move` parameter passed plainly defeats the only thing the annotation is for.
+//
+// It parsed and meant nothing: `isMove` appeared in exactly two places in the entire compiler, the
+// field on TypeRef and the line the parser wrote it on. Nobody read it, because canonicalType()
+// flattens a TypeRef to a string and drops it on the way.
+program MoveSignatureBad;
+
+public bundle main {
+    public namespace app {
+
+        public class Connection {
+            public mutable int fd;
+            public constructor Connection(int fd) { this.fd = fd; }
+        }
+
+        public class Net2 {
+            // Takes ownership: the caller must say `move`.
+            public static method consume(move Connection c) returns void {
+                System.IO.Console.println($"{c.fd}");
+                return;
+            }
+
+            // Gives ownership out: the return must say `move`.
+            public static method create() returns move Connection {
+                Connection c = new Connection(7) on heap;
+                return c;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Connection c = new Connection(3) on heap;
+                Net2.consume(c);
+                return;
+            }
+        }
+    }
+}

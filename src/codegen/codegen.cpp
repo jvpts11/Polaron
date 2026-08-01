@@ -7204,10 +7204,17 @@ struct CodeGenerator::Impl {
                     return nullptr;
                 }
                 std::vector<llvm::Value*> args;
-                // A leading string literal is a printf-style format; otherwise the first arg is a
-                // String value, printed with %s.
+                // A leading string literal WITH further arguments is a printf-style format; a lone
+                // literal is text and is printed as text.
+                //
+                // Everything used to go down the format path, so `println("50% done")` handed `%` to
+                // printf as a directive with no argument behind it -- undefined behaviour that
+                // fail-fasts at run time, from a line containing no formatting and no arguments.
+                // Nothing about `println("...")` suggests its content is a format string, and the
+                // one character that makes it one is the ordinary way to write a percentage.
                 if (const auto* lit =
-                        dynamic_cast<const ast::StringLiteralExpr*>(call.args.front().get())) {
+                        dynamic_cast<const ast::StringLiteralExpr*>(call.args.front().get());
+                    lit != nullptr && call.args.size() > 1) {
                     args.push_back(createGlobalStringPtr(builder,
                         resolveEscapes(lit->value) + (nl ? "\n" : ""), ".str"));
                     for (std::size_t i = 1; i < call.args.size(); ++i) {
@@ -7215,6 +7222,12 @@ struct CodeGenerator::Impl {
                         if (v == nullptr) return nullptr;
                         args.push_back(asCStr(*call.args[i], v));
                     }
+                } else if (const auto* only =
+                               dynamic_cast<const ast::StringLiteralExpr*>(call.args.front().get())) {
+                    // A lone literal: its own text, through a "%s" format so no character in it can
+                    // be read as a directive.
+                    args.push_back(createGlobalStringPtr(builder, nl ? "%s\n" : "%s", ".str"));
+                    args.push_back(createGlobalStringPtr(builder, resolveEscapes(only->value), ".str"));
                 } else {
                     llvm::Value* s = emitExpr(*call.args.front());
                     if (s == nullptr) return nullptr;
@@ -10623,10 +10636,37 @@ struct CodeGenerator::Impl {
         }
         if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {
             if (rel->isPersistent) {
-                // `release persistent obj.field`: persistents are in-process (spec 18) and
-                // reclaimed at program shutdown, so the explicit release is a no-op for now;
-                // its role is to satisfy the static release obligation (spec 18.15). Freeing
-                // the backing storage on release is a later runtime refinement.
+                // `release persistent obj.field` (spec 18.15). This was a no-op that satisfied the
+                // static obligation and did nothing at all -- so a program could release a
+                // persistent, read it back, and find every accumulated value still there. The
+                // statement existed to be written, not to mean anything.
+                //
+                // What it means in an IN-PROCESS persistent model is that the accumulated state is
+                // discarded: a later reattach starts from zero, exactly as the first attach of the
+                // run did. The named block cannot be freed -- it is a global, and the whole point of
+                // a named persistent is that its address is stable across reattach -- so releasing
+                // is ZEROING it, which is the observable half and the honest one. The runtime frees
+                // the storage at shutdown as it always has.
+                if (rel->target != nullptr) {
+                    if (const auto* mem =
+                            dynamic_cast<const ast::MemberExpr*>(rel->target.get())) {
+                        const std::string cls = baseType(typeName(*mem->object));
+                        auto cit = classes.find(cls);
+                        if (cit != classes.end() && cit->second.persistPtrIdx != 0) {
+                            llvm::Value* objPtr = emitObjectPtr(*mem->object);
+                            if (objPtr != nullptr) {
+                                llvm::Value* slot =
+                                    builder.CreateStructGEP(cit->second.type, objPtr,
+                                                            cit->second.persistPtrIdx, "__persist");
+                                llvm::Value* block =
+                                    builder.CreateLoad(builder.getPtrTy(), slot, "pblock");
+                                builder.CreateCall(memsetFn(),
+                                                   {block, builder.getInt32(0),
+                                                    sizeOf(cit->second.persistBlock)});
+                            }
+                        }
+                    }
+                }
                 return;
             }
             // Destruct every object in the region, then free the whole block (spec 17.7). Null the
