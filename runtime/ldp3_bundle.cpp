@@ -49,6 +49,30 @@ std::string tempDir() {
 #endif
 }
 
+// On Windows, the import library the host executable's own link produced. The bundle DLL links against
+// it so its `__ldp3_malloc`/`__ldp3_free`/`__ldp3_check_live` resolve to the HOST's -- one heap, one
+// liveness registry. Without it the bundle would need its own copy of the allocator, which means an
+// object allocated on one side and freed on the other corrupts both heaps and the double-free trap only
+// ever sees half the program.
+//
+// The linker writes `<app>.lib` beside `<app>.exe` automatically once the runtime's symbols are
+// dllexport'd, so the path is derivable and needs no build-system cooperation. POSIX needs none of this:
+// the host is linked -rdynamic and the .so resolves back against it.
+std::string hostImportLib() {
+#ifdef _WIN32
+    char buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    std::string p(buf, n);
+    const std::size_t dot = p.find_last_of('.');
+    const std::size_t sep = p.find_last_of("\\/");
+    if (dot == std::string::npos || (sep != std::string::npos && dot < sep)) return {};
+    return p.substr(0, dot) + ".lib";
+#else
+    return {};
+#endif
+}
+
 // Whether a file exists at `path`.
 bool fileExists(const std::string& path) {
 #ifdef _WIN32
@@ -120,8 +144,15 @@ void* ldp3_bundle_load(const char* ldbPath, const unsigned char* expectedFp, int
         out.close();
         // -O1 dead-strips the weak prelude functions the bundle does not use, so the image only keeps
         // what it references (e.g. Object) and stays self-contained.
+        // Link against the host's import library so the bundle's allocations come from the host's heap
+        // (see hostImportLib). Absent -- an older host, or one linked without exporting -- the command is
+        // unchanged and the failure is the same undefined-symbol error as before, not a silent second
+        // heap: better to fail at load than to corrupt at free.
+        std::string hostLib;
+        if (const std::string lib = hostImportLib(); !lib.empty() && fileExists(lib))
+            hostLib = " \"" + lib + "\"";
         const std::string cmd = "clang -shared -O1 -Wno-override-module \"" + bc + "\" -o \"" + dll +
-                                "\"" LDP3_BUNDLE_LINK;
+                                "\"" + hostLib + LDP3_BUNDLE_LINK;
         if (std::system(cmd.c_str()) != 0) return fail(LDP3_BUNDLE_MISSING, "could not be compiled");
     }
     void* h = loadLibrary(dll);

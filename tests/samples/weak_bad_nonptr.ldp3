@@ -1,0 +1,14 @@
+program WeakBadNonptr;
+
+// `weak` observes an object by identity, so it must qualify a POINTER to a class. A `weak int`
+// has no object to observe and no place to hook the auto-null, so the analyzer must reject it.
+public bundle Main {
+    public namespace App {
+        public class Holder {
+            public mutable weak int x;
+        }
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

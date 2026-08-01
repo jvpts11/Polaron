@@ -30,6 +30,7 @@ enum class TokenKind : std::uint8_t {
     DecimalLiteral,  // numeric with an `m` suffix (1.50m) -> the Decimal primitive (spec 34)
     CharLiteral,
     StringLiteral,
+    BytesLiteral,   // b"..." -- raw NUL-terminated bytes, not a String object (freestanding)
     InterpString,  // $"...{expr}..." -- raw content kept; split by the parser
 
     // Keywords -- structure
@@ -51,14 +52,14 @@ enum class TokenKind : std::uint8_t {
     KwIs, KwAs, KwCast, KwNull,
 
     // Keywords -- ownership / regions / scoped resources (0.2 memory model)
-    KwMove, KwMovable, KwUnique, KwPartitionable,
+    KwMove, KwMovable, KwUnique, KwWeak, KwPartitionable,
     KwRegion, KwOf, KwAccepts, KwRejects,
     KwItself, KwRelease,
     KwPersistent, KwEternal, KwTransient,
     KwDeprecated,   // spec 14.2: marks a method as deprecated -> a warning at each call site
     KwPartial,      // spec 8.3: a class declaration split across several declarations/files
     KwDefer, KwUsing, KwSynchronized, KwAsync, KwAwait,
-    KwExtern, KwCdecl, KwStdcall, KwFastcall, KwFreestanding,
+    KwExtern, KwCdecl, KwStdcall, KwFastcall, KwUnknown, KwFreestanding, KwNaked,
     KwVolatile, KwCascade, KwLazy, KwExternal,
     KwLambda, KwFunction, KwMethodref,
     KwTypealias, KwNewtype, KwAnnotation,

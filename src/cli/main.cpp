@@ -29,6 +29,7 @@
 #include "parser/boundscheck.h"
 #include "parser/loopopt.h"
 #include "parser/ipc.h"
+#include <chrono>
 #include "parser/monomorphize.h"
 #include "parser/parser.h"
 #include "semantic/analyzer.h"
@@ -558,6 +559,36 @@ R"LDP3(
         public class ClassCastException extends Exception {
             public constructor ClassCastException() {}
             public override method message() returns String { return "invalid cast"; }
+        }
+        // Thrown when `cast<T>(x)` is used to assert that a `nullable T` holds a value and it does not.
+        // The cast is how a program says "I checked this" -- so when it has not, the honest outcome is a
+        // reported failure, not a dereference of address zero somewhere later with no trace of who
+        // promised what. Catch it, or check the value with `if (x != null)` and let the compiler narrow
+        // the type for you, which needs no cast at all.
+        public class NullReferenceException extends Exception {
+            public constructor NullReferenceException() {}
+            public override method message() returns String { return "null where a value was asserted"; }
+        }
+        // Arithmetic that has no correct answer. In a HOSTED program these are exceptions, so a caller
+        // can decide what a bad divisor or an overflowing sum means for it; in FREESTANDING there is no
+        // exception machinery (spec 36.3), so the same faults terminate through `__ldp3_panic`. The
+        // failure is identical either way -- only the reporting differs, exactly as for a bad downcast.
+        // Catch `ArithmeticException` for both, or the specific one.
+        public class ArithmeticException extends Exception {
+            public constructor ArithmeticException() {}
+            public override method message() returns String { return "arithmetic error"; }
+        }
+        // The divisor was zero, or the division was INT_MIN / -1 -- whose true quotient has no
+        // representation in the type, so wrapping it would be a wrong answer rather than a defined one.
+        public class DivideByZeroException extends ArithmeticException {
+            public constructor DivideByZeroException() {}
+            public override method message() returns String { return "division by zero"; }
+        }
+        // A `checked(...)` expression whose result does not fit its type. Plain arithmetic wraps by
+        // design (modular, zero-overhead); this is only raised where the program asked to be told.
+        public class OverflowException extends ArithmeticException {
+            public constructor OverflowException() {}
+            public override method message() returns String { return "integer overflow"; }
         }
     }
 )LDP3"
@@ -8896,9 +8927,10 @@ R"LDP3(
             public method capability() returns String {
                 return this.capabilityName;
             }
-            // A refused request yields a token that was never granted. (LDP3's nullable does not narrow,
-            // so a `nullable BundleAccessToken*` could never be passed to a method that demands one --
-            // the type system itself pushes the answer here.)
+            // A refused request yields a token that was never granted, rather than null. Narrowing would
+            // make `nullable BundleAccessToken*` workable at the call site, but it would also collapse
+            // "refused" and "absent" into one shape; a token that answers `granted()` keeps the refusal a
+            // value you can carry, log and attribute.
             public method granted() returns boolean {
                 return this.nonceValue != cast<long>(0);
             }
@@ -9444,7 +9476,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             const std::vector<std::string>& deps = {},
             const std::vector<std::string>& dynDeps = {}, bool testMode = false,
             bool debugInfo = false, const std::vector<std::string>& remoteDeps = {},
-            bool checkOnly = false) {
+            bool checkOnly = false, bool regionBinder = false) {
     ldp3::ast::Program program;
     std::string programName;
     // In check mode a broken file must not hide the others: an editor asks about the whole project and
@@ -9623,24 +9655,48 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     }
 #endif
 
+    // LDP3_PHASE_TIMES=1: print how long each front-end phase takes. Kept in the tree because "which
+    // pass is slow" is otherwise unanswerable without a profiler, and compile time is a feature.
+    const bool phaseTimes = std::getenv("LDP3_PHASE_TIMES") != nullptr;
+    auto phaseClock = std::chrono::steady_clock::now();
+    auto phase = [&](const char* name) {
+        if (!phaseTimes) return;
+        const auto now = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "[phase] %-24s %lld ms\n", name,
+                     (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+                         now - phaseClock).count());
+        phaseClock = now;
+    };
+    phase("(parse+read)");
     appendPrelude(program);
+    phase("appendPrelude");
     // In a library the prelude is emitted into the .ldb with weak (linkonce_odr) linkage (handled in
     // codegen): static linking deduplicates it against the program's own prelude, and a dynamically
     // built DLL is self-contained (every class extends the prelude's Object). This matters now that
     // Object is the universal root, so even a trivial bundle references the prelude.
     ldp3::resolveTypeAliases(program);           // expand `typealias` to its target everywhere (spec 24)
+    phase("resolveTypeAliases");
     // Before qualifyNamespaces: the remote program's header carries ITS entry class, which this pass
     // drops. Left in place, two classes named Main would look like a name clash and both would be
     // renamed -- and this program would lose its entry point.
     if (!ldp3::synthesizeIpc(program)) return 1;  // spec 2.8: IPC proxies + this program's dispatcher
     ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
+    phase("qualifyNamespaces");
     assignObjectRoot(program);                   // a class with no `extends` implicitly extends Object
+    phase("assignObjectRoot");
     synthesizeValueKeyHooks(program);            // value types get structural equalsKey/hash/compareTo (collection keying)
-    if (!ldp3::monomorphize(program)) return 1;  // expand generics; false on constraint error
-    if (optLevel > 0) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
-    if (optLevel > 0) ldp3::hoistBoundsChecks(program);          // bounds-check hoisting (sema re-checks it)
+    phase("synthesizeValueKeyHooks");
+    if (!ldp3::monomorphize(program)) return 1;
+    phase("monomorphize");  // expand generics; false on constraint error
+    // Freestanding has no managed arrays and no bounds checks (raw-pointer `p[i]` is unchecked), so these
+    // array-shaped loop optimizations don't apply -- and hoistBoundsChecks would synthesize `p.length()`
+    // on a raw pointer (which has no `length`), erroring under -O2. Skip both in freestanding.
+    if (optLevel > 0 && !program.isFreestanding) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
+    if (optLevel > 0 && !program.isFreestanding) ldp3::hoistBoundsChecks(program);          // bounds-check hoisting (sema re-checks it)
     ldp3::SemanticAnalyzer sema;
+    sema.setRegionBinder(regionBinder);
     const bool semaOk = sema.analyze(program, libraryMode, testMode);
+    phase("sema.analyze");
     // `--check` (used by the editor's live check) and `--concise` want one machine-parseable line per
     // diagnostic; a normal build shows the full rich explanation.
     const bool concise = checkOnly || g_concise;
@@ -9864,6 +9920,7 @@ int main(int argc, char** argv) {
     bool libraryMode = false;  // --lib: compile a bundle to a .ldb (+ .ldh), no entry point required
     bool testMode = false;     // --test: emit a synthetic runner over the [Test] methods, not main
     bool debugInfo = false;    // -g: emit DWARF debug metadata (for lldb / the Forge debugger)
+    bool regionBinder = false; // --region-binder: static temporal-safety escape checks (opt-in for now)
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "-o") {
             if (i + 1 >= args.size()) {
@@ -9917,6 +9974,8 @@ int main(int argc, char** argv) {
         } else if (args[i] == "-g") {
             debugInfo = true;
             optLevel = 0;  // debug info survives best unoptimized (variables, line stepping)
+        } else if (args[i] == "--region-binder") {
+            regionBinder = true;  // enable the static temporal-safety escape checks
         } else if (args[i] == "--concise" || args[i] == "-q") {
             g_concise = true;  // one machine-parseable line per diagnostic (CI / huge broken builds)
         } else {
@@ -9929,5 +9988,5 @@ int main(int argc, char** argv) {
         return printUsage(argv[0]);
     }
     return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps, testMode, debugInfo,
-                   remoteDeps);
+                   remoteDeps, /*checkOnly=*/false, regionBinder);
 }

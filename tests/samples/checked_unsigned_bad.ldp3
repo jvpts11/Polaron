@@ -1,0 +1,32 @@
+import System.IO.Console;
+import System.Runtime.OverflowException;
+program CheckedUnsignedBad;
+
+// `checked(expr)` must trap on UNSIGNED overflow too. It used to be dropped silently for unsigned
+// operands -- the condition read `if (checkedArith_ && !uns && ...)` -- so asking for the one arithmetic
+// safety opt-in the language has, on an unsigned type, got you plain wrapping and no diagnostic. Unsigned
+// wrap-around is exactly as much a bug as signed when the programmer said `checked`.
+//
+// Subtracting past zero on an unsigned type is a borrow, and a borrow is an overflow. In a hosted program
+// that is a catchable OverflowException (a panic in freestanding, which has no exception machinery), so
+// this checks both halves at once: that the unsigned case is detected at all, and that the program can
+// deal with it instead of dying.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable uint small = 3;
+                uint big = 10;
+                try {
+                    uint wrapped = checked(small - big);   // would wrap to 4294967289
+                    System.IO.Console.printf("unreachable: %u\n", wrapped);
+                } catch (OverflowException e) {
+                    System.IO.Console.printf("caught: %s\n", e.message());
+                }
+                System.IO.Console.printf("survived\n");
+                return;
+            }
+        }
+    }
+}

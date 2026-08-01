@@ -1,0 +1,53 @@
+program MixedSignednessBad;
+
+// Signed and unsigned operands may not be mixed (spec 3.6). This is not pedantry about type names -- it
+// is the one integer mismatch that produces a WRONG ANSWER rather than a surprising one:
+//
+//     address a = 1;  int neg = 0 - 1;  a < neg   ==>  TRUE
+//
+// because -1 sign-extends to 64 bits and then the comparison is performed unsigned. There is no common
+// type that represents every value of a 64-bit unsigned AND every value of a signed one, so the compiler
+// has to pick a side and be wrong about the other. C ships -Wsign-compare for exactly this.
+//
+// WIDTH is deliberately NOT the rule. A narrower integer widens silently because that conversion
+// preserves the value, and `address`/`ulong` are one type under two spellings -- demanding a cast between
+// two identically-sized types would be noise with no safety behind it. The methods below this one are the
+// forms that must KEEP compiling, so a fix that over-rejects fails here too.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            static method wrong() returns boolean {
+                address a = 1;
+                int neg = 0 - 1;
+                return a < neg;                       // <-- the error
+            }
+
+            static method maskWithLiteral() returns address {
+                address at = 0x140000000;
+                return at & (0 - 4096);               // untyped constant: adapts, no cast
+            }
+            static method sameTypeTwoNames() returns address {
+                address a = 0x1000;
+                ulong u = 0x20;
+                return a + u;                         // both unsigned 64: one type, two spellings
+            }
+            static method shiftCount() returns address {
+                address a = 0x140000000;
+                return a >> 12;                       // the right operand is a COUNT, not an address
+            }
+            static method widerSignedHoldsIt() returns long {
+                uint w = 7;
+                long g = 9;
+                return g + cast<long>(w);             // unsigned fits strictly wider signed
+            }
+            static method sameSignDifferentWidth() returns int {
+                short s = 2;
+                int i = 3;
+                return i + cast<int>(s);              // same signedness: width alone never blocks
+            }
+
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

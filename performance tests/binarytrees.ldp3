@@ -7,8 +7,10 @@ program BinaryTrees;
 public bundle main {
     public namespace app {
         public class Tree {
-            public mutable Tree* left;
-            public mutable Tree* right;
+            // `nullable`, because a leaf HAS no children -- absence is a real state of a tree node, and
+            // the type is where that gets said. Every type in LDP3 is non-null unless it opts in.
+            public mutable nullable Tree* left;
+            public mutable nullable Tree* right;
             public constructor Tree() {
                 this.left = null;
                 this.right = null;
@@ -27,12 +29,15 @@ public bundle main {
                 if (t.left == null) {
                     return 1;
                 }
-                return 1 + Main.check(t.left) + Main.check(t.right);
+                // The `if` above proved both children exist, but a null CHECK does not narrow the type
+                // (no flow-sensitive narrowing yet), so the cast is how the check is stated to the
+                // compiler. It is a claim, not a conversion: the field is still one pointer.
+                return 1 + Main.check(cast<Tree*>(t.left)) + Main.check(cast<Tree*>(t.right));
             }
             public static method free(Tree* t) returns void {
                 if (t.left != null) {
-                    Main.free(t.left);
-                    Main.free(t.right);
+                    Main.free(cast<Tree*>(t.left));
+                    Main.free(cast<Tree*>(t.right));
                 }
                 delete t;
             }
