@@ -474,6 +474,22 @@ std::vector<std::string> SemanticAnalyzer::catalogImplementers(const std::string
     return out;
 }
 
+// The tail on a type-mismatch message when the two sides are `address` and a plain integer. Without
+// it the reader is told `address` and `long` are different types, which is true and unhelpful: both
+// are 64-bit integers, the rule that separates them is new, and the whole point is that crossing
+// between them should be a thing you decided rather than a thing that happened.
+std::string SemanticAnalyzer::addressHint(const std::string& from, const std::string& to) const {
+    if (!isIntName(from) || !isIntName(to)) return "";
+    if ((from == "address") == (to == "address")) return "";
+    if (to == "address")
+        return ". An address is not an integer that happens to be 64 bits wide -- making one out of "
+               "a number is how a program reads memory nobody gave it. Write 'cast<address>(...)' if "
+               "that is what you mean";
+    return ". An address is not an integer that happens to be 64 bits wide -- storing one in a "
+           "number loses the fact that it points at something. Write 'cast<" + to +
+           ">(...)' if that is what you mean";
+}
+
 bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& super, int depth) const {
     if (sub == super) return true;
     // Guard against a cyclic type graph (e.g. `catalog A extends B; B extends A`):
@@ -503,7 +519,21 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     // int and float both widen to a float type (no implicit narrowing).
     if (isFloatType(super) && isNumeric(sub)) return true;
     // Integers widen to a wider integer (no implicit narrowing).
-    if (isIntName(sub) && isIntName(super)) return intBits(sub) <= intBits(super);
+    if (isIntName(sub) && isIntName(super)) {
+        // ...but `address` is not an integer that happens to be 64 bits wide, it is a machine
+        // address, and it sits in isIntName only so the arithmetic on it works. Left as a plain
+        // widening, `address a = someLong;` silently turned a number into a pointer and
+        // `long n = someAddress;` silently turned a pointer into a number -- the exact conversion a
+        // language with no exploitable UB has to make somebody write down.
+        //
+        // Freestanding is exempt, and not as a concession: on bare metal, turning an integer into an
+        // address IS the work (spec 36), the memory-mapped register at 0xB8000 is a number until you
+        // say otherwise, and there is no allocator to have given you the address instead. Measured
+        // before landing: the whole hosted world is TWELVE sites -- five across 380 samples and seven
+        // in agents-exe -- against 210 in the pico kernel, which is what that split looks like.
+        if (!freestanding_ && (sub == "address") != (super == "address")) return false;
+        return intBits(sub) <= intBits(super);
+    }
     // Pointer/reference compatibility follows the pointee (T*, T& and T mix
     // freely for now; the strict value-vs-reference rules land with deep copy).
     //
@@ -2865,7 +2895,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType) &&
             !intLiteralFits(*vd->init, declType)) {
             error("cannot initialize variable '" + vd->name + "' of type '" + declType +
-                      "' with a value of type '" + initType + "'",
+                      "' with a value of type '" + initType + "'" + addressHint(initType, declType),
                   vd->loc);
         }
         if (lookupLocal(vd->name) != nullptr && deleted_.count(vd->name) == 0) {

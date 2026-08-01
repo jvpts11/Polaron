@@ -230,6 +230,8 @@ private:
     // so the fix reads right at each of them.
     void checkOwnershipAssign(const std::string& targetType, const ast::Expr& rhs,
                               SourceLocation loc, const std::string& what);
+    // The advice tail for an address/integer mismatch; empty when that is not the mismatch.
+    std::string addressHint(const std::string& from, const std::string& to) const;
     // True if `className` owns a `unique` field, directly, through a superclass, or through a value
     // sub-object -- such an object may not be value-copied (spec 19.2).
     bool classHasUniqueField(const std::string& className);

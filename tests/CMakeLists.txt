@@ -505,6 +505,14 @@ add_test(NAME codegen_bce_affine_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# `address` no longer widens from/to a plain integer in hosted code: turning a number into a pointer
+# is the conversion a no-exploitable-UB language has to make somebody write down. Freestanding is
+# exempt -- the pico kernel does it 210 times and means every one of them.
+add_test(NAME sema_rejects_address_from_int
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/address_int_bad.ldp3")
+set_tests_properties(sema_rejects_address_from_int PROPERTIES
+    PASS_REGULAR_EXPRESSION "address")
+
 # A user type may share a simple name with a stdlib one; the stdlib keeps meaning its own.
 add_test(NAME codegen_stdlib_name_shadow_runs COMMAND "${CMAKE_COMMAND}"
     "-DLDP3C=$<TARGET_FILE:ldp3c>"
