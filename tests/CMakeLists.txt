@@ -4,14 +4,21 @@
 # unit tests (doctest) over the lexer/parser/semantic libraries.
 
 # ---- Integration tests (driver) ----
+# The toolchain version lives in SIX places and every bump has to touch all of them:
+#   src/cli/main.cpp (kVersion)      src/driver/ldp3_main.cpp (kVersion)
+#   installer/build-msi.ps1          installer/ldp3.wxs
+#   docs/reference/README.md         and the two tests below.
+# The two compilers had already drifted apart before this was written down -- ldp3c said 1.0.0
+# while ldp3 said 1.0.13 -- because only one test pinned a version and it pinned the stale one.
+# Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.0")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.14")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.13")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.14")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -554,7 +561,7 @@ set_tests_properties(sema_checks_lambda_body PROPERTIES
 add_test(NAME sema_rejects_movable_without_move
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/ownership_sites_bad.ldp3")
 set_tests_properties(sema_rejects_movable_without_move PROPERTIES
-    PASS_REGULAR_EXPRESSION "LDP3-0404")
+    PASS_REGULAR_EXPRESSION "LDP3-0405")
 
 # One constructor per class, for the same reason there is one method per name. A second one used to be
 # accepted and its parameters APPENDED to the first's, so the error landed on the call site as

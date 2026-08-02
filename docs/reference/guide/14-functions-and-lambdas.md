@@ -52,6 +52,12 @@ inc(); inc(); inc();         // counter is now 3
 Explicit captures keep closures honest: a lambda cannot silently reach out and mutate state
 you didn't hand it, and `byvalue` vs `byref` says exactly which you meant.
 
+A lambda **body is type-checked like any other body**: names must resolve, `return` must
+match the declared type, and the flow analysis runs inside it. The captured variables are
+in scope during that check, and the body's own flow facts stay inside it — a `delete x`
+within a lambda does not mark the enclosing method's `x` as freed, because the two are
+separate flows of control.
+
 ## 14.3 Functions as parameters and return values
 
 Because functions are values, a method can take one as a parameter or hand one back — the

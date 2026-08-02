@@ -258,6 +258,23 @@ built-in `print`. A program that forgets the import and then calls
 `System.IO.Console.println(...)` will not compile. The verbosity is the intended
 cost of having no hidden magic.
 
+### Naming a type the standard library also names
+
+Because a type's address is its full path, a simple name is not reserved. Your
+program may declare `class Regex`, `class Scanner`, `class Files` — the standard
+library keeps meaning its own, yours means yours, and neither has to know about
+the other. What decides which one a file gets is the same thing as always: the
+namespace it is written in, and what it imports.
+
+The exception is the handful of types the **compiler** answers for itself rather
+than declaring in the library — `File`, `Time`, `Net`, `Memory`, `Process` and
+their neighbours ([§11](#11-systems-programming)). There is no class to shadow,
+so taking one of those names takes it for the whole program, including the
+standard library's own calls to it; the compiler rejects that at the declaration.
+`Math` is the deliberate exception to the exception: it is a virtual type
+precisely so that a program with its own `Math` compiles. Freestanding code is
+exempt from the whole rule, having no standard library to disturb.
+
 ### How imports gate cross-namespace access
 
 The purpose of an import is to cross a namespace boundary. Within a single

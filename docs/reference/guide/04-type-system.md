@@ -69,6 +69,22 @@ There is also `address`, a raw pointer-sized integer (64-bit on the current
 target). It exists for low-level and freestanding code that needs to treat a
 memory address as a number; you will rarely see it in application code.
 
+`address` sits in the integer family so that arithmetic on it works, but it does
+**not** convert to or from the other integers on its own. Making an address out of
+a number is how a program reads memory nobody gave it, so the conversion is written
+down:
+
+```ldp3
+mutable long n = 4096;
+address a = n;                  // error: an address is not a 64-bit integer
+address a = cast<address>(n);   // ...unless you say so
+```
+
+Freestanding code is exempt, and not as a concession: on bare metal, making an
+address out of an integer *is* the work — the memory-mapped register at `0xB8000`
+is a number until you say otherwise, and no allocator is going to hand you the
+address instead.
+
 ### The freestanding-only bit-counted names
 
 You may have seen names like `int32` or `uint8` in other systems languages, and

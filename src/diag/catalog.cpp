@@ -520,7 +520,7 @@ constexpr Row kCatalog[] = {
         "else: what the compiler can know goes in the declaration, what needs the machine goes in code." }},
 
     {Code::MoveRequired, {
-        "LDP3-0404", "a movable value is transferred, never copied -- say so",
+        "LDP3-0405", "a movable value is transferred, never copied -- say so",
         "`movable` on a class means its instances have exactly one owner at a time and travel by handing "
         "that ownership over. A plain binding would read as a copy, and for a type whose whole point is a "
         "single owner there is no such thing as a copy -- so the transfer is written down: `move x`. The "

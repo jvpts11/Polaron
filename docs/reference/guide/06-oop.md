@@ -80,6 +80,11 @@ public class Account {
 }
 ```
 
+A class has **exactly one** constructor, for the same reason it has one method per name:
+LDP3 has no overloading. Where another language would offer several, give the alternatives
+distinct names as static factory methods, or take one constructor with the widest
+parameter list.
+
 The mirror image of a constructor is a **destructor**, written `destructor ~Name()
 returns void`. It runs when an object's lifetime ends and is where you release whatever
 the object owns — heap memory, file handles, and the like. LDP3 has no garbage

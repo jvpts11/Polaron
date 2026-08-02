@@ -257,6 +257,10 @@ library is available without an import.
 - **`printf(format, args...)`** takes a C-style format string — `%d` for an integer, `%c`
   for a character, with `\n` and `\t` escapes — and substitutes the arguments in order.
 
+A string on its own is **text, not a format**: `println("50% done")` prints a percent sign.
+The format reading applies only when there are arguments to substitute, which is what
+`printf` is for.
+
 For building output from several values, **string interpolation** is usually clearer than
 `printf`. Inside a `$"..."` string, each `{expr}` is evaluated and its value spliced into
 the text:

@@ -45,3 +45,18 @@ tests/samples/*.ll
 
 # stray IR dumps at the repo root (ldp3c -o na.ll etc.)
 /*.ll
+
+# Working documents, deliberately not published (see docs/reference/ for the public reference).
+# Removed once already; re-added by a careless `git add -A docs`, so the pattern is written down.
+docs/superpowers/
+docs/IMPLEMENTATION_STATUS.md
+docs/LDP3_state.md
+docs/LDP3_specification.md
+docs/LDP3_keywords.md
+NIGHT_PROGRESS*.md
+MUDANCAS.md
+PENDENTE.md
+ldp3_analise.md
+ctest_*.log*
+*.tmp
+*.tmp.ldp3
