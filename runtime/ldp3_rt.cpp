@@ -18,6 +18,7 @@
 #include <winsock2.h>   // must precede <windows.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <io.h>         // _dup/_dup2/_close: the stdout diversion behind Test.captureOutput
 #pragma comment(lib, "ws2_32.lib")
 #else
 #include <arpa/inet.h>
@@ -2564,15 +2565,121 @@ int ldp3_apply_cb(int (*f)(int), int x) { return f(x); }
 //
 // Default output is DETERMINISTIC on purpose -- a test report is diffed, pasted into a review, and
 // compared against a golden file, so durations are opt-in behind --timing rather than on by default.
+// The file stdout is diverted into while a test's output is captured. Its name is
+// ".ldp3-capture-<pid>": the LDP3 side (Test.captureOutput) reads it back with the ordinary File
+// builtin rather than needing a way to receive a C string, so the two sides have to agree on the
+// name -- and they agree on the RULE, not on a constant, so two test binaries running in the same
+// directory do not clobber each other's capture.
+static int ldp3_capture_id(void) {
+#ifdef _WIN32
+    return (int)GetCurrentProcessId();
+#else
+    return (int)getpid();
+#endif
+}
+LDP3_RT_API int __ldp3_capture_id(void) { return ldp3_capture_id(); }
+
+static const char* ldp3_capture_path(void) {
+    static char path[64];
+    if (path[0] == 0) snprintf(path, sizeof path, ".ldp3-capture-%d", ldp3_capture_id());
+    return path;
+}
+#define LDP3_CAPTURE_PATH ldp3_capture_path()
+
 static const char* g_test_filter = 0;
+static const char* g_test_tag = 0;         // --tag: only tests carrying it
+static const char* g_test_extag = 0;       // --exclude-tag: everything but those
 static int g_test_list_only = 0;
 static int g_test_timing = 0;
+static int g_test_json = 0;
+static int g_test_failfast = 0;
+static int g_test_bench = 0;               // --bench: run [Benchmark] methods too
+static int g_test_update_golden = 0;
 static int g_test_pass = 0;
 static int g_test_fail = 0;
 static int g_test_skip = 0;
+static int g_test_xfail = 0;               // expected failures that did fail (counted as passes)
 static long long g_test_ns = 0;
-static const char* g_test_current = 0;  // the test being run, for the failure header
-static int g_test_header_done = 0;      // its "FAIL <name>" header has already been printed
+static const char* g_test_current = 0;     // the test being run, for the failure header
+static int g_test_header_done = 0;         // its "FAIL <name>" header has already been printed
+static int g_test_expect_fail = 0;         // the running test is [ExpectedToFail]
+static int g_test_json_first = 1;          // no record emitted yet, so no separating comma
+
+// ---- stdout capture ----
+// Used twice over: by Test.captureOutput, and by --format=json, where a test's own printing would
+// otherwise land in the middle of the JSON and corrupt it. A small save stack so the two can nest.
+static int g_cap_saved[4];
+static FILE* g_cap_file[4];
+static int g_cap_depth = 0;
+
+static void ldp3_capture_push(void) {
+    if (g_cap_depth >= 4) return;
+    fflush(stdout);
+#ifdef _WIN32
+    g_cap_saved[g_cap_depth] = _dup(_fileno(stdout));
+#else
+    g_cap_saved[g_cap_depth] = dup(fileno(stdout));
+#endif
+    FILE* f = fopen(LDP3_CAPTURE_PATH, "w+");
+    if (f == 0) { g_cap_saved[g_cap_depth] = -1; g_cap_file[g_cap_depth] = 0; g_cap_depth++; return; }
+    g_cap_file[g_cap_depth] = f;
+#ifdef _WIN32
+    _dup2(_fileno(f), _fileno(stdout));
+#else
+    dup2(fileno(f), fileno(stdout));
+#endif
+    g_cap_depth++;
+}
+
+// Restores stdout and returns the captured bytes in `buf` (caller-owned, NUL-terminated) or 0.
+static char* ldp3_capture_pop(void) {
+    if (g_cap_depth <= 0) return 0;
+    g_cap_depth--;
+    fflush(stdout);
+    const int saved = g_cap_saved[g_cap_depth];
+    FILE* f = g_cap_file[g_cap_depth];
+    if (saved >= 0) {
+#ifdef _WIN32
+        _dup2(saved, _fileno(stdout));
+        _close(saved);
+#else
+        dup2(saved, fileno(stdout));
+        close(saved);
+#endif
+    }
+    if (f == 0) return 0;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    if (n < 0) n = 0;
+    fseek(f, 0, SEEK_SET);
+    char* buf = (char*)malloc((size_t)n + 1);
+    if (buf == 0) { fclose(f); return 0; }
+    size_t got = fread(buf, 1, (size_t)n, f);
+    buf[got] = 0;
+    fclose(f);
+    return buf;
+}
+
+// Test.captureOutput brackets its action with these; it then reads LDP3_CAPTURE_PATH itself, which
+// pop() has already flushed and closed.
+LDP3_RT_API void __ldp3_capture_begin(void) { ldp3_capture_push(); }
+LDP3_RT_API void __ldp3_capture_end(void) { free(ldp3_capture_pop()); }
+// Whether `--update-golden` was passed, so Test.assertMatchesGolden rewrites instead of comparing.
+LDP3_RT_API int __ldp3_test_update_golden(void) { return g_test_update_golden; }
+
+static void ldp3_json_string(const char* s) {
+    putchar('"');
+    for (const char* p = s != 0 ? s : ""; *p != 0; p++) {
+        const unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\') { putchar('\\'); putchar((char)c); }
+        else if (c == '\n') fputs("\\n", stdout);
+        else if (c == '\r') fputs("\\r", stdout);
+        else if (c == '\t') fputs("\\t", stdout);
+        else if (c < 0x20) printf("\\u%04x", c);
+        else putchar((char)c);
+    }
+    putchar('"');
+}
 
 // Parses the runner's own command line. Unknown arguments are ignored: a project may pass its
 // program's flags through `ldp3 test` and they are none of the runner's business.
@@ -2581,47 +2688,137 @@ LDP3_RT_API void __ldp3_test_begin(int argc, char** argv) {
         const char* a = argv[i];
         if (strcmp(a, "--list") == 0) g_test_list_only = 1;
         else if (strcmp(a, "--timing") == 0) g_test_timing = 1;
+        else if (strcmp(a, "--fail-fast") == 0) g_test_failfast = 1;
+        else if (strcmp(a, "--bench") == 0) g_test_bench = 1;
+        else if (strcmp(a, "--update-golden") == 0) g_test_update_golden = 1;
+        else if (strcmp(a, "--format=json") == 0) g_test_json = 1;
+        else if (strcmp(a, "--format") == 0 && i + 1 < argc && strcmp(argv[i + 1], "json") == 0) { g_test_json = 1; i++; }
         else if (strcmp(a, "--filter") == 0 && i + 1 < argc) g_test_filter = argv[++i];
         else if (strncmp(a, "--filter=", 9) == 0) g_test_filter = a + 9;
+        else if (strcmp(a, "--tag") == 0 && i + 1 < argc) g_test_tag = argv[++i];
+        else if (strncmp(a, "--tag=", 6) == 0) g_test_tag = a + 6;
+        else if (strcmp(a, "--exclude-tag") == 0 && i + 1 < argc) g_test_extag = argv[++i];
+        else if (strncmp(a, "--exclude-tag=", 14) == 0) g_test_extag = a + 14;
     }
+    if (g_test_json && !g_test_list_only) fputs("{\"tests\":[", stdout);
+}
+
+// `tags` is the comma-joined list of a test's [Tag] names ("" when it carries none). Matched as whole
+// entries, so --tag=slow does not also select "slower".
+static int ldp3_has_tag(const char* tags, const char* want) {
+    if (tags == 0 || want == 0 || *want == 0) return 0;
+    const size_t n = strlen(want);
+    for (const char* p = tags; *p != 0;) {
+        const char* e = strchr(p, ',');
+        const size_t len = e != 0 ? (size_t)(e - p) : strlen(p);
+        if (len == n && strncmp(p, want, n) == 0) return 1;
+        if (e == 0) break;
+        p = e + 1;
+    }
+    return 0;
 }
 
 // Whether this test should run. Under --list it prints the name and answers no, so the runner needs
 // only ONE code path: nothing runs, and a class's [BeforeAll] fixture is never paid for -- which is
-// the whole point of listing.
-LDP3_RT_API int __ldp3_test_should_run(const char* name) {
+// the whole point of listing. Under --fail-fast it answers no once something has failed, which stops
+// the run without the emitted code needing an early exit.
+// Whether the run has been called off. Asked immediately BEFORE each test, because selection is
+// decided for a whole class up front (to know whether its [BeforeAll] fixture is needed at all) and
+// at that point nothing has failed yet. [AfterAll] still runs, so an abort does not leak the fixture.
+LDP3_RT_API int __ldp3_test_aborted(void) { return g_test_failfast && g_test_fail > 0; }
+
+LDP3_RT_API int __ldp3_test_should_run(const char* name, const char* tags) {
     if (g_test_filter != 0 && strstr(name, g_test_filter) == 0) return 0;
-    if (g_test_list_only) { printf("%s\n", name); return 0; }
+    if (g_test_tag != 0 && !ldp3_has_tag(tags, g_test_tag)) return 0;
+    if (g_test_extag != 0 && ldp3_has_tag(tags, g_test_extag)) return 0;
+    if (g_test_list_only) { printf("%s%s%s\n", name, (tags != 0 && *tags != 0) ? "  #" : "", (tags != 0 && *tags != 0) ? tags : ""); return 0; }
     return 1;
+}
+
+// "Class.method[3]" for one row of a [Cases] test. A static buffer: the name is consumed immediately,
+// by the very next start/record call.
+LDP3_RT_API const char* __ldp3_test_case_name(const char* base, long long index) {
+    static char buf[512];
+    snprintf(buf, sizeof buf, "%s[%lld]", base != 0 ? base : "", index);
+    return buf;
 }
 
 // Called just before a test runs. Names it, so the first failing assertion inside it can print the
 // "FAIL <name>" header ITSELF -- otherwise every detail line lands above the verdict it belongs to,
-// and the report reads backwards.
-LDP3_RT_API void __ldp3_test_start(const char* name) {
+// and the report reads backwards. Under --format=json it also diverts the test's own printing, which
+// would otherwise land in the middle of the JSON.
+LDP3_RT_API void __ldp3_test_start(const char* name, int expectFail) {
     g_test_current = name;
     g_test_header_done = 0;
+    g_test_expect_fail = expectFail;
+    if (g_test_json) ldp3_capture_push();
 }
 
-// Called by Test.mark() before it prints a failure detail: emits the header once per test.
+// Called by Test.mark() before it prints a failure detail: emits the header once per test. An
+// [ExpectedToFail] test is headed XFAIL, because its failure is the expected outcome and calling it
+// FAIL here and XFAIL two lines later reads as a contradiction.
 LDP3_RT_API void __ldp3_test_detail(void) {
     if (g_test_header_done) return;
     g_test_header_done = 1;
-    printf("FAIL %s\n", g_test_current != 0 ? g_test_current : "");
+    if (!g_test_json)
+        printf("%s %s\n", g_test_expect_fail ? "XFAIL" : "FAIL",
+               g_test_current != 0 ? g_test_current : "");
 }
 
-LDP3_RT_API void __ldp3_test_record(const char* name, int verdict, long long ns, const char* why) {
+// Reported after every repeat of a [Repeat] test that failed, so "it fails 3 times in 100" is visible
+// rather than just "it failed".
+LDP3_RT_API void __ldp3_test_repeat_failed(long long iteration) {
+    if (!g_test_json) printf("  failed on repeat %lld\n", iteration);
+}
+
+// verdict: 0 pass, 1 fail, 2 skip, 3 expected failure (counts as a pass), 4 expected to fail but
+// passed (counts as a failure -- the bug got fixed and the annotation is now a lie).
+// budgetNs > 0 turns a pass that overran a [MaxTime] budget into a failure.
+LDP3_RT_API void __ldp3_test_record(const char* name, int verdict, long long ns, const char* why,
+                                    long long budgetNs) {
     g_test_ns += ns;
-    const int headed = g_test_header_done;  // the FAIL line is already out; do not repeat it
+    const int headed = g_test_header_done;
     g_test_header_done = 0;
+    char* captured = g_test_json ? ldp3_capture_pop() : 0;
+    int over = 0;
+    if (budgetNs > 0 && ns > budgetNs && (verdict == 0 || verdict == 3)) { verdict = 1; over = 1; }
+
+    const char* tag = verdict == 2   ? "SKIP"
+                      : verdict == 3 ? "XFAIL"
+                      : verdict == 4 ? "FAIL"
+                      : verdict == 1 ? "FAIL"
+                                     : "PASS";
+    if (verdict == 2) g_test_skip++;
+    else if (verdict == 3) { g_test_xfail++; g_test_pass++; }
+    else if (verdict == 1 || verdict == 4) g_test_fail++;
+    else g_test_pass++;
+
+    if (g_test_json) {
+        if (!g_test_json_first) putchar(',');
+        g_test_json_first = 0;
+        fputs("{\"name\":", stdout);
+        ldp3_json_string(name);
+        printf(",\"status\":\"%s\",\"ns\":%lld", tag, ns);
+        if (verdict == 2) { fputs(",\"reason\":", stdout); ldp3_json_string(why); }
+        if (verdict == 4) fputs(",\"reason\":\"expected to fail but passed\"", stdout);
+        if (over) printf(",\"reason\":\"over budget: %.1f ms of %.1f ms\"", (double)ns / 1e6, (double)budgetNs / 1e6);
+        if (captured != 0 && *captured != 0) { fputs(",\"output\":", stdout); ldp3_json_string(captured); }
+        putchar('}');
+        free(captured);
+        return;
+    }
+    free(captured);
+
     if (verdict == 2) {
-        g_test_skip++;
         printf("SKIP %s -- %s\n", name, (why != 0 && *why != 0) ? why : "no reason given");
         return;
     }
-    const char* tag = verdict == 1 ? "FAIL" : "PASS";
-    if (verdict == 1) g_test_fail++; else g_test_pass++;
-    if (verdict == 1 && headed) {
+    if (verdict == 4) {
+        printf("FAIL %s -- expected to fail but passed; the annotation is now a lie\n", name);
+        return;
+    }
+    if (over) printf("  over budget: took %.1f ms of %.1f ms\n", (double)ns / 1e6, (double)budgetNs / 1e6);
+    if ((verdict == 1 || verdict == 3 || over) && headed) {
         if (g_test_timing) printf("  (%.1f ms)\n", (double)ns / 1000000.0);
         return;
     }
@@ -2629,14 +2826,44 @@ LDP3_RT_API void __ldp3_test_record(const char* name, int verdict, long long ns,
     else printf("%s %s\n", tag, name);
 }
 
+// ---- benchmarks ([Benchmark], run only under --bench) ----
+static int g_bench_count = 0;
+
+LDP3_RT_API int __ldp3_bench_should_run(const char* name) {
+    if (!g_test_bench) return 0;
+    if (g_test_filter != 0 && strstr(name, g_test_filter) == 0) return 0;
+    if (g_test_list_only) { printf("%s  (benchmark)\n", name); return 0; }
+    return 1;
+}
+
+LDP3_RT_API void __ldp3_bench_record(const char* name, long long totalNs, long long iterations) {
+    g_bench_count++;
+    const double per = iterations > 0 ? (double)totalNs / (double)iterations : 0.0;
+    if (g_test_json) {
+        if (!g_test_json_first) putchar(',');
+        g_test_json_first = 0;
+        fputs("{\"name\":", stdout);
+        ldp3_json_string(name);
+        printf(",\"status\":\"BENCH\",\"iterations\":%lld,\"nsPerOp\":%.1f}", iterations, per);
+        return;
+    }
+    printf("BENCH %s  %.1f ns/op  (%lld iterations)\n", name, per, iterations);
+}
+
 // Prints the summary and returns the process exit code: non-zero if anything failed.
 LDP3_RT_API int __ldp3_test_summary(void) {
     if (g_test_list_only) return 0;
-    if (g_test_timing)
-        printf("tests: %d passed, %d failed, %d skipped in %.1f ms\n", g_test_pass, g_test_fail,
-               g_test_skip, (double)g_test_ns / 1000000.0);
-    else
-        printf("tests: %d passed, %d failed, %d skipped\n", g_test_pass, g_test_fail, g_test_skip);
+    if (g_test_json) {
+        printf("],\"summary\":{\"passed\":%d,\"failed\":%d,\"skipped\":%d,\"expectedFailures\":%d,"
+               "\"benchmarks\":%d,\"ns\":%lld}}\n",
+               g_test_pass, g_test_fail, g_test_skip, g_test_xfail, g_bench_count, g_test_ns);
+        return g_test_fail != 0 ? 1 : 0;
+    }
+    printf("tests: %d passed, %d failed, %d skipped", g_test_pass, g_test_fail, g_test_skip);
+    if (g_test_xfail > 0) printf(", %d expected to fail", g_test_xfail);
+    if (g_test_timing) printf(" in %.1f ms", (double)g_test_ns / 1000000.0);
+    putchar('\n');
+    remove(LDP3_CAPTURE_PATH);
     return g_test_fail != 0 ? 1 : 0;
 }
 

@@ -18,7 +18,7 @@
 #include "driver/toolchain.h"
 
 namespace {
-constexpr const char* kVersion = "ldp3 1.0.15";
+constexpr const char* kVersion = "ldp3 1.0.16";
 
 int printHelp() {
     std::printf(
@@ -31,8 +31,14 @@ int printHelp() {
         "  ldp3 explain <code>                 the why / fix / prevent for a diagnostic code (e.g. LDP3-0101)\n"
         "  ldp3 test [-- <runner args>]        build and run the project's [Test] methods\n"
         "      -- --filter <text>              run only the tests whose name contains <text>\n"
+        "      -- --tag <name>                 run only the tests carrying that [Tag]\n"
+        "      -- --exclude-tag <name>         run everything except those\n"
         "      -- --list                       print the test names without running them\n"
         "      -- --timing                     add per-test durations to the report\n"
+        "      -- --fail-fast                  stop at the first failure\n"
+        "      -- --format=json                emit one machine-readable document\n"
+        "      -- --bench                      also run the [Benchmark] methods\n"
+        "      -- --update-golden              rewrite golden files instead of comparing\n"
         "  ldp3 doc                            render the public API to HTML from /// comments\n"
         "  ldp3 fmt [file.ldp3]                format the project's source (or one file) in place\n"
         "  ldp3 compile <file.ldp3>            compile one file to an .exe (no run)\n"

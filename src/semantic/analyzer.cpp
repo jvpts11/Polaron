@@ -1155,6 +1155,176 @@ void SemanticAnalyzer::validateAnnotations(const ast::Program& program) {
     }
 }
 
+namespace {
+// The string value of an annotation argument, e.g. the "..." of [Cases(source: "...")].
+std::string annotationText(const ast::AnnotationUse& use, const std::string& field) {
+    for (const ast::AnnotationArg& a : use.args)
+        if (a.name == field)
+            if (const auto* s = dynamic_cast<const ast::StringLiteralExpr*>(a.value.get()))
+                return s->value;
+    return "";
+}
+long long annotationNumber(const ast::AnnotationUse& use, const std::string& field,
+                           long long fallback) {
+    for (const ast::AnnotationArg& a : use.args)
+        if (a.name == field)
+            if (const auto* i = dynamic_cast<const ast::IntLiteralExpr*>(a.value.get())) {
+                try {
+                    return std::stoll(i->text, nullptr, 0);
+                } catch (const std::exception&) {
+                    return fallback;
+                }
+            }
+    return fallback;
+}
+}  // namespace
+
+// spec 32.11: every test declaration is well formed. This runs on EVERY compile, not only under
+// --test, because a `[Test]` that cannot be called is a broken declaration whichever way you build --
+// and finding out at build time (or in the editor, through `ldp3 check`) beats finding out on the day
+// someone runs the suite and quietly gets one test fewer than they wrote.
+void SemanticAnalyzer::validateTestDeclarations(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        if (bundle.isImported || bundle.isPrelude) continue;
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
+                std::map<std::string, std::string> hookOwner;  // hook kind -> the method holding it
+                for (const ast::MemberPtr& member : cls.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                    if (m == nullptr) continue;
+                    const std::string sym = cls.name + "." + m->name;
+
+                    bool isTest = false;
+                    const ast::AnnotationUse* ignore = nullptr;
+                    const ast::AnnotationUse* cases = nullptr;
+                    const ast::AnnotationUse* repeat = nullptr;
+                    const ast::AnnotationUse* bench = nullptr;
+                    std::string hook;
+                    for (const ast::AnnotationUse& a : m->annotations) {
+                        if (a.name == "Test") isTest = true;
+                        else if (a.name == "Ignore") ignore = &a;
+                        else if (a.name == "Cases") cases = &a;
+                        else if (a.name == "Repeat") repeat = &a;
+                        else if (a.name == "Benchmark") bench = &a;
+                        else if (a.name == "BeforeAll" || a.name == "AfterAll" || a.name == "Setup" ||
+                                 a.name == "Teardown")
+                            hook = a.name;
+                    }
+
+                    if (!hook.empty()) {
+                        if (isTest) {
+                            error("'[" + hook + "]' and '[Test]' cannot mark the same method '" + sym +
+                                      "': a hook runs around the tests, so it cannot be one of them",
+                                  m->loc);
+                            continue;
+                        }
+                        if (!m->isStatic || typeRefStr(m->returnType) != "void") {
+                            error("'[" + hook + "]' method '" + sym +
+                                      "' must be a public static method returning void",
+                                  m->loc);
+                            continue;
+                        }
+                        auto [it, fresh] = hookOwner.emplace(hook, sym);
+                        if (!fresh)
+                            error("class '" + cls.name + "' already has a '[" + hook + "]' method ('" +
+                                      it->second + "'); there may be only one, because two would have "
+                                      "no defined order",
+                                  m->loc);
+                        continue;
+                    }
+
+                    if (bench != nullptr) {
+                        if (isTest) {
+                            error("'[Benchmark]' and '[Test]' cannot mark the same method '" + sym +
+                                      "': a benchmark measures, a test judges",
+                                  m->loc);
+                            continue;
+                        }
+                        if (!m->isStatic || typeRefStr(m->returnType) != "void" || !m->params.empty())
+                            error("'[Benchmark]' method '" + sym +
+                                      "' must be a public static method taking no arguments and "
+                                      "returning void",
+                                  m->loc);
+                        else if (annotationNumber(*bench, "iterations", 1000) < 1)
+                            error("'[Benchmark(iterations: ...)]' on '" + sym +
+                                      "' needs at least 1 iteration",
+                                  bench->loc);
+                        continue;
+                    }
+
+                    if (!isTest) {
+                        if (ignore != nullptr)
+                            error("'[Ignore]' on '" + sym +
+                                      "' has no effect: it only applies to a '[Test]' method",
+                                  m->loc);
+                        if (cases != nullptr)
+                            error("'[Cases]' on '" + sym +
+                                      "' has no effect: it only applies to a '[Test]' method",
+                                  m->loc);
+                        continue;
+                    }
+
+                    const std::string ret = typeRefStr(m->returnType);
+                    if (!m->isStatic || (ret != "boolean" && ret != "void")) {
+                        error("[Test] method '" + sym +
+                                  "' must be a public static method returning boolean (the test's own "
+                                  "verdict) or void (the verdict comes from its Test.assert* calls)",
+                              m->loc);
+                        continue;
+                    }
+                    if (repeat != nullptr && annotationNumber(*repeat, "times", 1) < 1)
+                        error("'[Repeat(times: ...)]' on '" + sym + "' needs a count of at least 1",
+                              repeat->loc);
+                    validateTestCases(cls, *m, cases, sym);
+                }
+            }
+        }
+    }
+}
+
+// The [Cases] half of the check above: a parametrized test takes exactly one parameter, and its
+// source must be a static method of the same class returning an array of that parameter's type.
+void SemanticAnalyzer::validateTestCases(const ast::ClassDecl& cls, const ast::MethodDecl& m,
+                                         const ast::AnnotationUse* cases, const std::string& sym) {
+    if (cases == nullptr) {
+        if (!m.params.empty())
+            error("[Test] method '" + sym +
+                      "' takes parameters, so it needs a '[Cases(source: \"...\")]' naming the static "
+                      "method that supplies its rows",
+                  m.loc);
+        return;
+    }
+    if (m.params.size() != 1) {
+        error("'[Cases]' test '" + sym +
+                  "' must take exactly one parameter (it is called once per row); group several "
+                  "values into a record and take that",
+              m.loc);
+        return;
+    }
+    const std::string source = annotationText(*cases, "source");
+    if (source.empty()) {
+        error("'[Cases]' on '" + sym + "' needs a source: [Cases(source: \"methodName\")]", cases->loc);
+        return;
+    }
+    const std::string want = typeRefStr(m.params.front().type);
+    const ast::MethodDecl* src = nullptr;
+    for (const ast::MemberPtr& member : cls.members) {
+        const auto* cand = dynamic_cast<const ast::MethodDecl*>(member.get());
+        if (cand != nullptr && cand->name == source) { src = cand; break; }
+    }
+    if (src == nullptr) {
+        error("'[Cases]' source '" + source + "' is not a method of class '" + cls.name + "'",
+              cases->loc);
+        return;
+    }
+    const std::string got = typeRefStr(src->returnType);
+    if (!src->isStatic || got != want + "[]")
+        error("'[Cases]' source '" + cls.name + "." + source +
+                  "' must be a public static method returning '" + want + "[]' to match the parameter "
+                  "of '" + sym + "' (it returns '" + got + "')",
+              src->loc);
+}
+
 void SemanticAnalyzer::registerEnums(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
@@ -1840,6 +2010,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     analyzeBodies(program);
     analyzeLiteralBodies(program);
     validateAnnotations(program);  // spec 14.3: applied [Name(...)] match a declared annotation
+    validateTestDeclarations(program);  // spec 32.11: [Test]/[Cases]/hooks are well formed
     checkPersistentReleases();  // spec 18.15: after all bodies, so releases are collected
     return errors_.empty();
 }

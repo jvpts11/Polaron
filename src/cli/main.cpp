@@ -47,7 +47,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "ldp3c 1.0.15";
+constexpr std::string_view kVersion = "ldp3c 1.0.16";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -8632,6 +8632,28 @@ R"LDP3(
         public annotation AfterAll {}
         public annotation Setup {}
         public annotation Teardown {}
+        // `[Cases(source: "rows")]` on a [Test] that takes ONE parameter: `rows` is a public static
+        // method of the same class returning an array of that parameter's type, and the test runs
+        // once per element, reported as `Class.method[i]`. Several values per row: make them a
+        // record and take that. Anything else -- a parameter with no [Cases], a source of the wrong
+        // type -- is a compile error, not a test that quietly never runs.
+        public annotation Cases { String source; }
+        // `[Repeat(times: 100)]`: run the whole test (hooks included) N times and report ONE verdict.
+        // A test that fails 3 times in 100 is a flaky test, and the report says which runs failed.
+        public annotation Repeat { int times; }
+        // `[ExpectedToFail(reason: "...")]`: the verdict is inverted. Failing is expected and reported
+        // as XFAIL; PASSING is a failure, because the bug got fixed and this annotation is now a lie.
+        // Unlike [Ignore] the test still RUNS, so the day it starts working you hear about it.
+        public annotation ExpectedToFail { String reason default ""; }
+        // `[Tag(name: "slow")]`, repeatable: groups tests for `--tag` / `--exclude-tag`.
+        public annotation Tag { String name; }
+        // `[MaxTime(ms: 500)]`: a passing test that took longer becomes a failure. Checked after the
+        // fact -- it is a budget, not a timeout, and it does not abort a test that hangs.
+        public annotation MaxTime { int ms; }
+        // `[Benchmark(iterations: 1000, warmup: 100)]` on a public static void method taking no
+        // arguments: an untimed warmup pass, then the measured loop, reported as ns/op. Never a
+        // verdict -- a benchmark cannot turn the suite red -- and run only under `--bench`.
+        public annotation Benchmark { int iterations default 1000; int warmup default 100; }
         // Boolean assertion helpers (spec 34): each returns whether the check holds, to be fed to
         // TestRunner.check. near compares doubles within an epsilon.
         // The assertion API of spec 32.11. Unlike Assert (whose helpers merely RETURN whether a check
@@ -8824,6 +8846,43 @@ R"LDP3(
                 }
                 return;
             }
+            public static method assertStartsWith(String text, String prefix) returns void {
+                if (!text.startsWith(prefix)) {
+                    Test.mark();
+                    System.IO.Console.printf("expected to start with %s, got %s\n", prefix, text);
+                }
+                return;
+            }
+            public static method assertEndsWith(String text, String suffix) returns void {
+                if (!text.endsWith(suffix)) {
+                    Test.mark();
+                    System.IO.Console.printf("expected to end with %s, got %s\n", suffix, text);
+                }
+                return;
+            }
+            public static method assertEqualChar(char actual, char expected) returns void {
+                if (actual != expected) {
+                    Test.mark();
+                    System.IO.Console.printf("expected %c, got %c\n", expected, actual);
+                }
+                return;
+            }
+            public static method assertEqualBoolean(boolean actual, boolean expected) returns void {
+                if (actual != expected) {
+                    Test.mark();
+                    System.IO.Console.println("boolean values differ");
+                }
+                return;
+            }
+            // Exact double equality. Almost always the wrong tool -- reach for assertWithin or
+            // assertNear -- but the right one for a value that was copied, not computed.
+            public static method assertEqualDouble(double actual, double expected) returns void {
+                if (actual != expected) {
+                    Test.mark();
+                    System.IO.Console.printf("expected %f, got %f\n", expected, actual);
+                }
+                return;
+            }
             // Reports the FIRST index that differs, not just "arrays differ": with a thousand cells
             // the index is the whole diagnosis.
             public static method assertEqualIntArray(int[] actual, int[] expected) returns void {
@@ -8839,6 +8898,89 @@ R"LDP3(
                         Test.mark();
                         System.IO.Console.printf("differs at index %d: expected %d, got %d\n", i,
                                                  expected[i], actual[i]);
+                        return;
+                    }
+                    i = i + 1;
+                }
+                return;
+            }
+)LDP3"
+// System.Test continues in a second literal: MSVC caps one string literal at 64 KB, and the test
+// framework's assertion surface pushed this namespace past it. The pieces are concatenated, so the
+// split is textual only -- it falls in the middle of `class Test`.
+R"LDP3(
+            public static method assertEqualLongArray(long[] actual, long[] expected) returns void {
+                if (actual.length() != expected.length()) {
+                    Test.mark();
+                    System.IO.Console.printf("expected %d elements, got %d\n", expected.length(),
+                                             actual.length());
+                    return;
+                }
+                mutable int i = 0;
+                while (i < actual.length()) {
+                    if (actual[i] != expected[i]) {
+                        Test.mark();
+                        System.IO.Console.printf("differs at index %d: expected %lld, got %lld\n", i,
+                                                 expected[i], actual[i]);
+                        return;
+                    }
+                    i = i + 1;
+                }
+                return;
+            }
+            public static method assertEqualStringArray(String[] actual, String[] expected)
+                    returns void {
+                if (actual.length() != expected.length()) {
+                    Test.mark();
+                    System.IO.Console.printf("expected %d elements, got %d\n", expected.length(),
+                                             actual.length());
+                    return;
+                }
+                mutable int i = 0;
+                while (i < actual.length()) {
+                    if (!actual[i].equals(expected[i])) {
+                        Test.mark();
+                        System.IO.Console.printf("differs at index %d: expected %s, got %s\n", i,
+                                                 expected[i], actual[i]);
+                        return;
+                    }
+                    i = i + 1;
+                }
+                return;
+            }
+            // Element-wise within an absolute tolerance: a computed array is never bit-identical.
+            public static method assertEqualDoubleArray(double[] actual, double[] expected,
+                                                        double tolerance) returns void {
+                if (actual.length() != expected.length()) {
+                    Test.mark();
+                    System.IO.Console.printf("expected %d elements, got %d\n", expected.length(),
+                                             actual.length());
+                    return;
+                }
+                mutable int i = 0;
+                while (i < actual.length()) {
+                    mutable double d = actual[i] - expected[i];
+                    if (d < 0.0) {
+                        d = 0.0 - d;
+                    }
+                    if (d > tolerance) {
+                        Test.mark();
+                        System.IO.Console.printf("differs at index %d: expected %f +/- %f, got %f\n",
+                                                 i, expected[i], tolerance, actual[i]);
+                        return;
+                    }
+                    i = i + 1;
+                }
+                return;
+            }
+            // Ascending order, reporting the first pair that breaks it.
+            public static method assertSorted(int[] values) returns void {
+                mutable int i = 1;
+                while (i < values.length()) {
+                    if (values[i] < values[i - 1]) {
+                        Test.mark();
+                        System.IO.Console.printf("not sorted at index %d: %d follows %d\n", i,
+                                                 values[i], values[i - 1]);
                         return;
                     }
                     i = i + 1;
@@ -8886,6 +9028,102 @@ R"LDP3(
                     System.IO.Console.printf("leaked %lld bytes\n", after - before);
                 }
                 return;
+            }
+
+            // The action must NOT throw. Without it a test that swallows an unexpected exception
+            // higher up reads as a pass; with it the failure lands where the throw happened.
+            public static method assertDoesNotThrow(function<void> action) returns void {
+                try {
+                    action();
+                }
+                catch (Exception e) {
+                    Test.mark();
+                    System.IO.Console.printf("expected no exception, got %s\n", e.message());
+                }
+                return;
+            }
+
+            private extern cdecl static method __ldp3_capture_begin() returns void;
+            private extern cdecl static method __ldp3_capture_end() returns void;
+            private extern cdecl static method __ldp3_capture_id() returns int;
+            private extern cdecl static method __ldp3_test_update_golden() returns int;
+
+            // The file stdout is diverted into during a capture. The runtime writes it and this side
+            // reads it back with the ordinary File builtin, so the two must agree on the name -- and
+            // they agree on the RULE (".ldp3-capture-<pid>"), not on a constant, so two test binaries
+            // running in the same directory never clobber each other.
+            private static method capturePath() returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.append(".ldp3-capture-");
+                sb.appendInt(Test.__ldp3_capture_id());
+                String path = sb.toString();
+                delete sb;
+                return path;
+            }
+
+            // Runs the action with everything it prints diverted, and returns that text. For code
+            // whose JOB is to produce output -- a report, a formatter, a serializer -- where the
+            // thing to assert on is what came out, not a value that was returned.
+            public static method captureOutput(function<void> action) returns String {
+                Test.__ldp3_capture_begin();
+                action();
+                Test.__ldp3_capture_end();
+                return File.readAll(Test.capturePath());
+            }
+
+            // Compares against a file of expected text ("golden" / approval testing): the way to pin
+            // a large output -- a generated report, a rendered table -- without transcribing it into
+            // assertions. Reports the FIRST differing line, because a whole-file diff in a test log
+            // is unreadable. Running with `--update-golden` rewrites the file instead of comparing,
+            // which is how you accept an intended change.
+            public static method assertMatchesGolden(String actual, String goldenPath) returns void {
+                if (Test.__ldp3_test_update_golden() != 0) {
+                    File.writeAll(goldenPath, actual);
+                    System.IO.Console.printf("  updated golden %s\n", goldenPath);
+                    return;
+                }
+                if (!File.exists(goldenPath)) {
+                    Test.mark();
+                    System.IO.Console.printf("no golden file %s; run with --update-golden to create it\n",
+                                             goldenPath);
+                    return;
+                }
+                String expected = File.readAll(goldenPath);
+                if (actual.equals(expected)) {
+                    return;
+                }
+                ArrayList<String> a = Strings.split(actual, "\n");
+                ArrayList<String> b = Strings.split(expected, "\n");
+                mutable int i = 0;
+                while (i < a.size() && i < b.size()) {
+                    if (!a.get(i).equals(b.get(i))) {
+                        Test.mark();
+                        System.IO.Console.printf("%s differs at line %d\n    expected: %s\n    actual:   %s\n",
+                                                 goldenPath, i + 1, b.get(i), a.get(i));
+                        return;
+                    }
+                    i = i + 1;
+                }
+                Test.mark();
+                System.IO.Console.printf("%s has %d lines, got %d\n", goldenPath, b.size(), a.size());
+                return;
+            }
+
+            // Names a file the test produced -- a rendered image, a dump, a log -- so a failure
+            // points at the artifact that explains it instead of only describing it.
+            public static method artifact(String path) returns void {
+                System.IO.Console.printf("  artifact: %s\n", path);
+                return;
+            }
+
+            // A scratch directory for tests that touch the filesystem, created on first use. Not
+            // cleaned up automatically: a failing test's leftovers are usually the evidence.
+            public static method tempDir() returns String {
+                String dir = ".ldp3-test-tmp";
+                if (!File.exists(dir)) {
+                    File.mkdir(dir);
+                }
+                return dir;
             }
         }
         public class Assert {

@@ -457,8 +457,24 @@ struct CodeGenerator::Impl {
         bool isVoid = false;  // verdict comes from Test.assert* rather than a returned boolean
         bool ignored = false;         // [Ignore(...)]: reported as SKIP, never run
         std::string ignoreReason;
+        std::string tags;             // [Tag(name:)] entries, comma-joined, for --tag/--exclude-tag
+        // [Cases(source: "m")]: the test takes one parameter and runs once per element of the array
+        // that `m` returns. Empty when the test takes no parameters.
+        std::string casesSym;         // "Class.m"
+        std::string paramType;        // the element type, for the load out of the array block
+        int repeat = 1;               // [Repeat(times:)]: all runs must pass
+        bool expectedToFail = false;  // [ExpectedToFail]: the verdict is inverted
+        long long maxTimeNs = 0;      // [MaxTime(ms:)]: a pass that overran becomes a failure
     };
     std::vector<TestCase> testMethods;
+    // [Benchmark] methods: timed loops rather than verdicts, run only under --bench.
+    struct BenchCase {
+        std::string sym;
+        std::string display;
+        long long iterations = 1000;
+        long long warmup = 100;
+    };
+    std::vector<BenchCase> benchMethods;
     // Per-class lifecycle hooks. [Setup]/[Teardown] run around EACH test of the class; [BeforeAll]/
     // [AfterAll] run ONCE around the whole class, so an expensive fixture is built one time.
     struct TestHooks {
@@ -13670,8 +13686,12 @@ struct CodeGenerator::Impl {
     }
 
     // Collect the test declarations of spec 32.11 from the user's own code, for the --test runner:
-    // [Test] methods plus the per-class lifecycle hooks that bracket them. A malformed one is a
-    // compile error -- a test that silently does not run is worse than no test.
+    // [Test] methods plus the per-class lifecycle hooks that bracket them.
+    //
+    // SemanticAnalyzer::validateTestDeclarations has already rejected every malformed shape on EVERY
+    // compile (so the editor and `ldp3 build` report them too), which means the checks repeated here
+    // cannot fire. They stay as a backstop: if sema ever grows a hole, the result should be an error,
+    // never a test that silently does not run.
     void collectTests() {
         for (const ast::Bundle& bundle : program.bundles) {
             if (bundle.isImported || bundle.isPrelude) continue;
@@ -13682,13 +13702,31 @@ struct CodeGenerator::Impl {
                         if (m == nullptr) continue;
                         bool isTest = false;
                         const ast::AnnotationUse* ignore = nullptr;
+                        const ast::AnnotationUse* cases = nullptr;
+                        const ast::AnnotationUse* repeat = nullptr;
+                        const ast::AnnotationUse* maxTime = nullptr;
+                        const ast::AnnotationUse* bench = nullptr;
+                        const ast::AnnotationUse* xfail = nullptr;
+                        std::string tags;
                         const char* hook = nullptr;  // the lifecycle annotation this method carries
                         for (const ast::AnnotationUse& a : m->annotations) {
                             if (a.name == "Test") isTest = true;
                             else if (a.name == "Ignore") ignore = &a;
-                            else if (a.name == "BeforeAll" || a.name == "AfterAll" ||
-                                     a.name == "Setup" || a.name == "Teardown")
+                            else if (a.name == "Cases") cases = &a;
+                            else if (a.name == "Repeat") repeat = &a;
+                            else if (a.name == "MaxTime") maxTime = &a;
+                            else if (a.name == "Benchmark") bench = &a;
+                            else if (a.name == "ExpectedToFail") xfail = &a;
+                            else if (a.name == "Tag") {
+                                if (!tags.empty()) tags += ",";
+                                tags += annotationStringArg(a, "name");
+                            } else if (a.name == "BeforeAll" || a.name == "AfterAll" ||
+                                       a.name == "Setup" || a.name == "Teardown")
                                 hook = a.name.c_str();
+                        }
+                        if (bench != nullptr) {
+                            collectBenchmark(cls, *m, *bench, isTest);
+                            continue;
                         }
                         if (hook != nullptr) {
                             collectHook(cls, *m, hook);
@@ -13722,10 +13760,24 @@ struct CodeGenerator::Impl {
                         tc.display = tc.sym;  // Class.method: what --filter matches and the report prints
                         tc.cls = cls.name;
                         tc.isVoid = trt == "void";  // spec 32.11: verdict is "no assertion failed"
+                        tc.tags = tags;
                         if (ignore != nullptr) {
                             tc.ignored = true;
                             tc.ignoreReason = annotationStringArg(*ignore, "reason");
                         }
+                        tc.expectedToFail = xfail != nullptr;
+                        if (repeat != nullptr) {
+                            tc.repeat = static_cast<int>(annotationIntArg(*repeat, "times", 1));
+                            if (tc.repeat < 1) {
+                                errors.push_back(CodegenError{
+                                    "'[Repeat(times: ...)]' on '" + tc.sym + "' needs a count of at "
+                                    "least 1", repeat->loc});
+                                tc.repeat = 1;
+                            }
+                        }
+                        if (maxTime != nullptr)
+                            tc.maxTimeNs = annotationIntArg(*maxTime, "ms", 0) * 1000000LL;
+                        if (!collectCases(cls, *m, cases, tc)) continue;
                         testMethods.push_back(std::move(tc));
                     }
                 }
@@ -13768,6 +13820,108 @@ struct CodeGenerator::Impl {
         return "";
     }
 
+    // The integer value of one annotation argument, e.g. the 500 of [MaxTime(ms: 500)].
+    static long long annotationIntArg(const ast::AnnotationUse& use, const std::string& name,
+                                      long long fallback) {
+        for (const ast::AnnotationArg& a : use.args) {
+            if (a.name != name) continue;
+            if (const auto* i = dynamic_cast<const ast::IntLiteralExpr*>(a.value.get())) {
+                try {
+                    return std::stoll(i->text, nullptr, 0);
+                } catch (const std::exception&) {
+                    return fallback;
+                }
+            }
+        }
+        return fallback;
+    }
+
+    // Resolves [Cases(source: "m")] against the test's parameter list. A parametrized test takes
+    // exactly one parameter and runs once per element of the array `m` returns; anything else is
+    // rejected here rather than producing a test that quietly never runs. Returns false to drop the
+    // test after reporting.
+    bool collectCases(const ast::ClassDecl& cls, const ast::MethodDecl& m,
+                      const ast::AnnotationUse* cases, TestCase& tc) {
+        if (cases == nullptr) {
+            if (m.params.empty()) return true;
+            errors.push_back(CodegenError{
+                "[Test] method '" + tc.sym + "' takes parameters, so it needs a "
+                "'[Cases(source: \"...\")]' naming the static method that supplies its rows",
+                m.loc});
+            return false;
+        }
+        if (m.params.size() != 1) {
+            errors.push_back(CodegenError{
+                "'[Cases]' test '" + tc.sym + "' must take exactly one parameter (it is called once "
+                "per row); group several values into a record and take that",
+                m.loc});
+            return false;
+        }
+        const std::string source = annotationStringArg(*cases, "source");
+        if (source.empty()) {
+            errors.push_back(CodegenError{
+                "'[Cases]' on '" + tc.sym + "' needs a source: [Cases(source: \"methodName\")]",
+                cases->loc});
+            return false;
+        }
+        const std::string want = typeRefName(m.params.front().type);
+        const ast::MethodDecl* src = nullptr;
+        for (const ast::MemberPtr& member : cls.members) {
+            const auto* cand = dynamic_cast<const ast::MethodDecl*>(member.get());
+            if (cand != nullptr && cand->name == source) { src = cand; break; }
+        }
+        if (src == nullptr) {
+            errors.push_back(CodegenError{"'[Cases]' source '" + source + "' is not a method of class '" +
+                                              cls.name + "'",
+                                          cases->loc});
+            return false;
+        }
+        const std::string got = typeRefName(src->returnType);
+        if (!src->isStatic || got != want + "[]") {
+            errors.push_back(CodegenError{
+                "'[Cases]' source '" + cls.name + "." + source + "' must be a public static method "
+                "returning '" + want + "[]' to match the parameter of '" + tc.sym + "' (it returns '" +
+                    got + "')",
+                src->loc});
+            return false;
+        }
+        tc.casesSym = cls.name + "." + source;
+        tc.paramType = want;
+        return true;
+    }
+
+    // [Benchmark]: a timed loop, not a verdict. Kept out of the test list entirely so a benchmark can
+    // never turn a suite red, and run only under --bench so it never slows an ordinary run.
+    void collectBenchmark(const ast::ClassDecl& cls, const ast::MethodDecl& m,
+                          const ast::AnnotationUse& use, bool alsoTest) {
+        const std::string sym = cls.name + "." + m.name;
+        if (alsoTest) {
+            errors.push_back(CodegenError{"'[Benchmark]' and '[Test]' cannot mark the same method '" +
+                                              sym + "': a benchmark measures, a test judges",
+                                          m.loc});
+            return;
+        }
+        if (!m.isStatic || typeRefName(m.returnType) != "void" || !m.params.empty()) {
+            errors.push_back(CodegenError{"'[Benchmark]' method '" + sym +
+                                              "' must be a public static method taking no arguments "
+                                              "and returning void",
+                                          m.loc});
+            return;
+        }
+        BenchCase bc;
+        bc.sym = sym;
+        bc.display = sym;
+        bc.iterations = annotationIntArg(use, "iterations", 1000);
+        bc.warmup = annotationIntArg(use, "warmup", 100);
+        if (bc.iterations < 1) {
+            errors.push_back(CodegenError{"'[Benchmark(iterations: ...)]' on '" + sym +
+                                              "' needs at least 1 iteration",
+                                          use.loc});
+            return;
+        }
+        benchMethods.push_back(std::move(bc));
+    }
+
     // Emits `body()` guarded by `cond`, leaving the builder on the join block.
     void emitIfThen(llvm::Function* fn, llvm::Value* cond, const std::function<void()>& body) {
         llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context, "then", fn);
@@ -13800,17 +13954,23 @@ struct CodeGenerator::Impl {
         llvm::FunctionCallee beginFn = module.getOrInsertFunction(
             "__ldp3_test_begin", llvm::FunctionType::get(v, {i32, ptr}, false));
         llvm::FunctionCallee shouldFn = module.getOrInsertFunction(
-            "__ldp3_test_should_run", llvm::FunctionType::get(i32, {ptr}, false));
+            "__ldp3_test_should_run", llvm::FunctionType::get(i32, {ptr, ptr}, false));
         llvm::FunctionCallee startFn = module.getOrInsertFunction(
-            "__ldp3_test_start", llvm::FunctionType::get(v, {ptr}, false));
+            "__ldp3_test_start", llvm::FunctionType::get(v, {ptr, i32}, false));
         llvm::FunctionCallee recordFn = module.getOrInsertFunction(
-            "__ldp3_test_record", llvm::FunctionType::get(v, {ptr, i32, i64, ptr}, false));
+            "__ldp3_test_record", llvm::FunctionType::get(v, {ptr, i32, i64, ptr, i64}, false));
         llvm::FunctionCallee summaryFn =
             module.getOrInsertFunction("__ldp3_test_summary", llvm::FunctionType::get(i32, {}, false));
         llvm::FunctionCallee nowFn =
             module.getOrInsertFunction("__ldp3_now_ns", llvm::FunctionType::get(i64, {}, false));
         llvm::FunctionCallee cstrFn = module.getOrInsertFunction(
             "__ldp3_str_cstr", llvm::FunctionType::get(ptr, {ptr}, false));
+        llvm::FunctionCallee caseNameFn = module.getOrInsertFunction(
+            "__ldp3_test_case_name", llvm::FunctionType::get(ptr, {ptr, i64}, false));
+        llvm::FunctionCallee repeatFailedFn = module.getOrInsertFunction(
+            "__ldp3_test_repeat_failed", llvm::FunctionType::get(v, {i64}, false));
+        llvm::FunctionCallee abortedFn =
+            module.getOrInsertFunction("__ldp3_test_aborted", llvm::FunctionType::get(i32, {}, false));
 
         auto argIt = mainFn->arg_begin();
         llvm::Value* argc = &*argIt++;
@@ -13853,74 +14013,197 @@ struct CodeGenerator::Impl {
             llvm::Value* anySelected = builder.getInt1(false);
             for (const TestCase* t : cases) {
                 llvm::Value* nameStr = createGlobalStringPtr(builder, t->display, ".test.name");
-                llvm::Value* s = builder.CreateICmpNE(builder.CreateCall(shouldFn, {nameStr}),
+                llvm::Value* tagStr = createGlobalStringPtr(builder, t->tags, ".test.tags");
+                llvm::Value* s = builder.CreateICmpNE(builder.CreateCall(shouldFn, {nameStr, tagStr}),
                                                       builder.getInt32(0), "sel");
                 selected.push_back(s);
                 anySelected = builder.CreateOr(anySelected, s, "any");
             }
             emitIfThen(mainFn, anySelected, [&] { callHook(hooks.beforeAll); });
 
-            for (std::size_t i = 0; i < cases.size(); ++i) {
-                const TestCase& t = *cases[i];
-                emitIfThen(mainFn, selected[i], [&] {
-                    llvm::Value* nameStr = createGlobalStringPtr(builder, t.display, ".test.name");
-                    if (t.ignored) {
-                        // [Ignore]: never run, reported as a skip carrying its reason, so a
-                        // known-broken case stays visible instead of quietly disappearing.
-                        builder.CreateCall(recordFn,
-                                           {nameStr, builder.getInt32(2), builder.getInt64(0),
-                                            createGlobalStringPtr(builder, t.ignoreReason, ".test.why")});
-                        return;
-                    }
-                    const auto fnIt = functions.find(t.sym);
-                    if (fnIt == functions.end()) return;
-                    // Name the test to the runtime BEFORE running it, so the first failing assertion
-                    // can print the "FAIL <name>" header itself and its details read underneath.
-                    builder.CreateCall(startFn, {nameStr});
-                    // Reset before EVERY test (not just the void ones): the failure count, the
-                    // Test.checking label and the skip flag must never bleed into the next test.
+            // Runs one test (or one row of a [Cases] test) under `caseName`, and reports it.
+            auto runOne = [&](const TestCase& t, llvm::Value* caseName, llvm::Value* arg) {
+                const auto fnIt = functions.find(t.sym);
+                if (fnIt == functions.end()) return;
+                // Name the test to the runtime BEFORE running it, so the first failing assertion can
+                // print the "FAIL <name>" header itself and its details read underneath.
+                builder.CreateCall(startFn,
+                                   {caseName, builder.getInt32(t.expectedToFail ? 1 : 0)});
+                llvm::Value* started = builder.CreateCall(nowFn, {}, "t0");
+                // [Repeat(times: N)] runs the whole thing N times and reports ONE verdict: a test
+                // that fails 3 times in 100 is a flaky test, and 100 report lines would bury that.
+                llvm::Value* failCount = builder.CreateAlloca(i32, nullptr, "failcount");
+                builder.CreateStore(builder.getInt32(0), failCount);
+                for (int rep = 0; rep < t.repeat; ++rep) {
+                    // Reset before EVERY run (not just the void ones): the failure count, the
+                    // Test.checking label and the skip flag must never bleed into the next.
                     if (resetFn != nullptr) builder.CreateCall(resetFn, {});
-                    llvm::Value* started = builder.CreateCall(nowFn, {}, "t0");
                     callHook(hooks.setup);
                     llvm::Value* failed = nullptr;
+                    llvm::SmallVector<llvm::Value*, 1> callArgs;
+                    if (arg != nullptr && fnIt->second->arg_size() >= 1)
+                        callArgs.push_back(coerceToType(arg, fnIt->second->getArg(0)->getType()));
                     if (t.isVoid) {
                         // spec 32.11: a void test passes when none of its Test.assert* calls failed.
-                        builder.CreateCall(fnIt->second, {});
+                        builder.CreateCall(fnIt->second, callArgs);
                         llvm::Value* f = failuresFn != nullptr
                                              ? builder.CreateCall(failuresFn, {}, "fails")
                                              : llvm::cast<llvm::Value>(builder.getInt32(0));
                         failed = builder.CreateICmpNE(f, builder.getInt32(0), "failed");
                     } else {
-                        llvm::Value* r = builder.CreateCall(fnIt->second, {}, "verdict");
+                        llvm::Value* r = builder.CreateCall(fnIt->second, callArgs, "verdict");
                         failed = builder.CreateICmpEQ(r, builder.getInt32(0), "failed");
                     }
                     // [Teardown] runs before the clock stops: releasing the fixture is part of the
                     // test's cost, and a teardown that hangs should show up as a slow test.
                     callHook(hooks.teardown);
-                    llvm::Value* elapsed =
-                        builder.CreateSub(builder.CreateCall(nowFn, {}, "t1"), started, "ns");
-                    // Test.skip(why) at runtime outranks the pass/fail verdict: the test never
-                    // reached the point of having one.
-                    llvm::Value* skipped =
-                        skippedFn != nullptr
-                            ? builder.CreateICmpNE(builder.CreateCall(skippedFn, {}, "skipped"),
-                                                   builder.getInt32(0))
-                            : llvm::cast<llvm::Value>(builder.getInt1(false));
-                    llvm::Value* why =
-                        reasonFn != nullptr
-                            ? builder.CreateCall(cstrFn, {builder.CreateCall(reasonFn, {}, "why")})
-                            : llvm::cast<llvm::Value>(
-                                  createGlobalStringPtr(builder, "", ".test.why"));
-                    llvm::Value* verdict = builder.CreateSelect(
-                        skipped, builder.getInt32(2),
-                        builder.CreateSelect(failed, builder.getInt32(1), builder.getInt32(0)),
-                        "verdict");
-                    builder.CreateCall(recordFn, {nameStr, verdict, elapsed, why});
+                    if (t.repeat > 1) {
+                        const int iteration = rep + 1;
+                        emitIfThen(mainFn, failed, [&] {
+                            builder.CreateCall(repeatFailedFn, {builder.getInt64(iteration)});
+                        });
+                    }
+                    builder.CreateStore(
+                        builder.CreateAdd(builder.CreateLoad(i32, failCount),
+                                          builder.CreateZExt(failed, i32)),
+                        failCount);
+                }
+                llvm::Value* anyFailed = builder.CreateICmpNE(builder.CreateLoad(i32, failCount),
+                                                              builder.getInt32(0), "anyfailed");
+                llvm::Value* elapsed =
+                    builder.CreateSub(builder.CreateCall(nowFn, {}, "t1"), started, "ns");
+                // Test.skip(why) at runtime outranks the pass/fail verdict: the test never reached
+                // the point of having one.
+                llvm::Value* skipped =
+                    skippedFn != nullptr
+                        ? builder.CreateICmpNE(builder.CreateCall(skippedFn, {}, "skipped"),
+                                               builder.getInt32(0))
+                        : llvm::cast<llvm::Value>(builder.getInt1(false));
+                llvm::Value* why =
+                    reasonFn != nullptr
+                        ? builder.CreateCall(cstrFn, {builder.CreateCall(reasonFn, {}, "why")})
+                        : llvm::cast<llvm::Value>(createGlobalStringPtr(builder, "", ".test.why"));
+                // [ExpectedToFail] inverts the verdict: failing is the expected outcome (3), and
+                // passing is itself a failure (4) -- the bug got fixed and the annotation is a lie.
+                llvm::Value* pass = t.expectedToFail ? builder.getInt32(4) : builder.getInt32(0);
+                llvm::Value* fail = t.expectedToFail ? builder.getInt32(3) : builder.getInt32(1);
+                llvm::Value* verdict = builder.CreateSelect(
+                    skipped, builder.getInt32(2), builder.CreateSelect(anyFailed, fail, pass),
+                    "verdict");
+                builder.CreateCall(recordFn,
+                                   {caseName, verdict, elapsed, why, builder.getInt64(t.maxTimeNs)});
+            };
+
+            for (std::size_t i = 0; i < cases.size(); ++i) {
+                const TestCase& t = *cases[i];
+                // --fail-fast is asked HERE, not in the selection above: selection is decided for the
+                // whole class before anything runs, so at that point nothing has failed yet.
+                llvm::Value* live = builder.CreateAnd(
+                    selected[i],
+                    builder.CreateICmpEQ(builder.CreateCall(abortedFn, {}, "aborted"),
+                                         builder.getInt32(0)),
+                    "live");
+                emitIfThen(mainFn, live, [&] {
+                    llvm::Value* nameStr = createGlobalStringPtr(builder, t.display, ".test.name");
+                    if (t.ignored) {
+                        // [Ignore]: never run, reported as a skip carrying its reason, so a
+                        // known-broken case stays visible instead of quietly disappearing.
+                        builder.CreateCall(
+                            recordFn,
+                            {nameStr, builder.getInt32(2), builder.getInt64(0),
+                             createGlobalStringPtr(builder, t.ignoreReason, ".test.why"),
+                             builder.getInt64(0)});
+                        return;
+                    }
+                    if (t.casesSym.empty()) {
+                        runOne(t, nameStr, nullptr);
+                        return;
+                    }
+                    // [Cases]: call the source once, then run the body over every row, each reported
+                    // as its own result under "Class.method[i]".
+                    const auto srcIt = functions.find(t.casesSym);
+                    if (srcIt == functions.end()) return;
+                    llvm::Value* block = builder.CreateCall(srcIt->second, {}, "rows");
+                    llvm::Value* len = builder.CreateLoad(i64, block, "rows.len");
+                    llvm::Type* storageTy = arrayStorageTy(t.paramType);
+                    llvm::Value* iv = builder.CreateAlloca(i64, nullptr, "row");
+                    builder.CreateStore(builder.getInt64(0), iv);
+                    llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "rows.cond", mainFn);
+                    llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "rows.body", mainFn);
+                    llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(context, "rows.done", mainFn);
+                    builder.CreateBr(condBB);
+                    builder.SetInsertPoint(condBB);
+                    llvm::Value* i0 = builder.CreateLoad(i64, iv, "i");
+                    builder.CreateCondBr(builder.CreateICmpULT(i0, len), bodyBB, doneBB);
+                    builder.SetInsertPoint(bodyBB);
+                    llvm::Value* i1 = builder.CreateLoad(i64, iv, "i");
+                    llvm::Value* elemPtr =
+                        builder.CreateGEP(storageTy, arrayData(block), i1, "row.elem");
+                    llvm::Value* value = builder.CreateLoad(storageTy, elemPtr, "row.val");
+                    if (t.paramType == "boolean")  // 1-byte storage, i32 value
+                        value = builder.CreateZExt(value, i32);
+                    llvm::Value* caseName = builder.CreateCall(caseNameFn, {nameStr, i1}, "casename");
+                    runOne(t, caseName, value);
+                    builder.CreateStore(builder.CreateAdd(i1, builder.getInt64(1)), iv);
+                    builder.CreateBr(condBB);
+                    builder.SetInsertPoint(doneBB);
                 });
             }
             emitIfThen(mainFn, anySelected, [&] { callHook(hooks.afterAll); });
         }
+        emitBenchmarks(mainFn);
         builder.CreateRet(builder.CreateCall(summaryFn, {}, "rc"));
+    }
+
+    // [Benchmark] methods: a warmup pass the timer ignores, then the measured loop. Reported as
+    // ns/op, never as a verdict, and only when --bench asked for them.
+    void emitBenchmarks(llvm::Function* mainFn) {
+        if (benchMethods.empty()) return;
+        llvm::Type* i32 = builder.getInt32Ty();
+        llvm::Type* i64 = builder.getInt64Ty();
+        llvm::Type* ptr = builder.getPtrTy();
+        llvm::FunctionCallee shouldFn = module.getOrInsertFunction(
+            "__ldp3_bench_should_run", llvm::FunctionType::get(i32, {ptr}, false));
+        llvm::FunctionCallee recordFn = module.getOrInsertFunction(
+            "__ldp3_bench_record",
+            llvm::FunctionType::get(builder.getVoidTy(), {ptr, i64, i64}, false));
+        llvm::FunctionCallee nowFn =
+            module.getOrInsertFunction("__ldp3_now_ns", llvm::FunctionType::get(i64, {}, false));
+
+        for (const BenchCase& b : benchMethods) {
+            const auto fnIt = functions.find(b.sym);
+            if (fnIt == functions.end()) continue;
+            llvm::Value* nameStr = createGlobalStringPtr(builder, b.display, ".bench.name");
+            llvm::Value* sel = builder.CreateICmpNE(builder.CreateCall(shouldFn, {nameStr}),
+                                                    builder.getInt32(0), "bsel");
+            emitIfThen(mainFn, sel, [&] {
+                auto loop = [&](long long count, const char* tag) {
+                    if (count <= 0) return;
+                    llvm::Value* iv = builder.CreateAlloca(i64, nullptr, tag);
+                    builder.CreateStore(builder.getInt64(0), iv);
+                    llvm::BasicBlock* c = llvm::BasicBlock::Create(context, "b.cond", mainFn);
+                    llvm::BasicBlock* bd = llvm::BasicBlock::Create(context, "b.body", mainFn);
+                    llvm::BasicBlock* d = llvm::BasicBlock::Create(context, "b.done", mainFn);
+                    builder.CreateBr(c);
+                    builder.SetInsertPoint(c);
+                    llvm::Value* i0 = builder.CreateLoad(i64, iv);
+                    builder.CreateCondBr(builder.CreateICmpULT(i0, builder.getInt64(count)), bd, d);
+                    builder.SetInsertPoint(bd);
+                    builder.CreateCall(fnIt->second, {});
+                    builder.CreateStore(builder.CreateAdd(builder.CreateLoad(i64, iv),
+                                                          builder.getInt64(1)),
+                                        iv);
+                    builder.CreateBr(c);
+                    builder.SetInsertPoint(d);
+                };
+                loop(b.warmup, "warm");  // untimed: let the caches and the branch predictor settle
+                llvm::Value* t0 = builder.CreateCall(nowFn, {}, "b0");
+                loop(b.iterations, "iter");
+                llvm::Value* total =
+                    builder.CreateSub(builder.CreateCall(nowFn, {}, "b1"), t0, "bns");
+                builder.CreateCall(recordFn, {nameStr, total, builder.getInt64(b.iterations)});
+            });
+        }
     }
 
     void emitFunctions() {

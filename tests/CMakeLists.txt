@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.15")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.16")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.15")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.16")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -4362,6 +4362,55 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # The rest of the framework: [Cases] over int and String rows, [Repeat], [ExpectedToFail]
+        # (which RUNS and reports XFAIL), [Tag] + [MaxTime], output capture and golden comparison,
+        # and the breadth of the assertion set.
+        add_test(NAME codegen_test_full_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_full.ldp3"
+            "-DEXPECTED=PASS Parser.every_seed_lands_in_band[0] PASS Parser.every_seed_lands_in_band[1] PASS Parser.every_seed_lands_in_band[2] PASS Parser.every_name_is_lowercase[0] PASS Parser.every_name_is_lowercase[1] PASS Parser.stable_across_runs XFAIL Parser.nested_quotes the parser drops the inner quote PASS Parser.large_input PASS Report.printed_output_is_captured PASS Report.golden_file_comparison PASS Report.the_assertion_surface tests: 11 passed, 0 failed, 0 skipped, 1 expected to fail"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # --tag selects a group; the [MaxTime] budget on that same test must not trip.
+        add_test(NAME codegen_test_tag_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_full.ldp3"
+            "-DRUNARGS=--tag slow"
+            "-DEXPECTED=PASS Parser.large_input tests: 1 passed, 0 failed, 0 skipped"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # --bench runs the [Benchmark] methods and no tests at all. The ns/op figure varies, so only
+        # the shape is pinned.
+        add_test(NAME codegen_test_bench_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_full.ldp3"
+            "-DRUNARGS=--bench --filter summing_speed"
+            "-DCONTAINS=BENCH Parser.summing_speed"
+            "-DEXPECTED=unused"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # --format=json emits one machine-readable document. A test's own printing is captured into
+        # its record rather than being interleaved, which is what keeps the JSON well-formed.
+        add_test(NAME codegen_test_json_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_full.ldp3"
+            "-DRUNARGS=--format=json --filter every_seed"
+            "-DCONTAINS={\"tests\":[{\"name\":\"Parser.every_seed_lands_in_band[0]\",\"status\":\"PASS\""
+            "-DEXPECTED=unused"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Test.assertNoLeaks over a clean allocate/free round-trip, plus the accounting it is built
         # on moving in both directions. The second test is what stops the assertion from being green
         # by construction -- without it, a counter stuck at zero would pass everything.
@@ -4373,6 +4422,13 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=PASS Probe.clean_round_trip_leaves_nothing PASS Probe.a_leak_shows_up_in_the_live_total tests: 2 passed, 0 failed, 0 skipped"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # The same check runs under `--check`, which is what the editor calls: a malformed test is
+        # reported while you type, not only on the day someone runs the suite.
+        add_test(NAME test_check_reports_malformed_declarations
+            COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle_bad.ldp3")
+        set_tests_properties(test_check_reports_malformed_declarations PROPERTIES
+            PASS_REGULAR_EXPRESSION "already has a '\\[Setup\\]' method")
 
         # Malformed test declarations are compile errors, not silent no-ops. Each shape gets its own
         # assertion against the same sample, so a fix that repairs one message cannot mask the others.
@@ -4399,6 +4455,24 @@ if(LDP3_WITH_LLVM)
                     -o "${CMAKE_CURRENT_BINARY_DIR}/testbad.ll")
         set_tests_properties(test_rejects_ignore_without_test PROPERTIES
             PASS_REGULAR_EXPRESSION "has no effect: it only applies to a '\\[Test\\]' method")
+
+        add_test(NAME test_rejects_parameter_without_cases
+            COMMAND ldp3c --test "${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle_bad.ldp3"
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/testbad.ll")
+        set_tests_properties(test_rejects_parameter_without_cases PROPERTIES
+            PASS_REGULAR_EXPRESSION "takes parameters, so it needs a '\\[Cases")
+
+        add_test(NAME test_rejects_mismatched_cases_source
+            COMMAND ldp3c --test "${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle_bad.ldp3"
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/testbad.ll")
+        set_tests_properties(test_rejects_mismatched_cases_source PROPERTIES
+            PASS_REGULAR_EXPRESSION "must be a public static method returning 'int\\[\\]'")
+
+        add_test(NAME test_rejects_benchmark_that_is_also_a_test
+            COMMAND ldp3c --test "${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle_bad.ldp3"
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/testbad.ll")
+        set_tests_properties(test_rejects_benchmark_that_is_also_a_test PROPERTIES
+            PASS_REGULAR_EXPRESSION "a benchmark measures, a test judges")
 
         add_test(NAME codegen_test_list_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
