@@ -1,0 +1,57 @@
+import System.IO.Console;
+import System.Test.Test;
+program TestClassLoad;
+
+// A test runs against a program whose classes must be as LOADED as they are in a normal run.
+//
+// The --test runner synthesizes its own entry point, and it used to skip the onClassLoad hooks that
+// the program's own `main` gets (spec 32.5). The failure was not subtle and it was not local: in
+// agents-exe every single test panicked in its first fixture, on a lookup table that an onClassLoad
+// fills -- an entire suite failing for a reason none of its tests were about.
+
+public bundle Main {
+    public namespace App {
+
+        public class Palette {
+            private static mutable int[] table;
+            private static mutable int loads = 0;
+
+            onClassLoad {
+                Palette.table = new int[8]();
+                mutable int i = 0;
+                while (i < 8) {
+                    Palette.table[i] = i * 11;
+                    i = i + 1;
+                }
+                Palette.loads = Palette.loads + 1;
+            }
+
+            public static method at(int i) returns int {
+                return Palette.table[i];
+            }
+
+            public static method loadCount() returns int {
+                return Palette.loads;
+            }
+        }
+
+        public class Loading {
+            [Test]
+            public static method the_class_was_loaded_before_the_tests_ran() returns void {
+                Test.checking("onClassLoad ran exactly once");
+                Test.assertEqual(Palette.loadCount(), 1);
+                Test.checking("and it filled the table it is there to fill");
+                Test.assertEqual(Palette.at(0), 0);
+                Test.assertEqual(Palette.at(7), 77);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("run me with --test");
+                return;
+            }
+        }
+    }
+}

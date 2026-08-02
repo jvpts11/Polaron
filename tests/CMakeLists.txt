@@ -4423,6 +4423,18 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A test runs against a LOADED program: the synthesized runner emits the onClassLoad hooks
+        # the program's own main would (spec 32.5). Without this, agents-exe's whole suite panicked
+        # in its first fixture on a table an onClassLoad fills.
+        add_test(NAME codegen_test_class_load_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_class_load.ldp3"
+            "-DEXPECTED=PASS Loading.the_class_was_loaded_before_the_tests_ran tests: 1 passed, 0 failed, 0 skipped"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # The same check runs under `--check`, which is what the editor calls: a malformed test is
         # reported while you type, not only on the day someone runs the suite.
         add_test(NAME test_check_reports_malformed_declarations
