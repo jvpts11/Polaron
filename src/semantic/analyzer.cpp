@@ -1195,6 +1195,22 @@ long long annotationNumber(const ast::AnnotationUse& use, const std::string& fie
 // --test, because a `[Test]` that cannot be called is a broken declaration whichever way you build --
 // and finding out at build time (or in the editor, through `ldp3 check`) beats finding out on the day
 // someone runs the suite and quietly gets one test fewer than they wrote.
+// Which classes own a fixture. Runs before the bodies, because the warning about reading somebody
+// else's fixture is raised where the call is checked.
+void SemanticAnalyzer::collectFixtureOwners(const ast::Program& program) {
+    for (const ast::Bundle& bundle : program.bundles) {
+        if (bundle.isImported || bundle.isPrelude) continue;
+        for (const ast::Namespace& ns : bundle.namespaces)
+            for (const ast::ClassDecl& cls : ns.classes)
+                for (const ast::MemberPtr& member : cls.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                    if (m == nullptr) continue;
+                    for (const ast::AnnotationUse& a : m->annotations)
+                        if (a.name == "BeforeAll" || a.name == "AfterAll") fixtureOwners_.insert(cls.name);
+                }
+    }
+}
+
 void SemanticAnalyzer::validateTestDeclarations(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         if (bundle.isImported || bundle.isPrelude) continue;
@@ -1864,6 +1880,13 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // A value Result/Option rides the Task's 64-bit result slot boxed (codegen copies
                         // the { tag, payload } struct to the heap on completion and unboxes it on await),
                         // so both the value and boxed forms of an async Result/Option are allowed.
+                        // A [Test] and the [Setup]/[Teardown] that bracket it all run inside their own
+                        // class's fixture window, so they are the methods the fixture-ownership warning
+                        // applies to.
+                        inTestMethod_ = false;
+                        for (const ast::AnnotationUse& a : m->annotations)
+                            if (a.name == "Test" || a.name == "Setup" || a.name == "Teardown")
+                                inTestMethod_ = true;
                         std::vector<const ast::Expr*> contracts;
                         for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
                         for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
@@ -2019,6 +2042,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     // §8: compute the interprocedural escape summary before checking. Also run it when emitting a library
     // (even without --region-binder) so the summary is serialized into the .ldh for downstream consumers.
     if (regionBinder_ || libraryMode_) computeEscapeSummaries(program);
+    collectFixtureOwners(program);  // spec 32.11: known before the bodies that reach into them
     analyzeBodies(program);
     analyzeLiteralBodies(program);
     validateAnnotations(program);  // spec 14.3: applied [Name(...)] match a declared annotation
@@ -5262,6 +5286,24 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 if (objId->name != "this" && lookupLocal(objId->name) == nullptr) {
                     if (const ClassInfo* sc = lookupClass(objId->name)) {
+                        // spec 32.11: [BeforeAll]/[AfterAll] bracket the tests of the class that
+                        // DECLARES them and nothing else, so a test reaching into another class's
+                        // fixture reads state that class may already have torn down. The failure is a
+                        // read of freed memory in a suite whose output showed nothing but passes.
+                        if (inTestMethod_ && objId->name != enclosingClass_ &&
+                            fixtureOwners_.count(objId->name) > 0) {
+                            const std::string key = enclosingClass_ + "." + mem->member + "|" + objId->name;
+                            if (fixtureWarned_.insert(key).second)
+                                warn("this test reads '" + objId->name +
+                                         "', which owns a [BeforeAll]/[AfterAll] fixture, from class '" +
+                                         enclosingClass_ +
+                                         "'. Those hooks bracket only their own class's tests, so '" +
+                                         objId->name +
+                                         "' may already have torn the fixture down by the time this "
+                                         "runs. Move the test into '" +
+                                         objId->name + "', or give this class its own fixture",
+                                     call->loc);
+                        }
                         // Qualified literal suffix: Type.kib(64) (spec 17.10). A literal suffix is not
                         // in the method table, so resolve it before the method lookup.
                         if (auto lit = literals_.find(mem->member); lit != literals_.end()) {
