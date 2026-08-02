@@ -1,4 +1,4 @@
-# The LDP3 Language Reference — 1.0.16
+# The LDP3 Language Reference — 1.0.17
 
 A complete, book-length reference for **LDP3** (Linguagem De Programação 3): an
 object-orientation–mandatory, manually memory-managed systems language that compiles to native
@@ -11,7 +11,7 @@ language, cross-checked against the actual compiler and the embedded standard-li
 these pages describe **what the compiler accepts today**.
 
 A single typeset PDF of everything below:
-**[LDP3-Language-Reference-1.0.16.pdf](LDP3-Language-Reference-1.0.16.pdf)**.
+**[LDP3-Language-Reference-1.0.17.pdf](LDP3-Language-Reference-1.0.17.pdf)**.
 
 ---
 

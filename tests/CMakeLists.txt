@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.16")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.17")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.16")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.17")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -158,6 +158,15 @@ add_test(NAME sema_rejects_no_entry
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/no_entry.ldp3")
 set_tests_properties(sema_rejects_no_entry PROPERTIES
     PASS_REGULAR_EXPRESSION "no entry point")
+
+# A field name declared twice in one class compiled silently: the layout got a slot per declaration and
+# every use resolved to the last one, leaving the first as storage never written and never read. The
+# method case has been rejected for a long time; the field case was simply missing, and agents-exe
+# carried a dead duplicate `int[] best` for weeks with nothing noticing.
+add_test(NAME sema_rejects_duplicate_field
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/duplicate_field_bad.ldp3")
+set_tests_properties(sema_rejects_duplicate_field PROPERTIES
+    PASS_REGULAR_EXPRESSION "field 'n' is already declared in class 'Box'")
 
 # The RETURN must check the type of what it returns, not only its nullability (LDP3-0303). Without it,
 # `return someDog;` from a method `returns Cat` produced valid IR and reinterpreted the object -- vtable

@@ -988,6 +988,18 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                           cls.loc);
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
+                        // A name is unique within a class, and a silent duplicate here is worse
+                        // than the method case: the layout gets a slot per declaration while every
+                        // `this.name` resolves to the last one, so the earlier slot is storage that
+                        // is never written and never read. If its type is owned, the destructor is
+                        // handed uninitialised memory to free.
+                        if (info.fields.count(f->name))
+                            error("field '" + f->name + "' is already declared in class '" +
+                                      cls.name +
+                                      "' -- each field name must be unique, and a second declaration "
+                                      "silently takes over every use of the name while leaving the "
+                                      "first one as dead storage. Remove one of them",
+                                  f->loc);
                         // A movable/unique field is reassignable (it is moved out and reassigned).
                         info.fields[f->name] =
                             FieldInfo{typeRefStr(f->type), f->isMutable || f->isMovable || f->isUnique,

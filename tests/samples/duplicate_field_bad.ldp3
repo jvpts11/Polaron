@@ -1,0 +1,45 @@
+import System.IO.Console;
+program DuplicateFieldBad;
+
+// A field name declared twice in one class. It used to compile without a word: the layout got a slot
+// per declaration, every `this.n` resolved to the LAST one, and the earlier slot became storage that
+// is never written and never read. For an `int` that is only waste; for an owned field the destructor
+// is handed uninitialised memory to free.
+//
+// `Nations` in agents-exe carried exactly this for weeks -- two `int[] best` declarations, one of them
+// dead -- and nothing in the toolchain noticed.
+
+public bundle Main {
+    public namespace App {
+
+        public class Box {
+            private mutable int n;
+            private mutable int[] slot;
+            private mutable int n;                  // rejected here
+
+            public constructor Box() {
+                this.n = 7;
+                this.slot = new int[4]();
+                return;
+            }
+
+            public destructor ~Box() returns void {
+                delete this.slot;
+                return;
+            }
+
+            public method get() returns int {
+                return this.n;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box* b = new Box() on heap;
+                System.IO.Console.println($"n = {b.get()}");
+                delete b;
+                return;
+            }
+        }
+    }
+}
