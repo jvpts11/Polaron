@@ -284,11 +284,27 @@ struct Ldp3ProfInit {
 static Ldp3ProfInit g_ldp3_prof_init;
 #endif
 
+// Out of memory stops the program, HERE, saying what it was asked for.
+//
+// Returning NULL instead sent the null straight back to codegen, which zero-fills a fresh array and
+// stores a field without ever looking at it, so the failure surfaced as an access violation at
+// address zero somewhere unrelated -- the classic C answer, and exactly the undefined behaviour this
+// language does not accept. An allocation that cannot be served is a defined, reported end.
+static void __ldp3_oom(size_t want) {
+    char msg[256];
+    snprintf(msg, sizeof msg,
+             "out of memory: could not allocate %.1f MB. The program asked for more than this "
+             "machine would give it -- allocate less at once, free what is finished with, or run "
+             "fewer of whatever is holding memory in parallel",
+             (double)want / 1048576.0);
+    __ldp3_panic(msg);
+}
+
 LDP3_RT_API void* __ldp3_malloc(size_t size) {
     if (size == 0) size = 1;
     if (size > LDP3_POOL_MAX) {  // large: a plain libc block tagged so free/realloc recognise it
         char* p = (char*)malloc(size + 16);
-        if (p == NULL) return NULL;
+        if (p == NULL) __ldp3_oom(size);
         ((Ldp3Hdr*)p)->magic = LDP3_MAGIC;
         ((Ldp3Hdr*)p)->cls = LDP3_LARGE;
         ((Ldp3Hdr*)p)->pad = (unsigned)size;  // remember size for the profiler's free accounting
@@ -311,7 +327,7 @@ LDP3_RT_API void* __ldp3_malloc(size_t size) {
     size_t need = 16 + (size_t)(cls + 1) * 16;
     if (g_ldp3_slab_cur == NULL || g_ldp3_slab_cur + need > g_ldp3_slab_end) {
         char* s = (char*)malloc(LDP3_SLAB);
-        if (s == NULL) return NULL;
+        if (s == NULL) __ldp3_oom(LDP3_SLAB);
         g_ldp3_slab_cur = s;
         g_ldp3_slab_end = s + LDP3_SLAB;
     }
@@ -711,7 +727,7 @@ LDP3_RT_API void* __ldp3_realloc(void* ptr, size_t size) {
     if (h->cls == LDP3_LARGE) {
         long long oldsz = (long long)h->pad;
         char* np = (char*)realloc(h, size + 16);
-        if (np == NULL) return NULL;
+        if (np == NULL) __ldp3_oom(size);
         ((Ldp3Hdr*)np)->magic = LDP3_MAGIC;
         ((Ldp3Hdr*)np)->cls = LDP3_LARGE;
         ((Ldp3Hdr*)np)->pad = (unsigned)size;
@@ -720,8 +736,7 @@ LDP3_RT_API void* __ldp3_realloc(void* ptr, size_t size) {
     }
     size_t oldsz = (size_t)(h->cls + 1) * 16;
     if (size <= oldsz) return ptr;  // still fits the current class
-    void* np = __ldp3_malloc(size);
-    if (np == NULL) return NULL;
+    void* np = __ldp3_malloc(size);  // panics on exhaustion; never NULL
     memcpy(np, ptr, oldsz);
     __ldp3_free(ptr);
     return np;

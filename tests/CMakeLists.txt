@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.17")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.18")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.17")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.18")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1758,6 +1758,17 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/slice_oob_bad.ldp3"
             "-DPANIC=array index out of bounds"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+
+        # No-UB: an allocation the machine cannot serve must stop the program saying so. The runtime
+        # used to return NULL and nothing downstream checks it, so exhaustion surfaced as an access
+        # violation at address zero in unrelated code.
+        add_test(NAME codegen_out_of_memory_panics COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/out_of_memory_bad.ldp3"
+            "-DPANIC=out of memory"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
 
