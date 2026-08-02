@@ -12,7 +12,7 @@ it sits `ldp3c`, the compiler proper; you rarely call `ldp3c` directly.
 | `ldp3 build` | Build the current project into `build-output/`. |
 | `ldp3 check [--project <dir>] [--overlay <file>=<tmp>]` | Type-check and print diagnostics without emitting anything. `--overlay` checks a file as it reads in a temp buffer — the hook editors use for live diagnostics. |
 | `ldp3 compile <file.ldp3>` | Compile one file to an `.exe`, without running it. |
-| `ldp3 test` | Build and run the project's test methods. |
+| `ldp3 test [-- args...]` | Build and run the project's `[Test]` methods. Arguments after `--` go to the runner: `--filter <text>` narrows the run, `--list` names the tests without running them, `--timing` adds durations. |
 | `ldp3 fmt [file.ldp3]` | Format the project's source (or one file) in place. |
 | `ldp3 doc` | Render the public API to HTML from `///` doc comments. |
 | `ldp3 explain <code>` | Print the why / fix / prevent for a diagnostic code (see [§13](#13-diagnostics)). |

@@ -18,7 +18,7 @@
 #include "driver/toolchain.h"
 
 namespace {
-constexpr const char* kVersion = "ldp3 1.0.14";
+constexpr const char* kVersion = "ldp3 1.0.15";
 
 int printHelp() {
     std::printf(
@@ -29,7 +29,10 @@ int printHelp() {
         "  ldp3 check [--project <dir>]        type-check the project, print diagnostics, emit nothing\n"
         "             [--overlay <file>=<tmp>]  check <file> as it reads in <tmp> (an editor's buffer)\n"
         "  ldp3 explain <code>                 the why / fix / prevent for a diagnostic code (e.g. LDP3-0101)\n"
-        "  ldp3 test                           build and run the project's [Test] methods\n"
+        "  ldp3 test [-- <runner args>]        build and run the project's [Test] methods\n"
+        "      -- --filter <text>              run only the tests whose name contains <text>\n"
+        "      -- --list                       print the test names without running them\n"
+        "      -- --timing                     add per-test durations to the report\n"
         "  ldp3 doc                            render the public API to HTML from /// comments\n"
         "  ldp3 fmt [file.ldp3]                format the project's source (or one file) in place\n"
         "  ldp3 compile <file.ldp3>            compile one file to an .exe (no run)\n"
@@ -221,9 +224,23 @@ int runCli(int argc, char** argv) {
         ldp3::driver::Manifest m = ldp3::driver::parseManifestText(ss.str());
         if (m.entry.empty()) { std::fprintf(stderr, "ldp3: manifest has no [program] entry\n"); return 1; }
         m.name = m.name + "-test";  // keep the test binary separate from the normal build
+        // A [library] is normally built to a .ldb with no entry point. Its tests still have to RUN,
+        // so build the same sources as an executable instead: --test synthesizes the entry, and the
+        // analyzer already exempts a test run from needing a `main`. Without this, `ldp3 test` on a
+        // library wrote the bundle and exited 0 without running a single test -- which a CI reads as
+        // "all tests passed".
+        m.isLibrary = false;
         ldp3::driver::BuildOptions opts;
         opts.run = true;
         opts.passthrough = {"--test"};
+        // Everything after `--` goes to the runner: `ldp3 test -- --filter Census`, `-- --list`,
+        // `-- --timing`. Anything it does not recognize it ignores, so a project may also pass its
+        // program's own flags through.
+        for (std::size_t i = 1; i < args.size(); ++i) {
+            if (args[i] != "--") continue;
+            for (std::size_t j = i + 1; j < args.size(); ++j) opts.runArgs.push_back(args[j]);
+            break;
+        }
         return ldp3::driver::buildProgram(m, manifestPath->parent_path(), opts);
     }
     if (cmd == "run") {

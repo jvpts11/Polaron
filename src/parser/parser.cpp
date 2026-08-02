@@ -586,10 +586,15 @@ ast::LiteralDecl Parser::parseLiteral() {
     return std::move(*parseLiteralMember(std::move(visibility), isComptime));
 }
 
-// Parses zero or more applied annotations preceding a declaration. Two equivalent spellings (spec 14.1):
-//   `[Name(arg: val, ...)]`  -- user-defined annotations (spec 14.3)
-//   `@Name(arg: val, ...)`   -- the language's built-in ones, e.g. `@Test` (spec 32.11)
-// Both produce the same AnnotationUse, so a built-in is just an annotation the stdlib declares.
+// Parses zero or more applied annotations preceding a declaration. An annotation has two
+// interchangeable spellings (spec 14.1), and BOTH are accepted for BOTH built-in and user-defined
+// annotations -- a built-in is just an annotation the stdlib declares, so there is nothing to tell
+// them apart and no reason to spell them differently:
+//   `[Name(arg: val, ...)]`  e.g. `[Test]`, `[Ignore(reason: "flaky")]`, `[MyAnnotation]`
+//   `@Name(arg: val, ...)`   e.g. `@Test`, `@Ignore(reason: "flaky")`, `@MyAnnotation`
+// Both produce the same AnnotationUse, so every consumer just looks the name up.
+// A compiler ATTRIBUTE is a different thing and keeps its own spelling: `[[no_bounds_check]]`
+// (spec 36.4), double-bracketed only, never `@`.
 std::vector<ast::AnnotationUse> Parser::parseAnnotationUsesOpt() {
     std::vector<ast::AnnotationUse> uses;
     while (check(TokenKind::LBracket) || check(TokenKind::At)) {

@@ -82,6 +82,12 @@
           "name": "meta.annotation.ldp3",
           "match": "\\[\\s*([A-Z][A-Za-z0-9_]*)",
           "captures": { "1": { "name": "storage.type.annotation.ldp3" } }
+        },
+        {
+          "comment": "The `@Name` spelling is equivalent to `[Name]` for every annotation, built-in or user-defined, so it highlights the same way.",
+          "name": "meta.annotation.ldp3",
+          "match": "@\\s*([A-Z][A-Za-z0-9_]*)",
+          "captures": { "1": { "name": "storage.type.annotation.ldp3" } }
         }
       ]
     },

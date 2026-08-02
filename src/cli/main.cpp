@@ -47,7 +47,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "ldp3c 1.0.14";
+constexpr std::string_view kVersion = "ldp3c 1.0.15";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -8609,9 +8609,29 @@ R"LDP3(
 // System.Test in its own literal (the unit-test framework, spec 34).
 R"LDP3(
     public namespace Test {
-        // Marker annotation (spec 32.11): a public static method returning boolean tagged @Test (or the
-        // equivalent [Test] form) is an inline test, discovered and run by `ldp3 test`.
+        // The test annotations (spec 32.11). Each may be written `[Name]` or `@Name` -- the two
+        // spellings are interchangeable everywhere (spec 14.1).
+        //
+        // `[Test]` marks an inline test: a public static method returning boolean (it IS its own
+        // verdict) or void (the verdict comes from its Test.assert* calls). `ldp3 test` finds and runs
+        // them; a malformed one is a compile error, because a test that silently does not run is
+        // worse than no test at all.
         public annotation Test {}
+        // `[Ignore(reason: "...")]` on a [Test]: reported as SKIP with the reason printed, never run.
+        // How a known-broken case stays visible in the report instead of being commented out and
+        // forgotten, without turning the suite red.
+        public annotation Ignore { String reason default ""; }
+        // Lifecycle hooks: public static methods returning void, at most one of each per class,
+        // because two would have no defined order.
+        //   [BeforeAll] / [AfterAll]  run ONCE around the whole class -- where an expensive fixture
+        //                             (a generated world, a parsed file) is built and released, so
+        //                             every test does not pay to rebuild it.
+        //   [Setup] / [Teardown]      run around EACH test of the class.
+        // [BeforeAll] is skipped entirely when --filter selected none of the class's tests.
+        public annotation BeforeAll {}
+        public annotation AfterAll {}
+        public annotation Setup {}
+        public annotation Teardown {}
         // Boolean assertion helpers (spec 34): each returns whether the check holds, to be fed to
         // TestRunner.check. near compares doubles within an epsilon.
         // The assertion API of spec 32.11. Unlike Assert (whose helpers merely RETURN whether a check
@@ -8619,49 +8639,143 @@ R"LDP3(
         // list of assertions returning void: `ldp3c --test` resets the counter around each test and
         // reads it back as that test's verdict.
         public class Test {
-            private static mutable int fails;
+            private static mutable int fails = 0;
+            // What the next assertions are checking (Test.checking). Not named `label`: that is a
+            // keyword, for the loop labels of `break label:`.
+            private static mutable String criterion = "";
+            private static mutable boolean skipping = false;
+            private static mutable String skipWhy = "";
+
+            // The --test runner calls this before EVERY test, so the failure count, the label and the
+            // skip flag never bleed from one test into the next.
             public static method reset() returns void {
                 Test.fails = 0;
+                Test.criterion = "";
+                Test.skipping = false;
+                Test.skipWhy = "";
                 return;
             }
             public static method failures() returns int {
                 return Test.fails;
             }
+            public static method wasSkipped() returns boolean {
+                return Test.skipping;
+            }
+            public static method skipReason() returns String {
+                return Test.skipWhy;
+            }
+
+            // Names what the assertions that follow are checking. It exists because a bare
+            // `assertBetween(pct, 8, 22)` reports only numbers, and the reader is left guessing WHICH
+            // criterion broke -- the exact problem that makes hand-rolled audit code grow an enum of
+            // reject reasons. The label is cleared at the start of every test, so it costs nothing
+            // when you do not use it.
+            public static method checking(String what) returns void {
+                Test.criterion = what;
+                return;
+            }
+            // Give up on this test at runtime: an unmet precondition (no GPU, no network, a fixture
+            // that could not be built), not a defect. Reported as SKIP with the reason.
+            public static method skip(String why) returns void {
+                Test.skipping = true;
+                Test.skipWhy = why;
+                return;
+            }
+            // Record a failure directly, for a check no assertion covers.
+            public static method fail(String why) returns void {
+                Test.mark();
+                System.IO.Console.printf("%s\n", why);
+                return;
+            }
+
+            private extern cdecl static method __ldp3_test_detail() returns void;
+
+            // Counts a failure and opens its detail line, prefixed with the current label if there is
+            // one. Every assertion below goes through it, so they all report the same shape -- and
+            // the runtime prints this test's "FAIL <name>" header on the way through, once, so the
+            // details read underneath their verdict instead of above it.
+            private static method mark() returns void {
+                Test.__ldp3_test_detail();
+                Test.fails = Test.fails + 1;
+                if (Test.criterion.length() > 0) {
+                    System.IO.Console.printf("  [%s] ", Test.criterion);
+                } else {
+                    System.IO.Console.print("  ");
+                }
+                return;
+            }
+
             public static method assertEqual(int actual, int expected) returns void {
                 if (actual != expected) {
-                    Test.fails = Test.fails + 1;
-                    System.IO.Console.printf("  assertion failed: expected %d, got %d\n",
-                                             expected, actual);
+                    Test.mark();
+                    System.IO.Console.printf("expected %d, got %d\n", expected, actual);
+                }
+                return;
+            }
+            public static method assertNotEqual(int actual, int unexpected) returns void {
+                if (actual == unexpected) {
+                    Test.mark();
+                    System.IO.Console.printf("expected anything but %d\n", unexpected);
                 }
                 return;
             }
             public static method assertEqualLong(long actual, long expected) returns void {
                 if (actual != expected) {
-                    Test.fails = Test.fails + 1;
-                    System.IO.Console.printf("  assertion failed: expected %lld, got %lld\n",
-                                             expected, actual);
+                    Test.mark();
+                    System.IO.Console.printf("expected %lld, got %lld\n", expected, actual);
                 }
                 return;
             }
             public static method assertEqualString(String actual, String expected) returns void {
                 if (!actual.equals(expected)) {
-                    Test.fails = Test.fails + 1;
-                    System.IO.Console.printf("  assertion failed: expected %s, got %s\n",
-                                             expected, actual);
+                    Test.mark();
+                    System.IO.Console.printf("expected %s, got %s\n", expected, actual);
                 }
                 return;
             }
             public static method assertTrue(boolean condition) returns void {
                 if (!condition) {
-                    Test.fails = Test.fails + 1;
-                    System.IO.Console.println("  assertion failed: expected true");
+                    Test.mark();
+                    System.IO.Console.println("expected true");
                 }
                 return;
             }
             public static method assertFalse(boolean condition) returns void {
                 if (condition) {
-                    Test.fails = Test.fails + 1;
-                    System.IO.Console.println("  assertion failed: expected false");
+                    Test.mark();
+                    System.IO.Console.println("expected false");
+                }
+                return;
+            }
+            // Bands, not exact values: most measurements of a generated or simulated system are only
+            // ever "within an acceptable range", and writing that as `assertTrue(v >= 8 && v <= 22)`
+            // throws away the numbers the report needs to be useful.
+            public static method assertBetween(int value, int low, int high) returns void {
+                if (value < low || value > high) {
+                    Test.mark();
+                    System.IO.Console.printf("expected %d..%d, got %d\n", low, high, value);
+                }
+                return;
+            }
+            public static method assertAtLeast(int value, int minimum) returns void {
+                if (value < minimum) {
+                    Test.mark();
+                    System.IO.Console.printf("expected at least %d, got %d\n", minimum, value);
+                }
+                return;
+            }
+            public static method assertAtMost(int value, int maximum) returns void {
+                if (value > maximum) {
+                    Test.mark();
+                    System.IO.Console.printf("expected at most %d, got %d\n", maximum, value);
+                }
+                return;
+            }
+            public static method assertBetweenDouble(double value, double low, double high)
+                    returns void {
+                if (value < low || value > high) {
+                    Test.mark();
+                    System.IO.Console.printf("expected %f..%f, got %f\n", low, high, value);
                 }
                 return;
             }
@@ -8673,9 +8787,61 @@ R"LDP3(
                     d = 0.0 - d;
                 }
                 if (d > tolerance) {
-                    Test.fails = Test.fails + 1;
-                    System.IO.Console.printf("  assertion failed: expected %f +/- %f, got %f\n",
-                                             expected, tolerance, actual);
+                    Test.mark();
+                    System.IO.Console.printf("expected %f +/- %f, got %f\n", expected, tolerance,
+                                             actual);
+                }
+                return;
+            }
+            // Tolerance as a FRACTION of the expected value, for quantities whose scale varies (a
+            // count of cells in a world, an elapsed time): 0.05 means "within 5%". Falls back to an
+            // absolute comparison when the expected value is zero, where a relative one has no meaning.
+            public static method assertNear(double actual, double expected, double relativeTolerance)
+                    returns void {
+                mutable double scale = expected;
+                if (scale < 0.0) {
+                    scale = 0.0 - scale;
+                }
+                mutable double allowed = relativeTolerance * scale;
+                if (scale == 0.0) {
+                    allowed = relativeTolerance;
+                }
+                mutable double d = actual - expected;
+                if (d < 0.0) {
+                    d = 0.0 - d;
+                }
+                if (d > allowed) {
+                    Test.mark();
+                    System.IO.Console.printf("expected %f within %f (relative), got %f\n", expected,
+                                             relativeTolerance, actual);
+                }
+                return;
+            }
+            public static method assertContains(String haystack, String needle) returns void {
+                if (!haystack.contains(needle)) {
+                    Test.mark();
+                    System.IO.Console.printf("expected to contain %s, got %s\n", needle, haystack);
+                }
+                return;
+            }
+            // Reports the FIRST index that differs, not just "arrays differ": with a thousand cells
+            // the index is the whole diagnosis.
+            public static method assertEqualIntArray(int[] actual, int[] expected) returns void {
+                if (actual.length() != expected.length()) {
+                    Test.mark();
+                    System.IO.Console.printf("expected %d elements, got %d\n", expected.length(),
+                                             actual.length());
+                    return;
+                }
+                mutable int i = 0;
+                while (i < actual.length()) {
+                    if (actual[i] != expected[i]) {
+                        Test.mark();
+                        System.IO.Console.printf("differs at index %d: expected %d, got %d\n", i,
+                                                 expected[i], actual[i]);
+                        return;
+                    }
+                    i = i + 1;
                 }
                 return;
             }
@@ -8690,8 +8856,34 @@ R"LDP3(
                     threw = true;
                 }
                 if (!threw) {
-                    Test.fails = Test.fails + 1;
-                    System.IO.Console.println("  assertion failed: expected an exception, none thrown");
+                    Test.mark();
+                    System.IO.Console.println("expected an exception, none thrown");
+                }
+                return;
+            }
+
+            private extern cdecl static method __ldp3_live_bytes() returns long;
+
+            // Live heap bytes on THIS thread. Useful on its own -- a test can assert an allocation
+            // budget for a pass ("this frame allocates under a megabyte"), not only that it leaks
+            // nothing -- and it is what assertNoLeaks below is built from.
+            public static method liveBytes() returns long {
+                return Test.__ldp3_live_bytes();
+            }
+
+            // The assertion only a manually-managed language can offer: run the action and require
+            // that it gave back everything it took. It catches what no correctness assertion can --
+            // the code that produces exactly the right answer and grows by a megabyte a second.
+            // Two limits, both deliberate: it measures the CALLING THREAD (work handed to another
+            // thread is not covered), and it measures the NET total, so a leak exactly balanced by a
+            // matching free inside the same action reads as clean.
+            public static method assertNoLeaks(function<void> action) returns void {
+                long before = Test.__ldp3_live_bytes();
+                action();
+                long after = Test.__ldp3_live_bytes();
+                if (after > before) {
+                    Test.mark();
+                    System.IO.Console.printf("leaked %lld bytes\n", after - before);
                 }
                 return;
             }

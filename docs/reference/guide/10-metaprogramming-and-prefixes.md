@@ -284,9 +284,28 @@ tagged `[Audited]` and wrap it.
 
 Annotations attach declarative metadata to a class, method, or field without changing what that
 declaration *does*. LDP3 keeps a sharp line between language concepts and user metadata: built-in
-modifiers such as `override`, `final`, `static`, and `volatile` are **keywords**, and the few
-built-in annotations use the `@Name` form; annotations you define yourself use the `[Name]` bracket
-form.
+modifiers such as `override`, `final`, `static`, and `volatile` are **keywords**, while everything
+else that decorates a declaration is an annotation.
+
+### The two spellings
+
+An annotation may be written either way, and the two are **exactly** equivalent — same meaning, same
+parsed result:
+
+```ldp3
+[Test]                      @Test
+[Ignore(reason: "flaky")]   @Ignore(reason: "flaky")
+[MaxLength(value: 100)]     @MaxLength(value: 100)
+```
+
+This holds for both the annotations the standard library ships and the ones you declare, because
+there is no difference between them: a built-in is simply an annotation the stdlib declares. Pick one
+spelling and stay with it; this documentation uses `[Name]` throughout.
+
+Arguments are always **named** (`field: value`), never positional, in both spellings.
+
+A compiler **attribute** is a different thing and keeps its own spelling: double brackets, no `@`
+form — `[[no_bounds_check]]` (§11). Attributes instruct the compiler; annotations carry metadata.
 
 ### Declaring an annotation
 

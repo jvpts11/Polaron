@@ -1,4 +1,4 @@
-# The LDP3 Language Reference — 1.0.14
+# The LDP3 Language Reference — 1.0.15
 
 A complete, book-length reference for **LDP3** (Linguagem De Programação 3): an
 object-orientation–mandatory, manually memory-managed systems language that compiles to native
@@ -11,7 +11,7 @@ language, cross-checked against the actual compiler and the embedded standard-li
 these pages describe **what the compiler accepts today**.
 
 A single typeset PDF of everything below:
-**[LDP3-Language-Reference-1.0.14.pdf](LDP3-Language-Reference-1.0.14.pdf)**.
+**[LDP3-Language-Reference-1.0.15.pdf](LDP3-Language-Reference-1.0.15.pdf)**.
 
 ---
 
@@ -52,6 +52,7 @@ verbatim member signatures with explanatory prose.
 |---|---------|----------------|
 | 13 | [Diagnostics](guide/13-diagnostics.md) | The `LDP3-NNNN` code system, the rich why/fix/prevent format, `ldp3 explain`, the code ranges, and editor integration. |
 | 15 | [The Toolchain & Projects](guide/15-toolchain.md) | The `ldp3` driver and its commands, project layout, the `ldp3.toml` manifest, dependencies, and environments. |
+| 16 | [Testing](guide/16-testing.md) | `[Test]`, the assertion set, `[Setup]`/`[BeforeAll]` fixtures, `[Ignore]`, `assertNoLeaks`, testing the whole program, and running the suite. |
 
 ---
 

@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.14")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.15")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.14")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.15")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -4334,7 +4334,79 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DOPT=--test"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/inline_tests.ldp3"
-            "-DEXPECTED=PASS add_basic PASS predicates_and_tolerance PASS still_boolean tests: 3 passed, 0 failed"
+            "-DEXPECTED=PASS MathUtils.add_basic PASS MathUtils.predicates_and_tolerance PASS MathUtils.still_boolean tests: 3 passed, 0 failed, 0 skipped"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # The rest of spec 32.11: [BeforeAll]/[AfterAll] build the class fixture once, [Setup]/[Teardown]
+        # bracket each test, [Ignore] and a runtime Test.skip both report SKIP, and the report is
+        # deterministic (durations are opt-in behind --timing) so it can be compared exactly.
+        add_test(NAME codegen_test_lifecycle_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle.ldp3"
+            "-DEXPECTED=PASS Census.fixture_built_once PASS Census.values_stay_in_band PASS Census.setup_ran_for_this_test SKIP Census.needs_a_bigger_world -- needs a 4096-cell world; this fixture is 64 SKIP Census.forest_regrows -- regrowth is not implemented yet PASS Census.boolean_form_still_works PASS Arithmetic.arrays_and_text tests: 5 passed, 0 failed, 2 skipped"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # --filter narrows the run to matching test names; --list names them without running anything,
+        # which also means a filtered-out class never pays for its [BeforeAll] fixture.
+        add_test(NAME codegen_test_filter_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle.ldp3"
+            "-DRUNARGS=--filter Arithmetic"
+            "-DEXPECTED=PASS Arithmetic.arrays_and_text tests: 1 passed, 0 failed, 0 skipped"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Test.assertNoLeaks over a clean allocate/free round-trip, plus the accounting it is built
+        # on moving in both directions. The second test is what stops the assertion from being green
+        # by construction -- without it, a counter stuck at zero would pass everything.
+        add_test(NAME codegen_test_no_leaks_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_no_leaks.ldp3"
+            "-DEXPECTED=PASS Probe.clean_round_trip_leaves_nothing PASS Probe.a_leak_shows_up_in_the_live_total tests: 2 passed, 0 failed, 0 skipped"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Malformed test declarations are compile errors, not silent no-ops. Each shape gets its own
+        # assertion against the same sample, so a fix that repairs one message cannot mask the others.
+        add_test(NAME test_rejects_duplicate_hook
+            COMMAND ldp3c --test "${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle_bad.ldp3"
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/testbad.ll")
+        set_tests_properties(test_rejects_duplicate_hook PROPERTIES
+            PASS_REGULAR_EXPRESSION "already has a '\\[Setup\\]' method")
+
+        add_test(NAME test_rejects_instance_hook
+            COMMAND ldp3c --test "${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle_bad.ldp3"
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/testbad.ll")
+        set_tests_properties(test_rejects_instance_hook PROPERTIES
+            PASS_REGULAR_EXPRESSION "must be a public static method returning void")
+
+        add_test(NAME test_rejects_hook_that_is_also_a_test
+            COMMAND ldp3c --test "${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle_bad.ldp3"
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/testbad.ll")
+        set_tests_properties(test_rejects_hook_that_is_also_a_test PROPERTIES
+            PASS_REGULAR_EXPRESSION "cannot mark the same method")
+
+        add_test(NAME test_rejects_ignore_without_test
+            COMMAND ldp3c --test "${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle_bad.ldp3"
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/testbad.ll")
+        set_tests_properties(test_rejects_ignore_without_test PROPERTIES
+            PASS_REGULAR_EXPRESSION "has no effect: it only applies to a '\\[Test\\]' method")
+
+        add_test(NAME codegen_test_list_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_lifecycle.ldp3"
+            "-DRUNARGS=--list"
+            "-DEXPECTED=Census.fixture_built_once Census.values_stay_in_band Census.setup_ran_for_this_test Census.needs_a_bigger_world Census.forest_regrows Census.boolean_form_still_works Arithmetic.arrays_and_text"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

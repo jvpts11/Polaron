@@ -1,0 +1,53 @@
+import System.IO.Console;
+import System.Test.Test;
+program TestLifecycleBad;
+
+// The malformed test declarations that `ldp3c --test` must REJECT. Every one of them would otherwise
+// mean a test or a hook that silently does not run, which is worse than not having written it: the
+// suite stays green and nobody learns anything.
+
+public bundle Main {
+    public namespace App {
+
+        public class Broken {
+            // Two hooks of the same kind: they would have no defined order, so the runner would have
+            // to silently pick one.
+            [Setup]
+            public static method firstSetup() returns void {
+                return;
+            }
+
+            [Setup]
+            public static method secondSetup() returns void {
+                return;
+            }
+
+            // A hook must be static and return void -- it is called by the runner, which has no
+            // instance to call it on and nothing to do with a returned value.
+            [BeforeAll]
+            public method instanceHook() returns void {
+                return;
+            }
+
+            // A hook runs AROUND the tests, so it cannot also be one of them.
+            [Teardown]
+            [Test]
+            public static method bothAtOnce() returns void {
+                return;
+            }
+
+            // [Ignore] only means anything on a [Test]. On anything else it reads as "this is
+            // skipped" while the method runs perfectly normally.
+            [Ignore(reason: "this is not a test")]
+            public static method notATest() returns void {
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                return;
+            }
+        }
+    }
+}

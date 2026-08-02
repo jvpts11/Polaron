@@ -12,7 +12,10 @@ endif()
 
 # Unique intermediate file names per test configuration so the suite is safe to run in parallel
 # (ctest -j): every test used to share e2e_out.ll/.exe in WORKDIR and clobber each other's files.
-string(MD5 _tag "${INPUT}|${INPUT2}|${OPT}")
+# RUNARGS and INPUT_FILE are part of the identity too: several tests may run the SAME sample with
+# different arguments (the test runner's --filter / --list, for instance), and leaving them out put
+# those tests back on a shared .exe path, where one ran while another was still linking it.
+string(MD5 _tag "${INPUT}|${INPUT2}|${OPT}|${RUNARGS}|${INPUT_FILE}")
 set(ll "${WORKDIR}/e2e_${_tag}.ll")
 set(exe "${WORKDIR}/e2e_${_tag}.exe")
 

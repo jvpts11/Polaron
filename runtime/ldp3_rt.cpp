@@ -169,6 +169,18 @@ static long long g_prof_total_alloc = 0;
 static long long g_prof_total_free = 0;
 static long long g_prof_class_live[33];  // 0..31 = pool classes; 32 = large (>512 B)
 
+// -------- always-on live-block accounting (Test.assertNoLeaks, spec 32.11) --------
+// Deliberately NOT the profiler counters above: those are interlocked and compiled out of the
+// production runtime, while an assertion a test can write must work in every build. thread_local and
+// non-atomic, matching the thread_local pool free-lists it accounts for -- two ordinary increments,
+// no bus lock -- so it measures the CALLING THREAD's net allocation, which is what a single-threaded
+// test wants and is the documented limit of the assertion.
+static thread_local long long g_live_bytes = 0;
+static thread_local long long g_live_count = 0;
+
+LDP3_RT_API long long __ldp3_live_bytes(void) { return g_live_bytes; }
+LDP3_RT_API long long __ldp3_live_count(void) { return g_live_count; }
+
 static inline void prof_add(long long* p, long long d) {
 #ifdef _WIN32
     _InterlockedExchangeAdd64((volatile long long*)p, d);
@@ -279,6 +291,7 @@ LDP3_RT_API void* __ldp3_malloc(size_t size) {
         ((Ldp3Hdr*)p)->magic = LDP3_MAGIC;
         ((Ldp3Hdr*)p)->cls = LDP3_LARGE;
         ((Ldp3Hdr*)p)->pad = (unsigned)size;  // remember size for the profiler's free accounting
+        g_live_bytes += (long long)size; g_live_count++;
         if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)size); prof_add(&g_prof_class_live[32], 1); }
         return p + 16;
     }
@@ -287,6 +300,7 @@ LDP3_RT_API void* __ldp3_malloc(size_t size) {
     if (n != NULL) {  // reuse: the header (magic + class) is still intact just before the node
         g_ldp3_free[cls] = n->next;
         ((Ldp3Hdr*)((char*)n - 16))->magic = LDP3_MAGIC;  // live again: clear the freed stamp
+        g_live_bytes += (long long)(cls + 1) * 16; g_live_count++;
         if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)(cls + 1) * 16); prof_add(&g_prof_class_live[cls], 1); }
 #ifdef _WIN32
         if (g_memsite_on) memsite_record((Ldp3Hdr*)((char*)n - 16));
@@ -304,6 +318,7 @@ LDP3_RT_API void* __ldp3_malloc(size_t size) {
     g_ldp3_slab_cur += need;
     ((Ldp3Hdr*)p)->magic = LDP3_MAGIC;
     ((Ldp3Hdr*)p)->cls = cls;
+    g_live_bytes += (long long)(cls + 1) * 16; g_live_count++;
     if (g_prof_on) { prof_add(&g_prof_live_count, 1); prof_add(&g_prof_total_alloc, 1); prof_add(&g_prof_live_bytes, (long long)(cls + 1) * 16); prof_add(&g_prof_class_live[cls], 1); }
 #ifdef _WIN32
     if (g_memsite_on) memsite_record((Ldp3Hdr*)p);
@@ -329,10 +344,12 @@ LDP3_RT_API void __ldp3_free(void* ptr) {
     }
     if (h->cls == LDP3_LARGE) {
         h->magic = LDP3_FREED;  // large blocks go back to libc; stamp guards a same-run double free
+        g_live_bytes -= (long long)h->pad; g_live_count--;
         if (g_prof_on) { prof_add(&g_prof_live_count, -1); prof_add(&g_prof_total_free, 1); prof_add(&g_prof_live_bytes, -(long long)h->pad); prof_add(&g_prof_class_live[32], -1); }
         free(h);
         return;
     }
+    g_live_bytes -= (long long)(h->cls + 1) * 16; g_live_count--;
     if (g_prof_on) { prof_add(&g_prof_live_count, -1); prof_add(&g_prof_total_free, 1); prof_add(&g_prof_live_bytes, -(long long)(h->cls + 1) * 16); prof_add(&g_prof_class_live[h->cls], -1); }
 #ifdef _WIN32
     if (g_memsite_on) memsite_release(h);
@@ -2538,6 +2555,99 @@ char* ldp3_read_line(int64_t* out_len) {
 
 // FFI callback test helper (spec 26): a C function that takes a raw function pointer and calls it.
 int ldp3_apply_cb(int (*f)(int), int x) { return f(x); }
+
+// ---- `--test` runner support (spec 32.11) ----
+// The runner itself is synthesized as LLVM IR by codegen, but its argument policy and report
+// formatting live here: they are ordinary string handling, and open-coding them in IR would make
+// every later change (a new flag, a new output format) an exercise in basic-block plumbing.
+// Verdicts are 0 = pass, 1 = fail, 2 = skip.
+//
+// Default output is DETERMINISTIC on purpose -- a test report is diffed, pasted into a review, and
+// compared against a golden file, so durations are opt-in behind --timing rather than on by default.
+static const char* g_test_filter = 0;
+static int g_test_list_only = 0;
+static int g_test_timing = 0;
+static int g_test_pass = 0;
+static int g_test_fail = 0;
+static int g_test_skip = 0;
+static long long g_test_ns = 0;
+static const char* g_test_current = 0;  // the test being run, for the failure header
+static int g_test_header_done = 0;      // its "FAIL <name>" header has already been printed
+
+// Parses the runner's own command line. Unknown arguments are ignored: a project may pass its
+// program's flags through `ldp3 test` and they are none of the runner's business.
+LDP3_RT_API void __ldp3_test_begin(int argc, char** argv) {
+    for (int i = 1; i < argc; i++) {
+        const char* a = argv[i];
+        if (strcmp(a, "--list") == 0) g_test_list_only = 1;
+        else if (strcmp(a, "--timing") == 0) g_test_timing = 1;
+        else if (strcmp(a, "--filter") == 0 && i + 1 < argc) g_test_filter = argv[++i];
+        else if (strncmp(a, "--filter=", 9) == 0) g_test_filter = a + 9;
+    }
+}
+
+// Whether this test should run. Under --list it prints the name and answers no, so the runner needs
+// only ONE code path: nothing runs, and a class's [BeforeAll] fixture is never paid for -- which is
+// the whole point of listing.
+LDP3_RT_API int __ldp3_test_should_run(const char* name) {
+    if (g_test_filter != 0 && strstr(name, g_test_filter) == 0) return 0;
+    if (g_test_list_only) { printf("%s\n", name); return 0; }
+    return 1;
+}
+
+// Called just before a test runs. Names it, so the first failing assertion inside it can print the
+// "FAIL <name>" header ITSELF -- otherwise every detail line lands above the verdict it belongs to,
+// and the report reads backwards.
+LDP3_RT_API void __ldp3_test_start(const char* name) {
+    g_test_current = name;
+    g_test_header_done = 0;
+}
+
+// Called by Test.mark() before it prints a failure detail: emits the header once per test.
+LDP3_RT_API void __ldp3_test_detail(void) {
+    if (g_test_header_done) return;
+    g_test_header_done = 1;
+    printf("FAIL %s\n", g_test_current != 0 ? g_test_current : "");
+}
+
+LDP3_RT_API void __ldp3_test_record(const char* name, int verdict, long long ns, const char* why) {
+    g_test_ns += ns;
+    const int headed = g_test_header_done;  // the FAIL line is already out; do not repeat it
+    g_test_header_done = 0;
+    if (verdict == 2) {
+        g_test_skip++;
+        printf("SKIP %s -- %s\n", name, (why != 0 && *why != 0) ? why : "no reason given");
+        return;
+    }
+    const char* tag = verdict == 1 ? "FAIL" : "PASS";
+    if (verdict == 1) g_test_fail++; else g_test_pass++;
+    if (verdict == 1 && headed) {
+        if (g_test_timing) printf("  (%.1f ms)\n", (double)ns / 1000000.0);
+        return;
+    }
+    if (g_test_timing) printf("%s %s (%.1f ms)\n", tag, name, (double)ns / 1000000.0);
+    else printf("%s %s\n", tag, name);
+}
+
+// Prints the summary and returns the process exit code: non-zero if anything failed.
+LDP3_RT_API int __ldp3_test_summary(void) {
+    if (g_test_list_only) return 0;
+    if (g_test_timing)
+        printf("tests: %d passed, %d failed, %d skipped in %.1f ms\n", g_test_pass, g_test_fail,
+               g_test_skip, (double)g_test_ns / 1000000.0);
+    else
+        printf("tests: %d passed, %d failed, %d skipped\n", g_test_pass, g_test_fail, g_test_skip);
+    return g_test_fail != 0 ? 1 : 0;
+}
+
+// The C string inside an LDP3 String, for the few places a runtime helper takes one (the skip
+// reason). Null-safe: an unset String reads as empty rather than crashing the report.
+LDP3_RT_API const char* __ldp3_str_cstr(void* s) {
+    struct Ldp3Str { long long len; char* data; long long hash; };
+    if (s == 0) return "";
+    const char* d = ((Ldp3Str*)s)->data;
+    return d != 0 ? d : "";
+}
 
 #ifdef __cplusplus
 }  // extern "C"
