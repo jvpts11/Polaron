@@ -1,0 +1,56 @@
+import System.Test.Test;
+
+// [BeforeAll] and [AfterAll] bracket the tests of the class that DECLARES them, and nothing else.
+// A test in another class that reads the fixture through a static of the owner is reading state the
+// owner may already have torn down -- and it fails as a read of freed memory, in a suite whose output
+// showed nothing but passes, which is about the worst diagnostic a test framework can offer.
+//
+// Here Readers.reads_somebody_elses_world calls Fixture.world(), and Fixture declares [AfterAll].
+
+program CrossClassFixture;
+
+public bundle main {
+    public namespace app {
+
+        public class Fixture {
+            private static mutable int[] built;
+
+            [BeforeAll]
+            public static method build() returns void {
+                Fixture.built = new int[4]();
+                Fixture.built[0] = 7;
+                return;
+            }
+
+            [AfterAll]
+            public static method drop() returns void {
+                delete Fixture.built;
+                return;
+            }
+
+            public static method world() returns int {
+                return Fixture.built[0];
+            }
+
+            [Test]
+            public static method reads_its_own_world() returns void {
+                Test.assertEqual(Fixture.world(), 7);   // fine: this class owns the fixture
+                return;
+            }
+        }
+
+        public class Readers {
+            [Test]
+            public static method reads_somebody_elses_world() returns void {
+                Test.assertEqual(Fixture.world(), 7);   // warns: the fixture may already be gone
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                return;
+            }
+        }
+    }
+}

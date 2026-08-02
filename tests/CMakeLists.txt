@@ -168,6 +168,15 @@ add_test(NAME sema_rejects_duplicate_field
 set_tests_properties(sema_rejects_duplicate_field PROPERTIES
     PASS_REGULAR_EXPRESSION "field 'n' is already declared in class 'Box'")
 
+# spec 32.11: a test that reads another class's [BeforeAll]/[AfterAll] fixture is reading state that
+# class may already have torn down. It cost a whole afternoon in agents-exe, where it surfaced as an
+# access violation in a suite that had printed nothing but passes. Warned, not rejected: the compiler
+# cannot know the lifetime, only that the shape is the one that goes wrong.
+add_test(NAME sema_warns_cross_class_fixture
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/cross_class_fixture_bad.ldp3")
+set_tests_properties(sema_warns_cross_class_fixture PROPERTIES
+    PASS_REGULAR_EXPRESSION "this test reads 'Fixture', which owns a \\[BeforeAll\\]/\\[AfterAll\\] fixture, from class 'Readers'")
+
 # The RETURN must check the type of what it returns, not only its nullability (LDP3-0303). Without it,
 # `return someDog;` from a method `returns Cat` produced valid IR and reinterpreted the object -- vtable
 # pointer included -- because every class is an opaque `ptr` at the LLVM level. The sample also holds the

@@ -195,6 +195,7 @@ private:
     // someone runs the suite -- a test that silently does not run is the one failure mode a test
     // framework must never have.
     void validateTestDeclarations(const ast::Program& program);
+    void collectFixtureOwners(const ast::Program& program);
     void validateTestCases(const ast::ClassDecl& cls, const ast::MethodDecl& m,
                            const ast::AnnotationUse* cases, const std::string& sym);
     void checkAnnotationUses(const std::vector<ast::AnnotationUse>& uses);
@@ -372,6 +373,13 @@ private:
     bool libraryMode_ = false;      // compiling a bundle to a .ldb: a missing `main` is allowed
     bool testMode_ = false;         // `ldp3c --test`: a missing `main` is allowed (runner is synthetic)
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
+    // spec 32.11: the classes that declare a [BeforeAll]/[AfterAll] fixture, and whether the method
+    // being analyzed is a [Test] (or one of the per-test hooks around it). A test that reaches into
+    // ANOTHER class's fixture reads state whose lifetime it does not control -- see the warning at the
+    // static-call site.
+    std::unordered_set<std::string> fixtureOwners_;
+    std::unordered_set<std::string> fixtureWarned_;  // "Reader.method|Owner", warned once each
+    bool inTestMethod_ = false;
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     std::string enclosingClass_;  // class the current method belongs to, set even for static methods
                                   // (unlike currentClass_) -- used to point unqualified calls at their owner
