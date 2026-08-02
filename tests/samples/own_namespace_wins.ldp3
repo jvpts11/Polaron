@@ -1,0 +1,50 @@
+import System.IO.Console;
+program OwnNamespaceWins;
+
+// A type of your own, in a namespace of your own, named the same as one in the standard library --
+// and referenced from a SECOND namespace of your own.
+//
+// This used to fail, and the reason was worth writing down: the pass that disambiguates a name
+// declared in two namespaces decided "is this the standard library?" by comparing the NAMESPACE
+// NAME. The standard library has a namespace called `App` -- and `App` is the single most likely
+// name for a namespace in somebody's own program -- so a reference from a user's `App` to any
+// ambiguous type resolved to the standard library's version of it. The failure surfaced as
+// `class 'IO__Paths' has no method 'one'`, naming a mangled class the program never wrote.
+//
+// Any of IO, Math, Runtime, Errors, Collections, Concurrency or Ecs would have done the same thing.
+
+public bundle Own {
+    public namespace World {
+        // `Paths` is System.IO.Paths in the standard library, which this program never imports.
+        public class Paths {
+            public method one() returns int {
+                return 41;
+            }
+        }
+        // And `Scanner` is System.IO.Scanner, reached as a type rather than a static call. (`File`
+        // would not do here: it is a type the compiler itself provides, which is a different rule
+        // and rejects the declaration outright.)
+        public class Scanner {
+            private mutable int n;
+            public constructor Scanner(int n) {
+                this.n = n;
+            }
+            public method value() returns int {
+                return this.n;
+            }
+        }
+    }
+
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Paths* p = new Paths() on heap;
+                Scanner* f = new Scanner(1) on heap;
+                System.IO.Console.println($"total {p.one() + f.value()}");
+                delete f;
+                delete p;
+                return;
+            }
+        }
+    }
+}

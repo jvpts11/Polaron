@@ -1341,15 +1341,19 @@ void resolveTypeAliases(ast::Program& program) {
 void qualifyNamespaces(ast::Program& program) {
     // 1. Index each simple type name to the set of namespaces declaring it.
     std::map<std::string, std::set<std::string>> declNs;
-    // Which namespaces belong to the standard library, and where in it each name is declared. The
-    // stdlib does not import itself -- its namespaces refer to each other's types directly -- so
-    // without this it is the one body of code in the program that cannot say which `Regex` it means.
-    std::set<std::string> preludeNs;
+    // Where in the standard library each name is declared. The stdlib does not import itself -- its
+    // namespaces refer to each other's types directly -- so without this it is the one body of code
+    // in the program that cannot say which `Regex` it means.
     std::map<std::string, std::string> preludeOwner;
+    // And the same index kept per bundle, so "does my own program declare this name, and where"
+    // can be answered later. It has to be a SNAPSHOT: the rewriting loop below renames declarations
+    // as it walks, so by the time it reaches the second namespace of a bundle the first one's class
+    // is already called `World__Paths` and looking for `Paths` there finds nothing.
+    std::map<std::string, std::map<std::string, std::set<std::string>>> bundleDecl;
     for (auto& b : program.bundles)
         for (auto& ns : b.namespaces) {
-            if (b.isPrelude) preludeNs.insert(ns.name);
             auto note = [&](const std::string& n) {
+                bundleDecl[b.name][n].insert(ns.name);
                 declNs[n].insert(ns.name);
                 if (b.isPrelude) preludeOwner[n] = ns.name;
             };
@@ -1428,9 +1432,36 @@ void qualifyNamespaces(ast::Program& program) {
                 // `class Regex` in your own program produced four errors inside `<prelude>` saying
                 // `Regex` was undeclared, and declaring `class File` produced four saying the
                 // standard library should import YOUR type.
-                if (owner.empty() && preludeNs.count(ns.name) > 0)
+                // `b.isPrelude`, and NOT "a namespace with a prelude namespace's name". The
+                // standard library has a namespace called `App` (CircuitBreaker and friends), and
+                // `App` is the single most likely name for a namespace in somebody's own program --
+                // so every ambiguous type referenced from a user's `App` was resolved to the
+                // STANDARD LIBRARY'S, and the failure surfaced as an error about a mangled class
+                // nobody had written. Any of IO, Math, Runtime, Errors, Collections, Concurrency or
+                // Ecs would have done the same.
+                if (owner.empty() && b.isPrelude)
                     if (auto po = preludeOwner.find(amb); po != preludeOwner.end())
                         owner = po->second;
+                // And the mirror of it, which was missing: OUTSIDE the prelude, a bare name means
+                // this program's own type before it means the standard library's. Without this, a
+                // class named `Paths` in one namespace was invisible from the next namespace along
+                // -- the reference kept the bare name, the declaration had been renamed out from
+                // under it, and it landed on `System.IO.Paths`, reported as "class 'IO__Paths' has
+                // no method 'one'" against a name the program never wrote. The stdlib requires an
+                // explicit import to be visible at all, so it cannot be what an unqualified name
+                // in your own bundle resolves to.
+                //
+                // Only when the bundle declares it in exactly one place: two namespaces of your own
+                // declaring the same name is a genuine ambiguity, and that one still needs saying
+                // which you meant.
+                if (owner.empty() && !b.isPrelude) {
+                    auto bd = bundleDecl.find(b.name);
+                    if (bd != bundleDecl.end()) {
+                        auto where = bd->second.find(amb);
+                        if (where != bd->second.end() && where->second.size() == 1)
+                            owner = *where->second.begin();
+                    }
+                }
                 if (!owner.empty()) {
                     subst[amb] = qualified(owner, amb);
                     program.qualifiedTypes.insert(qualified(owner, amb));
