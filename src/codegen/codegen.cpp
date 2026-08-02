@@ -13171,14 +13171,8 @@ struct CodeGenerator::Impl {
         }
 
         // Entry point: run every class's onClassLoad hook once, before main (spec 32.5).
-        if (auto eit = functions.find("@entry"); eit != functions.end() && fn == eit->second) {
-            for (const ast::Bundle& b : program.bundles)
-                for (const ast::Namespace& n : b.namespaces)
-                    for (const ast::ClassDecl& c : n.classes)
-                        // `lazy import` defers a class's load to its first instance (spec 37.3).
-                        if (c.onClassLoad && !isLazyImport(c.name))
-                            builder.CreateCall(functions[c.name + ".__onClassLoad"]);
-        }
+        if (auto eit = functions.find("@entry"); eit != functions.end() && fn == eit->second)
+            emitClassLoadHooks();
 
         emitBlock(body, /*newScope=*/false);  // emitBody owns function-level teardown (+ contracts)
         if (builder.GetInsertBlock()->getTerminator() == nullptr) {
@@ -13922,6 +13916,21 @@ struct CodeGenerator::Impl {
         benchMethods.push_back(std::move(bc));
     }
 
+    // Every class's onClassLoad hook, once, at the top of the entry point (spec 32.5). Called from
+    // BOTH entry points -- the program's own `main` and the synthesized --test runner -- because a
+    // test runs against a program whose classes must be as loaded as they are in a normal run. The
+    // --test runner used to skip this, and the result was a suite that panicked in its first fixture
+    // on a table its onClassLoad fills: every test in agents-exe failed for a reason none of them
+    // were about.
+    void emitClassLoadHooks() {
+        for (const ast::Bundle& b : program.bundles)
+            for (const ast::Namespace& n : b.namespaces)
+                for (const ast::ClassDecl& c : n.classes)
+                    // `lazy import` defers a class's load to its first instance (spec 37.3).
+                    if (c.onClassLoad && !isLazyImport(c.name))
+                        builder.CreateCall(functions[c.name + ".__onClassLoad"]);
+    }
+
     // Emits `body()` guarded by `cond`, leaving the builder on the join block.
     void emitIfThen(llvm::Function* fn, llvm::Value* cond, const std::function<void()>& body) {
         llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context, "then", fn);
@@ -13976,6 +13985,7 @@ struct CodeGenerator::Impl {
         llvm::Value* argc = &*argIt++;
         llvm::Value* argv = &*argIt;
         builder.CreateCall(beginFn, {argc, argv});
+        emitClassLoadHooks();  // the program's classes load before its tests run, exactly as in main
 
         // A prelude static, by "Class.method". Absent only if the stdlib was not linked in.
         auto prelude = [&](const char* sym) -> llvm::Function* {
