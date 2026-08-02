@@ -1080,6 +1080,21 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A user type sharing a standard-library name, referenced from a second namespace of the same
+        # program. The pass that disambiguates such names asked "is this the standard library?" by
+        # comparing the NAMESPACE NAME -- and the stdlib has a namespace called `App`, which is the
+        # likeliest name anybody gives a namespace of their own. Every ambiguous type referenced from
+        # a user's `App` therefore resolved to the stdlib's, reported as a method missing from a
+        # mangled class the program never wrote. Runs rather than only checks, so a resolution that
+        # type-checks but binds to the wrong class still fails.
+        add_test(NAME codegen_own_namespace_wins COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/own_namespace_wins.ldp3"
+            "-DEXPECTED=total 42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # M2: variables and arithmetic with precedence; a + b * 2 = 50.
         add_test(NAME codegen_expr_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
