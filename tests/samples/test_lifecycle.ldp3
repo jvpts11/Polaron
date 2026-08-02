@@ -1,0 +1,146 @@
+import System.IO.Console;
+import System.Test.Test;
+program TestLifecycle;
+
+// The test facilities of spec 32.11 beyond a bare [Test]: the lifecycle hooks that let an expensive
+// fixture be built once, [Ignore] for a known-broken case, the Test.checking label that names what
+// broke, a runtime Test.skip for an unmet precondition, and the range assertions.
+//
+// Every annotation here is written `[Name]`. `@Name` means exactly the same thing (spec 14.1); the
+// bracket spelling is the one this codebase uses.
+
+public bundle Main {
+    public namespace App {
+
+        // Stands in for an expensive fixture -- a generated world, a parsed file: something built ONCE
+        // for the whole class rather than once per test, which is the difference between a suite that
+        // runs in a second and one nobody runs.
+        public class Census {
+            private static mutable int[] cells;      // the class fixture, built by [BeforeAll]
+            private static mutable int[] scratch;    // a per-test buffer, from [Setup]
+            private static mutable int builds = 0;
+            private static mutable int setups = 0;
+
+            [BeforeAll]
+            public static method buildWorld() returns void {
+                Census.cells = new int[64]();
+                mutable int i = 0;
+                while (i < 64) {
+                    Census.cells[i] = i % 7;
+                    i = i + 1;
+                }
+                Census.builds = Census.builds + 1;
+                return;
+            }
+
+            [AfterAll]
+            public static method dropWorld() returns void {
+                delete Census.cells;
+                return;
+            }
+
+            [Setup]
+            public static method openScratch() returns void {
+                Census.scratch = new int[8]();
+                Census.setups = Census.setups + 1;
+                return;
+            }
+
+            [Teardown]
+            public static method closeScratch() returns void {
+                delete Census.scratch;
+                return;
+            }
+
+            [Test]
+            public static method fixture_built_once() returns void {
+                Test.checking("the class fixture is built exactly once");
+                Test.assertEqual(Census.builds, 1);
+                Test.assertEqual(Census.cells.length(), 64);
+                return;
+            }
+
+            [Test]
+            public static method values_stay_in_band() returns void {
+                Test.checking("every cell holds a value in 0..6");
+                mutable int i = 0;
+                mutable int total = 0;
+                while (i < Census.cells.length()) {
+                    Test.assertBetween(Census.cells[i], 0, 6);
+                    total = total + Census.cells[i];
+                    i = i + 1;
+                }
+                Test.checking("the mean sits near 3");
+                Test.assertNear(cast<double>(total) / 64.0, 3.0, 0.10);
+                return;
+            }
+
+            [Test]
+            public static method setup_ran_for_this_test() returns void {
+                Test.checking("[Setup] gives each test a fresh scratch buffer");
+                Test.assertEqual(Census.scratch.length(), 8);
+                Test.assertAtLeast(Census.setups, 1);
+                Test.assertAtMost(Census.builds, 1);
+                return;
+            }
+
+            // A runtime skip: the precondition is not met, which is not a defect. The test reports
+            // SKIP with its reason instead of passing on a technicality or failing on something it
+            // never got to check.
+            [Test]
+            public static method needs_a_bigger_world() returns void {
+                if (Census.cells.length() < 4096) {
+                    Test.skip("needs a 4096-cell world; this fixture is 64");
+                    return;
+                }
+                Test.fail("the guard above should have skipped this test");
+                return;
+            }
+
+            // Known broken, kept visible in the report instead of commented out and forgotten.
+            [Ignore(reason: "regrowth is not implemented yet")]
+            [Test]
+            public static method forest_regrows() returns void {
+                Test.fail("this would fail today, which is why it is ignored");
+                return;
+            }
+
+            // The boolean form: the test IS its own verdict.
+            [Test]
+            public static method boolean_form_still_works() returns boolean {
+                return Census.cells.length() == 64;
+            }
+        }
+
+        // A second class, with no hooks of its own: proves the hooks above belong to Census alone.
+        public class Arithmetic {
+            [Test]
+            public static method arrays_and_text() returns void {
+                Test.checking("two equal arrays compare equal");
+                int[] a = new int[3]();
+                int[] b = new int[3]();
+                mutable int i = 0;
+                while (i < 3) {
+                    a[i] = i * 2;
+                    b[i] = i * 2;
+                    i = i + 1;
+                }
+                Test.assertEqualIntArray(a, b);
+                delete a;
+                delete b;
+
+                Test.checking("substring and inequality");
+                Test.assertContains("mountain share out of band", "share");
+                Test.assertNotEqual(7, 8);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("run me with --test");
+                return;
+            }
+        }
+    }
+}

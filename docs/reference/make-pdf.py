@@ -2,7 +2,7 @@
 # Assemble the LDP3 language reference (docs/reference/*.md) into one styled HTML document, ready to
 # print to PDF with a headless browser. Regenerate the PDF with:
 #   python docs/reference/make-pdf.py
-#   msedge --headless --print-to-pdf=docs/reference/LDP3-Language-Reference-1.0.14.pdf \
+#   msedge --headless --print-to-pdf=docs/reference/LDP3-Language-Reference-1.0.15.pdf \
 #          --no-pdf-header-footer docs/reference/_reference.html
 import datetime
 import html as _html
@@ -12,7 +12,7 @@ import re
 import markdown
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "1.0.14"
+VERSION = "1.0.15"
 
 # Order the documents for the PDF: the eleven language chapters (each already carries its own
 # "# N. Title" heading), then the six standard-library slices. Titles here drive the table of
@@ -33,6 +33,7 @@ DOCS = [
     ("Diagnostics", "guide/13-diagnostics.md"),
     ("Functions, Lambdas & Tuples", "guide/14-functions-and-lambdas.md"),
     ("The Toolchain & Projects", "guide/15-toolchain.md"),
+    ("Testing", "guide/16-testing.md"),
     ("Standard Library — Concurrency & Core", "stdlib/concurrency-and-core.md"),
     ("Standard Library — Collections", "stdlib/collections.md"),
     ("Standard Library — Data Structures & ECS", "stdlib/data-structures.md"),

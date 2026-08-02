@@ -788,15 +788,141 @@ Fixed-point money as integer cents (spec 34), avoiding floating-point rounding.
 
 # System.Test
 
-## Test (annotation)
+Tests live next to the code they test, as annotated static methods. There are no `test` or `assert`
+keywords — it is all annotations, static methods and classes. `ldp3 test` (or `ldp3c --test`) finds
+them, runs them, and exits non-zero if any failed.
+
+Every annotation below may also be written `@Name`; the two spellings are identical (§10.3).
+
+## The annotations
 
 **Namespace:** `System.Test` · **Import:** `import System.Test.Test;`
 
-Marker annotation (spec 32.11): a `public static method` returning `boolean` tagged `[Test]` is an
-inline test, discovered and run by `ldp3 test`. (The spec writes `@Test`, but LDP3 annotations use
-`[Name]` brackets.)
+| Annotation | Applies to | Meaning |
+|---|---|---|
+| `[Test]` | `public static` method returning `boolean` or `void` | An inline test. Returning `boolean` makes the test its own verdict; returning `void` takes the verdict from its `Test.assert*` calls. |
+| `[Ignore(reason: "...")]` | a `[Test]` method | Reported as SKIP with the reason, never run. Keeps a known-broken case visible instead of commented out. |
+| `[BeforeAll]` / `[AfterAll]` | `public static` method returning `void` | Run **once** around the whole class — where an expensive fixture is built and released. Skipped entirely when `--filter` selected none of the class's tests. |
+| `[Setup]` / `[Teardown]` | `public static` method returning `void` | Run around **each** test of the class. |
 
-- `public annotation Test {}` — the marker annotation, applied as `[Test]`.
+At most one hook of each kind per class: two would have no defined order. A malformed test or hook
+(not static, wrong return type, `[Ignore]` on something that is not a test, a hook that is also a
+test) is a **compile error**, not a silent no-op.
+
+```ldp3
+import System.Test.Test;
+
+public class Census {
+    private static mutable int[] cells;
+
+    [BeforeAll]
+    public static method buildWorld() returns void {
+        Census.cells = new int[64]();
+        return;
+    }
+
+    [AfterAll]
+    public static method dropWorld() returns void {
+        delete Census.cells;
+        return;
+    }
+
+    [Test]
+    public static method values_stay_in_band() returns void {
+        Test.checking("every cell holds a value in 0..6");
+        mutable int i = 0;
+        while (i < Census.cells.length()) {
+            Test.assertBetween(Census.cells[i], 0, 6);
+            i = i + 1;
+        }
+        return;
+    }
+
+    [Ignore(reason: "regrowth is not implemented yet")]
+    [Test]
+    public static method forest_regrows() returns void {
+        Test.fail("would fail today");
+        return;
+    }
+}
+```
+
+## Test
+
+**Namespace:** `System.Test` · **Import:** `import System.Test.Test;`
+
+The assertions. Each records a failure and prints what went wrong; the test's verdict is "no
+assertion failed". The runner resets the state around every test, so nothing bleeds between them.
+
+**Naming the check**
+
+- `public static method checking(String what) returns void` — names what the assertions that follow
+  are checking. A bare `assertBetween(pct, 8, 22)` reports only numbers and leaves the reader
+  guessing *which* criterion broke; with a label the failure reads
+  `[mountain share stays in band] expected 8..22, got 31`. Cleared at the start of every test, so it
+  costs nothing when unused.
+- `public static method fail(String why) returns void` — record a failure directly, for a check no
+  assertion covers.
+- `public static method skip(String why) returns void` — give up at runtime on an unmet precondition
+  (no GPU, no network, a fixture that could not be built). Reported as SKIP, which is neither a pass
+  nor a defect.
+
+**Equality and predicates**
+
+- `assertEqual(int actual, int expected)` · `assertNotEqual(int actual, int unexpected)`
+- `assertEqualLong(long actual, long expected)`
+- `assertEqualString(String actual, String expected)`
+- `assertTrue(boolean condition)` · `assertFalse(boolean condition)`
+- `assertContains(String haystack, String needle)`
+- `assertEqualIntArray(int[] actual, int[] expected)` — reports the **first differing index**, which
+  with a thousand cells is the whole diagnosis.
+
+**Ranges and tolerances** — most measurements of a generated or simulated system are only ever
+"within an acceptable band", and writing that as `assertTrue(v >= 8 && v <= 22)` throws away the
+numbers the report needs.
+
+- `assertBetween(int value, int low, int high)` — inclusive.
+- `assertAtLeast(int value, int minimum)` · `assertAtMost(int value, int maximum)`
+- `assertBetweenDouble(double value, double low, double high)`
+- `assertWithin(double actual, double expected, double tolerance)` — absolute tolerance.
+- `assertNear(double actual, double expected, double relativeTolerance)` — tolerance as a *fraction*
+  of the expected value, for quantities whose scale varies. `0.05` means "within 5%". Falls back to
+  an absolute comparison when the expected value is zero.
+- `assertThrows<E>(function<void> action)` — the action must throw `E`.
+
+**Memory** — the assertion only a manually-managed language can offer.
+
+- `assertNoLeaks(function<void> action)` — the action must give back everything it took. Measures the
+  **calling thread**'s **net** live bytes, so work handed to another thread is not covered and a leak
+  exactly balanced by a matching free reads as clean. The assertion machinery allocates too
+  (`checking` stores its label as a `String`), so keep `Test.*` calls out of the measured action.
+- `liveBytes() returns long` — the live heap total on this thread, for asserting an allocation
+  *budget* rather than a leak.
+
+The runner also calls `reset()`, `failures()`, `wasSkipped()` and `skipReason()`; they are public so
+a custom harness can reuse the same state, but a test does not need them.
+
+## Running them
+
+| Command | What it does |
+|---|---|
+| `ldp3 test` | Build and run the project's tests. |
+| `ldp3 test -- --filter <text>` | Run only the tests whose `Class.method` name contains `<text>`. |
+| `ldp3 test -- --list` | Print the test names without running anything. |
+| `ldp3 test -- --timing` | Add per-test and total durations to the report. |
+
+A `[library]` project is tested the same way: `ldp3 test` builds its sources as an executable (the
+runner supplies the entry point) instead of the usual `.ldb` bundle.
+
+The report is **deterministic by default** — durations are opt-in behind `--timing` — so it can be
+diffed, pasted into a review, or compared against a golden file:
+
+```
+PASS Census.values_stay_in_band
+SKIP Census.forest_regrows -- regrowth is not implemented yet
+FAIL Census.setup_ran_for_this_test
+tests: 1 passed, 1 failed, 1 skipped
+```
 
 ## Assert
 

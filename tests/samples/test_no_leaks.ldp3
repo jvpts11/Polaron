@@ -1,0 +1,63 @@
+import System.IO.Console;
+import System.Test.Test;
+program TestNoLeaks;
+
+// Test.assertNoLeaks (spec 32.11): the assertion only a manually-managed language can offer. A
+// program can be entirely correct and still be wrong -- right answer, growing by a megabyte a second
+// -- and no correctness assertion can see that.
+//
+// The second test deliberately leaks, so the suite proves the assertion is not merely always green.
+
+public bundle Main {
+    public namespace App {
+
+        public class Node {
+            private mutable int value;
+            public constructor Node(int v) {
+                this.value = v;
+            }
+            public method value() returns int {
+                return this.value;
+            }
+        }
+
+        public class Probe {
+            [Test]
+            public static method clean_round_trip_leaves_nothing() returns void {
+                Test.checking("allocate and free gives everything back");
+                Test.assertNoLeaks(lambda() returns void {
+                    Node* n = new Node(7) on heap;
+                    delete n;
+                });
+                return;
+            }
+
+            // Proves the accounting behind assertNoLeaks actually moves, so the assertion above is
+            // not green by construction: allocate without freeing and watch the live total rise,
+            // then free and watch it come back.
+            //
+            // Every measurement is taken with NO Test.* call between it and the next: the assertion
+            // machinery allocates too (Test.checking stores its label as a String), so a call in the
+            // middle would show up as movement the test never caused.
+            [Test]
+            public static method a_leak_shows_up_in_the_live_total() returns void {
+                Test.checking("a live object raises the byte total, and freeing it puts it back");
+                long before = Test.liveBytes();
+                Node* leaked = new Node(7) on heap;
+                long held = Test.liveBytes();
+                delete leaked;
+                long after = Test.liveBytes();
+                Test.assertTrue(held > before);
+                Test.assertEqualLong(after, before);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("run me with --test");
+                return;
+            }
+        }
+    }
+}
