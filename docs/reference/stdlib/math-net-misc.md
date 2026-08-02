@@ -804,10 +804,17 @@ Every annotation below may also be written `@Name`; the two spellings are identi
 | `[Ignore(reason: "...")]` | a `[Test]` method | Reported as SKIP with the reason, never run. Keeps a known-broken case visible instead of commented out. |
 | `[BeforeAll]` / `[AfterAll]` | `public static` method returning `void` | Run **once** around the whole class — where an expensive fixture is built and released. Skipped entirely when `--filter` selected none of the class's tests. |
 | `[Setup]` / `[Teardown]` | `public static` method returning `void` | Run around **each** test of the class. |
+| `[Cases(source: "m")]` | a `[Test]` taking **one** parameter | Runs once per element of the array `m` returns, reported as `Class.method[i]`. `m` must be a `public static` method of the same class returning an array of the parameter's type. |
+| `[Repeat(times: N)]` | a `[Test]` method | Runs the whole test N times and reports one verdict, naming the runs that failed. For flakiness. |
+| `[ExpectedToFail(reason: "...")]` | a `[Test]` method | Inverts the verdict: failing is expected (XFAIL), **passing is a failure**. Unlike `[Ignore]`, it still runs. |
+| `[Tag(name: "...")]` | a `[Test]` method, repeatable | Groups tests for `--tag` / `--exclude-tag`. |
+| `[MaxTime(ms: N)]` | a `[Test]` method | A passing test that took longer becomes a failure. A budget checked after the fact, not a timeout: it does not abort a hang. |
+| `[Benchmark(iterations: N, warmup: M)]` | `public static` method, no arguments, returning `void` | Measured, never judged: warmup pass, then the timed loop, reported as ns/op. Runs only under `--bench`. |
 
-At most one hook of each kind per class: two would have no defined order. A malformed test or hook
-(not static, wrong return type, `[Ignore]` on something that is not a test, a hook that is also a
-test) is a **compile error**, not a silent no-op.
+At most one hook of each kind per class: two would have no defined order. A malformed test, hook or
+annotation — not static, wrong return type, `[Ignore]` on something that is not a test, a hook or a
+benchmark that is also a test, a parameter with no `[Cases]`, a `[Cases]` source of the wrong type —
+is a **compile error**, not a silent no-op.
 
 ```ldp3
 import System.Test.Test;
@@ -870,12 +877,21 @@ assertion failed". The runner resets the state around every test, so nothing ble
 **Equality and predicates**
 
 - `assertEqual(int actual, int expected)` · `assertNotEqual(int actual, int unexpected)`
-- `assertEqualLong(long actual, long expected)`
-- `assertEqualString(String actual, String expected)`
+- `assertEqualLong(long actual, long expected)` · `assertEqualString(String actual, String expected)`
+- `assertEqualChar(char, char)` · `assertEqualBoolean(boolean, boolean)` · `assertEqualDouble(double, double)`
+  (exact — almost always the wrong tool; reach for `assertWithin`/`assertNear`)
 - `assertTrue(boolean condition)` · `assertFalse(boolean condition)`
-- `assertContains(String haystack, String needle)`
-- `assertEqualIntArray(int[] actual, int[] expected)` — reports the **first differing index**, which
-  with a thousand cells is the whole diagnosis.
+- `assertContains(String haystack, String needle)` · `assertStartsWith(String, String)` ·
+  `assertEndsWith(String, String)`
+
+**Arrays** — every one of these reports the **first differing index**, which with a thousand elements
+is the whole diagnosis.
+
+- `assertEqualIntArray(int[], int[])` · `assertEqualLongArray(long[], long[])` ·
+  `assertEqualStringArray(String[], String[])`
+- `assertEqualDoubleArray(double[] actual, double[] expected, double tolerance)` — element-wise; a
+  computed array is never bit-identical.
+- `assertSorted(int[] values)` — ascending, naming the first pair that breaks it.
 
 **Ranges and tolerances** — most measurements of a generated or simulated system are only ever
 "within an acceptable band", and writing that as `assertTrue(v >= 8 && v <= 22)` throws away the
@@ -889,6 +905,19 @@ numbers the report needs.
   of the expected value, for quantities whose scale varies. `0.05` means "within 5%". Falls back to
   an absolute comparison when the expected value is zero.
 - `assertThrows<E>(function<void> action)` — the action must throw `E`.
+- `assertDoesNotThrow(function<void> action)` — and this one must not. Without it, a test that
+  swallows an unexpected exception higher up reads as a pass.
+
+**Output** — for code whose job is to produce text.
+
+- `captureOutput(function<void> action) returns String` — runs the action with its printing diverted
+  and returns that text.
+- `assertMatchesGolden(String actual, String goldenPath)` — compares against a file of expected text
+  and reports the **first differing line**; `--update-golden` rewrites the file instead, which is how
+  an intended change is accepted.
+- `artifact(String path)` — names a file the test produced, so a failure points at the evidence.
+- `tempDir() returns String` — a scratch directory, created on first use and deliberately not cleaned
+  up: a failing test's leftovers are usually what explains it.
 
 **Memory** — the assertion only a manually-managed language can offer.
 
@@ -908,8 +937,13 @@ a custom harness can reuse the same state, but a test does not need them.
 |---|---|
 | `ldp3 test` | Build and run the project's tests. |
 | `ldp3 test -- --filter <text>` | Run only the tests whose `Class.method` name contains `<text>`. |
+| `ldp3 test -- --tag <name>` / `--exclude-tag <name>` | Select or skip by `[Tag]`. |
 | `ldp3 test -- --list` | Print the test names without running anything. |
 | `ldp3 test -- --timing` | Add per-test and total durations to the report. |
+| `ldp3 test -- --fail-fast` | Stop at the first failure (`[AfterAll]` still runs). |
+| `ldp3 test -- --format=json` | One machine-readable document, each test's own output captured into its record. |
+| `ldp3 test -- --bench` | Also run the `[Benchmark]` methods. |
+| `ldp3 test -- --update-golden` | Rewrite golden files instead of comparing. |
 
 A `[library]` project is tested the same way: `ldp3 test` builds its sources as an executable (the
 runner supplies the entry point) instead of the usual `.ldb` bundle.

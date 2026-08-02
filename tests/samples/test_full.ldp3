@@ -1,0 +1,178 @@
+import System.IO.Console;
+import System.IO.File;
+import System.Test.Test;
+program TestFull;
+
+// The rest of the test framework (spec 32.11): parametrized [Cases], [Repeat] for flakiness,
+// [ExpectedToFail] for a known-broken case that must still RUN, [Tag] for grouping, [MaxTime] as a
+// budget, [Benchmark] for measuring, output capture, golden-file comparison, and the breadth of the
+// assertion set.
+
+public bundle Main {
+    public namespace App {
+
+        public class Parser {
+            // The rows of a parametrized test: a public static method returning an array of the
+            // test's parameter type. The test runs once per element, reported as `Parser.name[i]`.
+            public static method seeds() returns int[] {
+                mutable int[] rows = new int[3]();
+                rows[0] = 2;
+                rows[1] = 7;
+                rows[2] = 11;
+                return rows;
+            }
+
+            [Cases(source: "seeds")]
+            [Test]
+            public static method every_seed_lands_in_band(int seed) returns void {
+                Test.checking("the seed stays inside the accepted band");
+                Test.assertBetween(seed, 1, 15);
+                return;
+            }
+
+            public static method names() returns String[] {
+                mutable String[] rows = new String[2]();
+                rows[0] = "alpha";
+                rows[1] = "beta";
+                return rows;
+            }
+
+            [Cases(source: "names")]
+            [Test]
+            public static method every_name_is_lowercase(String name) returns void {
+                Test.checking("names arrive already folded");
+                Test.assertEqualString(name.toLower(), name);
+                return;
+            }
+
+            // Runs five times and reports one verdict. A test that fails 3 times in 100 is flaky,
+            // and one line per run would bury that.
+            [Repeat(times: 5)]
+            [Test]
+            public static method stable_across_runs() returns void {
+                Test.assertEqual(2 + 2, 4);
+                return;
+            }
+
+            // Still RUNS, unlike [Ignore]: the day it starts passing, the report says so instead of
+            // letting a fixed bug go unnoticed behind a disabled test.
+            [ExpectedToFail(reason: "nested quotes are not handled yet")]
+            [Test]
+            public static method nested_quotes() returns void {
+                Test.fail("the parser drops the inner quote");
+                return;
+            }
+
+            // Grouped by tag and given a time budget: checked after the fact, so it catches a test
+            // that got slow, not one that hangs.
+            [Tag(name: "slow")]
+            [MaxTime(ms: 30000)]
+            [Test]
+            public static method large_input() returns void {
+                mutable int total = 0;
+                mutable int i = 0;
+                while (i < 10000) {
+                    total = total + i;
+                    i = i + 1;
+                }
+                Test.checking("a large input still adds up");
+                Test.assertEqual(total, 49995000);
+                return;
+            }
+
+            // Measured, never judged: a benchmark cannot turn the suite red, and it only runs when
+            // --bench asks for it.
+            [Benchmark(iterations: 50, warmup: 5)]
+            public static method summing_speed() returns void {
+                mutable int total = 0;
+                mutable int i = 0;
+                while (i < 100) {
+                    total = total + i;
+                    i = i + 1;
+                }
+                return;
+            }
+        }
+
+        public class Report {
+            // For code whose JOB is to print: assert on what came out.
+            [Test]
+            public static method printed_output_is_captured() returns void {
+                String out = Test.captureOutput(lambda() returns void {
+                    System.IO.Console.println("total: 42");
+                    System.IO.Console.println("errors: 0");
+                });
+                Test.checking("the report names its total");
+                Test.assertContains(out, "total: 42");
+                Test.checking("and its error count");
+                Test.assertContains(out, "errors: 0");
+                return;
+            }
+
+            // Golden-file comparison: pin a large output without transcribing it into assertions.
+            // The file is written first so the sample is self-contained wherever it runs.
+            [Test]
+            public static method golden_file_comparison() returns void {
+                String path = Test.tempDir() + "/report.golden";
+                File.writeAll(path, "landmasses: 5\nmountains: 14%\n");
+                Test.checking("matching text passes");
+                Test.assertMatchesGolden("landmasses: 5\nmountains: 14%\n", path);
+                return;
+            }
+
+            [Test]
+            public static method the_assertion_surface() returns void {
+                Test.checking("text");
+                Test.assertStartsWith("mountain share", "mountain");
+                Test.assertEndsWith("mountain share", "share");
+                Test.assertContains("mountain share", "in sh");
+
+                Test.checking("scalars");
+                Test.assertEqualChar('X', 'X');
+                Test.assertEqualBoolean(true, true);
+                Test.assertEqualDouble(1.5, 1.5);
+                Test.assertNear(0.98, 1.0, 0.05);
+                Test.assertNotEqual(7, 8);
+
+                Test.checking("arrays");
+                mutable int[] xs = new int[3]();
+                xs[0] = 1;
+                xs[1] = 4;
+                xs[2] = 9;
+                Test.assertSorted(xs);
+                mutable long[] ls = new long[2]();
+                ls[0] = cast<long>(10);
+                ls[1] = cast<long>(20);
+                mutable long[] ls2 = new long[2]();
+                ls2[0] = cast<long>(10);
+                ls2[1] = cast<long>(20);
+                Test.assertEqualLongArray(ls, ls2);
+                mutable double[] ds = new double[2]();
+                ds[0] = 1.0;
+                ds[1] = 2.0;
+                mutable double[] ds2 = new double[2]();
+                ds2[0] = 1.001;
+                ds2[1] = 1.999;
+                Test.assertEqualDoubleArray(ds, ds2, 0.01);
+                delete xs;
+                delete ls;
+                delete ls2;
+                delete ds;
+                delete ds2;
+
+                Test.checking("exceptions");
+                Test.assertDoesNotThrow(lambda() returns void {
+                    Test.assertEqual(1, 1);
+                });
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("run me with --test");
+                return;
+            }
+        }
+    }
+}

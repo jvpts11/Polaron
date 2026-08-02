@@ -90,12 +90,18 @@ Two more reporting calls round it out:
 
 | Group | Calls |
 |---|---|
-| Equality | `assertEqual(int, int)`, `assertNotEqual`, `assertEqualLong`, `assertEqualString`, `assertEqualIntArray` |
-| Predicates | `assertTrue`, `assertFalse`, `assertContains(String, String)` |
+| Equality | `assertEqual(int, int)`, `assertNotEqual`, `assertEqualLong`, `assertEqualString`, `assertEqualChar`, `assertEqualBoolean`, `assertEqualDouble` |
+| Predicates | `assertTrue`, `assertFalse` |
+| Text | `assertContains`, `assertStartsWith`, `assertEndsWith` |
 | Ranges | `assertBetween(int, int low, int high)`, `assertAtLeast`, `assertAtMost`, `assertBetweenDouble` |
 | Tolerances | `assertWithin(double, double, double absolute)`, `assertNear(double, double, double relative)` |
-| Exceptions | `assertThrows<E>(function<void>)` |
-| Memory | `assertNoLeaks(function<void>)` — see [§16.6](#166-asserting-on-memory) |
+| Arrays | `assertEqualIntArray`, `assertEqualLongArray`, `assertEqualStringArray`, `assertEqualDoubleArray(…, tolerance)`, `assertSorted(int[])` |
+| Exceptions | `assertThrows<E>(function<void>)`, `assertDoesNotThrow(function<void>)` |
+| Memory | `assertNoLeaks(function<void>)`, `liveBytes()` — see [§16.9](#169-asserting-on-memory) |
+| Output | `captureOutput(function<void>) returns String`, `assertMatchesGolden(actual, path)` — see [§16.9](#169-asserting-on-memory) |
+
+Every array comparison reports the **first differing index**: with a thousand elements the index is
+the whole diagnosis, and "arrays differ" is not.
 
 Two of these deserve a note.
 
@@ -108,7 +114,92 @@ away everything the report needed: which bound, and by how much. `assertBetween`
 scale varies — a cell count that depends on world size, an elapsed time. It falls back to an absolute
 comparison when the expected value is zero, where a relative one has no meaning.
 
-## 16.4 Fixtures: the lifecycle hooks
+## 16.4 One test, many inputs
+
+A test that should run over a list of inputs takes **one parameter** and names the static method that
+supplies the rows:
+
+```ldp3
+public static method seeds() returns int[] {
+    mutable int[] rows = new int[3]();
+    rows[0] = 2;
+    rows[1] = 7;
+    rows[2] = 11;
+    return rows;
+}
+
+[Cases(source: "seeds")]
+[Test]
+public static method every_seed_lands_in_band(int seed) returns void {
+    Test.checking("the seed stays inside the accepted band");
+    Test.assertBetween(seed, 1, 15);
+    return;
+}
+```
+
+```
+PASS Parser.every_seed_lands_in_band[0]
+PASS Parser.every_seed_lands_in_band[1]
+PASS Parser.every_seed_lands_in_band[2]
+```
+
+Each row is its own result, so one bad input fails alone and names itself. The source is called
+**once** per test, not once per row.
+
+The source must be a `public static` method of the same class returning an array of exactly the
+parameter's type — `int[]` for an `int` parameter, `String[]` for a `String` one. For several values
+per row, declare a `record` and take that; the machinery is the same. A parameter with no `[Cases]`,
+or a source of the wrong type, is a compile error.
+
+## 16.5 Repeating, expecting failure, tagging, budgeting
+
+**`[Repeat(times: N)]`** runs the whole test — hooks included — N times and reports **one** verdict.
+For flakiness: a test that fails 3 times in 100 is a broken test, and the report names the runs that
+failed rather than printing a hundred lines.
+
+**`[ExpectedToFail(reason: "...")]`** inverts the verdict. Failing is the expected outcome, reported
+as `XFAIL`; **passing is a failure**, because the bug got fixed and the annotation is now a lie.
+Unlike `[Ignore]` the test still *runs*, so the day it starts working you hear about it:
+
+```ldp3
+[ExpectedToFail(reason: "nested quotes are not handled yet")]
+[Test]
+public static method nested_quotes() returns void {
+    Test.fail("the parser drops the inner quote");
+    return;
+}
+```
+
+**`[Tag(name: "slow")]`** groups tests. Repeatable, and selected with `--tag` / `--exclude-tag`, so
+the slow half of a suite can sit out the inner loop and still run in CI.
+
+**`[MaxTime(ms: 500)]`** turns a passing test that took longer into a failure. It is a **budget, not
+a timeout**: it is checked after the fact and does not abort a test that hangs. It catches the test
+that quietly got ten times slower.
+
+## 16.6 Benchmarks
+
+`[Benchmark]` marks a `public static` method taking no arguments that is *measured*, not judged:
+
+```ldp3
+[Benchmark(iterations: 1000, warmup: 100)]
+public static method summing_speed() returns void {
+    ...
+}
+```
+
+An untimed warmup pass lets caches and branch predictors settle, then the measured loop runs and the
+result is reported as ns/op:
+
+```
+BENCH Parser.summing_speed  70.0 ns/op  (1000 iterations)
+```
+
+A benchmark can never turn the suite red — it has no verdict — and it only runs under `--bench`, so
+it never slows an ordinary test run. `[Benchmark]` and `[Test]` on the same method is a compile
+error: one measures, the other judges.
+
+## 16.7 Fixtures: the lifecycle hooks
 
 A test that needs an expensive thing — a generated world, a parsed file, an open connection — should
 not rebuild it for every assertion. Four hooks control when setup happens:
@@ -170,7 +261,7 @@ The hooks belong to their class alone; another class in the same file is unaffec
 is **skipped entirely** when `--filter` selected none of the class's tests — the expensive fixture is
 never built for a run that was not going to use it.
 
-## 16.5 Known-broken tests
+## 16.8 Known-broken tests
 
 A test for something that does not work yet has two bad fates: deleted, or commented out. Both make
 the gap invisible. `[Ignore]` is the third option — the test stays in the file and in the report:
@@ -191,7 +282,7 @@ SKIP Census.forest_regrows -- regrowth is not implemented yet
 It never runs, so it cannot turn the suite red, and it names itself and its reason on every run so
 nobody forgets it is there.
 
-## 16.6 Asserting on memory
+## 16.9 Asserting on memory
 
 LDP3 manages memory by hand, so a program can be entirely correct and still be wrong: it produces the
 right answer and grows by a megabyte a second. No correctness assertion can see that.
@@ -226,7 +317,33 @@ Test.checking("a frame allocates under a megabyte");
 Test.assertTrue(after - before < 1048576);
 ```
 
-## 16.7 Testing the whole program
+### Asserting on what a program printed
+
+For code whose *job* is output — a report, a formatter, a serializer — the thing to assert on is what
+came out. `Test.captureOutput` runs an action with its printing diverted and hands back the text:
+
+```ldp3
+String out = Test.captureOutput(lambda() returns void {
+    Report.write(world);
+});
+Test.checking("the report names its landmass count");
+Test.assertContains(out, "landmasses: 5");
+```
+
+When the output is large, comparing it line by line in assertions is worse than useless.
+`Test.assertMatchesGolden(actual, path)` compares it against a file of expected text and reports the
+**first differing line**; running with `--update-golden` rewrites that file instead of comparing,
+which is how an intended change gets accepted:
+
+```ldp3
+Test.assertMatchesGolden(out, "tests/golden/world-report.txt");
+```
+
+`Test.artifact(path)` names a file the test produced — a rendered image, a dump — so a failure points
+at the evidence rather than only describing it. `Test.tempDir()` gives a scratch directory, created on
+first use and deliberately *not* cleaned up: a failing test's leftovers are usually what explains it.
+
+## 16.10 Testing the whole program
 
 Under `--test` the runner is the entry point, which means your program's own `main` is no longer the
 entry point — it is an ordinary static method, and a test can call it:
@@ -249,14 +366,28 @@ This is the answer to "can a test exercise the whole program": it can, with the 
 as many times as it likes, asserting on whatever state the run left behind. Nothing special is needed
 — no harness, no separate entry point, no mode flag threaded through `main`.
 
-## 16.8 Running them
+## 16.11 Running them
 
 | Command | What it does |
 |---|---|
 | `ldp3 test` | Build and run every test in the project. |
 | `ldp3 test -- --filter <text>` | Run only the tests whose `Class.method` name contains `<text>`. |
+| `ldp3 test -- --tag <name>` | Run only the tests carrying that `[Tag]`. |
+| `ldp3 test -- --exclude-tag <name>` | Run everything except those. |
 | `ldp3 test -- --list` | Print the test names without running anything. |
 | `ldp3 test -- --timing` | Add per-test and total durations to the report. |
+| `ldp3 test -- --fail-fast` | Stop at the first failure. `[AfterAll]` still runs, so a fixture is never left behind. |
+| `ldp3 test -- --format=json` | Emit one machine-readable document instead of the text report. |
+| `ldp3 test -- --bench` | Also run the `[Benchmark]` methods. |
+| `ldp3 test -- --update-golden` | Rewrite golden files instead of comparing against them. |
+
+Under `--format=json` the whole run is a single JSON object, and each test's own printing is captured
+into its record rather than interleaved — which is what keeps the document well-formed:
+
+```json
+{"tests":[{"name":"Report.printed","status":"PASS","ns":1344000,"output":"total: 42\n"}],
+ "summary":{"passed":1,"failed":0,"skipped":0,"expectedFailures":0,"benchmarks":0,"ns":1344000}}
+```
 
 Everything after `--` goes to the runner; anything it does not recognize it ignores, so a project may
 pass its program's own flags the same way.
@@ -279,7 +410,7 @@ tests: 1 passed, 1 failed, 1 skipped
 
 The process exit code is non-zero if anything failed, which is all a CI needs.
 
-## 16.9 Malformed tests are compile errors
+## 16.12 Malformed tests are compile errors
 
 A test that silently does not run is worse than a test nobody wrote: the suite stays green and nobody
 learns anything. So the compiler rejects, rather than ignores:
@@ -288,5 +419,9 @@ learns anything. So the compiler rejects, rather than ignores:
 - a hook that is not `public static` returning `void`;
 - a second `[Setup]` (or `[BeforeAll]`, `[AfterAll]`, `[Teardown]`) in the same class;
 - a method marked both `[Test]` and a hook — a hook runs *around* the tests, so it cannot be one;
+- a method marked both `[Test]` and `[Benchmark]` — one judges, the other measures;
 - `[Ignore]` on anything that is not a `[Test]`, where it would read as "skipped" while the method
-  runs perfectly normally.
+  runs perfectly normally;
+- a `[Test]` that takes parameters without a `[Cases]` to supply them, or whose `[Cases]` source does
+  not exist, is not static, or returns the wrong array type;
+- `[Repeat(times: 0)]` or `[Benchmark(iterations: 0)]`, which would measure and judge nothing.

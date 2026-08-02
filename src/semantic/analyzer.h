@@ -190,6 +190,13 @@ private:
     void registerNewtypes(const ast::Program& program);
     void registerAnnotations(const ast::Program& program);
     void validateAnnotations(const ast::Program& program);
+    // spec 32.11: the test declarations are well formed. Here rather than in the --test codegen so a
+    // malformed test is caught by `ldp3 build` and by the editor's `ldp3 check`, not only on the day
+    // someone runs the suite -- a test that silently does not run is the one failure mode a test
+    // framework must never have.
+    void validateTestDeclarations(const ast::Program& program);
+    void validateTestCases(const ast::ClassDecl& cls, const ast::MethodDecl& m,
+                           const ast::AnnotationUse* cases, const std::string& sym);
     void checkAnnotationUses(const std::vector<ast::AnnotationUse>& uses);
     void registerCatalogs(const ast::Program& program);
     void validateCatalogs(const ast::Program& program);

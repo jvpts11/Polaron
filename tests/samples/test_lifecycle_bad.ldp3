@@ -42,6 +42,31 @@ public bundle Main {
             public static method notATest() returns void {
                 return;
             }
+
+            // A parameter with no [Cases] has nothing to supply it: the test could never be called.
+            [Test]
+            public static method takesAnArgument(int seed) returns void {
+                return;
+            }
+
+            // The source must exist, be static, and return an array of the parameter's type --
+            // otherwise the rows never reach the test.
+            public static method wrongRows() returns String {
+                return "not an array of int";
+            }
+
+            [Cases(source: "wrongRows")]
+            [Test]
+            public static method mismatchedSource(int seed) returns void {
+                return;
+            }
+
+            // A benchmark measures and a test judges; one method cannot do both.
+            [Benchmark]
+            [Test]
+            public static method measuresAndJudges() returns void {
+                return;
+            }
         }
 
         public class Main {
