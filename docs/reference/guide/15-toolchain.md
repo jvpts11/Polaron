@@ -24,6 +24,18 @@ it sits `ldp3c`, the compiler proper; you rarely call `ldp3c` directly.
 | `ldp3 studio` | Open the TUI project manager. |
 | `ldp3 --version` / `ldp3 --help` | Print the version / usage. |
 
+### Turning off the escape checks
+
+The **region binder** — the analysis that stops a pointer to a dead frame from leaving the
+frame ([§5.4](#54-no-undefined-behavior-dangling-double-free-and-the-trap)) — is on by
+default. `ldp3c --no-region-binder` turns it off for a whole program.
+
+There is deliberately no per-line version. A line that hands out a pointer to storage that
+is about to disappear looks like ordinary code, which is exactly how the mistake survives
+review; so the way to opt out is one flag, visible in the build, rather than an annotation
+buried in the source. `ldp3c --check` accepts the same flag and has the same default, so
+the editor's live diagnostics and the build never disagree about what is an error.
+
 ## 15.2 Project layout
 
 A project is a directory with an `ldp3.toml` manifest and a `src/` tree. `ldp3 build`

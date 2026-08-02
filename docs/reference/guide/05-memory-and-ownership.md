@@ -276,6 +276,43 @@ program with a precise diagnostic than let it wander into corrupted state.
 The best defense, though, is to not manage memory by hand at all where you don't have to —
 which is exactly what the next three sections are about.
 
+### The compile-time half: the region binder
+
+Trapping is what happens when a mistake reaches the running program. Some mistakes never
+need to get that far, and the **region binder** is the analysis that stops them at the
+compiler. It is **on by default**.
+
+An object allocated in a method's own frame — `new X()`, or `new X() on stack` — lives
+exactly as long as the call. A pointer or reference to it that *leaves* the call is
+dangling before it is ever used once:
+
+```ldp3
+public static method make() returns Point* {
+    Point* p = new Point(7);
+    return p;                 // error[LDP3-1721]: the frame is gone by the time
+}                             // the caller reads it
+```
+
+The same rule covers storing such an object into something that outlives the call — a
+field, or a parameter a callee stores into its own receiver — and it covers a closure
+handed to a `Thread` that captures plain mutable state instead of an `atomic<T>`,
+`Mutex<T>` or `Channel<T>`.
+
+A **heap** object is not caught, and that distinction is the whole of it: `on heap` means
+the pointer dies at return and the object does not, so handing one out is a factory and
+storing one in a field is the ownership transfer every linked structure is built from.
+
+```ldp3
+Node* n = new Node(v) on heap;
+this.head = n;                 // fine: the object outlives the call
+```
+
+If a program genuinely traffics in pointers to dead frames, `--no-region-binder` turns the
+analysis off for that program. There is deliberately no per-line version: a line that
+looks ordinary is exactly how this mistake survives review, so the way to opt out is one
+flag, visible in the build. `ldp3c --check` takes the same flag and the same default, so
+the editor and the compiler always agree about what is an error.
+
 ---
 
 ## 5.5 RAII: destructors and automatic cleanup
@@ -587,9 +624,19 @@ Connection c2 = move c1;    // ownership transfers to c2; c1 is now "moved"
 ```
 
 A plain `Connection c2 = c1;` (no `move`) is a compile error for a movable type — the
-whole point is that transfer must be visible in the source. A moved-from variable is not
-garbage you must tiptoe around; it is simply *empty*, and you can bring it back to life by
-reassigning it:
+whole point is that transfer must be visible in the source. That holds at **every place a
+value can land**, not only at a variable: a field, a call argument and a return are the
+three ways a value outlives the method it was written in, so they are exactly where it
+matters most.
+
+```ldp3
+this.held = c;        // error[LDP3-0404]: field 'held' needs an explicit 'move' (move c)
+this.keep(c);         // error[LDP3-0404]: the parameter of 'keep' needs an explicit move
+return c;             // error[LDP3-0404]: this return needs an explicit 'move'
+```
+
+A moved-from variable is not garbage you must tiptoe around; it is simply *empty*, and you
+can bring it back to life by reassigning it:
 
 ```ldp3
 mutable Connection c = new Connection(1) on heap;
@@ -664,6 +711,21 @@ cascade move tree from region old to region fresh;   // tree + everything it own
 release region old;                                   // old is freed; tree lives in fresh
 ```
 
+`move` also appears **in a signature**, on a parameter or a return type, to say that the
+method takes or gives ownership — for any type, not only a `movable` one:
+
+```ldp3
+public method consume(move Connection c) returns void { ... }
+public method create() returns move Connection { return move c; }
+
+consume(move c1);    // the call must say `move` too; c1 is finished afterwards
+```
+
+The keyword appearing in both places is the point rather than an oversight. Reading the
+*call* tells you ownership changed hands, without going to look at the declaration — so a
+`move` parameter passed plainly is rejected, and a method declared `returns move T` must
+`return move ...`.
+
 In freestanding (kernel) mode the ownership keywords `move`, `movable`, `unique`,
 `partitionable`, and `into` all remain available — precisely because they are compile-time
 only and need no managed runtime, which makes them ideal for low-level code that wants
@@ -730,9 +792,14 @@ public class Cache {
 // somewhere in the program:
 Cache c = new Cache() on heap;
 c.use();
-release persistent c.slot;    // satisfies the compile-time release obligation
+release persistent c.slot;    // discards the accumulated state
 delete c;
 ```
+
+Releasing a persistent **discards what it accumulated**: a later reattach starts from
+zero, exactly as the first attach of the run did. The block's storage itself is not freed —
+a stable address across reattach is the whole point of a named persistent — and the runtime
+reclaims it at shutdown.
 
 The escape hatch is `eternal`: a persistent that is *meant* to live for the whole run
 (a global config cache, a session-long counter) is marked `eternal persistent`, and then

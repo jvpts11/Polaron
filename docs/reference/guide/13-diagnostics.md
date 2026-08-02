@@ -68,13 +68,13 @@ codes are added over time.
 | `01xx`  | Name & type resolution           | `0101` undeclared name · `0102` no such field · `0103` no such method · `0104` unknown type |
 | `02xx`  | Visibility                       | `0201` not accessible from here |
 | `03xx`  | Type checking                    | `0301` wrong type · `0302` wrong number of arguments · `0303` return type mismatch · `0305` cast not allowed · `0307` operator on the wrong type |
-| `04xx`  | Mutability & ownership           | `0401` not mutable · `0402` used after move · `0403` cannot be moved · `0404` cannot assign |
-| `05xx`  | Flow & exhaustiveness            | `0501` not all paths return · `0502` match not exhaustive · `0503` `try?` needs a Result/Option |
-| `06xx`  | Declarations & inheritance       | `0601` already declared · `0602/0603` duplicate field/member · `0604` inheritance cycle · `0605` cannot extend · `0606` override a final method · `0607` contradictory modifiers |
+| `04xx`  | Mutability & ownership           | `0401` not mutable · `0402` used after move · `0403` cannot be moved · `0404` cannot assign · `0405` a movable value needs an explicit move |
+| `05xx`  | Flow & exhaustiveness            | `0501` not all paths return · `0502` match not exhaustive · `0503` `try?` needs a Result/Option · `0504` `try?` propagates a failure this method cannot carry |
+| `06xx`  | Declarations & inheritance       | `0601` already declared · `0602/0603` duplicate field/member · `0604` inheritance cycle · `0605` cannot extend · `0606` override a final method · `0607` contradictory modifiers · `0608` a static field initializer has no value before the program starts |
 | `07xx`  | Literals & interpolation         | `0701` bad literal suffix · `0702` cannot interpolate this value · `0703` printf needs a literal format |
 | `08xx`  | Feature-specific semantics       | `0801` operator overload · `0802` reflection · `0803` region · `0804` vector/matrix · `0805` unimport/reimport · `0806` static assertion · `0807` must be compile-time constant · `0808` a persistent is never released |
 | `09xx`  | Freestanding mode                | `0901` not available in freestanding mode |
-| `17xx`  | Regions (flavors & operations)   | `1710` a region has one flavor · `1711` fixedslot/ring needs its element type · `1712` growable does not apply · `1713` mark/rollback need a stack region · `1714` checkpoint belongs to another region · `1715` a ring auto-evicts · `1717` use after extract · `1718` cannot extract an object whose field lives in the same region · `1719` a flavor only qualifies a region · `1720` an extract result must be bound |
+| `17xx`  | Regions (flavors & operations)   | `1710` a region has one flavor · `1711` fixedslot/ring needs its element type · `1712` growable does not apply · `1713` mark/rollback need a stack region · `1714` checkpoint belongs to another region · `1715` a ring auto-evicts · `1717` use after extract · `1718` cannot extract an object whose field lives in the same region · `1719` a flavor only qualifies a region · `1720` an extract result must be bound · `1721` this hands out a pointer to storage about to disappear |
 
 Run `ldp3 explain` with no argument for the authoritative, complete list.
 
