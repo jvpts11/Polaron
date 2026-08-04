@@ -345,12 +345,46 @@ LDP3_RT_API void* __ldp3_malloc(size_t size) {
 
 LDP3_RT_API void __ldp3_free(void* ptr) {
     if (ptr == NULL) return;
+    // EVERY POINTER THAT REACHES HERE MUST HAVE COME FROM __ldp3_malloc.
+    //
+    // Reading the header means reading the sixteen bytes BEFORE the payload, and if the block was
+    // not ours those sixteen bytes belong to somebody else -- so the read is out of bounds and the
+    // value is whatever happened to be there. That is not a theoretical worry: the runtime's own
+    // File.readAll returned a plain libc malloc, every String built from a file was freed through
+    // here, and the bytes in front of a libc block are very often the tail of an LDP3 block that
+    // has been freed -- stamped, precisely, LDP3_FREED. So the guard against double frees fired on
+    // programs that had not double-freed anything. It took down two windows in six of a game whose
+    // only crime was reading its own mesh files, and it read as a rare one-off for months.
+    //
+    // Every buffer inside this runtime that can become a String now comes from __ldp3_malloc. The
+    // branch below still forwards a foreign pointer, for memory that genuinely came from an FFI
+    // call, and that case keeps the same unavoidable read -- but nothing the runtime itself hands
+    // out takes it any more.
     Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
     // Freeing a pool block that is already on the free-list would splice it in twice and cycle the list,
     // silently handing the same address out to two later allocations. A live block always carries
     // LDP3_MAGIC, so a header already stamped LDP3_FREED means a double free -- stop deterministically
     // rather than corrupt the heap (no UB). One compare on the free path; perf is unchanged.
-    if (h->magic == LDP3_FREED) __ldp3_panic("double free of a heap block");
+    if (h->magic == LDP3_FREED) {
+        // SAY WHAT WAS IN IT. "double free of a heap block" is true and almost useless: the block
+        // could have come from anywhere in a program of any size, and the stack at the second free
+        // says nothing about the first. Freeing does not scrub the payload -- only the first eight
+        // bytes become the free-list link -- so whatever the block held is still legible, and for
+        // the commonest case by far, a String, that is its text, which usually names the site
+        // outright. Printed as one line of printable bytes, dots for the rest.
+        char peek[65];
+        const unsigned char* body = (const unsigned char*)ptr;
+        int n = 0;
+        while (n < 64) {
+            unsigned char c = body[n];
+            if (c == 0) break;
+            peek[n] = (c >= 32 && c < 127) ? (char)c : '.';
+            n++;
+        }
+        peek[n] = '\0';
+        if (n > 8) fprintf(stderr, "LDP3: the block held: \"%s\"\n", peek + 8);
+        __ldp3_panic("double free of a heap block");
+    }
     // A pool/fixedslot region slot carries LDP3_RMAGIC/RFREED. It lives INSIDE a region block, so pushing
     // it onto the global free-list (or handing it to libc free) would corrupt the heap. Trap with a fix.
     if (h->magic == LDP3_RMAGIC || h->magic == LDP3_RFREED)
@@ -1679,16 +1713,16 @@ long long __ldp3_ipc_send(long long conn, const char* data, long long len) {
 char* __ldp3_ipc_recv(long long conn, long long* outLen) {
     Ldp3Pipe* c = (Ldp3Pipe*)(intptr_t)conn;
     *outLen = 0;
-    if (c == NULL || c->isServer) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    if (c == NULL || c->isServer) { char* e = (char*)__ldp3_malloc(1); e[0] = 0; return e; }
     unsigned char hdr[4];
-    if (!ldp3_ipc_read_all(c, (char*)hdr, 4)) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    if (!ldp3_ipc_read_all(c, (char*)hdr, 4)) { char* e = (char*)__ldp3_malloc(1); e[0] = 0; return e; }
     unsigned int n = (unsigned int)hdr[0] | ((unsigned int)hdr[1] << 8) |
                      ((unsigned int)hdr[2] << 16) | ((unsigned int)hdr[3] << 24);
-    char* buf = (char*)malloc((size_t)n + 1);
-    if (buf == NULL) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    char* buf = (char*)__ldp3_malloc((size_t)n + 1);
+    if (buf == NULL) { char* e = (char*)__ldp3_malloc(1); e[0] = 0; return e; }
     if (n > 0 && !ldp3_ipc_read_all(c, buf, (long long)n)) {
-        free(buf);
-        char* e = (char*)malloc(1);
+        __ldp3_free(buf);
+        char* e = (char*)__ldp3_malloc(1);
         e[0] = 0;
         return e;
     }
@@ -1727,15 +1761,15 @@ void __ldp3_ipc_close(long long h) {
 #endif
 char* __ldp3_process_run(const char* cmd, long long* outLen, int* outExit) {
     FILE* p = _popen(cmd, "r");
-    if (p == NULL) { *outLen = 0; *outExit = -1; char* e = (char*)malloc(1); e[0] = 0; return e; }
+    if (p == NULL) { *outLen = 0; *outExit = -1; char* e = (char*)__ldp3_malloc(1); e[0] = 0; return e; }
     size_t cap = 4096, len = 0;
-    char* buf = (char*)malloc(cap);
+    char* buf = (char*)__ldp3_malloc(cap);
     char chunk[4096];
     size_t n;
     while ((n = fread(chunk, 1, sizeof(chunk), p)) > 0) {
         if (len + n + 1 > cap) {
             while (len + n + 1 > cap) cap *= 2;
-            buf = (char*)realloc(buf, cap);
+            buf = (char*)__ldp3_realloc(buf, cap);
         }
         memcpy(buf + len, chunk, n);
         len += n;
@@ -1819,10 +1853,10 @@ long long __ldp3_subproc_write(long long h, const char* data, long long len) {
 
 char* __ldp3_subproc_read(long long h, long long* outLen) {
     *outLen = 0;
-    if (h == 0) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    if (h == 0) { char* e = (char*)__ldp3_malloc(1); e[0] = 0; return e; }
     LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
     DWORD n = 0;
-    char* buf = (char*)malloc(4097);
+    char* buf = (char*)__ldp3_malloc(4097);
     if (!ReadFile(s->hOut, buf, 4096, &n, NULL) || n == 0) { buf[0] = 0; return buf; }  // EOF/broken pipe
     buf[n] = 0;
     *outLen = (long long)n;
@@ -1906,9 +1940,9 @@ long long __ldp3_subproc_write(long long h, const char* data, long long len) {
 
 char* __ldp3_subproc_read(long long h, long long* outLen) {
     *outLen = 0;
-    if (h == 0) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    if (h == 0) { char* e = (char*)__ldp3_malloc(1); e[0] = 0; return e; }
     LdpSubproc* s = (LdpSubproc*)(intptr_t)h;
-    char* buf = (char*)malloc(4097);
+    char* buf = (char*)__ldp3_malloc(4097);
     ssize_t n = read(s->fdOut, buf, 4096);
     if (n <= 0) { buf[0] = 0; return buf; }
     buf[n] = 0;
@@ -2032,10 +2066,10 @@ extern "C" long long __ldp3_conpty_write(long long h, const char* data, long lon
 }
 extern "C" char* __ldp3_conpty_read(long long h, long long* outLen) {
     *outLen = 0;
-    if (h == 0) { char* e = (char*)malloc(1); e[0] = 0; return e; }
+    if (h == 0) { char* e = (char*)__ldp3_malloc(1); e[0] = 0; return e; }
     LdpPty* p = (LdpPty*)(intptr_t)h;
     DWORD n = 0;
-    char* buf = (char*)malloc(8193);
+    char* buf = (char*)__ldp3_malloc(8193);
     if (!ReadFile(p->fromChild, buf, 8192, &n, NULL) || n == 0) { buf[0] = 0; return buf; }
     buf[n] = 0;
     *outLen = (long long)n;
@@ -2083,7 +2117,7 @@ extern "C" long long __ldp3_conpty_write(long long h, const char* data, long lon
     (void)h; (void)data; (void)len; return -1;
 }
 extern "C" char* __ldp3_conpty_read(long long h, long long* outLen) {
-    (void)h; *outLen = 0; char* e = (char*)malloc(1); e[0] = 0; return e;
+    (void)h; *outLen = 0; char* e = (char*)__ldp3_malloc(1); e[0] = 0; return e;
 }
 extern "C" int __ldp3_conpty_can_read(long long h) { (void)h; return 0; }
 extern "C" int __ldp3_conpty_alive(long long h) { (void)h; return 0; }
@@ -2139,9 +2173,9 @@ long long __ldp3_secure_random(void) {  // getrandom(2), with /dev/urandom as th
 // ---- Environment variables (spec 34). ----
 char* __ldp3_env_get(const char* name, long long* outLen) {
     const char* v = getenv(name);
-    if (v == NULL) { *outLen = 0; char* e = (char*)malloc(1); e[0] = 0; return e; }
+    if (v == NULL) { *outLen = 0; char* e = (char*)__ldp3_malloc(1); e[0] = 0; return e; }
     size_t n = strlen(v);
-    char* buf = (char*)malloc(n + 1);
+    char* buf = (char*)__ldp3_malloc(n + 1);
     memcpy(buf, v, n + 1);
     *outLen = (long long)n;
     return buf;
@@ -2159,8 +2193,8 @@ int __ldp3_env_set(const char* name, const char* value) {
 char* __ldp3_executable_path(void) {
 #ifdef _WIN32
     DWORD cap = 4096;
-    char* buf = (char*)malloc(cap);
-    if (buf == NULL) { char* e = (char*)malloc(1); if (e) e[0] = 0; return e; }
+    char* buf = (char*)__ldp3_malloc(cap);
+    if (buf == NULL) { char* e = (char*)__ldp3_malloc(1); if (e) e[0] = 0; return e; }
     DWORD n = GetModuleFileNameA(NULL, buf, cap);
     if (n == 0 || n >= cap) { buf[0] = 0; } else { buf[n] = 0; }
     return buf;
@@ -2177,12 +2211,12 @@ char* __ldp3_executable_path(void) {
 // ---- File I/O (spec 34.4): whole-file read/write over C stdio. ----
 char* __ldp3_file_read_all(const char* path, long long* outLen) {
     FILE* f = fopen(path, "rb");
-    if (f == NULL) { *outLen = 0; char* e = (char*)malloc(1); e[0] = 0; return e; }
+    if (f == NULL) { *outLen = 0; char* e = (char*)__ldp3_malloc(1); e[0] = 0; return e; }
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     if (size < 0) size = 0;
     fseek(f, 0, SEEK_SET);
-    char* buf = (char*)malloc((size_t)size + 1);
+    char* buf = (char*)__ldp3_malloc((size_t)size + 1);
     size_t n = fread(buf, 1, (size_t)size, f);
     fclose(f);
     buf[n] = 0;
