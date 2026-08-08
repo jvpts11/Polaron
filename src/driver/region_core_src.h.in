@@ -7,5 +7,8 @@
 // binaries only, and a region core that silently went missing would fail at the link with an unrelated
 // message.
 namespace ldp3 {
-inline const char* kRegionCoreSource = R"LDP3_REGION_CORE(@LDP3_REGION_CORE_SRC@)LDP3_REGION_CORE";
+// Several adjacent raw literals, not one: MSVC caps a literal at 16380 bytes and this source is past
+// that. Adjacent literals concatenate, so the value is the file, byte for byte. See CMakeLists.txt.
+inline const char* kRegionCoreSource =
+@LDP3_REGION_CORE_SRC@;
 }  // namespace ldp3

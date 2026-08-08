@@ -84,7 +84,24 @@ configure_file(src/driver/config.h.in "${CMAKE_BINARY_DIR}/ldp3_config.h" @ONLY)
 # the bare-metal target by `ldp3 build`. Embed its text in the driver so the second compilation uses the
 # very same source rather than a copy that drifts. configure_file makes the header a configure-time
 # dependency, so editing it regenerates this automatically.
-file(READ runtime/ldp3_region_core.h LDP3_REGION_CORE_SRC)
+#
+# Emitted as SEVERAL adjacent raw literals rather than one. MSVC caps a single string literal at 16380
+# bytes (C2026) and the core is past that, so one literal builds under clang and fails under the
+# toolset this repository targets. Adjacent literals concatenate, so the value is identical either way
+# and the chunk size is nobody's business but this loop's.
+file(READ runtime/ldp3_region_core.h LDP3_REGION_CORE_RAW)
+string(LENGTH "${LDP3_REGION_CORE_RAW}" LDP3_RC_LEN)
+set(LDP3_REGION_CORE_SRC "")
+set(LDP3_RC_POS 0)
+while(LDP3_RC_POS LESS LDP3_RC_LEN)
+    math(EXPR LDP3_RC_TAKE "${LDP3_RC_LEN} - ${LDP3_RC_POS}")
+    if(LDP3_RC_TAKE GREATER 8000)
+        set(LDP3_RC_TAKE 8000)
+    endif()
+    string(SUBSTRING "${LDP3_REGION_CORE_RAW}" ${LDP3_RC_POS} ${LDP3_RC_TAKE} LDP3_RC_CHUNK)
+    string(APPEND LDP3_REGION_CORE_SRC "R\"LDP3RC(${LDP3_RC_CHUNK})LDP3RC\"\n")
+    math(EXPR LDP3_RC_POS "${LDP3_RC_POS} + ${LDP3_RC_TAKE}")
+endwhile()
 configure_file(src/driver/region_core_src.h.in "${CMAKE_BINARY_DIR}/ldp3_region_core_src.h" @ONLY)
 
 # The lightweight toolchain driver: spawns ldp3c + clang. No LLVM. Logic lives in a static lib so both
