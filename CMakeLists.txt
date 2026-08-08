@@ -25,6 +25,7 @@ set(LDP3_CORE_SOURCES
     src/semantic/analyzer.cpp
     src/semantic/comptime.cpp
     src/semantic/asmcheck.cpp  # semantic analysis of inline assembly, per architecture and dialect
+    src/semantic/implicitthis.cpp  # a bare name finds the enclosing class's own member
     src/diag/catalog.cpp  # rich-diagnostic catalog: why/fix/prevent per error code
     src/diag/render.cpp   # rich-diagnostic renderer: snippet + caret + sections, or one concise line
     src/bundle/ldh.cpp  # public-API header (.ldh) generation; AST-only, no LLVM
