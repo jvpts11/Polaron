@@ -30,6 +30,15 @@ public bundle Main {
                 this.species = 0;
                 this.state = 0;
             }
+
+            // A byte budget belongs in a method of the type it constrains -- a fact about a type
+            // lives with the type. NOTHING CALLS THIS, deliberately: the property that makes the
+            // placement worth anything is that the assertion is still checked. A budget that went
+            // unchecked the moment nobody called it would be a trap wearing a guard's clothes.
+            public static method budget() returns void {
+                static_assert(sizeof(Packed) == 20, "Packed must stay three to a cache line");
+                return;
+            }
         }
 
         // Two bit fields share one storage unit, so the struct is a byte -- not eight.
