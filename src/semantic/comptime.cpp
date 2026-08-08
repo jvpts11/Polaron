@@ -259,6 +259,25 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
             if (oid == nullptr || env.count(oid->name) > 0)
                 if (int r = evalStringBuiltin(*call, out, ctx, env); r != 0) return r == 1;
         }
+        // sizeof(T) / T.sizeof() (spec issue #7). The argument NAMES A TYPE, so it is read as a name
+        // and never evaluated as an expression -- `sizeof(float)` has no value to compute. Folds only
+        // where the context can answer for the target's layout (see Context::sizeOfType).
+        {
+            std::string tn;
+            if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
+                cid != nullptr && cid->name == "sizeof" && call->args.size() == 1)
+                tn = typeNameSpelled(*call->args[0]);
+            else if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+                     sm != nullptr && sm->member == "sizeof" && call->args.empty())
+                tn = typeNameSpelled(*sm->object);
+            if (!tn.empty()) {
+                long long bytes = 0;
+                if (!ctx.sizeOfType || !ctx.sizeOfType(tn, bytes)) return false;
+                out = Num::I(bytes);
+                return true;
+            }
+        }
+
         if (ctx.methods == nullptr) return false;
         std::string name;
         if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get()))
@@ -417,6 +436,47 @@ bool evalDouble(const ast::Expr& e, double& out, Context& ctx) {
     if (n.isStr) return false;
     out = n.dbl();
     return true;
+}
+
+std::string typeNameSpelled(const ast::Expr& e) {
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) return id->name;
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&e)) {
+        const std::string base = typeNameSpelled(*mem->object);
+        return base.empty() ? std::string() : base + "." + mem->member;
+    }
+    return {};  // anything else is a value expression, not a type name
+}
+
+bool mentionsSizeof(const ast::Expr& e) {
+    if (const auto* call = dynamic_cast<const ast::CallExpr*>(&e)) {
+        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
+            cid != nullptr && cid->name == "sizeof")
+            return true;
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+            mem != nullptr && mem->member == "sizeof")
+            return true;
+        if (call->callee && mentionsSizeof(*call->callee)) return true;
+        for (const ast::ExprPtr& a : call->args)
+            if (a && mentionsSizeof(*a)) return true;
+        return false;
+    }
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e))
+        return (b->lhs && mentionsSizeof(*b->lhs)) || (b->rhs && mentionsSizeof(*b->rhs));
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e))
+        return u->operand && mentionsSizeof(*u->operand);
+    if (const auto* t = dynamic_cast<const ast::TernaryExpr*>(&e))
+        return (t->cond && mentionsSizeof(*t->cond)) || (t->thenExpr && mentionsSizeof(*t->thenExpr)) ||
+               (t->elseExpr && mentionsSizeof(*t->elseExpr));
+    if (const auto* c = dynamic_cast<const ast::CastExpr*>(&e))
+        return c->operand && mentionsSizeof(*c->operand);
+    if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(&e))
+        return (nc->lhs && mentionsSizeof(*nc->lhs)) || (nc->rhs && mentionsSizeof(*nc->rhs));
+    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(&e))
+        return m->object && mentionsSizeof(*m->object);
+    // Any other node cannot currently carry a sizeof into a constant expression. Answering `false`
+    // here is the safe direction: the analyzer then reports the non-constant condition itself,
+    // exactly as it did before, rather than deferring a check that would never run.
+    return false;
 }
 
 }  // namespace ldp3::comptime

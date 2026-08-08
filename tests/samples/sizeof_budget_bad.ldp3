@@ -1,0 +1,29 @@
+import System.IO.Console;
+program SizeofBudgetBad;
+
+// A byte budget that is EXCEEDED must fail the build. An assertion that cannot fire is worse
+// than no assertion, because it reads as protection.
+
+public bundle Main {
+    public namespace App {
+
+        public struct Wide {
+            public mutable float x;
+            public mutable float y;
+            public mutable int   herd;
+            public constructor Wide() {
+                this.x = 0.0;
+                this.y = 0.0;
+                this.herd = 0;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                static_assert(sizeof(Wide) <= 8, "Wide must fit eight bytes");
+                System.IO.Console.println($"unreachable = {1}");
+                return;
+            }
+        }
+    }
+}

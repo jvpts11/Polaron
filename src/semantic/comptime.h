@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -30,7 +31,24 @@ struct Context {
     // this pool, so the value type stays register-small and deep comptime recursion does not enlarge
     // the native stack frame.
     std::vector<std::string> strings;
+    // Resolves `sizeof(T)` / `T.sizeof()` (spec issue #7) to a byte count, so a size can take part in
+    // a constant expression -- `static_assert(sizeof(Beast) <= 20, ...)` is the point.
+    //
+    // Only whoever knows the TARGET's layout may set this: the codegen, which holds the DataLayout.
+    // A caller that would have to guess leaves it unset, and then an expression containing sizeof is
+    // simply not constant. A size folded from a second, hand-rolled layout model would be a
+    // confident lie the moment the two models drifted, and an assertion that lies is worse than one
+    // that cannot run.
+    std::function<bool(const std::string& typeName, long long& out)> sizeOfType;
 };
+
+// True when `e` mentions `sizeof` anywhere. Such a condition can only be folded where the target
+// layout is known, so the analyzer defers it to the codegen instead of rejecting it (spec 28.2).
+bool mentionsSizeof(const ast::Expr& e);
+
+// The dotted type name an expression spells (`Beast`, `app.Beast`), or "" if it is not a plain name.
+// `sizeof`'s argument names a type, so it is read rather than evaluated.
+std::string typeNameSpelled(const ast::Expr& e);
 
 // Evaluates `e` to a compile-time integer (the result must be int-valued; a
 // double result fails). Returns false if it is not such a constant.

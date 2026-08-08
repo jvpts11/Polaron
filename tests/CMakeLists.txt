@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.20")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.21")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.20")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.21")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -903,6 +903,26 @@ add_test(NAME sema_rejects_static_assert_fail
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/static_assert_fail_bad.ldp3")
 set_tests_properties(sema_rejects_static_assert_fail PROPERTIES
     PASS_REGULAR_EXPRESSION "static assertion failed: fib.10. is not 99")
+
+# A byte budget that is EXCEEDED must fail the build. Checked with a full compile and not
+# `--check`, because a size is only knowable against the target's layout, which exists in the code
+# generator: the analyzer defers exactly the sizeof-bearing assertions to it. The trade is
+# deliberate -- one authority on layout instead of two models that can disagree -- and the cost is
+# that a blown budget shows up at build time rather than in the editor's live check.
+add_test(NAME codegen_rejects_exceeded_size_budget
+    COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/sizeof_budget_bad.ldp3"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/sizeof_budget_bad.ll")
+set_tests_properties(codegen_rejects_exceeded_size_budget PROPERTIES
+    PASS_REGULAR_EXPRESSION "static assertion failed: Wide must fit eight bytes")
+
+# A parse error inside a string interpolation is reported WHERE IT IS. The embedded expression is
+# lexed and parsed on its own, so its diagnostics used to count from that substring's line 1 and
+# landed on the import at the top of the file -- the first error a reader sees, pointing at
+# innocent code. The fault here is on line 14.
+add_test(NAME sema_reports_interpolation_error_in_place
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interp_error_location.ldp3")
+set_tests_properties(sema_reports_interpolation_error_in_place PROPERTIES
+    PASS_REGULAR_EXPRESSION "interp_error_location.ldp3:14:")
 
 # a non-eternal persistent with no release anywhere is a compile error (spec 18.15).
 add_test(NAME sema_rejects_unreleased_persistent
@@ -4085,6 +4105,22 @@ if(LDP3_WITH_LLVM)
             "-DPANIC=bounds_report.ldp3:"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+
+        # sizeof as a COMPILE-TIME constant (spec 28.2 + issue #7), so a hot struct can carry a byte
+        # budget the build enforces. The sample asserts its sizes AND prints them: an assertion that
+        # disagreed with the layout the program actually gets would be worse than none at all.
+        #
+        # One test rather than one per fact: the harness names the executable after the input, so
+        # several tests over one sample race for the same file under -j. Matching the whole output is
+        # also the stricter assertion -- it pins vec2 = 8 (not the fallback 4 sizeof used to report)
+        # and TwoNibbles = 1 (adjacent bit fields do share a storage unit) alongside the budget.
+        add_test(NAME codegen_sizeof_comptime_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sizeof_comptime.ldp3"
+            "-DEXPECTED=Packed = 20 TwoNibbles = 1 vec2 = 8 vec4 = 16 float = 4 short = 2 long = 8 member form = 20 local long = 8"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # generic Result<T, E> (two type params + inheritance + virtual).
         add_test(NAME codegen_result_runs COMMAND "${CMAKE_COMMAND}"

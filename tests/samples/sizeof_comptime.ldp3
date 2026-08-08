@@ -1,0 +1,71 @@
+import System.IO.Console;
+program SizeofComptime;
+
+// sizeof as a COMPILE-TIME constant (spec 28.2 + issue #7). `sizeof` is resolved against the
+// target's data layout, so a struct can carry a byte budget that the build enforces -- and the
+// same expression measured at run time must agree with what the assertion checked.
+//
+// Regression cover for three defects found sizing a hot 20-byte struct:
+//   * static_assert(sizeof(T) <= N) was rejected as "not a constant expression"
+//   * sizeof(vec2) answered 4 for an 8-byte vector
+//   * sizeof(float) and the other primitives did not parse at all
+
+public bundle Main {
+    public namespace App {
+
+        public struct Packed {
+            public mutable float x;
+            public mutable float y;
+            public mutable int   herd;
+            public mutable short stamina;
+            public mutable short age;
+            public mutable int   species : 5;
+            public mutable int   state   : 3;
+            public constructor Packed() {
+                this.x = 0.0;
+                this.y = 0.0;
+                this.herd = 0;
+                this.stamina = 0;
+                this.age = 0;
+                this.species = 0;
+                this.state = 0;
+            }
+        }
+
+        // Two bit fields share one storage unit, so the struct is a byte -- not eight.
+        public struct TwoNibbles {
+            public mutable int a : 4;
+            public mutable int b : 4;
+            public constructor TwoNibbles() {
+                this.a = 0;
+                this.b = 0;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                static_assert(sizeof(Packed) == 20, "Packed must stay 20 bytes");
+                static_assert(sizeof(Packed) <= 24, "Packed must not outgrow its budget");
+                static_assert(sizeof(TwoNibbles) == 1, "adjacent bit fields share a storage unit");
+                static_assert(sizeof(vec2) == 8, "a vec2 is two float32 lanes");
+                static_assert(sizeof(float) == 4 && sizeof(short) == 2, "primitives have sizes too");
+                static_assert(sizeof(Packed) > sizeof(TwoNibbles), "sizes compare like any int");
+
+                // What the assertions checked must be what the program actually has.
+                System.IO.Console.println($"Packed = {sizeof(Packed)}");
+                System.IO.Console.println($"TwoNibbles = {sizeof(TwoNibbles)}");
+                System.IO.Console.println($"vec2 = {sizeof(vec2)}");
+                System.IO.Console.println($"vec4 = {sizeof(vec4)}");
+                System.IO.Console.println($"float = {sizeof(float)}");
+                System.IO.Console.println($"short = {sizeof(short)}");
+                System.IO.Console.println($"long = {sizeof(long)}");
+                System.IO.Console.println($"member form = {Packed.sizeof()}");
+
+                // sizeof over an expression still measures that expression's type.
+                mutable long n = 7;
+                System.IO.Console.println($"local long = {sizeof(n)}");
+                return;
+            }
+        }
+    }
+}

@@ -3422,6 +3422,41 @@ struct CodeGenerator::Impl {
         return builder.CreatePtrToInt(gep, builder.getInt64Ty());
     }
 
+    // Whether `t` NAMES A TYPE. `llvmType` is total -- it answers for anything, falling back to an
+    // integer -- so `sizeof(x)` needs this first to tell "the type vec2" from "some expression named
+    // vec2". Without it, sizeof(vec2) silently measured the fallback and reported 4 for an 8-byte
+    // vector: a wrong number, which is worse than a rejected one.
+    bool namesAType(const std::string& t) {
+        if (t.empty() || t == "void") return false;
+        if (ast::typeIsNullable(t)) return namesAType(ast::stripNullable(t));
+        if (isArrayType(t)) return namesAType(elementOf(t));
+        if (isRefType(t) || isTupleType(t) || isValueVariant(t)) return true;
+        if (isFloatType(t) || isIntName(t) || vecWidth(t) != 0) return true;
+        if (t == "boolean" || t == "char" || t == "mat4" || t == "region" || t == "checkpoint")
+            return true;
+        if (t == "String" || t == "string" || t == "Object" || t == "Decimal") return true;
+        if (t == "Type" || t == "Method" || t == "Field" || t == "Annotation") return true;
+        if (t.rfind("function<", 0) == 0 || t.rfind("funcptr<", 0) == 0) return true;
+        if (classes.count(clsKey(t)) > 0 || classes.count(t) > 0) return true;
+        if (enums.count(t) > 0 || newtypes_.count(t) > 0 || isTaggedCatalog(t)) return true;
+        return false;
+    }
+
+    // The byte size of a named type, from the TARGET's DataLayout -- the single authority on layout,
+    // which is why `static_assert(sizeof(T) <= N)` is folded here and not in the analyzer (spec 28.2,
+    // issue #7). Returns false when `t` does not name a type.
+    bool sizeOfTypeName(const std::string& t, long long& out) {
+        if (!namesAType(t)) return false;
+        if (auto cit = classes.find(clsKey(t)); cit != classes.end() && cit->second.type != nullptr) {
+            out = static_cast<long long>(module.getDataLayout().getTypeAllocSize(cit->second.type));
+            return true;
+        }
+        llvm::Type* lt = llvmType(t);
+        if (lt == nullptr || !lt->isSized()) return false;
+        out = static_cast<long long>(module.getDataLayout().getTypeAllocSize(lt));
+        return true;
+    }
+
     // A value-type struct passed/returned across FFI by value (spec 26). True unless `t` is a
     // pointer/reference to the struct (those pass as a plain pointer).
     bool isFfiByValueStruct(const std::string& t) {
@@ -7110,22 +7145,23 @@ struct CodeGenerator::Impl {
                 }
             }
         }
-        // Type.sizeof() (spec issue #7): the member form, equivalent to sizeof(Type) for a class type.
+        // Type.sizeof() (spec issue #7): the member form, equivalent to sizeof(Type).
         if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
             sm != nullptr && sm->member == "sizeof" && call.args.empty()) {
-            const std::string tn = flattenCallee(*sm->object);
-            if (auto cit = classes.find(clsKey(tn)); cit != classes.end())
-                return builder.CreateTrunc(sizeOf(cit->second.type), builder.getInt32Ty());
+            if (long long bytes = 0; sizeOfTypeName(flattenCallee(*sm->object), bytes))
+                return builder.getInt32(static_cast<std::uint32_t>(bytes));
         }
         // sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or an expression's
-        // type, as an int. A bare class name is a type; otherwise the argument is an expression.
+        // type, as an int. The argument is taken as a TYPE whenever it names one -- including a
+        // primitive or a vec2, which `llvmType` alone cannot distinguish from an expression --
+        // and only otherwise as an expression whose static type is measured.
         if (name == "sizeof" && call.args.size() == 1) {
-            const std::string bare = flattenCallee(*call.args[0]);
-            const std::string tn =
-                classes.count(baseType(bare)) > 0 ? bare : typeName(*call.args[0]);
-            auto cit = classes.find(clsKey(tn));
-            llvm::Value* sz = cit != classes.end() ? sizeOf(cit->second.type) : sizeOf(llvmType(tn));
-            return builder.CreateTrunc(sz, builder.getInt32Ty());
+            long long bytes = 0;
+            if (sizeOfTypeName(flattenCallee(*call.args[0]), bytes) ||
+                sizeOfTypeName(typeName(*call.args[0]), bytes))
+                return builder.getInt32(static_cast<std::uint32_t>(bytes));
+            error("sizeof(...) needs a type or an expression with a known type", call.loc);
+            return nullptr;
         }
         // embed("path") (spec 36): read a file AT COMPILE TIME and materialize it as a `byte[]` constant
         // in the image. This is how a freestanding program carries data it must not load from a
@@ -10493,8 +10529,19 @@ struct CodeGenerator::Impl {
             return;
         }
         setDebugLoc(stmt.loc);  // -g: this statement's line, so breakpoints/stepping map to source
-        // static_assert is a compile-time check (spec 28.2); it emits no code.
-        if (dynamic_cast<const ast::StaticAssertStmt*>(&stmt) != nullptr) return;
+        // static_assert is a compile-time check (spec 28.2); it emits no code. The analyzer already
+        // checked every condition it could fold, and deferred exactly those mentioning `sizeof` --
+        // a size is only knowable against the target's layout, which exists here and nowhere
+        // earlier. Re-checking only the deferred ones keeps each assertion reported once.
+        if (const auto* sa = dynamic_cast<const ast::StaticAssertStmt*>(&stmt)) {
+            if (comptime::mentionsSizeof(*sa->condition)) {
+                if (long long v = 0; !foldConstInt(*sa->condition, v))
+                    error("static_assert requires a constant expression", sa->loc);
+                else if (v == 0)
+                    error("static assertion failed: " + sa->message, sa->loc);
+            }
+            return;
+        }
         if (const auto* br = dynamic_cast<const ast::BreakStmt*>(&stmt)) {
             if (const LoopTargets* t = findLoop(br->label)) {
                 llvm::BasicBlock* target = t->brk;
@@ -13259,6 +13306,8 @@ struct CodeGenerator::Impl {
         ctx.consts = &constIntVals;
         ctx.dconsts = &constDblVals;
         ctx.methods = &comptimeMethods;
+        // Only this stage may answer for layout, so this is where sizeof becomes a constant.
+        ctx.sizeOfType = [this](const std::string& t, long long& out) { return sizeOfTypeName(t, out); };
         return ctx;
     }
     bool foldConstInt(const ast::Expr& e, long long& out) {
