@@ -631,9 +631,17 @@ struct CodeGenerator::Impl {
         diCurrentSP = sp;
         return sp;
     }
+    // The statement being emitted, for naming the place in a runtime guard's message.
+    SourceLocation hereLoc;
+
     // Set the current debug location to (loc.line, loc.col) within the current function's scope. A no-op
     // when -g is off or there is no active subprogram.
     void setDebugLoc(SourceLocation loc) {
+        // Remembered whatever -g says. A runtime guard that fires has to name the line it fired on,
+        // and a program built without debug info is exactly the program whose crash you cannot walk
+        // back in a debugger -- so it is the one that needs the line in the message most. Storing
+        // three fields per statement costs nothing a compiler notices.
+        if (loc.line > 0) hereLoc = loc;
         if (!debugInfo || diCurrentSP == nullptr) return;
         unsigned line = loc.line > 0 ? static_cast<unsigned>(loc.line) : diCurrentSP->getLine();
         unsigned col = loc.col > 0 ? static_cast<unsigned>(loc.col) : 1;
@@ -1402,6 +1410,56 @@ struct CodeGenerator::Impl {
 
     // Terminates deterministically with a message (LDP3 has no UB): used by runtime checks
     // such as division by zero or out-of-bounds. Ends the current block.
+    // `  --> file:line:col  in Class.method`, the same second line a contract violation carries and
+    // the same shape as a compile-time diagnostic. Empty when nothing is known, which is better than
+    // a confident lie about the location.
+    std::string whereLine() const {
+        if (hereLoc.line <= 0) return "";
+        std::string file = std::string(hereLoc.file);
+        if (file.empty()) file = "<prelude>";
+        std::string fnName;
+        if (builder.GetInsertBlock() != nullptr && builder.GetInsertBlock()->getParent() != nullptr)
+            fnName = builder.GetInsertBlock()->getParent()->getName().str();
+        std::string out = "  --> " + file + ":" + std::to_string(hereLoc.line) + ":" +
+                          std::to_string(hereLoc.col);
+        if (!fnName.empty()) out += "  in " + fnName;
+        return out + "\n";
+    }
+
+    // A guard that fired: stop, and say where and with what.
+    //
+    // Every one of these printed a bare noun -- "array index out of bounds" -- and nothing else. In a
+    // program of any size that names the KIND of accident and withholds everything needed to find it:
+    // not the line, not the method, and above all not the index and the length, which between them
+    // usually make the mistake obvious on sight.
+    //
+    // The cost is nothing on the path that matters. The message is a constant, and the two values are
+    // moved only inside the block that ends the program -- a block that, in a correct run, is never
+    // entered.
+    void emitGuardFail(const std::string& headline, const char* aLabel, llvm::Value* aVal,
+                       const char* bLabel, llvm::Value* bVal, int code) {
+        const std::string msg = "LDP3 panic: " + headline + "\n" + whereLine();
+        if (program.isFreestanding || aVal == nullptr || bVal == nullptr) {
+            // Bare metal has no stdio to format numbers with, and a guard with nothing to show has
+            // nothing to gain from the wider path.
+            emitPanic(headline + "\n" + whereLine());
+            return;
+        }
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            builder.getVoidTy(),
+            {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
+             builder.getInt64Ty(), builder.getInt32Ty()},
+            false);
+        builder.CreateCall(
+            module.getOrInsertFunction("__ldp3_fail", ft),
+            {createGlobalStringPtr(builder, msg, ".fail"),
+             createGlobalStringPtr(builder, aLabel, ".faila"),
+             builder.CreateSExt(aVal, builder.getInt64Ty(), "fail.a"),
+             createGlobalStringPtr(builder, bLabel, ".failb"),
+             builder.CreateSExt(bVal, builder.getInt64Ty(), "fail.b"), builder.getInt32(code)});
+        builder.CreateUnreachable();
+    }
+
     void emitPanic(const std::string& msg) {
         llvm::FunctionType* ft =
             llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
@@ -3113,15 +3171,19 @@ struct CodeGenerator::Impl {
         } else {
             llvm::FunctionType* ft = llvm::FunctionType::get(
                 builder.getVoidTy(),
-                {builder.getPtrTy(), builder.getInt32Ty(), builder.getInt64Ty(),
-                 builder.getInt64Ty()},
+                {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
+                 builder.getInt64Ty(), builder.getInt32Ty()},
                 false);
             llvm::Value* zero = builder.getInt64(0);
-            builder.CreateCall(module.getOrInsertFunction("__ldp3_contract_fail", ft),
-                               {createGlobalStringPtr(builder, msg, ".contract"),
-                                builder.getInt32(args.empty() ? 0 : 1),
-                                args.empty() ? zero : args[0],
-                                args.empty() ? zero : args[1]});
+            llvm::Value* none = llvm::ConstantPointerNull::get(builder.getPtrTy());
+            const bool has = !args.empty();
+            builder.CreateCall(
+                module.getOrInsertFunction("__ldp3_fail", ft),
+                {createGlobalStringPtr(builder, msg, ".contract"),
+                 has ? createGlobalStringPtr(builder, "left", ".cl") : none,
+                 has ? args[0] : zero,
+                 has ? createGlobalStringPtr(builder, "right", ".cr") : none,
+                 has ? args[1] : zero, builder.getInt32(1)});
             builder.CreateUnreachable();
         }
         builder.SetInsertPoint(contBB);
@@ -3735,7 +3797,7 @@ struct CodeGenerator::Impl {
             auto* okBB = llvm::BasicBlock::Create(context, "idx.ok", f);
             builder.CreateCondBr(oob, badBB, okBB, coldBranchWeights());
             builder.SetInsertPoint(badBB);
-            emitPanic("array index out of bounds");
+            emitGuardFail("array index out of bounds", "index", idx, "length", len, 70);
             builder.SetInsertPoint(okBB);
         }
         return builder.CreateGEP(elemTy, arrayData(block), idx, "arr.elem");
@@ -4214,7 +4276,8 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "nullrecv.ok", currentFn);
         builder.CreateCondBr(isNull, trapBB, okBB);
         builder.SetInsertPoint(trapBB);
-        emitPanic("null reference dereference");  // ends the block with unreachable
+        emitGuardFail("null reference dereference", nullptr, nullptr, nullptr, nullptr,
+                      70);  // ends the block with unreachable
         builder.SetInsertPoint(okBB);
     }
     llvm::Value* emitObjectPtrRaw(const ast::Expr& expr) {
@@ -8275,7 +8338,8 @@ struct CodeGenerator::Impl {
                             auto* okBB = llvm::BasicBlock::Create(context, "div.ok", currentFn);
                             builder.CreateCondBr(zero, badBB, okBB);
                             builder.SetInsertPoint(badBB);
-                            emitPanic("integer division by zero");
+                            emitGuardFail("integer division by zero", nullptr, nullptr, nullptr,
+                                          nullptr, 70);
                             builder.SetInsertPoint(okBB);
                         }
                         if (isUnsigned(ot)) return builder.CreateUDiv(a, b);

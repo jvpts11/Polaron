@@ -1,0 +1,43 @@
+import System.IO.Console;
+
+// WHAT AN INDEX OFF THE END SAYS (the no-UB guards).
+//
+// The guard printed `array index out of bounds` and stopped. That names the KIND of accident and
+// withholds everything needed to find it: not the line, not the method, and above all not the index
+// and the length -- which between them usually make the mistake obvious on sight.
+//
+// This program walks one past the end on purpose. The test pins the index, the length and the place.
+program BoundsReport;
+
+public bundle main {
+    public namespace app {
+
+        public class Shelf {
+            private mutable int[] slots;
+
+            public constructor Shelf(int howMany) {
+                this.slots = new int[howMany]();
+            }
+
+            // The caller cannot see the length from here, which is exactly when the two numbers in
+            // the message earn their place.
+            public method at(int which) returns int {
+                return this.slots[which];
+            }
+
+            public destructor ~Shelf() returns void {
+                delete this.slots;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shelf s = new Shelf(6) on stack;
+                System.IO.Console.println($"slot 0 is {s.at(0)}");
+                System.IO.Console.println($"slot 9 is {s.at(9)}");   // six slots: this is the last line
+                return;
+            }
+        }
+    }
+}
