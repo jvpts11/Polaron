@@ -5,7 +5,7 @@
 #   ./build-msi.ps1                       # -> installer/dist/LDP3-1.0.4.msi
 param(
     [string]$Config = "Release",
-    [string]$Version = "1.0.18"
+    [string]$Version = "1.0.19"
 )
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
