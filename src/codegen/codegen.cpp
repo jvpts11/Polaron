@@ -523,6 +523,9 @@ struct CodeGenerator::Impl {
     const ast::Program& program;
     const EntryPoint& entry;
     bool libraryMode = false;  // compiling a bundle to a .ldb: no entry point / `main` wrapper
+    // How to read a line of the compiled source, for quoting a contract clause in its failure
+    // message. Empty when the driver did not supply one.
+    std::function<std::string(std::string_view, int)> sourceLookup;
     bool testMode = false;     // `ldp3c --test`: the entry is a synthetic [Test] runner
     // One discovered [Test] method (spec 32.11), in declaration order.
     struct TestCase {
@@ -3016,6 +3019,42 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // Whether re-evaluating this expression in the failure path is free of consequences.
+    //
+    // A contract that fails is about to stop the program, and the most useful thing it can say is
+    // what the two sides actually were -- but reading them means running the expression a second
+    // time. That is only honest for expressions that do nothing but read: a call could log, mutate
+    // or allocate, and a diagnostic that changes the state it is diagnosing is worse than no
+    // diagnostic. Anything not on this list simply goes unquoted.
+    static bool isPureToReread(const ast::Expr* e) {
+        if (e == nullptr) return false;
+        if (dynamic_cast<const ast::IdentifierExpr*>(e) != nullptr) return true;
+        if (dynamic_cast<const ast::IntLiteralExpr*>(e) != nullptr) return true;
+        if (dynamic_cast<const ast::BoolLiteralExpr*>(e) != nullptr) return true;
+        if (dynamic_cast<const ast::CharLiteralExpr*>(e) != nullptr) return true;
+        if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e))
+            return m->object == nullptr || isPureToReread(m->object.get());
+        if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e))
+            return u->op != "++" && u->op != "--" && isPureToReread(u->operand.get());
+        if (const auto* ca = dynamic_cast<const ast::CastExpr*>(e))
+            return isPureToReread(ca->operand.get());
+        return false;
+    }
+
+    // The clause as it reads in the source, trimmed, or "" when the source is not to hand.
+    //
+    // Taken as the WHOLE LINE rather than reconstructed from the tree: LDP3 puts one clause on one
+    // line, so the line is the clause, and it comes back with the spacing and spelling the author
+    // wrote instead of a pretty-printer guessing at them.
+    std::string clauseText(const SourceLocation& loc) const {
+        if (!sourceLookup) return "";
+        const std::string line = sourceLookup(loc.file, loc.line);
+        const std::size_t first = line.find_first_not_of(" \t");
+        if (first == std::string::npos) return "";
+        const std::size_t last = line.find_last_not_of(" \t\r");
+        return line.substr(first, last - first + 1);
+    }
+
     void emitContractCheck(const ast::Expr& cond, const char* kind) {
         llvm::Value* c = emitExpr(cond);
         if (c == nullptr) return;
@@ -3025,16 +3064,64 @@ struct CodeGenerator::Impl {
         llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "contract.cont", fn);
         builder.CreateCondBr(ok, contBB, failBB);
         builder.SetInsertPoint(failBB);
-        const std::string msg = std::string("contract violated: ") + kind + "\n";
+
+        // WHAT BROKE, WHERE, IN WHOSE METHOD, AND WITH WHICH VALUES.
+        //
+        // This printed `contract violated: requires` and nothing else. In a file with three
+        // contracts that is a bisection; across a codebase it is a search. A contract exists
+        // precisely to name a disagreement, so one that cannot say WHICH disagreement stops the
+        // program and then declines to explain itself -- and it read as far worse than the
+        // compile-time diagnostics beside it, which have carried a path, a caret and a code for a
+        // long time.
+        //
+        // The place and the method are already here: the clause carries its own SourceLocation and
+        // the LLVM function is the method being emitted. The clause TEXT is read back out of the
+        // source. The VALUES are what turn "this was false" into "this was false because 1813 is
+        // not 1817", and they are printed whenever the clause is a comparison whose two sides can
+        // be read a second time without consequences.
+        std::string where = std::string(cond.loc.file);
+        if (where.empty()) where = "<prelude>";
+        std::string msg = std::string("contract violated: ") + kind + "\n";
+        msg += "  --> " + where + ":" + std::to_string(cond.loc.line) + ":" +
+               std::to_string(cond.loc.col) + "  in " + fn->getName().str() + "\n";
+        const std::string text = clauseText(cond.loc);
+        if (!text.empty()) msg += "   |  " + text + "\n";
+
+        std::vector<llvm::Value*> args;
+        const auto* cmp = dynamic_cast<const ast::BinaryExpr*>(&cond);
+        const bool comparison =
+            cmp != nullptr && (cmp->op == "==" || cmp->op == "!=" || cmp->op == "<" ||
+                               cmp->op == ">" || cmp->op == "<=" || cmp->op == ">=");
+        if (!program.isFreestanding && comparison && isPureToReread(cmp->lhs.get()) &&
+            isPureToReread(cmp->rhs.get())) {
+            llvm::Value* lv = emitExpr(*cmp->lhs);
+            llvm::Value* rv = emitExpr(*cmp->rhs);
+            if (lv != nullptr && rv != nullptr && lv->getType()->isIntegerTy() &&
+                rv->getType()->isIntegerTy()) {
+                args.push_back(builder.CreateSExt(lv, builder.getInt64Ty(), "contract.l"));
+                args.push_back(builder.CreateSExt(rv, builder.getInt64Ty(), "contract.r"));
+            }
+        }
+
         // Freestanding has no stdio and no exit: report through `__ldp3_panic`, the same deterministic
         // stop the div-by-zero, overflow and bounds guards use. Without this, a single `requires` in a
         // kernel pulled in `puts`/`exit` and failed to link -- which made contracts unusable in exactly
-        // the code that benefits from them most.
+        // the code that benefits from them most. It takes a fixed string, so the values are the one
+        // part of the message a kernel does without.
         if (program.isFreestanding) {
             emitPanic(msg);
         } else {
-            builder.CreateCall(printf(), {createGlobalStringPtr(builder, msg, ".contract")});
-            builder.CreateCall(exitFn(), {builder.getInt32(1)});
+            llvm::FunctionType* ft = llvm::FunctionType::get(
+                builder.getVoidTy(),
+                {builder.getPtrTy(), builder.getInt32Ty(), builder.getInt64Ty(),
+                 builder.getInt64Ty()},
+                false);
+            llvm::Value* zero = builder.getInt64(0);
+            builder.CreateCall(module.getOrInsertFunction("__ldp3_contract_fail", ft),
+                               {createGlobalStringPtr(builder, msg, ".contract"),
+                                builder.getInt32(args.empty() ? 0 : 1),
+                                args.empty() ? zero : args[0],
+                                args.empty() ? zero : args[1]});
             builder.CreateUnreachable();
         }
         builder.SetInsertPoint(contBB);
@@ -15420,6 +15507,9 @@ void CodeGenerator::setTargetTriple(const std::string& triple) {
 }
 
 void CodeGenerator::setLibrary(bool library) { impl_->libraryMode = library; }
+void CodeGenerator::setSourceLookup(std::function<std::string(std::string_view, int)> lookup) {
+    impl_->sourceLookup = std::move(lookup);
+}
 void CodeGenerator::setTestMode(bool test) { impl_->testMode = test; }
 void CodeGenerator::setDebugInfo(bool debug) { impl_->debugInfo = debug; }
 void CodeGenerator::setVerifyStack(bool verify) { impl_->verifyStack = verify; }

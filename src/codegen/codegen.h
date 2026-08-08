@@ -5,6 +5,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <functional>
 #include <string_view>
 #include <vector>
 
@@ -36,6 +37,12 @@ public:
     // Library mode: compiling a bundle to a .ldb. No entry point is required and no `main` wrapper is
     // emitted. Call before generate().
     void setLibrary(bool library);
+
+    // How to fetch line `line` of file `file` from the sources compiled this run, or "" when it is
+    // not available (the embedded prelude has no file on disk). Used to quote the offending clause
+    // in a contract violation, so the message names the rule instead of only its kind. Optional:
+    // without it the message keeps the location and drops the quote.
+    void setSourceLookup(std::function<std::string(std::string_view, int)> lookup);
 
     // Test mode (`ldp3c --test`): the entry point is a synthetic runner that calls every [Test] method and
     // reports pass/fail, instead of the program's own `main`. Call before generate().

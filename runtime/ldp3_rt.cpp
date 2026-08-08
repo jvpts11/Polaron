@@ -139,6 +139,22 @@ LDP3_RT_API void __ldp3_panic(const char* msg) {
 #define LDP3_SLAB (1u << 20)               // 1 MiB slabs, bump-allocated then recycled via free-list
 #define LDP3_LARGE 0xFFFFFFFFu
 
+// A CONTRACT THAT FAILED, REPORTED THE WAY AN ERROR SHOULD BE.
+//
+// On stderr, like the panics, because it is a fatal diagnostic and not program output -- on stdout
+// it lands in the middle of whatever the program was printing and disappears into a redirect.
+//
+// The values arrive as arguments rather than baked into a format string. Composing `%lld` into the
+// message in the compiler would put a format specifier inside a string the programmer's own clause
+// text is pasted into, and a clause containing a stray `%` would then be read as a directive -- the
+// same injection the compiler already refuses for literals passed to printf.
+LDP3_RT_API void __ldp3_contract_fail(const char* text, int hasValues, long long l, long long r) {
+    fputs(text, stderr);
+    if (hasValues != 0) fprintf(stderr, "   |  left = %lld, right = %lld\n", l, r);
+    fflush(stderr);
+    exit(1);
+}
+
 // The region layout and the size-class scheme it shares with the heap pool. THE one definition: the
 // same header is compiled bare-metal by `ldp3 build`, so a hosted program and a kernel cannot end up
 // disagreeing about where a region's data starts. __ldp3_panic is already defined above, so the
