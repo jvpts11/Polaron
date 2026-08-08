@@ -885,12 +885,11 @@ R"LDP3(
                 return c;
             }
         }
-        // Adapts a plain Iterator into a Stream (the head of a pipeline).
+        // Adapts a plain Iterator into a Stream (the head of a pipeline). It adds nothing but its type,
+        // so it answers nothing itself: `delegate` forwards hasNext and next to the iterator it wraps.
         public class IteratorStream<T> extends Stream<T> {
-            private Iterator<T> src;
+            private delegate Iterator<T> src;
             public constructor IteratorStream(Iterator<T> src) { this.src = src; }
-            public override method hasNext() returns boolean { return this.src.hasNext(); }
-            public override method next() returns T { return this.src.next(); }
         }
         // Yields only the upstream elements that satisfy the predicate; caches one look-ahead so hasNext
         // can skip rejected elements without losing the accepted one.
@@ -917,13 +916,14 @@ R"LDP3(
         }
         // Applies a transform to each upstream element as it is pulled, possibly changing the type
         // (T -> R). Extends Stream<R>, so map may be chained with a different element type.
+        // A decorator: `hasNext` is the upstream's answer unchanged, so it is delegated; `next` is the
+        // one thing this class exists to do, so it is written here and wins over the delegate.
         public class MapStream<T, R> extends Stream<R> {
-            private Stream<T> src;
+            private delegate Stream<T> src;
             private function<R, T> fn;
             public constructor MapStream(Stream<T> src, function<R, T> fn) {
                 this.src = src; this.fn = fn;
             }
-            public override method hasNext() returns boolean { return this.src.hasNext(); }
             public override method next() returns R { return this.fn(this.src.next()); }
         }
         // A non-owning window over a [start, start+len) range of an array (spec 34): no copy, just a
@@ -9594,6 +9594,46 @@ void synthesizeValueKeyHooks(ldp3::ast::Program& program) {
                     }
                 }
                 const auto loc = cls.loc;
+                // Which fields the generated key is built from -- ONE answer, used by all three hooks.
+                // They used to disagree: equalsKey compared EVERY field with `==`, while hash and
+                // compareTo skipped pointers, arrays, refs, nullables and enums. So for a record with an
+                // `int[]` or a `Node*` field, `==` fell back to comparing ADDRESSES while the hash ignored
+                // the field entirely -- two records with identical contents were "different", and which
+                // fields made up the key depended on which hook you happened to ask.
+                //
+                // 0 = not part of the key, 1 = compared directly, 2 = through the field type's own hooks.
+                // Classified by `ast::keyFieldKind`, which codegen also calls to serialise a keyed
+                // persistent -- so what makes up a type's identity is decided in exactly one place.
+                auto keyPart = [&](const FieldDecl* f) -> int {
+                    switch (ldp3::ast::keyFieldKind(f->type, valueTypeNames)) {
+                        case ldp3::ast::KeyFieldKind::None:   return 0;
+                        case ldp3::ast::KeyFieldKind::Scalar: return 1;
+                        case ldp3::ast::KeyFieldKind::Text:
+                        case ldp3::ast::KeyFieldKind::Nested: return 2;   // through the type's own hooks
+                    }
+                    return 0;
+                };
+                // ... and say so. A field silently left out of a type's identity is how two things that
+                // look equal compare unequal, and it is invisible in code that only ever reads the
+                // declaration. Warn once per field, at the class, naming the way out.
+                if (!hasEq || !hasHash || !hasCmp) {
+                    for (const FieldDecl* f : fields) {
+                        if (keyPart(f) != 0) continue;
+                        std::fprintf(stderr,
+                                     "warning: field '%s' of '%s' is not part of the generated key: %s "
+                                     "has no structural value to compare, so it is left out of equalsKey, "
+                                     "hash and compareTo alike. Two %s values that differ only in this "
+                                     "field will compare EQUAL. Write your own equalsKey/hash if it should "
+                                     "count, or make the field a value type (a struct, record or String).\n",
+                                     f->name.c_str(), cls.name.c_str(),
+                                     f->type.isArray      ? "an array"
+                                     : f->type.isPointer  ? "a pointer"
+                                     : f->type.isRef      ? "a reference"
+                                     : f->type.isNullable ? "a nullable field"
+                                                          : "a class or enum reference",
+                                     cls.name.c_str());
+                    }
+                }
                 // --- small AST builders (capture loc) ---
                 auto ident = [&](const std::string& n) -> ExprPtr {
                     auto e = std::make_unique<IdentifierExpr>(); e->loc = loc; e->name = n; return e;
@@ -9638,7 +9678,13 @@ void synthesizeValueKeyHooks(ldp3::ast::Program& program) {
                     method->returnType.name = "boolean";
                     ExprPtr expr;
                     for (const FieldDecl* f : fields) {
-                        auto cmp = binary("==", field("this", f->name), field("other", f->name));
+                        const int part = keyPart(f);
+                        if (part == 0) continue;   // the same fields hash and compareTo use, not more
+                        // A value-typed field compares through its OWN equalsKey. `==` on it would test
+                        // the reference, which is the disagreement this whole predicate exists to end.
+                        auto cmp = part == 2
+                            ? call1(field("this", f->name), "equalsKey", field("other", f->name))
+                            : binary("==", field("this", f->name), field("other", f->name));
                         expr = expr ? binary("&&", std::move(expr), std::move(cmp)) : std::move(cmp);
                     }
                     if (!expr) { auto b = std::make_unique<BoolLiteralExpr>(); b->loc = loc; b->value = true; expr = std::move(b); }
@@ -9653,14 +9699,29 @@ void synthesizeValueKeyHooks(ldp3::ast::Program& program) {
                     method->returnType.name = "long";
                     ExprPtr acc = cast("long", intLit("17"));
                     for (const FieldDecl* f : fields) {
-                        // Array/pointer/ref/nullable fields are not scalar-hashable (and their base name
-                        // may look numeric, e.g. `int[]`), so they don't participate in the structural hash.
-                        if (f->type.isArray || f->type.isPointer || f->type.isRef || f->type.isNullable) continue;
-                        const std::string& ft = f->type.name;
+                        const int part = keyPart(f);   // exactly the fields equalsKey compares
+                        if (part == 0) continue;
+                        // A boolean is part of the key (equalsKey compares it), but `cast<long>` of one
+                        // is not a legal conversion in LDP3 -- so folding it like any other scalar made
+                        // this generated method reject itself, and every struct or record with a
+                        // `boolean` field became UNDECLARABLE with an error pointing at a cast its
+                        // author never wrote. Contribute 1 or 0 instead, which is what the cast was
+                        // reaching for. (`compareTo` above leaves booleans out of the ORDERING, and
+                        // says so -- an order is a weaker contract than an identity, and a hash that
+                        // ignored a field equalsKey compares would put unequal values in one bucket.)
                         ExprPtr contrib;
-                        if (valueTypeNames.count(ft) > 0) contrib = call0(field("this", f->name), "hash");
-                        else if (numeric.count(ft) > 0 || ft == "boolean") contrib = cast("long", field("this", f->name));
-                        else continue;  // reference/array/enum field: not part of the structural hash
+                        if (part == 2) {
+                            contrib = call0(field("this", f->name), "hash");
+                        } else if (f->type.name == "boolean") {
+                            auto t = std::make_unique<TernaryExpr>();
+                            t->loc = loc;
+                            t->cond = field("this", f->name);
+                            t->thenExpr = cast("long", intLit("1"));
+                            t->elseExpr = cast("long", intLit("0"));
+                            contrib = std::move(t);
+                        } else {
+                            contrib = cast("long", field("this", f->name));
+                        }
                         acc = binary("+", binary("*", std::move(acc), cast("long", intLit("31"))),
                                      std::move(contrib));
                     }
@@ -9676,9 +9737,7 @@ void synthesizeValueKeyHooks(ldp3::ast::Program& program) {
                     method->params.push_back(std::move(p));
                     method->returnType.name = "int";
                     for (const FieldDecl* f : fields) {
-                        // Array/pointer/ref/nullable fields have no scalar ordering (and their base name
-                        // may look numeric, e.g. `int[]`), so they don't participate in the ordering.
-                        if (f->type.isArray || f->type.isPointer || f->type.isRef || f->type.isNullable) continue;
+                        if (keyPart(f) == 0) continue;   // same fields again
                         const std::string& ft = f->type.name;
                         if (valueTypeNames.count(ft) > 0) {
                             // if (this.f.compareTo(other.f) != 0) return this.f.compareTo(other.f);
@@ -9910,7 +9969,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             const std::vector<std::string>& deps = {},
             const std::vector<std::string>& dynDeps = {}, bool testMode = false,
             bool debugInfo = false, const std::vector<std::string>& remoteDeps = {},
-            bool checkOnly = false, bool regionBinder = true) {
+            bool checkOnly = false, bool regionBinder = true, bool verifyStack = false) {
     ldp3::ast::Program program;
     std::string programName;
     // In check mode a broken file must not hide the others: an editor asks about the whole project and
@@ -10120,6 +10179,10 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     phase("assignObjectRoot");
     synthesizeValueKeyHooks(program);            // value types get structural equalsKey/hash/compareTo (collection keying)
     phase("synthesizeValueKeyHooks");
+    // Before monomorphize: a generic class is delegated ONCE, on the template, and the forwarding
+    // methods are then copied per instantiation like any other member.
+    if (!ldp3::expandDelegates(program)) return 1;
+    phase("expandDelegates");
     if (!ldp3::monomorphize(program)) return 1;
     phase("monomorphize");  // expand generics; false on constraint error
     // Freestanding has no managed arrays and no bounds checks (raw-pointer `p[i]` is unchecked), so these
@@ -10127,6 +10190,19 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // on a raw pointer (which has no `length`), erroring under -O2. Skip both in freestanding.
     if (optLevel > 0 && !program.isFreestanding) ldp3::interchangeReductionLoops(program);  // loop interchange (sema re-checks it)
     if (optLevel > 0 && !program.isFreestanding) ldp3::hoistBoundsChecks(program);          // bounds-check hoisting (sema re-checks it)
+    // `--test` on a freestanding program synthesized a runner that calls printf, __ldp3_now_ns and the
+    // whole hosted test runtime -- it emitted the IR without a word, and the link failed later on symbols
+    // the program never wrote. Refuse at the point the mistake is made, and say what to do instead: a
+    // freestanding image is tested by RUNNING it, which is what pico's harness does (boot under QEMU,
+    // assert on the serial output).
+    if (testMode && program.isFreestanding) {
+        std::fprintf(stderr,
+                     "error: `--test` is not available for a freestanding program: the generated runner "
+                     "reports through printf and the managed test runtime, which bare metal has no way "
+                     "to provide. Test a freestanding image from outside -- boot it and assert on what "
+                     "it emits.\n");
+        return 1;
+    }
     ldp3::SemanticAnalyzer sema;
     sema.setRegionBinder(regionBinder);
     const bool semaOk = sema.analyze(program, libraryMode, testMode);
@@ -10167,6 +10243,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     codegen.setLibrary(libraryMode);  // a .ldb has no entry point / `main`
     codegen.setTestMode(testMode);    // --test: synthetic [Test] runner as the entry
     codegen.setDebugInfo(debugInfo);  // -g: emit DWARF debug metadata
+    codegen.setVerifyStack(verifyStack);  // --verify-stack: each method proves its own stack pointer
     codegen.seedVtableSlots(seedSlots);  // adopt imported bundles' vtable slot layout
     for (const auto& [name, path, fp] : dynBundleInfo)
         codegen.addDynamicBundle(name, path, fp);  // runtime-resolving thunks for --use-dynamic
@@ -10371,6 +10448,10 @@ int main(int argc, char** argv) {
     bool libraryMode = false;  // --lib: compile a bundle to a .ldb (+ .ldh), no entry point required
     bool testMode = false;     // --test: emit a synthetic runner over the [Test] methods, not main
     bool debugInfo = false;    // -g: emit DWARF debug metadata (for lldb / the Forge debugger)
+    // --verify-stack: every method checks that the stack pointer it returns on is the one it was called
+    // on. Off by default because it costs two reads and a compare per call; see the flag's own comment
+    // below for the fault that made it necessary.
+    bool verifyStack = false;
     // ON by default: the static temporal-safety escape checks. It was opt-in for as long as it could
     // not tell a heap object from a stack one -- `Node* n = new Node(v) on heap; this.top = n;`, the
     // first two lines of every linked structure, was reported as a dangling store, so nobody could
@@ -10419,6 +10500,16 @@ int main(int argc, char** argv) {
             ++i;
         } else if (args[i].rfind("--target=", 0) == 0) {
             target = std::string(args[i].substr(9));
+        } else if (args[i] == "--verify-stack") {
+            // Make every method prove its own stack pointer survived its body.
+            //
+            // This exists because of a fault nothing else could locate: a stack slot came back holding
+            // a return address, about one boot in twenty, if and only if an interrupt landed inside the
+            // call being made at that moment. Every hand-placed probe moved it, and two days produced
+            // clues and no cause. Only the compiler knows what the stack pointer is SUPPOSED to be at
+            // each point -- and checking that is mechanical, not analysis. A displacement stops being a
+            // mystery three hours downstream and becomes a named method at the moment it happens.
+            verifyStack = true;
         } else if (args[i] == "-O" || args[i] == "-O2") {
             optLevel = 2;
         } else if (args[i] == "-O0") {
@@ -10451,5 +10542,5 @@ int main(int argc, char** argv) {
         return printUsage(argv[0]);
     }
     return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps, testMode, debugInfo,
-                   remoteDeps, /*checkOnly=*/false, regionBinder);
+                   remoteDeps, /*checkOnly=*/false, regionBinder, verifyStack);
 }

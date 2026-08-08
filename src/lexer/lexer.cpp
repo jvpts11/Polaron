@@ -124,6 +124,7 @@ TokenKind keywordKind(std::string_view text) {
         {"cascade", TokenKind::KwCascade},
         {"lazy", TokenKind::KwLazy},
         {"external", TokenKind::KwExternal},
+        {"delegate", TokenKind::KwDelegate},
         // NOTE: get / set / init are soft keywords -- recognized contextually in
         // a property body (parseProperty), not reserved, so `method get()` works.
         {"if", TokenKind::KwIf},
@@ -429,6 +430,23 @@ Token Lexer::scanNumber() {
         if (peek() == '.' && isDigit(peek(1))) {
             isFloat = true;
             advance();  // '.'
+            while (!atEnd() && (isDigit(peek()) || peek() == '_')) advance();
+        }
+        // Scientific notation: 1.0e30, 1e-9, 6.022E+23. Without this the exponent was not part of the
+        // number at all -- `1.0e30` lexed as `1.0` followed by the IDENTIFIER `e30`, which the parser then
+        // read as a member access and rejected with "unknown call 'e30'", a message about a method on a
+        // line containing no method. An exponent also makes the literal a float on its own: `1e30` has no
+        // '.' and is still a double.
+        //
+        // Only consumed when a digit really follows (after an optional sign), so `1.0exp` keeps lexing as
+        // `1.0` then `exp` -- consuming the 'e' of an identifier would turn a typo into a lexer error
+        // pointing at the wrong place. Hex is excluded by construction: 'e' is a hex DIGIT, and that
+        // branch is handled above.
+        if ((peek() == 'e' || peek() == 'E') &&
+            (isDigit(peek(1)) || ((peek(1) == '+' || peek(1) == '-') && isDigit(peek(2))))) {
+            isFloat = true;
+            advance();                                        // 'e' / 'E'
+            if (peek() == '+' || peek() == '-') advance();     // optional sign
             while (!atEnd() && (isDigit(peek()) || peek() == '_')) advance();
         }
     }
