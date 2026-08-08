@@ -2,8 +2,9 @@ import System.IO.Console;
 program BitFields;
 
 // Bit-fields (spec 11.1): `field : N` constrains the stored value to N bits, so a
-// value that overflows N bits is truncated on store. (Value masking; physical
-// packing of the struct layout is a later refinement.)
+// value that overflows N bits is truncated on store. Adjacent bit fields also share
+// a storage unit, so the struct shrinks: `struct { int a : 4; int b : 4; }` measures
+// one byte, not eight.
 
 public bundle main {
     public namespace app {
