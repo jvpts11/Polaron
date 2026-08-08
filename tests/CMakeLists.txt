@@ -641,6 +641,16 @@ add_test(NAME codegen_unqualified_self_call_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# And the same for a FIELD: read, written, static, and inherited, all without a prefix -- with `this.`
+# left in the one place it distinguishes anything, a parameter of the same name as the field it sets.
+add_test(NAME codegen_implicit_this_runs COMMAND "${CMAKE_COMMAND}"
+    "-DLDP3C=$<TARGET_FILE:ldp3c>"
+    "-DCLANG=${LDP3_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/implicit_this.ldp3"
+    "-DEXPECTED=counter = 6 tally = 5 made = 2"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # ...but an instance method still needs an object: calling one unqualified from a static context must fail
 # with a diagnostic that names the cause and the fix, not a bare "unknown call".
 add_test(NAME sema_rejects_instance_call_from_static

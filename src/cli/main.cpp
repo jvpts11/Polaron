@@ -33,6 +33,7 @@
 #include "parser/monomorphize.h"
 #include "parser/parser.h"
 #include "semantic/analyzer.h"
+#include "semantic/implicitthis.h"
 
 #include "bundle/ldh.h"
 #include "diag/diagnostic.h"
@@ -10183,6 +10184,11 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // methods are then copied per instantiation like any other member.
     if (!ldp3::expandDelegates(program)) return 1;
     phase("expandDelegates");
+    // AFTER delegation, so a synthesized forwarder is walked like any other method, and BEFORE
+    // everything that reads the tree: from here on a member reference IS a member access, so nothing
+    // downstream needs to know the prefix was ever optional.
+    if (!ldp3::resolveImplicitThis(program)) return 1;
+    phase("resolveImplicitThis");
     if (!ldp3::monomorphize(program)) return 1;
     phase("monomorphize");  // expand generics; false on constraint error
     // Freestanding has no managed arrays and no bounds checks (raw-pointer `p[i]` is unchecked), so these

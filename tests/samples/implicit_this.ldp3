@@ -1,0 +1,69 @@
+﻿// `this.` is required only where it distinguishes two things.
+//
+// Every member below is reached without a prefix: fields read and written, an instance method called,
+// a static field and a static method, and an inherited field. The one place `this.` appears is the one
+// place it says something -- a parameter with the same name as the field it is assigned to.
+import System.IO.Console;
+program ImplicitThis;
+
+public bundle main {
+    public namespace app {
+
+        public class Counter {
+            public static mutable int made;
+            private mutable int value;
+            private int amount;
+
+            public constructor Counter(int amount) {
+                // The parameter shadows the field, so here -- and only here -- the prefix is needed.
+                this.amount = amount;
+                value = 0;
+                made = made + 1;
+            }
+
+            public method bump() returns void {
+                value = value + amount;      // two fields, no prefix
+                return;
+            }
+
+            public method twice() returns void {
+                bump();                    // an instance method of this class, no receiver
+                bump();
+                return;
+            }
+
+            public method read() returns int {
+                return value;
+            }
+
+            public static method total() returns int {
+                return made;               // a static field from a static method
+            }
+        }
+
+        public class Tally extends Counter {
+            public constructor Tally() {
+                super(5);
+            }
+
+            public method describe() returns void {
+                // `read` is inherited, and reached the same way as anything else.
+                System.IO.Console.println($"tally = {read()}");
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter c = new Counter(3) on stack;
+                c.twice();
+                System.IO.Console.println($"counter = {c.read()}");
+                Tally t = new Tally() on stack;
+                t.bump();
+                t.describe();
+                System.IO.Console.println($"made = {Counter.total()}");
+                return;
+            }
+        }
+    }
+}
