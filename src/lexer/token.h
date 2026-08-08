@@ -60,7 +60,7 @@ enum class TokenKind : std::uint8_t {
     KwPartial,      // spec 8.3: a class declaration split across several declarations/files
     KwDefer, KwUsing, KwSynchronized, KwAsync, KwAwait,
     KwExtern, KwCdecl, KwStdcall, KwFastcall, KwUnknown, KwFreestanding, KwNaked,
-    KwVolatile, KwCascade, KwLazy, KwExternal,
+    KwVolatile, KwCascade, KwLazy, KwExternal, KwDelegate,
     KwLambda, KwFunction, KwMethodref,
     KwTypealias, KwNewtype, KwAnnotation,
     KwLabel, KwComefrom, KwGoto, KwAbstainfrom, KwReinstate, KwUnimport, KwReimport,

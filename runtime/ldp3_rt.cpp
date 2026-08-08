@@ -96,6 +96,18 @@ static void WakeAllConditionVariable(CONDITION_VARIABLE* c) { pthread_cond_broad
 extern "C" {
 #endif
 
+// `ldp3c --verify-stack` calls this when a method returns on a different stack pointer than the one it
+// was entered on. It REPORTS AND RETURNS rather than terminating, and that is deliberate: the fault it
+// was built for happens roughly one run in twenty, and every attempt to stop the machine at it changed
+// the timing enough to hide it. Leaving the run intact means the next thing that goes wrong is still
+// observable and the two can be lined up.
+//
+// Defined here as well as in the freestanding runtime (`src/driver/build.cpp`), because a flag that
+// fails to LINK anywhere but bare metal is a flag nobody can try the day they need it.
+LDP3_RT_API void __ldp3_stack_mismatch(const char* method) {
+    fprintf(stderr, "LDP3 STACK MISMATCH in %s\n", method);
+}
+
 // Defined-behaviour panic: LDP3 never invokes UB. When a check fails (division by zero,
 // out-of-bounds, etc.) the program terminates deterministically with a message instead of
 // continuing into undefined territory.
@@ -124,26 +136,15 @@ LDP3_RT_API void __ldp3_panic(const char* msg) {
 // pool. Thread-local free-lists need no lock; a block freed on any thread is simply reused there.
 #define LDP3_MAGIC 0x4C44503341313142ULL  // arbitrary 64-bit tag; collision with libc data ~2^-64
 #define LDP3_FREED 0x4C44503346524545ULL  // stamped into a pool block's header while it sits freed
-#define LDP3_RMAGIC 0x4C4450335247314EULL // a live slot inside a `pool`/`fixedslot` region (spec 17 flavors)
-#define LDP3_RFREED 0x4C4450335246524EULL // a region slot sitting on its region's free-list (double-free guard)
-#define LDP3_POOL_MAX 512u                 // requests above this go straight to libc malloc
-#define LDP3_NCLASSES 32                   // size classes 16,32,...,512 (step 16)
 #define LDP3_SLAB (1u << 20)               // 1 MiB slabs, bump-allocated then recycled via free-list
 #define LDP3_LARGE 0xFFFFFFFFu
-// A flavored region (pool/fixedslot/ring/stack, or any growable region) block begins with an
-// Ldp3RegionDesc header; its object data starts LDP3_REGION_HDR bytes in. Kept a fixed 16-aligned constant
-// so the compiler and the runtime agree on the data offset without the compiler needing
-// sizeof(Ldp3RegionDesc). A static_assert below pins it (with headroom for future fields).
-#define LDP3_REGION_HDR 448u
 
-typedef struct Ldp3Hdr {
-    unsigned long long magic;
-    unsigned int cls;
-    unsigned int pad;
-} Ldp3Hdr;
-typedef struct Ldp3FreeNode {
-    struct Ldp3FreeNode* next;
-} Ldp3FreeNode;
+// The region layout and the size-class scheme it shares with the heap pool. THE one definition: the
+// same header is compiled bare-metal by `ldp3 build`, so a hosted program and a kernel cannot end up
+// disagreeing about where a region's data starts. __ldp3_panic is already defined above, so the
+// header's declaration of it (which bare metal needs) would clash with its dllexport -- suppress it.
+#define LDP3_PANIC_DECLARED
+#include "ldp3_region_core.h"
 
 static thread_local Ldp3FreeNode* g_ldp3_free[LDP3_NCLASSES];
 static thread_local char* g_ldp3_slab_cur;
@@ -469,290 +470,21 @@ void __ldp3_region_release(void* block) {
     __ldp3_free(block);
 }
 
-// ---- Flavored regions (spec 17, flavors expansion): pool / fixedslot / stack (ring later) ----
-// A flavored region's block starts with this descriptor and its object data follows LDP3_REGION_HDR bytes
-// in. The first three fields deliberately mirror the lean bump header ([used][cap][dataBase] at 0/8/16) so
-// __ldp3_region_release reads cap/dataBase the same way for every flavor (a flavored dataBase != block+24,
-// so release just frees the whole block -- correct, since the block is one __ldp3_malloc allocation).
-//
-// pool/fixedslot/stack allocate a slot per object: [16-byte Ldp3Hdr][payload], the payload 16-aligned.
-// pool/fixedslot: a freed slot goes on freelists[class]; a later same-class allocation pops it (pointers
-// never move). stack: pure bump (no free-list) plus mark/rollback; objects with destructors are recorded
-// in a runtime registry so rollback/release can run them newest-first. Slots carry LDP3_RMAGIC (distinct
-// from heap LDP3_MAGIC) so a mistaken plain `delete`/`free` traps instead of splicing a region-interior
-// pointer onto the global heap free-list (no exploitable UB).
-typedef struct Ldp3RegionDesc {
-    unsigned long long used;      // +0  bump cursor over the data area, in bytes (mirrors lean header)
-    unsigned long long cap;       // +8  data-area capacity in bytes (mirrors lean header)
-    void*              dataBase;  // +16 = (char*)block + LDP3_REGION_HDR (mirrors lean header)
-    unsigned long long flavor;    // +24 1=pool, 2=stack, 3=fixedslot, 4=ring (bump never uses this desc)
-    unsigned long long entrySize; // +32 fixedslot/ring slot payload size (0 for a general pool)
-    unsigned long long ringHead;  // +40 ring: index of the oldest entry (later wave)
-    unsigned long long ringCount; // +48 ring: number of live entries (later wave)
-    unsigned long long ringCap;   // +56 ring: capacity in entries (later wave)
-    // stack registry: objects with destructors, in allocation order (== address order, since stack bumps).
-    // rollback/release walk it newest-first. Backed by libc malloc/realloc (small metadata, off the arena).
-    void**             trackPtr;  // +64 live object payload pointers
-    void**             trackDtor; // +72 parallel destructor function pointers (void(*)(void*))
-    unsigned long long trackCount;// +80
-    unsigned long long trackCap;  // +88
-    void*              ringDtor;  // +96 ring: the single element type's destructor (all entries share it)
-    // growable region (spec 17): blocks chain on overflow. `growNext` links each block to the next;
-    // `growTail` (head only) is the current bump block; `growable` is the flag. A shared free-list on the
-    // head serves pool/fixedslot reuse across the whole chain. `release` frees the chain.
-    struct Ldp3RegionDesc* growNext;  // +104 next block in the chain (null = last)
-    struct Ldp3RegionDesc* growTail;  // +112 head only: the block currently being bumped
-    unsigned long long growable;      // +120 1 = chain a new block on overflow instead of trapping
-    Ldp3FreeNode*      freelists[LDP3_NCLASSES + 1];  // +128 per size class; [LDP3_NCLASSES] = large (>512)
-} Ldp3RegionDesc;
-// The compiler hardcodes LDP3_REGION_HDR as the data offset; keep the struct within it.
-typedef char Ldp3RegionDescFits[(sizeof(Ldp3RegionDesc) <= LDP3_REGION_HDR) ? 1 : -1];
-
-// Payload size class for a region slot: 0..LDP3_NCLASSES-1 for <=512 (step 16), LDP3_NCLASSES for large.
-static inline unsigned ldp3_region_class(unsigned long long payload) {
-    if (payload <= LDP3_POOL_MAX) return (unsigned)((payload + 15) / 16) - 1;
-    return LDP3_NCLASSES;  // large: reused only on exact-size match
-}
-
-// Initialize a freshly acquired flavored region block (called by codegen right after acquire).
-void __ldp3_region_init(void* block, unsigned long long flavor, unsigned long long cap,
-                        unsigned long long growable) {
-    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
-    d->used = 0;
-    d->cap = cap;
-    d->dataBase = (char*)block + LDP3_REGION_HDR;
-    d->flavor = flavor;
-    d->entrySize = 0;
-    d->ringHead = 0;
-    d->ringCount = 0;
-    d->ringCap = 0;
-    d->trackPtr = NULL;
-    d->trackDtor = NULL;
-    d->trackCount = 0;
-    d->trackCap = 0;
-    d->ringDtor = NULL;
-    d->growNext = NULL;
-    d->growTail = d;  // the head is its own initial bump block
-    d->growable = growable;
-    for (int i = 0; i <= LDP3_NCLASSES; i++) d->freelists[i] = NULL;
-}
-
-// Allocate `size` bytes of object storage from a pool/fixedslot region. Pops a same-class free slot when
-// available, otherwise bumps a fresh one; traps (no UB) when the fixed region is full.
-void* __ldp3_region_new(void* block, unsigned long long size) {
-    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
-    unsigned long long payload = (size + 15) & ~15ULL;  // 16-align
-    if (payload == 0) payload = 16;
-    unsigned cls = ldp3_region_class(payload);
-    // Only pool/fixedslot reuse a free-list (shared on the head across all growable blocks). bump/stack
-    // always bump: bump frees together on release; stack reclaims LIFO via mark/rollback.
-    if (d->flavor == 1 || d->flavor == 3) {
-        if (cls < LDP3_NCLASSES) {
-            Ldp3FreeNode* n = d->freelists[cls];
-            if (n != NULL) {  // reuse: the [16-byte header][payload] is still just before the node
-                d->freelists[cls] = n->next;
-                ((Ldp3Hdr*)((char*)n - 16))->magic = LDP3_RMAGIC;  // live again
-                // Region slots are sub-allocations inside a block that the profiler already counts; the
-                // block is freed en masse on release, so per-slot live accounting would over-report.
-                if (g_prof_on) prof_add(&g_prof_total_alloc, 1);
-                return (void*)n;
-            }
-        } else {
-            // large: first-fit exact-size match on the large list (homogeneous churn hits the head first)
-            Ldp3FreeNode** pp = &d->freelists[LDP3_NCLASSES];
-            while (*pp != NULL) {
-                Ldp3Hdr* h = (Ldp3Hdr*)((char*)(*pp) - 16);
-                if (h->pad == (unsigned)payload) {
-                    Ldp3FreeNode* n = *pp;
-                    *pp = n->next;
-                    h->magic = LDP3_RMAGIC;
-                    if (g_prof_on) prof_add(&g_prof_total_alloc, 1);
-                    return (void*)n;
-                }
-                pp = &(*pp)->next;
-            }
-        }
-    }
-    unsigned long long slotBytes = 16 + payload;
-    // Bump in the current tail block. A growable region chains a new block on overflow instead of trapping;
-    // a fixed region traps (no UB). The shared free-list above means steady-state churn never grows.
-    Ldp3RegionDesc* tail = d->growable ? d->growTail : d;
-    if (tail->used + slotBytes > tail->cap) {
-        if (!d->growable)
-            __ldp3_panic("region out of memory: this fixed region is full -- give itself.allocate a bigger size, delete/extract objects to reclaim slots, or make it a `growable` region");
-        unsigned long long newcap = tail->cap;          // grow by at least the previous block's size
-        if (newcap < slotBytes) newcap = slotBytes;
-        void* nb = __ldp3_malloc((size_t)(LDP3_REGION_HDR + newcap));
-        if (nb == NULL) __ldp3_panic("out of memory growing a region");
-        __ldp3_region_init(nb, d->flavor, newcap, 1);
-        tail->growNext = (Ldp3RegionDesc*)nb;
-        d->growTail = (Ldp3RegionDesc*)nb;
-        tail = (Ldp3RegionDesc*)nb;
-    }
-    char* slot = (char*)tail->dataBase + tail->used;
-    tail->used += slotBytes;
-    Ldp3Hdr* h = (Ldp3Hdr*)slot;
-    h->magic = LDP3_RMAGIC;
-    h->cls = cls;
-    h->pad = (unsigned)payload;
-    if (g_prof_on) prof_add(&g_prof_total_alloc, 1);  // block-level bytes already counted at acquire
-    return slot + 16;
-}
-
-// Return an object's slot to its pool/fixedslot region's free-list. Traps on a double free or on a
-// pointer that is not a live region slot, rather than corrupting the list (no UB). `size` is unused (the
-// slot header remembers its class) but kept in the ABI for symmetry and future validation.
-void __ldp3_region_free(void* block, void* ptr, unsigned long long size) {
-    (void)size;
-    if (ptr == NULL) return;
-    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
-    Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
-    if (h->magic == LDP3_RFREED) __ldp3_panic("double free of a region object (it was already deleted or extracted)");
-    if (h->magic != LDP3_RMAGIC) __ldp3_panic("region free of a pointer that this region did not allocate");
-    unsigned cls = h->cls;
-    if (g_prof_on) prof_add(&g_prof_total_free, 1);  // per-slot live is not tracked (see region_new)
-    h->magic = LDP3_RFREED;
-    if (d->flavor == 2) {  // stack: no free-list. Untrack, and reclaim LIFO if this was the top slot.
-        for (unsigned long long i = d->trackCount; i > 0; --i) {
-            if (d->trackPtr[i - 1] == ptr) {  // drop it so rollback/release never re-destructs it
-                for (unsigned long long j = i - 1; j + 1 < d->trackCount; ++j) {
-                    d->trackPtr[j] = d->trackPtr[j + 1];
-                    d->trackDtor[j] = d->trackDtor[j + 1];
-                }
-                d->trackCount--;
-                break;
-            }
-        }
-        unsigned long long slotBytes = 16 + (unsigned long long)h->pad;
-        if ((char*)h + slotBytes == (char*)d->dataBase + d->used) d->used -= slotBytes;  // top: reclaim
-        return;
-    }
-    Ldp3FreeNode* n = (Ldp3FreeNode*)ptr;
-    unsigned idx = (cls < LDP3_NCLASSES) ? cls : LDP3_NCLASSES;
-    n->next = d->freelists[idx];
-    d->freelists[idx] = n;
-}
-
-// Free every block of a (possibly growable) region chain. Called by codegen on release/scope exit of a
-// growable region, after its objects' destructors have run. A non-growable region has a null growNext, so
-// this frees just its one block (equivalent to release without the block cache).
-void __ldp3_region_free_chain(void* block) {
-    Ldp3RegionDesc* b = (Ldp3RegionDesc*)block;
-    while (b != NULL) {
-        Ldp3RegionDesc* next = b->growNext;
-        __ldp3_free(b);
-        b = next;
-    }
-}
-
-// Record a stack-region object that has a destructor, so mark/rollback and release can run it (newest
-// first). Only objects with destructors are tracked; the registry lives off the arena (libc malloc).
-void __ldp3_region_track(void* block, void* ptr, void* dtor) {
-    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
-    if (d->trackCount == d->trackCap) {
-        unsigned long long ncap = d->trackCap == 0 ? 16 : d->trackCap * 2;
-        d->trackPtr = (void**)realloc(d->trackPtr, ncap * sizeof(void*));
-        d->trackDtor = (void**)realloc(d->trackDtor, ncap * sizeof(void*));
-        if (d->trackPtr == NULL || d->trackDtor == NULL) __ldp3_panic("out of memory tracking a stack region object");
-        d->trackCap = ncap;
-    }
-    d->trackPtr[d->trackCount] = ptr;
-    d->trackDtor[d->trackCount] = dtor;
-    d->trackCount++;
-}
-
-// Roll a stack region back to a mark: run destructors newest-first for every tracked object allocated at
-// or after `mark` (byte offset into the data area), then reset the cursor. `mark == 0` destructs all (used
-// by release). Objects without destructors are not tracked; the cursor reset reclaims their memory anyway.
-void __ldp3_region_rollback(void* block, unsigned long long mark) {
-    if (block == NULL) return;  // an unallocated / already-released region
-    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
-    char* threshold = (char*)d->dataBase + mark;  // slots at or after this are being rolled back
-    while (d->trackCount > 0) {
-        void* ptr = d->trackPtr[d->trackCount - 1];
-        if ((char*)ptr - 16 < threshold) break;  // older than the mark: keep it (registry is in alloc order)
-        Ldp3Hdr* h = (Ldp3Hdr*)((char*)ptr - 16);
-        d->trackCount--;
-        if (h->magic == LDP3_RMAGIC) {  // still live (not already deleted): destruct it once
-            h->magic = LDP3_RFREED;
-            ((void (*)(void*))d->trackDtor[d->trackCount])(ptr);
-        }
-    }
-    d->used = mark;
-}
-
-// Tear a stack region down before its block is freed: run all remaining destructors and free the
-// off-arena registry arrays. Codegen calls this for a stack region right before __ldp3_region_release.
-void __ldp3_region_teardown(void* block) {
-    if (block == NULL) return;  // an unallocated / already-released region (explicit release nulled it)
-    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
-    __ldp3_region_rollback(block, 0);  // destruct everything still live
-    free(d->trackPtr);
-    free(d->trackDtor);
-    d->trackPtr = NULL;
-    d->trackDtor = NULL;
-    d->trackCap = 0;
-}
-
-// ---- ring flavor (spec 17): a fixed-capacity circular buffer of one element type ----
-// All entries share a single element type, so the region stores its one destructor. Set once, at the ring
-// region's declaration, from its `.accepts({T})` type (null when that type has no destructor).
-void __ldp3_ring_set_dtor(void* block, void* dtor) {
-    if (block == NULL) return;
-    ((Ldp3RegionDesc*)block)->ringDtor = dtor;
-}
-
-// Allocate the next ring slot. Slots are fixed-size ([16-byte header][payload]); when the ring is full a
-// new allocation overwrites the oldest entry -- its destructor runs first (no leak), then the memory is
-// reused in place. Returns the slot payload (the caller's constructor writes it).
-void* __ldp3_ring_new(void* block, unsigned long long size) {
-    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
-    if (d->entrySize == 0) {  // first allocation fixes the entry size and capacity in entries
-        unsigned long long payload = (size + 15) & ~15ULL;
-        if (payload == 0) payload = 16;
-        d->entrySize = 16 + payload;
-        d->ringCap = d->cap / d->entrySize;
-        if (d->ringCap == 0)
-            __ldp3_panic("ring region is too small to hold even one entry -- give itself.allocate a bigger size");
-    }
-    unsigned long long widx = (d->ringHead + d->ringCount) % d->ringCap;
-    char* slot = (char*)d->dataBase + widx * d->entrySize;
-    if (d->ringCount < d->ringCap) {
-        d->ringCount++;
-        if (g_prof_on) prof_add(&g_prof_total_alloc, 1);  // per-slot live not tracked (see region_new)
-    } else {  // full: evict the oldest (this same slot), running its destructor before reuse
-        Ldp3Hdr* oh = (Ldp3Hdr*)slot;
-        if (d->ringDtor != NULL && oh->magic == LDP3_RMAGIC) {
-            oh->magic = LDP3_RFREED;
-            ((void (*)(void*))d->ringDtor)(slot + 16);
-        }
-        d->ringHead = (d->ringHead + 1) % d->ringCap;
-        if (g_prof_on) { prof_add(&g_prof_total_alloc, 1); }
-    }
-    unsigned long long payload = d->entrySize - 16;
-    Ldp3Hdr* h = (Ldp3Hdr*)slot;
-    h->magic = LDP3_RMAGIC;
-    h->cls = ldp3_region_class(payload);
-    h->pad = (unsigned)payload;
-    return slot + 16;
-}
-
-// Destruct a ring region's live entries (oldest to newest) before its block is freed.
-void __ldp3_ring_teardown(void* block) {
-    if (block == NULL) return;
-    Ldp3RegionDesc* d = (Ldp3RegionDesc*)block;
-    if (d->ringDtor == NULL || d->ringCap == 0) return;  // no destructor / never used
-    for (unsigned long long i = 0; i < d->ringCount; i++) {
-        unsigned long long idx = (d->ringHead + i) % d->ringCap;
-        char* slot = (char*)d->dataBase + idx * d->entrySize;
-        Ldp3Hdr* h = (Ldp3Hdr*)slot;
-        if (h->magic == LDP3_RMAGIC) {
-            h->magic = LDP3_RFREED;
-            ((void (*)(void*))d->ringDtor)(slot + 16);
-        }
-    }
-    d->ringCount = 0;
-}
+// ---- Flavored regions (spec 17): the shared core, backed by this runtime's allocator ----
+// The implementation lives in ldp3_region_core.h because `ldp3 build` compiles that same file for
+// bare metal. Only the backing differs, and it differs here, in five macros. Including it in THIS
+// translation unit (rather than linking a separate object) keeps every call site visible to the
+// optimizer exactly as it was when these bodies sat inline in this file.
+#define LDP3_RGN_BLOCK_ALLOC(bytes) __ldp3_malloc((size_t)(bytes))
+#define LDP3_RGN_BLOCK_FREE(p) __ldp3_free(p)
+// The registry arrays are small metadata that must not come out of the region itself, and libc's
+// realloc already grows them in place when it can.
+#define LDP3_RGN_META_ALLOC(p, oldBytes, newBytes) realloc((p), (size_t)(newBytes))
+#define LDP3_RGN_META_FREE(p, bytes) free(p)
+#define LDP3_RGN_PROF_ALLOC() do { if (g_prof_on) prof_add(&g_prof_total_alloc, 1); } while (0)
+#define LDP3_RGN_PROF_FREE() do { if (g_prof_on) prof_add(&g_prof_total_free, 1); } while (0)
+#define LDP3_REGION_CORE_IMPL
+#include "ldp3_region_core.h"
 
 LDP3_RT_API void* __ldp3_realloc(void* ptr, size_t size) {
     if (ptr == NULL) return __ldp3_malloc(size);
@@ -814,6 +546,13 @@ typedef struct {
     const char* key;  // NULL = empty slot
     long long index;
     void* block;
+    // Keyed persistents (docs/design/persistent-keys.md): the identity as SERIALISED BYTES, owned by the
+    // registry. Bytes rather than the key object because the registry outlives the object that supplied
+    // it -- a stored pointer would dangle, and a stored copy would still dangle through its own pointer
+    // fields, since an LDP3 copy is one level deep. NULL here means the older (array-slot) form, which
+    // matches on `index` instead.
+    unsigned char* keyBytes;
+    long long keyLen;
 } Ldp3PSlot;
 static Ldp3PSlot* g_ldp3_pslots = NULL;
 static long long g_ldp3_pslots_cap = 0;    // power of two, or 0 before first insert
@@ -862,8 +601,85 @@ void* __ldp3_persist_slot(const char* key, long long index, long long size) {
     g_ldp3_pslots[j].key = key;
     g_ldp3_pslots[j].index = index;
     g_ldp3_pslots[j].block = block;
+    g_ldp3_pslots[j].keyBytes = NULL;
+    g_ldp3_pslots[j].keyLen = 0;
     ++g_ldp3_pslots_count;
     return block;
+}
+
+// -- Keyed persistents ------------------------------------------------------------------------------
+// The block for one IDENTITY rather than one source location: `keyBytes` is the declaring class's key
+// fields serialised in declaration order (docs/design/persistent-keys.md). The hash picks the bucket;
+// the BYTES decide the match, so two identities that collide never merge -- silently sharing state on a
+// hash collision would be the exact failure this design exists to avoid, in a feature about state.
+static unsigned long long __ldp3_pkey_hash(const char* cls, const unsigned char* kb, long long n) {
+    unsigned long long h = 1469598103934665603ULL;
+    for (const char* p = cls; *p != '\0'; ++p) { h ^= (unsigned char)*p; h *= 1099511628211ULL; }
+    for (long long i = 0; i < n; ++i) { h ^= kb[i]; h *= 1099511628211ULL; }
+    return h;
+}
+static int __ldp3_pslot_matches(const Ldp3PSlot* s, const char* cls, const unsigned char* kb, long long n) {
+    if (s->keyBytes == NULL || s->keyLen != n) return 0;
+    if (!(s->key == cls || strcmp(s->key, cls) == 0)) return 0;   // two classes may share key bytes
+    return memcmp(s->keyBytes, kb, (size_t)n) == 0;
+}
+void* __ldp3_persist_slot_keyed(const char* cls, const unsigned char* keyBytes, long long keyLen,
+                                long long size, const void* initial) {
+    if (g_ldp3_pslots_cap == 0 || g_ldp3_pslots_count * 4 >= g_ldp3_pslots_cap * 3)
+        __ldp3_pslots_grow();
+    long long mask = g_ldp3_pslots_cap - 1;
+    long long j = (long long)(__ldp3_pkey_hash(cls, keyBytes, keyLen) & (unsigned long long)mask);
+    while (g_ldp3_pslots[j].key != NULL) {
+        if (__ldp3_pslot_matches(&g_ldp3_pslots[j], cls, keyBytes, keyLen))
+            return g_ldp3_pslots[j].block;
+        j = (j + 1) & mask;
+    }
+    // The registry OWNS its copy of the key: the object that supplied it may be gone before the next
+    // lookup, and the caller's buffer is a temporary.
+    unsigned char* owned = (unsigned char*)malloc((size_t)(keyLen > 0 ? keyLen : 1));
+    if (owned == NULL) __ldp3_panic("out of memory in persistent registry");
+    memcpy(owned, keyBytes, (size_t)keyLen);
+    // A FIRST attach starts from what the constructor wrote; a reattach never reaches here and keeps what
+    // it accumulated. That is what makes "write it in the constructor" mean initial values.
+    void* block = calloc(1, (size_t)size);
+    if (initial != NULL && block != NULL) memcpy(block, initial, (size_t)size);
+    g_ldp3_pslots[j].key = cls;
+    g_ldp3_pslots[j].index = 0;
+    g_ldp3_pslots[j].block = block;
+    g_ldp3_pslots[j].keyBytes = owned;
+    g_ldp3_pslots[j].keyLen = keyLen;
+    ++g_ldp3_pslots_count;
+    return block;
+}
+// `release s.hits;` -- discard what THIS identity accumulated. The block is zeroed rather than freed, so
+// a later reattach starts from zero exactly as the first attach did; the entry itself stays, because a
+// stable address across reattach is what a named persistent is for.
+void __ldp3_persist_release_keyed(const char* cls, const unsigned char* keyBytes, long long keyLen,
+                                  long long size) {
+    if (g_ldp3_pslots_cap == 0) return;
+    long long mask = g_ldp3_pslots_cap - 1;
+    long long j = (long long)(__ldp3_pkey_hash(cls, keyBytes, keyLen) & (unsigned long long)mask);
+    while (g_ldp3_pslots[j].key != NULL) {
+        if (__ldp3_pslot_matches(&g_ldp3_pslots[j], cls, keyBytes, keyLen)) {
+            memset(g_ldp3_pslots[j].block, 0, (size_t)size);
+            return;
+        }
+        j = (j + 1) & mask;
+    }
+}
+// `release Session.hits all;` -- every identity the field ever had. Without this a program could only
+// release the identities it still happened to be holding, which is a leak with extra steps.
+//
+// ONE field, given as its byte offset and width in the block -- not the whole block. Zeroing everything
+// would make `release C.a all` silently discard `C.b` and `C.c` too, which is the same defect the narrow
+// form had: a statement that names a field and then wipes its siblings.
+void __ldp3_persist_release_all(const char* cls, long long off, long long width) {
+    for (long long i = 0; i < g_ldp3_pslots_cap; ++i) {
+        Ldp3PSlot* s = &g_ldp3_pslots[i];
+        if (s->key == NULL || s->keyBytes == NULL) continue;
+        if (s->key == cls || strcmp(s->key, cls) == 0)
+            memset((unsigned char*)s->block + off, 0, (size_t)width);
+    }
 }
 
 // Pointer visited-set for `cascade` cycle detection (spec 37.1, rule 2). A small open-

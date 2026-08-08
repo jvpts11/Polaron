@@ -617,7 +617,7 @@ for completeness — they do not work today.
 | `const` | compile-time constant | **Replaced by `fixed`** in the implementation; `const` is not reserved. |
 | `module` | future organizational unit | Reserved in the spec only; not implemented. |
 | `package` | future package system | Reserved in the spec only; not implemented. |
-| `delegate` | a method-reference type | Not implemented — use `methodref`/`lambda`. |
+| `delegate` | field prefix: satisfy the interfaces by forwarding to this field | Composition instead of inheritance; a method the class writes wins. Compile-time only, so freestanding too. For a callable VALUE use `methodref` / `function<>` / `funcptr<>`. |
 | `force` | an `unimport` modifier | Contextual in the spec; not recognized. |
 | `timeout` | an `unimport` modifier | Not recognized as an unimport keyword (exists only as a `Channel.select` method). |
 | `serializable` | marks something serializable | Documented; not recognized. |

@@ -152,6 +152,51 @@ void collectRefs(const ast::Stmt* s, std::set<std::string>& out) {
     // leaf statements (break/continue/goto/label/asm/...) contribute no identifiers
 }
 
+// How each `region` FIELD is created, keyed "Class.field". A field region assigned
+// `itself.allocate(...)` owns its block, so that block can carry the descriptor header (and with it a
+// destructor registry); `itself.at(...)` / `atMultiple` point at memory somebody else owns, so their
+// header stays the lean 24 bytes and they get no registry.
+//
+// This is a pre-pass and not a decision made while emitting, because the METHODS that allocate into a
+// field region are emitted in whatever order the classes appear -- possibly before the constructor that
+// creates it. Every site has to agree about the header shape before any of them is emitted; disagreeing
+// would mean one of them writing a registry pointer over the region's first object.
+struct FieldRegionKinds {
+    std::set<std::string> owned;     // assigned itself.allocate(...) somewhere
+    std::set<std::string> external;  // assigned itself.at(...)/atMultiple(...) somewhere -- vetoes `owned`
+};
+void scanFieldRegions(const ast::Stmt* s, const std::string& cls, FieldRegionKinds& out);
+void scanFieldRegions(const ast::Block& b, const std::string& cls, FieldRegionKinds& out) {
+    for (const auto& st : b.statements) scanFieldRegions(st.get(), cls, out);
+}
+void scanFieldRegions(const ast::Stmt* s, const std::string& cls, FieldRegionKinds& out) {
+    if (!s) return;
+    if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) {
+        const auto* mt = dynamic_cast<const ast::MemberExpr*>(as->target.get());
+        const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(as->value.get());
+        const auto* recv = mt ? dynamic_cast<const ast::IdentifierExpr*>(mt->object.get()) : nullptr;
+        if (mt != nullptr && ri != nullptr && recv != nullptr && recv->name == "this") {
+            const std::string key = cls + "." + mt->member;
+            if (ri->atAddress != nullptr || !ri->ranges.empty()) out.external.insert(key);
+            else out.owned.insert(key);
+        }
+        return;
+    }
+    if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(s)) { scanFieldRegions(ifs->thenBlock, cls, out); if (ifs->elseBlock) scanFieldRegions(*ifs->elseBlock, cls, out); return; }
+    if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(s)) { scanFieldRegions(ws->body, cls, out); return; }
+    if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(s)) { scanFieldRegions(dw->body, cls, out); return; }
+    if (const auto* fs = dynamic_cast<const ast::ForStmt*>(s)) { scanFieldRegions(fs->init.get(), cls, out); scanFieldRegions(fs->body, cls, out); return; }
+    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(s)) { scanFieldRegions(fe->body, cls, out); return; }
+    if (const auto* df = dynamic_cast<const ast::DeferStmt*>(s)) { scanFieldRegions(df->body, cls, out); return; }
+    if (const auto* us = dynamic_cast<const ast::UsingStmt*>(s)) { scanFieldRegions(us->decl.get(), cls, out); scanFieldRegions(us->body, cls, out); return; }
+    if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(s)) { scanFieldRegions(sy->body, cls, out); return; }
+    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(s)) { for (const auto& c : ms->cases) scanFieldRegions(c.body, cls, out); if (ms->defaultBody) scanFieldRegions(*ms->defaultBody, cls, out); return; }
+    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(s)) { for (const auto& c : sw->cases) scanFieldRegions(c.body, cls, out); if (sw->defaultBody) scanFieldRegions(*sw->defaultBody, cls, out); return; }
+    if (const auto* ts = dynamic_cast<const ast::TryStmt*>(s)) { scanFieldRegions(ts->body, cls, out); for (const auto& c : ts->catches) scanFieldRegions(c.body, cls, out); if (ts->finallyBlock) scanFieldRegions(*ts->finallyBlock, cls, out); return; }
+    if (const auto* ls = dynamic_cast<const ast::LabeledStmt*>(s)) { scanFieldRegions(ls->stmt.get(), cls, out); return; }
+    // Every other statement kind either cannot contain an assignment or cannot contain THIS one.
+}
+
 std::string resolveEscapes(const std::string& raw) {
     std::string out;
     for (std::size_t i = 0; i < raw.size(); ++i) {
@@ -164,6 +209,30 @@ std::string resolveEscapes(const std::string& raw) {
                 case '\\': out += '\\'; break;
                 case '\'': out += '\''; break;
                 case '"': out += '"'; break;
+                // \xNN -- one byte by its hex value. Without it a `b"..."` literal, whose whole purpose
+                // is RAW BYTES, could only express printable ASCII: the pico kernel hit this writing
+                // machine code for a user-mode trampoline, where `b"\x48\x63\xC1\xC3"` silently became
+                // the four characters `x`, `4`, `8`, `x` and the guest executed them.
+                //
+                // One or two digits, so `\x0` and `\x48` both work and `\x48ff` is a byte followed by
+                // text. An unparseable `\x` keeps its old meaning (a literal 'x') rather than becoming
+                // an error, because that is what any existing source containing one already means.
+                case 'x': {
+                    auto hexVal = [](char c) -> int {
+                        if (c >= '0' && c <= '9') return c - '0';
+                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                        return -1;
+                    };
+                    if (i + 1 < raw.size() && hexVal(raw[i + 1]) >= 0) {
+                        int v = hexVal(raw[++i]);
+                        if (i + 1 < raw.size() && hexVal(raw[i + 1]) >= 0) v = v * 16 + hexVal(raw[++i]);
+                        out += static_cast<char>(static_cast<unsigned char>(v));
+                    } else {
+                        out += 'x';
+                    }
+                    break;
+                }
                 default: out += raw[i]; break;
             }
         } else {
@@ -382,6 +451,12 @@ struct ClassLayout {
     std::unordered_map<std::string, unsigned> fieldIndex;  // includes inherited fields
     std::unordered_map<std::string, std::string> fieldType;  // LDP3 type name per field
     std::unordered_map<std::string, int> bitFieldWidth;  // field -> bit-field width (spec 11.1)
+    // Physical packing (spec 11.1). Consecutive bit-fields share ONE storage unit: `fieldIndex` gives
+    // them all the same LLVM element, and these say where each one sits inside it. A packed field has
+    // no address of its own, which is why `&s.f` on one is rejected rather than quietly handed the
+    // unit's address.
+    std::unordered_map<std::string, unsigned> bitFieldOffset;  // field -> bit offset within its unit
+    std::unordered_map<std::string, unsigned> bitFieldUnitBits;  // field -> width of that unit in bits
     std::unordered_map<std::string, std::string> propertySetters;  // field -> setter method (spec 8.4)
     std::unordered_set<std::string> volatileFields;  // fields whose accesses are volatile (spec 37.5)
     std::unordered_set<std::string> externalFields;  // `external` fields: associations, not owned (spec 37.1)
@@ -490,6 +565,12 @@ struct CodeGenerator::Impl {
     // debugger. dib is null unless -g is set. diCU is the compile unit; diFiles caches a DIFile per source
     // path; diCurrentSP is the DISubprogram of the function being emitted (the scope for line locations).
     bool debugInfo = false;
+    // --verify-stack. See codegen.h for the fault that made this necessary. `entrySp` is the stack
+    // pointer this method was entered on, read once after its prologue and compared against a fresh
+    // read before each return; null when the flag is off or the method is `naked` (which owns its whole
+    // frame, so there is no compiler-established value to compare against).
+    bool verifyStack = false;
+    llvm::Value* entrySp = nullptr;
     std::unique_ptr<llvm::DIBuilder> dib;
     llvm::DICompileUnit* diCU = nullptr;
     std::unordered_map<std::string, llvm::DIFile*> diFiles;
@@ -802,6 +883,35 @@ struct CodeGenerator::Impl {
             builder.CreateCall(weakNullifyFn(), {head});
         }
     }
+    // The single function to register with a region's destructor registry for an object of class `cn`.
+    //
+    // Usually that is just the destructor. A class with weak state needs more: when it dies its weak
+    // pointers must be nulled and its own weak slots unlinked, and the registry holds ONE function
+    // pointer -- so the two are wrapped into a thunk, built once per class. Without this, a weak
+    // reference into a region would still be pointing at the arena after the arena was released.
+    llvm::Function* regionDtorFn(const std::string& cn) {
+        auto dit = functions.find(cn + ".~" + cn);
+        const bool weak = weakRelevant(cn);
+        if (!weak) return dit == functions.end() ? nullptr : dit->second;
+        const std::string tname = cn + ".__rgndtor";
+        if (auto tit = functions.find(tname); tit != functions.end()) return tit->second;
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false);
+        auto* thunk = llvm::Function::Create(ty, llvm::Function::InternalLinkage, tname, module);
+        auto ip = builder.saveIP();
+        llvm::Function* savedFn = currentFn;
+        currentFn = thunk;
+        builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", thunk));
+        llvm::Value* obj = thunk->getArg(0);
+        if (dit != functions.end()) builder.CreateCall(dit->second, {obj});
+        emitWeakCleanup(obj, cn);
+        builder.CreateRetVoid();
+        currentFn = savedFn;
+        builder.restoreIP(ip);
+        functions[tname] = thunk;
+        return thunk;
+    }
+
     // Global per-method-name vtable slots. Every distinct virtual method name gets
     // one stable index, and every polymorphic class's vtable is laid out by these
     // indices. Because LDP3 has no method overloading (unique name per method), a
@@ -846,6 +956,10 @@ struct CodeGenerator::Impl {
     // identity), keys the object's persistent block so it reattaches by slot across a delete
     llvm::Value* pendingPersistIndex = nullptr;
     int lambdaCounter = 0;  // unique names for lowered lambda functions
+    // The lambda whose body is being emitted right now, so `itself(...)` inside it resolves to a direct
+    // call. Saved and restored around each body, because a lambda can be written inside a lambda.
+    llvm::Function* currentLambdaFn_ = nullptr;
+    bool currentLambdaHasEnv_ = false;  // closures take an environment as arg 0; C callbacks do not
     std::unordered_map<std::string, std::string> literalReturnType;  // mangled suffix (name$param) -> return type
     std::unordered_map<std::string, std::vector<std::string>> literalSuffixParams;  // suffix name -> param types
     std::unordered_map<std::string, std::string> externReturnType;   // extern C fn -> return type
@@ -861,6 +975,10 @@ struct CodeGenerator::Impl {
     std::unordered_map<std::string, const ast::MethodDecl*> comptimeMethods;  // spec 28.3, by name
     std::unordered_map<std::string, LocalSlot> locals;
     std::vector<ScopeObject> scopeObjects;  // stack objects awaiting destructor calls
+    // Every local slot holding a `new ... on stack` object. Separate from scopeObjects because that one
+    // answers "what must be destructed" and this one answers "is this address on the stack" -- and only
+    // the second question keeps `delete` from handing a frame address to free().
+    std::set<llvm::Value*> stackObjectSlots_;
     // Region locals (spec 17.7): freed at the end of their lexical block unless
     // `eternal` or already released. Mirrors scopeObjects.
     struct RegionLocal { llvm::Value* slot; bool isEternal; std::string name; };
@@ -971,6 +1089,9 @@ struct CodeGenerator::Impl {
     llvm::BasicBlock* yieldEnd_ = nullptr;
     std::string yieldType_;
     const std::vector<ast::ExprPtr>* currentEnsures = nullptr;  // contracts: postconditions
+    // contracts: `result` inside an ensures clause -- the value the return being emitted hands back.
+    // Non-null only while the postconditions of a value-returning `return` are being emitted.
+    llvm::Value* currentResultValue_ = nullptr;
     const std::vector<const ast::Expr*>* currentInvariants = nullptr;  // contracts: class + inherited invariants
     // contracts: each old(e) in an ensures clause -> an entry-captured slot (spec 29).
     std::unordered_map<const ast::OldExpr*, llvm::Value*> oldValues_;
@@ -1471,6 +1592,66 @@ struct CodeGenerator::Impl {
             "bitfield");
     }
 
+    // ---- packed bit fields (spec 11.1) ----
+    // A bit field has no storage of its own: it lives in bits of a shared unit, and `fieldIndex` gives
+    // the UNIT's address. So neither a plain load nor a plain store is correct for one, and the two
+    // helpers below are the only way its value may be read or written.
+
+    bool isBitFieldMember(const std::string& className, const std::string& field) const {
+        auto cit = classes.find(clsKey(className));
+        return cit != classes.end() && cit->second.bitFieldUnitBits.count(field) > 0;
+    }
+
+    // Reads the field out of its unit, in the field's own declared type.
+    llvm::Value* emitBitFieldLoad(llvm::Value* unitAddr, const std::string& className,
+                                  const std::string& field, bool isVolatile) {
+        const ClassLayout& L = classes.at(clsKey(className));
+        const unsigned unitBits = L.bitFieldUnitBits.at(field);
+        const unsigned off = L.bitFieldOffset.at(field);
+        const unsigned w = static_cast<unsigned>(L.bitFieldWidth.at(field));
+        const std::string ft = L.fieldType.at(field);
+        llvm::Type* unitTy = builder.getIntNTy(unitBits);
+        llvm::Value* unit = builder.CreateLoad(unitTy, unitAddr, isVolatile, field + ".unit");
+        // Left-justify, then shift back down. One shape for both signednesses, and the arithmetic shift
+        // is what makes a signed 4-bit field holding 0b1111 read as -1 rather than 15 -- the declared
+        // width is part of the type, so the value has to come back the way that type would hold it.
+        llvm::Value* v = builder.CreateShl(unit, unitBits - off - w, field + ".hi");
+        v = isUnsigned(ft) ? builder.CreateLShr(v, unitBits - w, field)
+                           : builder.CreateAShr(v, unitBits - w, field);
+        llvm::Type* want = llvmType(ft);
+        if (want->getIntegerBitWidth() == unitBits) return v;
+        return isUnsigned(ft) ? builder.CreateZExtOrTrunc(v, want, field)
+                              : builder.CreateSExtOrTrunc(v, want, field);
+    }
+
+    // Writes the field back into its unit, leaving every other field in that unit untouched.
+    // Read-modify-write, and deliberately ONE access of the unit's natural size in each direction:
+    // an MMIO register packed as bit fields must be touched as the register, not byte by byte.
+    void emitBitFieldStore(llvm::Value* unitAddr, const std::string& className,
+                           const std::string& field, llvm::Value* v, bool isVolatile) {
+        const ClassLayout& L = classes.at(clsKey(className));
+        const unsigned unitBits = L.bitFieldUnitBits.at(field);
+        const unsigned off = L.bitFieldOffset.at(field);
+        const unsigned w = static_cast<unsigned>(L.bitFieldWidth.at(field));
+        llvm::Type* unitTy = builder.getIntNTy(unitBits);
+        const llvm::APInt low = llvm::APInt::getLowBitsSet(unitBits, w);
+        // Zero-extend rather than sign-extend: the mask keeps only w bits, and for a value already at
+        // least w bits wide the low w bits are the same either way -- so this cannot smear a negative
+        // value into a neighbour's bits.
+        llvm::Value* wide = builder.CreateZExtOrTrunc(v, unitTy);
+        wide = builder.CreateAnd(wide, llvm::ConstantInt::get(unitTy, low), field + ".bits");
+        if (off != 0) wide = builder.CreateShl(wide, off);
+        llvm::Value* unit = builder.CreateLoad(unitTy, unitAddr, isVolatile, field + ".unit");
+        unit = builder.CreateAnd(unit, llvm::ConstantInt::get(unitTy, ~low.shl(off)), field + ".keep");
+        builder.CreateStore(builder.CreateOr(unit, wide, field + ".set"), unitAddr, isVolatile);
+    }
+
+    // The class a member access names, or "" -- for deciding whether a member IS a bit field.
+    std::string bitFieldOwner(const ast::MemberExpr& mem) {
+        const std::string cn = clsKey(typeName(*mem.object));
+        return isBitFieldMember(cn, mem.member) ? cn : std::string();
+    }
+
     // True if the lvalue denotes a `volatile` local or field (spec 37.5), so its
     // load/store must not be optimized away. Walks T*/T& field access too.
     bool isVolatileAccess(const ast::Expr& expr) {
@@ -1537,6 +1718,10 @@ struct CodeGenerator::Impl {
         // by the free-list link, so the destructor lookup below would call through garbage. Panic first
         // if the block is already freed (live/foreign pointers pass through untouched).
         builder.CreateCall(checkLiveFn(), {objPtr});
+        // Regions this object OWNS go with it -- see `emitOwnedRegionFieldRelease`. Done up front
+        // because everything below may free the object's storage, and the field holding the region's
+        // block has to still be readable.
+        emitOwnedRegionFieldRelease(objPtr, cn);
         auto cit = classes.find(cn);
         if (cit != classes.end() && cit->second.hasVtable) {
             llvm::Value* vtblField = builder.CreateStructGEP(cit->second.type, objPtr, 0, "vtbl.addr");
@@ -2371,6 +2556,34 @@ struct CodeGenerator::Impl {
         return llvm::FunctionType::get(llvmType(rt), ptypes, false);
     }
 
+    // The type of `c ? a : b` comes from BOTH arms. Taking it from the then-arm alone -- which both this
+    // phase and the analyzer used to do -- silently truncated the other one: `long r = c ? 7 : big;` typed
+    // the whole ternary `int` from the literal `7`, emitted `trunc i64 %big to i32`, and the assignment to
+    // `long` then looked like an ordinary widening, so nothing anywhere reported it. The two phases agreed,
+    // which is exactly why no test caught it: they were consistently wrong.
+    std::string ternaryType(const ast::TernaryExpr& t) {
+        const std::string a = typeName(*t.thenExpr);
+        const std::string b = typeName(*t.elseExpr);
+        if (a == b || b.empty()) return a;
+        if (a.empty()) return b;
+        // Nullability is contagious: if either arm can be absent, so can the result. A `null` literal arm
+        // contributes only its nullability, never its (absent) type.
+        if (ast::typeIsNullable(a) || ast::typeIsNullable(b) || a == "null" || b == "null") {
+            const std::string ba = ast::stripNullable(a), bb = ast::stripNullable(b);
+            if (ba == "null") return ast::makeNullable(bb);
+            if (bb == "null") return ast::makeNullable(ba);
+            return ast::makeNullable(ba);
+        }
+        // Integers merge to the WIDER arm, so neither is truncated. Signedness disagreement is the
+        // analyzer's to reject (spec: it needs an explicit conversion); by the time we are here the
+        // program is valid, so widening is all that is left to do.
+        if (isIntName(a) && isIntName(b)) return intBits(a) >= intBits(b) ? a : b;
+        // Float beside integer, or a wider float: the float wins, again so nothing is truncated.
+        if (a == "double" || b == "double") return "double";
+        if (a == "float" || b == "float") return "float";
+        return a;
+    }
+
     // Type name of an expression. Assumes a valid AST (semantic analysis ran).
     std::string typeName(const ast::Expr& expr) {
         if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
@@ -2458,7 +2671,7 @@ struct CodeGenerator::Impl {
             return "int";
         }
         if (const auto* tern = dynamic_cast<const ast::TernaryExpr*>(&expr)) {
-            return typeName(*tern->thenExpr);
+            return ternaryType(*tern);
         }
         if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(&expr)) {  // a ?? b
             auto nullable = [](const std::string& s) { return ast::typeIsNullable(s); };
@@ -2626,6 +2839,7 @@ struct CodeGenerator::Impl {
                 }
                 if (ot == "Decimal" && mem->member == "toString") return "String";
                 if (isFloatType(ot) && mem->member == "toString") return "String";
+                if (ot == "boolean" && mem->member == "toString") return "String";
                 // Integer keys: Hashable/Comparable builtins (collections) + toString (itoa).
                 if (isIntName(ot)) {
                     if (mem->member == "hash") return "long";
@@ -2854,6 +3068,28 @@ struct CodeGenerator::Impl {
             {builder.getPtrTy(), builder.getInt64Ty(), builder.getInt64Ty()}, false);
         return module.getOrInsertFunction("__ldp3_persist_slot", ty);
     }
+    // Keyed lookup. Takes the INITIAL bytes rather than an "is this new?" flag: the registry copies them
+    // only when it creates the block, so a first attach starts from what the constructor wrote and a
+    // reattach keeps what accumulated -- one call, and no branch in the emitted code.
+    llvm::FunctionCallee persistSlotKeyedFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getPtrTy(),
+            {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty(), builder.getInt64Ty(),
+             builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_persist_slot_keyed", ty);
+    }
+    llvm::FunctionCallee persistReleaseKeyedFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getVoidTy(),
+            {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty(), builder.getInt64Ty()}, false);
+        return module.getOrInsertFunction("__ldp3_persist_release_keyed", ty);
+    }
+    llvm::FunctionCallee persistReleaseAllFn() {
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getVoidTy(),
+            {builder.getPtrTy(), builder.getInt64Ty(), builder.getInt64Ty()}, false);
+        return module.getOrInsertFunction("__ldp3_persist_release_all", ty);
+    }
 
     llvm::FunctionCallee freeFn() {
         llvm::FunctionType* ty =
@@ -2910,10 +3146,15 @@ struct CodeGenerator::Impl {
             builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty()}, false);
         return module.getOrInsertFunction("__ldp3_region_free", ty);
     }
-    llvm::FunctionCallee regionTrackFn() {  // (block, ptr, dtor) -> void  (stack: record for rollback)
+    llvm::FunctionCallee regionTrackFn() {  // (block, ptr, dtor) -> void  (record for release/rollback)
         llvm::FunctionType* ty = llvm::FunctionType::get(
             builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()}, false);
         return module.getOrInsertFunction("__ldp3_region_track", ty);
+    }
+    llvm::FunctionCallee regionUntrackFn() {  // (block, ptr) -> void  (destructed by hand; forget it)
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_region_untrack", ty);
     }
     llvm::FunctionCallee regionRollbackFn() {  // (block, mark) -> void  (stack: destruct + reset cursor)
         llvm::FunctionType* ty = llvm::FunctionType::get(
@@ -2976,6 +3217,35 @@ struct CodeGenerator::Impl {
         if (const ast::FieldDecl* fd = regionFieldDecl(name)) return fd->regionGrowable;
         return false;
     }
+    // `region` fields that own their block, keyed "Class.field" (filled by collectFieldRegionKinds).
+    std::set<std::string> ownedFieldRegions_;
+    // Does this region carry a RUNTIME destructor registry -- i.e. must its objects be recorded with
+    // __ldp3_region_track rather than in the compiler's scopeObjects?
+    //
+    // Field regions must. A field region lives as long as the object owning it, so objects enter it from
+    // any method, and the compiler only ever sees the ones written in the block that releases it. A parse
+    // tree assembled across method calls had NO destructor run at all -- silently, because everything the
+    // compiler could see was handled. The registry is the only thing that can know.
+    //
+    // Local regions must not, and that is not a compromise: a local region cannot outlive the function
+    // that declares it and cannot be passed anywhere, so every object that enters it is written in that
+    // one function and scopeObjects already sees all of them. Tracking them at run time would buy nothing
+    // and cost a call per object.
+    //
+    // A `stack` region always has one (mark/rollback is built on it); a `ring` never does (its entries
+    // all share one destructor, which the ring teardown runs). bump/pool/fixedslot get one iff they are
+    // a field.
+    bool regionHasRegistry(const std::string& name) {
+        const std::string flavor = flavorOfRegion(name);
+        if (isStackFlavor(flavor)) return true;
+        if (isRingFlavor(flavor)) return false;
+        return isOwnedFieldRegion(name);
+    }
+    bool isOwnedFieldRegion(const std::string& name) {
+        const auto dot = name.find('.');
+        if (dot == std::string::npos || currentClass.empty()) return false;
+        return ownedFieldRegions_.count(currentClass + "." + name.substr(dot + 1)) > 0;
+    }
     // The flavored-region data offset -- MUST match LDP3_REGION_HDR in runtime/ldp3_rt.cpp.
     static constexpr unsigned kRegionHdr = 448u;
     // The descriptor flavor code stored at block+24 (matches the runtime's reading).
@@ -2991,6 +3261,9 @@ struct CodeGenerator::Impl {
     // emitExpr(init).
     std::string pendingRegionFlavor_;
     bool pendingRegionGrowable_ = false;
+    // Set only around a `this.field = itself.allocate(...)`: that block gets the descriptor header so it
+    // can carry a destructor registry (see regionHasRegistry).
+    bool pendingRegionRegistry_ = false;
 
     // sizeof(type) in bytes, the target-portable way: gep null + 1, then
     // ptrtoint. The backend folds it to a constant using the real data layout.
@@ -3521,7 +3794,13 @@ struct CodeGenerator::Impl {
         const unsigned esz = arrayElemBytes(na.elementType);  // real element width (boolean=1, else 1/2/4/8)
         llvm::Value* elemBytes = builder.CreateMul(n64, builder.getInt64(esz));
         llvm::Value* total = builder.CreateAdd(builder.getInt64(8), elemBytes);
-        llvm::Value* block = builder.CreateCall(mallocFn(), {total}, "arr");
+        // `in region R`: the block comes out of the region's arena, so it dies with the region and needs
+        // no `delete`. The layout is identical either way -- [i64 length][elements] -- because where a
+        // block came from is not a property the block carries.
+        llvm::Value* block = na.region.empty()
+                                 ? builder.CreateCall(mallocFn(), {total}, "arr")
+                                 : emitRegionAllocBytes(na.region, total, na.loc);
+        if (block == nullptr) return nullptr;
         builder.CreateStore(n64, block);  // length header (element count)
         builder.CreateCall(memsetFn(), {arrayData(block), builder.getInt32(0), elemBytes});
         return block;
@@ -3631,6 +3910,124 @@ struct CodeGenerator::Impl {
         if (locals.find(objId->name) != locals.end()) return "";
         const std::string key = objId->name + "." + mem.member;
         return staticGlobals.count(key) > 0 ? key : std::string();
+    }
+
+    // -- Keyed persistents (docs/design/persistent-keys.md) --------------------------------------------
+    // A persistent belongs to the IDENTITY of the object that declares it, not to the source location
+    // that happened to bind one. The identity is the class's key fields SERIALISED TO BYTES -- bytes
+    // because the registry outlives the object that supplied the key, so anything holding a pointer
+    // would dangle, and a stored copy would still dangle through its own pointer fields (an LDP3 copy is
+    // one level deep). The hash picks a bucket; the bytes decide the match, so two identities never merge.
+    //
+    // Cost lands entirely on ATTACH -- once per identity, at construction. Reading a persistent field
+    // afterwards is a plain load through the block pointer, exactly as before.
+    std::set<std::string> valueTypeNames_;
+    bool valueTypeNamesBuilt_ = false;
+    const std::set<std::string>& valueTypeNames() {
+        if (!valueTypeNamesBuilt_) {
+            for (const auto& [n, lay] : classes)
+                if (lay.decl != nullptr && (lay.decl->isStruct || lay.decl->isRecord) && !lay.decl->isUnion)
+                    valueTypeNames_.insert(n);
+            valueTypeNamesBuilt_ = true;
+        }
+        return valueTypeNames_;
+    }
+    // A class's key fields in DECLARATION ORDER -- order is part of the encoding, which is what makes a
+    // key stable and comparable at all. Persistent fields are excluded: a key cannot include the state it
+    // keys. An empty result means the class has no identity to key on, so its persistents keep the older
+    // (scope, name, region) form and nothing about them changes.
+    std::vector<const ast::FieldDecl*> keyFieldsOf(const std::string& cn) {
+        std::vector<const ast::FieldDecl*> out;
+        auto it = classes.find(cn);
+        if (it == classes.end() || it->second.decl == nullptr) return out;
+        for (const auto& m : it->second.decl->members) {
+            const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get());
+            if (f == nullptr || f->isStatic || f->isPersistent) continue;
+            if (ast::keyFieldKind(f->type, valueTypeNames()) != ast::KeyFieldKind::None) out.push_back(f);
+        }
+        return out;
+    }
+    // Byte width of a fixed-width key field, and 0 for a String (whose width is only known at runtime).
+    unsigned keyScalarBytes(const std::string& t) {
+        if (t == "boolean") return 4;                       // boolean is an i32 in this ABI
+        if (t == "double" || t == "quadruple") return 8;
+        if (t == "float" || t == "smallfloat") return 4;
+        if (t == "char") return 4;
+        return intBits(t) / 8;
+    }
+    // Running size of a class's key: the fixed part folded at compile time, plus 8 + length for each
+    // String. Two String fields cannot be confused with one longer one, because each carries its length.
+    llvm::Value* emitKeySize(const std::string& cn, llvm::Value* obj) {
+        std::uint64_t fixed = 0;
+        std::vector<llvm::Value*> dyn;
+        for (const ast::FieldDecl* f : keyFieldsOf(cn)) {
+            switch (ast::keyFieldKind(f->type, valueTypeNames())) {
+                case ast::KeyFieldKind::Scalar: fixed += keyScalarBytes(f->type.name); break;
+                case ast::KeyFieldKind::Text: {
+                    fixed += 8;                              // the length prefix
+                    llvm::Value* s = loadKeyField(cn, obj, f);
+                    dyn.push_back(builder.CreateLoad(builder.getInt64Ty(),
+                        builder.CreateStructGEP(stringType(), s, 0, "k.slen"), "klen"));
+                    break;
+                }
+                case ast::KeyFieldKind::Nested: {
+                    llvm::Value* sub = keyFieldPtr(cn, obj, f);
+                    dyn.push_back(emitKeySize(f->type.name, sub));
+                    break;
+                }
+                case ast::KeyFieldKind::None: break;
+            }
+        }
+        llvm::Value* total = builder.getInt64(fixed);
+        for (llvm::Value* d : dyn) total = builder.CreateAdd(total, d, "k.size");
+        return total;
+    }
+    llvm::Value* keyFieldPtr(const std::string& cn, llvm::Value* obj, const ast::FieldDecl* f) {
+        auto& lay = classes[cn];
+        return builder.CreateStructGEP(lay.type, obj, lay.fieldIndex.at(f->name), "k." + f->name);
+    }
+    llvm::Value* loadKeyField(const std::string& cn, llvm::Value* obj, const ast::FieldDecl* f) {
+        return builder.CreateLoad(llvmType(f->type.name), keyFieldPtr(cn, obj, f), "k.v");
+    }
+    // Writes the key into `buf` starting at `*offSlot`, advancing it. Recursive for nested value types.
+    void emitKeyWrite(const std::string& cn, llvm::Value* obj, llvm::Value* buf, llvm::Value* offSlot) {
+        for (const ast::FieldDecl* f : keyFieldsOf(cn)) {
+            llvm::Value* off = builder.CreateLoad(builder.getInt64Ty(), offSlot, "k.off");
+            llvm::Value* at = builder.CreateGEP(builder.getInt8Ty(), buf, off, "k.at");
+            switch (ast::keyFieldKind(f->type, valueTypeNames())) {
+                case ast::KeyFieldKind::Scalar: {
+                    builder.CreateStore(loadKeyField(cn, obj, f), at);
+                    builder.CreateStore(
+                        builder.CreateAdd(off, builder.getInt64(keyScalarBytes(f->type.name))), offSlot);
+                    break;
+                }
+                case ast::KeyFieldKind::Text: {
+                    llvm::Value* s = loadKeyField(cn, obj, f);
+                    llvm::Value* len = builder.CreateLoad(builder.getInt64Ty(),
+                        builder.CreateStructGEP(stringType(), s, 0, "k.slen"), "klen");
+                    builder.CreateStore(len, at);                        // length prefix, then contents
+                    llvm::Value* after = builder.CreateAdd(off, builder.getInt64(8));
+                    builder.CreateCall(memcpyFn(),
+                        {builder.CreateGEP(builder.getInt8Ty(), buf, after, "k.txt"), stringData(s), len});
+                    builder.CreateStore(builder.CreateAdd(after, len), offSlot);
+                    break;
+                }
+                case ast::KeyFieldKind::Nested:
+                    emitKeyWrite(f->type.name, keyFieldPtr(cn, obj, f), buf, offSlot);
+                    break;
+                case ast::KeyFieldKind::None: break;
+            }
+        }
+    }
+    // The whole thing: {bytes, length}, in a stack buffer sized at runtime. Nothing reaches the heap on
+    // this side -- the registry makes the single owned copy it keeps.
+    std::pair<llvm::Value*, llvm::Value*> emitKeyBytes(const std::string& cn, llvm::Value* obj) {
+        llvm::Value* size = emitKeySize(cn, obj);
+        llvm::Value* buf = builder.CreateAlloca(builder.getInt8Ty(), size, "key.buf");
+        llvm::Value* offSlot = builder.CreateAlloca(builder.getInt64Ty(), nullptr, "key.off");
+        builder.CreateStore(builder.getInt64(0), offSlot);
+        emitKeyWrite(cn, obj, buf, offSlot);
+        return {buf, size};
     }
 
     // The in-process persistent block for an identity key (one per variable that binds a
@@ -4288,8 +4685,11 @@ struct CodeGenerator::Impl {
         auto sVals = scopeValueStructs;
         scopeStrings.clear(); stringTemps.clear(); scopeValueStructs.clear();
         auto sIP = builder.saveIP();
+        auto sSelf = currentLambdaFn_; auto sSelfEnv = currentLambdaHasEnv_;
+        currentLambdaFn_ = fn; currentLambdaHasEnv_ = false;   // a C callback takes no environment arg
         emitBody(fn, lam.body, lam.params, "", rt, nullptr, nullptr, nullptr, nullptr,
                  /*hasEnv=*/false);
+        currentLambdaFn_ = sSelf; currentLambdaHasEnv_ = sSelfEnv;
         currentFn = sFn; currentClass = sCls; currentRetType = sRet; currentRetTypeName_ = sRetN;
         currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
         currentDtorChain = sDtorChain; oldValues_ = sOld;
@@ -4376,8 +4776,13 @@ struct CodeGenerator::Impl {
             auto sVals = scopeValueStructs;
             scopeStrings.clear(); stringTemps.clear(); scopeValueStructs.clear();
             auto sIP = builder.saveIP();
+            // `itself(...)` in the body is a direct call to THIS function -- it has to be published
+            // before the body is emitted, because that is when the recursive call site is reached.
+            auto sSelf = currentLambdaFn_; auto sSelfEnv = currentLambdaHasEnv_;
+            currentLambdaFn_ = fn; currentLambdaHasEnv_ = true;
             emitBody(fn, lam->body, lam->params, "", rt, nullptr, nullptr, nullptr, nullptr,
                      /*hasEnv=*/true, &eff, &capTypes);
+            currentLambdaFn_ = sSelf; currentLambdaHasEnv_ = sSelfEnv;
             currentFn = sFn; currentClass = sCls; currentRetType = sRet; currentRetTypeName_ = sRetN;
             currentEnsures = sEns; currentInvariants = sInv; currentThis = sThis;
             currentDtorChain = sDtorChain;
@@ -4415,6 +4820,18 @@ struct CodeGenerator::Impl {
                     llvm::Type* vt = llvmType(capTypes[i]);
                     llvm::Value* copy =
                         builder.CreateCall(mallocFn(), {builder.getInt64(8)}, "cap");
+                    // NOTE (2026-08-03): for a CLASS value the loaded "value" is the object's pointer,
+                    // so a `byvalue` capture SHARES the object rather than copying it -- the lambda sees
+                    // mutations made after it was created. That contradicts the capture list's own
+                    // description ("a copy is taken when the lambda is created"), but it is the
+                    // behaviour four samples deliberately rely on: atomic_counter, mutex_synchronized
+                    // and the two event tests all write `byvalue` over shared state and expect it to
+                    // stay shared. Deep-copying here made them read 0.
+                    //
+                    // So this is a language DECISION, not a defect to patch: either `byvalue` means a
+                    // copy and those samples want `byref`, or it means "the value slot, which for an
+                    // object is its reference" and the wording is what should change. Left as it is
+                    // until that is settled -- see ACHADOS.md.
                     builder.CreateStore(builder.CreateLoad(vt, capStorages[i]), copy);
                     builder.CreateStore(copy, dst);
                 }
@@ -4553,6 +4970,12 @@ struct CodeGenerator::Impl {
         }
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
             if (id->name == "this") return currentThis;
+            // `result` inside an ensures clause (spec 29): the value this return hands back. Bound
+            // only while postconditions are being emitted, so everywhere else the name is an ordinary
+            // identifier -- a local called `result` still shadows nothing and means itself.
+            if (id->name == "result" && currentResultValue_ != nullptr &&
+                locals.find("result") == locals.end())
+                return currentResultValue_;
             auto it = locals.find(id->name);
             if (it == locals.end()) {
                 // A namespace-level compile-time constant (spec 28.1).
@@ -4681,6 +5104,10 @@ struct CodeGenerator::Impl {
                     return builder.CreateLoad(fty, fieldPtr, mem->member);
                 }
             }
+            // A packed bit field: `fieldPtr` is the address of the shared UNIT, so extract rather than
+            // load (spec 11.1).
+            if (const std::string bfOwner = bitFieldOwner(*mem); !bfOwner.empty())
+                return emitBitFieldLoad(fieldPtr, bfOwner, mem->member, isVolatileAccess(*mem));
             return builder.CreateLoad(llvmType(typeName(*mem)), fieldPtr, isVolatileAccess(*mem),
                                       mem->member);
         }
@@ -4947,7 +5374,7 @@ struct CodeGenerator::Impl {
         }
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
             return emitRegionAllocate(ri->size.get(), ri->atAddress.get(), pendingRegionFlavor_,
-                                      pendingRegionGrowable_);
+                                      pendingRegionGrowable_, pendingRegionRegistry_);
         }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
             // `x is T` (op 1) / `x as? T` (op 2), spec 6.4: a runtime is-a test on a class value.
@@ -5004,6 +5431,41 @@ struct CodeGenerator::Impl {
                         builder.SetInsertPoint(okBB);
                     }
                     return emitCast(v, fromT, toT);
+                }
+            }
+            // NUMBER -> int-style enum, RANGE CHECKED.
+            //
+            // An int-style enum IS its ordinal at runtime, so the conversion itself is free. What is
+            // not free -- and what makes this safe to offer at all -- is proving the number names a
+            // constant that exists. Without the check a program could manufacture a value outside the
+            // declared set, and every `match` over that enum would then have a case it was promised
+            // could not happen: exhaustiveness would become a guarantee the language cannot keep.
+            //
+            // Same shape as the asserting null cast above. A cast is the program STATING something,
+            // and a statement that can be checked should be.
+            if (cst->op == 0) {
+                const std::string toE = baseType(cst->targetType);
+                auto eit = enums.find(toE);
+                if (eit != enums.end() && javaEnums.count(toE) == 0 &&
+                    enums.count(baseType(typeName(*cst->operand))) == 0) {
+                    llvm::Value* v = emitExpr(*cst->operand);
+                    if (v == nullptr) return nullptr;
+                    if (v->getType()->isIntegerTy()) {
+                        v = coerceToType(v, builder.getInt32Ty());
+                        const int n = static_cast<int>(eit->second.size());
+                        llvm::Value* bad = builder.CreateOr(
+                            builder.CreateICmpSLT(v, builder.getInt32(0)),
+                            builder.CreateICmpSGE(v, builder.getInt32(n)), "enum.outofrange");
+                        llvm::Function* f = currentFn;
+                        auto* badBB = llvm::BasicBlock::Create(context, "enum.bad", f);
+                        auto* okBB = llvm::BasicBlock::Create(context, "enum.ok", f);
+                        builder.CreateCondBr(bad, badBB, okBB, coldBranchWeights());
+                        builder.SetInsertPoint(badBB);
+                        emitArithFault("ArithmeticException",
+                                       "cast to enum: value names no constant");
+                        builder.SetInsertPoint(okBB);
+                        return v;
+                    }
                 }
             }
             return emitCast(emitExpr(*cst->operand), typeName(*cst->operand), cst->targetType);
@@ -5182,7 +5644,7 @@ struct CodeGenerator::Impl {
         llvm::Value* c = emitExpr(*t.cond);
         if (c == nullptr) return nullptr;
         c = builder.CreateICmpNE(c, builder.getInt32(0), "tern.c");
-        const std::string rt = typeName(*t.thenExpr);
+        const std::string rt = ternaryType(t);
         llvm::Type* rty = llvmType(rt);
         llvm::Function* fn = builder.GetInsertBlock()->getParent();
         llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context, "tern.then", fn);
@@ -5537,8 +5999,23 @@ struct CodeGenerator::Impl {
     // bump/stack use the inline bump cursor (a region block is [ i64 used | i64 cap | ptr dataBase | data ];
     // 8-aligned bump -- the untouched fast path); pool/fixedslot serve an individual slot from the runtime
     // free-list via __ldp3_region_new so `delete`/`extract` can reclaim it.
+    // An object of a known class: its size is the only thing the allocator ever needed.
     llvm::Value* emitRegionAlloc(const std::string& name, llvm::StructType* objType,
                                  SourceLocation loc) {
+        return emitRegionAllocBytes(name, sizeOf(objType), loc);
+    }
+
+    // Reserve `size` bytes in a region's arena.
+    //
+    // A region is TYPED -- always, without exception; that is what separates it from a hand-rolled
+    // arena, which takes bytes and forgets what they were. The type check does not happen HERE because
+    // it has already happened: every path that reaches this has gone through `checkRegionAccepts` in the
+    // analyzer, for an object's class or for an array's element type. By the time there is machine code
+    // to emit, the only open question is how many bytes to bump, which is why this parameter is a size.
+    //
+    // Nothing may call this without having asked that question first.
+    llvm::Value* emitRegionAllocBytes(const std::string& name, llvm::Value* size,
+                                      SourceLocation loc) {
         llvm::Value* slot = regionStorageSlot(name);
         if (slot == nullptr) {
             error("unknown region '" + name + "'", loc);
@@ -5582,12 +6059,12 @@ struct CodeGenerator::Impl {
         // (reclaimed via mark/rollback). All go through the runtime allocator. (After any lazy acquire so
         // the block exists; bump falls through to the inline fast path below.)
         if (isRingFlavor(flavor)) {
-            return builder.CreateCall(ringNewFn(), {block, sizeOf(objType)}, "ring.slot");
+            return builder.CreateCall(ringNewFn(), {block, size}, "ring.slot");
         }
         // A growable bump region also serves through the runtime allocator (it chains blocks on overflow),
         // so it leaves the inline cursor fast path -- only fixed bump keeps the byte-identical hot path.
         if (usesRuntimeDesc(flavor) || growable) {
-            return builder.CreateCall(regionNewFn(), {block, sizeOf(objType)}, "rgn.slot");
+            return builder.CreateCall(regionNewFn(), {block, size}, "rgn.slot");
         }
         llvm::Value* used;
         llvm::Value* dataBase;
@@ -5605,10 +6082,31 @@ struct CodeGenerator::Impl {
             dataBase = db;
         }
         llvm::Value* objPtr = builder.CreateGEP(builder.getInt8Ty(), dataBase, used, "rgn.obj");
-        llvm::Value* aligned = builder.CreateAnd(builder.CreateAdd(sizeOf(objType), builder.getInt64(7)),
+        llvm::Value* aligned = builder.CreateAnd(builder.CreateAdd(size, builder.getInt64(7)),
                                                  builder.getInt64(~static_cast<std::uint64_t>(7)));
-        builder.CreateStore(builder.CreateAdd(used, aligned),
-                            cursorSlot != nullptr ? cursorSlot : block);  // bump
+        llvm::Value* next = builder.CreateAdd(used, aligned, "rgn.next");
+        // A FIXED region is full when the next object would end past its capacity, and saying so is not
+        // optional. Without this compare, `itself.allocate(64)` accepted four thousand objects and wrote
+        // past the block -- silently, exit status 0. That is undefined behaviour of the plainest kind in
+        // a language whose whole claim is that it has none, and every other flavor already trapped here
+        // (`__ldp3_region_new` panics); only the inline bump path did not, because the inline path was
+        // written to be fast and the check was never added back.
+        //
+        // The cost is a load the optimizer hoists (cap is invariant for the region's life), a compare
+        // and a never-taken branch -- which is what a hand-written arena pays too, if it checks at all.
+        // The alternative is not a faster region, it is a region that corrupts memory.
+        auto* capPtr = builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 8, "rgn.cap");
+        auto* cap = builder.CreateLoad(builder.getInt64Ty(), capPtr, "cap");
+        cap->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(context, {}));
+        llvm::Function* fn = currentFn;
+        auto* fullBB = llvm::BasicBlock::Create(context, "rgn.full", fn);
+        auto* okBB = llvm::BasicBlock::Create(context, "rgn.ok", fn);
+        builder.CreateCondBr(builder.CreateICmpUGT(next, cap, "rgn.over"), fullBB, okBB);
+        builder.SetInsertPoint(fullBB);
+        emitPanic("region out of memory: this fixed region is full -- give itself.allocate a bigger "
+                  "size, release it and take it again, or make it a `growable` region");
+        builder.SetInsertPoint(okBB);
+        builder.CreateStore(next, cursorSlot != nullptr ? cursorSlot : block);  // bump
         return objPtr;
     }
 
@@ -5654,7 +6152,8 @@ struct CodeGenerator::Impl {
     // address (spec 17.8 / 36.9). `size` is a ByteSize (read .bytes) or a raw byte count;
     // accepts/rejects are compile-time only, so codegen ignores them.
     llvm::Value* emitRegionAllocate(const ast::Expr* sizeExpr, const ast::Expr* atAddr = nullptr,
-                                    const std::string& flavor = "", bool growable = false) {
+                                    const std::string& flavor = "", bool growable = false,
+                                    bool wantRegistry = false) {
         llvm::Value* nbytes = builder.getInt64(0);
         if (sizeExpr != nullptr) {
             llvm::Value* arg = emitExpr(*sizeExpr);
@@ -5669,10 +6168,16 @@ struct CodeGenerator::Impl {
                 nbytes = fitInt(arg, 64);
             }
         }
-        // A flavored (pool/fixedslot/stack/ring) OR growable region: a larger block whose Ldp3RegionDesc
-        // header (LDP3_REGION_HDR bytes) carries the free-lists / stack registry / grow chain; the runtime
-        // init lays it out. Objects are then served by __ldp3_region_new/ring_new. `at address` cannot grow.
-        if ((usesRuntimeDesc(flavor) || growable) && atAddr == nullptr) {
+        // A flavored (pool/fixedslot/stack/ring) OR growable region, or one that needs a destructor
+        // registry: a larger block whose Ldp3RegionDesc header (LDP3_REGION_HDR bytes) carries the
+        // free-lists / registry / grow chain; the runtime init lays it out. `at address` cannot have any
+        // of them -- its data belongs to somebody else, so all it owns is the lean 24-byte header.
+        //
+        // A plain bump region here (flavorCode 0) keeps the inline cursor: the descriptor's first three
+        // fields ARE the lean header, so emitRegionAllocBytes bumps [used] at +0 over [dataBase] at +16
+        // exactly as before, and objects still carry no per-slot header. The larger header buys the
+        // registry and costs 424 bytes once per region -- not a byte or an instruction per object.
+        if ((usesRuntimeDesc(flavor) || growable || wantRegistry) && atAddr == nullptr) {
             llvm::Value* block = builder.CreateCall(
                 regionAcquireFn(), {builder.CreateAdd(builder.getInt64(kRegionHdr), nbytes)}, "region");
             builder.CreateCall(regionInitFn(),
@@ -5790,7 +6295,45 @@ struct CodeGenerator::Impl {
         // Wire up the persistent block (if any) BEFORE the constructor, so the ctor can read
         // and write this.<persistent field>. Keyed by the binding variable's identity.
         llvm::Value* persistBlockRef = nullptr;
-        if (cit->second.persistPtrIdx != 0) {
+        // A class WITH an identity keys its persistents by that identity, and the identity is only
+        // complete once the constructor has assigned it. So the block cannot be chosen here: the ctor
+        // writes into a zeroed scratch, and after it returns those bytes become the INITIAL state of a
+        // first attach (a reattach ignores them and keeps what accumulated). Reading a persistent inside
+        // such a constructor is rejected by the analyzer, because there is no identity to read from yet.
+        //
+        // Two shapes keep the older form, and both for the same reason -- they need the block BEFORE the
+        // constructor, which is the opposite order:
+        //
+        //   * a PARTIAL constructor (spec 18.9), whose omitted parameters take their values FROM the
+        //     block, so it must already be attached when the ctor runs;
+        //   * `arr[i] = new T()`, where the programmer named an explicit slot identity, which beats an
+        //     implicit one derived from the fields.
+        std::vector<const ast::FieldDecl*> keyFields;
+        if (cit->second.persistPtrIdx != 0 && pendingPersistIndex == nullptr) {
+            bool partialCapable = false;
+            if (cit->second.decl != nullptr)
+                for (const ast::MemberPtr& m : cit->second.decl->members)
+                    if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(m.get())) {
+                        for (const ast::Param& p : c->params)
+                            if (std::find(cit->second.persistOrder.begin(),
+                                          cit->second.persistOrder.end(),
+                                          p.name) != cit->second.persistOrder.end())
+                                partialCapable = true;
+                        break;
+                    }
+            if (!partialCapable) keyFields = keyFieldsOf(cn);
+        }
+        llvm::Value* keyedScratch = nullptr;
+        if (cit->second.persistPtrIdx != 0 && !keyFields.empty()) {
+            llvm::Value* sz = sizeOf(cit->second.persistBlock);
+            keyedScratch = builder.CreateAlloca(cit->second.persistBlock, nullptr, "__persist.init");
+            builder.CreateCall(memsetFn(), {keyedScratch, builder.getInt32(0), sz});
+            builder.CreateStore(keyedScratch,
+                                builder.CreateStructGEP(cit->second.type, objPtr,
+                                                        cit->second.persistPtrIdx, "__persist"));
+            pendingPersistKey.clear();
+            pendingPersistIndex = nullptr;
+        } else if (cit->second.persistPtrIdx != 0) {
             if (pendingPersistIndex != nullptr && !pendingPersistKey.empty()) {
                 // Index-keyed reattach (spec 18.5): `arr[i] = new T()`. A runtime registry keyed by
                 // (array identity, index) returns the same block for the same slot across a delete, so
@@ -5872,13 +6415,30 @@ struct CodeGenerator::Impl {
             emitMaybeInvoke(fnit->second, args);
             for (const auto& [idx, acn] : freeAfter) emitDeleteObject(args[idx], acn);
         }
-        // A stack region records each constructed object that has a destructor, so `rollback`/`release`
-        // can run those destructors newest-first (the runtime registry, not scopeObjects, owns them).
-        if (!nw.region.empty() && cit->second.hasDestructor &&
-            isStackFlavor(flavorOfRegion(nw.region))) {
-            llvm::Value* block =
-                builder.CreateLoad(builder.getPtrTy(), regionStorageSlot(nw.region), "region");
-            builder.CreateCall(regionTrackFn(), {block, objPtr, functions[cn + ".~" + cn]});
+        // The identity is complete now, so the keyed block can be chosen. The scratch the constructor
+        // wrote into is handed over as the INITIAL state: the registry copies it only when it creates
+        // the block, so a first attach starts from it and a reattach keeps what it accumulated.
+        if (keyedScratch != nullptr) {
+            auto [kb, kn] = emitKeyBytes(cn, objPtr);
+            llvm::Value* block = builder.CreateCall(
+                persistSlotKeyedFn(),
+                {createGlobalStringPtr(builder, cn, "pcls"), kb, kn,
+                 sizeOf(cit->second.persistBlock), keyedScratch},
+                "__persist.keyed");
+            builder.CreateStore(block, builder.CreateStructGEP(cit->second.type, objPtr,
+                                                               cit->second.persistPtrIdx, "__persist"));
+        }
+        // A region with a registry records each constructed object that needs teardown, so
+        // `rollback`/`release` can run it newest-first -- the runtime registry, not scopeObjects, owns
+        // them. That is what makes teardown complete for a FIELD region, whose objects are put there by
+        // methods the releasing scope never sees.
+        if (!nw.region.empty() && (cit->second.hasDestructor || weakRelevant(cn)) &&
+            regionHasRegistry(nw.region)) {
+            if (llvm::Function* dtor = regionDtorFn(cn)) {
+                llvm::Value* block =
+                    builder.CreateLoad(builder.getPtrTy(), regionStorageSlot(nw.region), "region");
+                builder.CreateCall(regionTrackFn(), {block, objPtr, dtor});
+            }
         }
         return objPtr;
     }
@@ -6323,6 +6883,24 @@ struct CodeGenerator::Impl {
             return emitSafeNav(call, *cm->object);
         }
         const std::string name = flattenCallee(*call.callee);
+        // `itself(...)`: a direct call to the lambda currently being emitted. Direct rather than through
+        // the closure value, because the closure does not exist yet -- the body is emitted while the
+        // value that will hold it is still being built. The environment pointer is this invocation's
+        // own arg 0, so a recursive call sees the same captures.
+        if (name == "itself" && currentLambdaFn_ != nullptr) {
+            std::vector<llvm::Value*> args;
+            if (currentLambdaHasEnv_) args.push_back(currentFn->getArg(0));
+            for (std::size_t i = 0; i < call.args.size(); ++i) {
+                llvm::Value* a = emitExpr(*call.args[i]);
+                if (a == nullptr) return nullptr;
+                const std::size_t pi = args.size();
+                if (pi < currentLambdaFn_->arg_size())
+                    a = coerceToType(a, currentLambdaFn_->getArg(pi)->getType());
+                args.push_back(a);
+            }
+            return builder.CreateCall(currentLambdaFn_, args,
+                                      currentLambdaFn_->getReturnType()->isVoidTy() ? "" : "itself.call");
+        }
         // checked(expr) (spec 3.6): evaluate expr with signed +/-/* trapping on overflow instead of
         // wrapping. Opt-in, since the default is the zero-overhead wrap.
         if (name == "checked" && call.args.size() == 1) {
@@ -7550,6 +8128,29 @@ struct CodeGenerator::Impl {
                 llvm::Value* len = builder.CreateCall(ftoaFn(), {a, buf});
                 return ownedStr(emitStringFromParts(len, buf));
             }
+            // boolean.toString(): "true" or "false". The SELECT picks the spelling, so exactly one
+            // String is built -- constructing both and choosing afterwards would leak the other.
+            //
+            // The bytes are COPIED into a fresh buffer rather than pointing at the constant array,
+            // because the result is an owned String and scope exit frees its data: handing it a
+            // private global would free a global. This is the same shape as the int and float paths
+            // above for the same reason, and it is why they malloc a buffer before formatting.
+            if (typeName(*mem->object) == "boolean" && mem->member == "toString" &&
+                call.args.empty()) {
+                llvm::Value* b = emitExpr(*mem->object);
+                if (b == nullptr) return nullptr;
+                llvm::Value* cond = builder.CreateICmpNE(
+                    b, llvm::ConstantInt::get(b->getType(), 0), "b.istrue");
+                llvm::Value* text =
+                    builder.CreateSelect(cond, emitBytesLiteral("true"), emitBytesLiteral("false"));
+                llvm::Value* len =
+                    builder.CreateSelect(cond, builder.getInt64(4), builder.getInt64(5));
+                llvm::Value* buf =
+                    builder.CreateCall(mallocFn(), {builder.getInt64(6)}, "btoa.buf");
+                builder.CreateMemCpy(buf, llvm::MaybeAlign(1), text, llvm::MaybeAlign(1),
+                                     builder.CreateAdd(len, builder.getInt64(1)));  // with the NUL
+                return ownedStr(emitStringFromParts(len, buf));
+            }
             // Integer keys satisfy Hashable<T>/Comparable<T> via builtins (collections). Gate on the
             // builtin member names so this never intercepts ClassName.staticMethod() (whose receiver
             // typeName falls back to "int").
@@ -8071,6 +8672,32 @@ struct CodeGenerator::Impl {
                         builder.CreateBr(doneBB);
                         builder.SetInsertPoint(doneBB);
                         return builder.CreateLoad(variantStructType(), slot, "parse.result");
+                    }
+                    // A STATIC method the enum declares itself. The function is already emitted with
+                    // no receiver parameter (see the declaration loop: `if (!m->isStatic)` is what
+                    // adds the ordinal `this`), so the only thing that was ever missing is this call
+                    // site -- which is why declaring one used to compile and calling it did not.
+                    //
+                    // Guarded on the declaration actually being static: an INSTANCE method shares the
+                    // same mangled name, and calling it on the type would pass the first argument
+                    // where the ordinal belongs.
+                    if (auto edit = enumMethodDecls.find(eid->name); edit != enumMethodDecls.end()) {
+                        for (const ast::MemberPtr& member : edit->second->members) {
+                            const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                            if (m == nullptr || m->name != mem->member || !m->isStatic) continue;
+                            auto sf = functions.find(eid->name + "." + mem->member);
+                            if (sf == functions.end()) break;
+                            std::vector<llvm::Value*> args;
+                            for (std::size_t i = 0; i < call.args.size(); ++i) {
+                                llvm::Value* a = emitExpr(*call.args[i]);
+                                if (a == nullptr) return nullptr;
+                                if (i < sf->second->arg_size())
+                                    a = coerceToType(
+                                        a, sf->second->getArg(static_cast<unsigned>(i))->getType());
+                                args.push_back(a);
+                            }
+                            return emitMaybeInvoke(sf->second, args);
+                        }
                     }
                 }
             }
@@ -8677,6 +9304,47 @@ struct CodeGenerator::Impl {
         mpm.run(module, mam);
     }
 
+    // Bare metal has no red zone. Marks every emitted method `noredzone` when the target has no OS.
+    //
+    // The red zone is the 128 bytes BELOW the stack pointer that the System V AMD64 ABI lets a leaf
+    // method use without moving RSP. It is safe in a hosted program because the operating system
+    // promises it: the kernel builds a signal frame clear of it. Nothing makes that promise to a
+    // freestanding program, and worse, the hardware actively breaks it -- an interrupt taken with no
+    // privilege change pushes RIP/CS/RFLAGS/RSP/SS starting AT the stack pointer and going down, which
+    // is the red zone, byte for byte. The interrupt stub's own pushes then cover the rest of it.
+    //
+    // So on bare metal a leaf method's locals are destroyed by any interrupt that arrives while they
+    // are live. What that looks like from the outside is not a crash. It is a method that returns a
+    // wrong answer, rarely, with no memory anywhere having been written by anything that could be
+    // blamed -- because the corrupted value need not be a value at all. In the kernel that found this,
+    // the two things spilled below RSP were POINTERS: a `this` and a field address. The interrupt frame
+    // replaced them with RFLAGS and the interrupted RSP, and the method then dereferenced those, so it
+    // read its answer out of the saved stack and out of low memory. The object it was supposedly
+    // reading was never touched. Every heap canary, every DMA redzone and every audit of the object
+    // itself came back clean, correctly, for two days.
+    //
+    // This must be set HERE, on the function, and not by passing `-mno-red-zone` to the compiler that
+    // consumes the IR. That flag is a front-end flag: clang applies it while lowering C or C++, by
+    // attaching this exact attribute. Handed a .ll file the front end is bypassed, the flag reaches
+    // nothing, and LLVM's x86 frame lowering asks only one question -- does the function carry
+    // `noredzone`. It silently compiled the flag and silently ignored it. The kernel it produced had
+    // 1668 accesses below RSP with the flag on the command line, and the assembly was byte-identical
+    // with the flag removed. `-mgeneral-regs-only` on that same command line DOES work, because target
+    // features fall back to the subtarget, which is exactly why the gap went unseen for so long.
+    //
+    // "No OS in the triple" is the condition rather than a build-mode flag, because it is the true one:
+    // the red zone is a promise by an operating system, so a target that names none has nobody to make
+    // it. A hosted program keeps the red zone and the optimisation it buys.
+    void applyBareMetalAttrs() {
+        const llvm::Triple triple(moduleTripleStr(module));
+        // An unset triple is the hosted default, and an unparseable arch is not a target we can reason
+        // about -- neither is bare metal, so neither gets the attribute.
+        if (triple.getArch() == llvm::Triple::UnknownArch) return;
+        if (triple.getOS() != llvm::Triple::UnknownOS) return;   // `...-none-elf` parses as no OS
+        for (llvm::Function& f : module)
+            if (!f.isDeclaration()) f.addFnAttr(llvm::Attribute::NoRedZone);
+    }
+
     // Physically overwrites the machine code of a class's methods (and ctor/dtor) in RAM
     // with int3 traps, via the runtime helper (spec 30 aggressive unload). The code is
     // ripped from memory; the alive guard ensures we never branch into the traps.
@@ -8923,6 +9591,25 @@ struct CodeGenerator::Impl {
                 last = scanClass_ + "." + scanMethod_ + "." + lm->name;
             }
         }
+    }
+    // Which `region` fields own their block (and so can carry a destructor registry). Run before any
+    // body is emitted -- see FieldRegionKinds for why the answer cannot be discovered while emitting.
+    void collectFieldRegionKinds() {
+        for (const ast::Bundle& bundle : program.bundles)
+            for (const ast::Namespace& ns : bundle.namespaces)
+                for (const ast::ClassDecl& cls : ns.classes) {
+                    FieldRegionKinds k;
+                    for (const ast::MemberPtr& member : cls.members) {
+                        if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get()))
+                            scanFieldRegions(m->body, cls.name, k);
+                        else if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(member.get()))
+                            scanFieldRegions(c->body, cls.name, k);
+                        else if (const auto* d = dynamic_cast<const ast::DestructorDecl*>(member.get()))
+                            scanFieldRegions(d->body, cls.name, k);
+                    }
+                    for (const std::string& key : k.owned)
+                        if (k.external.count(key) == 0) ownedFieldRegions_.insert(key);
+                }
     }
     void collectAbstainedLabels() {
         for (const ast::Bundle& bundle : program.bundles)
@@ -9965,27 +10652,37 @@ struct CodeGenerator::Impl {
                 regionFlavor_[vd->name] = vd->regionFlavor;
             if (declType == "region" && vd->regionGrowable)
                 growableRegions_.insert(vd->name);
+            // atMultiple (spec 17.4): a multi-range region over fixed addresses. Record the ranges plus
+            // one bump used-counter per range; there is no malloc'd block to free.
+            //
+            // OUTSIDE the `lazy` branch, which is where this used to live -- so a plain
+            // `region r = itself.atMultiple(...)` registered no ranges at all, every `new T in region r`
+            // fell through to the ordinary bump path, and the objects were written just past a 24-byte
+            // header block. The routing this construct exists for simply did not happen, and nothing
+            // said so: the test printed the right numbers while overrunning the heap. `lazy` has nothing
+            // to do with it -- a multi-range region has no backing block, so there is nothing to defer.
+            if (declType == "region") {
+                if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get());
+                    ri != nullptr && !ri->ranges.empty()) {
+                    llvm::Value* slot = createEntryAlloca(vd->name, builder.getPtrTy());
+                    builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
+                    locals[vd->name] = LocalSlot{slot, "region"};
+                    multiRegionRanges_[vd->name] = &ri->ranges;
+                    std::vector<llvm::Value*> useds;
+                    for (std::size_t i = 0; i < ri->ranges.size(); ++i) {
+                        llvm::Value* u = createEntryAlloca(
+                            vd->name + "#used" + std::to_string(i), builder.getInt64Ty());
+                        builder.CreateStore(builder.getInt64(0), u);
+                        useds.push_back(u);
+                    }
+                    multiRegionUsed_[vd->name] = std::move(useds);
+                    return;
+                }
+            }
             // `lazy region` (spec 37.3): defer the backing allocation until the first object
             // enters. Store null now and remember the size/address to replay on first use.
             if (declType == "region" && vd->isLazy) {
                 if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get())) {
-                    // atMultiple (spec 17.4): a multi-range region over fixed addresses. Record the
-                    // ranges + one bump used-counter per range; there is no malloc'd block to free.
-                    if (!ri->ranges.empty()) {
-                        llvm::Value* slot = createEntryAlloca(vd->name, builder.getPtrTy());
-                        builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
-                        locals[vd->name] = LocalSlot{slot, "region"};
-                        multiRegionRanges_[vd->name] = &ri->ranges;
-                        std::vector<llvm::Value*> useds;
-                        for (std::size_t i = 0; i < ri->ranges.size(); ++i) {
-                            llvm::Value* u = createEntryAlloca(
-                                vd->name + "#used" + std::to_string(i), builder.getInt64Ty());
-                            builder.CreateStore(builder.getInt64(0), u);
-                            useds.push_back(u);
-                        }
-                        multiRegionUsed_[vd->name] = std::move(useds);
-                        return;
-                    }
                     llvm::Value* slot = createEntryAlloca(vd->name, builder.getPtrTy());
                     builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
                     locals[vd->name] = LocalSlot{slot, "region"};
@@ -10075,18 +10772,32 @@ struct CodeGenerator::Impl {
             // program, no cleanup).
             if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
                 auto cit = classes.find(nw->className);
-                // Track for scope-exit teardown if it has a destructor OR any weak state: a dtor-less weak
-                // target must still null its weak refs when its stack/region storage dies, and a dtor-less
-                // holder must unlink its weak slots -- otherwise a `weak T*` to a stack object would dangle.
-                if (cit != classes.end() &&
-                    (cit->second.hasDestructor || weakRelevant(nw->className)) && !vd->isEternal) {
+                // Every stack object, whether or not anything needs destructing. `delete` has to be able
+                // to tell a stack address from a heap one, and it is the ONLY thing this set is for --
+                // deriving that from the destructor list meant a class with no destructor was invisible
+                // to `delete`, which then freed a stack pointer into libc.
+                if (cit != classes.end() && nw->region.empty() && nw->location == "stack")
+                    stackObjectSlots_.insert(slot);
+                // Track for scope-exit teardown if it has a destructor OR any weak state OR owns a
+                // `region` field. The weak case: a dtor-less weak target must still null its weak refs
+                // when its stack/region storage dies, and a dtor-less holder must unlink its weak slots,
+                // or a `weak T*` to a stack object would dangle.
+                //
+                // The region case was the other half of the region-field leak. `emitBlockCleanup` asks
+                // this question again and handles a dtor-less owner correctly -- but it only ever sees
+                // objects that got REGISTERED here, and registration demanded a destructor. So the fix
+                // there could not fire, and a class holding a region and no destructor leaked its whole
+                // region on every scope exit. Silently, and precisely against the promise a region
+                // makes: that its storage lives exactly as long as its owner. Neither half works alone.
+                if (cit != classes.end() && !vd->isEternal &&
+                    (cit->second.hasDestructor || weakRelevant(nw->className) ||
+                     !ownedRegionFieldsOf(nw->className).empty())) {
                     // A region object's destructor runs when the region is released/freed (spec
                     // 17.7); a plain stack object's runs at scope exit. A heap object is manual.
-                    // A STACK- or RING-region object is NOT tracked here: the runtime owns its destructor
-                    // (the stack registry / the ring teardown), so scopeObjects would double-destruct it.
-                    const std::string rfl =
-                        flavorOfRegion(nw->region);
-                    if (!nw->region.empty() && !isStackFlavor(rfl) && !isRingFlavor(rfl))
+                    // An object in a region with a REGISTRY, or in a ring, is NOT tracked here: the
+                    // runtime owns its teardown, so scopeObjects would destruct it a second time.
+                    const std::string rfl = flavorOfRegion(nw->region);
+                    if (!nw->region.empty() && !regionHasRegistry(nw->region) && !isRingFlavor(rfl))
                         scopeObjects.push_back(ScopeObject{slot, nw->className, nw->region});
                     else if (nw->region.empty() && nw->location == "stack") {
                         zeroStackObjectSlot(slot);  // abstain/skip past this decl -> null -> no dtor on uninit
@@ -10105,7 +10816,8 @@ struct CodeGenerator::Impl {
                 // object; same ownership and same accepted this-escape risk as any stack object.
                 const std::string cn = baseType(declType);
                 if (auto cit = classes.find(cn);
-                    cit != classes.end() && (cit->second.hasDestructor || weakRelevant(cn)))
+                    cit != classes.end() && (cit->second.hasDestructor || weakRelevant(cn) ||
+                                             !ownedRegionFieldsOf(cn).empty()))
                     scopeObjects.push_back(ScopeObject{slot, cn, ""});
             }
             // RAII for regions (spec 17.7): freed at the end of the lexical block
@@ -10321,10 +11033,12 @@ struct CodeGenerator::Impl {
                     if (const ast::FieldDecl* fd = regionFieldDecl("this." + mt->member)) {
                         pendingRegionFlavor_ = fd->regionFlavor;
                         pendingRegionGrowable_ = fd->regionGrowable;
+                        pendingRegionRegistry_ = regionHasRegistry("this." + mt->member);
                     }
             llvm::Value* v = emitExpr(*assign->value);
             pendingRegionFlavor_.clear();
             pendingRegionGrowable_ = false;
+            pendingRegionRegistry_ = false;
             if (v == nullptr) return;
             pendingPersistIndex = nullptr;  // defensive: never leak into the next new
             // Value semantics: assigning a class value makes the target an independent copy.
@@ -10409,8 +11123,18 @@ struct CodeGenerator::Impl {
                         builder.CreateCall(strFreeFn(), {builder.CreateLoad(builder.getPtrTy(), slot)});
                     }
                 }
-                if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
+                if (const auto* mt = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
+                    // A packed bit field shares its storage unit with its neighbours, so writing it is
+                    // a read-modify-write of the unit, not a store. Doing this here rather than letting
+                    // the store below run is the whole difference between `version = 3` setting four
+                    // bits and it wiping the three fields sitting beside them.
+                    if (const std::string bfOwner = bitFieldOwner(*mt); !bfOwner.empty()) {
+                        emitBitFieldStore(slot, bfOwner, mt->member, sv,
+                                          isVolatileAccess(*assign->target));
+                        return;
+                    }
                     sv = maskBitField(sv, typeName(*mt->object), mt->member);  // bit-field (spec 11.1)
+                }
                 // A boolean array element occupies 1 byte; narrow the i32 boolean value before storing.
                 if (targetType == "boolean")
                     if (const auto* tix = dynamic_cast<const ast::IndexExpr*>(assign->target.get()))
@@ -10488,6 +11212,20 @@ struct CodeGenerator::Impl {
             llvm::Type* ty = llvmType(itn);
             llvm::Value* slot = emitLValue(*incdec->target);
             if (slot == nullptr) return;
+            // A packed bit field: read it out of its unit, step it, put it back. Going through the plain
+            // load/store below would read its neighbours' bits as part of the value and then overwrite
+            // them -- `++` on one field silently editing the ones next to it.
+            if (const auto* bfm = dynamic_cast<const ast::MemberExpr*>(incdec->target.get()))
+                if (const std::string bfOwner = bitFieldOwner(*bfm); !bfOwner.empty()) {
+                    const bool vol = isVolatileAccess(*incdec->target);
+                    llvm::Value* was = emitBitFieldLoad(slot, bfOwner, bfm->member, vol);
+                    llvm::Value* stepped =
+                        incdec->isIncrement
+                            ? builder.CreateAdd(was, llvm::ConstantInt::get(was->getType(), 1))
+                            : builder.CreateSub(was, llvm::ConstantInt::get(was->getType(), 1));
+                    emitBitFieldStore(slot, bfOwner, bfm->member, stepped, vol);
+                    return;
+                }
             llvm::Value* cur = builder.CreateLoad(ty, slot);
             // Pointer arithmetic (spec 27): `p++` steps by one ELEMENT, not one byte -- an integer add
             // on a pointer value is not even valid IR. The analyzer already warned about doing this to a
@@ -10503,6 +11241,11 @@ struct CodeGenerator::Impl {
             llvm::Value* one = llvm::ConstantInt::get(ty, 1);
             llvm::Value* res =
                 incdec->isIncrement ? builder.CreateAdd(cur, one) : builder.CreateSub(cur, one);
+            // A bit field keeps only its declared width, and `=` and `+=` both masked -- this path did
+            // not, so `f.nibble++` on a 4-bit field holding 15 stored 16. The width is part of the
+            // field's type; which statement wrote it cannot change what it can hold.
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(incdec->target.get()))
+                res = maskBitField(res, baseType(typeName(*mem->object)), mem->member);
             builder.CreateStore(res, slot);
             return;
         }
@@ -10616,13 +11359,28 @@ struct CodeGenerator::Impl {
                     const std::string rflavor =
                         flavorOfRegion(del->fromRegion);
                     const bool runtimeReclaim = usesRuntimeDesc(rflavor) && cit != classes.end();
+                    const bool registry = regionHasRegistry(del->fromRegion);
                     if (runtimeReclaim) builder.CreateCall(checkLiveFn(), {objPtr});
-                    if (cit != classes.end() && cit->second.hasDestructor)
-                        builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+                    // Through the same thunk the registry would have used, so a weak target deleted by
+                    // hand nulls its weak pointers exactly as one destructed at release does.
+                    if (cit != classes.end() && (cit->second.hasDestructor || weakRelevant(cn))) {
+                        if (llvm::Function* d = registry ? regionDtorFn(cn)
+                                                         : (cit->second.hasDestructor
+                                                                ? functions[cn + ".~" + cn]
+                                                                : nullptr))
+                            builder.CreateCall(d, {objPtr});
+                    }
                     if (runtimeReclaim) {
                         llvm::Value* block = builder.CreateLoad(
                             builder.getPtrTy(), regionStorageSlot(del->fromRegion), "region");
                         builder.CreateCall(regionFreeFn(), {block, objPtr, sizeOf(cit->second.type)});
+                    } else if (registry) {
+                        // A bump region reclaims only on release, but the registry must forget this object
+                        // now -- otherwise release destructs it a second time, on memory whose destructor
+                        // has already run.
+                        llvm::Value* block = builder.CreateLoad(
+                            builder.getPtrTy(), regionStorageSlot(del->fromRegion), "region");
+                        builder.CreateCall(regionUntrackFn(), {block, objPtr});
                     }
                     if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(&target))
                         if (auto lit = locals.find(tid->name); lit != locals.end())
@@ -10636,16 +11394,25 @@ struct CodeGenerator::Impl {
                     emitCascade(CascadeOp::Delete, objPtr, cn, cascadeCsid_++, del->cascade);
                     return;
                 }
-                // A stack-allocated owned object (tracked for RAII): `delete` is an early
-                // destruct -- run the destructor once and drop it from tracking, but never
-                // free() a stack pointer or let scope-exit destruct it again.
+                // A stack-allocated owned object: `delete` is an early destruct -- run the destructor
+                // once and drop it from RAII tracking, but NEVER free() a stack pointer.
+                //
+                // The membership test is `stackObjectSlots_`, which holds every stack object, not
+                // `scopeObjects`, which holds only the ones with a destructor or weak state. An object
+                // with neither was in no list at all, so `delete` on it fell through to the heap path
+                // and handed a stack address to free(). The header read 16 bytes below it is whatever
+                // the frame happens to hold, so it is not one of our stamps, and the allocator forwards
+                // the pointer to libc -- which corrupts the heap and reports it somewhere else entirely.
+                // Nothing about this needed a destructor to go wrong; needing one to be NOTICED is what
+                // kept it hidden.
                 if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(&target)) {
                     if (auto lit = locals.find(tid->name); lit != locals.end()) {
-                        for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so) {
-                            if (so->slot != lit->second.storage) continue;
+                        if (stackObjectSlots_.count(lit->second.storage) > 0) {
                             if (cit != classes.end() && cit->second.hasDestructor)
                                 builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
-                            scopeObjects.erase(so);
+                            if (cit != classes.end() && weakRelevant(cn)) emitWeakCleanup(objPtr, cn);
+                            for (auto so = scopeObjects.begin(); so != scopeObjects.end(); ++so)
+                                if (so->slot == lit->second.storage) { scopeObjects.erase(so); break; }
                             return;
                         }
                     }
@@ -10680,6 +11447,37 @@ struct CodeGenerator::Impl {
                 if (rel->target != nullptr) {
                     if (const auto* mem =
                             dynamic_cast<const ast::MemberExpr*>(rel->target.get())) {
+                        // `release C.field all` -- every identity the field ever had. Without it a
+                        // program could release only the identities it still happened to be holding,
+                        // which is a leak with extra steps rather than a release.
+                        if (rel->allKeys) {
+                            // The receiver is a CLASS name here (`release Session.hits all`), not an
+                            // object, so read the name rather than typing an expression that has no value.
+                            std::string cls;
+                            if (const auto* rid =
+                                    dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
+                                cls = rid->name;
+                            else
+                                cls = baseType(typeName(*mem->object));
+                            if (auto cit = classes.find(cls);
+                                cit != classes.end() && cit->second.persistPtrIdx != 0) {
+                                // The field's byte offset and width, so the runtime clears exactly it
+                                // and leaves its siblings in every block alone.
+                                const auto& porder = cit->second.persistOrder;
+                                auto pp = std::find(porder.begin(), porder.end(), mem->member);
+                                if (pp == porder.end()) return;
+                                const auto fidx = static_cast<unsigned>(pp - porder.begin());
+                                const llvm::StructLayout* sl =
+                                    module.getDataLayout().getStructLayout(cit->second.persistBlock);
+                                llvm::Type* ft = llvmType(cit->second.fieldType[mem->member]);
+                                builder.CreateCall(
+                                    persistReleaseAllFn(),
+                                    {createGlobalStringPtr(builder, cls, "pcls"),
+                                     builder.getInt64(sl->getElementOffset(fidx)),
+                                     builder.getInt64(module.getDataLayout().getTypeStoreSize(ft))});
+                            }
+                            return;
+                        }
                         const std::string cls = baseType(typeName(*mem->object));
                         auto cit = classes.find(cls);
                         if (cit != classes.end() && cit->second.persistPtrIdx != 0) {
@@ -10690,9 +11488,23 @@ struct CodeGenerator::Impl {
                                                             cit->second.persistPtrIdx, "__persist");
                                 llvm::Value* block =
                                     builder.CreateLoad(builder.getPtrTy(), slot, "pblock");
-                                builder.CreateCall(memsetFn(),
-                                                   {block, builder.getInt32(0),
-                                                    sizeOf(cit->second.persistBlock)});
+                                // ONE field, not the whole block. Zeroing everything meant
+                                // `release a.x` also wiped `a.y` and `a.z` -- a statement that names a
+                                // field and then discards its siblings, silently.
+                                const auto& porder = cit->second.persistOrder;
+                                auto pp = std::find(porder.begin(), porder.end(), mem->member);
+                                if (pp != porder.end()) {
+                                    const auto fidx = static_cast<unsigned>(pp - porder.begin());
+                                    llvm::Value* fp = builder.CreateStructGEP(
+                                        cit->second.persistBlock, block, fidx, mem->member);
+                                    llvm::Type* ft =
+                                        llvmType(cit->second.fieldType[mem->member]);
+                                    builder.CreateStore(llvm::Constant::getNullValue(ft), fp);
+                                } else {
+                                    builder.CreateCall(memsetFn(),
+                                                       {block, builder.getInt32(0),
+                                                        sizeOf(cit->second.persistBlock)});
+                                }
                             }
                         }
                     }
@@ -10702,23 +11514,27 @@ struct CodeGenerator::Impl {
             // Destruct every object in the region, then free the whole block (spec 17.7). Null the
             // slot so the scope-end region RAII frees null (no double free), and the objects are
             // cleared so they are not destructed again on the freed block.
-            auto it = locals.find(rel->region);
-            if (it != locals.end()) {
+            // `regionStorageSlot`, not `locals` -- a region may be a FIELD (spec 17: `this.f`), and
+            // `new X() in region this.f` has always gone through that helper. Looking only in `locals`
+            // here meant `release region this.f` matched nothing and fell out of the whole branch: no
+            // destructors, no free, no null -- a silent no-op that leaked the block. The allocation side
+            // and the release side of the same construct were asking two different questions about
+            // where a region lives.
+            if (llvm::Value* rslot = regionStorageSlot(rel->region)) {
                 runRegionObjectDtors(rel->region);
-                llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), it->second.storage);
+                llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), rslot);
                 // A stack region tears down its registry (rollback-to-0 + free it); a ring region destructs
                 // its live entries -- both before the block is freed. A growable region frees its whole
                 // block chain (bump/pool/fixedslot only -- growable stack/ring are rejected in sema).
                 const std::string relFlavor =
                     flavorOfRegion(rel->region);
-                if (isStackFlavor(relFlavor)) builder.CreateCall(regionTeardownFn(), {block});
+                if (regionHasRegistry(rel->region)) builder.CreateCall(regionTeardownFn(), {block});
                 else if (isRingFlavor(relFlavor)) builder.CreateCall(ringTeardownFn(), {block});
                 if (growableOfRegion(rel->region))
                     builder.CreateCall(regionFreeChainFn(), {block});
                 else
                     builder.CreateCall(regionReleaseFn(), {block});
-                builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()),
-                                    it->second.storage);
+                builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), rslot);
             }
             return;
         }
@@ -10911,6 +11727,40 @@ struct CodeGenerator::Impl {
             return;
         }
         if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
+            // --verify-stack: does this method leave on the stack pointer it arrived on?
+            //
+            // Emitted BEFORE any of the return paths below, so it covers all of them. If the two differ,
+            // something moved the stack under this method -- and the whole reason for spending compiler
+            // work on it is that such a displacement is currently invisible until it surfaces as wrong
+            // DATA in unrelated code, hours of bisection later.
+            // `entrySp` belongs to ONE method. This handler also runs while emitting thunks, closures
+            // and other bodies that get their own function, and referring to a Value from a different
+            // function is invalid IR -- it segfaulted the compiler outright the first time. So the
+            // check only fires where the entry read and this return are demonstrably the same one.
+            auto* entryInst = llvm::dyn_cast_or_null<llvm::Instruction>(entrySp);
+            if (verifyStack && entryInst != nullptr && currentFn != nullptr &&
+                entryInst->getFunction() == currentFn && builder.GetInsertBlock() != nullptr &&
+                builder.GetInsertBlock()->getParent() == currentFn) {
+                llvm::Function* save =
+                    llvm::Intrinsic::getDeclaration(&module, llvm::Intrinsic::stacksave,
+                                                    {llvm::PointerType::get(context, 0)});
+                llvm::Value* now = builder.CreateCall(save, {}, "sp.exit");
+                llvm::Value* same = builder.CreateICmpEQ(now, entrySp, "sp.same");
+                llvm::BasicBlock* bad = llvm::BasicBlock::Create(context, "sp.mismatch", currentFn);
+                llvm::BasicBlock* ok = llvm::BasicBlock::Create(context, "sp.ok", currentFn);
+                builder.CreateCondBr(same, ok, bad);
+                builder.SetInsertPoint(bad);
+                // A weak reporter, so a freestanding program can say it over whatever channel it has and
+                // a hosted one gets a default. Named, because "the stack moved" without a name is the
+                // same useless clue this instrument exists to replace.
+                llvm::FunctionType* rt = llvm::FunctionType::get(
+                    llvm::Type::getVoidTy(context), {llvm::PointerType::get(context, 0)}, false);
+                llvm::FunctionCallee reporter = module.getOrInsertFunction("__ldp3_stack_mismatch", rt);
+                builder.CreateCall(
+                    reporter, {builder.CreateGlobalStringPtr(currentFn->getName().str(), "sp.who")});
+                builder.CreateBr(ok);
+                builder.SetInsertPoint(ok);
+            }
             if (genSM) {  // spec 22.6: a bare `return` ends the sequence -- the resume reports "done"
                 emitScopeCleanup();
                 builder.CreateStore(builder.getInt32(-1),
@@ -10922,8 +11772,17 @@ struct CodeGenerator::Impl {
             // caller reads freed memory. Promote a directly-returned plain `new X() [on stack]` to the
             // heap so the returned object stays live; a returned object is the caller's to own and free.
             // (Arrays already default to heap; region-targeted news keep their region.)
+            //
+            // NOT for a value struct (spec 11), which is what the `currentSretSlot_` guard says. Such a
+            // return hands back no pointer at all: it memcpy's the object into the caller's result slot
+            // a few lines below, so nothing of this frame outlives the frame and there is nothing to
+            // promote. Doing it anyway malloc'd a temporary, constructed into it, copied it out and then
+            // dropped the only pointer to it -- an allocation AND a leak on every `return new Point(x,
+            // y)` from a struct method. Found from a freestanding program, where it was worse than a
+            // leak: a value struct returned before the heap existed called the allocator anyway.
             if (const auto* cnw = dynamic_cast<const ast::NewExpr*>(rs->value.get());
-                cnw != nullptr && cnw->location == "stack" && cnw->region.empty())
+                cnw != nullptr && cnw->location == "stack" && cnw->region.empty() &&
+                currentSretSlot_ == nullptr)
                 const_cast<ast::NewExpr*>(cnw)->location = "heap";
             // Inside an `expecting { ... }` block (spec 30.18), `return X` is the block's value:
             // store it and jump to the block's end, rather than returning from the method.
@@ -10996,7 +11855,13 @@ struct CodeGenerator::Impl {
                     return;
                 }
                 emitPendingFinallys(0);  // run every enclosing try's finally before leaving
+                // `result` in an ensures clause (spec 29) is THIS value. The postconditions run inside
+                // emitScopeCleanup, which is after the returned value has been computed and converted
+                // -- so it is simply in hand here, and binding it costs nothing. Cleared straight
+                // after: a sibling return path binds its own.
+                currentResultValue_ = v;
                 emitScopeCleanup();
+                currentResultValue_ = nullptr;
                 if (builder.GetInsertBlock()->getTerminator() == nullptr && v != nullptr)
                     builder.CreateRet(v);
                 return;
@@ -11047,22 +11912,100 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // Does this class own any `region` FIELD? (spec 17: `private mutable region store;`)
+    std::vector<std::string> ownedRegionFieldsOf(const std::string& cn) {
+        std::vector<std::string> out;
+        auto cit = classes.find(clsKey(cn));
+        if (cit == classes.end()) return out;
+        // Keyed off `ownedFieldRegions_` rather than off the field's TYPE NAME: that set is exactly
+        // "fields this class assigns `itself.allocate(...)` to, and never `itself.at(...)`", which IS
+        // the definition of a region the object owns. A field pointed at MMIO with `at` is deliberately
+        // not in it -- releasing a framebuffer aperture would be absurd.
+        for (const auto& [fname, idx] : cit->second.fieldIndex)
+            if (ownedFieldRegions_.count(cn + "." + fname) > 0) out.push_back(fname);
+        return out;
+    }
+
+    // Release the regions an object OWNS, when that object dies.
+    //
+    // This was missing, and it leaked every time. A local region is freed by `freeRegionsFrom` at scope
+    // exit and an explicit `release region this.f` frees a field one -- but an object holding a region
+    // field and simply going out of scope released NOTHING. The region's whole promise is that its
+    // storage lives exactly as long as its owner; for a field that owner is the object, and nobody was
+    // enforcing the second half of that sentence.
+    //
+    // Found from pico: ten thousand create/destroy cycles of a small object with one 4 KiB region field
+    // exhausted memory and hung the kernel. It is the same leak that made a per-call `ArgumentBlock`
+    // unusable there -- the shell died a third of the way through a session.
+    //
+    // Teardown before release, in that order and for the reason spec 17.7 gives: the objects living in
+    // the region must be destructed while their storage is still valid.
+    void emitOwnedRegionFieldRelease(llvm::Value* objPtr, const std::string& cn) {
+        auto cit = classes.find(clsKey(cn));
+        if (cit == classes.end() || objPtr == nullptr) return;
+        for (const std::string& fname : ownedRegionFieldsOf(cn)) {
+            auto idx = cit->second.fieldIndex.find(fname);
+            if (idx == cit->second.fieldIndex.end()) continue;
+            llvm::Value* slot =
+                builder.CreateStructGEP(cit->second.type, objPtr, idx->second, "rgnfield." + fname);
+            llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "rgnfield.block");
+            // A null block is a field never initialised (an early return in the constructor, say), and
+            // the runtime's release already tolerates it -- but the teardown call does not, so guard.
+            llvm::Function* f = currentFn;
+            auto* liveBB = llvm::BasicBlock::Create(context, "rgnfield.live", f);
+            auto* doneBB = llvm::BasicBlock::Create(context, "rgnfield.done", f);
+            builder.CreateCondBr(
+                builder.CreateICmpNE(block, llvm::ConstantPointerNull::get(builder.getPtrTy())),
+                liveBB, doneBB);
+            builder.SetInsertPoint(liveBB);
+            // A field region always carries a registry (see `regionHasRegistry`), so its objects are
+            // recorded at run time and torn down newest-first here.
+            builder.CreateCall(regionTeardownFn(), {block});
+            builder.CreateCall(regionReleaseFn(), {block});
+            builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
+            builder.CreateBr(doneBB);
+            builder.SetInsertPoint(doneBB);
+        }
+    }
+
     void freeRegionsFrom(std::size_t base) {
+        // Snapshot the objects' class names and restore them afterwards, exactly as `emitScopeCleanup`
+        // does for `deferred` and for the same reason: this runs once per EXIT PATH, and
+        // `runRegionObjectDtors` marks each object done by clearing its className -- a mutation of the
+        // COMPILER's bookkeeping, not a runtime flag.
+        //
+        // Without restoring, the first `return` a function emits got the destructor calls and wiped the
+        // names, and every later `return` saw an empty name and emitted nothing. A method with two
+        // exits destructed its region objects on one of them and leaked on the other, silently, with
+        // which one depending on source order. Adding an early return to a method -- turning a
+        // `requires` into an `if (...) { return false; }`, say -- was enough to move which path got the
+        // teardown.
+        //
+        // The clearing itself stays, and is still load-bearing for the OTHER caller: an explicit
+        // `release region R` mid-function must stop the scope exit re-running those destructors on
+        // memory it already freed.
+        std::vector<std::string> savedNames;
+        savedNames.reserve(scopeObjects.size());
+        for (const ScopeObject& so : scopeObjects) savedNames.push_back(so.className);
+
         for (std::size_t i = scopeRegions.size(); i > base; --i) {
             const std::string& rname = scopeRegions[i - 1].name;
             runRegionObjectDtors(rname);  // destruct objects before freeing (17.7)
             llvm::Value* block =
                 builder.CreateLoad(builder.getPtrTy(), scopeRegions[i - 1].slot, "region");
-            // stack tears down its registry, ring destructs its live entries -- on scope exit and
-            // exception unwind alike, so region objects are reclaimed either way (spec 17.7).
+            // A region with a registry tears it down (every remaining destructor, newest-first, then the
+            // registry itself); a ring destructs its live entries -- on scope exit and exception unwind
+            // alike, so region objects are reclaimed either way (spec 17.7).
             const std::string rfl = flavorOfRegion(rname);
-            if (isStackFlavor(rfl)) builder.CreateCall(regionTeardownFn(), {block});
+            if (regionHasRegistry(rname)) builder.CreateCall(regionTeardownFn(), {block});
             else if (isRingFlavor(rfl)) builder.CreateCall(ringTeardownFn(), {block});
             if (growableOfRegion(rname))
                 builder.CreateCall(regionFreeChainFn(), {block});  // free the whole grown chain
             else
                 builder.CreateCall(regionReleaseFn(), {block});  // cache the block for reuse (see runtime)
         }
+        for (std::size_t i = 0; i < scopeObjects.size() && i < savedNames.size(); ++i)
+            scopeObjects[i].className = savedNames[i];
     }
 
     void emitBlockCleanup(std::size_t soBase, std::size_t dfBase, std::size_t regBase,
@@ -11077,10 +12020,19 @@ struct CodeGenerator::Impl {
             if (!so.region.empty()) continue;  // region objects are destructed when the region frees
             auto fnit = functions.find(so.className + ".~" + so.className);
             const bool weak = weakRelevant(so.className);
-            if (fnit == functions.end() && !weak) continue;
+            // A class with a `region` FIELD needs cleanup even with no destructor and no weak refs:
+            // the region it owns has to go when it does. Leaving it out of this condition is what
+            // made a region field leak on every scope exit.
+            const bool ownsRegion = !ownedRegionFieldsOf(so.className).empty();
+            if (fnit == functions.end() && !weak && !ownsRegion) continue;
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);
-            emitDtorIfLive(objPtr, fnit == functions.end() ? llvm::FunctionCallee() : fnit->second,
-                           weak ? so.className : std::string());
+            if (fnit != functions.end() || weak) {
+                emitDtorIfLive(objPtr,
+                               fnit == functions.end() ? llvm::FunctionCallee() : fnit->second,
+                               weak ? so.className : std::string());
+            }
+            // AFTER the user destructor: it may still touch what lives in the region.
+            if (ownsRegion) emitOwnedRegionFieldRelease(objPtr, so.className);
         }
         // String RAII: free String locals declared in this block (LIFO). The sentinel base means "leave
         // them" -- break/continue pass it so the outer scope-exit / function return frees them, never us
@@ -12043,7 +12995,75 @@ struct CodeGenerator::Impl {
                     std::vector<llvm::Type*> fieldTypes;
                     if (layout.hasVtable) fieldTypes.push_back(builder.getPtrTy());  // vtable ptr
                     unsigned idx = layout.hasVtable ? 1u : 0u;
+                    // BIT-FIELD PACKING (spec 11.1). The spec gives a `PacketHeader` and no semantics,
+                    // and for a language that points at hardware registers and wire formats there is only
+                    // one defensible reading: the bits are laid out PHYSICALLY, predictably, and it is
+                    // written down. Value masking alone -- what this used to do -- makes the example in
+                    // the spec a lie, because `uint8 version:4; uint8 type:4;` would occupy two bytes.
+                    //
+                    // The rule, in full:
+                    //   * consecutive bit-fields accumulate into one RUN, in declaration order;
+                    //   * within the run each field takes the next bits from the LEAST significant end
+                    //     (this is a little-endian target, so LSB-first is what makes bit 0 of the first
+                    //     field also bit 0 of the first byte -- the thing a register datasheet means);
+                    //   * a run ends at the first non-bit-field member, or when the next field would take
+                    //     it past 64 bits;
+                    //   * the run's storage unit is the next power-of-two byte size that holds it (1, 2,
+                    //     4 or 8 bytes), so a packed group is always readable and writable with ONE
+                    //     naturally sized access. That matters for MMIO, where a 32-bit register must be
+                    //     touched as a 32-bit access and not as four byte pokes.
+                    // A run wider than 64 bits is an ERROR, not a silent second unit: a header that does
+                    // not fit an integer needs the author to say where it splits.
+                    std::vector<std::pair<std::string, std::string>> ordered = collectFields(cls.name);
+                    std::size_t fi = 0;
+                    while (fi < ordered.size()) {
+                        if (layout.bitFieldWidth.count(ordered[fi].first) == 0) { ++fi; continue; }
+                        // Gather the run and total its bits.
+                        std::size_t runEnd = fi;
+                        unsigned bitsUsed = 0;
+                        while (runEnd < ordered.size()) {
+                            auto bw = layout.bitFieldWidth.find(ordered[runEnd].first);
+                            if (bw == layout.bitFieldWidth.end()) break;
+                            const unsigned w = static_cast<unsigned>(bw->second);
+                            if (bitsUsed + w > 64u) break;
+                            bitsUsed += w;
+                            ++runEnd;
+                        }
+                        if (runEnd == fi) {
+                            error("bit field '" + ordered[fi].first + "' of " + cls.name + " is wider "
+                                  "than 64 bits; a packed group must fit one storage unit -- split it "
+                                  "into named fields that each fit", cls.loc);
+                            ++fi;
+                            continue;
+                        }
+                        unsigned unitBits = 8;
+                        while (unitBits < bitsUsed) unitBits *= 2;
+                        unsigned off = 0;
+                        for (std::size_t k = fi; k < runEnd; ++k) {
+                            layout.bitFieldOffset[ordered[k].first] = off;
+                            layout.bitFieldUnitBits[ordered[k].first] = unitBits;
+                            off += static_cast<unsigned>(layout.bitFieldWidth[ordered[k].first]);
+                        }
+                        fi = runEnd;
+                    }
+                    // One element per field, EXCEPT that every field of a run shares the run's element.
+                    std::string runOwner;   // the field whose element the current run occupies
                     for (const auto& [fname, ftype] : collectFields(cls.name)) {
+                        if (auto ub = layout.bitFieldUnitBits.find(fname);
+                            ub != layout.bitFieldUnitBits.end()) {
+                            const bool startsRun =
+                                runOwner.empty() || layout.bitFieldOffset[fname] == 0;
+                            if (startsRun) {
+                                runOwner = fname;
+                                layout.fieldIndex[fname] = idx++;
+                                fieldTypes.push_back(builder.getIntNTy(ub->second));
+                            } else {
+                                layout.fieldIndex[fname] = layout.fieldIndex[runOwner];
+                            }
+                            layout.fieldType[fname] = ftype;
+                            continue;
+                        }
+                        runOwner.clear();
                         layout.fieldIndex[fname] = idx++;
                         layout.fieldType[fname] = ftype;
                         // a `weak T*` field is a 2-ptr WeakSlot {ptr, next}; every other field is its
@@ -12354,6 +13374,7 @@ struct CodeGenerator::Impl {
         ehPadStack.clear();    // thunks are standalone: no enclosing try / RAII scope
         ehBaseStack.clear();
         scopeObjects.clear();
+        stackObjectSlots_.clear();
         llvm::PointerType* ptrTy = builder.getPtrTy();
         llvm::FunctionCallee loadFn = module.getOrInsertFunction(
             "ldp3_bundle_load", llvm::FunctionType::get(ptrTy, {ptrTy, ptrTy, ptrTy}, false));
@@ -13008,6 +14029,7 @@ struct CodeGenerator::Impl {
         currentAsyncState = asyncResume ? fn->getArg(0) : nullptr;
         locals.clear();
         scopeObjects.clear();
+        stackObjectSlots_.clear();
         scopeRegions.clear();
         scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
         scopeValueStructs.clear();  // same, for coroutine-state value structs (B9)
@@ -13027,8 +14049,18 @@ struct CodeGenerator::Impl {
         labelBlocks.clear(); comefromBlocks.clear();
         llvm::BasicBlock* block = llvm::BasicBlock::Create(context, "entry", fn);
         builder.SetInsertPoint(block);
-        // -g: attach a DISubprogram for this function and give the prologue (arg stores, super/field-init
-        // calls) the function's opening line, so no instruction in a debug function lacks a location.
+        // --verify-stack: read the stack pointer this method was entered on. Compared against a fresh
+        // read at every `return` (see the ReturnStmt handler). See codegen.h for the fault this exists
+        // to locate; the short version is that a displaced stack pointer currently surfaces as wrong
+        // DATA somewhere else entirely, and this turns it into a named method at the moment it happens.
+        entrySp = nullptr;
+        if (verifyStack) {
+            llvm::Function* save = llvm::Intrinsic::getDeclaration(&module, llvm::Intrinsic::stacksave,
+                                                    {llvm::PointerType::get(context, 0)});
+            entrySp = builder.CreateCall(save, {}, "sp.entry");
+        }
+        // -g: attach a DISubprogram for this method and give the prologue (arg stores, super/field-init
+        // calls) the method's opening line, so no instruction in a debug method lacks a location.
         beginDebugFunction(fn, body.loc);
         setDebugLoc(body.loc);
 
@@ -13036,7 +14068,11 @@ struct CodeGenerator::Impl {
         // decide whether a copied class-value parameter must live on the heap (it escapes) or the frame.
         std::set<std::string> escaping;
         for (const auto& s : body.statements) collectReturnedNames(s.get(), escaping);
-        if (!escaping.empty())
+        // A value-struct return copies into the caller's sret slot, so a local it returns by name does
+        // not escape as a pointer and must not be promoted -- same reason as the direct `return new X()`
+        // case in the ReturnStmt codegen. `escaping` itself still stands: it also drives the class-value
+        // parameter copies below, which do escape.
+        if (!escaping.empty() && currentSretSlot_ == nullptr)
             for (const auto& s : body.statements) promoteEscapingNews(s.get(), escaping);
         escapingLocals_ = escaping;  // value-copy locals that escape (below) are copied onto the heap
 
@@ -13229,6 +14265,7 @@ struct CodeGenerator::Impl {
         currentDtorChain = "";
         locals.clear();
         scopeObjects.clear();
+        stackObjectSlots_.clear();
         scopeRegions.clear();
         scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
         scopeValueStructs.clear();  // same, for coroutine-state value structs (B9)
@@ -13506,6 +14543,7 @@ struct CodeGenerator::Impl {
         currentDtorChain = "";
         locals.clear();
         scopeObjects.clear();
+        stackObjectSlots_.clear();
         scopeRegions.clear();
         scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
         scopeValueStructs.clear();  // same, for coroutine-state value structs (B9)
@@ -13601,6 +14639,7 @@ struct CodeGenerator::Impl {
         currentDtorChain = "";
         locals.clear();
         scopeObjects.clear();
+        stackObjectSlots_.clear();
         scopeRegions.clear();
         scopeStrings.clear();  // String RAII: reset per function so a slot never leaks into another's cleanup
         scopeValueStructs.clear();  // same, for coroutine-state value structs (B9)
@@ -14383,6 +15422,7 @@ void CodeGenerator::setTargetTriple(const std::string& triple) {
 void CodeGenerator::setLibrary(bool library) { impl_->libraryMode = library; }
 void CodeGenerator::setTestMode(bool test) { impl_->testMode = test; }
 void CodeGenerator::setDebugInfo(bool debug) { impl_->debugInfo = debug; }
+void CodeGenerator::setVerifyStack(bool verify) { impl_->verifyStack = verify; }
 
 void CodeGenerator::setPatchedClasses(const std::set<std::string>& classes) {
     impl_->patchedClasses_ = classes;
@@ -14423,6 +15463,8 @@ bool CodeGenerator::generate() {
     cg("declareClasses");
     impl_->collectAbstainedLabels();
     cg("collectAbstainedLabels");
+    impl_->collectFieldRegionKinds();
+    cg("collectFieldRegionKinds");
     impl_->emitNamespaceConsts();
     cg("emitNamespaceConsts");
     impl_->emitStaticFields();
@@ -14451,6 +15493,7 @@ bool CodeGenerator::generate() {
     cg("attachTBAA");
     impl_->stripDeadCode();  // drop unreferenced prelude/user code from executables
     cg("stripDeadCode");
+    impl_->applyBareMetalAttrs();  // no OS in the triple -> no red zone; see the method for why here
 
     std::string verifyMsg;
     llvm::raw_string_ostream os(verifyMsg);

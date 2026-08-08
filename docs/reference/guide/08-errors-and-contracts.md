@@ -425,6 +425,30 @@ ensures this.balance == old(this.balance) + amount
 `old(...)` is only meaningful inside an `ensures` clause; using it elsewhere is a
 compile error.
 
+### `result` in postconditions
+
+Every example above is a `void` mutator promising something about `this`. The other
+half of what a postcondition is for is the *returned value* — "what I hand you
+satisfies this" — and inside an `ensures` clause the name `result` is that value:
+
+```ldp3
+public method takePage() returns int
+    ensures result % 4096 == 0
+{
+    ...
+}
+```
+
+This is the guarantee that meets a caller's `requires`. A frame allocator that
+promises page-aligned addresses and a mapper that requires them state the two halves
+of one contract, and neither has to trust the other.
+
+`result` is in scope in `ensures` only. A `requires` clause runs on entry, before
+there is a result, so naming it there is an undeclared-name error like any other. It
+is not a reserved word: a local actually called `result` shadows the binding and
+means itself. With several `return` statements, each one's postconditions see that
+return's own value.
+
 ### Invariants are inherited
 
 A class invariant binds not only the class that declares it but every subclass. If

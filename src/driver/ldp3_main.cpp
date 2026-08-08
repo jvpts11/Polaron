@@ -160,6 +160,10 @@ int runCli(int argc, char** argv) {
         ss << f.rdbuf();
         ldp3::driver::Manifest m = ldp3::driver::parseManifestText(ss.str());
         if (m.entry.empty()) { std::fprintf(stderr, "ldp3: manifest has no [program] entry\n"); return 1; }
+        // Name the manifest, always. A build that resolves upward can be building a project the user is
+        // not standing in, and "wrote foo.elf" is far too late a place to learn that -- by then it reads
+        // as an output name, not as an answer to "which project?".
+        std::printf("ldp3: %s (%s)\n", m.name.c_str(), manifestPath->string().c_str());
         ldp3::driver::BuildOptions opts;
         // `--debug`: a -g -O0 build a debugger can step (DWARF line tables + variables). Other flags pass
         // through to ldp3c.

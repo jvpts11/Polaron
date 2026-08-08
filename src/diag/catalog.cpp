@@ -512,12 +512,17 @@ constexpr Row kCatalog[] = {
         "is a cycle, where two fields are each defined from the other and neither can go first. Until this "
         "was checked, an initializer the compiler could not evaluate was silently emitted as ZERO: no error, "
         "no warning, and a program whose behaviour was wrong in a place no test of its output points back to.",
-        "If the value really is constant, break the cycle -- one of the two has to be a literal. If it is "
-        "not constant, it does not belong in the declaration: move it into an `onClassLoad` block, which "
-        "runs before anything touches the class and may compute anything at all.",
-        "Keep static field initializers to plain arithmetic over other constants, and put every computed "
-        "or allocated setup in `onClassLoad`. The split is the same one the language draws everywhere "
-        "else: what the compiler can know goes in the declaration, what needs the machine goes in code." }},
+        "Three ways out, and which is right depends on WHY it will not fold. (1) If the value really is "
+        "constant, break the cycle -- one of the two has to be a literal. (2) If it cannot be computed "
+        "until the value is first NEEDED, mark it `lazy`: a lazy binding runs its initializer at the "
+        "first read and at most once, which breaks a cycle without moving anything and skips the work "
+        "entirely when nobody touches the field. (3) If it needs the machine running -- allocation, I/O, "
+        "an OS call -- it does not belong in a declaration at all: move it into an `onClassLoad` block, "
+        "which runs before anything touches the class and may compute anything.",
+        "Keep static field initializers to plain arithmetic over other constants. Reach for `lazy` when "
+        "the value is expensive or self-referential but still just a value, and `onClassLoad` when the "
+        "setup genuinely needs to run. The split is the one the language draws everywhere else: what the "
+        "compiler can know goes in the declaration, what needs the machine goes in code." }},
 
     {Code::MoveRequired, {
         "LDP3-0405", "a movable value is transferred, never copied -- say so",

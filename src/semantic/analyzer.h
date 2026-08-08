@@ -75,6 +75,8 @@ struct FieldInfo {
     bool isStatic = false;
     bool isMovable = false;  // spec 19.9: field can be moved separately (partitionable class)
     bool isUnique = false;
+    int bitWidth = 0;  // spec 11.1: declared bit-field width, 0 for an ordinary field. A field with one
+                       // shares a storage unit with its neighbours and therefore HAS NO ADDRESS.
 };
 struct MethodInfo {
     std::string returnType;
@@ -220,9 +222,17 @@ private:
     void analyzeBodies(const ast::Program& program);
     void analyzeLiteralBodies(const ast::Program& program);
     void analyzeFieldInits(const ast::ClassDecl& cls);
+    // `postconditions` are checked with `result` in scope, typed `postResultType` (spec 29): a
+    // postcondition on a value-returning method has to be able to say something about the value.
+    // Empty for a void method, a constructor or an invariant -- there `result` is not in scope, and
+    // using it is an undeclared name like any other. They are separate from `contracts` (the
+    // preconditions and invariants) precisely so `requires` does NOT see it: a precondition runs on
+    // entry, when there is no result yet.
     void analyzeMethodBody(const ast::Block& body, const std::vector<ast::Param>& params,
                            const std::string& thisClass, bool inConstructor,
-                           const std::vector<const ast::Expr*>& contracts = {});
+                           const std::vector<const ast::Expr*>& contracts = {},
+                           const std::vector<const ast::Expr*>& postconditions = {},
+                           const std::string& postResultType = "");
     void analyzeBlock(const ast::Block& block);
     // Analyzes an `expecting { ... }` block (spec 30.18) in its own scope and returns the type its
     // `return` produces (the validation value's type). The block's return is its own value, so the
@@ -393,6 +403,16 @@ private:
     // than once for the same node (the declaration, then each use), and a lambda inside a lambda
     // would otherwise nest the save/restore; one level is all the checking needs.
     bool analyzingLambda_ = false;
+    // Every path returns (or throws). Distinct from blockAlwaysExits, which counts break/continue --
+    // right for narrowing, wrong for "did this method produce a value".
+    bool alwaysReturns(const ast::Block& b);
+    bool blockHasBreak(const ast::Block& b);
+    // Value types (struct/record) by name, so `ast::keyFieldKind` can tell a nested value field from a
+    // class reference. Collected before the class pass, because a field may name a type declared later.
+    std::set<std::string> valueTypeNames_;
+    // The enclosing lambda's parameter types, while its body is being analyzed. `itself(...)` is checked
+    // against these: a lambda has no name, so there is nothing to look its own signature up by.
+    std::vector<std::string> currentLambdaParams_;
     // Type names the compiler answers for itself (spec 34) -- File, Time, Net, Memory, Math and the
     // rest. They have no prelude class, so a user class of the same name did not look like a
     // redeclaration to anything: it simply took the name over, and the failure surfaced as the
@@ -403,10 +423,19 @@ private:
     std::string currentGenElem_;
     std::set<std::string> patchedClasses_;  // spec 32.8: classes with a runtime-replaced method
     bool inConstructor_ = false;  // immutable fields may be initialized here
+    // True while analysing the body of a `naked` method. Only the inline-assembly checker reads it: a
+    // naked body has no compiler-generated code around it, so a register it destroys cannot be
+    // corrupting anything the register allocator placed. See asmcheck.h.
+    bool inNakedFn_ = false;
     std::unordered_set<std::string> moved_;  // variables in the "moved" state
     // Definite assignment (`T x;` then `x = ...`). Absent from the map means "declared with an
     // initializer", i.e. Init -- only deferred declarations ever enter it.
     std::unordered_map<std::string, FlowFacts::Init> init_;
+    // Fields the constructor being analysed owes a value to, with where they were declared (the error
+    // points at the FIELD, not at the constructor: the reader needs to see which one, and the
+    // declaration is the thing they will edit). Entered into `init_` as `this.<name>` so the existing
+    // branch-join machinery handles them without knowing they are fields.
+    std::vector<std::pair<std::string, SourceLocation>> pendingCtorFields_;
     // Names proven non-null at this point. See FlowFacts::nonNull.
     std::unordered_set<std::string> nonNull_;
     // Set while typing the operands of a null TEST, so `b != null` sees the declared type rather than
@@ -441,6 +470,12 @@ private:
     // `new ... in region R`, so extracting/deleting the OWNER of such a field alone can be rejected.
     std::unordered_map<std::string, std::string> regionOf_;  // path -> region it was allocated in
     std::unordered_map<std::string, RegionConstraints> regionConstraints_;  // region var -> accepts/rejects
+    // The same, for a region held as a FIELD, keyed "Class.field". Separate from the map above because
+    // that one is cleared per method -- right for a local region, which cannot outlive the method that
+    // declares it, and wrong for a field region, which is a property of the CLASS. Without this, a field
+    // region's accepts/rejects were recorded in the constructor, wiped before the next method, and every
+    // check against them passed by default: a region that was typed on paper and untyped in practice.
+    std::unordered_map<std::string, RegionConstraints> fieldRegionConstraints_;
     std::unordered_map<std::string, std::string> regionFlavor_;  // region var -> flavor (spec 17 expansion)
     // Persistent fields (spec 18.15): each must be released somewhere unless eternal.
     struct PersistentFieldInfo {

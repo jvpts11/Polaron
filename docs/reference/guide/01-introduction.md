@@ -327,7 +327,7 @@ thereafter. The chapters build on one another:
    defined-behavior traps.
 9. **Concurrency** — threads, channels, mutexes, and `async`/`await`.
 10. **Compile-Time, Reflection & Prefixes** — `comptime`, reflection, the universal prefixes, and
-    the managed-runtime features (persistents, `unimport`).
+    `unimport`, which needs the managed runtime. Persistents do **not** — see §5.9.
 11. **Systems Programming** — freestanding mode, raw pointers, the low-level `Memory` API, and FFI.
 12. **Keyword Reference** — every reserved word, its status, and a short example.
 13. **Diagnostics** — how to read an LDP3 error, its structure, and `ldp3 explain`.

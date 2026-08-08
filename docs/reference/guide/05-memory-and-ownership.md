@@ -121,6 +121,38 @@ pointers and references are for — the subject of the next section.
 > know statically. `String`, being immutable, is shared freely — copying an immutable value
 > is pointless, and it can never surprise you.
 
+### How deep the copy goes, and how to go deeper
+
+The copy duplicates the object's own storage, including its value-typed fields. A **pointer**
+field is copied *as a pointer* — so the copy points at the same thing the original did, and
+everything reachable through it is shared:
+
+```ldp3
+Node head = new Node(1) on stack;
+head.next = &tail;
+
+Node copy = head;                    // `copy` is a new node ...
+cast<Node*>(copy.next).v = 77;       // ... but `next` still points at the SAME tail
+// head.next.v is now 77 as well
+```
+
+That is the right default — following every pointer would mean a copy could not be bounded, and
+`external` back-references would turn one copy into a copy of the whole program — but it is the
+place where "assignment is a deep copy" stops being the whole story. It matters most in exactly
+the structures built out of pointers: linked lists, trees, and graphs.
+
+When you want a genuinely independent graph, that is what **`cascade clone`** is for
+([§10.5](10-metaprogramming-and-prefixes.md)). It walks what the object *owns*, clones each node
+once, repoints the clone's pointers at the clones, and shares nothing:
+
+```ldp3
+cascade clone head into fresh;       // fresh's tail is a copy, not the same tail
+```
+
+It keeps a visited set, so a **cyclic** graph clones exactly once per node and comes out with the
+same shape rather than looping forever. `external` pointers are treated as associations and left
+pointing where they pointed, which is what stops a clone of one node from dragging in the world.
+
 ---
 
 ## 5.2 Sharing on purpose: pointers (`T*`) and references (`T&`)
@@ -775,6 +807,19 @@ The persistent even remains accessible *after* the parent is deleted, through th
 qualified path — it genuinely outlived the object. LDP3's persistents are **in-process**:
 they live for the duration of the program run, keyed by that triple, and reattach in
 memory within the same run.
+
+**Persistents work in freestanding mode**, which the chapter overview once said they did not.
+A persistent bound to a named variable costs *nothing*: the compiler gives it a private global,
+so a bare-metal image gains no runtime call and no allocation. That makes them a natural fit for
+exactly the state a kernel is made of — a counter, a cache, a table that has to survive the
+object that owns it being torn down and rebuilt.
+
+The one form that needs support is the indexed one (`table[i] = new T()`, §18.5), which is keyed
+by slot at runtime. Freestanding gets a **fixed** registry rather than the hosted growing one: no
+allocator is involved, blocks come from one static arena so an address stays stable for the whole
+run, and exhausting either the slot table or the arena is a panic that names the limit. Raise
+`LDP3_FS_PERSIST_SLOTS` or `LDP3_FS_PERSIST_ARENA` if a program needs more. A bound you can see
+is worth more in a kernel than a table that quietly grows.
 
 Because a persistent that nobody ever releases is a memory leak by construction, LDP3
 enforces a **release obligation at compile time**. A non-`eternal` persistent must have a

@@ -2034,4 +2034,244 @@ bool monomorphize(ast::Program& program) {
     return ok;
 }
 
+// -------------------------------------------------------------------------------------------------
+// `delegate`: satisfy an interface by FORWARDING to a field.
+//
+// The word does not mean "function pointer" here -- that is C#'s idiosyncrasy, and LDP3 already spells
+// callables four ways (`function<>`, `typealias`, `methodref`, `unknown <world> funcptr<>`). It means
+// what it means in OOP: this object receives a message and passes it to the component that actually
+// knows how to answer it.
+//
+// Which is composition instead of inheritance -- the thing every design text asks for and almost nobody
+// does, because doing it by hand costs N methods whose entire content is `return this.f.m(args);`. So
+// people reach for `extends` to get behaviour they only wanted to REUSE, and burn the single inheritance
+// slot on it. The stdlib does this in four places its own reference names out loud ("Delegates to the
+// source iterator", "delegates to the backing map"), and `LinkedHashMap` is the case that proves the
+// point: it forwards to a backing map because it could not have inherited from one -- it already has an
+// identity of its own.
+//
+// This runs BEFORE monomorphize, so a generic class gets its forwarding methods once and the copies come
+// out per instantiation like everything else. The synthesized methods are ordinary AST from here on, so
+// type checking, `override`, codegen and reflection all see real methods -- an `implements` that is not
+// a lie.
+static size_t delegateErrorCount = 0;
+static void delegateError(const SourceLocation& loc, const std::string& message) {
+    ++delegateErrorCount;
+    monoError(loc, message);
+}
+
+namespace {
+
+// Walk the whole supertype closure -- superclass chain AND interfaces -- splitting what it declares in
+// two: the ABSTRACT methods, which are obligations, and the names that already have a body somewhere,
+// which are answered and must not be forwarded over.
+//
+// Both directions matter and neither alone is enough. Interfaces are the obvious source of obligations,
+// but the stdlib's own case arrives the other way: `IteratorStream extends Stream<T>`, and `Stream` is
+// an abstract class that implements `Iterator<T>`. Restricting delegation to `implements` would have
+// missed the very sites that motivated the keyword.
+void collectObligations(const std::string& typeName,
+                        const std::map<std::string, ast::ClassDecl*>& index,
+                        std::vector<const ast::MethodDecl*>& owed, std::set<std::string>& answered,
+                        std::set<std::string>& seenTypes) {
+    if (!seenTypes.insert(typeName).second) return;
+    auto it = index.find(typeName);
+    if (it == index.end()) return;
+    const ast::ClassDecl& c = *it->second;
+    for (const ast::MemberPtr& m : c.members) {
+        const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
+        if (md == nullptr || md->isStatic) continue;
+        if (md->name == c.name || (!md->name.empty() && md->name[0] == '~')) continue;
+        if (md->isAbstract) owed.push_back(md);
+        else answered.insert(md->name);
+    }
+    if (!c.superclass.empty()) collectObligations(c.superclass, index, owed, answered, seenTypes);
+    for (const std::string& i : c.interfaces) collectObligations(i, index, owed, answered, seenTypes);
+}
+
+// Can `typeName` answer a message called `name`? An ABSTRACT declaration counts: a delegate typed as an
+// interface is the ordinary case, and the object behind it is the one that will answer.
+bool typeAnswers(const std::string& typeName, const std::string& name,
+                 const std::map<std::string, ast::ClassDecl*>& index, std::set<std::string>& seen) {
+    if (!seen.insert(typeName).second) return false;
+    auto it = index.find(typeName);
+    if (it == index.end()) return false;
+    const ast::ClassDecl& c = *it->second;
+    for (const ast::MemberPtr& m : c.members)
+        if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()))
+            if (md->name == name && !md->isStatic) return true;
+    if (!c.superclass.empty() && typeAnswers(c.superclass, name, index, seen)) return true;
+    for (const std::string& i : c.interfaces)
+        if (typeAnswers(i, name, index, seen)) return true;
+    return false;
+}
+
+// `return this.<field>.<method>(<params>);` -- or the statement plus a bare `return;` when void.
+ast::MemberPtr makeForwarder(const ast::FieldDecl& f, const ast::MethodDecl& owed) {
+    auto fwd = std::make_unique<ast::MethodDecl>();
+    // The diagnostic location is the DELEGATE FIELD, not the interface. If this method is wrong -- a
+    // clash, a type that does not line up -- the line the author can act on is the one that said
+    // "forward my interface here", and there is no other line to point at: they never wrote this method.
+    fwd->loc = f.loc;
+    fwd->visibility = "public";
+    fwd->isOverride = true;
+    fwd->name = owed.name;
+    fwd->params = owed.params;
+    fwd->returnType = owed.returnType;
+    fwd->throwsTypes = owed.throwsTypes;  // the interface's clause, which the delegate may not widen
+
+    auto self = std::make_unique<ast::IdentifierExpr>();
+    self->name = "this";
+    self->loc = f.loc;
+    auto target = std::make_unique<ast::MemberExpr>();
+    target->object = std::move(self);
+    target->member = f.name;
+    target->loc = f.loc;
+    auto callee = std::make_unique<ast::MemberExpr>();
+    callee->object = std::move(target);
+    callee->member = owed.name;
+    callee->loc = f.loc;
+    auto call = std::make_unique<ast::CallExpr>();
+    call->callee = std::move(callee);
+    call->loc = f.loc;
+    for (const ast::Param& p : owed.params) {
+        auto a = std::make_unique<ast::IdentifierExpr>();
+        a->name = p.name;
+        a->loc = f.loc;
+        call->args.push_back(std::move(a));
+        call->argNames.emplace_back();  // positional
+    }
+
+    fwd->body.loc = f.loc;
+    if (owed.returnType.name == "void" && !owed.returnType.isPointer && !owed.returnType.isArray) {
+        auto es = std::make_unique<ast::ExprStmt>();
+        es->expr = std::move(call);
+        es->loc = f.loc;
+        fwd->body.statements.push_back(std::move(es));
+        auto rs = std::make_unique<ast::ReturnStmt>();
+        rs->loc = f.loc;
+        fwd->body.statements.push_back(std::move(rs));
+    } else {
+        auto rs = std::make_unique<ast::ReturnStmt>();
+        rs->value = std::move(call);
+        rs->loc = f.loc;
+        fwd->body.statements.push_back(std::move(rs));
+    }
+    return fwd;
+}
+
+}  // namespace
+
+bool expandDelegates(ast::Program& program) {
+    bool ok = true;
+    std::map<std::string, ast::ClassDecl*> index;
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes) index[c.name] = &c;
+
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& c : ns.classes) {
+                std::vector<const ast::FieldDecl*> delegates;
+                bool classHasPersistent = false;
+                std::set<std::string> defined;
+                for (const ast::MemberPtr& m : c.members) {
+                    if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get())) {
+                        defined.insert(md->name);
+                        continue;
+                    }
+                    const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get());
+                    if (f == nullptr) continue;
+                    if (f->isPersistent) classHasPersistent = true;
+                    if (f->isDelegate) delegates.push_back(f);
+                }
+                if (delegates.empty()) continue;
+
+                for (const ast::FieldDecl* f : delegates) {
+                    const size_t before = delegateErrorCount;
+                    if (f->isStatic)
+                        delegateError(f->loc, "a `delegate` field cannot be static: forwarding a message "
+                                              "needs a receiver, and a static field has no object to be "
+                                              "the receiver of");
+                    // A delegate that may be absent makes EVERY forwarded method conditionally broken,
+                    // and the failure surfaces at the call, far from the field that caused it. Both
+                    // spellings of "may be absent" are rejected for the same reason.
+                    if (f->type.isNullable)
+                        delegateError(f->loc, "a `delegate` field cannot be `nullable`: every method "
+                                              "forwarded to it would break when it is null, and the "
+                                              "failure would surface at the call rather than here");
+                    if (f->isWeak)
+                        delegateError(f->loc, "a `delegate` field cannot be `weak`: it is auto-nulled "
+                                              "when its target dies, which silently empties every method "
+                                              "this class implements through it");
+                    // Persistence, decided with Joao: a persistent object that forwards into something
+                    // that does not come back is reattached with its whole interface dead inside, and
+                    // nothing at the failure says why. So the delegate travels with it, or it is not a
+                    // delegate.
+                    if (f->isTransient)
+                        delegateError(f->loc, "a `delegate` field cannot be `transient`: it would be "
+                                              "absent after the object is reattached, leaving every "
+                                              "method it implements with nothing to forward to");
+                    // `eternal` alone does not discharge this: it means "as long as the program", and a
+                    // persistent object is reattached in a LATER one. Only `persistent` crosses runs --
+                    // and `eternal persistent` sets both, so the no-release-needed form still passes.
+                    if (classHasPersistent && !f->isPersistent)
+                        delegateError(f->loc, "class '" + c.name + "' has a `persistent` field, so its "
+                                              "`delegate` must be `persistent` too: the object survives "
+                                              "the run and would come back forwarding into something "
+                                              "that did not");
+                    if (delegateErrorCount != before) ok = false;
+                }
+                std::vector<const ast::MethodDecl*> owed;
+                std::set<std::string> answered;
+                std::set<std::string> seenTypes;
+                if (!c.superclass.empty())
+                    collectObligations(c.superclass, index, owed, answered, seenTypes);
+                for (const std::string& iface : c.interfaces)
+                    collectObligations(iface, index, owed, answered, seenTypes);
+                if (owed.empty()) {
+                    delegateError(delegates.front()->loc,
+                                  "class '" + c.name + "' declares a `delegate` but owes no method: "
+                                  "nothing it inherits is left unanswered, so there is nothing to "
+                                  "forward");
+                    ok = false;
+                    continue;
+                }
+
+                std::vector<ast::MemberPtr> synthesized;
+                std::set<std::string> done;
+                for (const ast::MethodDecl* md : owed) {
+                    // A method the class WRITES wins. That is the whole rule: the presence of a body is
+                    // the statement of intent, so there is no list of exceptions to keep in sync.
+                    if (defined.count(md->name) != 0 || answered.count(md->name) != 0) continue;
+                    if (!done.insert(md->name).second) continue;
+                    const ast::FieldDecl* provider = nullptr;
+                    bool ambiguous = false;
+                    for (const ast::FieldDecl* f : delegates) {
+                        std::set<std::string> seen;
+                        if (!typeAnswers(f->type.name, md->name, index, seen)) continue;
+                        if (provider != nullptr) ambiguous = true;
+                        else provider = f;
+                    }
+                    if (ambiguous) {
+                        delegateError(c.loc, "method '" + md->name + "' is answered by more than one "
+                                             "`delegate` in class '" + c.name + "'; define it here to "
+                                             "say which one wins");
+                        ok = false;
+                        continue;
+                    }
+                    if (provider == nullptr) {
+                        delegateError(c.loc, "no `delegate` in class '" + c.name + "' answers method '" +
+                                             md->name + "'; either define it here or delegate to "
+                                             "something that has it");
+                        ok = false;
+                        continue;
+                    }
+                    synthesized.push_back(makeForwarder(*provider, *md));
+                }
+                for (ast::MemberPtr& m : synthesized) c.members.push_back(std::move(m));
+            }
+    return ok;
+}
+
 }  // namespace ldp3
