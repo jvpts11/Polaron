@@ -3317,10 +3317,16 @@ static bool evalConstDouble(const ast::Expr& e, double& out,
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* sa = dynamic_cast<const ast::StaticAssertStmt*>(&stmt)) {
         long long v;
-        if (!evalConstInt(*sa->condition, v, &constInts_, &comptimeMethods_, &constDoubles_))
-            error("static_assert requires a constant expression", sa->loc);
-        else if (v == 0)
+        if (!evalConstInt(*sa->condition, v, &constInts_, &comptimeMethods_, &constDoubles_)) {
+            // A condition over `sizeof` needs the target's real layout, which only the codegen has
+            // (spec 28.2, issue #7). Deferring it there is what lets a struct carry a byte budget;
+            // folding a size from a layout guessed here would assert something the program does not
+            // actually have. Every other non-constant condition is still rejected at once.
+            if (!comptime::mentionsSizeof(*sa->condition))
+                error("static_assert requires a constant expression", sa->loc);
+        } else if (v == 0) {
             error("static assertion failed: " + sa->message, sa->loc);
+        }
         return;
     }
     if (dynamic_cast<const ast::BreakStmt*>(&stmt) != nullptr ||
@@ -5519,8 +5525,27 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                   "freestanding program from outside -- boot it and assert on what it emits",
                   call->loc);
         // sizeof(Type) / sizeof(expr) (spec, issue #7): byte size as an int. The argument may name a
-        // type, so it is not type-checked as an ordinary value here.
-        if (name == "sizeof" && call->args.size() == 1) return "int";
+        // TYPE, which has no value to type-check -- but when it names no type it is a VALUE, and a
+        // value must be checked like one. Skipping both is how `sizeof(NoSuchType)` used to compile
+        // to a guessed 4 instead of saying the name means nothing.
+        //
+        // The test below is deliberately permissive: the codegen holds the real layout and is the
+        // authority on what a type is, so anything arguable passes here and is decided there. Only a
+        // bare name that plainly matches nothing falls through to the value check.
+        if (name == "sizeof" && call->args.size() == 1) {
+            const std::string spelled = comptime::typeNameSpelled(*call->args[0]);
+            const std::string bare = baseType(spelled);
+            const bool looksLikeAType =
+                !spelled.empty() &&
+                (spelled.find('<') != std::string::npos || spelled.find('.') != std::string::npos ||
+                 isNumeric(bare) || bare == "boolean" || bare == "char" || bare == "void" ||
+                 bare == "String" || bare == "string" || bare == "Object" || bare == "Decimal" ||
+                 bare == "vec2" || bare == "vec3" || bare == "vec4" || bare == "mat4" ||
+                 enums_.count(bare) > 0 || catalogs_.count(bare) > 0 || newtypes_.count(bare) > 0 ||
+                 classes_.count(bare) > 0 || lookupClass(bare) != nullptr);
+            if (!looksLikeAType) typeOf(*call->args[0]);
+            return "int";
+        }
         // embed("path") (spec 36): the file's bytes, materialized into the image at compile time.
         if (name == "embed" && call->args.size() == 1) {
             if (dynamic_cast<const ast::StringLiteralExpr*>(call->args[0].get()) == nullptr)

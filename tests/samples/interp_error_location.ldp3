@@ -1,0 +1,19 @@
+import System.IO.Console;
+program InterpErrorLocation;
+
+// A parse error INSIDE a string interpolation must be reported where the fault is. The embedded
+// expression is lexed and parsed on its own, so its diagnostics used to count from that
+// substring's line 1 -- and landed on the `import` at the top of the file, which is innocent.
+//
+// The fault below is on line 14, at the `+`, and the diagnostic must say so.
+
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"broken = {1 + }");
+                return;
+            }
+        }
+    }
+}

@@ -3333,6 +3333,15 @@ ast::ExprPtr Parser::parseInterpolation(const std::string& raw, SourceLocation l
                 }
             }
 
+            // Where this embedded expression actually sits in the file. The sub-parser below lexes
+            // `exprSrc` on its own, so every location it reports counts from the start of THAT
+            // string -- line 1, column 1. Left alone, the first error a reader sees points at line 1
+            // of the file, which is innocent code and the worst possible place to be wrong.
+            // `loc` is the '$'; the content starts two characters later, past `$"`. An interpolated
+            // string never spans lines (the lexer stops at a newline), so the line is `loc`'s.
+            SourceLocation exprLoc = loc;
+            exprLoc.col = loc.col + 2 + static_cast<int>(i + 1);  // i+1 == just past the '{'
+
             Lexer sublex(exprSrc, file_);
             Parser sub(sublex.tokenize(), file_);
             ast::ExprPtr parsed;
@@ -3341,9 +3350,21 @@ ast::ExprPtr Parser::parseInterpolation(const std::string& raw, SourceLocation l
             } catch (const ParseError&) {
                 // recorded below via sub.errors()
             }
-            for (const ParseError& se : sub.errors()) errors_.push_back(se);
+            bool subReported = false;
+            for (ParseError se : sub.errors()) {
+                // The sub-parser counted from its own line 1, column 1. Its column is an offset into
+                // the embedded expression, so it lands exactly where the fault is once rebased.
+                se.loc.col = exprLoc.col + se.loc.col - 1;
+                se.loc.line = exprLoc.line;
+                se.loc.file = exprLoc.file;
+                errors_.push_back(std::move(se));
+                subReported = true;
+            }
             if (parsed == nullptr) {
-                fail("invalid expression in interpolation: {" + exprSrc + "}", loc);
+                // The sub-parser's own message is the precise one; this generic one only speaks when
+                // it said nothing, so a single fault is not reported twice.
+                if (subReported) throw errors_.back();
+                fail("invalid expression in interpolation: {" + exprSrc + "}", exprLoc);
             }
             e->exprs.push_back(std::move(parsed));
             e->formats.push_back(std::move(format));
@@ -3566,7 +3587,21 @@ ast::ExprPtr Parser::parsePostfixOps(ast::ExprPtr base) {
             auto call = std::make_unique<ast::CallExpr>();
             call->loc = current().loc;
             advance();  // '('
-            parseCallArgs(*call);
+            // sizeof's argument names a TYPE (spec issue #7), and a primitive type is a keyword, not
+            // an identifier -- so `sizeof(float)` has no expression to parse and used to be a syntax
+            // error. Read the type here and carry its canonical spelling as a name; a class or vector
+            // name is already an identifier and takes the ordinary path below.
+            const auto* calleeId = dynamic_cast<const ast::IdentifierExpr*>(expr.get());
+            if (calleeId != nullptr && calleeId->name == "sizeof" && isTypeKeyword(current().kind)) {
+                auto named = std::make_unique<ast::IdentifierExpr>();
+                named->loc = current().loc;
+                ast::TypeRef t = parseTypeRef();
+                named->name = ast::canonicalType(t);
+                call->args.push_back(std::move(named));
+                call->argNames.emplace_back();
+            } else {
+                parseCallArgs(*call);
+            }
             expect(TokenKind::RParen, "')'");
             call->callee = std::move(expr);
             expr = std::move(call);
