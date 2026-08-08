@@ -48,7 +48,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "ldp3c 1.0.19";
+constexpr std::string_view kVersion = "ldp3c 1.0.20";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -10234,6 +10234,10 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
 #ifdef LDP3_WITH_LLVM
     ldp3::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
     codegen.setPatchedClasses(sema.patchedClasses());  // spec 32.8: they need a writable vtable
+    // The same source map the rich diagnostics read, so a contract that fails at RUNTIME can quote
+    // the clause the way an error quotes the offending line. The two now say the same kind of thing
+    // in the same shape, which is the point: a contract is a diagnostic that happens later.
+    codegen.setSourceLookup(sourceLineAt);
     // Always set a triple (and, through it, the data layout) -- with --target for freestanding/cross, or
     // the host's otherwise -- so ABI alignments are correct and hot loops vectorize. Without this the
     // module is layout-less and i64 loads emit `align 4`.

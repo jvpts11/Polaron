@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.19")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.20")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.19")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.20")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -4025,6 +4025,41 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=balance = 120"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # WHAT A VIOLATED CONTRACT SAYS. It printed `contract violated: requires` and nothing else --
+        # no clause, no place, no method, no values -- which is a bisection rather than a diagnostic.
+        # Four separate assertions, because each part went missing for its own reason and each can
+        # regress on its own: the clause text needs the source lookup wired into codegen, the method
+        # name comes off the LLVM function, the location off the clause's own SourceLocation, and the
+        # values need the comparison to be re-read in the failure path.
+        add_test(NAME codegen_contract_names_the_clause COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/contract_report.ldp3"
+            "-DPANIC=requires this.seats >= wanted"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+        add_test(NAME codegen_contract_names_the_method COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/contract_report.ldp3"
+            "-DPANIC=in Gate.admit"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+        add_test(NAME codegen_contract_names_the_place COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/contract_report.ldp3"
+            "-DPANIC=contract_report.ldp3:"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+        add_test(NAME codegen_contract_shows_the_values COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/contract_report.ldp3"
+            "-DPANIC=left = 4, right = 9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
 
         # generic Result<T, E> (two type params + inheritance + virtual).
         add_test(NAME codegen_result_runs COMMAND "${CMAKE_COMMAND}"
