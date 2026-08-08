@@ -148,11 +148,24 @@ LDP3_RT_API void __ldp3_panic(const char* msg) {
 // message in the compiler would put a format specifier inside a string the programmer's own clause
 // text is pasted into, and a clause containing a stray `%` would then be read as a directive -- the
 // same injection the compiler already refuses for literals passed to printf.
-LDP3_RT_API void __ldp3_contract_fail(const char* text, int hasValues, long long l, long long r) {
-    fputs(text, stderr);
-    if (hasValues != 0) fprintf(stderr, "   |  left = %lld, right = %lld\n", l, r);
+// ONE SHAPE FOR EVERY WAY A RUN CAN STOP.
+//
+// A contract that failed, an index off the end, a divide by zero: they are the same event from the
+// programmer's side -- the run stopped for a reason it now has to be told. So they print the same
+// way, and there is one function that does it rather than a message style per guard.
+//
+// The two numbers are the part that matters most and the part every one of these used to omit. They
+// arrive as arguments with their own labels rather than composed into a format string: the headline
+// carries the programmer's own clause or expression text, and a stray `%` in that text would be read
+// as a directive -- the same injection the compiler already refuses for literals handed to printf.
+// A null label means this failure has no numbers to show.
+LDP3_RT_API void __ldp3_fail(const char* headline, const char* aLabel, long long a,
+                             const char* bLabel, long long b, int code) {
+    fputs(headline, stderr);
+    if (aLabel != NULL && bLabel != NULL)
+        fprintf(stderr, "   |  %s = %lld, %s = %lld\n", aLabel, a, bLabel, b);
     fflush(stderr);
-    exit(1);
+    exit(code);
 }
 
 // The region layout and the size-class scheme it shares with the heap pool. THE one definition: the
