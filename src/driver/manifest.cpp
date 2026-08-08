@@ -124,11 +124,22 @@ Manifest parseManifestText(const std::string& text) {
     return m;
 }
 
-// Walk up from `start` looking for a project manifest: a .toml whose first non-blank line is
+// Walk up from `start` looking for a project manifest: a .toml whose first meaningful line is
 // `[ldp3_project]`. Every filesystem query takes an error_code -- the throwing overloads abort the
 // process on an unreadable entry (a broken link or a permission-denied directory, both common under
 // %TEMP% and network drives), which would kill the driver with no message at all.
 // `sawToml` reports a .toml that was found but lacked the header, so the caller can say so.
+//
+// "Meaningful" skips blank lines AND `#` comments, because a manifest is TOML and TOML has comments.
+// The sniff used to break on the first non-blank line, so a manifest whose first line was a comment
+// was rejected by the FINDER even though parseManifestText below reads it perfectly -- two different
+// answers to "is this a manifest" in the same file.
+//
+// And a file named exactly `ldp3.toml` that fails the sniff STOPS the walk. Climbing past it was the
+// worse half of the same bug: `ldp3 build` in a subproject silently built the PARENT's project and
+// exited 0, so the only evidence of the mistake was the name of the file it wrote. Naming a file
+// ldp3.toml is a claim; a claim that does not hold up is an error, not a reason to go look elsewhere.
+// Any OTHER .toml (a Cargo.toml, some tool's config) is not a claim, so the walk passes it in silence.
 std::optional<std::filesystem::path> findManifest(const std::filesystem::path& start,
                                                   std::filesystem::path* sawToml) {
     namespace fs = std::filesystem;
@@ -146,12 +157,18 @@ std::optional<std::filesystem::path> findManifest(const std::filesystem::path& s
                 if (entry.path().extension() != ".toml") continue;
                 std::ifstream f(entry.path());
                 std::string line;
+                bool header = false;
                 while (std::getline(f, line)) {
-                    const std::string t = trim(line);
-                    if (t.empty()) continue;
-                    if (t == "[ldp3_project]") return entry.path();
-                    if (sawToml != nullptr && sawToml->empty()) *sawToml = entry.path();
-                    break;  // first non-blank line only
+                    const std::string t = stripComment(line);
+                    if (t.empty()) continue;          // blank, or a whole-line comment
+                    header = (t == "[ldp3_project]");
+                    break;                            // first meaningful line only
+                }
+                if (header) return entry.path();
+                // Named ldp3.toml but not one: say so here rather than building someone else's project.
+                if (entry.path().filename() == "ldp3.toml") {
+                    if (sawToml != nullptr) *sawToml = entry.path();
+                    return std::nullopt;
                 }
             }
         }

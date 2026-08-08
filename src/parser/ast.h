@@ -249,6 +249,32 @@ inline bool isUnsignedIntName(const std::string& t) {
     return t.rfind("uint", 0) == 0 || t == "address" || t == "ubyte" || t == "ushort" || t == "ulong";
 }
 
+// What a field contributes to a type's IDENTITY -- the generated equalsKey/hash/compareTo, and the
+// serialised key of a keyed persistent (docs/design/persistent-keys.md). One definition, called by the
+// synthesis pass and by codegen, for the reason the predicate above exists: two copies of "does this
+// field count?" would eventually disagree, and here they would disagree about where state lives.
+//
+// Excluded on purpose: a pointer, array, reference or nullable field has no structural value to compare,
+// and a class or enum reference is an identity of its own rather than part of this one. A field left out
+// is warned about at the declaration, never silently dropped.
+enum class KeyFieldKind {
+    None,    // not part of the identity
+    Scalar,  // fixed-width: integers, boolean, char, floats -- compared and serialised as their bytes
+    Text,    // String: variable-width, serialised as a length prefix then the contents
+    Nested,  // a struct/record of the above: recurse in declaration order
+};
+inline KeyFieldKind keyFieldKind(const TypeRef& t, const std::set<std::string>& valueTypeNames) {
+    if (t.isArray || t.isPointer || t.isRef || t.isNullable) return KeyFieldKind::None;
+    if (t.name == "String") return KeyFieldKind::Text;
+    if (valueTypeNames.count(t.name) > 0) return KeyFieldKind::Nested;
+    static const std::set<std::string> scalars = {
+        "byte", "ubyte", "short", "ushort", "int", "uint", "long", "ulong", "address",
+        "smallfloat", "float", "double", "quadruple", "char", "boolean",
+        "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+        "float32", "float64", "usize", "isize"};
+    return scalars.count(t.name) > 0 ? KeyFieldKind::Scalar : KeyFieldKind::None;
+}
+
 // True when an expression is built ONLY from integer literals and arithmetic on them -- a constant whose
 // type its context is free to choose, so mixing it with any integer type is safe.
 //
@@ -378,6 +404,11 @@ struct NewArrayExpr : Expr {
     std::string elementType;  // e.g. "int", "char"
     ExprPtr size;
     std::string location;  // "stack" or "heap" (arrays default to heap)
+    // `in region R`, exactly as NewExpr has it. A region holds ANYTHING that passes its accepts/rejects
+    // (spec 17); an array was excluded only because this field did not exist -- and the consequence was
+    // that a program wanting its buffers region-owned had to hand-roll an arena beside the region, which
+    // is the precise thing regions exist to make unnecessary. Empty means the ordinary heap.
+    std::string region;
     void dump(std::string& out, int indent) const override;
 };
 
@@ -482,8 +513,9 @@ struct DeleteStmt : Stmt {
 // non-eternal-persistent release obligation (spec 18.15).
 struct ReleaseStmt : Stmt {
     std::string region;       // set for `release region R`
-    bool isPersistent = false;  // set for `release [persistent|eternal] <expr>`
+    bool isPersistent = false;  // set for `release <expr>` (the `persistent`/`eternal` word is optional)
     ExprPtr target;           // the persistent lvalue (obj.field), when isPersistent
+    bool allKeys = false;     // `release C.field all` -- every keyed entry, not just this object's
     void dump(std::string& out, int indent) const override;
 };
 
@@ -916,6 +948,11 @@ struct FieldDecl : MemberDecl {
     bool isVolatile = false;    // spec 37.5: loads/stores are never optimized away
     bool isLazy = false;        // spec 28.4: a class-typed field initialized on first access
     bool isExternal = false;    // spec 37.1: an association, not owned; cascade does not follow it
+    // `delegate T f` -- this class satisfies its interfaces BY FORWARDING to this field. Every method an
+    // interface declares and the class does not define is synthesized as `return this.f.m(args);`.
+    // Composition instead of inheritance, without the boilerplate that is the real reason nobody chooses
+    // composition: doing it by hand means writing N methods that say nothing but the forwarding itself.
+    bool isDelegate = false;
     bool isMovable = false;     // spec 19.9: `movable` field -- movable separately (partitionable class)
     bool isUnique = false;      // spec 19.9: `unique` field -- single live reference, movable separately
     bool isWeak = false;        // `weak T*` field -- non-owning; auto-nulled when the pointee dies (intrusive)

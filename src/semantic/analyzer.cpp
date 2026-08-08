@@ -1,5 +1,6 @@
 #include "semantic/analyzer.h"
 
+#include "semantic/asmcheck.h"
 #include "semantic/comptime.h"
 
 #include <algorithm>
@@ -98,6 +99,50 @@ unsigned intBits(const std::string& t) {
     return 32;
 }
 bool isNumeric(const std::string& t) { return isIntName(t) || isFloatType(t); }
+
+// Everything a bit field must be, checked where it is declared (spec 11.1).
+//
+// A bit field is not a narrower field -- it is a field with NO STORAGE OF ITS OWN, sharing a unit with
+// the fields declared beside it. That is what makes it able to describe a hardware register or a wire
+// format, and it is also what makes every one of these rules load-bearing rather than tidiness: a
+// declaration the compiler cannot lay out unambiguously becomes a struct whose bits are somewhere
+// other than where its author reads them, which is a bug no test of the program's logic can find.
+void checkBitField(const ast::ClassDecl& cls, const ast::FieldDecl& f,
+                   const std::function<void(const std::string&, const SourceLocation&)>& error) {
+    if (f.bitWidth <= 0) {
+        if (f.bitWidth == 0) return;  // no `: n` at all
+        error("bit field '" + f.name + "' must have a width of at least 1", f.loc);
+        return;
+    }
+    const std::string t = ast::canonicalType(f.type);
+    if (!isIntName(t) || t == "address") {
+        error("bit field '" + f.name + "' has type '" + t + "'; only integer types can be packed into "
+              "bits, because a bit field is a range of bits inside a shared unit rather than a value "
+              "with its own storage", f.loc);
+        return;
+    }
+    if (static_cast<unsigned>(f.bitWidth) > intBits(t)) {
+        error("bit field '" + f.name + "' is declared " + std::to_string(f.bitWidth) + " bits wide but "
+              "its type '" + t + "' holds only " + std::to_string(intBits(t)) + "; widen the type or "
+              "narrow the field", f.loc);
+        return;
+    }
+    if (f.isStatic)
+        error("bit field '" + f.name + "' cannot be static: a static field has one storage location of "
+              "its own, which is the opposite of sharing a unit with its neighbours", f.loc);
+    if (f.isPersistent)
+        error("bit field '" + f.name + "' cannot be persistent: a persistent field is stored "
+              "individually outside the object, so it has no unit to be packed into", f.loc);
+    if (f.isWeak || f.isUnique || f.isMovable)
+        error("bit field '" + f.name + "' cannot be weak, unique or movable: those describe ownership "
+              "of a referenced object, and a bit field holds bits", f.loc);
+    if (f.isLazy)
+        error("bit field '" + f.name + "' cannot be lazy: a lazy field uses its own null value to mean "
+              "'not yet computed', and a range of bits has no spare value to spend on that", f.loc);
+    if (cls.isUnion)
+        error("bit field '" + f.name + "' cannot be declared in a union: every union member starts at "
+              "offset 0, so there is no run of neighbours for it to pack with", f.loc);
+}
 
 // True if `init` is an integer literal (optionally negated) whose value fits the integer type
 // `target`. A compile-time literal coerces to a narrower type when it fits, so `byte b = 5;` and
@@ -866,6 +911,74 @@ bool SemanticAnalyzer::blockAlwaysExits(const ast::Block& b) {
     return false;
 }
 
+// True when every path through this block RETURNS (or throws) -- deliberately not `blockAlwaysExits`,
+// which answers a different question. That one counts `break` and `continue` as leaving, which is right
+// for narrowing (the rest of that block is unreachable) and wrong here: a `break` carries on inside the
+// method and still has to reach a `return`.
+//
+// Conservative by construction. A shape it does not recognise answers false, which costs a missed
+// diagnostic; answering true where a path really does fall through would let the original bug back in,
+// and answering false where the code is fine would break a build that was correct.
+bool SemanticAnalyzer::alwaysReturns(const ast::Block& b) {
+    for (const auto& st : b.statements) {
+        const ast::Stmt* s = st.get();
+        if (dynamic_cast<const ast::ReturnStmt*>(s) != nullptr) return true;
+        if (dynamic_cast<const ast::ThrowStmt*>(s) != nullptr) return true;
+        if (const auto* iff = dynamic_cast<const ast::IfStmt*>(s))
+            if (iff->elseBlock != nullptr && alwaysReturns(iff->thenBlock) &&
+                alwaysReturns(*iff->elseBlock))
+                return true;
+        // `while (true)` with no way out is a method that ends by never ending -- the shape a dispatch
+        // loop, a scheduler and a kernel's idle path all have.
+        if (const auto* w = dynamic_cast<const ast::WhileStmt*>(s))
+            if (const auto* c = dynamic_cast<const ast::BoolLiteralExpr*>(w->cond.get());
+                c != nullptr && c->value && !blockHasBreak(w->body))
+                return true;
+        // try/catch: the value has to come out of the body AND out of every catch, or out of a finally
+        // that returns regardless.
+        if (const auto* tr = dynamic_cast<const ast::TryStmt*>(s)) {
+            if (tr->finallyBlock != nullptr && alwaysReturns(*tr->finallyBlock)) return true;
+            bool all = alwaysReturns(tr->body);
+            for (const auto& c : tr->catches) all = all && alwaysReturns(c.body);
+            if (all) return true;
+        }
+        // switch/match: only when there is a default, since without one a subject that matches nothing
+        // falls straight through.
+        if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(s)) {
+            if (sw->defaultBody != nullptr) {
+                bool all = alwaysReturns(*sw->defaultBody);
+                for (const auto& c : sw->cases) all = all && alwaysReturns(c.body);
+                if (all) return true;
+            }
+        }
+        if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(s)) {
+            bool all = ms->defaultBody != nullptr ? alwaysReturns(*ms->defaultBody) : true;
+            for (const auto& c : ms->cases) all = all && alwaysReturns(c.body);
+            if (all && !ms->cases.empty()) return true;   // a match over a sealed type is exhaustive
+        }
+    }
+    return false;
+}
+
+// Whether a block contains a `break` that would leave a loop -- used only to tell a `while (true)` that
+// never ends from one that does. Nested loops own their own breaks, so those do not count.
+bool SemanticAnalyzer::blockHasBreak(const ast::Block& b) {
+    for (const auto& st : b.statements) {
+        const ast::Stmt* s = st.get();
+        if (dynamic_cast<const ast::BreakStmt*>(s) != nullptr) return true;
+        if (const auto* iff = dynamic_cast<const ast::IfStmt*>(s)) {
+            if (blockHasBreak(iff->thenBlock)) return true;
+            if (iff->elseBlock != nullptr && blockHasBreak(*iff->elseBlock)) return true;
+        }
+        if (const auto* tr = dynamic_cast<const ast::TryStmt*>(s)) {
+            if (blockHasBreak(tr->body)) return true;
+            for (const auto& c : tr->catches) if (blockHasBreak(c.body)) return true;
+            if (tr->finallyBlock != nullptr && blockHasBreak(*tr->finallyBlock)) return true;
+        }
+    }
+    return false;
+}
+
 // Read a null test and report what it PROVES, and for which arm. Only the shapes whose meaning is
 // unambiguous are recognised -- `x != null` and `x == null` against a plain name. Anything cleverer
 // (`a != null && b != null`, a call that returns a nullable) proves nothing here, which costs a cast at
@@ -929,6 +1042,13 @@ bool SemanticAnalyzer::isValidMainSignature(const ast::MethodDecl& method) const
 
 // ---- Pass 1: collect every class's fields, methods and constructor. ----
 void SemanticAnalyzer::registerClasses(const ast::Program& program) {
+    // Value types first: a field can name a struct/record declared further down, and `keyFieldKind` has
+    // to tell "a nested value" from "a reference to another object" to answer at all.
+    valueTypeNames_.clear();
+    for (const ast::Bundle& b : program.bundles)
+        for (const ast::Namespace& n : b.namespaces)
+            for (const ast::ClassDecl& c : n.classes)
+                if ((c.isStruct || c.isRecord) && !c.isUnion) valueTypeNames_.insert(c.name);
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ClassDecl& cls : ns.classes) {
@@ -1003,7 +1123,11 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         // A movable/unique field is reassignable (it is moved out and reassigned).
                         info.fields[f->name] =
                             FieldInfo{typeRefStr(f->type), f->isMutable || f->isMovable || f->isUnique,
-                                      f->isStatic, f->isMovable, f->isUnique};
+                                      f->isStatic, f->isMovable, f->isUnique, f->bitWidth};
+                        checkBitField(cls, *f,
+                                      [this](const std::string& m, const SourceLocation& l) {
+                                          error(m, l);
+                                      });
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         // LDP3 has no method overloading -- a name is unique within a class. A silent
                         // duplicate (last-wins in this map) makes codegen emit two same-named functions;
@@ -1052,6 +1176,43 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) != nullptr) {
                         info.hasDestructor = true;
                     }
+                }
+                // A class can want two incompatible orders at once, and until now it got one of them in
+                // silence. A PARTIAL constructor (spec 18.9) takes an omitted parameter's value FROM the
+                // persistent block, so the block must be attached BEFORE the constructor runs. An
+                // identity key is made of the class's value fields, which the constructor is what fills
+                // in -- so it can only be known AFTER. Both are legitimate; they cannot both be honoured.
+                //
+                // The partial constructor wins, because it is the one that would otherwise break. Say so,
+                // rather than letting a class that looks keyed quietly not be.
+                if (!bundle.isPrelude) {
+                    std::vector<std::string> persistNames;
+                    bool hasKeyField = false, partialCapable = false;
+                    for (const ast::MemberPtr& m : cls.members)
+                        if (const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get());
+                            f != nullptr && !f->isStatic) {
+                            if (f->isPersistent) persistNames.push_back(f->name);
+                            else if (ast::keyFieldKind(f->type, valueTypeNames_) !=
+                                     ast::KeyFieldKind::None)
+                                hasKeyField = true;
+                        }
+                    if (!persistNames.empty() && hasKeyField)
+                        for (const ast::MemberPtr& m : cls.members)
+                            if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(m.get())) {
+                                for (const ast::Param& p : c->params)
+                                    if (std::find(persistNames.begin(), persistNames.end(), p.name) !=
+                                        persistNames.end())
+                                        partialCapable = true;
+                                break;
+                            }
+                    if (partialCapable)
+                        warn("'" + cls.name + "' has value fields that would key its persistents by "
+                             "identity, but its constructor takes a parameter named after a persistent "
+                             "field -- a partial constructor (spec 18.9), which reads that value out of "
+                             "the block before it runs. The block cannot be chosen before the identity "
+                             "exists, so this class keeps the per-binding form. Rename the parameter if "
+                             "you wanted the persistents keyed by identity instead",
+                             cls.loc);
                 }
                 classes_[cls.name] = std::move(info);
                 typeNamespace_[cls.name] = ns.name;
@@ -1889,15 +2050,52 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                                 inTestMethod_ = true;
                         std::vector<const ast::Expr*> contracts;
                         for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
-                        for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
+                        // Postconditions go separately: they are checked with `result` in scope, and
+                        // preconditions must not see it.
+                        std::vector<const ast::Expr*> posts;
+                        for (const auto& e : m->ensuresClauses) posts.push_back(e.get());
                         currentReturnType_ = typeRefStr(m->returnType);  // for the return null check
                         currentReturnIsMove_ = m->returnType.isMove;
                         currentGenElem_ = m->genElem;  // spec 22.6: the type each `yield` must produce
                         currentThrows_.clear();
                         for (const auto& t : m->throwsTypes)
                             currentThrows_.push_back(baseType(typeRefStr(t)));
+                        const std::string retT = typeRefStr(m->returnType);
+                        // `naked` changes what an asm body is ALLOWED to do, so the asm checker has to
+                        // know. In an ordinary method the block sits inside compiler-generated code and
+                        // every register it destroys must be declared, or the allocator's live values
+                        // are corrupted. A naked method has no such code -- the body IS the method --
+                        // so the same write is not a lie, and reporting it would reject every boot stub
+                        // ever written.
+                        inNakedFn_ = m->isNaked;
                         analyzeMethodBody(m->body, m->params,
-                                          m->isStatic ? std::string() : cls.name, false, contracts);
+                                          m->isStatic ? std::string() : cls.name, false, contracts,
+                                          posts, retT == "void" ? std::string() : retT);
+                        inNakedFn_ = false;
+                        // A non-void method that can reach its end without returning. LDP3-0501 was
+                        // written in the catalog and had NO producer, so `returns int { if (n > 0) {
+                        // return 7; } }` compiled clean and handed the caller a 0 -- a wrong answer, in
+                        // the most ordinary shape there is. `blockAlwaysExits` is the same walker the
+                        // flow machine uses to decide that a guard clause narrows, so the two agree
+                        // about what "this path is over" means.
+                        //
+                        // Abstract/extern/async bodies are skipped: there is nothing to fall off.
+                        // A generator (`yield`) ends by running out of values, not by returning one.
+                        // An EMPTY body is also skipped, and not only for tidiness: every test that
+                        // renames a class (the stdlib-name and namespace-collision ones) reaches this
+                        // point with prelude `extern` declarations whose `isExtern` did not survive the
+                        // rewrite, so the flag alone is not enough to tell "no body" from "a body that
+                        // falls through". A declaration with nothing in it never had a path to check.
+                        if (!m->isAbstract && !m->isExtern && !m->isAsync && m->genElem.empty() &&
+                            !m->body.statements.empty() &&
+                            !typeRefStr(m->returnType).empty() && typeRefStr(m->returnType) != "void" &&
+                            !alwaysReturns(m->body))
+                            error("method '" + m->name + "' returns '" + typeRefStr(m->returnType) +
+                                      "', but a path reaches the end of its body without returning a "
+                                      "value. Falling off the end leaves the caller holding whatever "
+                                      "happened to be there -- add a `return` on that path, usually the "
+                                      "final `else` or the code after the last `if`",
+                                  m->loc);
                         currentGenElem_.clear();
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
@@ -1907,8 +2105,131 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         currentReturnType_ = "void";
                         currentReturnIsMove_ = false;
                         currentThrows_.clear();
+                        // WHICH FIELDS THIS CONSTRUCTOR OWES A VALUE. Computed from the declarations
+                        // rather than from `ClassInfo`, because the exclusions live in the AST: an
+                        // initializer at the declaration, `lazy`, `static`, `persistent`.
+                        pendingCtorFields_.clear();
+                        // A SYNTHESIZED class is not the programmer's to fix. The state class a
+                        // `generator` method compiles into is written by this compiler, and an error
+                        // pointing into it names a line nobody typed. Synthesized nodes carry an empty
+                        // location, which is the same signal used elsewhere in this file.
+                        // ...and neither is a MONOMORPHIZED one. By the time a generic reaches here it
+                        // has been copied per type argument -- `FilterStream$int` -- and the copy has
+                        // lost what the original said: a `T cached` guarded by a `hasCached` flag is
+                        // now an `int cached` with no visible reason it may be left alone, and there is
+                        // no default the constructor could write for a `T` anyway.
+                        //
+                        // STATED LIMITATION rather than a hidden one: the right place to check a
+                        // generic is its TEMPLATE, once, before substitution, and this analysis does not
+                        // run there. So a generic class's constructor is not checked at all today. The
+                        // `$` in the name is what monomorphization and synthesis both leave behind.
+                        const bool synthesized =
+                            cls.loc.file.empty() || cls.name.find('$') != std::string::npos;
+                        for (const ast::MemberPtr& fm : cls.members) {
+                            if (synthesized) break;
+                            const auto* fd = dynamic_cast<const ast::FieldDecl*>(fm.get());
+                            if (fd == nullptr) continue;
+                            // A field with a value at its declaration already has one.
+                            if (fd->init) continue;
+                            // A static field is not per-object, so a constructor is not where it gets
+                            // its value.
+                            if (fd->isStatic) continue;
+                            // `lazy` MEANS uninitialised until first read -- that is the feature, and
+                            // reporting it would make the keyword unusable.
+                            if (fd->isLazy) continue;
+                            // A persistent field is read out of its block, which the runtime fills from
+                            // the previous incarnation; assigning it in the constructor is how INITIAL
+                            // values are expressed, not a requirement (spec 18.9).
+                            if (fd->isPersistent) continue;
+                            // A field whose TYPE has a defined empty value is not uninitialised when it
+                            // is left alone -- it is that value, and the type says so. `nullable T*`
+                            // starts null and `weak T*` starts as an empty slot, both established by
+                            // codegen rather than by the constructor. Requiring `this.next = null;`
+                            // would be ceremony that says exactly what the declaration already said.
+                            //
+                            // A plain `T*` is NOT excluded, and that is the line: a non-nullable pointer
+                            // left unassigned is a dangling pointer the type system has promised is
+                            // valid, which is worse than either.
+                            if (fd->isWeak) continue;
+                            if (isNullableType(typeRefStr(fd->type))) continue;
+                            // ANY pointer field. `nullable T*` is the explicit spelling, but a plain
+                            // `T*` field null-defaults too, and the linked-list idiom -- a `next` the
+                            // constructor deliberately leaves empty -- is written that way throughout
+                            // the standard library and the tests. Demanding `this.next = null;` would be
+                            // ceremony restating the declaration, and rejecting existing correct code is
+                            // how a new check gets switched off rather than obeyed.
+                            if (!typeRefStr(fd->type).empty() && typeRefStr(fd->type).back() == '*')
+                                continue;
+                            // A field whose type is one of the class's TYPE PARAMETERS has no default
+                            // the constructor could write: there is no value of `T` to be had without
+                            // one being supplied. The prelude's `FilterStream<T>` is the shape --
+                            // a `T cached` guarded by a `hasCached` flag, correct and unassignable.
+                            // Seeing that it is guarded needs reasoning this analysis does not do, so
+                            // the type parameter is where the line goes.
+                            bool isTypeParam = false;
+                            for (const std::string& tp : cls.typeParams)
+                                if (typeRefStr(fd->type) == tp) isTypeParam = true;
+                            if (isTypeParam) continue;
+                            // A `region` field is brought into being by `itself.allocate(...)`, which is
+                            // an assignment like any other -- so regions are NOT excluded.
+                            pendingCtorFields_.push_back({fd->name, fd->loc});
+                        }
                         analyzeMethodBody(c->body, c->params, cls.name, /*inConstructor=*/true,
                                           contracts);
+                        // ...and what it left unset. The two messages are the two different mistakes,
+                        // exactly as for locals: never assigned, versus assigned on only some paths.
+                        //
+                        // Why this matters MORE for a field than for a local, which is the reason it was
+                        // worth extending the analysis across the object boundary: an uninitialised
+                        // local reads stack garbage, which is usually absurd and fails loudly. An
+                        // uninitialised field reads THE PREVIOUS OBJECT'S VALUE, because the heap block
+                        // is reused -- so the wrong value is plausible and stable. A socket in the pico
+                        // kernel inherited a dead socket's port number this way: everything downstream
+                        // worked perfectly with the wrong number, the datagram went out and the answer
+                        // came back, and it was discarded one layer above.
+                        for (const auto& [fname, floc] : pendingCtorFields_) {
+                            const FlowFacts::Init st = initStateOf("this." + fname);
+                            if (st == FlowFacts::Init::Init) continue;
+                            error(st == FlowFacts::Init::Uninit
+                                      ? "constructor of '" + cls.name + "' never assigns field '" +
+                                            fname + "'. A new object's storage is whatever was last "
+                                            "there -- for a heap object, the previous object's values -- "
+                                            "so the field does not start empty, it starts WRONG. Assign "
+                                            "it here, or give it a value at its declaration"
+                                      : "constructor of '" + cls.name + "' assigns field '" + fname +
+                                            "' on only some paths. The others leave it holding whatever "
+                                            "was in that memory before, which for a reused heap block is "
+                                            "the previous object's value. Assign it on every path, or "
+                                            "give it a default at its declaration",
+                                  floc);
+                        }
+                        pendingCtorFields_.clear();
+                        // A base whose constructor takes arguments has to be given them. Without a
+                        // `super(...)` codegen called it with `this` alone, so the arity was wrong and
+                        // the LLVM verifier caught it -- "Incorrect number of arguments passed to called
+                        // function", a message that names nothing the programmer wrote and points at no
+                        // line of theirs. Reject it here, where the omission actually is.
+                        if (!cls.superclass.empty())
+                            if (const ClassInfo* sup = lookupClass(cls.superclass);
+                                sup != nullptr && !sup->ctorParamTypes.empty()) {
+                                bool hasSuper = false;
+                                if (!c->body.statements.empty())
+                                    if (const auto* es = dynamic_cast<const ast::ExprStmt*>(
+                                            c->body.statements.front().get()))
+                                        if (const auto* call =
+                                                dynamic_cast<const ast::CallExpr*>(es->expr.get()))
+                                            if (dynamic_cast<const ast::SuperExpr*>(call->callee.get()) !=
+                                                nullptr)
+                                                hasSuper = true;
+                                if (!hasSuper)
+                                    error("'" + cls.name + "' extends '" + cls.superclass +
+                                              "', whose constructor takes " +
+                                              std::to_string(sup->ctorParamTypes.size()) +
+                                              " argument(s), so this constructor has to begin with "
+                                              "`super(...)` to supply them. Without it the base is left "
+                                              "unbuilt and its fields hold whatever was there",
+                                          c->loc);
+                            }
                     } else if (const auto* d =
                                    dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                         currentReturnType_ = "void";
@@ -2397,7 +2718,9 @@ void SemanticAnalyzer::collectMethodLabels(const ast::Block& block) {
 void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
                                          const std::vector<ast::Param>& params,
                                          const std::string& thisClass, bool inConstructor,
-                                         const std::vector<const ast::Expr*>& contracts) {
+                                         const std::vector<const ast::Expr*>& contracts,
+                                         const std::vector<const ast::Expr*>& postconditions,
+                                         const std::string& postResultType) {
     scopes_.clear();
     moved_.clear();
     // The flow facts describe THIS method's locals and mean nothing in the next one. Leaving them behind
@@ -2426,6 +2749,16 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     for (const ast::Param& p : params) {
         declareLocal(p.name, LocalVar{typeRefStr(p.type), false});  // params immutable by default
     }
+    // DEFINITE ASSIGNMENT FOR FIELDS. Seeded here so the flow machinery that already exists for locals
+    // does the work: `init_` is keyed by opaque strings, and the join at a branch merge operates on the
+    // map without caring what the keys mean -- so a field entered as `this.name` gets Uninit/Maybe/Init
+    // exactly as a local does, including the "assigned on only one path" case that is the hard one.
+    //
+    // Only in a constructor, and only for fields that have nowhere else to get a value from. See
+    // `fieldNeedsInit` for what is excluded and why.
+    if (inConstructor)
+        for (const auto& [fname, floc] : pendingCtorFields_)
+            init_["this." + fname] = FlowFacts::Init::Uninit;
     for (std::size_t i = 0; i < body.statements.size(); ++i) {
         // `super(...)` is only legal as the very first statement of a constructor.
         if (inConstructor && i != 0) {
@@ -2444,6 +2777,19 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
         const std::string t = typeOf(*clause);
         if (!t.empty() && t != "boolean")
             error("a contract clause must be boolean, got '" + t + "'", clause->loc);
+    }
+    // Postconditions, with `result` in scope. In their own scope so the binding cannot leak into the
+    // body or into a sibling method, and AFTER the preconditions so a `requires` naming `result` is
+    // still the undeclared-name error it should be -- on entry there is no result to talk about.
+    if (!postconditions.empty()) {
+        pushScope();
+        if (!postResultType.empty()) declareLocal("result", LocalVar{postResultType, false});
+        for (const ast::Expr* clause : postconditions) {
+            const std::string t = typeOf(*clause);
+            if (!t.empty() && t != "boolean")
+                error("a contract clause must be boolean, got '" + t + "'", clause->loc);
+        }
+        popScope();
     }
     popScope();
 }
@@ -2730,6 +3076,30 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     std::string n = baseType(typeName);          // see through T* / T&
     if (isArrayType(n)) n = elementOf(n);         // and through T[]
     checkBitCounted(typeName, loc);                // bit-counted names are freestanding-only
+    // ...and the gate in the other direction, which was missing these two. `String` and the test
+    // framework's `Test` resolved fine in a freestanding program and then failed at LINK, on
+    // __ldp3_str_copy / __ldp3_str_free / printf -- symbols the generated freestanding runtime
+    // (memcpy/memset/memmove/__ldp3_panic, src/driver/build.cpp) does not provide. Compiles clean, dies
+    // at link: exactly what this gate exists to prevent, and what guide/11 promises cannot happen
+    // ("you cannot accidentally reach for the managed runtime").
+    //
+    // Only user code is flagged. The prelude's own classes name String constantly, and unused prelude
+    // code is dead-stripped, so their mere presence must not break a program that never touches them --
+    // the same rule the Console gate follows.
+    if (freestanding_ && std::string(loc.file) != "<prelude>") {
+        const std::string mn = baseType(typeName);
+        if (mn == "String")
+            error("'String' is a managed object and is not available in freestanding mode (spec 36.3): "
+                  "it lowers to __ldp3_str_copy/__ldp3_str_free, which bare metal has no runtime to "
+                  "provide. Use a byte literal `b\"...\"` for fixed text, or `byte*`/`byte[]` and the raw "
+                  "Memory API for text you build",
+                  loc);
+        else if (mn == "Test")
+            error("the test framework is not available in freestanding mode (spec 36.3): `Test` reports "
+                  "through printf and builds Strings, neither of which exists bare metal. Test the "
+                  "freestanding program from outside -- boot it and assert on what it emits",
+                  loc);
+    }
     // Inside a compiler-generated monomorphized class, type references were already validated at the
     // template and the instantiation site (and may reach stdlib types like Json from ArrayList<Json>).
     if (currentClass_.find('$') != std::string::npos) return;
@@ -2766,20 +3136,33 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
 
 void SemanticAnalyzer::checkRegionAccepts(const std::string& region, const std::string& type,
                                           SourceLocation loc) {
-    auto rc = regionConstraints_.find(region);
-    if (rc == regionConstraints_.end()) return;  // no constraints recorded
-    for (const std::string& rej : rc->second.rejects) {
+    // Where the constraints live depends on where the REGION lives. A local's are in the per-method
+    // map; a field's are at class scope, because the per-method map is cleared between methods -- right
+    // for a local, which cannot outlive its declaring method, and fatal for a field, whose constraints
+    // would be wiped before the first method that allocates into it ever ran.
+    const RegionConstraints* rc = nullptr;
+    auto local = regionConstraints_.find(region);
+    if (local != regionConstraints_.end()) {
+        rc = &local->second;
+    } else if (region.rfind("this.", 0) == 0 && !currentClass_.empty()) {
+        auto fld = fieldRegionConstraints_.find(currentClass_ + "." + region.substr(5));
+        if (fld != fieldRegionConstraints_.end()) rc = &fld->second;
+    }
+    // A region that declares neither accepts nor rejects takes anything, like a plain arena -- with the
+    // difference that it still knows what it took.
+    if (rc == nullptr) return;
+
+    for (const std::string& rej : rc->rejects) {
         if (type == rej || isSubtype(type, rej)) {
             error("region '" + region + "' rejects type '" + type + "'", loc);
             return;
         }
     }
-    if (!rc->second.accepts.empty()) {
-        for (const std::string& acc : rc->second.accepts) {
-            if (type == acc || isSubtype(type, acc)) return;  // accepted
-        }
-        error("region '" + region + "' does not accept type '" + type + "'", loc);
+    if (rc->accepts.empty()) return;  // rejects-only: anything not rejected is in
+    for (const std::string& acc : rc->accepts) {
+        if (type == acc || isSubtype(type, acc)) return;
     }
+    error("region '" + region + "' does not accept type '" + type + "'", loc);
 }
 
 // The ONE place the value-ownership rules are decided, for every place a value can land.
@@ -3206,6 +3589,18 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 if (const auto* nw = dynamic_cast<const ast::NewExpr*>(assign->value.get());
                     nw != nullptr && !nw->region.empty())
                     regionOf_[path] = nw->region;
+                // A region assigned to a FIELD keeps its accepts/rejects, exactly as a local does --
+                // and they are kept at CLASS scope, because that is where the region lives. The
+                // per-method map is cleared between methods, which is right for a local (it cannot
+                // outlive its declaring method) and would erase this before the first method that
+                // allocates into it ever ran. A region is typed always; one that accepted anything
+                // because of where it happened to be stored was not a region.
+                if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(assign->value.get())) {
+                    regionConstraints_[path] = RegionConstraints{ri->accepts, ri->rejects};
+                    if (path.rfind("this.", 0) == 0 && !currentClass_.empty())
+                        fieldRegionConstraints_[currentClass_ + "." + path.substr(5)] =
+                            RegionConstraints{ri->accepts, ri->rejects};
+                }
             }
         }
         // atomic<T> assignment (spec 20.6): `counter = counter +/- n` (a lock-free atomicrmw,
@@ -3265,6 +3660,22 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             if (!ft.empty())
                 checkOwnershipAssign(ft, *assign->value, assign->loc,
                                      "field '" + mem->member + "'");
+            // `this.f = ...` inside a constructor discharges the obligation to give `f` a value. Only
+            // through `this`: assigning some OTHER object's field of the same name says nothing about
+            // ours, and matching on the name alone would silently accept a constructor that initialises
+            // its argument instead of itself.
+            // Walk down to the ROOT of the chain: `this.cap.x = x` initialises `cap`, field by field,
+            // and is the ordinary way to fill a value-struct field. Marking only on a direct
+            // `this.<name>` would report `cap` as unset in a constructor that plainly sets it -- and a
+            // check that rejects correct code gets switched off rather than obeyed.
+            if (inConstructor_) {
+                const ast::MemberExpr* root = mem;
+                while (const auto* outer = dynamic_cast<const ast::MemberExpr*>(root->object.get()))
+                    root = outer;
+                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(root->object.get());
+                    oid != nullptr && oid->name == "this")
+                    markInitialized("this." + root->member);
+            }
         }
         return;
     }
@@ -3498,11 +3909,31 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* asmS = dynamic_cast<const ast::AsmStmt*>(&stmt)) {
-        // Inline assembly (spec issue 1): the body itself is raw text, but its operands are ordinary
-        // expressions and must resolve -- so a typo in `in (v)` is a compile error, not a mystery at
-        // assembly time. An `out (...)` operand is written by the asm, so it must be an assignable lvalue.
+        // Inline assembly (spec issue 1). Its operands are ordinary expressions and must resolve -- so a
+        // typo in `in (v)` is a compile error, not a mystery at assembly time. An `out (...)` operand is
+        // written by the asm, so it must be an assignable lvalue.
         for (const ast::ExprPtr& i : asmS->inputs) typeOf(*i);
         for (const ast::ExprPtr& o : asmS->outputs) checkAssignTarget(*o, typeOf(*o), o->loc, nullptr);
+        // And now the BODY.
+        //
+        // Until this, the body went to the assembler unread -- which made `asm` the one construct in
+        // LDP3 where arbitrary code could live, and the only place a mistake was neither caught nor
+        // catchable. The block already names its architecture and dialect; that information was being
+        // collected and then thrown away. See asmcheck.h for what is checked and, as importantly, what
+        // is deliberately not.
+        semantic::AsmDeclared decl;
+        decl.arch = asmS->arch;
+        decl.dialect = asmS->dialect;
+        decl.outputCount = static_cast<int>(asmS->outputs.size());
+        decl.inputCount = static_cast<int>(asmS->inputs.size());
+        decl.clobbers = asmS->clobbers;
+        decl.inNakedFunction = inNakedFn_;
+        const semantic::AsmReport report = semantic::checkAsm(asmS->body, decl);
+        for (const semantic::AsmFinding& f : report.findings) {
+            const std::string where = " (asm line " + std::to_string(f.line) + ")";
+            if (f.severity == semantic::AsmFinding::Severity::Error) error(f.message + where, asmS->loc);
+            else warn(f.message + where, asmS->loc);
+        }
         return;
     }
     if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
@@ -3548,6 +3979,28 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             // `release [persistent|eternal] obj.field;` -- record that this persistent
             // field is released somewhere, satisfying the obligation (spec 18.15).
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(rel->target.get())) {
+                // `release C.field all;` names the CLASS, not an object -- there is no instance whose
+                // identity is meant, because the point is every identity. Resolve the receiver as a type
+                // name; typing it as an expression would report `C` as an undeclared variable.
+                if (rel->allKeys) {
+                    std::string cls;
+                    if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
+                        cls = rid->name;
+                    if (cls.empty() || lookupClass(cls) == nullptr) {
+                        error("'release ... all' names a class and one of its persistent fields "
+                              "(`release Session.hits all;`); '" +
+                                  (cls.empty() ? std::string("this receiver") : "'" + cls + "'") +
+                                  " is not a class in scope",
+                              rel->loc);
+                        return;
+                    }
+                    if (const std::string owner = persistentFieldOwner(cls, mem->member); !owner.empty())
+                        releasedPersistents_.insert(owner + "." + mem->member);
+                    else
+                        error("'" + mem->member + "' is not a persistent field of '" + cls + "'",
+                              rel->loc);
+                    return;
+                }
                 const std::string ot = baseType(typeOf(*mem->object));
                 if (const std::string owner = persistentFieldOwner(ot, mem->member); !owner.empty())
                     releasedPersistents_.insert(owner + "." + mem->member);
@@ -4027,11 +4480,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             auto savedInit = init_;
             currentReturnType_ = typeRefStr(lam->returnType);
             currentReturnIsMove_ = false;
+            // The parameter types `itself(...)` is checked against -- the lambda has no name to look
+            // its own signature up by, so the signature has to be carried here while its body runs.
+            auto savedLambdaParams = currentLambdaParams_;
+            currentLambdaParams_.clear();
+            for (const ast::Param& p : lam->params)
+                currentLambdaParams_.push_back(typeRefStr(p.type));
             pushScope();
             for (const ast::Param& p : lam->params)
                 declareLocal(p.name, LocalVar{typeRefStr(p.type), false});
             for (const auto& st : lam->body.statements) analyzeStatement(*st);
             popScope();
+            currentLambdaParams_ = std::move(savedLambdaParams);
             currentReturnType_ = savedReturn;
             currentReturnIsMove_ = savedReturnMove;
             moved_ = std::move(savedMoved);
@@ -4181,6 +4641,20 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
         const std::string t = typeOf(*un->operand);
         if (un->op == "&") {
+            // A packed bit field HAS NO ADDRESS (spec 11.1). It occupies a range of bits inside a unit
+            // it shares with its neighbours, and the smallest thing a pointer can name is a byte. The
+            // only address that could be handed back is the unit's, which would let a write through it
+            // destroy every field packed beside this one -- silently, and nowhere near the `&`.
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(un->operand.get())) {
+                const std::string owner = baseType(typeOf(*mem->object));
+                if (const FieldInfo* fi = findField(owner, mem->member);
+                    fi != nullptr && fi->bitWidth > 0)
+                    error("cannot take the address of '" + mem->member + "': it is a " +
+                          std::to_string(fi->bitWidth) + "-bit field packed into a storage unit it "
+                          "shares with the fields declared next to it, so it has no address of its "
+                          "own. Copy it into a local and take the address of that",
+                          un->loc);
+            }
             return t.empty() ? std::string() : t + "*";  // address-of: T -> T*
         }
         if (un->op == "*") {  // pointer dereference: T* -> T (peel one '*')
@@ -4469,6 +4943,21 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             const bool intToPtr = (isRefType(dst) || dstFuncptr) && isNumeric(src);
             if (!src.empty() && !srcRef && !intToPtr)
                 error("cannot cast '" + src + "' to '" + dst + "'", cst->loc);
+        } else if (enums_.count(baseType(dst)) > 0) {
+            // NUMBER -> int-style enum, the reverse of the ordinal reinterpret just above.
+            //
+            // It was missing, and the asymmetry was the tell: `cast<int>(someEnum)` has always been
+            // allowed, so an enum could be taken apart and never put back together. That is a real
+            // hole for any program that reads an enumerated field out of something -- a device
+            // register, a wire format, a file header -- because such a field always arrives as a
+            // number.
+            //
+            // CHECKED, not a reinterpret (see codegen). An unchecked version would let a program
+            // manufacture an enum value outside the declared set, which is a hole in the type system
+            // rather than a convenience -- and this language does not convert integers silently
+            // anywhere else either.
+            if (!src.empty() && !numLike(src) && enums_.count(baseType(src)) == 0)
+                error("cannot cast '" + srcRaw + "' to enum '" + dst + "'", cst->loc);
         } else {
             error("cast<" + dst + "> is not supported here", cst->loc);
         }
@@ -4481,8 +4970,47 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string ct = typeOf(*tern->cond);
         if (!ct.empty() && ct != "boolean")
             error("ternary condition must be boolean, got '" + ct + "'", tern->loc);
+        // The result type comes from BOTH arms. Reading it off `then` alone made the other arm truncate:
+        // `long r = c ? 7 : big;` took `int` from the literal, and codegen -- which had the same omission,
+        // so the two agreed -- emitted `trunc i64 %big to i32`. The assignment to `long` then looked like
+        // an ordinary widening and nothing reported anything.
         const std::string tt = typeOf(*tern->thenExpr);
-        typeOf(*tern->elseExpr);
+        const std::string et = typeOf(*tern->elseExpr);
+        if (tt.empty() || et.empty() || tt == et) return tt.empty() ? et : tt;
+        if (tt == "null" || et == "null" || isNullableType(tt) || isNullableType(et)) {
+            const std::string bt = ast::stripNullable(tt), be = ast::stripNullable(et);
+            if (bt == "null") return ast::makeNullable(be);
+            if (be == "null") return ast::makeNullable(bt);
+            return ast::makeNullable(bt);
+        }
+        if (isIntName(tt) && isIntName(et)) {
+            // Width widens silently; SIGNEDNESS must agree, the same rule the arithmetic operators use --
+            // a literal that fits the other arm adapts, exactly as it does at an assignment or a return.
+            const bool tLit = intLiteralFits(*tern->thenExpr, et);
+            const bool eLit = intLiteralFits(*tern->elseExpr, tt);
+            if (!tLit && !eLit && ast::isUnsignedIntName(tt) != ast::isUnsignedIntName(et))
+                error("the two arms of this '?:' are '" + tt + "' and '" + et +
+                          "', which differ in signedness. Widening happens on its own, but mixing signed "
+                          "and unsigned does not: the same bits mean different numbers. Convert one arm "
+                          "explicitly -- `cast<" + tt + ">(...)` on the else-arm, or `cast<" + et +
+                          ">(...)` on the then-arm -- so the result's meaning is written down",
+                      tern->loc);
+            if (tLit) return et;
+            if (eLit) return tt;
+            return intBits(tt) >= intBits(et) ? tt : et;   // the wider arm, so neither is truncated
+        }
+        if (isNumeric(tt) && isNumeric(et)) {
+            if (tt == "double" || et == "double") return "double";
+            if (tt == "float" || et == "float") return "float";
+            return tt;
+        }
+        // Classes and everything else: one arm has to be usable as the other, or the result has no type.
+        if (isSubtype(et, tt)) return tt;
+        if (isSubtype(tt, et)) return et;
+        error("the two arms of this '?:' have unrelated types '" + tt + "' and '" + et +
+                  "', so the expression has no single type. Both arms must produce the same type, or one "
+                  "that the other can stand in for -- give them a common supertype, or convert one arm",
+              tern->loc);
         return tt;
     }
     if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(&expr)) {  // a ?? b (spec 3.7)
@@ -4516,6 +5044,28 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string& op = bin->op;
         // Operator overloading: a OP b where a's class defines `operator OP` (spec 6.5).
         if (const MethodInfo* om = findMethod(baseType(lt), "operator" + op)) {
+            // The right operand is the operator's PARAMETER and was never checked against it -- so
+            // `money + other` called `operator+(Money)` with an unrelated class and read its fields
+            // through Money's layout. Type confusion, in an expression that reads like arithmetic.
+            // A call spelled `a.plus(b)` had this check all along; the symbol form skipped it.
+            if (!om->paramTypes.empty() && !rt.empty()) {
+                const std::string& pt = om->paramTypes.front();
+                // Report the name as WRITTEN. A type declared in two namespaces is rewritten to
+                // `Ns__Type` internally, and telling someone their operand does not match `A__Money`
+                // names a class they never wrote.
+                auto asWritten = [](const std::string& s) {
+                    const auto p = s.rfind("__");
+                    return p == std::string::npos ? s : s.substr(p + 2);
+                };
+                if (!pt.empty() && !isSubtype(rt, pt) && !intLiteralFits(*bin->rhs, pt))
+                    error("the right operand of '" + op + "' is '" + asWritten(rt) + "', but '" +
+                              asWritten(baseType(lt)) + "' declares `operator" + op + "(" + asWritten(pt) +
+                              ")`. An operator is an ordinary method reached through a symbol, so its "
+                              "operand has to match its parameter -- otherwise the value is read "
+                              "through the wrong type's layout. Convert it, or declare an "
+                              "`operator" + op + "(" + asWritten(rt) + ")` if this combination is meant",
+                          bin->loc);
+            }
             return om->returnType;
         }
         // SIMD vectors: element-wise + - * / ; a scalar operand broadcasts.
@@ -4761,6 +5311,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
         const std::string st = typeOf(*na->size);
         if (!st.empty() && st != "int") error("array size must be an int", na->loc);
+        // `new T[n]() in region R` is checked against the region's accepts/rejects exactly as an object
+        // is. A region is TYPED -- that is what separates it from a hand-rolled arena, which takes bytes
+        // and forgets what they were -- so an array entering one has to answer the same question its
+        // element type would. Checked on the ELEMENT: `accepts({byte})` admits `byte[]`, because what
+        // the region is being asked to hold is bytes.
+        if (!na->region.empty()) checkRegionAccepts(na->region, na->elementType, na->loc);
         return na->elementType + "[]";
     }
     if (const auto* al = dynamic_cast<const ast::ArrayLiteralExpr*>(&expr)) {  // `[a, b, c]` (spec 25)
@@ -4802,6 +5358,16 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(&expr)) {
+        // Interpolation builds a String, so it carries the managed runtime with it -- a stored `$"..."`
+        // emitted snprintf + __ldp3_malloc + __ldp3_str_copy/free, none of which exist bare metal. The
+        // guide notes it can be lowered without an allocation "when the result is only consumed, not
+        // stored", but in freestanding every consumer of a String (Console, the collections) is already
+        // gated, so there is no consumed form left to permit.
+        if (freestanding_ && std::string(is->loc.file) != "<prelude>")
+            error("string interpolation is not available in freestanding mode (spec 36.3): `$\"...\"` "
+                  "builds a managed String, which needs snprintf and the String runtime. Format into a "
+                  "byte buffer yourself, or emit the pieces one at a time",
+                  is->loc);
         for (const auto& e : is->exprs) {
             const std::string t = typeOf(*e);
             const bool printable = t.empty() || isIntName(t) || isFloatType(t) || t == "char" ||
@@ -4817,6 +5383,52 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+        // A CONSTRUCTOR THAT DELEGATES cannot be judged by the field-initialisation check below: a
+        // `this.setUp()` or a `super(...)` assigns fields in a body this analysis does not follow, so
+        // every field would be reported as unset. That is not a stricter check, it is a wrong one, and
+        // it would reject a pattern the standard library itself uses.
+        //
+        // Discharging ALL of them rather than guessing which the callee touches: seeing through the
+        // call needs interprocedural analysis, and a check that is sometimes wrong teaches people to
+        // ignore it -- which costs more than the cases it would have caught. Done HERE, inside the
+        // traversal that already visits every expression, so a delegation nested in a branch is found
+        // without a second walker that could disagree with this one about where it looked.
+        if (inConstructor_ && !pendingCtorFields_.empty()) {
+            bool delegates = dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr;
+            if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(call->callee.get()))
+                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(cm->object.get());
+                    oid != nullptr && oid->name == "this")
+                    delegates = true;
+            if (delegates)
+                for (const auto& [fname, floc] : pendingCtorFields_)
+                    markInitialized("this." + fname);
+        }
+        // `itself(...)`: the lambda calling itself. Handled before every other call shape because
+        // `itself` resolves to no class, no local and no method -- it names the enclosing lambda, which
+        // has no name of its own to look up.
+        if (const auto* iid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
+            iid != nullptr && iid->name == "itself") {
+            if (!analyzingLambda_) {
+                error("'itself' names the lambda it appears in, so it can only be called inside a "
+                      "lambda body. In a method, call the method by name; at the top of a declaration, "
+                      "`itself.allocate(...)` is the region initializer (spec 17.2)",
+                      call->loc);
+                return "";
+            }
+            // Arity first: checkCallArgs only type-checks the arguments that line up with a parameter,
+            // so a wrong COUNT would slip through it and reach codegen, which builds the call from the
+            // function's own arity and would silently drop or invent an argument.
+            if (call->args.size() != currentLambdaParams_.size()) {
+                error("this lambda takes " + std::to_string(currentLambdaParams_.size()) +
+                          " argument(s), but 'itself' is called here with " +
+                          std::to_string(call->args.size()),
+                      call->loc);
+                for (const auto& a : call->args) typeOf(*a);
+                return currentReturnType_;
+            }
+            checkCallArgs(call->args, currentLambdaParams_, "this lambda (called through 'itself')");
+            return currentReturnType_;   // set to the lambda's return type for the body's duration
+        }
         // spec 32.8: `Dog.methods.replace("bark", <function value>)` -- a mutable dispatch table. The
         // replacement takes over the class's vtable slot, so every Dog (already alive or not yet born)
         // gets the new behaviour: genuine AOP, mocking without a framework, localized hot patching.
@@ -4896,6 +5508,16 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return "void";
         }
         const std::string name = flattenCallee(*call->callee);
+        // The test framework, reached as a static call (`Test.assertEqual(...)`), which never goes
+        // through checkTypeAccessible -- so gating the TYPE was not enough to stop it. It reports
+        // through printf and builds Strings; a freestanding program that used it compiled clean and
+        // failed at link. Same rule as Console: user code only, since the prelude names it freely.
+        if (freestanding_ && std::string(call->loc.file) != "<prelude>" &&
+            (name.rfind("Test.", 0) == 0 || name.rfind("System.Test.Test.", 0) == 0))
+            error("the test framework is not available in freestanding mode (spec 36.3): 'Test' reports "
+                  "through printf and builds Strings, neither of which exists bare metal. Test a "
+                  "freestanding program from outside -- boot it and assert on what it emits",
+                  call->loc);
         // sizeof(Type) / sizeof(expr) (spec, issue #7): byte size as an int. The argument may name a
         // type, so it is not type-checked as an ordinary value here.
         if (name == "sizeof" && call->args.size() == 1) return "int";
@@ -5377,7 +5999,40 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                         typeOf(*call->args[0]);
                         return "Option$" + oid->name;
                     }
-                    error("enum '" + oid->name + "' has no built-in '" + mem->member + "'",
+                    // A STATIC method the enum declares itself. Spec 12.2 gives enums methods and
+                    // nothing restricts them to instance methods; codegen has always emitted these
+                    // correctly (a static one simply gets no `this` parameter), but resolution never
+                    // looked past the built-ins -- so declaring one compiled and CALLING it did not.
+                    // That is the worst shape a gap can have: a declaration the language accepts and
+                    // then gives you no way to reach.
+                    //
+                    // It bites hardest where an enum meets hardware. A register field arrives as an
+                    // integer and something has to turn it into a value; that is a factory, and a
+                    // factory is static by nature.
+                    if (auto emit = enumMethods_.find(oid->name); emit != enumMethods_.end()) {
+                        auto mit = emit->second.find(mem->member);
+                        if (mit != emit->second.end() && mit->second.isStatic) {
+                            for (const auto& arg : call->args) typeOf(*arg);
+                            const std::size_t want = enumMethodParams_[oid->name][mem->member];
+                            if (call->args.size() != want) {
+                                error("method '" + mem->member + "' expects " + std::to_string(want) +
+                                          " argument(s) but got " + std::to_string(call->args.size()),
+                                      call->loc);
+                            }
+                            return mit->second.returnType;
+                        }
+                        // Declared, but on an instance. Saying which beats "has no built-in", which
+                        // sends the reader hunting for a spelling mistake that is not there.
+                        if (mit != emit->second.end()) {
+                            error("method '" + mem->member + "' on enum '" + oid->name +
+                                      "' is an instance method -- call it on a value of the enum, "
+                                      "not on the type itself",
+                                  call->loc);
+                            return mit->second.returnType;
+                        }
+                    }
+                    error("enum '" + oid->name + "' has no built-in or static method '" +
+                              mem->member + "'",
                           call->loc);
                     return "";
                 }
@@ -5477,6 +6132,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // toString() on every field. (Only toString -- floats are deliberately NOT hashable or
             // comparable keys, since float equality is not an identity anyone should key a map on.)
             if (isFloatType(objType) && mem->member == "toString" && call->args.empty()) {
+                return "String";
+            }
+            // And a boolean, for exactly the same reason and with exactly the same limit: a `record`
+            // with a boolean field could not be DECLARED, because its synthesized toString() calls
+            // toString() on every field and there was no such method -- so the error landed on the
+            // record declaration, naming a call the author never wrote. "true"/"false", which is the
+            // answer every language that has this gives. (toString only: a bare boolean is not a
+            // useful map key, so it stays out of the Hashable/Comparable builtins.)
+            if (objType == "boolean" && mem->member == "toString" && call->args.empty()) {
                 return "String";
             }
             // Integer types satisfy Hashable<T>/Comparable<T> via builtins, so they can be used as

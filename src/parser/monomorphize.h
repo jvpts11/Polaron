@@ -24,6 +24,14 @@ void qualifyNamespaces(ast::Program& program);
 // program declares no type aliases. Run first, before qualifyNamespaces and monomorphize.
 void resolveTypeAliases(ast::Program& program);
 
+// Expands every `delegate` field: for each method an implemented interface declares and the class does
+// not define, synthesizes `return this.<field>.<method>(args);` on the class. Composition instead of
+// inheritance, without the N forwarding methods that are the real reason nobody picks composition.
+// Run after qualifyNamespaces (interface names must already be unique) and BEFORE monomorphize, so a
+// generic class is expanded once and copied per instantiation. Returns false (after reporting) when no
+// delegate answers something an interface requires, or when more than one does.
+bool expandDelegates(ast::Program& program);
+
 // Deep-clone of an expression / statement (no type substitution). Used by AST-level optimization
 // passes (e.g. loop interchange) that need to duplicate sub-trees.
 ast::ExprPtr cloneExprDeep(const ast::Expr* e);

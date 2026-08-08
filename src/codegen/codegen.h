@@ -46,6 +46,17 @@ public:
     // generate(). Best paired with -O0 so variables and line stepping survive.
     void setDebugInfo(bool debug);
 
+    // `ldp3c --verify-stack`: emit, in every method, its own proof that the stack pointer it returns on
+    // is the one it was called on. Read once after the prologue, read again before each return, and
+    // reported to `__ldp3_stack_mismatch(name)` when they differ.
+    //
+    // Not a safety net -- an INSTRUMENT, and it exists because of a fault hand-placed probes could not
+    // locate: a stack slot came back holding a return address, about one boot in twenty, if and only if
+    // an interrupt landed inside the call being made at that moment. Every probe added to find it moved
+    // it. Only the compiler knows what the stack pointer is supposed to be at each point, so only the
+    // compiler can check it, and doing so is mechanical rather than analysis. Call before generate().
+    void setVerifyStack(bool verify);
+
     // Classes whose dispatch table is patched at runtime (spec 32.8), as found by the analyzer. Such a
     // class always gets a vtable, its calls are never devirtualized, and its vtable is writable -- without
     // which a replacement would be installed where nothing ever reads it. Call before generate().
