@@ -73,6 +73,17 @@ ast::MemberPtr buildRecordHashCode(const std::string& typeName,
             cast->targetType = "int";
             cast->operand = std::move(fieldVal);
             fieldVal = std::move(cast);
+        } else if (f.type.name == "boolean") {
+            // 1 or 0. A boolean is listed as a hashed field (it is part of the record's identity and
+            // `equals` compares it) but it is not an arithmetic value: adding it into the mix directly
+            // gave "operator '+' requires numeric operands" ON THE RECORD DECLARATION, for a `+` the
+            // author never wrote. Same gap as the `cast<long>(boolean)` in the value-key hooks.
+            auto t = std::make_unique<ast::TernaryExpr>();
+            t->loc = loc;
+            t->cond = std::move(fieldVal);
+            t->thenExpr = makeInt("1");
+            t->elseExpr = makeInt("0");
+            fieldVal = std::move(t);
         }
         auto mul = std::make_unique<ast::BinaryExpr>();
         mul->loc = loc;
@@ -332,7 +343,10 @@ ast::Program Parser::parse() {
             program.imports.push_back(parseImportDecl());
         expect(TokenKind::KwProgram, "'program'");
         program.name = expect(TokenKind::Identifier, "the program name").lexeme;
-        if (match(TokenKind::KwFreestanding)) program.isFreestanding = true;  // spec 36.8
+        if (match(TokenKind::KwFreestanding)) {
+            program.isFreestanding = true;  // spec 36.8
+            freestanding_ = true;
+        }
         expect(TokenKind::Semicolon, "';'");
         while (!check(TokenKind::EndOfFile)) {
             program.bundles.push_back(parseBundle());
@@ -422,7 +436,10 @@ ast::Bundle Parser::parseBundle() {
     b.visibility = parseVisibilityOpt();
     expect(TokenKind::KwBundle, "'bundle'");
     b.name = expect(TokenKind::Identifier, "the bundle name").lexeme;
-    if (match(TokenKind::KwFreestanding)) b.isFreestanding = true;  // spec 36.8
+    if (match(TokenKind::KwFreestanding)) {
+        b.isFreestanding = true;  // spec 36.8
+        freestanding_ = true;
+    }
     expect(TokenKind::LBrace, "'{'");
     // Imports belong before `program` (spec 2.7), not inside a bundle.
     if (check(TokenKind::KwImport))
@@ -1028,7 +1045,15 @@ ast::ClassDecl Parser::parseRecord() {
     }
     c.members.push_back(buildRecordEquals(c.name, fields, c.loc));
     c.members.push_back(buildRecordHashCode(c.name, fields, c.loc));
-    c.members.push_back(buildRecordToString(c.name, fields, c.loc));
+    // `toString` returns a String, and String is a managed object that freestanding does not have
+    // (spec 36.3). Generating it there made every `record` UNDECLARABLE -- the type was rejected for a
+    // method the author never wrote, with an error pointing at the String machinery rather than at the
+    // record. So the auto-member that cannot exist is simply not generated.
+    //
+    // `equals` and `hashCode` stay: neither touches String (hashCode already skips non-numeric fields
+    // by design), and they are the two that make a record worth having as an immutable value -- which
+    // is exactly the shape a kernel wants for a descriptor.
+    if (!freestanding_) c.members.push_back(buildRecordToString(c.name, fields, c.loc));
 
     // Body: methods and constants only -- no extra fields (spec 10).
     expect(TokenKind::LBrace, "'{'");
@@ -1128,6 +1153,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isAsync = false;
     bool isNaked = false;
     bool isExternal = false;
+    bool isDelegateField = false;
     bool isMovableField = false;
     bool isUniqueField = false;
     bool isWeakField = false;
@@ -1218,6 +1244,11 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isExternal = true;
             continue;
         }
+        if (!isDelegateField && check(TokenKind::KwDelegate)) {  // implement the interfaces via this field
+            advance();
+            isDelegateField = true;
+            continue;
+        }
         if (!isMovableField && check(TokenKind::KwMovable)) {  // spec 19.9: field-level ownership
             advance();
             isMovableField = true;
@@ -1281,8 +1312,9 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     } else {
         // Otherwise it is a field:  <type> <name> ;
         member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
-                            isTransient, isVolatile, isLazy, isExternal, isMovableField,
-                            isUniqueField, isWeakField, isAbstract, isOverride, isFinal, inInterface);
+                            isTransient, isVolatile, isLazy, isExternal, isDelegateField,
+                            isMovableField, isUniqueField, isWeakField, isAbstract, isOverride,
+                            isFinal, inInterface);
     }
     if (!anns.empty()) {  // attach leading annotations to the declaration they precede
         if (auto* m = dynamic_cast<ast::MethodDecl*>(member.get())) m->annotations = std::move(anns);
@@ -1436,9 +1468,9 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
 
 ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable,
                                   bool isPersistent, bool isEternal, bool isTransient,
-                                  bool isVolatile, bool isLazy, bool isExternal, bool isMovable,
-                                  bool isUnique, bool isWeak, bool isAbstract, bool isOverride, bool isFinal,
-                                  bool inInterface) {
+                                  bool isVolatile, bool isLazy, bool isExternal, bool isDelegate,
+                                  bool isMovable, bool isUnique, bool isWeak, bool isAbstract,
+                                  bool isOverride, bool isFinal, bool inInterface) {
     const SourceLocation loc = current().loc;
     // Region flavor / growth soft keywords (spec 17 flavors) on a `region` field, before the type.
     std::string fieldRegionFlavor;
@@ -1469,6 +1501,7 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->isVolatile = isVolatile;
     f->isLazy = isLazy;
     f->isExternal = isExternal;
+    f->isDelegate = isDelegate;
     f->isMovable = isMovable;
     f->isUnique = isUnique;
     f->isWeak = isWeak;
@@ -2502,10 +2535,20 @@ ast::StmtPtr Parser::parseStatement() {
         if (match(TokenKind::KwRegion)) {
             rel->region = parseRegionName();
         } else {
-            // `release persistent obj.field;` / `release eternal obj.field;` (spec 18.13/18.15).
-            if (!match(TokenKind::KwPersistent)) expect(TokenKind::KwEternal, "'region', 'persistent' or 'eternal' after 'release'");
+            // `release obj.field;` (spec 18.13/18.15). The `persistent` / `eternal` word is OPTIONAL and
+            // carries nothing: the field was already declared persistent, so restating it at the release
+            // site resolves no ambiguity -- and this language does not make you repeat what it already
+            // knows. Both spellings are accepted so existing code keeps compiling.
+            if (!match(TokenKind::KwPersistent)) match(TokenKind::KwEternal);
             rel->isPersistent = true;
             rel->target = parseExpression();
+            // `release Session.hits all;` -- every entry the field has, not just this object's key.
+            // Without it a program could only ever release the identities it still happened to be
+            // holding, which is a leak with extra steps rather than a release.
+            if (check(TokenKind::Identifier) && current().lexeme == "all") {
+                advance();
+                rel->allKeys = true;
+            }
         }
         expect(TokenKind::Semicolon, "';'");
         return rel;
@@ -3814,9 +3857,27 @@ ast::ExprPtr Parser::parsePrimary() {
             advance();
             return e;  // parsePostfix turns `super(args)` into a CallExpr
         }
-        case TokenKind::KwItself:
-            // `itself.allocate(...)` region initializer (spec 17.2-17.3, 17.9).
-            return parseRegionInit();
+        case TokenKind::KwItself: {
+            // `itself.allocate(...)` / `.at(...)` / `.atMultiple(...)` is the region initializer
+            // (spec 17.2-17.3, 17.9) -- recognised by the '.' that has to follow.
+            if (peek(1).kind == TokenKind::Dot) return parseRegionInit();
+            // BARE `itself` is the self-reference pronoun the keyword reference already describes:
+            // "refers to the entity being declared". Inside a lambda that entity is the lambda, so
+            // `itself(...)` is how an anonymous function recurses.
+            //
+            // It has no workaround. Naming the variable the lambda is being assigned to does not
+            // compile -- that variable holds nothing until the lambda value exists, so the body
+            // referring to it is a use of something not yet initialized. Recursive anonymous
+            // functions were simply unwritable.
+            //
+            // Parsed as an identifier so `parsePostfix` builds the CallExpr; `itself` is a keyword,
+            // so no user name can collide with it.
+            auto e = std::make_unique<ast::IdentifierExpr>();
+            e->loc = tok.loc;
+            e->name = "itself";
+            advance();
+            return e;
+        }
         case TokenKind::LParen: {
             const SourceLocation lp = tok.loc;
             advance();
@@ -3876,6 +3937,20 @@ ast::ExprPtr Parser::parseUnimportExpr() {
 ast::ExprPtr Parser::parseNew() {
     const SourceLocation loc = current().loc;
     expect(TokenKind::KwNew, "'new'");
+    // `new nullable T*[n]()` -- an array whose elements are OPTIONAL pointers.
+    //
+    // A field could be declared `nullable T*[]` and there was no way to construct one, which is the
+    // gap shape that keeps turning up: the language accepts the declaration and then offers no
+    // expression that produces a value for it. It matters for every table of slots in a kernel -- a
+    // scheduler's processes, a registry's devices, a handle table -- where "this slot is empty" is a
+    // normal state and the honest type for it is `nullable`. Without this the arrays held raw
+    // `address` with 0 for empty and a cast at every read, which is the exact hole in the type system
+    // the `nullable` keyword exists to close.
+    //
+    // `nullable` is dropped from the element type name rather than carried: an element slot is
+    // pointer-sized either way, and null IS the zero the array is already initialised to. It is the
+    // DECLARED type that makes the caller check, and that is on the field, not here.
+    if (check(TokenKind::KwNullable)) advance();
     // Base type: a primitive keyword (int/char/...) or a class name.
     std::string typeName;
     if (isTypeKeyword(current().kind) || check(TokenKind::Identifier)) {
@@ -3910,6 +3985,12 @@ ast::ExprPtr Parser::parseNew() {
             arr->location = expect(TokenKind::Identifier, "'stack' or 'heap'").lexeme;
         } else {
             arr->location = "heap";  // arrays are dynamic -> default heap
+        }
+        // `in region R`, the same suffix an object new takes and for the same reason: a region owns
+        // whatever its accepts/rejects allow, and nothing about an array makes that a different question.
+        if (match(TokenKind::KwIn)) {
+            expect(TokenKind::KwRegion, "'region' after 'in'");
+            arr->region = parseRegionName();
         }
         return arr;
     }

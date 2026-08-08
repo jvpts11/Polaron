@@ -24,6 +24,7 @@ set(LDP3_CORE_SOURCES
     src/parser/boundscheck.cpp
     src/semantic/analyzer.cpp
     src/semantic/comptime.cpp
+    src/semantic/asmcheck.cpp  # semantic analysis of inline assembly, per architecture and dialect
     src/diag/catalog.cpp  # rich-diagnostic catalog: why/fix/prevent per error code
     src/diag/render.cpp   # rich-diagnostic renderer: snippet + caret + sections, or one concise line
     src/bundle/ldh.cpp  # public-API header (.ldh) generation; AST-only, no LLVM
@@ -78,6 +79,13 @@ if(NOT LDP3_CLANG)
     set(LDP3_CLANG "clang")  # fall back to a PATH lookup at run time
 endif()
 configure_file(src/driver/config.h.in "${CMAKE_BINARY_DIR}/ldp3_config.h" @ONLY)
+
+# The region core (runtime/ldp3_region_core.h) is compiled TWICE: once into ldp3_rt above, and once for
+# the bare-metal target by `ldp3 build`. Embed its text in the driver so the second compilation uses the
+# very same source rather than a copy that drifts. configure_file makes the header a configure-time
+# dependency, so editing it regenerates this automatically.
+file(READ runtime/ldp3_region_core.h LDP3_REGION_CORE_SRC)
+configure_file(src/driver/region_core_src.h.in "${CMAKE_BINARY_DIR}/ldp3_region_core_src.h" @ONLY)
 
 # The lightweight toolchain driver: spawns ldp3c + clang. No LLVM. Logic lives in a static lib so both
 # the ldp3 binary and the unit tests can link it (modules are added task by task).

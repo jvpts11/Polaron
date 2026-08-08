@@ -87,7 +87,7 @@ private:
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
                               bool isPersistent, bool isEternal, bool isTransient,
                               bool isVolatile = false, bool isLazy = false,
-                              bool isExternal = false, bool isMovable = false,
+                              bool isExternal = false, bool isDelegate = false, bool isMovable = false,
                               bool isUnique = false, bool isWeak = false, bool isAbstract = false,
                               bool isOverride = false, bool isFinal = false,
                               bool inInterface = false);
@@ -157,6 +157,10 @@ private:
     bool looksLikeExtractStmt() const;  // a bare `extract <lvalue> from region R;` statement
     std::string parseRegionName();  // a region reference: a local name or a `this.field` region
     bool sawQualifiedType_ = false;         // a `ns.Type` reference was parsed (spec 15)
+    // spec 36: `program X freestanding;` / `bundle X freestanding`. Needed DURING parsing because one
+    // desugaring has to differ -- a record's auto-generated `toString` returns a String, and String
+    // does not exist in freestanding, so generating it makes the record undeclarable.
+    bool freestanding_ = false;
     bool parsingEnsures_ = false;           // inside an `ensures` clause -> `old(...)` is allowed (spec 29)
     bool headerMode_ = false;               // parsing a .ldh: method/constructor bodies may be absent
 };
