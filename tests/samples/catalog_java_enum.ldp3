@@ -22,8 +22,8 @@ public bundle main {
             byCatalog {
                 bronze(10),
                 gold(95)
-            }
-            ;
+            };
+
             private int points;
 
             public constructor Medal(int points) {

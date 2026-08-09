@@ -549,7 +549,11 @@ int d = Planet.EARTH.density();   // 5
 Every enum, simple or Java-style, comes with auto-generated helpers:
 `EnumType.values()` returns all constants in declaration order, `EnumType.count()`
 returns how many there are, `EnumType.random()` picks one, and
-`EnumType.parse(s)` returns an `Option<EnumType>` by name.
+`EnumType.parse(s)` returns an `Option<EnumType>` by name. On a VALUE, `v.name()`
+returns the declared identifier back as a `String` — the same name data `parse`
+reads in, read out the other way — and an enum that declares its own `name`
+method keeps it. A Java-style value also converts to its declaration ordinal
+with `cast<int>(v)` (never to its singleton's pointer bits).
 
 ### Catalogs
 
