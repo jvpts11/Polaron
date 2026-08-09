@@ -2293,22 +2293,15 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
         typeBundle_[type] = "System";
         if (!shadowable) builtinTypes_.insert(type);
     };
-    builtin("Math", "Math", /*shadowable=*/true);  // spec 34.6: virtual so a user `class Math` works
-    // spec 17.8: the low-level memory API, as a NAMESPACE of classes that each do one thing --
-    // System.Memory.Allocator (alloc/free/copy) and System.Memory.Raw (read/write/sizeof/addressOf).
-    // It used to be a single class `Memory` hung straight off the bundle with no namespace at all,
-    // the only builtin shaped that way, which put a class where the hierarchy wants a namespace.
-    builtin("Allocator", "Memory");
-    builtin("Raw", "Memory");
-    builtin("File", "IO");        // spec 34.4: static methods lower to runtime stdio
-    builtin("Time", "Time");      // spec 34: clock + sleep builtins
-    builtin("Net", "Net");        // spec 34: TCP builtins over runtime winsock
-    builtin("Ipc", "Ipc");        // spec 2.8: cross-program transport builtins (pipe/socket named after the program)
-    builtin("Bits", "Ipc");       // exact double<->long bit reinterpretation (IEEE-754 pattern)
-    builtin("Process", "OS");     // spec 34: subprocess builtin (Process.run); ProcessResult is a real prelude class
-    builtin("Env", "OS");         // spec 34: environment-variable builtins (Env.get/set)
-    builtin("Subproc", "OS");     // low-level persistent-subprocess builtins (Subprocess class)
-    builtin("Conpty", "OS");      // low-level pseudo-console builtins (Pty class)
+    // The one list lives in ast.h, because the monomorphizer needs the same answer -- see
+    // ast::builtinStaticClasses(). Two copies of it already cost a day: expansion had its own, so a
+    // generic `read<T>` anywhere rewrote every `Raw.read<int>` into a builtin that does not exist.
+    //
+    // spec 17.8: the low-level memory API is a NAMESPACE of classes that each do one thing --
+    // System.Memory.Allocator and System.Memory.Raw. It used to be one class `Memory` hung straight
+    // off the bundle with no namespace, the only builtin shaped that way.
+    for (const ast::BuiltinStaticClass& b : ast::builtinStaticClasses())
+        builtin(b.name, b.ns, b.shadowable);
     // reflect (spec 31) is a builtin namespace, not a prelude class; register it so `import reflect;`
     // (a bare, bundle-less import) resolves. Reflection use is gated on this import at reflect.typeOf.
     typeNamespace_["reflect"] = "reflect";
