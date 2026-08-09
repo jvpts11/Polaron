@@ -1,0 +1,61 @@
+import System.IO.Console;
+program ItselfPronoun;
+
+// `itself` is the pronoun for "the entity being declared" -- the definition the keyword reference
+// always gave it. Bare, it is that entity; followed by a '.', it is that entity's TYPE. It used to
+// be honoured in only two places (the region initializer and lambda self-recursion); those are not
+// special cases but instances of the same rule, and both still hold below.
+
+public bundle main {
+
+    public namespace app {
+
+        public class Tally {
+            public mutable int total;
+
+            public constructor Tally() {
+                this.total = 0;
+            }
+
+            // Reached below as `itself.empty()` from a declaration of type Tally, without naming
+            // the type a second time.
+            public static method empty() returns Tally {
+                return new Tally() on heap;
+            }
+
+            public method add(int n) returns void {
+                this.total = itself + n;   // the field being assigned: `this.` and no repetition
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // 1. Bare `itself` on an assignment: the entity being assigned to.
+                mutable int a = 5;
+                a = itself * 2;
+                System.IO.Console.println($"a = {a}");
+
+                // 2. `itself.` on a declaration: the declared TYPE, here Tally.
+                Tally t = itself.empty();
+                t.add(7);
+                t.add(3);
+                System.IO.Console.println($"total = {t.total}");
+
+                // 3. The long-standing use, unchanged: a lambda calling itself. The pronoun means
+                // the lambda here because a lambda body is the one place this rewrite does not
+                // reach -- and inside one, the entity being declared IS the lambda.
+                function<int, int> fact = lambda(int n) returns int {
+                    if (n <= 1) {
+                        return 1;
+                    }
+                    return n * itself(n - 1);
+                };
+                System.IO.Console.println($"fact = {fact(5)}");
+
+                delete t;
+                return;
+            }
+        }
+    }
+}

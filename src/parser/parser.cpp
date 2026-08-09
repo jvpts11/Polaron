@@ -3895,8 +3895,15 @@ ast::ExprPtr Parser::parsePrimary() {
         }
         case TokenKind::KwItself: {
             // `itself.allocate(...)` / `.at(...)` / `.atMultiple(...)` is the region initializer
-            // (spec 17.2-17.3, 17.9) -- recognised by the '.' that has to follow.
-            if (peek(1).kind == TokenKind::Dot) return parseRegionInit();
+            // (spec 17.2-17.3, 17.9). It is NOT a special case of the pronoun -- it is an instance of
+            // it: `itself.` names the declared entity's TYPE, and for a `region` those three are how
+            // that type builds one. Only those three names are claimed here; every other
+            // `itself.member` is an ordinary access on the declared type, resolved in the
+            // implicit-this pass where the declaration's type is still in hand.
+            if (peek(1).kind == TokenKind::Dot && peek(2).kind == TokenKind::Identifier &&
+                (peek(2).lexeme == "allocate" || peek(2).lexeme == "at" ||
+                 peek(2).lexeme == "atMultiple"))
+                return parseRegionInit();
             // BARE `itself` is the self-reference pronoun the keyword reference already describes:
             // "refers to the entity being declared". Inside a lambda that entity is the lambda, so
             // `itself(...)` is how an anonymous function recurses.

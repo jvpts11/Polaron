@@ -58,6 +58,19 @@ ast::ExprPtr typeRef(const std::string& name, const SourceLocation& loc) {
     return id;
 }
 
+// The name a bare `itself` stands for on the right of an assignment: the plain variable, or the
+// field of a `this.field` target. Anything else yields "" and the pronoun is left alone -- for
+// `a[i] = itself + 1` it would have to stand for an element whose index would then be evaluated a
+// second time, and a pronoun must not cost an extra evaluation of anything.
+std::string itselfTargetName(const ast::Expr* target) {
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(target)) return id->name;
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(target)) {
+        const auto* obj = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+        if (obj != nullptr && obj->name == "this") return mem->member;
+    }
+    return "";
+}
+
 ast::ExprPtr memberOf(ast::ExprPtr object, const std::string& name, const SourceLocation& loc) {
     auto mem = std::make_unique<ast::MemberExpr>();
     mem->object = std::move(object);
@@ -119,6 +132,32 @@ private:
     bool static_;
     const std::set<std::string>& types_;
     std::vector<std::set<std::string>> scopes_;
+
+public:
+    // `itself` -- the pronoun the keyword reference defines as "the entity being declared". Bare, it
+    // is that entity; followed by a '.', it is that entity's TYPE. Both are known here and nowhere
+    // later: by the time the analyser sees the initializer, the declaration it belongs to is no
+    // longer the thing being walked. Empty when no declaration is open, which leaves `itself` alone
+    // for the analyser to reject -- or, inside a lambda body, for the lambda to claim (the walk
+    // returns before reaching a lambda, so its self-recursion is untouched by any of this).
+    std::string itselfName_;
+    std::string itselfType_;
+
+    // Save/restore around a nested walk. A declaration's initializer can hold another declaration
+    // (a lambda body, a match arm), and the inner one owns the pronoun while it is open.
+    struct Entity {
+        Rewriter& r;
+        std::string name, type;
+        Entity(Rewriter& rw, std::string n, std::string t)
+            : r(rw), name(rw.itselfName_), type(rw.itselfType_) {
+            r.itselfName_ = std::move(n);
+            r.itselfType_ = std::move(t);
+        }
+        ~Entity() {
+            r.itselfName_ = std::move(name);
+            r.itselfType_ = std::move(type);
+        }
+    };
 };
 
 void Rewriter::expr(ast::ExprPtr& slot) {
@@ -135,7 +174,18 @@ void Rewriter::expr(ast::ExprPtr& slot) {
         for (auto& a : x->args) expr(a);
         return;
     }
-    if (auto* x = dynamic_cast<ast::MemberExpr*>(e)) { expr(x->object); return; }
+    if (auto* x = dynamic_cast<ast::MemberExpr*>(e)) {
+        // `itself.member`: the pronoun followed by a '.' names the declared entity's TYPE, so the
+        // member is read off the type rather than off a value that does not exist yet. Taken before
+        // walking into the object, which is where the bare-pronoun rewrite would otherwise claim it.
+        if (auto* obj = dynamic_cast<ast::IdentifierExpr*>(x->object.get());
+            obj != nullptr && obj->name == "itself" && !itselfType_.empty()) {
+            obj->name = itselfType_;
+            return;
+        }
+        expr(x->object);
+        return;
+    }
     if (auto* x = dynamic_cast<ast::BinaryExpr*>(e)) { expr(x->lhs); expr(x->rhs); return; }
     if (auto* x = dynamic_cast<ast::TernaryExpr*>(e)) { expr(x->cond); expr(x->thenExpr); expr(x->elseExpr); return; }
     if (auto* x = dynamic_cast<ast::UnaryExpr*>(e)) { expr(x->operand); return; }
@@ -169,6 +219,10 @@ void Rewriter::expr(ast::ExprPtr& slot) {
     if (dynamic_cast<ast::LambdaExpr*>(e) != nullptr) return;
 
     if (auto* x = dynamic_cast<ast::IdentifierExpr*>(e)) {
+        // Bare `itself` is the entity, not its type. Renamed rather than returned on, so that a field
+        // still picks up its receiver from the resolve below: in `this.total = itself + 1` the
+        // pronoun means the field, and a field needs its `this.` like any other mention of it.
+        if (x->name == "itself" && !itselfName_.empty()) x->name = itselfName_;
         if (ast::ExprPtr repl = resolve(x->name, x->loc))
             slot = memberOf(std::move(repl), x->name, x->loc);
         return;
@@ -187,12 +241,29 @@ void Rewriter::stmt(ast::Stmt* st) {
         for (auto& mt : x->moreTargets) expr(mt);
         return;
     }
-    if (auto* x = dynamic_cast<ast::AssignStmt*>(st)) { expr(x->target); expr(x->value); return; }
+    if (auto* x = dynamic_cast<ast::AssignStmt*>(st)) {
+        expr(x->target);
+        // `a = itself + b`: what is being assigned is the entity the pronoun names. The target is
+        // walked first, so a field has already become `this.field` and reads back as one. No type is
+        // available in this pass, so the `itself.` form stays unresolved on an assignment and the
+        // analyser reports it -- a declaration is where a written type exists.
+        Entity ent(*this, itselfTargetName(x->target.get()), std::string());
+        expr(x->value);
+        return;
+    }
     if (auto* x = dynamic_cast<ast::IncDecStmt*>(st)) { expr(x->target); return; }
     // THE INITIALIZER IS WALKED BEFORE THE NAME EXISTS. `int n = n;` names the field, not the local
     // being declared -- the local is not in scope until its own declaration is complete, which is the
     // rule everywhere else and the only one under which that line means anything at all.
-    if (auto* x = dynamic_cast<ast::VarDeclStmt*>(st)) { expr(x->init); declare(x->name); return; }
+    if (auto* x = dynamic_cast<ast::VarDeclStmt*>(st)) {
+        // `itself` in the initializer is THIS declaration: its name, and its written type. With
+        // `var` there is no written type -- it is being inferred from this very initializer -- so the
+        // type form is left unresolved rather than made circular.
+        Entity ent(*this, x->name, x->isVar ? std::string() : x->type.name);
+        expr(x->init);
+        declare(x->name);
+        return;
+    }
     if (auto* x = dynamic_cast<ast::TupleDeclStmt*>(st)) {
         expr(x->init);
         for (const ast::TupleBinding& b : x->bindings) declare(b.name);
