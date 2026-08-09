@@ -14,7 +14,7 @@ public bundle main freestanding {
         }
         public class Main {
             public static method main(string[] args) returns int {
-                address buf = Memory.alloc(8);
+                address buf = Allocator.alloc(8);
                 int* msg = cast<int*>(buf);
                 msg[0] = 79;   // 'O'
                 msg[1] = 75;   // 'K'
@@ -22,7 +22,7 @@ public bundle main freestanding {
                 for (mutable int i = 0; i < 3; i++) {
                     Sys.putchar(msg[i]);
                 }
-                Memory.free(buf);
+                Allocator.free(buf);
                 return 0;
             }
         }

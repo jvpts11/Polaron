@@ -1,5 +1,6 @@
 import System.IO.Console;
-import System.Memory;
+import System.Memory.Allocator;
+import System.Memory.Raw;
 
 program LowLevelMemory;
 
@@ -11,16 +12,16 @@ public bundle main {
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
-                address mem = Memory.alloc(16);     // raw block, returns an address
+                address mem = Allocator.alloc(16);     // raw block, returns an address
                 int* p = cast<int*>(mem);           // reinterpret the address as a pointer
                 p[0] = 100;                          // raw pointer write
                 p[1] = 200;
                 System.IO.Console.printf("sum=%d\n", p[0] + p[1]);          // 300
-                Memory.write<int>(mem, 999);
-                System.IO.Console.printf("read=%d\n", Memory.read<int>(mem));  // 999
+                Raw.write<int>(mem, 999);
+                System.IO.Console.printf("read=%d\n", Raw.read<int>(mem));  // 999
                 address back = cast<address>(p);     // pointer -> address round-trip
                 System.IO.Console.printf("addr=%d\n", cast<int>(back - mem));  // 0 (same address)
-                Memory.free(mem);
+                Allocator.free(mem);
                 return;
             }
         }

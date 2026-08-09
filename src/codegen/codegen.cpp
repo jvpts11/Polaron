@@ -2810,7 +2810,7 @@ struct CodeGenerator::Impl {
             if (flattenCallee(*call->callee) == "reflect.typeOf") return "Type";  // spec 31
             if (flattenCallee(*call->callee) == "System.IO.Console.read") return "String";  // reads a line
             if (const std::string rc = flattenCallee(*call->callee);
-                rc == "Memory.readString" || rc == "System.Memory.readString") return "String";  // StringBuilder
+                rc == "Raw.readString" || rc == "System.Memory.Raw.readString") return "String";  // StringBuilder
             if (const std::string fc = flattenCallee(*call->callee); fc.rfind("Time.", 0) == 0) {
                 if (fc == "Time.millis" || fc == "Time.nanos" || fc == "Time.unixMillis")
                     return "long";  // spec 34
@@ -7439,8 +7439,9 @@ struct CodeGenerator::Impl {
         }
         // Memory API (spec 17.8): low-level address-based access. `address` is an i64. Accept both the
         // qualified System.Memory.X and the short Memory.X (the semantic phase enforces the import).
+        // Canonicalise the fully-qualified spelling to the short one: System.Memory.Raw.read -> Raw.read.
         const std::string memName =
-            (name.rfind("System.Memory.", 0) == 0) ? "Memory." + name.substr(14) : name;
+            (name.rfind("System.Memory.", 0) == 0) ? name.substr(14) : name;
         // `Memory.sizeof(T)` (spec issue #7): the byte size of a type, or of an expression's type, as
         // an int. A static method on this class rather than a bare word the language reserves -- a
         // size is a question about memory, so it is asked of the type that owns memory. Folded here
@@ -7450,39 +7451,39 @@ struct CodeGenerator::Impl {
         // The argument is taken as a TYPE whenever it names one (including a primitive or a vec2,
         // which `llvmType` alone cannot tell from an expression), and only otherwise as an expression
         // whose static type is measured.
-        if (memName == "Memory.sizeof" && call.args.size() == 1) {
+        if (memName == "Raw.sizeof" && call.args.size() == 1) {
             long long bytes = 0;
             if (sizeOfTypeName(flattenCallee(*call.args[0]), bytes) ||
                 sizeOfTypeName(typeName(*call.args[0]), bytes))
                 return builder.getInt32(static_cast<std::uint32_t>(bytes));
-            error("Memory.sizeof(...) needs a type or an expression with a known type", call.loc);
+            error("Raw.sizeof(...) needs a type or an expression with a known type", call.loc);
             return nullptr;
         }
-        if (memName == "Memory.alloc") {
+        if (memName == "Allocator.alloc") {
             llvm::Value* n = emitExpr(*call.args[0]);
             if (n == nullptr) return nullptr;
             llvm::Value* p = builder.CreateCall(
                 mallocFn(), {builder.CreateIntCast(n, builder.getInt64Ty(), false)}, "mem.alloc");
             return builder.CreatePtrToInt(p, builder.getInt64Ty());
         }
-        if (memName == "Memory.free") {
+        if (memName == "Allocator.free") {
             llvm::Value* a = emitExpr(*call.args[0]);
             if (a == nullptr) return nullptr;
             builder.CreateCall(freeFn(), {builder.CreateIntToPtr(a, builder.getPtrTy())});
             return nullptr;
         }
-        if (memName == "Memory.getMemory") {
+        if (memName == "Raw.getMemory") {
             llvm::Value* p = emitLValue(*call.args[0]);  // the target's storage address
             if (p == nullptr) return nullptr;
             return builder.CreatePtrToInt(p, builder.getInt64Ty());
         }
-        if (memName == "Memory.read") {
+        if (memName == "Raw.read") {
             llvm::Value* a = emitExpr(*call.args[0]);
             if (a == nullptr) return nullptr;
             llvm::Type* t = llvmType(call.typeArgs.empty() ? "int" : call.typeArgs[0]);
             return builder.CreateLoad(t, builder.CreateIntToPtr(a, builder.getPtrTy()), "mem.read");
         }
-        if (memName == "Memory.write") {
+        if (memName == "Raw.write") {
             llvm::Value* a = emitExpr(*call.args[0]);
             llvm::Value* v = emitExpr(*call.args[1]);
             if (a == nullptr || v == nullptr) return nullptr;
@@ -7921,7 +7922,7 @@ struct CodeGenerator::Impl {
         }
         // Memory.writeString(address, src): bulk-copy src's bytes to a raw buffer via memcpy (used by
         // StringBuilder.append, replacing a byte-at-a-time charAt/write loop).
-        if (memName == "Memory.writeString") {
+        if (memName == "Raw.writeString") {
             llvm::Value* dstAddr = emitExpr(*call.args[0]);
             llvm::Value* srcStr = emitExpr(*call.args[1]);
             if (dstAddr == nullptr || srcStr == nullptr) return nullptr;
@@ -7930,7 +7931,7 @@ struct CodeGenerator::Impl {
             return nullptr;
         }
         // Memory.copy(dst, src, n): raw memcpy of n bytes between two addresses.
-        if (memName == "Memory.copy") {
+        if (memName == "Allocator.copy") {
             llvm::Value* dstAddr = emitExpr(*call.args[0]);
             llvm::Value* srcAddr = emitExpr(*call.args[1]);
             llvm::Value* n = fitInt(emitExpr(*call.args[2]), 64);
@@ -7941,7 +7942,7 @@ struct CodeGenerator::Impl {
         }
         // Memory.readString(address, len): build a String by copying `len` bytes from a raw buffer
         // (the new String owns its own copy). Used by StringBuilder.toString().
-        if (memName == "Memory.readString") {
+        if (memName == "Raw.readString") {
             llvm::Value* addr = emitExpr(*call.args[0]);
             llvm::Value* len = fitInt(emitExpr(*call.args[1]), 64);
             if (addr == nullptr || len == nullptr) return nullptr;

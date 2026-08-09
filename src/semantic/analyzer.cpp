@@ -2294,8 +2294,12 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
         if (!shadowable) builtinTypes_.insert(type);
     };
     builtin("Math", "Math", /*shadowable=*/true);  // spec 34.6: virtual so a user `class Math` works
-    builtin("Memory", "");        // spec 17.8: low-level memory API class, sits directly in bundle System
-                                  // -> `import System.Memory;` (bundle System, no namespace, type Memory)
+    // spec 17.8: the low-level memory API, as a NAMESPACE of classes that each do one thing --
+    // System.Memory.Allocator (alloc/free/copy) and System.Memory.Raw (read/write/sizeof/addressOf).
+    // It used to be a single class `Memory` hung straight off the bundle with no namespace at all,
+    // the only builtin shaped that way, which put a class where the hierarchy wants a namespace.
+    builtin("Allocator", "Memory");
+    builtin("Raw", "Memory");
     builtin("File", "IO");        // spec 34.4: static methods lower to runtime stdio
     builtin("Time", "Time");      // spec 34: clock + sleep builtins
     builtin("Net", "Net");        // spec 34: TCP builtins over runtime winsock
@@ -5668,29 +5672,33 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 return "double";
             }
         }
-        // Memory API (spec 17.8): the low-level, address-based memory API, now a first-class stdlib
-        // class System.Memory. Reached as System.Memory.X (fully qualified, always allowed) or, after
-        // `import System.Memory;`, as the short Memory.X. The short form requires the import, enforced
-        // through checkTypeAccessible exactly like System.Math.Math (System.* code stays exempt).
+        // Memory API (spec 17.8): a NAMESPACE of stdlib classes -- System.Memory.Allocator (alloc/
+        // free/copy) and System.Memory.Raw (read/write/readString/writeString/addressOf/sizeof).
+        // Reached fully qualified (always allowed) or, after `import System.Memory.Allocator;` /
+        // `import System.Memory.Raw;`, by the short Allocator.X / Raw.X. The short form requires the
+        // import, enforced through checkTypeAccessible exactly like System.Math.Math (System.* code
+        // stays exempt, and so does freestanding, whose systems core this is).
         std::string memName = name;
         if (memName.rfind("System.Memory.", 0) == 0) {
-            memName = "Memory." + memName.substr(14);
-        } else if (memName.rfind("Memory.", 0) == 0 && !freestanding_) {
-            checkTypeAccessible("Memory", call->loc);   // freestanding's systems core needs no import
+            memName = memName.substr(14);   // -> "Allocator.alloc" / "Raw.read"
+        } else if ((memName.rfind("Allocator.", 0) == 0 || memName.rfind("Raw.", 0) == 0) &&
+                   !freestanding_) {
+            checkTypeAccessible(memName.substr(0, memName.find('.')), call->loc);
         }
-        // `Memory.sizeof(T)` (spec issue #7): the byte size of a type, or of an expression's type. A
-        // size is a question about memory, so it is asked of the class that owns memory rather than
-        // by a bare word the language would have to reserve. Folded to a constant in the code
-        // generator, which is what lets a `static_assert` hold a struct to a byte budget.
+        // `Raw.sizeof(T)` (spec issue #7): the byte size of a type, or of an expression's type. A size
+        // is a question about how a value is laid out in memory, so it is asked of the class that
+        // reads and writes memory rather than by a bare word the language would have to reserve.
+        // Folded to a constant in the code generator, which is what lets a `static_assert` hold a
+        // struct to a byte budget.
         //
         // The argument may NAME A TYPE, which has no value to type-check -- but when it names no type
         // it is a VALUE, and a value must be checked like one. Skipping both is how a size of a
         // nonexistent name used to compile to a guessed 4 instead of saying the name means nothing.
         // The test is deliberately permissive: the code generator holds the real layout and decides,
         // so anything arguable passes here and only a bare name matching nothing is checked as a value.
-        if (memName == "Memory.sizeof") {
+        if (memName == "Raw.sizeof") {
             if (call->args.size() != 1) {
-                error("Memory.sizeof takes one type or expression", call->loc);
+                error("Raw.sizeof takes one type or expression", call->loc);
                 return "int";
             }
             const std::string spelled = comptime::typeNameSpelled(*call->args[0]);
@@ -5706,41 +5714,41 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (!looksLikeAType) typeOf(*call->args[0]);
             return "int";
         }
-        if (memName == "Memory.alloc") {
-            if (call->args.size() != 1) error("Memory.alloc takes a byte count", call->loc);
+        if (memName == "Allocator.alloc") {
+            if (call->args.size() != 1) error("Allocator.alloc takes a byte count", call->loc);
             else typeOf(*call->args.front());
             return "address";
         }
-        if (memName == "Memory.free") {
-            if (call->args.size() != 1) error("Memory.free takes an address", call->loc);
+        if (memName == "Allocator.free") {
+            if (call->args.size() != 1) error("Allocator.free takes an address", call->loc);
             else typeOf(*call->args.front());
             return "void";
         }
-        if (memName == "Memory.getMemory") {
-            if (call->args.size() != 1) error("Memory.getMemory takes one argument", call->loc);
+        if (memName == "Raw.getMemory") {
+            if (call->args.size() != 1) error("Raw.getMemory takes one argument", call->loc);
             else typeOf(*call->args.front());
             return "address";
         }
-        if (memName == "Memory.read") {
-            if (call->typeArgs.size() != 1) error("Memory.read<T> needs a type argument", call->loc);
+        if (memName == "Raw.read") {
+            if (call->typeArgs.size() != 1) error("Raw.read<T> needs a type argument", call->loc);
             else checkBitCounted(call->typeArgs[0], call->loc);  // int8/int16/... are freestanding-only
             for (const auto& a : call->args) typeOf(*a);
             return call->typeArgs.empty() ? "" : call->typeArgs[0];
         }
-        if (memName == "Memory.write") {
+        if (memName == "Raw.write") {
             if (!call->typeArgs.empty()) checkBitCounted(call->typeArgs[0], call->loc);  // bit-counted: freestanding-only
             for (const auto& a : call->args) typeOf(*a);
             return "void";
         }
-        // Memory.writeString(address, String): bulk-copy a String's bytes to a raw buffer (StringBuilder).
-        if (memName == "Memory.writeString") {
-            if (call->args.size() != 2) error("Memory.writeString takes (address, String)", call->loc);
+        // Raw.writeString(address, String): bulk-copy a String's bytes to a raw buffer (StringBuilder).
+        if (memName == "Raw.writeString") {
+            if (call->args.size() != 2) error("Raw.writeString takes (address, String)", call->loc);
             for (const auto& a : call->args) typeOf(*a);
             return "void";
         }
-        // Memory.copy(dst, src, n): raw memcpy of n bytes between two addresses (StringBuilder growth).
-        if (memName == "Memory.copy") {
-            if (call->args.size() != 3) error("Memory.copy takes (dst, src, n)", call->loc);
+        // Allocator.copy(dst, src, n): raw memcpy of n bytes between two addresses (StringBuilder growth).
+        if (memName == "Allocator.copy") {
+            if (call->args.size() != 3) error("Allocator.copy takes (dst, src, n)", call->loc);
             for (const auto& a : call->args) typeOf(*a);
             return "void";
         }
@@ -5879,8 +5887,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
         }
         // Memory.readString(address, len): build a String from a raw byte buffer (StringBuilder).
-        if (memName == "Memory.readString") {
-            if (call->args.size() != 2) error("Memory.readString takes (address, length)", call->loc);
+        if (memName == "Raw.readString") {
+            if (call->args.size() != 2) error("Raw.readString takes (address, length)", call->loc);
             for (const auto& a : call->args) typeOf(*a);
             return "String";
         }

@@ -1269,31 +1269,43 @@ TEST_CASE("semantic accepts low-level memory in freestanding mode") {
     CHECK(checkSrc(
         "program K freestanding; public bundle b freestanding { public namespace n {"
         " public class Main { public static method main(string[] args) returns int {"
-        " address a = Memory.alloc(8); int* p = cast<int*>(a); p[0] = 5;"
-        " int x = p[0]; Memory.free(a); return x; } } } }"));
+        " address a = Allocator.alloc(8); int* p = cast<int*>(a); p[0] = 5;"
+        " int x = p[0]; Allocator.free(a); return x; } } } }"));
 }
 
-// ---- System.Memory: a first-class stdlib class, import-gated in normal mode (spec 17.8) ----
+// ---- System.Memory: a NAMESPACE of stdlib classes, import-gated in normal mode (spec 17.8).
+// It used to be one class `Memory` hung straight off the bundle with no namespace -- the only
+// builtin shaped that way, a class where the hierarchy wants a namespace. ----
 
-TEST_CASE("semantic rejects the short Memory.* without importing System.Memory") {
+TEST_CASE("semantic rejects the short Allocator.* without importing System.Memory.Allocator") {
     CHECK_FALSE(checkSrc(
         "program M; public bundle b { public namespace app {"
         " public class Main { public static method main(string[] args) returns void {"
-        " address a = Memory.alloc(8); Memory.free(a); return; } } } }"));
+        " address a = Allocator.alloc(8); Allocator.free(a); return; } } } }"));
 }
 
-TEST_CASE("semantic accepts Memory.* after importing System.Memory") {
+TEST_CASE("semantic accepts Allocator.* after importing System.Memory.Allocator") {
     CHECK(checkSrc(
-        "import System.Memory; program M; public bundle b { public namespace app {"
+        "import System.Memory.Allocator; program M; public bundle b { public namespace app {"
         " public class Main { public static method main(string[] args) returns void {"
-        " address a = Memory.alloc(8); Memory.free(a); return; } } } }"));
+        " address a = Allocator.alloc(8); Allocator.free(a); return; } } } }"));
 }
 
-TEST_CASE("semantic accepts fully-qualified System.Memory.* without an import") {
+TEST_CASE("semantic accepts fully-qualified System.Memory.Allocator.* without an import") {
     CHECK(checkSrc(
         "program M; public bundle b { public namespace app {"
         " public class Main { public static method main(string[] args) returns void {"
-        " address a = System.Memory.alloc(8); System.Memory.free(a); return; } } } }"));
+        " address a = System.Memory.Allocator.alloc(8);"
+        " System.Memory.Allocator.free(a); return; } } } }"));
+}
+
+TEST_CASE("semantic accepts Raw.* after importing System.Memory.Raw") {
+    CHECK(checkSrc(
+        "import System.Memory.Allocator; import System.Memory.Raw;"
+        " program M; public bundle b { public namespace app {"
+        " public class Main { public static method main(string[] args) returns void {"
+        " address a = Allocator.alloc(8); Raw.write<int>(a, 5);"
+        " Allocator.free(a); return; } } } }"));
 }
 
 TEST_CASE("semantic rejects async in freestanding mode") {
