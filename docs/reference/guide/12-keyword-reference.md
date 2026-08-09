@@ -423,8 +423,17 @@ compiler lowers such a method to a state machine.
 #### `invariant`
 **hard.** A class invariant, checked before/after every public method.
 
-#### `static_assert`
-**hard.** An assertion validated at compile time.
+#### `demand`
+**hard.** A statement that settles a condition while the program is built: `demand <cond> otherwise
+"why";`. The condition must be knowable then, and it must hold. Emits nothing.
+
+#### `otherwise`
+**hard.** Introduces the reason on a `demand`.
+
+#### `layout`
+**hard.** An interface for memory, implemented by a value aggregate: it says how the type arranges
+itself. Its `onArrange` hook runs at build time and leaves nothing behind; implementing one lets the
+compiler order the type's fields. See §6.14.
 
 ---
 
