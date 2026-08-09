@@ -48,7 +48,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "ldp3c 1.0.21";
+constexpr std::string_view kVersion = "ldp3c 1.0.22";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -3203,29 +3203,29 @@ R"LDP3(
             private mutable int cap;
             public constructor StringBuilder() {
                 this.cap = 16;
-                this.buf = Memory.alloc(16);
+                this.buf = Allocator.alloc(16);
                 this.count = 0;
             }
             private method ensure(int extra) returns void {
                 if (this.count + extra <= this.cap) { return; }
                 mutable int n = this.cap * 2;
                 while (n < this.count + extra) { n = n * 2; }
-                address nb = Memory.alloc(n);
-                Memory.copy(nb, this.buf, this.count);  // bulk memcpy, not byte-by-byte
-                Memory.free(this.buf);
+                address nb = Allocator.alloc(n);
+                Allocator.copy(nb, this.buf, this.count);  // bulk memcpy, not byte-by-byte
+                Allocator.free(this.buf);
                 this.buf = nb;
                 this.cap = n;
             }
             public method append(String s) returns StringBuilder {
                 int n = s.length();
                 this.ensure(n);
-                Memory.writeString(this.buf + cast<address>(this.count), s);  // bulk memcpy, not byte-by-byte
+                Raw.writeString(this.buf + cast<address>(this.count), s);  // bulk memcpy, not byte-by-byte
                 this.count = this.count + n;
                 return this;
             }
             public method appendChar(char c) returns StringBuilder {
                 this.ensure(1);
-                Memory.write<byte>(this.buf + cast<address>(this.count), cast<byte>(c));  // one byte, not int-wide
+                Raw.write<byte>(this.buf + cast<address>(this.count), cast<byte>(c));  // one byte, not int-wide
                 this.count = this.count + 1;
                 return this;
             }
@@ -3234,14 +3234,14 @@ R"LDP3(
             }
             public method length() returns int { return this.count; }
             public method toString() returns String {
-                return Memory.readString(this.buf, this.count);
+                return Raw.readString(this.buf, this.count);
             }
             // The buffer is raw memory, so nothing else can reclaim it: without this every builder
             // leaked at least its initial 16 bytes plus whatever it grew to. Guarded and nulled so a
             // second release (an explicit `delete` followed by scope exit) is harmless.
             public destructor ~StringBuilder() returns void {
                 if (this.buf != cast<address>(0)) {
-                    Memory.free(this.buf);
+                    Allocator.free(this.buf);
                     this.buf = cast<address>(0);
                 }
             }

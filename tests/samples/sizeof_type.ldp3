@@ -1,5 +1,5 @@
 import System.IO.Console;
-import System.Memory;
+import System.Memory.Raw;
 program SizeofType;
 
 // A type's byte size, in the two spellings LDP3 keeps (spec, issue #7):
@@ -19,9 +19,9 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 int n = Pair.sizeof();         // 16 (vtable pointer + two ints; every class is an Object)
-                int n2 = Memory.sizeof(Pair);  // 16 -- the same size, asked the other way
+                int n2 = Raw.sizeof(Pair);     // 16 -- the same size, asked the other way
                 Pair p = new Pair() on stack;
-                int m = Memory.sizeof(p);      // size of p's type (pointer to Pair)
+                int m = Raw.sizeof(p);         // size of p's type (pointer to Pair)
                 System.IO.Console.printf("n=%d n2=%d mpos=%d\n", n, n2, m > 0);
                 return;
             }

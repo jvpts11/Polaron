@@ -1,6 +1,7 @@
 import System.IO.Console;
 import System.Memory.Units.bytes;
-import System.Memory;
+import System.Memory.Allocator;
+import System.Memory.Raw;
 
 program RegionAtAddress;
 
@@ -21,13 +22,13 @@ public bundle main {
         }
         public class Main {
             public static method main(string[] args) returns void {
-                address mem = Memory.alloc(256);          // stand-in for a fixed hardware address
+                address mem = Allocator.alloc(256);       // stand-in for a fixed hardware address
                 region hw = itself.at(mem, 256 bytes);
                 Cell* c = new Cell() in region hw;         // placed at the fixed address
                 c.v = 77;
-                System.IO.Console.printf("v=%d raw=%d\n", c.v, Memory.read<int>(mem));  // 77 77
+                System.IO.Console.printf("v=%d raw=%d\n", c.v, Raw.read<int>(mem));  // 77 77
                 release region hw;                          // frees the header, not the fixed memory
-                Memory.free(mem);
+                Allocator.free(mem);
                 return;
             }
         }

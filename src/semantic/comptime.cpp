@@ -260,18 +260,18 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
                 if (int r = evalStringBuiltin(*call, out, ctx, env); r != 0) return r == 1;
         }
         // A size, in the two spellings the language keeps (spec issue #7):
-        //   `T.sizeof()`        -- the type answers about itself
-        //   `Memory.sizeof(x)`  -- a static method on the stdlib's Memory class, and the only way to
-        //                          ask about an EXPRESSION rather than a named type
+        //   `T.sizeof()`     -- the type answers about itself
+        //   `Raw.sizeof(x)`  -- a static method on System.Memory.Raw, and the only way to ask about
+        //                       an EXPRESSION rather than a named type
         // Neither is a bare word the language reserves. The name being measured is READ, never
-        // evaluated -- `Memory.sizeof(float)` has no value to compute. Folds only where the context
-        // can answer for the target's layout (see Context::sizeOfType).
+        // evaluated -- `Raw.sizeof(float)` has no value to compute. Folds only where the context can
+        // answer for the target's layout (see Context::sizeOfType).
         {
             std::string tn;
             if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
                 sm != nullptr && sm->member == "sizeof") {
                 const std::string recv = typeNameSpelled(*sm->object);
-                if (call->args.size() == 1 && (recv == "Memory" || recv == "System.Memory"))
+                if (call->args.size() == 1 && (recv == "Raw" || recv == "System.Memory.Raw"))
                     tn = typeNameSpelled(*call->args[0]);
                 else if (call->args.empty())
                     tn = recv;  // T.sizeof()

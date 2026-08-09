@@ -1,8 +1,8 @@
 import System.IO.Console;
-import System.Memory;
+import System.Memory.Raw;
 program SizeofComptime;
 
-// `Memory.sizeof(T)` as a COMPILE-TIME constant (spec 28.2 + issue #7). A size is a question about
+// `Raw.sizeof(T)` as a COMPILE-TIME constant (spec 28.2 + issue #7). A size is a question about
 // memory, so it is asked of the stdlib class that owns memory -- not by a bare `sizeof` the language
 // would have to reserve as a keyword. It folds against the target's data layout, so a struct can
 // carry a byte budget the build enforces, and the same expression at run time must agree with what
@@ -56,27 +56,27 @@ public bundle Main {
 
         public class Main {
             public static method main(string[] args) returns void {
-                static_assert(Memory.sizeof(Packed) == 20, "Packed must stay 20 bytes");
-                static_assert(Memory.sizeof(Packed) <= 24, "Packed must not outgrow its budget");
-                static_assert(Memory.sizeof(TwoNibbles) == 1, "adjacent bit fields share a unit");
-                static_assert(Memory.sizeof(vec2) == 8, "a vec2 is two float32 lanes");
-                static_assert(Memory.sizeof(float) == 4 && Memory.sizeof(short) == 2,
+                static_assert(Raw.sizeof(Packed) == 20, "Packed must stay 20 bytes");
+                static_assert(Raw.sizeof(Packed) <= 24, "Packed must not outgrow its budget");
+                static_assert(Raw.sizeof(TwoNibbles) == 1, "adjacent bit fields share a unit");
+                static_assert(Raw.sizeof(vec2) == 8, "a vec2 is two float32 lanes");
+                static_assert(Raw.sizeof(float) == 4 && Raw.sizeof(short) == 2,
                               "primitives have sizes too");
-                static_assert(Memory.sizeof(Packed) > Memory.sizeof(TwoNibbles),
+                static_assert(Raw.sizeof(Packed) > Raw.sizeof(TwoNibbles),
                               "sizes compare like any int");
 
                 // What the assertions checked must be what the program actually has.
-                System.IO.Console.println($"Packed = {Memory.sizeof(Packed)}");
-                System.IO.Console.println($"TwoNibbles = {Memory.sizeof(TwoNibbles)}");
-                System.IO.Console.println($"vec2 = {Memory.sizeof(vec2)}");
-                System.IO.Console.println($"vec4 = {Memory.sizeof(vec4)}");
-                System.IO.Console.println($"float = {Memory.sizeof(float)}");
-                System.IO.Console.println($"short = {Memory.sizeof(short)}");
-                System.IO.Console.println($"long = {Memory.sizeof(long)}");
+                System.IO.Console.println($"Packed = {Raw.sizeof(Packed)}");
+                System.IO.Console.println($"TwoNibbles = {Raw.sizeof(TwoNibbles)}");
+                System.IO.Console.println($"vec2 = {Raw.sizeof(vec2)}");
+                System.IO.Console.println($"vec4 = {Raw.sizeof(vec4)}");
+                System.IO.Console.println($"float = {Raw.sizeof(float)}");
+                System.IO.Console.println($"short = {Raw.sizeof(short)}");
+                System.IO.Console.println($"long = {Raw.sizeof(long)}");
 
                 // A size over an EXPRESSION still measures that expression's type.
                 mutable long n = 7;
-                System.IO.Console.println($"local long = {Memory.sizeof(n)}");
+                System.IO.Console.println($"local long = {Raw.sizeof(n)}");
                 return;
             }
         }

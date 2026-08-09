@@ -1,5 +1,5 @@
 import System.IO.Console;
-import System.Memory;
+import System.Memory.Allocator;
 
 program RegionAtMultiple;
 
@@ -13,8 +13,8 @@ public bundle main {
         public class Cat { public mutable int id; public constructor Cat(int id) { this.id = id; } }
         public class Main {
             public static method main(string[] args) returns void {
-                address a0 = Memory.alloc(256);
-                address a1 = Memory.alloc(256);
+                address a0 = Allocator.alloc(256);
+                address a1 = Allocator.alloc(256);
                 region zoo = itself.atMultiple({
                     a0 accepts {Dog},
                     a1 accepts {Cat}
@@ -22,8 +22,8 @@ public bundle main {
                 Dog* d = new Dog(7) in region zoo;    // routes to a0 (accepts Dog)
                 Cat* c = new Cat(9) in region zoo;    // routes to a1 (accepts Cat)
                 System.IO.Console.printf("d=%d c=%d\n", d.id, c.id);
-                Memory.free(a0);
-                Memory.free(a1);
+                Allocator.free(a0);
+                Allocator.free(a1);
                 return;
             }
         }
