@@ -47,7 +47,7 @@ public class Cfg {
 A constant may refer to a sibling constant through its owning type (`Cfg.MAX`), and the evaluator
 resolves the whole chain before any code is generated. Because the result is a true constant, it can
 be used anywhere the language expects a compile-time value — including as the size of a stack array
-or as the condition of a `static_assert`.
+or as the condition of a `demand`.
 
 ### `comptime` locals
 
@@ -152,23 +152,37 @@ mutable string r = "hello";
 int n = Sql.len(r);   // error: the argument to a comptime parameter must be constant
 ```
 
-### `static_assert`
+### `demand`
 
-`static_assert(condition, "message")` checks an invariant at compile time. It shares the one
-compile-time evaluator with `comptime` and `fixed`, so its condition may reference named constants
-*and* call `comptime` methods. If the condition holds the assertion vanishes from the build; if it
-fails, compilation stops with your message:
+`demand <condition> otherwise "why";` settles a condition while the program is being built. It is a
+**statement**, not a call — it stands beside `return`, `delete`, `throw` and `release`, takes no
+receiver, returns nothing and emits nothing. It shares the one compile-time evaluator with
+`comptime` and `fixed`, so its condition may reference named constants *and* call `comptime`
+methods:
 
 ```ldp3
-static_assert(2 + 2 == 4, "math is broken");
-static_assert(16 * 1024 < 65536, "buffer does not fit");
-static_assert(Math.fib(10) == 55, "fib(10) must be 55");   // calls a comptime method
+demand 2 + 2 == 4 otherwise "math is broken";
+demand 16 * 1024 < 65536 otherwise "the buffer does not fit";
+demand Math.fib(10) == 55 otherwise "fib(10) must be 55";   // calls a comptime method
 ```
 
-A false condition is a hard compile error — `static_assert(Math.fib(10) == 99, "...")` refuses to
-build and prints its message. This is the idiomatic way to encode assumptions your code depends on
-(sizes, table lengths, protocol constants) so they are verified once, at build time, instead of
-being hoped for at runtime.
+If the condition holds, nothing at all reaches the executable. If it fails, compilation stops:
+
+```
+error[LDP3-0806]: demand not met: fib(10) must be 55
+```
+
+The `otherwise` text is the **reason**, not a restatement of the condition. The condition already
+says `== 55`; the message is there to say why 55 matters, and it is what the failure prints.
+
+A demand belongs in a method body, like any other statement. Its condition must be knowable at build
+time — a non-constant condition is refused rather than deferred to runtime, because a check that
+silently moves to runtime is a guarantee you have lost without being told.
+
+Use it for the assumptions your code depends on: table lengths, protocol constants, arithmetic that
+has to come out a certain way. For **the size of a type**, reach for a [`layout`](06-oop.md) instead —
+a byte budget is a property of the type rather than a condition about the program, and a layout lets
+the compiler arrange the fields to meet it instead of merely refusing when they do not.
 
 ### Guardrails
 
@@ -182,7 +196,7 @@ public static comptime method spin(int n) returns int {
 }
 ```
 
-Compile-time evaluation, `fixed`, `comptime`, `comptime if`, and `static_assert` are all pure
+Compile-time evaluation, `fixed`, `comptime`, `comptime if`, and `demand` are all pure
 compile-time machinery. They emit no runtime support code, so they are fully available in
 **freestanding** mode.
 
@@ -651,7 +665,7 @@ whether they need it. The table below is the summary; each rule is enforced by t
 
 | Feature | Freestanding? | Why |
 |---|---|---|
-| `fixed` constants, `comptime` (local / method / `if`), `static_assert` | **Yes** | Pure compile-time; emit no runtime code. |
+| `fixed` constants, `comptime` (local / method / `if`), `demand`, `layout` | **Yes** | Pure compile-time; emit no runtime code. |
 | `cascade` (delete / clone / move / validate / …) | **Yes** | A self-contained runtime graph walk. |
 | `cascade unimport` | No | Unimport is a managed-runtime service. |
 | `eternal` | **Yes** | A lifetime decision the compiler enforces by omitting cleanup. |

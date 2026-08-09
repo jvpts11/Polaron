@@ -475,22 +475,31 @@ public class Stepper extends Counter {
 If `down` ever drove `count` below zero, the inherited invariant would fire on the
 way out of `down`, even though the rule was written on `Counter`.
 
-### `static_assert`: the compile-time cousin
+### `demand`: the compile-time cousin
 
-Contracts are checked as the program runs. Sometimes the thing you want to assert
-is knowable at *compile time* — a buffer size, a layout assumption, a bit of
-arithmetic that must come out a certain way. `static_assert(condition, "message")`
-checks a constant condition during compilation and emits no runtime code at all:
+Contracts are checked as the program runs. Sometimes the thing you want to state
+is knowable at *build time* — a buffer size, a table length, a bit of arithmetic
+that must come out a certain way. `demand <condition> otherwise "why";` settles a
+constant condition during compilation and emits no runtime code at all:
 
 ```ldp3
-static_assert(2 + 2 == 4, "math is broken");
-static_assert(16 * 1024 < 65536, "buffer does not fit");
+demand 2 + 2 == 4 otherwise "math is broken";
+demand 16 * 1024 < 65536 otherwise "the buffer does not fit";
 ```
 
-If the condition is false, the build fails with your message. If it is true,
-`static_assert` disappears entirely — there is nothing left to run. Think of it as
-a `requires` clause on the program's own assumptions, paid for once at compile time
-instead of on every call.
+If the condition is false the build stops with your reason. If it is true the
+demand disappears entirely — there is nothing left to run. Think of it as a
+`requires` clause on the program's own assumptions, paid once while building
+rather than on every call.
+
+It is a **statement**, like `return` or `throw`, so it lives in a method body and
+carries no parentheses of its own. Its condition must be knowable then: one that
+does not fold is refused outright, never quietly deferred to runtime.
+
+For the **size of a type**, use a [`layout`](06-oop.md) rather than a demand. A byte
+budget is a property of the type, not a condition about the program — and a layout
+lets the compiler order the fields to meet it, which is a guarantee rather than a
+check. See §10 for how `demand` shares its evaluator with `comptime` and `fixed`.
 
 ---
 
@@ -594,7 +603,7 @@ To close, a rule of thumb for a chapter that has offered several overlapping too
   `using`, region releases, and mutex unlocks to run during that unwind.
 - **Contracts (`requires`/`ensures`/`invariant`)** — for stating and enforcing the
   rules a method assumes and promises; a violation is a bug and stops the program.
-  Use `static_assert` for the assumptions you can check at compile time.
+  Use `demand` for the assumptions you can settle at compile time.
 - **The no-UB guarantee** — you don't reach for this; it is always on. Overflow,
   division by zero, out-of-bounds access, and null dereference are all
   deterministic, so even the failures you never anticipated stop cleanly instead of

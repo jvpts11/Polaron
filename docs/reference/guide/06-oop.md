@@ -678,6 +678,68 @@ if they were declared plainly. Affinity is inherited safely: a subclass's object
 with exactly the base's layout, and only the subclass's own fields are grouped.
 
 With classes, inheritance, interfaces, virtual dispatch, properties, operators, enums, and
+## 6.14 Layouts: an interface for memory
+
+An interface says what a type **does**. A layout says how a type **arranges itself**. Those are
+separate questions, so a layout is not a fourth species beside `struct`, `record` and `union` — it
+crosses them:
+
+```ldp3
+public layout ThreeToALine {
+    onArrange {
+        itself.fitWithin(20 bytes);
+        itself.refuse("a beast must stay three to a cache line");
+    }
+}
+
+public struct Beast implements ThreeToALine {
+    public mutable float x;
+    public mutable float y;
+    public mutable int   herd;
+    public mutable short stamina;
+    public mutable short age;
+}
+```
+
+`implements` needed no new grammar for this. A struct cannot `extends` — it has no vtable to inherit
+through — but implementing was never inheriting, which is why the door was already open.
+
+**Implementing a layout authorizes the compiler to order the fields**, and that is the point of the
+feature rather than a side effect. A check that only refuses is a guard against a problem that could
+have been solved; here it can be solved, because the compiler knows every size and alignment and
+LDP3 exposes no offsets. Fields are ordered widest-first, so the padding a declaration order pays
+for simply is not spent. The build refuses only what could not be made to fit, and says so:
+
+```
+error: `Tick` is arranged by `Packed`, which fits it within 12 bytes -- it measures 16.
+       The fields were already ordered widest-first to make it fit, so reordering them by
+       hand will not help: something has to be narrower, or leave
+       (a tick must stay five to a cache line)
+```
+
+### What a layout is not
+
+A layout **establishes no contract** in the `requires`/`ensures` sense. A contract survives into the
+binary and can fail while the program runs; a layout is consumed entirely by the compiler, and a
+layout that cannot be satisfied means there is no program at all.
+
+Nothing inside `onArrange` names a library type — not even the byte unit, which the compiler reads
+directly. So layouts hold in freestanding by construction, rather than by a rule forbidding the
+library. Inside the hook, `itself` is the arrangement being decided.
+
+A layout applies to value aggregates because only they own a layout at the point of use: where a
+`Beast` is used, twenty bytes are there. Where a class is used, a pointer is — and the vtable slot at
+the front of the instance belongs to the compiler, not to the author.
+
+**Modifiers.** A layout may be `public`/`private`/`internal`, `final` (it cannot be refined), or
+`sealed ... permits` (only the listed types may implement it). `abstract` and `comptime` are refused
+with a reason: a layout is already both. So are `partial`, the ownership modifiers, and `heap`.
+
+For conditions that are *not* about a type's size — a table length, a protocol constant, arithmetic
+that has to come out a certain way — use [`demand`](10-metaprogramming-and-prefixes.md) instead.
+
+---
+
 field-layout hints in hand, you have the whole object model LDP3 offers. The recurring themes —
 explicit over implicit (visibility, `this.`, `override`), value semantics with opt-in
 sharing, and immutability by default — are worth keeping in mind as you read the

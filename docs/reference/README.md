@@ -28,7 +28,7 @@ A single typeset PDF of everything below:
 | 7 | [Control Flow](guide/07-control-flow.md) | `if`/`while`/`for`/`foreach`/ranges, `switch`, `match`, labelled `break`/`continue`, and the chaos tetrad. |
 | 8 | [Errors, Results & Contracts](guide/08-errors-and-contracts.md) | Exceptions, `Result`/`Option`/`try?`, `requires`/`ensures`/`invariant`, and the no-UB principle. |
 | 9 | [Concurrency](guide/09-concurrency.md) | `async`/`await` + `Task`, `Thread`, `Mutex`/`synchronized`, `atomic`, `Channel`/`select`. |
-| 10 | [Compile-Time, Reflection & Universal Prefixes](guide/10-metaprogramming-and-prefixes.md) | `comptime`, `static_assert`, reflection, annotations, lifecycle hooks, and `cascade`/`eternal`/`lazy`/`comptime`/`volatile`/`final`. |
+| 10 | [Compile-Time, Reflection & Universal Prefixes](guide/10-metaprogramming-and-prefixes.md) | `comptime`, `demand`, reflection, annotations, lifecycle hooks, and `cascade`/`eternal`/`lazy`/`comptime`/`volatile`/`final`. |
 | 11 | [Systems Programming](guide/11-systems-programming.md) | Compiler builtins (`String`, `Decimal`, `Memory`/`address`, SIMD, `Console`), FFI (`extern` + `native_libs`), and freestanding mode. |
 | 12 | [Keyword Reference](guide/12-keyword-reference.md) | Every reserved word, grouped by role, with its meaning, syntax, an example, and its exact status. |
 | 14 | [Functions, Lambdas & Tuples](guide/14-functions-and-lambdas.md) | First-class functions, the `function<>` type, lambdas + `byvalue`/`byref` captures, `methodref`, `funcptr<>` for FFI, tuple returns, and named arguments. |
