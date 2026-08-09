@@ -242,6 +242,43 @@ struct UnaryExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// The stdlib's BUILTIN STATIC CLASSES: types whose static methods are compiler intrinsics rather
+// than LDP3 code. Written down ONCE, for the same reason as the predicate below -- two copies of a
+// list like this are a defect waiting for the day they disagree, and that day already came: the
+// monomorphizer had its own copy, so a class declaring a generic `read<T>` rewrote every
+// `Raw.read<int>` in the program into a builtin that does not exist.
+//
+// Two consumers. The analyzer registers each as a type in its namespace; the monomorphizer must know
+// them so generic-method expansion leaves their type arguments alone (a builtin's `<int>` says what
+// to load, not which template to instantiate).
+struct BuiltinStaticClass {
+    const char* name;
+    const char* ns;      // namespace inside bundle System
+    bool shadowable;     // may a user class of the same name take precedence?
+};
+inline const std::vector<BuiltinStaticClass>& builtinStaticClasses() {
+    static const std::vector<BuiltinStaticClass> kAll = {
+        {"Math", "Math", true},        // spec 34.6: virtual so a user `class Math` works
+        {"Allocator", "Memory", false},  // spec 17.8: alloc/free/copy
+        {"Raw", "Memory", false},        // spec 17.8: read/write/sizeof/addressOf
+        {"File", "IO", false},           // spec 34.4: static methods lower to runtime stdio
+        {"Time", "Time", false},         // spec 34: clock + sleep builtins
+        {"Net", "Net", false},           // spec 34: TCP builtins over runtime winsock
+        {"Ipc", "Ipc", false},           // spec 2.8: cross-program transport builtins
+        {"Bits", "Ipc", false},          // exact double<->long bit reinterpretation (IEEE-754)
+        {"Process", "OS", false},        // spec 34: subprocess builtin (Process.run)
+        {"Env", "OS", false},            // spec 34: environment-variable builtins
+        {"Subproc", "OS", false},        // low-level persistent-subprocess builtins
+        {"Conpty", "OS", false},         // low-level pseudo-console builtins
+    };
+    return kAll;
+}
+inline bool isBuiltinStaticClassName(const std::string& n) {
+    for (const BuiltinStaticClass& b : builtinStaticClasses())
+        if (n == b.name) return true;
+    return n == "reflect";  // a builtin NAMESPACE rather than a class, but calls on it read the same
+}
+
 // Unsigned integer type names. `byte` is int8 (SIGNED) per spec 5 -- exactly the sort of fact that two
 // copies of this predicate would eventually disagree about, which is why there is one and both the
 // analyzer and the code generator call it.

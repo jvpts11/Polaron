@@ -1009,12 +1009,11 @@ std::string receiverClassName(const ast::Expr* obj) {
 // `Raw.read$int`, which is no builtin at all -- so the receiver stopped resolving and the error came
 // out as "use of undeclared variable 'Raw'", pointing at innocent code in another file.
 //
-// The names mirror the `builtin(...)` registrations in analyzer.cpp.
+// The list is ast::builtinStaticClasses(), shared with the analyzer's registration: a second copy
+// here would rot the first time a builtin was added to only one of them, which is the same shape of
+// mistake as the one above.
 bool isBuiltinStaticReceiver(const ast::Expr* obj) {
-    static const std::set<std::string> kBuiltinClasses = {
-        "Allocator", "Raw",  "Memory",  "Math",    "File",   "Time",  "Net",
-        "Ipc",       "Bits", "Process", "Subproc", "Conpty", "Env",   "reflect"};
-    return kBuiltinClasses.count(receiverClassName(obj)) > 0;
+    return ast::isBuiltinStaticClassName(receiverClassName(obj));
 }
 
 void rewriteMethExpr(ast::Expr* e) {
