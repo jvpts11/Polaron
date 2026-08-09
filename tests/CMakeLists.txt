@@ -3061,7 +3061,7 @@ if(LDP3_WITH_LLVM)
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sizeof_type.ldp3"
-            "-DEXPECTED=n=16 n2=16 mpos=1"
+            "-DEXPECTED=n=16 mpos=1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -4118,7 +4118,7 @@ if(LDP3_WITH_LLVM)
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sizeof_comptime.ldp3"
-            "-DEXPECTED=Packed = 20 TwoNibbles = 1 vec2 = 8 vec4 = 16 float = 4 short = 2 long = 8 member form = 20 local long = 8"
+            "-DEXPECTED=Packed = 20 TwoNibbles = 1 vec2 = 8 vec4 = 16 float = 4 short = 2 long = 8 local long = 8"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

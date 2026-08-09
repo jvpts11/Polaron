@@ -1,8 +1,11 @@
 import System.IO.Console;
+import System.Memory;
 program SizeofType;
 
-// sizeof(Type) / sizeof(expr) and the Type.sizeof() member form (spec, issue #7): the byte size of
-// a type or an expression's type. Both spellings are accepted and equivalent.
+// `Memory.sizeof(T)` (spec, issue #7): the byte size of a type, or of an expression's type. A size
+// is a question about memory, so it is asked of the stdlib class that owns memory. The bare
+// `sizeof(T)` and the `T.sizeof()` member form are both GONE: issue #7 asked for one spelling, and
+// a reserved-looking word that was never actually a keyword was the worst of the three.
 
 public bundle main {
     public namespace app {
@@ -13,11 +16,10 @@ public bundle main {
         }
         public class Main {
             public static method main(string[] args) returns void {
-                int n = sizeof(Pair);          // 16 (vtable pointer + two ints; every class is an Object)
-                int n2 = Pair.sizeof();        // 16 (the member form)
+                int n = Memory.sizeof(Pair);   // 16 (vtable pointer + two ints; every class is an Object)
                 Pair p = new Pair() on stack;
-                int m = sizeof(p);             // size of p's type (pointer to Pair)
-                System.IO.Console.printf("n=%d n2=%d mpos=%d\n", n, n2, m > 0);
+                int m = Memory.sizeof(p);      // size of p's type (pointer to Pair)
+                System.IO.Console.printf("n=%d mpos=%d\n", n, m > 0);
                 return;
             }
         }

@@ -7145,24 +7145,6 @@ struct CodeGenerator::Impl {
                 }
             }
         }
-        // Type.sizeof() (spec issue #7): the member form, equivalent to sizeof(Type).
-        if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
-            sm != nullptr && sm->member == "sizeof" && call.args.empty()) {
-            if (long long bytes = 0; sizeOfTypeName(flattenCallee(*sm->object), bytes))
-                return builder.getInt32(static_cast<std::uint32_t>(bytes));
-        }
-        // sizeof(Type) / sizeof(expr) (spec, issue #7): the byte size of a type or an expression's
-        // type, as an int. The argument is taken as a TYPE whenever it names one -- including a
-        // primitive or a vec2, which `llvmType` alone cannot distinguish from an expression --
-        // and only otherwise as an expression whose static type is measured.
-        if (name == "sizeof" && call.args.size() == 1) {
-            long long bytes = 0;
-            if (sizeOfTypeName(flattenCallee(*call.args[0]), bytes) ||
-                sizeOfTypeName(typeName(*call.args[0]), bytes))
-                return builder.getInt32(static_cast<std::uint32_t>(bytes));
-            error("sizeof(...) needs a type or an expression with a known type", call.loc);
-            return nullptr;
-        }
         // embed("path") (spec 36): read a file AT COMPILE TIME and materialize it as a `byte[]` constant
         // in the image. This is how a freestanding program carries data it must not load from a
         // filesystem it does not have -- a guest binary, a font, a firmware blob -- without dropping to an
@@ -7451,6 +7433,23 @@ struct CodeGenerator::Impl {
         // qualified System.Memory.X and the short Memory.X (the semantic phase enforces the import).
         const std::string memName =
             (name.rfind("System.Memory.", 0) == 0) ? "Memory." + name.substr(14) : name;
+        // `Memory.sizeof(T)` (spec issue #7): the byte size of a type, or of an expression's type, as
+        // an int. A static method on this class rather than a bare word the language reserves -- a
+        // size is a question about memory, so it is asked of the type that owns memory. Folded here
+        // and not emitted: it is a compile-time constant, which is what lets a `static_assert` hold a
+        // struct to a byte budget.
+        //
+        // The argument is taken as a TYPE whenever it names one (including a primitive or a vec2,
+        // which `llvmType` alone cannot tell from an expression), and only otherwise as an expression
+        // whose static type is measured.
+        if (memName == "Memory.sizeof" && call.args.size() == 1) {
+            long long bytes = 0;
+            if (sizeOfTypeName(flattenCallee(*call.args[0]), bytes) ||
+                sizeOfTypeName(typeName(*call.args[0]), bytes))
+                return builder.getInt32(static_cast<std::uint32_t>(bytes));
+            error("Memory.sizeof(...) needs a type or an expression with a known type", call.loc);
+            return nullptr;
+        }
         if (memName == "Memory.alloc") {
             llvm::Value* n = emitExpr(*call.args[0]);
             if (n == nullptr) return nullptr;
