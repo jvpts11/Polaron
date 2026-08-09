@@ -1024,22 +1024,30 @@ TEST_CASE("semantic rejects a generic instantiation that violates its constraint
         "int n = 5; Box<int> b = new Box<int>(&n) on stack;")));
 }
 
-TEST_CASE("semantic accepts a true static_assert") {
+TEST_CASE("semantic accepts a demand that holds") {
     CHECK(checkSrc(wrapMain(
         "public static method main(string[] args) returns void {"
-        " static_assert(2 + 2 == 4, \"ok\"); }")));
+        " demand 2 + 2 == 4 otherwise \"ok\"; }")));
 }
 
-TEST_CASE("semantic rejects a false static_assert") {
+TEST_CASE("semantic rejects a demand that does not hold") {
     CHECK_FALSE(checkSrc(wrapMain(
         "public static method main(string[] args) returns void {"
-        " static_assert(1 == 2, \"nope\"); }")));
+        " demand 1 == 2 otherwise \"nope\"; }")));
 }
 
-TEST_CASE("semantic rejects a non-constant static_assert") {
+TEST_CASE("semantic rejects a demand whose condition is not constant") {
     CHECK_FALSE(checkSrc(wrapMain(
         "public static method main(string[] args) returns void {"
-        " mutable int x = 3; static_assert(x == 3, \"not const\"); }")));
+        " mutable int x = 3; demand x == 3 otherwise \"not const\"; }")));
+}
+
+// A demand is a statement, so it belongs in a method body and nowhere else. Refused in a class body
+// with a reason, rather than with the parser tripping over an unexpected token.
+TEST_CASE("semantic rejects a demand outside a method") {
+    CHECK_FALSE(checkSrc(
+        "program P; public bundle B { public namespace N { public class C {"
+        " demand 2 + 2 == 4 otherwise \"nope\"; } } }"));
 }
 
 TEST_CASE("semantic accepts break and continue inside loops") {

@@ -1,0 +1,22 @@
+import System.IO.Console;
+program Demand;
+
+// `demand <cond> otherwise "why";` settles a condition while the program is being built (spec 28.2).
+// A STATEMENT, beside return / delete / throw / release -- not a call. The C++ spelling was a
+// function of two arguments, and a function is the one thing this is not: it has no receiver,
+// returns nothing, and emits nothing. It is also a keyword rather than a library class, because one
+// of the places it matters most is freestanding, where there is no library to hold it.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                demand 2 + 2 == 4 otherwise "math is broken";
+                demand 16 * 1024 < 65536 otherwise "buffer does not fit";
+                demand !(1 > 2) otherwise "logic is broken";
+                System.IO.Console.println($"checks passed = {1}");
+                return;
+            }
+        }
+    }
+}

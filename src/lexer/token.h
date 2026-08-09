@@ -48,7 +48,11 @@ enum class TokenKind : std::uint8_t {
     KwExtends, KwImplements, KwThis, KwSuper,
     KwSealed, KwPermits,
     KwRequires, KwEnsures, KwInvariant,
-    KwStaticAssert,
+    // `demand <cond> otherwise "why";` -- a compile-time check. A STATEMENT, not a call: the C++
+    // spelling was a function taking two arguments, and a function is the one thing this is not.
+    // Keyword rather than library, because the places it matters most include freestanding, where
+    // there is no library to hold it.
+    KwDemand, KwOtherwise,
     KwVar, KwNew, KwDelete, KwOn, KwIn,
     KwIs, KwAs, KwCast, KwNull,
 

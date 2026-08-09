@@ -89,7 +89,7 @@ enum class Code {
     RegionGrowableContradiction,  // LDP3-1712: growable + ring / at-address / stack
     VectorMisuse,         // a vec/mat operation with the wrong shape or component
     UnimportMisuse,       // unimport/reimport used wrongly
-    StaticAssert,         // a failed or non-constant static_assert
+    Demand,               // a `demand` that did not hold, or whose condition was not constant
     ComptimeConstant,     // a value required to be a compile-time constant but is not
     PersistentLifecycle,  // a persistent with no `release persistent` in the program
 

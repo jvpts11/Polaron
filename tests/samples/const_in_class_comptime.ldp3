@@ -12,7 +12,7 @@ public bundle main {
         }
         public class Main {
             public static method main(string[] args) returns void {
-                static_assert(Cfg.MAX > 50, "max too small");
+                demand Cfg.MAX > 50 otherwise "max too small";
                 System.IO.Console.printf("d=%d\n", Cfg.DOUBLED);   // 200
                 return;
             }

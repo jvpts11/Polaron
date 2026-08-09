@@ -20,7 +20,7 @@ public bundle Main {
 
             // In a method of the type, and nothing calls it. It must fail the build anyway.
             public static method budget() returns void {
-                static_assert(Raw.sizeof(Wide) <= 8, "Wide must fit eight bytes");
+                demand Raw.sizeof(Wide) <= 8 otherwise "Wide must fit eight bytes";
                 return;
             }
         }

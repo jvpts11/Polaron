@@ -10592,12 +10592,13 @@ struct CodeGenerator::Impl {
         // checked every condition it could fold, and deferred exactly those mentioning `sizeof` --
         // a size is only knowable against the target's layout, which exists here and nowhere
         // earlier. Re-checking only the deferred ones keeps each assertion reported once.
-        if (const auto* sa = dynamic_cast<const ast::StaticAssertStmt*>(&stmt)) {
+        if (const auto* sa = dynamic_cast<const ast::DemandStmt*>(&stmt)) {
             if (comptime::mentionsSizeof(*sa->condition)) {
                 if (long long v = 0; !foldConstInt(*sa->condition, v))
-                    error("static_assert requires a constant expression", sa->loc);
+                    error("a demand is settled while the program is built, so its condition has to "
+                          "be known then -- this one is not constant", sa->loc);
                 else if (v == 0)
-                    error("static assertion failed: " + sa->message, sa->loc);
+                    error("demand not met: " + sa->message, sa->loc);
             }
             return;
         }

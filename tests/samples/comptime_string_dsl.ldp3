@@ -20,7 +20,7 @@ public bundle main {
         }
         public class Main {
             public static method main(string[] args) returns void {
-                static_assert(Sql.colCount("a,b,c") == 3, "colCount must fold at compile time");
+                demand Sql.colCount("a,b,c") == 3 otherwise "colCount must fold at compile time";
                 System.IO.Console.printf("cols=%d\n", Sql.COLS);
                 return;
             }

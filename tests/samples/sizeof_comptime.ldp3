@@ -39,7 +39,7 @@ public bundle Main {
             // placement worth anything is that the assertion is still checked. A budget that went
             // unchecked the moment nobody called it would be a trap wearing a guard's clothes.
             public static method budget() returns void {
-                static_assert(Packed.sizeof() == 20, "Packed must stay three to a cache line");
+                demand Packed.sizeof() == 20 otherwise "Packed must stay three to a cache line";
                 return;
             }
         }
@@ -56,14 +56,14 @@ public bundle Main {
 
         public class Main {
             public static method main(string[] args) returns void {
-                static_assert(Raw.sizeof(Packed) == 20, "Packed must stay 20 bytes");
-                static_assert(Raw.sizeof(Packed) <= 24, "Packed must not outgrow its budget");
-                static_assert(Raw.sizeof(TwoNibbles) == 1, "adjacent bit fields share a unit");
-                static_assert(Raw.sizeof(vec2) == 8, "a vec2 is two float32 lanes");
-                static_assert(Raw.sizeof(float) == 4 && Raw.sizeof(short) == 2,
-                              "primitives have sizes too");
-                static_assert(Raw.sizeof(Packed) > Raw.sizeof(TwoNibbles),
-                              "sizes compare like any int");
+                demand Raw.sizeof(Packed) == 20 otherwise "Packed must stay 20 bytes";
+                demand Raw.sizeof(Packed) <= 24 otherwise "Packed must not outgrow its budget";
+                demand Raw.sizeof(TwoNibbles) == 1 otherwise "adjacent bit fields share a unit";
+                demand Raw.sizeof(vec2) == 8 otherwise "a vec2 is two float32 lanes";
+                demand Raw.sizeof(float) == 4 && Raw.sizeof(short) == 2
+                    otherwise "primitives have sizes too";
+                demand Raw.sizeof(Packed) > Raw.sizeof(TwoNibbles)
+                    otherwise "sizes compare like any int";
 
                 // What the assertions checked must be what the program actually has.
                 System.IO.Console.println($"Packed = {Raw.sizeof(Packed)}");

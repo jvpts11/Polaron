@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.24")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.25")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.24")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.25")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -898,11 +898,11 @@ add_test(NAME sema_rejects_comptime_runaway
 set_tests_properties(sema_rejects_comptime_runaway PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
 
-# a failing static_assert (spec 28.2) -- condition uses a comptime call -- reports its message.
-add_test(NAME sema_rejects_static_assert_fail
-    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/static_assert_fail_bad.ldp3")
-set_tests_properties(sema_rejects_static_assert_fail PROPERTIES
-    PASS_REGULAR_EXPRESSION "static assertion failed: fib.10. is not 99")
+# a `demand` that does not hold (spec 28.2) -- condition uses a comptime call -- reports its reason.
+add_test(NAME sema_rejects_demand_fail
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/demand_fail_bad.ldp3")
+set_tests_properties(sema_rejects_demand_fail PROPERTIES
+    PASS_REGULAR_EXPRESSION "demand not met: fib.10. is not 99")
 
 # A byte budget that is EXCEEDED must fail the build. Checked with a full compile and not
 # `--check`, because a size is only knowable against the target's layout, which exists in the code
@@ -913,7 +913,7 @@ add_test(NAME codegen_rejects_exceeded_size_budget
     COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/sizeof_budget_bad.ldp3"
             -o "${CMAKE_CURRENT_BINARY_DIR}/sizeof_budget_bad.ll")
 set_tests_properties(codegen_rejects_exceeded_size_budget PROPERTIES
-    PASS_REGULAR_EXPRESSION "static assertion failed: Wide must fit eight bytes")
+    PASS_REGULAR_EXPRESSION "demand not met: Wide must fit eight bytes")
 
 # A parse error inside a string interpolation is reported WHERE IT IS. The embedded expression is
 # lexed and parsed on its own, so its diagnostics used to count from that substring's line 1 and
@@ -4348,11 +4348,11 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # static_assert (spec 28.2): compile-time checks; they hold, so the program builds/runs.
-        add_test(NAME codegen_static_assert_runs COMMAND "${CMAKE_COMMAND}"
+        # `demand` (spec 28.2): compile-time checks; they hold, so the program builds/runs.
+        add_test(NAME codegen_demand_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/static_assert.ldp3"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/demand.ldp3"
             "-DEXPECTED=checks passed = 1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
@@ -5045,12 +5045,12 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # static_assert conditions may use consts + comptime calls (shared evaluator).
-        add_test(NAME codegen_static_assert_comptime_runs COMMAND "${CMAKE_COMMAND}"
+        # a demand's condition may use consts + comptime calls (shared evaluator).
+        add_test(NAME codegen_demand_comptime_runs COMMAND "${CMAKE_COMMAND}"
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/static_assert_comptime.ldp3"
-            "-DEXPECTED=static asserts passed"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/demand_comptime.ldp3"
+            "-DEXPECTED=demands met"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

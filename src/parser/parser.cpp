@@ -2322,17 +2322,21 @@ ast::StmtPtr Parser::parseStatement() {
     if (check(TokenKind::KwSwitch)) {
         return parseSwitch();
     }
-    if (check(TokenKind::KwStaticAssert)) {
-        auto sa = std::make_unique<ast::StaticAssertStmt>();
-        sa->loc = current().loc;
-        advance();  // 'static_assert'
-        expect(TokenKind::LParen, "'('");
-        sa->condition = parseExpression();
-        expect(TokenKind::Comma, "',' (static_assert takes a message)");
-        sa->message = expect(TokenKind::StringLiteral, "a message string").lexeme;
-        expect(TokenKind::RParen, "')'");
+    // `demand <cond> otherwise "why";` -- a compile-time check, and a STATEMENT rather than a call.
+    // The C++ spelling was a function of two arguments, which put it in the one category this does
+    // not belong to: it takes no receiver, returns nothing, and emits nothing. Here it stands beside
+    // the other imperative statements -- return, delete, throw, release -- which is what it is.
+    if (check(TokenKind::KwDemand)) {
+        auto dm = std::make_unique<ast::DemandStmt>();
+        dm->loc = current().loc;
+        advance();  // 'demand'
+        dm->condition = parseExpression();
+        expect(TokenKind::KwOtherwise,
+               "'otherwise \"...\"' (a demand carries the reason it exists; the condition says what "
+               "must hold, the message says why)");
+        dm->message = expect(TokenKind::StringLiteral, "the reason, as a string").lexeme;
         expect(TokenKind::Semicolon, "';'");
-        return sa;
+        return dm;
     }
     if (check(TokenKind::KwBreak)) {
         auto b = std::make_unique<ast::BreakStmt>();
