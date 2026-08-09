@@ -5524,28 +5524,6 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                   "through printf and builds Strings, neither of which exists bare metal. Test a "
                   "freestanding program from outside -- boot it and assert on what it emits",
                   call->loc);
-        // sizeof(Type) / sizeof(expr) (spec, issue #7): byte size as an int. The argument may name a
-        // TYPE, which has no value to type-check -- but when it names no type it is a VALUE, and a
-        // value must be checked like one. Skipping both is how `sizeof(NoSuchType)` used to compile
-        // to a guessed 4 instead of saying the name means nothing.
-        //
-        // The test below is deliberately permissive: the codegen holds the real layout and is the
-        // authority on what a type is, so anything arguable passes here and is decided there. Only a
-        // bare name that plainly matches nothing falls through to the value check.
-        if (name == "sizeof" && call->args.size() == 1) {
-            const std::string spelled = comptime::typeNameSpelled(*call->args[0]);
-            const std::string bare = baseType(spelled);
-            const bool looksLikeAType =
-                !spelled.empty() &&
-                (spelled.find('<') != std::string::npos || spelled.find('.') != std::string::npos ||
-                 isNumeric(bare) || bare == "boolean" || bare == "char" || bare == "void" ||
-                 bare == "String" || bare == "string" || bare == "Object" || bare == "Decimal" ||
-                 bare == "vec2" || bare == "vec3" || bare == "vec4" || bare == "mat4" ||
-                 enums_.count(bare) > 0 || catalogs_.count(bare) > 0 || newtypes_.count(bare) > 0 ||
-                 classes_.count(bare) > 0 || lookupClass(bare) != nullptr);
-            if (!looksLikeAType) typeOf(*call->args[0]);
-            return "int";
-        }
         // embed("path") (spec 36): the file's bytes, materialized into the image at compile time.
         if (name == "embed" && call->args.size() == 1) {
             if (dynamic_cast<const ast::StringLiteralExpr*>(call->args[0].get()) == nullptr)
@@ -5554,11 +5532,6 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         if (name == "checked" && call->args.size() == 1)  // checked(expr): overflow-trapping, same type
             return typeOf(*call->args[0]);
-        // Type.sizeof() (spec issue #7): the member form on a class type.
-        if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-            sm != nullptr && sm->member == "sizeof" && call->args.empty() &&
-            lookupClass(baseType(flattenCallee(*sm->object))) != nullptr)
-            return "int";
         // Namespace-level literal suffix function called by name: kilobytes(64).
         if (auto lit = literals_.find(name); lit != literals_.end() && !lit->second.empty()) {
             // The bare call form `name(arg)` is gone (spec 17.10): a suffix is used as the `N name`
@@ -5697,6 +5670,34 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             memName = "Memory." + memName.substr(14);
         } else if (memName.rfind("Memory.", 0) == 0 && !freestanding_) {
             checkTypeAccessible("Memory", call->loc);   // freestanding's systems core needs no import
+        }
+        // `Memory.sizeof(T)` (spec issue #7): the byte size of a type, or of an expression's type. A
+        // size is a question about memory, so it is asked of the class that owns memory rather than
+        // by a bare word the language would have to reserve. Folded to a constant in the code
+        // generator, which is what lets a `static_assert` hold a struct to a byte budget.
+        //
+        // The argument may NAME A TYPE, which has no value to type-check -- but when it names no type
+        // it is a VALUE, and a value must be checked like one. Skipping both is how a size of a
+        // nonexistent name used to compile to a guessed 4 instead of saying the name means nothing.
+        // The test is deliberately permissive: the code generator holds the real layout and decides,
+        // so anything arguable passes here and only a bare name matching nothing is checked as a value.
+        if (memName == "Memory.sizeof") {
+            if (call->args.size() != 1) {
+                error("Memory.sizeof takes one type or expression", call->loc);
+                return "int";
+            }
+            const std::string spelled = comptime::typeNameSpelled(*call->args[0]);
+            const std::string bare = baseType(spelled);
+            const bool looksLikeAType =
+                !spelled.empty() &&
+                (spelled.find('<') != std::string::npos || spelled.find('.') != std::string::npos ||
+                 isNumeric(bare) || bare == "boolean" || bare == "char" || bare == "void" ||
+                 bare == "String" || bare == "string" || bare == "Object" || bare == "Decimal" ||
+                 bare == "vec2" || bare == "vec3" || bare == "vec4" || bare == "mat4" ||
+                 enums_.count(bare) > 0 || catalogs_.count(bare) > 0 || newtypes_.count(bare) > 0 ||
+                 classes_.count(bare) > 0 || lookupClass(bare) != nullptr);
+            if (!looksLikeAType) typeOf(*call->args[0]);
+            return "int";
         }
         if (memName == "Memory.alloc") {
             if (call->args.size() != 1) error("Memory.alloc takes a byte count", call->loc);

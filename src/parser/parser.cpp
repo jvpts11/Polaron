@@ -3587,12 +3587,13 @@ ast::ExprPtr Parser::parsePostfixOps(ast::ExprPtr base) {
             auto call = std::make_unique<ast::CallExpr>();
             call->loc = current().loc;
             advance();  // '('
-            // sizeof's argument names a TYPE (spec issue #7), and a primitive type is a keyword, not
-            // an identifier -- so `sizeof(float)` has no expression to parse and used to be a syntax
-            // error. Read the type here and carry its canonical spelling as a name; a class or vector
-            // name is already an identifier and takes the ordinary path below.
-            const auto* calleeId = dynamic_cast<const ast::IdentifierExpr*>(expr.get());
-            if (calleeId != nullptr && calleeId->name == "sizeof" && isTypeKeyword(current().kind)) {
+            // `Memory.sizeof(T)`'s argument names a TYPE (spec issue #7), and a primitive type is a
+            // keyword, not an identifier -- so `Memory.sizeof(float)` has no expression to parse and
+            // would be a syntax error. Read the type here and carry its canonical spelling as a name;
+            // a class or vector name is already an identifier and takes the ordinary path below.
+            const auto* calleeMem = dynamic_cast<const ast::MemberExpr*>(expr.get());
+            if (calleeMem != nullptr && calleeMem->member == "sizeof" &&
+                isTypeKeyword(current().kind)) {
                 auto named = std::make_unique<ast::IdentifierExpr>();
                 named->loc = current().loc;
                 ast::TypeRef t = parseTypeRef();

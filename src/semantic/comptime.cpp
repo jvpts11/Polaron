@@ -259,17 +259,17 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
             if (oid == nullptr || env.count(oid->name) > 0)
                 if (int r = evalStringBuiltin(*call, out, ctx, env); r != 0) return r == 1;
         }
-        // sizeof(T) / T.sizeof() (spec issue #7). The argument NAMES A TYPE, so it is read as a name
-        // and never evaluated as an expression -- `sizeof(float)` has no value to compute. Folds only
+        // `Memory.sizeof(T)` (spec issue #7): a static method on the stdlib's Memory class, not a bare
+        // word the language reserves. The argument NAMES A TYPE, so it is read as a name and never
+        // evaluated as an expression -- `Memory.sizeof(float)` has no value to compute. Folds only
         // where the context can answer for the target's layout (see Context::sizeOfType).
         {
             std::string tn;
-            if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
-                cid != nullptr && cid->name == "sizeof" && call->args.size() == 1)
-                tn = typeNameSpelled(*call->args[0]);
-            else if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-                     sm != nullptr && sm->member == "sizeof" && call->args.empty())
-                tn = typeNameSpelled(*sm->object);
+            if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+                sm != nullptr && sm->member == "sizeof" && call->args.size() == 1) {
+                const std::string recv = typeNameSpelled(*sm->object);
+                if (recv == "Memory" || recv == "System.Memory") tn = typeNameSpelled(*call->args[0]);
+            }
             if (!tn.empty()) {
                 long long bytes = 0;
                 if (!ctx.sizeOfType || !ctx.sizeOfType(tn, bytes)) return false;
@@ -449,12 +449,11 @@ std::string typeNameSpelled(const ast::Expr& e) {
 
 bool mentionsSizeof(const ast::Expr& e) {
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&e)) {
-        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
-            cid != nullptr && cid->name == "sizeof")
-            return true;
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-            mem != nullptr && mem->member == "sizeof")
-            return true;
+            mem != nullptr && mem->member == "sizeof") {
+            const std::string recv = typeNameSpelled(*mem->object);
+            if (recv == "Memory" || recv == "System.Memory") return true;
+        }
         if (call->callee && mentionsSizeof(*call->callee)) return true;
         for (const ast::ExprPtr& a : call->args)
             if (a && mentionsSizeof(*a)) return true;

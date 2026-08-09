@@ -1,4 +1,5 @@
 import System.IO.Console;
+import System.Memory;
 program SizeofBudgetBad;
 
 // A byte budget that is EXCEEDED must fail the build. An assertion that cannot fire is worse
@@ -16,11 +17,16 @@ public bundle Main {
                 this.y = 0.0;
                 this.herd = 0;
             }
+
+            // In a method of the type, and nothing calls it. It must fail the build anyway.
+            public static method budget() returns void {
+                static_assert(Memory.sizeof(Wide) <= 8, "Wide must fit eight bytes");
+                return;
+            }
         }
 
         public class Main {
             public static method main(string[] args) returns void {
-                static_assert(sizeof(Wide) <= 8, "Wide must fit eight bytes");
                 System.IO.Console.println($"unreachable = {1}");
                 return;
             }
