@@ -259,16 +259,22 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
             if (oid == nullptr || env.count(oid->name) > 0)
                 if (int r = evalStringBuiltin(*call, out, ctx, env); r != 0) return r == 1;
         }
-        // `Memory.sizeof(T)` (spec issue #7): a static method on the stdlib's Memory class, not a bare
-        // word the language reserves. The argument NAMES A TYPE, so it is read as a name and never
-        // evaluated as an expression -- `Memory.sizeof(float)` has no value to compute. Folds only
-        // where the context can answer for the target's layout (see Context::sizeOfType).
+        // A size, in the two spellings the language keeps (spec issue #7):
+        //   `T.sizeof()`        -- the type answers about itself
+        //   `Memory.sizeof(x)`  -- a static method on the stdlib's Memory class, and the only way to
+        //                          ask about an EXPRESSION rather than a named type
+        // Neither is a bare word the language reserves. The name being measured is READ, never
+        // evaluated -- `Memory.sizeof(float)` has no value to compute. Folds only where the context
+        // can answer for the target's layout (see Context::sizeOfType).
         {
             std::string tn;
             if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-                sm != nullptr && sm->member == "sizeof" && call->args.size() == 1) {
+                sm != nullptr && sm->member == "sizeof") {
                 const std::string recv = typeNameSpelled(*sm->object);
-                if (recv == "Memory" || recv == "System.Memory") tn = typeNameSpelled(*call->args[0]);
+                if (call->args.size() == 1 && (recv == "Memory" || recv == "System.Memory"))
+                    tn = typeNameSpelled(*call->args[0]);
+                else if (call->args.empty())
+                    tn = recv;  // T.sizeof()
             }
             if (!tn.empty()) {
                 long long bytes = 0;
@@ -449,11 +455,10 @@ std::string typeNameSpelled(const ast::Expr& e) {
 
 bool mentionsSizeof(const ast::Expr& e) {
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&e)) {
+        // Both kept spellings: `Memory.sizeof(x)` and `T.sizeof()`.
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-            mem != nullptr && mem->member == "sizeof") {
-            const std::string recv = typeNameSpelled(*mem->object);
-            if (recv == "Memory" || recv == "System.Memory") return true;
-        }
+            mem != nullptr && mem->member == "sizeof" && !typeNameSpelled(*mem->object).empty())
+            return true;
         if (call->callee && mentionsSizeof(*call->callee)) return true;
         for (const ast::ExprPtr& a : call->args)
             if (a && mentionsSizeof(*a)) return true;
