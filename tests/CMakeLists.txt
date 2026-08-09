@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.23")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.24")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.23")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.24")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1133,6 +1133,27 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=total 42"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `layout`: an interface for memory. The printed number is the proof that implementing one
+        # ORDERED THE FIELDS -- the struct is written worst-first (a byte between two ints, twice),
+        # which measures 16 as declared and 12 ordered widest-first. 16 would not have compiled at
+        # all, so 12 is unreachable unless the reordering happened.
+        add_test(NAME codegen_layout_packed_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/layout_packed.ldp3"
+            "-DEXPECTED=tick = 12"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # And the type that cannot be made to fit. Not a --check test: a budget is measured against
+        # the target's real layout, which only exists in the code generator, so the refusal has to
+        # come from a real compile.
+        add_test(NAME codegen_rejects_layout_over_budget
+            COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/layout_over_budget.ldp3"
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/layout_over_budget.ll")
+        set_tests_properties(codegen_rejects_layout_over_budget PROPERTIES
+            PASS_REGULAR_EXPRESSION "measures 16.*a tick must stay five to a cache line")
 
         # `itself` as the universal pronoun the keyword reference always described: "the entity being
         # declared". Bare it is that entity, followed by a '.' it is that entity's TYPE. The compiler

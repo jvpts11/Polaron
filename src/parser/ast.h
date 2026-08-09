@@ -1032,9 +1032,17 @@ struct ClassDecl {
     // Constraint per type param, if any: (param, bound) from `<T extends X>` / `<T implements I>`.
     std::vector<std::pair<std::string, std::string>> typeParamBounds;
     bool isInterface = false;             // declared with `interface`
-    bool isStruct = false;                // declared with `struct` -- value type, no inheritance
+    // VALUE AGGREGATE. Set by `struct`, and ALSO by `record` and `union`, which are the same thing
+    // under three field-arrangement policies: in sequence, in sequence with generated identity, and
+    // overlapping. The name says `struct` for history; what it means is "a value aggregate", which is
+    // the category `layout` applies to and the one three classes of defect have already clustered in.
+    bool isStruct = false;
     bool isRecord = false;                // declared with `record` -- immutable value type
     bool isUnion = false;                 // declared with `union` -- fields share one storage
+    // Declared with `layout` -- an interface for memory (not a species): it says how an implementing
+    // value aggregate arranges itself, and is consumed entirely by the compiler. Never a type: no
+    // variable has a layout type, no value is ever one, and nothing of it reaches the executable.
+    bool isLayout = false;
     bool isAbstract = false;              // `abstract class` (interfaces are abstract too)
     bool isFinal = false;                 // `final class` -- cannot be extended
     bool isSealed = false;                // `sealed` -- only `permits` types may extend it
@@ -1050,6 +1058,10 @@ struct ClassDecl {
     std::string superclass;               // "" when none (from `extends`)
     std::vector<std::string> superclassTypeArgs;  // type args on `extends Base<...>` (generics)
     std::vector<std::string> interfaces;  // from `implements`
+    // The layouts named in `implements`, moved out of `interfaces` before the analyser runs so that
+    // everything downstream keeps seeing a list of interfaces only. A layout has no methods to
+    // implement and no vtable slot; it decides how the fields are arranged and then is gone.
+    std::vector<std::string> layouts;
     std::vector<std::vector<std::string>> interfaceTypeArgs;  // type args per interface (generics)
     std::vector<std::string> permits;     // sealed permits list (subtypes)
     std::vector<ExprPtr> invariants;      // class invariants (spec 29), checked per method
@@ -1057,6 +1069,11 @@ struct ClassDecl {
     std::unique_ptr<Block> onFirstInstance;          // spec 32.5: before the first instance is created
     std::unique_ptr<Block> onLastInstanceDestroyed;  // spec 32.5: after the last instance is destroyed
     std::unique_ptr<Block> onClassUnload;            // spec 32.5: on unimport (deferred: needs unimport)
+    // A `layout`'s arrangement hook. Same shape as the lifecycle hooks above -- a block nobody calls --
+    // but a different MOMENT: those run in the built program, this one runs during the build and
+    // leaves nothing behind. So it is read by the compiler rather than analyzed and emitted as code,
+    // and inside it `itself` is the arrangement being decided, not any value the program can hold.
+    std::unique_ptr<Block> onArrange;
     std::vector<MemberPtr> members;
     std::vector<AnnotationUse> annotations;  // applied `[Name(...)]` annotations (spec 14.3)
     SourceLocation loc;

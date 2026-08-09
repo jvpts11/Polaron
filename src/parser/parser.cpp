@@ -867,13 +867,31 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     if (match(TokenKind::KwInterface)) {
         c.isInterface = true;
         c.isAbstract = true;  // interfaces are abstract by nature
+    } else if (match(TokenKind::KwLayout)) {
+        // A layout is an interface for MEMORY: it says how an implementing value aggregate arranges
+        // itself. The class modifiers describe objects and lifetimes, so most of them say nothing
+        // about one. Refused with the reason rather than ignored -- silently accepting a word that
+        // does nothing teaches that it did something.
+        if (c.isAbstract)
+            fail("a layout is abstract by nature -- it describes memory and never has an instance, "
+                 "so `abstract` states what is already true", c.loc);
+        if (c.isPartial)
+            fail("a layout cannot be split across declarations: an arrangement is decided once, and "
+                 "two halves could ask for two different ones", c.loc);
+        if (c.isMovable || c.isUnique || c.isPartitionable)
+            fail("ownership modifiers belong to a type that holds a value; a layout holds nothing "
+                 "and is gone by the time the program runs", c.loc);
+        if (c.isHeap)
+            fail("`heap` marks the class that provides the program's heap, which a layout is not", c.loc);
+        c.isLayout = true;
+        c.isAbstract = true;  // abstract by nature, like an interface
     } else if (match(TokenKind::KwStruct)) {
         c.isStruct = true;  // value type, no inheritance
     } else if (match(TokenKind::KwUnion)) {
         c.isUnion = true;   // value type whose fields overlap one storage
         c.isStruct = true;
     } else {
-        expect(TokenKind::KwClass, "'class', 'struct', 'union' or 'interface'");
+        expect(TokenKind::KwClass, "'class', 'struct', 'union', 'interface' or 'layout'");
     }
     c.name = expect(TokenKind::Identifier, "the type name").lexeme;
     // Generic parameters: class Box<T>, class Pair<K, V>.
@@ -945,6 +963,21 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         if (match(TokenKind::KwInvariant)) {
             c.invariants.push_back(parseExpression());
             expect(TokenKind::Semicolon, "';'");
+            continue;
+        }
+        // A layout's arrangement hook -- the lifecycle hooks' shape (a soft keyword and a block that
+        // nobody calls) at a different moment: this one runs during the build and leaves nothing in
+        // the program. Rejected outside a layout, where there is no arrangement to speak of.
+        if (check(TokenKind::Identifier) && current().lexeme == "onArrange") {
+            const SourceLocation hookLoc = current().loc;
+            advance();
+            if (!c.isLayout)
+                fail("`onArrange` decides how a type arranges itself in memory, which is a layout's "
+                     "job -- declare a `layout` and implement it from here", hookLoc);
+            if (c.onArrange != nullptr)
+                fail("this layout already has an `onArrange`: one arrangement, decided in one place",
+                     hookLoc);
+            c.onArrange = std::make_unique<ast::Block>(parseBlock());
             continue;
         }
         // Lifecycle hooks (spec 32.5): `onClassLoad`/`onFirstInstance`/... -- soft keywords.

@@ -34,6 +34,7 @@
 #include "parser/parser.h"
 #include "semantic/analyzer.h"
 #include "semantic/implicitthis.h"
+#include "semantic/layouts.h"
 
 #include "bundle/ldh.h"
 #include "diag/diagnostic.h"
@@ -48,7 +49,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "ldp3c 1.0.23";
+constexpr std::string_view kVersion = "ldp3c 1.0.24";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -10343,6 +10344,11 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // downstream needs to know the prefix was ever optional.
     if (!ldp3::resolveImplicitThis(program)) return 1;
     phase("resolveImplicitThis");
+    // A layout is named in `implements` beside the interfaces, and is not one. Splitting it out here
+    // -- before anything looks for methods to bind or slots to fill -- is what lets the rest of the
+    // compiler go on seeing an interface list that holds only interfaces.
+    if (!ldp3::resolveLayouts(program)) return 1;
+    phase("resolveLayouts");
     if (!ldp3::monomorphize(program)) return 1;
     phase("monomorphize");  // expand generics; false on constraint error
     // Freestanding has no managed arrays and no bounds checks (raw-pointer `p[i]` is unchecked), so these

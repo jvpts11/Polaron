@@ -36,6 +36,7 @@ enum class TokenKind : std::uint8_t {
     // Keywords -- structure
     KwProgram, KwBundle, KwNamespace,
     KwClass, KwInterface, KwStruct, KwRecord, KwUnion, KwEnum, KwCatalog, KwByCatalog,
+    KwLayout,   // an interface for memory: how a value aggregate arranges itself
     KwMethod, KwConstructor, KwDestructor, KwOperator,
     KwReturns, KwReturn,
 

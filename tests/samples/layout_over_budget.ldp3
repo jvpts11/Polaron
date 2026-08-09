@@ -1,0 +1,35 @@
+import System.IO.Console;
+program LayoutOverBudget;
+
+// The same layout over a type that cannot be made to fit. Ordered widest-first this is
+// 4 + 4 + 4 + 1 + 1 = 14, rounded up to 16 -- over the twelve the layout allows. The compiler
+// refuses, and says so with the layout's own words plus the fact that reordering was already tried,
+// so nobody spends an afternoon shuffling the declaration.
+
+public bundle main {
+
+    public namespace app {
+
+        public layout Packed {
+            onArrange {
+                itself.fitWithin(12 bytes);
+                itself.refuse("a tick must stay five to a cache line");
+            }
+        }
+
+        public struct Tick implements Packed {
+            public mutable byte kind;
+            public mutable int  at;
+            public mutable byte flags;
+            public mutable int  who;
+            public mutable int  extra;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"tick = {Tick.sizeof()}");
+                return;
+            }
+        }
+    }
+}
