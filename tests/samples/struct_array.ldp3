@@ -1,0 +1,77 @@
+import System.IO.Console;
+
+// An array of a VALUE AGGREGATE stores its elements INLINE.
+//
+// It used to store an array of POINTERS: `new Cell[4]()` allocated eight bytes a slot, zeroed them,
+// and the first read of a field dereferenced the null that was left there -- an access violation on
+// the very first line that touched one. The whole shape a value struct exists for ("one array, no
+// allocation per element, ever") was therefore only apparent, and a program that used it crashed
+// instead of merely being slow.
+//
+// Every line below is one of the ways that broke: zero-init, writing a field, reading it back,
+// slots being distinct from one another, calling a method on an element, read-modify-write, copying
+// a whole element into another array, and the copy being independent of its source.
+program StructArray;
+
+public bundle Main {
+    public namespace App {
+
+        public enum Kind {
+            Oceanic,
+            Craton,
+            Island
+        }
+
+        public struct Cell {
+            public mutable int     a;
+            public mutable float   b;
+            public mutable boolean flag;
+            public mutable int     kind;
+
+            public method isKind(Kind k) returns boolean {
+                return this.kind == cast<int>(k);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Cell[] cells = new Cell[4]();
+                mutable int score = 0;
+                if (cells[0].a == 0 && cells[0].flag == false) {
+                    score = score + 1;              // 1: zero-initialised
+                }
+                cells[0].a = 7;
+                cells[0].b = 1.5;
+                cells[0].flag = true;
+                cells[0].kind = cast<int>(Kind.Craton);
+                if (cells[0].a == 7 && cells[0].flag) {
+                    score = score + 1;              // 2: a field written is a field read back
+                }
+                cells[3].a = 99;
+                if (cells[3].a == 99 && cells[1].a == 0) {
+                    score = score + 1;              // 3: the slots are distinct
+                }
+                if (cells[0].isKind(Kind.Craton) && !cells[1].isKind(Kind.Craton)) {
+                    score = score + 1;              // 4: a method dispatches on the element
+                }
+                cells[0].a = cells[0].a + 1;
+                if (cells[0].a == 8) {
+                    score = score + 1;              // 5: read-modify-write
+                }
+                mutable Cell[] mirror = new Cell[4]();
+                mirror[2] = cells[0];
+                if (mirror[2].a == 8 && mirror[2].flag) {
+                    score = score + 1;              // 6: a whole element copies, bytes and all
+                }
+                mirror[2].a = 123;
+                if (mirror[2].a == 123 && cells[0].a == 8) {
+                    score = score + 1;              // 7: and the copy is independent
+                }
+                delete mirror;
+                delete cells;
+                System.IO.Console.println($"inline = {score}");
+                return;
+            }
+        }
+    }
+}

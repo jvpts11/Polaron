@@ -3855,14 +3855,32 @@ struct CodeGenerator::Impl {
     llvm::Value* arrayData(llvm::Value* block) {
         return builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 8, "arr.data");
     }
+    // A VALUE AGGREGATE stored in an array sits INLINE, at its own size and stride -- it is not a
+    // reference. `classes.count(t) > 0` alone answers "user type", which for a class means a pointer
+    // and for a `struct` means the struct itself; conflating the two allocated 8 bytes a slot, stored
+    // nothing in them, and made the first field read dereference the null the zero-init left behind.
+    // The fauna model is an array of value structs by design ("no allocation per animal, ever"), so
+    // this is the difference between the language having that shape and only appearing to.
+    llvm::StructType* inlineElemStructTy(const std::string& elemType) {
+        if (!isFfiByValueStruct(elemType)) return nullptr;   // same predicate: a value struct, not a ref
+        auto cit = classes.find(clsKey(elemType));
+        if (cit == classes.end() || cit->second.type == nullptr) return nullptr;
+        if (!cit->second.type->isSized()) return nullptr;    // body not laid out yet: fall back
+        return cit->second.type;
+    }
     // A boolean array element occupies 1 byte (i8), though a boolean *value* stays i32. Every other
     // element stores at its natural width. The byte size (allocation/stride) and the LLVM storage type
     // (load/store) MUST agree or indexing corrupts memory. char stays i32 -- a 32-bit Unicode scalar.
     unsigned arrayElemBytes(const std::string& elemType) {
-        return elemType == "boolean" ? 1u : byteSizeOf(elemType);
+        if (elemType == "boolean") return 1u;
+        if (llvm::StructType* st = inlineElemStructTy(elemType))
+            return static_cast<unsigned>(module.getDataLayout().getTypeAllocSize(st));
+        return byteSizeOf(elemType);
     }
     llvm::Type* arrayStorageTy(const std::string& elemType) {
-        return elemType == "boolean" ? builder.getInt8Ty() : llvmType(elemType);
+        if (elemType == "boolean") return builder.getInt8Ty();
+        if (llvm::StructType* st = inlineElemStructTy(elemType)) return st;
+        return llvmType(elemType);
     }
 
     llvm::Value* arrayElemPtr(llvm::Value* block, llvm::Value* index, llvm::Type* elemTy,
@@ -5749,6 +5767,11 @@ struct CodeGenerator::Impl {
                 llvm::Value* raw = builder.CreateLoad(builder.getInt8Ty(), elemPtr, vol, "elem");
                 return builder.CreateZExt(raw, builder.getInt32Ty());
             }
+            // A value aggregate stored inline IS its storage: a struct value is represented by the
+            // address of its bytes everywhere else in this backend, so the element pointer is already
+            // the value. Loading here would read the first field as if the slot held a reference --
+            // which is exactly what made `cells[0].a` dereference null.
+            if (!isRefType(at) && inlineElemStructTy(et) != nullptr) return elemPtr;
             llvm::LoadInst* ld = builder.CreateLoad(llvmType(et), elemPtr, vol, "elem");
             // A raw pointer `p[i]` may target ANY address (spec 17.8): never assume the type's natural
             // alignment -- a misaligned load would be UB. `align 1` makes it total. On x86 this is the same
@@ -11299,6 +11322,36 @@ struct CodeGenerator::Impl {
             pendingRegionRegistry_ = false;
             if (v == nullptr) return;
             pendingPersistIndex = nullptr;  // defensive: never leak into the next new
+            // An array element that is a VALUE AGGREGATE is inline: the slot IS the bytes, not a
+            // pointer to them. Copy the struct into place. Storing a pointer here -- which is what
+            // every other field/element path does, correctly, because their slots hold references --
+            // would write an address over the first eight bytes of the element and leave the rest of
+            // it untouched, which reads back as garbage in the first two fields and stale in the rest.
+            if (dynamic_cast<const ast::IndexExpr*>(assign->target.get()) != nullptr)
+                if (llvm::StructType* est = inlineElemStructTy(targetType)) {
+                    builder.CreateCall(memcpyFn(), {slot, v, sizeOf(est)});
+                    // Owned children (arrays, Strings, nested value structs) are duplicated so the two
+                    // elements do not share them -- assignment is a copy, all the way down.
+                    for (const auto& [fname, ftype] : collectFields(targetType)) {
+                        const unsigned idx = classes[targetType].fieldIndex[fname];
+                        llvm::Value* deep = nullptr;
+                        if (isArrayType(ftype))
+                            deep = emitArrayDup(builder.CreateLoad(builder.getPtrTy(),
+                                                                   builder.CreateStructGEP(est, v, idx)),
+                                                elementOf(ftype));
+                        else if (ftype == "String")
+                            deep = emitStringCopy(builder.CreateLoad(builder.getPtrTy(),
+                                                                     builder.CreateStructGEP(est, v, idx)));
+                        else if (isClassValue(ftype) && isCopyDiscipline(ftype))
+                            deep = emitClassCopy(ftype,
+                                                 builder.CreateLoad(builder.getPtrTy(),
+                                                                    builder.CreateStructGEP(est, v, idx)),
+                                                 /*heap=*/true);
+                        if (deep != nullptr)
+                            builder.CreateStore(deep, builder.CreateStructGEP(est, slot, idx));
+                    }
+                    return;
+                }
             // Value semantics: assigning a class value makes the target an independent copy.
             const bool tgtFieldOrElem =
                 dynamic_cast<const ast::MemberExpr*>(assign->target.get()) != nullptr ||
