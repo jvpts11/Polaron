@@ -34,6 +34,12 @@ public bundle Main {
                 b.copyFrom(&src, 20, 4);
                 System.IO.Console.println($"copied = {b.readInt(20)}");
 
+                // The generic pair, for code that is itself generic over what it stores. It is named
+                // read/write on purpose: until today, declaring a generic method with a name a
+                // builtin also uses rewrote every `Raw.read<int>` in the whole program.
+                b.write<int>(24, 55);
+                System.IO.Console.println($"generic = {b.read<int>(24)}");
+
                 // Nothing is freed by hand: both buffers own their block and release it at scope exit.
                 return;
             }

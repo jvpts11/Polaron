@@ -181,10 +181,24 @@ public bundle System {
                 return this.at;
             }
 
-            // One pair per width. A single `read<T>/write<T>` would be shorter, but a generic method
-            // cannot forward its own type parameter into the Raw builtins today (the receiver stops
-            // resolving) -- so these are written out rather than faked. Each states the width it
-            // needs in its own contract, which is what the caller reads when one fails.
+            // Generic over the value's type, so one pair covers every width. The bound is checked
+            // by the typed pairs below, which are what callers use when the width is known; this
+            // pair exists for code that is itself generic over what it stores.
+            public method read<T>(int offset) returns T
+                requires offset >= 0
+                requires offset < this.size
+            {
+                return Raw.read<T>(this.at + cast<address>(offset));
+            }
+
+            public method write<T>(int offset, T value) returns void
+                requires offset >= 0
+                requires offset < this.size
+            {
+                Raw.write<T>(this.at + cast<address>(offset), value);
+                return;
+            }
+
             public method readByte(int offset) returns byte
                 requires offset >= 0
                 requires offset + 1 <= this.size

@@ -991,13 +991,40 @@ void rewriteMethBlock(ast::Block& b) {
 // Without this, a builtin like `Memory.read<int8>(...)` (type args, but not a user generic method)
 // would be wrongly rewritten to `Memory.read$int8` and lose its builtin meaning.
 static const std::set<std::string>* g_genericMethodNames = nullptr;
+
+// The last segment of a dotted receiver: `Raw` for both `Raw.read<int>` and
+// `System.Memory.Raw.read<int>`. Empty when the receiver is not a plain name chain.
+std::string receiverClassName(const ast::Expr* obj) {
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(obj)) return id->name;
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(obj)) return mem->member;
+    return {};
+}
+
+// Is the receiver a BUILTIN static class -- one whose methods are compiler intrinsics rather than
+// user code? Their type arguments say what to load or store (`Raw.read<int>`), not which template to
+// instantiate, so they must survive this pass untouched.
+//
+// Matching only the METHOD NAME is not enough, and that was a real defect: the moment any class in
+// the program declared a generic `read<T>`, every `Raw.read<int>` in every file was rewritten to
+// `Raw.read$int`, which is no builtin at all -- so the receiver stopped resolving and the error came
+// out as "use of undeclared variable 'Raw'", pointing at innocent code in another file.
+//
+// The names mirror the `builtin(...)` registrations in analyzer.cpp.
+bool isBuiltinStaticReceiver(const ast::Expr* obj) {
+    static const std::set<std::string> kBuiltinClasses = {
+        "Allocator", "Raw",  "Memory",  "Math",    "File",   "Time",  "Net",
+        "Ipc",       "Bits", "Process", "Subproc", "Conpty", "Env",   "reflect"};
+    return kBuiltinClasses.count(receiverClassName(obj)) > 0;
+}
+
 void rewriteMethExpr(ast::Expr* e) {
     if (e == nullptr) return;
     if (auto* x = dynamic_cast<ast::CallExpr*>(e)) {
         if (!x->typeArgs.empty())
             if (auto* mem = dynamic_cast<ast::MemberExpr*>(x->callee.get()))
-                if (g_genericMethodNames == nullptr ||
-                    g_genericMethodNames->count(mem->member) > 0) {
+                if (!isBuiltinStaticReceiver(mem->object.get()) &&
+                    (g_genericMethodNames == nullptr ||
+                     g_genericMethodNames->count(mem->member) > 0)) {
                     mem->member = ast::mangleGeneric(mem->member, x->typeArgs);
                     x->typeArgs.clear();
                 }
