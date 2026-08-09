@@ -4114,7 +4114,7 @@ if(LDP3_WITH_LLVM)
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/memory_buffer.ldp3"
-            "-DEXPECTED=length = 32 ints = 7 11 byte = 3 long = 1234567 last = 99 copied = 42"
+            "-DEXPECTED=length = 32 ints = 7 11 byte = 3 long = 1234567 last = 99 copied = 42 generic = 55"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
         # Writing past the end stops the program and says which clause, where, and with what numbers.
