@@ -39,7 +39,7 @@ public bundle Main {
             // placement worth anything is that the assertion is still checked. A budget that went
             // unchecked the moment nobody called it would be a trap wearing a guard's clothes.
             public static method budget() returns void {
-                static_assert(Memory.sizeof(Packed) == 20, "Packed must stay three to a cache line");
+                static_assert(Packed.sizeof() == 20, "Packed must stay three to a cache line");
                 return;
             }
         }

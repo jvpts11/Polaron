@@ -7145,6 +7145,14 @@ struct CodeGenerator::Impl {
                 }
             }
         }
+        // `T.sizeof()` (spec issue #7): the type answers about itself -- the OOP spelling, and the one
+        // to reach for when the thing measured has a name. `Memory.sizeof(x)` (below, with the rest of
+        // the Memory API) is its companion, and the only way to ask about an expression.
+        if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
+            sm != nullptr && sm->member == "sizeof" && call.args.empty()) {
+            if (long long bytes = 0; sizeOfTypeName(flattenCallee(*sm->object), bytes))
+                return builder.getInt32(static_cast<std::uint32_t>(bytes));
+        }
         // embed("path") (spec 36): read a file AT COMPILE TIME and materialize it as a `byte[]` constant
         // in the image. This is how a freestanding program carries data it must not load from a
         // filesystem it does not have -- a guest binary, a font, a firmware blob -- without dropping to an
