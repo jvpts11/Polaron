@@ -232,7 +232,7 @@ void Rewriter::expr(ast::ExprPtr& slot) {
 void Rewriter::stmt(ast::Stmt* st) {
     if (st == nullptr) return;
     if (auto* x = dynamic_cast<ast::ExprStmt*>(st)) { expr(x->expr); return; }
-    if (auto* x = dynamic_cast<ast::StaticAssertStmt*>(st)) { expr(x->condition); return; }
+    if (auto* x = dynamic_cast<ast::DemandStmt*>(st)) { expr(x->condition); return; }
     if (auto* x = dynamic_cast<ast::LabeledStmt*>(st)) { stmt(x->stmt.get()); return; }
     if (auto* x = dynamic_cast<ast::ThrowStmt*>(st)) { expr(x->value); return; }
     if (auto* x = dynamic_cast<ast::ReturnStmt*>(st)) { expr(x->value); return; }

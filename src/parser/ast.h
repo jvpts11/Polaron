@@ -798,9 +798,9 @@ struct MatchExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
-// static_assert(cond, "message"); -- compile-time assertion (spec 28.2). The
+// demand <cond> otherwise "why"; -- a compile-time check (spec 28.2). The
 // condition must be a constant expression; checked by the analyzer, emits no code.
-struct StaticAssertStmt : Stmt {
+struct DemandStmt : Stmt {
     ExprPtr condition;
     std::string message;
     void dump(std::string& out, int indent) const override;

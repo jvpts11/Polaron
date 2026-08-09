@@ -19,9 +19,9 @@ public bundle main {
 
         public class Main {
             public static method main(string[] args) returns void {
-                static_assert(Math.fib(Math.N) == 55, "fib(10) must be 55");
-                static_assert(Math.N * Math.N < Math.LIMIT, "N squared must fit");
-                System.IO.Console.printf("static asserts passed\n");
+                demand Math.fib(Math.N) == 55 otherwise "fib(10) must be 55";
+                demand Math.N * Math.N < Math.LIMIT otherwise "N squared must fit";
+                System.IO.Console.printf("demands met\n");
                 return;
             }
         }

@@ -417,8 +417,8 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->expr = cloneExpr(x->expr.get(), s);
         return n;
     }
-    if (const auto* x = dynamic_cast<const ast::StaticAssertStmt*>(st)) {
-        auto n = std::make_unique<ast::StaticAssertStmt>();
+    if (const auto* x = dynamic_cast<const ast::DemandStmt*>(st)) {
+        auto n = std::make_unique<ast::DemandStmt>();
         n->loc = x->loc;
         n->message = x->message;
         n->condition = cloneExpr(x->condition.get(), s);
@@ -858,7 +858,7 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
 void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& out) {
     if (st == nullptr) return;
     if (const auto* x = dynamic_cast<const ast::ExprStmt*>(st)) { collectExpr(x->expr.get(), g, out); return; }
-    if (const auto* x = dynamic_cast<const ast::StaticAssertStmt*>(st)) { collectExpr(x->condition.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::DemandStmt*>(st)) { collectExpr(x->condition.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) { collectStmt(x->stmt.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) { collectType(x->elemType, g, out); collectExpr(x->iterable.get(), g, out); collectBlock(x->body, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) { collectExpr(x->subject.get(), g, out); for (const auto& c : x->cases) { collectExpr(c.value.get(), g, out); collectBlock(c.body, g, out); } if (x->defaultBody) collectBlock(*x->defaultBody, g, out); return; }
@@ -959,7 +959,7 @@ void collectMethExpr(const ast::Expr* e, MethInsts& out) {
 void collectMethStmt(const ast::Stmt* st, MethInsts& out) {
     if (st == nullptr) return;
     if (const auto* x = dynamic_cast<const ast::ExprStmt*>(st)) { collectMethExpr(x->expr.get(), out); return; }
-    if (const auto* x = dynamic_cast<const ast::StaticAssertStmt*>(st)) { collectMethExpr(x->condition.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::DemandStmt*>(st)) { collectMethExpr(x->condition.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) { collectMethStmt(x->stmt.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) { collectMethExpr(x->iterable.get(), out); collectMethBlock(x->body, out); return; }
     if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) { collectMethExpr(x->subject.get(), out); for (const auto& c : x->cases) { collectMethExpr(c.value.get(), out); collectMethBlock(c.body, out); } if (x->defaultBody) collectMethBlock(*x->defaultBody, out); return; }
@@ -1056,7 +1056,7 @@ void rewriteMethExpr(ast::Expr* e) {
 void rewriteMethStmt(ast::Stmt* st) {
     if (st == nullptr) return;
     if (auto* x = dynamic_cast<ast::ExprStmt*>(st)) { rewriteMethExpr(x->expr.get()); return; }
-    if (auto* x = dynamic_cast<ast::StaticAssertStmt*>(st)) { rewriteMethExpr(x->condition.get()); return; }
+    if (auto* x = dynamic_cast<ast::DemandStmt*>(st)) { rewriteMethExpr(x->condition.get()); return; }
     if (auto* x = dynamic_cast<ast::LabeledStmt*>(st)) { rewriteMethStmt(x->stmt.get()); return; }
     if (auto* x = dynamic_cast<ast::ForeachStmt*>(st)) { rewriteMethExpr(x->iterable.get()); rewriteMethBlock(x->body); return; }
     if (auto* x = dynamic_cast<ast::SwitchStmt*>(st)) { rewriteMethExpr(x->subject.get()); for (auto& c : x->cases) { rewriteMethExpr(c.value.get()); rewriteMethBlock(c.body); } if (x->defaultBody) rewriteMethBlock(*x->defaultBody); return; }

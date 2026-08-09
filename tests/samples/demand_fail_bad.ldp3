@@ -13,7 +13,7 @@ public bundle main {
         }
         public class Main {
             public static method main(string[] args) returns void {
-                static_assert(Math.fib(10) == 99, "fib(10) is not 99");
+                demand Math.fib(10) == 99 otherwise "fib(10) is not 99";
                 return;
             }
         }

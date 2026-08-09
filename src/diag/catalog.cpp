@@ -433,14 +433,15 @@ constexpr Row kCatalog[] = {
         "Keep the unimport/reimport pair close and their `expecting` contracts identical. Treat runtime "
         "code-swapping as a deliberate, well-tested seam, not a casual edit." }},
 
-    {Code::StaticAssert, {
-        "LDP3-0806", "static assertion",
-        "`static_assert` checks a condition at compile time; the condition must be a constant expression, "
-        "and it must hold. Either it did not evaluate to a constant, or it evaluated to false.",
-        "Make the condition a compile-time constant (built from literals and comptime values), and ensure "
-        "it is true for the cases you compile. The message after the comma explains the intended invariant.",
-        "State the invariant the assert protects in its message, so a failure reads as a requirement, not a "
-        "puzzle. Assert facts the compiler can check, and the check costs nothing at runtime." }},
+    {Code::Demand, {
+        "LDP3-0806", "demand",
+        "`demand <cond> otherwise \"why\";` settles a condition while the program is being built. The "
+        "condition must be known then, and it must hold. Either it did not fold to a constant, or it "
+        "folded to false.",
+        "Build the condition from literals, `fixed` values and comptime calls, and make it true for the "
+        "targets you compile. The `otherwise` text is the reason, and it is what the failure reports.",
+        "Write the reason, not a restatement of the condition: `== 20` says the number, \"three to a "
+        "cache line\" says why 20. A demand costs nothing at runtime -- it is gone by then." }},
 
     {Code::TryContext, {
         "LDP3-0503", "`try?` needs a Result/Option method",
@@ -714,8 +715,8 @@ constexpr Rule kRules[] = {
     {"duplicate argument", Code::DuplicateMember},
     {"cycle involving", Code::InheritanceCycle},
 
-    {"static assertion", Code::StaticAssert},
-    {"static_assert", Code::StaticAssert},
+    {"demand not met", Code::Demand},
+    {"a demand is settled", Code::Demand},
     {"operator '", Code::OperatorOverload},
     // Region flavor / extract diagnostics (spec 17, flavors expansion) -- before the generic "region "
     // rule so they win. Each needle is a phrase the analyzer/parser guarantees in the matching message.

@@ -3312,7 +3312,7 @@ static bool evalConstDouble(const ast::Expr& e, double& out,
 }
 
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
-    if (const auto* sa = dynamic_cast<const ast::StaticAssertStmt*>(&stmt)) {
+    if (const auto* sa = dynamic_cast<const ast::DemandStmt*>(&stmt)) {
         long long v;
         if (!evalConstInt(*sa->condition, v, &constInts_, &comptimeMethods_, &constDoubles_)) {
             // A condition over `sizeof` needs the target's real layout, which only the codegen has
@@ -3320,9 +3320,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             // folding a size from a layout guessed here would assert something the program does not
             // actually have. Every other non-constant condition is still rejected at once.
             if (!comptime::mentionsSizeof(*sa->condition))
-                error("static_assert requires a constant expression", sa->loc);
+                error("a demand is settled while the program is built, so its condition has to be "
+                      "known then -- this one is not constant", sa->loc);
         } else if (v == 0) {
-            error("static assertion failed: " + sa->message, sa->loc);
+            error("demand not met: " + sa->message, sa->loc);
         }
         return;
     }
