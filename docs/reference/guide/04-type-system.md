@@ -565,7 +565,7 @@ public catalog TipoMotor {
     h2,
     eletrico
 
-    void classify() returns TipoMotor;
+    method classify() returns TipoMotor;
 }
 
 public enum Motor extends TipoMotor {
@@ -577,13 +577,57 @@ public enum Motor extends TipoMotor {
         eletrico
     }
 
-    TipoMotor classify() returns TipoMotor { return combustao; }
+    public method classify() returns TipoMotor { return combustao; }
 }
 ```
 
 Catalogs may provide default implementations, may extend other catalogs, and an
 enum may satisfy several catalogs at once — giving enums a form of multiple
 "interface" conformance that carries required values along with required methods.
+
+### Catalogs and Java-style enums compose
+
+A catalog-implementing enum may be Java-style: each constant — the enum's own
+and the `byCatalog` ones alike — takes constructor arguments, so every constant
+carries its data instead of a table on the side. The catalog's required methods
+are then implemented as ordinary enum methods reading the constant's own fields.
+
+```ldp3
+public catalog Scored {
+    bronze,
+    gold
+
+    method score() returns int;
+}
+
+public enum Medal extends Scored {
+    paper(1)
+
+    byCatalog {
+        bronze(10),
+        gold(95)
+    }
+    ;
+    private int points;
+
+    public constructor Medal(int points) {
+        this.points = points;
+    }
+
+    public method score() returns int {
+        return this.points;
+    }
+}
+
+Scored s = Medal.gold;
+int g = s.score();   // 95 -- dispatch picks Medal, and `this` is the gold singleton
+```
+
+A value typed as the catalog still carries the (enum, ordinal) tag, so several
+enums — ordinal and Java-style mixed freely — can implement one catalog and a
+call through the catalog-typed value reaches the right implementation. Ordinals
+run through `byCatalog` in declaration order exactly as for an ordinal enum, and
+`values()`, `count()`, `random()` and `parse()` behave the same.
 
 ---
 

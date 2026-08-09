@@ -1693,9 +1693,20 @@ void SemanticAnalyzer::validateCatalogs(const ast::Program& program) {
                 }
                 // Every required method must be implemented as a (non-static) instance
                 // method of the enum -- a catalog method receives the enum value as `this`.
+                // A java-style enum was desugared in the parser: its methods live on the
+                // twin class of the same name in this namespace, so look there.
+                const std::vector<ast::MemberPtr>* implMembers = &en.members;
+                if (en.isJavaStyle) {
+                    for (const ast::ClassDecl& cls : ns.classes) {
+                        if (cls.name == en.name) {
+                            implMembers = &cls.members;
+                            break;
+                        }
+                    }
+                }
                 for (const std::string& req : requiredMethods) {
                     const ast::MethodDecl* impl = nullptr;
-                    for (const ast::MemberPtr& member : en.members) {
+                    for (const ast::MemberPtr& member : *implMembers) {
                         const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
                         if (m != nullptr && m->name == req) { impl = m; break; }
                     }
@@ -6314,16 +6325,22 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 std::string retType;
                 bool ok = true;
                 for (const std::string& impl : impls) {
+                    // An ordinal implementer keeps its methods on the enum; a java-style one was
+                    // desugared, so its methods live on the twin class of the same name.
+                    std::string rt;
                     auto emit = enumMethods_.find(impl);
-                    if (emit == enumMethods_.end() ||
-                        emit->second.find(mem->member) == emit->second.end()) {
+                    if (emit != enumMethods_.end() &&
+                        emit->second.find(mem->member) != emit->second.end()) {
+                        rt = emit->second.at(mem->member).returnType;
+                    } else if (const MethodInfo* cm = findMethod(impl, mem->member); cm != nullptr) {
+                        rt = cm->returnType;
+                    } else {
                         error("enum '" + impl + "' implementing catalog '" + baseType(objType) +
                                   "' has no method '" + mem->member + "'",
                               call->loc);
                         ok = false;
                         break;
                     }
-                    const std::string rt = emit->second.at(mem->member).returnType;
                     if (retType.empty()) retType = rt;
                     else if (rt != retType) {
                         error("implementers of catalog '" + baseType(objType) + "' disagree on the "

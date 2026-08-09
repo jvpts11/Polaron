@@ -3169,6 +3169,27 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A java-style enum implementing a catalog (2026-08-09: the two compose): byCatalog constants
+        # take constructor arguments, catalog methods live on the desugared twin class, and dispatch
+        # through a catalog-typed value resolves the tagged ordinal back to the constant's singleton.
+        add_test(NAME codegen_catalog_java_enum_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_java_enum.ldp3"
+            "-DCONTAINS=p=1 b=10 g=95 n=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # Mixed implementers of one catalog: an ordinal enum and a java-style enum behind the same
+        # catalog-typed receiver; the type tag picks the implementer, the ordinal picks the singleton.
+        add_test(NAME codegen_catalog_java_mixed_dispatch_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_java_mixed_dispatch.ldp3"
+            "-DCONTAINS=w1=7 w2=42 w3=9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # FFI struct by value (spec 26): a small struct is passed to and returned from a C function
         # by value (the runtime provides the matching C helpers).
         add_test(NAME codegen_ffi_struct_runs COMMAND "${CMAKE_COMMAND}"

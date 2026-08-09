@@ -490,6 +490,10 @@ ast::Namespace Parser::parseNamespace() {
                 light.name = en.name;
                 light.constants = std::move(en.constants);
                 light.constantArgs = std::move(en.constantArgs);
+                // A java-style enum may implement catalogs (2026-08-09); the light enum keeps the
+                // linkage so the analyzer validates the contract and codegen finds the implementer.
+                light.extendsCatalogs = std::move(en.extendsCatalogs);
+                light.byCatalogValues = std::move(en.byCatalogValues);
                 light.isJavaStyle = true;
                 ns.enums.push_back(std::move(light));
             } else {
@@ -744,7 +748,9 @@ ast::EnumDecl Parser::parseEnum() {
     }
     // `byCatalog { ... }` block (spec 12.4): constants provided to satisfy a catalog.
     // They become real enum constants (appended after the own ones, so ordinals
-    // continue), and are recorded as catalog-provided for clarity/validation.
+    // continue), and are recorded as catalog-provided for clarity/validation. In a
+    // java-style enum every constant carries its data, so a byCatalog constant takes
+    // constructor arguments exactly like an own constant does.
     if (match(TokenKind::KwByCatalog)) {
         expect(TokenKind::LBrace, "'{' to open byCatalog");
         if (check(TokenKind::Identifier)) {
@@ -752,7 +758,17 @@ ast::EnumDecl Parser::parseEnum() {
                 const std::string v = expect(TokenKind::Identifier, "a catalog value").lexeme;
                 e.byCatalogValues.push_back(v);
                 e.constants.push_back(v);
-                e.constantArgs.push_back({});  // keep parallel to `constants`
+                std::vector<ast::ExprPtr> args;
+                if (match(TokenKind::LParen)) {
+                    e.isJavaStyle = true;
+                    if (!check(TokenKind::RParen)) {
+                        do {
+                            args.push_back(parseExpression());
+                        } while (match(TokenKind::Comma));
+                    }
+                    expect(TokenKind::RParen, "')'");
+                }
+                e.constantArgs.push_back(std::move(args));  // keep parallel to `constants`
             } while (match(TokenKind::Comma));
         }
         expect(TokenKind::RBrace, "'}' to close byCatalog");
@@ -772,12 +788,11 @@ ast::EnumDecl Parser::parseEnum() {
         }
     }
     expect(TokenKind::RBrace, "'}'");
-    // A catalog-implementing enum stays a plain ordinal enum (its constants are i32 ordinals with
-    // value semantics), so catalog dispatch can tag them (typeId<<32 | ordinal). It may still declare
-    // METHODS (dispatched on the ordinal) -- with or without a leading `;` -- but it cannot give its
-    // constants per-constant constructor arguments, instance fields, or a constructor, since those make
-    // each constant a distinct heap object with no ordinal to dispatch on. Only the latter is rejected;
-    // a `;` used merely to separate methods does not make the enum object-backed.
+    // A catalog-implementing enum may be ordinal OR java-style (2026-08-09: the two compose).
+    // Ordinal: constants are i32 ordinals, methods dispatch on the ordinal. Java-style: each
+    // constant is a singleton carrying its constructor data, and catalog dispatch resolves the
+    // tagged ordinal back to the singleton. A methods-only enum is normalised to ordinal even if
+    // a `;` separated its methods, so existing dispatch (and value semantics) stay unchanged.
     if (!e.extendsCatalogs.empty()) {
         bool hasCtorArgs = false;
         for (const auto& a : e.constantArgs) {
@@ -799,14 +814,7 @@ ast::EnumDecl Parser::parseEnum() {
                 }
             }
         }
-        if (hasCtorArgs || hasStateOrCtor) {
-            fail("a catalog-implementing enum must be a plain ordinal enum: it cannot give its "
-                 "constants constructor arguments, instance fields, or a constructor",
-                 e.loc);
-        }
-        // A methods-only enum is ordinal even if a `;` separated its methods -- normalise it so
-        // codegen keeps it an ordinal enum (not desugared to a heap class) and dispatch works.
-        e.isJavaStyle = false;
+        if (!hasCtorArgs && !hasStateOrCtor) e.isJavaStyle = false;
     }
     return e;
 }

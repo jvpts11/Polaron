@@ -1321,6 +1321,15 @@ struct CodeGenerator::Impl {
                 return builder.CreateOr(
                     ord, builder.getInt64(static_cast<std::int64_t>(enumTypeId[from]) << 32));
             }
+            // A java-style enum value is its singleton pointer; recover the ordinal by identity
+            // against the cached singletons, then pack it exactly like the ordinal case.
+            if (javaEnums.count(baseType(from)) > 0 && v->getType()->isPointerTy()) {
+                llvm::Value* ord = builder.CreateZExt(
+                    emitJavaEnumOrdinal(v, baseType(from)), builder.getInt64Ty());
+                return builder.CreateOr(
+                    ord,
+                    builder.getInt64(static_cast<std::int64_t>(enumTypeId[baseType(from)]) << 32));
+            }
         }
         if (isFloatType(to)) {
             llvm::Type* fty = llvmType(to);
@@ -2981,6 +2990,11 @@ struct CodeGenerator::Impl {
                         if (m != nullptr && m->name == mem->member) return typeRefName(m->returnType);
                     }
                 }
+                // A java-style implementer's methods live on its desugared twin class.
+                if (javaEnums.count(enumRecv) > 0 && classes.count(enumRecv) > 0) {
+                    auto& mrt = classes[enumRecv].methodReturnType;
+                    if (auto rit = mrt.find(mem->member); rit != mrt.end()) return rit->second;
+                }
                 // instance: search the object's hierarchy; static: the named class.
                 std::string owner = methodOwner(ot, mem->member);
                 if (owner.empty() && classes.count(flattenCallee(*mem->object)) > 0) {
@@ -4611,6 +4625,14 @@ struct CodeGenerator::Impl {
             }
             return false;
         }
+        // A java-style implementer resolved through a catalog: its methods are the twin class's.
+        if (javaEnums.count(enumRecv) > 0) {
+            if (std::string owner = methodOwner(enumRecv, mem->member); !owner.empty()) {
+                const std::string mrt = classes[owner].methodReturnType[mem->member];
+                return mrt == "String" || mrt == "string";
+            }
+            return false;
+        }
         // Instance: search the receiver's class hierarchy; static: the named class.
         std::string owner = methodOwner(typeName(*mem->object), mem->member);
         if (owner.empty() && classes.count(flattenCallee(*mem->object)) > 0)
@@ -4874,18 +4896,28 @@ struct CodeGenerator::Impl {
 
     // The enum that implements `catalog` and provides `method` (spec 12.4), or "" if none. The
     // analyzer guarantees a single implementer reaches here, so the first match is unambiguous.
+    // A java-style implementer's methods live on its desugared twin class, but the functions
+    // table keys them the same way (Enum.method), so both kinds resolve here.
     std::string catalogImplementerEnum(const std::string& catalog, const std::string& method) {
         for (const auto& [enumName, decl] : enumMethodDecls)
+            for (const std::string& c : decl->extendsCatalogs)
+                if (baseType(c) == catalog && functions.count(enumName + "." + method) > 0)
+                    return enumName;
+        for (const auto& [enumName, decl] : javaEnums)
             for (const std::string& c : decl->extendsCatalogs)
                 if (baseType(c) == catalog && functions.count(enumName + "." + method) > 0)
                     return enumName;
         return "";
     }
     // Every method-carrying enum implementing `catalog`, in a deterministic order (by type id), for
-    // multi-implementer dispatch (spec 12.4).
+    // multi-implementer dispatch (spec 12.4). Java-style implementers count: their methods are the
+    // twin class's methods.
     std::vector<std::string> catalogImplEnums(const std::string& catalog) {
         std::vector<std::string> out;
         for (const auto& [enumName, decl] : enumMethodDecls)
+            for (const std::string& c : decl->extendsCatalogs)
+                if (baseType(c) == catalog) { out.push_back(enumName); break; }
+        for (const auto& [enumName, decl] : javaEnums)
             for (const std::string& c : decl->extendsCatalogs)
                 if (baseType(c) == catalog) { out.push_back(enumName); break; }
         std::sort(out.begin(), out.end(), [&](const std::string& a, const std::string& b) {
@@ -4894,11 +4926,15 @@ struct CodeGenerator::Impl {
         return out;
     }
     // A catalog is "tagged" (carries a runtime type id alongside its ordinal, lowering to i64) when at
-    // least one method-carrying enum implements it -- i.e. dispatch through it is meaningful. Value-only
-    // catalogs stay a bare i32 ordinal so existing code is unaffected.
+    // least one method-carrying or java-style enum implements it -- i.e. dispatch through it is
+    // meaningful, or the implementer's constants are singletons whose ordinal must survive the trip.
+    // Value-only catalogs over ordinal enums stay a bare i32 ordinal so existing code is unaffected.
     bool isTaggedCatalog(const std::string& name) {
         if (catalogNames.count(name) == 0) return false;
         for (const auto& [enumName, decl] : enumMethodDecls)
+            for (const std::string& c : decl->extendsCatalogs)
+                if (baseType(c) == name) return true;
+        for (const auto& [enumName, decl] : javaEnums)
             for (const std::string& c : decl->extendsCatalogs)
                 if (baseType(c) == name) return true;
         return false;
@@ -6735,6 +6771,24 @@ struct CodeGenerator::Impl {
             ord = builder.CreateSelect(eq, builder.getInt32(static_cast<int>(i)), ord, "enum.ord");
         }
         return ord;
+    }
+
+    // The inverse of emitJavaEnumOrdinal: the singleton for a Java-style enum ordinal at runtime.
+    // Materializes every constant (each is lazily cached behind its own global), then selects by
+    // ordinal -- catalog dispatch uses this to turn a tagged ordinal back into the `this` the twin
+    // class's method expects (spec 12.4).
+    llvm::Value* emitJavaEnumFromOrdinal(const std::string& enumName, llvm::Value* ord) {
+        llvm::Value* result = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        auto jit = javaEnums.find(enumName);
+        if (jit == javaEnums.end()) return result;
+        const std::vector<std::string>& consts = jit->second->constants;
+        for (std::size_t i = 0; i < consts.size(); ++i) {
+            llvm::Value* p = emitEnumConstant(*jit->second, consts[i]);
+            if (p == nullptr) return result;
+            llvm::Value* eq = builder.CreateICmpEQ(ord, builder.getInt32(static_cast<int>(i)));
+            result = builder.CreateSelect(eq, p, result, "enum.singleton");
+        }
+        return result;
     }
 
     llvm::Value* emitEnumConstant(const ast::EnumDecl& en, const std::string& constName) {
@@ -9084,7 +9138,13 @@ struct CodeGenerator::Impl {
                         auto callImpl = [&](const std::string& e) -> llvm::Value* {
                             auto fnit = functions.find(e + "." + mem->member);
                             std::vector<llvm::Value*> args;
-                            args.push_back(ord);
+                            // An ordinal implementer's method takes the ordinal as `this`; a
+                            // java-style implementer's method lives on the twin class and takes
+                            // the constant's singleton, recovered from the same ordinal.
+                            if (javaEnums.count(e) > 0)
+                                args.push_back(emitJavaEnumFromOrdinal(e, ord));
+                            else
+                                args.push_back(ord);
                             for (std::size_t i = 0; i < argVals.size(); ++i) {
                                 llvm::Value* v = argVals[i];
                                 if (i + 1 < fnit->second->arg_size())
