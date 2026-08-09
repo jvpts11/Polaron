@@ -4106,6 +4106,36 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
 
+        # System.Memory.Buffer (spec 17.8): an owned block of raw bytes whose LENGTH TRAVELS WITH THE
+        # POINTER. Allocator hands out a bare address and Raw reads wherever it is pointed; Buffer is
+        # the pair made safe, and it frees itself, so the two commonest raw-memory faults stop being
+        # possible to write by accident.
+        add_test(NAME codegen_memory_buffer_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/memory_buffer.ldp3"
+            "-DEXPECTED=length = 32 ints = 7 11 byte = 3 long = 1234567 last = 99 copied = 42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # Writing past the end stops the program and says which clause, where, and with what numbers.
+        # A bounds check that cannot be seen failing is indistinguishable from no bounds check.
+        add_test(NAME codegen_memory_buffer_overrun_stops COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/memory_buffer_overrun.ldp3"
+            "-DPANIC=left = 34, right = 32"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+        # The clause itself is quoted from the PRELUDE's own text, which has no file on disk: the
+        # compiler registers it under `<prelude>` so a stdlib diagnostic reads like any other.
+        add_test(NAME codegen_prelude_contract_quotes_its_clause COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/memory_buffer_overrun.ldp3"
+            "-DPANIC=requires offset + 4 <= this.size"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+
         # sizeof as a COMPILE-TIME constant (spec 28.2 + issue #7), so a hot struct can carry a byte
         # budget the build enforces. The sample asserts its sizes AND prints them: an assertion that
         # disagreed with the layout the program actually gets would be worse than none at all.

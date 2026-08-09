@@ -3096,6 +3096,12 @@ struct CodeGenerator::Impl {
             return u->op != "++" && u->op != "--" && isPureToReread(u->operand.get());
         if (const auto* ca = dynamic_cast<const ast::CastExpr*>(e))
             return isPureToReread(ca->operand.get());
+        // Arithmetic over pure operands is itself pure: assignment is not an expression in LDP3, so a
+        // BinaryExpr computes and does nothing else. Without this a clause like
+        // `offset + 4 <= this.size` printed its text and then no numbers -- and the numbers are the
+        // half that says which call went wrong.
+        if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e))
+            return isPureToReread(b->lhs.get()) && isPureToReread(b->rhs.get());
         return false;
     }
 

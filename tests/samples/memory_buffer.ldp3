@@ -1,0 +1,42 @@
+import System.IO.Console;
+import System.Memory.Buffer;
+
+// `System.Memory.Buffer` (spec 17.8): an OWNED block of raw bytes that knows how long it is.
+//
+// Allocator hands out a bare address and Raw reads wherever it is pointed -- correct for the two
+// lowest layers, and unusable as the everyday tool. Buffer carries the length with the pointer and
+// frees itself at scope exit, so the two commonest raw-memory faults (running off the end, and
+// forgetting the free) stop being possible to write by accident.
+program MemoryBuffer;
+
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Buffer b = new Buffer(32) on stack;
+                System.IO.Console.println($"length = {b.length()}");
+
+                b.writeInt(0, 7);
+                b.writeInt(4, 11);
+                b.writeByte(8, cast<byte>(3));
+                b.writeLong(16, cast<long>(1234567));
+                System.IO.Console.println($"ints = {b.readInt(0)} {b.readInt(4)}");
+                System.IO.Console.println($"byte = {b.readByte(8)}");
+                System.IO.Console.println($"long = {b.readLong(16)}");
+
+                // The last int that still fits: offset 28 + 4 bytes == 32, exactly the length. The
+                // boundary is the case a bounds check gets wrong, so it is the one worth pinning.
+                b.writeInt(28, 99);
+                System.IO.Console.println($"last = {b.readInt(28)}");
+
+                Buffer src = new Buffer(8) on stack;
+                src.writeInt(0, 42);
+                b.copyFrom(&src, 20, 4);
+                System.IO.Console.println($"copied = {b.readInt(20)}");
+
+                // Nothing is freed by hand: both buffers own their block and release it at scope exit.
+                return;
+            }
+        }
+    }
+}
