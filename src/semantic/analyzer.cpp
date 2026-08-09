@@ -6105,6 +6105,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     return mit->second.returnType;
                 }
             }
+            // Enum value built-in (spec 12.5): `v.name()` -- the declared identifier as a String,
+            // on ordinal and java-style enums alike. It is the fourth of the generated quartet
+            // (values/count/random/parse read names in; name reads them back out). A `name`
+            // method the enum declares itself wins: ordinal enums returned above, java-style
+            // ones resolve through their twin class below, so only probe the builtin when no
+            // user method exists.
+            if (enums_.count(baseType(objType)) > 0 && mem->member == "name" &&
+                call->args.empty()) {
+                const bool userOwns =
+                    javaEnums_.count(baseType(objType)) > 0 &&
+                    findMethod(baseType(objType), "name") != nullptr;
+                if (!userOwns) return "String";
+            }
             if (int vw = vecWidth(objType); vw > 0) {  // SIMD vector methods (GLSL-style)
                 for (const auto& arg : call->args) typeOf(*arg);
                 if (mem->member == "dot" && call->args.size() == 1) return "float";

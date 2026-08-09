@@ -1,0 +1,33 @@
+import System.IO.Console;
+program JavaEnumOrdinalCast;
+
+// A Java-style enum value casts to its declaration ordinal (RL-3): the constant is a singleton,
+// but `cast<int>` recovers the ordinal by identity -- the same recovery interpolation and
+// comparisons already use. Works on a direct constant and on a runtime-held value.
+// Prints:
+//   e=0 m=1
+public bundle main {
+    public namespace app {
+
+        public enum Planet {
+            EARTH(10),
+            MARS(30);
+
+            private int mass;
+
+            public constructor Planet(int mass) {
+                this.mass = mass;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Planet m = Planet.MARS;
+                int e = cast<int>(Planet.EARTH);
+                int i = cast<int>(m);
+                System.IO.Console.println($"e={e} m={i}");
+                return;
+            }
+        }
+    }
+}

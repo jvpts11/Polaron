@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.26")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.28")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.26")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.28")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3187,6 +3187,26 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_java_mixed_dispatch.ldp3"
             "-DCONTAINS=w1=7 w2=42 w3=9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # v.name() (spec 12.5): the declared identifier back as a String, on ordinal and
+        # java-style enum values alike -- the fourth of the generated quartet.
+        add_test(NAME codegen_enum_name_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/enum_name.ldp3"
+            "-DCONTAINS=a=GREEN b=GREEN p=MARS"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # cast<int> of a java-style enum value yields its declaration ordinal, never the
+        # singleton's pointer bits (regression: it used to truncate the address).
+        add_test(NAME codegen_java_enum_ordinal_cast_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/java_enum_ordinal_cast.ldp3"
+            "-DCONTAINS=e=0 m=1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

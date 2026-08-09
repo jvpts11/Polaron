@@ -29,8 +29,8 @@ public bundle main {
         public enum AppLevel extends Tier {
             a(7)
 
-            byCatalog { low(9) }
-            ;
+            byCatalog { low(9) };
+
             private int heft;
 
             public constructor AppLevel(int heft) {

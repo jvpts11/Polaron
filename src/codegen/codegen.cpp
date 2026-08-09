@@ -1314,6 +1314,13 @@ struct CodeGenerator::Impl {
         // tagged catalog value as (enumTypeId << 32 | ordinal). catalog->catalog is identity; the reverse
         // catalog->int is a plain truncation to the low 32 bits (the ordinal), handled by the integer
         // path below.
+        // A java-style enum value converting to an integer is asking for its ORDINAL (spec 12.5),
+        // not its pointer bits -- the same recovery interpolation and comparisons already use.
+        // Before this branch existed the generic pointer path truncated the singleton's address,
+        // which is a value that means nothing (found by the relayout's RL-3).
+        if (isIntName(to) && javaEnums.count(baseType(from)) > 0 && v->getType()->isPointerTy()) {
+            return coerce(emitJavaEnumOrdinal(v, baseType(from)), "int", to);
+        }
         if (isTaggedCatalog(to)) {
             if (isTaggedCatalog(from)) return v;
             if (enums.count(from) > 0 && v->getType()->isIntegerTy()) {
@@ -1537,6 +1544,12 @@ struct CodeGenerator::Impl {
         // pointer<->int reinterpret below, which would otherwise treat the box pointer as an address.
         if (from == "Object" && isBoxablePrimitive(to) && v->getType()->isPointerTy())
             return emitUnbox(v, to);
+        // A java-style enum value casting to an integer asks for its ORDINAL (spec 12.5), not its
+        // pointer bits -- the same recovery interpolation and comparisons already use. Before this
+        // branch existed, the generic pointer<->int reinterpret below truncated the singleton's
+        // ADDRESS, a value that means nothing (the relayout's RL-3 finding).
+        if (javaEnums.count(baseType(from)) > 0 && v->getType()->isPointerTy() && isIntName(to))
+            return emitCast(emitJavaEnumOrdinal(v, baseType(from)), "int", toRaw);
         // Decimal conversions (spec 34): scale by 10^18 on the way in, descale on the way out. The
         // double paths are lossy (double keeps ~15-16 digits); int<->Decimal is exact.
         if (to == "Decimal" && from != "Decimal") {
@@ -2978,6 +2991,11 @@ struct CodeGenerator::Impl {
                         if (mem->member == "parse") return "Option$" + oid->name;
                     }
                 }
+                // Enum value built-in (spec 12.5): v.name() is a String, unless the enum
+                // declares its own `name` (resolved through the paths below).
+                if (enums.count(baseType(ot)) > 0 && mem->member == "name" &&
+                    functions.count(baseType(ot) + ".name") == 0)
+                    return "String";
                 // Enum (catalog) instance method: m.pick() -> the method's return type. A
                 // catalog-typed receiver resolves to its single implementing enum (spec 12.4).
                 std::string enumRecv = baseType(ot);
@@ -9120,6 +9138,27 @@ struct CodeGenerator::Impl {
                             args.push_back(v);
                         }
                         return emitMaybeInvoke(fnit->second, args);
+                    }
+                    // Enum value built-in (spec 12.5): v.name() -- the declared identifier back
+                    // as a String, the fourth of the generated quartet (parse reads the names in;
+                    // name reads them out). The names are private String GLOBALS, so the select
+                    // chain allocates nothing. A java-style receiver is its singleton pointer;
+                    // identity recovers its ordinal first. A `name` method the enum declares
+                    // itself was found in `functions` above and won.
+                    if (mem->member == "name" && call.args.empty()) {
+                        llvm::Value* recv = emitExpr(*mem->object);
+                        if (recv == nullptr) return nullptr;
+                        llvm::Value* ord = recv;
+                        if (javaEnums.count(est) > 0) ord = emitJavaEnumOrdinal(recv, est);
+                        const std::vector<std::string>& consts = enums[est];
+                        llvm::Value* result = emitStringObject("");
+                        for (std::size_t i = 0; i < consts.size(); ++i) {
+                            llvm::Value* eq =
+                                builder.CreateICmpEQ(ord, builder.getInt32(static_cast<int>(i)));
+                            result = builder.CreateSelect(eq, emitStringObject(consts[i]), result,
+                                                          "enum.name");
+                        }
+                        return result;
                     }
                 } else if (isTaggedCatalog(est)) {
                     std::vector<std::string> impls;

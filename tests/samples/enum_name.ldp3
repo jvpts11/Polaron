@@ -1,0 +1,38 @@
+import System.IO.Console;
+program EnumName;
+
+// Every enum value knows its declared name (RL-2): `v.name()` returns the identifier as a String,
+// on ordinal enums and Java-style enums alike -- the same per-enum name data parse() already
+// proves reaches the binary, read in the other direction.
+// Prints:
+//   a=GREEN b=GREEN p=MARS
+public bundle main {
+    public namespace app {
+
+        public enum Color {
+            RED,
+            GREEN,
+            BLUE
+        }
+
+        public enum Planet {
+            EARTH(10),
+            MARS(30);
+
+            private int mass;
+
+            public constructor Planet(int mass) {
+                this.mass = mass;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Color c = Color.GREEN;
+                Planet p = Planet.MARS;
+                System.IO.Console.println($"a={Color.GREEN.name()} b={c.name()} p={p.name()}");
+                return;
+            }
+        }
+    }
+}
