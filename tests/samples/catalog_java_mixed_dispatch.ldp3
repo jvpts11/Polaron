@@ -1,0 +1,56 @@
+import System.IO.Console;
+program CatalogJavaMixedDispatch;
+
+// Catalog dispatch across MIXED implementers (spec 12.4): one ordinal enum and one Java-style enum
+// implement the same catalog. The tagged catalog value (enum id + ordinal) picks the implementer;
+// for the Java-style one the ordinal resolves back to the constant's singleton, so the method reads
+// the constant's own field.
+// Prints:
+//   w1=7 w2=42 w3=9
+public bundle main {
+    public namespace app {
+
+        public catalog Tier {
+            low
+
+            method weight() returns int;
+        }
+
+        public enum SysLevel extends Tier {
+            x
+
+            byCatalog { low }
+
+            public method weight() returns int {
+                return 42;
+            }
+        }
+
+        public enum AppLevel extends Tier {
+            a(7)
+
+            byCatalog { low(9) }
+            ;
+            private int heft;
+
+            public constructor AppLevel(int heft) {
+                this.heft = heft;
+            }
+
+            public method weight() returns int {
+                return this.heft;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Tier t1 = AppLevel.a;
+                Tier t2 = SysLevel.x;
+                Tier t3 = AppLevel.low;
+                System.IO.Console.printf("w1=%d w2=%d w3=%d\n",
+                                         t1.weight(), t2.weight(), t3.weight());
+                return;
+            }
+        }
+    }
+}

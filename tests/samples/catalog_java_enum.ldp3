@@ -1,0 +1,49 @@
+import System.IO.Console;
+program CatalogJavaEnum;
+
+// A Java-style enum implementing a catalog (spec 12.3/12.4). The catalog contributes required
+// values and required methods; the enum gives EVERY constant -- its own and the byCatalog ones --
+// constructor arguments, so each constant carries its data instead of a table on the side.
+// Prints:
+//   p=1 b=10 g=95 n=3
+public bundle main {
+    public namespace app {
+
+        public catalog Scored {
+            bronze,
+            gold
+
+            method score() returns int;
+        }
+
+        public enum Medal extends Scored {
+            paper(1)
+
+            byCatalog {
+                bronze(10),
+                gold(95)
+            }
+            ;
+            private int points;
+
+            public constructor Medal(int points) {
+                this.points = points;
+            }
+
+            public method score() returns int {
+                return this.points;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Medal m = Medal.paper;
+                Scored s1 = Medal.bronze;
+                Scored s2 = Medal.gold;
+                System.IO.Console.printf("p=%d b=%d g=%d n=%d\n",
+                                         m.score(), s1.score(), s2.score(), Medal.count());
+                return;
+            }
+        }
+    }
+}
