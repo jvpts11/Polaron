@@ -46,6 +46,7 @@
 #include "parser/ast.h"
 #include "parser/monomorphize.h"  // cloneExprDeep, to reroute an unqualified self-call through the member path
 #include "semantic/comptime.h"
+#include "semantic/layouts.h"
 
 namespace ldp3 {
 
@@ -2437,15 +2438,45 @@ struct CodeGenerator::Impl {
         const ClassLayout& l = it->second;
         if (l.fieldAffinity.empty()) {
             for (const auto& f : l.ownFields) result.push_back(f);
-            return result;
+        } else {
+            for (const char* group : {"hot", "", "cold"})
+                for (const auto& f : l.ownFields) {
+                    auto a = l.fieldAffinity.find(f.first);
+                    const std::string aff = a == l.fieldAffinity.end() ? std::string() : a->second;
+                    if (aff == group) result.push_back(f);
+                }
         }
-        for (const char* group : {"hot", "", "cold"})
-            for (const auto& f : l.ownFields) {
-                auto a = l.fieldAffinity.find(f.first);
-                const std::string aff = a == l.fieldAffinity.end() ? std::string() : a->second;
-                if (aff == group) result.push_back(f);
-            }
+        orderForLayout(l, result);
         return result;
+    }
+
+    // IMPLEMENTING A LAYOUT AUTHORIZES THE COMPILER TO ORDER THE FIELDS, and that authorization is
+    // the whole point of the feature. A check that only refuses is a guard against a problem that
+    // could have been solved -- and here it can be: every size and alignment is known, LDP3 exposes
+    // no offsets, so nothing observable depends on the order fields were written in.
+    //
+    // Widest alignment first, stably, which is what removes the padding a declaration order pays for.
+    // Called from inside collectFields so that every reader of the field order -- the bit-field
+    // runs, the struct body, reflection -- sees the same one; two orders here would be two layouts.
+    //
+    // Left alone entirely if any field's alignment cannot be measured yet (its own struct is still
+    // being built): a half-sorted order is worse than the written one, because it is neither.
+    void orderForLayout(const ClassLayout& l,
+                        std::vector<std::pair<std::string, std::string>>& fields) {
+        if (l.decl == nullptr || l.decl->layouts.empty() || fields.size() < 2) return;
+        std::vector<unsigned> align(fields.size());
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            align[i] = alignOfTypeName(fields[i].second);
+            if (align[i] == 0) return;
+        }
+        std::vector<std::size_t> order(fields.size());
+        for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::stable_sort(order.begin(), order.end(),
+                         [&](std::size_t a, std::size_t b) { return align[a] > align[b]; });
+        std::vector<std::pair<std::string, std::string>> sorted;
+        sorted.reserve(fields.size());
+        for (std::size_t i : order) sorted.push_back(fields[i]);
+        fields = std::move(sorted);
     }
 
     // Every virtual method name this class participates in: its own instance
@@ -3461,6 +3492,20 @@ struct CodeGenerator::Impl {
         if (lt == nullptr || !lt->isSized()) return false;
         out = static_cast<long long>(module.getDataLayout().getTypeAllocSize(lt));
         return true;
+    }
+
+    // The alignment a named type demands, from the same DataLayout. 0 when it cannot be measured yet
+    // -- a field whose own struct is still being built. Callers treat that as "do not reorder", which
+    // keeps a partly-known layout in declaration order instead of half-sorting it.
+    unsigned alignOfTypeName(const std::string& t) {
+        if (!namesAType(t)) return 0;
+        if (auto cit = classes.find(clsKey(t)); cit != classes.end() && cit->second.type != nullptr)
+            return cit->second.type->isSized()
+                       ? module.getDataLayout().getABITypeAlign(cit->second.type).value()
+                       : 0;
+        llvm::Type* lt = llvmType(t);
+        if (lt == nullptr || !lt->isSized()) return 0;
+        return module.getDataLayout().getABITypeAlign(lt).value();
     }
 
     // A value-type struct passed/returned across FFI by value (spec 26). True unless `t` is a
@@ -13307,6 +13352,43 @@ struct CodeGenerator::Impl {
                 }
             }
         }
+        checkLayoutBudgets(program);
+    }
+
+    // Every value aggregate that implements a layout, measured against what that layout asked for.
+    // Runs once all struct bodies are set: a size is only real when every field's type is, and a
+    // budget checked earlier would be checked against a type still under construction.
+    //
+    // The fields have already been ordered by then (see orderForLayout), so this refuses only what
+    // could not be made to fit -- which is the difference between a layout and an assertion.
+    void checkLayoutBudgets(const ast::Program& program) {
+        std::map<std::string, const ast::ClassDecl*> layoutDecls;
+        for (const auto& b : program.bundles)
+            for (const auto& ns : b.namespaces)
+                for (const auto& c : ns.classes)
+                    if (c.isLayout) layoutDecls[c.name] = &c;
+        if (layoutDecls.empty()) return;
+        for (const auto& b : program.bundles)
+            for (const auto& ns : b.namespaces)
+                for (const auto& c : ns.classes) {
+                    long long measured = 0;
+                    if (c.layouts.empty() || !sizeOfTypeName(c.name, measured)) continue;
+                    for (const std::string& ln : c.layouts) {
+                        auto lit = layoutDecls.find(ln);
+                        if (lit == layoutDecls.end()) continue;
+                        Arrangement want;
+                        (void)readArrangement(*lit->second, want);  // already reported if malformed
+                        if (want.maxBytes < 0 || measured <= want.maxBytes) continue;
+                        std::string msg = "`" + c.name + "` is arranged by `" + ln + "`, which fits it within " +
+                                          std::to_string(want.maxBytes) + " bytes -- it measures " +
+                                          std::to_string(measured) +
+                                          ". The fields were already ordered widest-first to make it "
+                                          "fit, so reordering them by hand will not help: something "
+                                          "has to be narrower, or leave";
+                        if (!want.refuseMessage.empty()) msg += " (" + want.refuseMessage + ")";
+                        error(msg, c.loc);
+                    }
+                }
     }
 
     // Folds a simple literal initializer to an LLVM constant of `llvmType(type)`.
