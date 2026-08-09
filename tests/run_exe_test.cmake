@@ -56,8 +56,21 @@ else()
     # lower to; _Unwind_* comes from libgcc, which clang links by default.
     set(_platlibs -lpthread -ldl -lm -lstdc++)
 endif()
-execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}"
-    "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp" -o "${exe}"
+# RTOBJ is the runtime, compiled ONCE by the build (see tests/CMakeLists.txt). Passing the .cpp here
+# made every test rebuild it -- 1.63 s each, about half the suite's wall-clock, to produce an object
+# byte-identical to the one already sitting in the build directory. The source path stays as a
+# fallback so this script still works when invoked by hand without RTOBJ.
+# Found through WORKDIR, which every test already passes, so none of the ~500 add_test calls had to
+# grow an argument. Falls back to the source when the object is absent, so invoking this script by
+# hand still works.
+set(_rt "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp")
+foreach(_ext ".obj" ".o")
+    if(EXISTS "${WORKDIR}/ldp3_rt_clang${_ext}")
+        set(_rt "${WORKDIR}/ldp3_rt_clang${_ext}")
+        break()
+    endif()
+endforeach()
+execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}" "${_rt}" -o "${exe}"
     ${_platlibs} RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})")

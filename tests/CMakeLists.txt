@@ -60,6 +60,23 @@ add_test(NAME ldp3_plug_all COMMAND "${CMAKE_COMMAND}"
 set_tests_properties(ldp3_plug_all PROPERTIES TIMEOUT 90)
 
 if(LDP3_CLANG)
+    # THE RUNTIME IS COMPILED ONCE, not once per test. Every end-to-end test used to hand clang
+    # `runtime/ldp3_rt.cpp`, so each of them rebuilt winsock2, windows.h and the whole runtime from
+    # source to produce an object identical to the one the test before it had just produced --
+    # measured at 1.63 s each, which was roughly half the wall-clock of the entire suite.
+    #
+    # Built here with the SAME clang the tests link with, rather than reusing the MSVC-built
+    # ldp3_rt.lib: same-ABI or not, mixing the two compilers is the kind of thing that works in 656
+    # tests and fails in one. Wired into the build (not a test) so it exists before anything runs,
+    # whatever order ctest -j picks.
+    set(LDP3_RT_OBJ "${CMAKE_CURRENT_BINARY_DIR}/ldp3_rt_clang${CMAKE_C_OUTPUT_EXTENSION}")
+    add_custom_command(OUTPUT "${LDP3_RT_OBJ}"
+        COMMAND "${LDP3_CLANG}" -c "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/ldp3_rt.cpp"
+                -o "${LDP3_RT_OBJ}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/ldp3_rt.cpp"
+        COMMENT "Compiling the LDP3 runtime once for the end-to-end tests")
+    add_custom_target(ldp3_rt_for_tests ALL DEPENDS "${LDP3_RT_OBJ}")
+
     add_test(NAME ldp3_compile_produces_exe
         COMMAND ldp3 compile "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.ldp3"
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
