@@ -146,6 +146,141 @@ public bundle System {
             }
         }
     }
+    public namespace Memory {
+        // An owned block of raw bytes (spec 17.8).
+        //
+        // `Allocator` hands out a bare `address` with no length attached, and `Raw` reads and writes
+        // wherever it is pointed: between them nothing can check anything, which is the right shape
+        // for the two lowest layers and the wrong one for everything above. A Buffer is the pair made
+        // safe -- THE LENGTH TRAVELS WITH THE POINTER, which is the whole difference between a buffer
+        // and an address -- and it frees itself when it goes out of scope, so the commonest raw-memory
+        // leak stops being possible to write.
+        //
+        // Every access is a contract, not a silent read past the end. A violated one names the clause,
+        // the place, and the two numbers, so an overrun reads as a mistake with an address rather than
+        // as corruption discovered three frames later.
+        public class Buffer {
+            private mutable address at;
+            private mutable int size;
+
+            public constructor Buffer(int bytes)
+                requires bytes > 0
+            {
+                this.at = Allocator.alloc(bytes);
+                this.size = bytes;
+            }
+
+            public method length() returns int {
+                return this.size;
+            }
+
+            // The raw address, for the FFI call or GL upload that wants a pointer. Handing this out
+            // is deliberate and it is where the checking stops: what the callee does with it is the
+            // callee's business, which is why it is spelled out rather than reached through a field.
+            public method start() returns address {
+                return this.at;
+            }
+
+            // One pair per width. A single `read<T>/write<T>` would be shorter, but a generic method
+            // cannot forward its own type parameter into the Raw builtins today (the receiver stops
+            // resolving) -- so these are written out rather than faked. Each states the width it
+            // needs in its own contract, which is what the caller reads when one fails.
+            public method readByte(int offset) returns byte
+                requires offset >= 0
+                requires offset + 1 <= this.size
+            {
+                return Raw.read<byte>(this.at + cast<address>(offset));
+            }
+
+            public method writeByte(int offset, byte value) returns void
+                requires offset >= 0
+                requires offset + 1 <= this.size
+            {
+                Raw.write<byte>(this.at + cast<address>(offset), value);
+                return;
+            }
+
+            public method readInt(int offset) returns int
+                requires offset >= 0
+                requires offset + 4 <= this.size
+            {
+                return Raw.read<int>(this.at + cast<address>(offset));
+            }
+
+            public method writeInt(int offset, int value) returns void
+                requires offset >= 0
+                requires offset + 4 <= this.size
+            {
+                Raw.write<int>(this.at + cast<address>(offset), value);
+                return;
+            }
+
+            public method readLong(int offset) returns long
+                requires offset >= 0
+                requires offset + 8 <= this.size
+            {
+                return Raw.read<long>(this.at + cast<address>(offset));
+            }
+
+            public method writeLong(int offset, long value) returns void
+                requires offset >= 0
+                requires offset + 8 <= this.size
+            {
+                Raw.write<long>(this.at + cast<address>(offset), value);
+                return;
+            }
+
+            public method readFloat(int offset) returns float
+                requires offset >= 0
+                requires offset + 4 <= this.size
+            {
+                return Raw.read<float>(this.at + cast<address>(offset));
+            }
+
+            public method writeFloat(int offset, float value) returns void
+                requires offset >= 0
+                requires offset + 4 <= this.size
+            {
+                Raw.write<float>(this.at + cast<address>(offset), value);
+                return;
+            }
+
+            public method readDouble(int offset) returns double
+                requires offset >= 0
+                requires offset + 8 <= this.size
+            {
+                return Raw.read<double>(this.at + cast<address>(offset));
+            }
+
+            public method writeDouble(int offset, double value) returns void
+                requires offset >= 0
+                requires offset + 8 <= this.size
+            {
+                Raw.write<double>(this.at + cast<address>(offset), value);
+                return;
+            }
+
+            // Copies `bytes` from another buffer's start into this one at `offset`. Both ends are
+            // checked, because a copy is the one operation that can run off either of them.
+            public method copyFrom(Buffer* source, int offset, int bytes) returns void
+                requires bytes >= 0
+                requires offset >= 0
+                requires offset + bytes <= this.size
+                requires bytes <= source.length()
+            {
+                Allocator.copy(this.at + cast<address>(offset), source.start(), bytes);
+                return;
+            }
+
+            // Guarded and nulled, so a `delete` followed by scope exit is harmless.
+            public destructor ~Buffer() returns void {
+                if (this.at != cast<address>(0)) {
+                    Allocator.free(this.at);
+                    this.at = cast<address>(0);
+                }
+            }
+        }
+    }
     public namespace Concurrency {
         // An OS thread (spec 20.1). Holds a function<void> and its OS handle; start()/join() call
         // the low-level thread builtins, which lower to CreateThread / WaitForSingleObject.
@@ -9525,6 +9660,11 @@ R"LDP3(
 
 // Parses the embedded prelude and merges its bundles into `prog`.
 void appendPrelude(ldp3::ast::Program& prog) {
+    // Register the prelude's text under its own pseudo-path, so a diagnostic pointing into stdlib
+    // code can quote the line like any other. Without this a stdlib contract could name its method
+    // and its line and then show neither the clause nor the values -- which is most of the message.
+    if (g_sources.find("<prelude>") == g_sources.end())
+        g_sources["<prelude>"] = std::string(kPreludeSource);
     ldp3::Lexer lexer(kPreludeSource, "<prelude>");  // string_view: static lifetime
     ldp3::Parser parser(lexer.tokenize(), "<prelude>");
     ldp3::ast::Program prelude = parser.parse();
