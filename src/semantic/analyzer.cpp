@@ -5406,15 +5406,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 for (const auto& [fname, floc] : pendingCtorFields_)
                     markInitialized("this." + fname);
         }
-        // `itself(...)`: the lambda calling itself. Handled before every other call shape because
-        // `itself` resolves to no class, no local and no method -- it names the enclosing lambda, which
-        // has no name of its own to look up.
+        // `itself(...)` inside a lambda: the lambda calling itself. Handled before every other call
+        // shape because there `itself` resolves to no class, no local and no method -- the enclosing
+        // lambda has no name of its own to look up. Everywhere else the pronoun has already been
+        // resolved to the entity being declared, so reaching here means there was no such entity.
         if (const auto* iid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
             iid != nullptr && iid->name == "itself") {
             if (!analyzingLambda_) {
-                error("'itself' names the lambda it appears in, so it can only be called inside a "
-                      "lambda body. In a method, call the method by name; at the top of a declaration, "
-                      "`itself.allocate(...)` is the region initializer (spec 17.2)",
+                error("'itself' names the entity being declared, and there is none to name here. "
+                      "Inside a lambda body it is the lambda, which is how an anonymous function "
+                      "recurses; in a declaration or an assignment it is what is being declared or "
+                      "assigned to. In a method, call the method by its name",
                       call->loc);
                 return "";
             }

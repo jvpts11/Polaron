@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.22")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.23")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.22")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.23")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1131,6 +1131,19 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/own_namespace_wins.ldp3"
             "-DEXPECTED=total 42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `itself` as the universal pronoun the keyword reference always described: "the entity being
+        # declared". Bare it is that entity, followed by a '.' it is that entity's TYPE. The compiler
+        # honoured it in two places only -- the region initializer and lambda self-recursion -- and
+        # those are instances of the rule rather than exceptions to it. The lambda form is exercised
+        # here beside the general ones so that generalizing the pronoun cannot quietly break it.
+        add_test(NAME codegen_itself_pronoun_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/itself_pronoun.ldp3"
+            "-DEXPECTED=a = 10 total = 10 fact = 120"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
