@@ -788,12 +788,14 @@ ast::EnumDecl Parser::parseEnum() {
         }
     }
     expect(TokenKind::RBrace, "'}'");
-    // A catalog-implementing enum may be ordinal OR java-style (2026-08-09: the two compose).
-    // Ordinal: constants are i32 ordinals, methods dispatch on the ordinal. Java-style: each
-    // constant is a singleton carrying its constructor data, and catalog dispatch resolves the
-    // tagged ordinal back to the singleton. A methods-only enum is normalised to ordinal even if
-    // a `;` separated its methods, so existing dispatch (and value semantics) stay unchanged.
-    if (!e.extendsCatalogs.empty()) {
+    // What makes an enum java-style is STATE -- per-constant constructor arguments, instance
+    // fields, a constructor -- never methods alone. A methods-only enum is normalised back to
+    // ordinal whether or not it implements a catalog: its constants stay i32 ordinals with value
+    // semantics, its methods dispatch on the ordinal, and `;` is only ever a separator. (Before
+    // 2026-08-09 this normalisation existed only for catalog-implementing enums, so a plain enum
+    // that declared one method silently turned its constants into heap singletons -- found by the
+    // relayout when Biome gained its questions, as an 8-byte sizeof where 4 was promised.)
+    if (e.isJavaStyle) {
         bool hasCtorArgs = false;
         for (const auto& a : e.constantArgs) {
             if (!a.empty()) {

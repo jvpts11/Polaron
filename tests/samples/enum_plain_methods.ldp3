@@ -1,0 +1,36 @@
+import System.IO.Console;
+import System.Memory.Raw;
+program EnumPlainMethods;
+
+// A methods-only enum with NO catalog stays an ORDINAL enum: the `;` separates methods from
+// constants without turning every constant into a heap singleton. The observable difference is
+// the representation -- sizeof(Color) must be the i32 ordinal's 4, not a pointer's 8 -- and the
+// receiver of a method is the ordinal, exactly as for catalog-implementing enums.
+// Prints:
+//   b=2 ord=1 n=3 sz=4
+public bundle main {
+    public namespace app {
+
+        public enum Color {
+            RED,
+            GREEN,
+            BLUE;
+
+            public method brightness() returns int {
+                if (this == Color.GREEN) {
+                    return 2;
+                }
+                return 1;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Color c = Color.GREEN;
+                System.IO.Console.println(
+                    $"b={c.brightness()} ord={cast<int>(c)} n={Color.count()} sz={Raw.sizeof(Color)}");
+                return;
+            }
+        }
+    }
+}
