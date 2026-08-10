@@ -164,7 +164,20 @@ methods:
 demand 2 + 2 == 4 otherwise "math is broken";
 demand 16 * 1024 < 65536 otherwise "the buffer does not fit";
 demand Math.fib(10) == 55 otherwise "fib(10) must be 55";   // calls a comptime method
+demand Fruit.count() == 3 otherwise "three fruit are drawn on the labels";   // an enum's size
 ```
+
+An **enum's `count()`** folds here because an enum is a closed set written out in the source: its
+size is settled the moment the declaration is parsed. That is what lets a table numbered across
+several enums hold its own arithmetic together — give each family a slice of one index space and
+the offset of a family is the size of everything before it, so
+
+```ldp3
+demand 3 == Fruit.count() otherwise "crates are numbered after the fruit";
+```
+
+stops the build when somebody adds a fourth fruit, instead of silently renumbering every crate. A
+*class* with a static `count()` of its own is not an enum and stays an ordinary runtime call.
 
 If the condition holds, nothing at all reaches the executable. If it fails, compilation stops:
 

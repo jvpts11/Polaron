@@ -302,11 +302,15 @@ static bool evalConstInt(const ast::Expr& e, long long& out,
                          const std::unordered_map<std::string, long long>* consts = nullptr,
                          const std::unordered_map<std::string, const ast::MethodDecl*>* methods =
                              nullptr,
-                         const std::unordered_map<std::string, double>* dconsts = nullptr);
+                         const std::unordered_map<std::string, double>* dconsts = nullptr,
+                         const std::unordered_map<std::string, std::vector<std::string>>* enums =
+                             nullptr);
 static bool evalConstDouble(const ast::Expr& e, double& out,
                             const std::unordered_map<std::string, double>* dconsts,
                             const std::unordered_map<std::string, long long>* iconsts,
                             const std::unordered_map<std::string, const ast::MethodDecl*>* methods =
+                                nullptr,
+                            const std::unordered_map<std::string, std::vector<std::string>>* enums =
                                 nullptr);
 
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
@@ -2547,13 +2551,14 @@ void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
         }
         if (isFloatType(type)) {
             double d;
-            if (!evalConstDouble(*c.init, d, &constDoubles_, &constInts_, &comptimeMethods_))
+            if (!evalConstDouble(*c.init, d, &constDoubles_, &constInts_, &comptimeMethods_,
+                                 &enums_))
                 error("fixed '" + key + "' initializer must be a compile-time constant", c.loc);
             else
                 constDoubles_[key] = d;
         } else {
             long long v;
-            if (!evalConstInt(*c.init, v, &constInts_, &comptimeMethods_, &constDoubles_))
+            if (!evalConstInt(*c.init, v, &constInts_, &comptimeMethods_, &constDoubles_, &enums_))
                 error("fixed '" + key + "' initializer must be a compile-time constant", c.loc);
             else
                 constInts_[key] = v;
@@ -3295,17 +3300,33 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, bool isIncreme
     if (type != "int") error("'++'/'--' requires an int target", loc);
 }
 
+// Lets the evaluator answer `EnumName.count()` (spec 12.5) from the declarations this stage already
+// holds. An enum is a closed set written out in the source, so its size is a compile-time fact --
+// which is what a demand needs to hold one table's offsets to the size of another.
+static void setEnumCount(comptime::Context& ctx,
+                         const std::unordered_map<std::string, std::vector<std::string>>* enums) {
+    if (enums == nullptr) return;
+    ctx.enumCount = [enums](const std::string& name, long long& out) {
+        auto it = enums->find(name);
+        if (it == enums->end()) return false;
+        out = static_cast<long long>(it->second.size());
+        return true;
+    };
+}
+
 // Evaluates a constant integer/boolean/char expression at compile time (spec 28),
 // delegating to the shared comptime evaluator so consts and `comptime` method calls
 // resolve uniformly. `consts`/`methods` are optional resolution tables.
 static bool evalConstInt(const ast::Expr& e, long long& out,
                          const std::unordered_map<std::string, long long>* consts,
                          const std::unordered_map<std::string, const ast::MethodDecl*>* methods,
-                         const std::unordered_map<std::string, double>* dconsts) {
+                         const std::unordered_map<std::string, double>* dconsts,
+                         const std::unordered_map<std::string, std::vector<std::string>>* enums) {
     comptime::Context ctx;
     ctx.consts = consts;
     ctx.dconsts = dconsts;  // so a double const in e.g. a comparison still resolves
     ctx.methods = methods;
+    setEnumCount(ctx, enums);
     return comptime::evalInt(e, out, ctx);
 }
 
@@ -3314,18 +3335,21 @@ static bool evalConstInt(const ast::Expr& e, long long& out,
 static bool evalConstDouble(const ast::Expr& e, double& out,
                             const std::unordered_map<std::string, double>* dconsts,
                             const std::unordered_map<std::string, long long>* iconsts,
-                            const std::unordered_map<std::string, const ast::MethodDecl*>* methods) {
+                            const std::unordered_map<std::string, const ast::MethodDecl*>* methods,
+                            const std::unordered_map<std::string, std::vector<std::string>>* enums) {
     comptime::Context ctx;
     ctx.consts = iconsts;
     ctx.dconsts = dconsts;
     ctx.methods = methods;
+    setEnumCount(ctx, enums);
     return comptime::evalDouble(e, out, ctx);
 }
 
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* sa = dynamic_cast<const ast::DemandStmt*>(&stmt)) {
         long long v;
-        if (!evalConstInt(*sa->condition, v, &constInts_, &comptimeMethods_, &constDoubles_)) {
+        if (!evalConstInt(*sa->condition, v, &constInts_, &comptimeMethods_, &constDoubles_,
+                          &enums_)) {
             // A condition over `sizeof` needs the target's real layout, which only the codegen has
             // (spec 28.2, issue #7). Deferring it there is what lets a struct carry a byte budget;
             // folding a size from a layout guessed here would assert something the program does not
@@ -3705,7 +3729,8 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         if (ifs->isComptime) {
             long long v;
-            if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_, &constDoubles_))
+            if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_, &constDoubles_,
+                              &enums_))
                 error("'comptime if' requires a compile-time constant condition", ifs->loc);
         }
         // The branch is where the flow machine earns itself. Each arm is analyzed from the SAME entry
@@ -4374,8 +4399,8 @@ bool SemanticAnalyzer::isConstArg(const ast::Expr& e) {
         return true;
     long long i;
     double d;
-    return evalConstInt(e, i, &constInts_, &comptimeMethods_, &constDoubles_) ||
-           evalConstDouble(e, d, &constDoubles_, &constInts_, &comptimeMethods_);
+    return evalConstInt(e, i, &constInts_, &comptimeMethods_, &constDoubles_, &enums_) ||
+           evalConstDouble(e, d, &constDoubles_, &constInts_, &comptimeMethods_, &enums_);
 }
 
 void SemanticAnalyzer::checkComptimeArgs(const std::vector<ast::ExprPtr>& args,

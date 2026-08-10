@@ -13557,6 +13557,14 @@ struct CodeGenerator::Impl {
         ctx.methods = &comptimeMethods;
         // Only this stage may answer for layout, so this is where sizeof becomes a constant.
         ctx.sizeOfType = [this](const std::string& t, long long& out) { return sizeOfTypeName(t, out); };
+        // An enum's size is known from its declaration alone, so this stage can answer for it too --
+        // and must, so a `fixed` global folded here agrees with the demand the analyzer settled.
+        ctx.enumCount = [this](const std::string& e, long long& out) {
+            auto it = enums.find(e);
+            if (it == enums.end()) return false;
+            out = static_cast<long long>(it->second.size());
+            return true;
+        };
         return ctx;
     }
     bool foldConstInt(const ast::Expr& e, long long& out) {
