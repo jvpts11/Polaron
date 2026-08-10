@@ -40,6 +40,16 @@ struct Context {
     // confident lie the moment the two models drifted, and an assertion that lies is worse than one
     // that cannot run.
     std::function<bool(const std::string& typeName, long long& out)> sizeOfType;
+    // Resolves `EnumName.count()` (spec 12.5) to how many constants the enum declares. An enum is a
+    // closed set written out in the source, so its size is settled the moment the declaration is
+    // parsed -- there is nothing about it a running program could know that the compiler does not.
+    // That makes it fit to stand in a `demand`, which is the point: a table keyed by one enum and
+    // offset by the size of another can say so at build time instead of renumbering itself in
+    // silence when somebody adds a constant.
+    //
+    // Set by whichever stage holds the enum declarations. Left unset, a count is simply not
+    // constant, exactly as an unset sizeOfType makes a size non-constant.
+    std::function<bool(const std::string& enumName, long long& out)> enumCount;
 };
 
 // True when `e` mentions `sizeof` anywhere. Such a condition can only be folded where the target

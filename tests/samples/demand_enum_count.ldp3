@@ -1,0 +1,72 @@
+import System.IO.Console;
+program DemandEnumCount;
+
+// `EnumName.count()` (spec 12.5) is a compile-time constant, so it may stand in a `demand`
+// (spec 28.2). An enum is a closed set written out in the source: how many constants it declares
+// is settled the moment it is parsed, and there is nothing about it a running program could know
+// that the compiler does not.
+//
+// What it is FOR is the last two demands. A table numbered across several enums gives each family
+// a slice of one index space, and the offset of a family is the size of everything before it. Left
+// as a literal, adding one constant to the first family silently renumbers every row of the rest.
+// Said as a demand, it stops the build instead.
+
+public bundle main {
+    public namespace App {
+
+        public enum Fruit {
+            Apple,
+            Pear,
+            Plum
+        }
+
+        public enum Grade {
+            Poor,
+            Fine
+        }
+
+        // A java-style enum answers the same way: the constants are still a closed list.
+        public enum Crate {
+            Small(4),
+            Large(9);
+
+            private int holds;
+
+            public constructor Crate(int holds) {
+                this.holds = holds;
+            }
+
+            public method holds() returns int {
+                return this.holds;
+            }
+
+            // Crates are numbered after the fruit, so this offset is the fruit's size.
+            public method index() returns int {
+                return 3 + cast<int>(this);
+            }
+        }
+
+        // A class may have a static count() of its own. It is not an enum, so it stays an ordinary
+        // runtime call -- the fold must not swallow it.
+        public class Shelf {
+            public static method count() returns int {
+                return 12;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                demand Fruit.count() == 3 otherwise "three fruit are drawn on the crate labels";
+                demand Crate.count() == 2 otherwise "the yard stocks two crate sizes";
+                demand Fruit.count() + Crate.count() == 5 otherwise "five rows fit on one label";
+                // The offset the index() above hard-codes, held to the family before it.
+                demand 3 == Fruit.count() otherwise "crates are numbered after the fruit";
+                demand Grade.count() < Fruit.count() otherwise "a grade is coarser than a fruit";
+
+                System.IO.Console.printf("shelf=%d idx=%d holds=%d\n",
+                    Shelf.count(), Crate.Large.index(), Crate.Large.holds());
+                return;
+            }
+        }
+    }
+}

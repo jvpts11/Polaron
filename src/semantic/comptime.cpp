@@ -284,6 +284,21 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
             }
         }
 
+        // `EnumName.count()` (spec 12.5). An enum is a closed set written out in the source, so how
+        // many constants it declares is settled the moment it is parsed. Folding it is what lets a
+        // demand hold a table's family offsets to the size of the family before them.
+        //
+        // Only an ENUM answers here. A class with a static `count()` of its own -- a table asking
+        // how long it is -- falls through to the ordinary call path below and stays a runtime read.
+        if (ctx.enumCount) {
+            if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+                cm != nullptr && cm->member == "count" && call->args.empty()) {
+                const std::string recv = typeNameSpelled(*cm->object);
+                long long n = 0;
+                if (!recv.empty() && ctx.enumCount(recv, n)) { out = Num::I(n); return true; }
+            }
+        }
+
         if (ctx.methods == nullptr) return false;
         std::string name;
         if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get()))
