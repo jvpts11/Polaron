@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.30")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.31")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.30")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.31")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3218,6 +3218,19 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/enum_plain_methods.ldp3"
             "-DCONTAINS=b=2 ord=1 n=3 sz=4"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A catalog-typed value passed as an ARGUMENT keeps its tag (spec 12.6). Regression: the
+        # tagged ordinal lowers to i64 exactly as `long` does, so coercing an argument to the
+        # parameter's LLVM shape alone dropped the type tag and dispatched every call to whichever
+        # enum owned tag 0 -- silently wrong (200 read as 11); from a java-style implementer the
+        # same path failed module verification.
+        add_test(NAME codegen_catalog_arg_passing_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_arg_passing.ldp3"
+            "-DEXPECTED=m=11 200 20 c=30 e=7 200"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

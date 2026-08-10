@@ -958,6 +958,12 @@ struct CodeGenerator::Impl {
     // implementing enum. Assigned in declaration order in declareClasses pass 0.
     std::unordered_map<std::string, int> enumTypeId;
     std::unordered_map<std::string, llvm::Function*> functions;  // mangled -> fn
+    // The type names a function's parameters were DECLARED with, in the same index space as its
+    // LLVM arguments (an implicit `this` holds an empty slot). An LLVM type does not always say
+    // what the language meant: a tagged catalog lowers to i64, exactly like `long`, so an argument
+    // widened to the LLVM shape alone reaches it UNTAGGED and dispatches as whichever enum owns
+    // tag 0 -- a wrong answer with nothing anywhere to report it.
+    std::unordered_map<const llvm::Function*, std::vector<std::string>> paramTypeNames;
     std::unordered_map<std::string, llvm::GlobalVariable*> staticGlobals;  // "Class.field" -> global
     std::unordered_map<std::string, std::string> staticFieldType;  // "Class.field" -> LDP3 type
     // class -> its persistent instance field names (spec 18: object reattach via per-variable globals)
@@ -1647,6 +1653,29 @@ struct CodeGenerator::Impl {
             }
             if (src->isFloatingPointTy()) return fpToInt(v, ty, false);  // f -> int, saturating
         }
+        return v;
+    }
+
+    // Coerces a call argument to what the callee DECLARED, falling back to its LLVM shape.
+    //
+    // The two part company at a catalog. A catalog-typed value is a TAGGED ordinal
+    // (typeId << 32 | ordinal) and lowers to i64 -- the same LLVM type as `long` -- so widening an
+    // implementer's ordinal to the parameter's shape produces a number that is a valid i64 and a
+    // meaningless catalog value: the tag reads 0, and every call dispatches to whichever enum
+    // happens to own tag 0. That is the silent-wrong-answer shape this compiler refuses to have.
+    // The language-level coercion knows how to pack the tag, for an ordinal implementer and for a
+    // java-style one (whose value is a singleton pointer), so ask it whenever the declaration says
+    // the parameter is a catalog.
+    llvm::Value* coerceArg(llvm::Value* v, const std::string& fromType, const llvm::Function* fn,
+                           std::size_t argIndex) {
+        if (v == nullptr || fn == nullptr) return v;
+        if (auto it = paramTypeNames.find(fn); it != paramTypeNames.end() &&
+                                               argIndex < it->second.size() && !fromType.empty()) {
+            const std::string& want = it->second[argIndex];
+            if (!want.empty() && want != fromType && isTaggedCatalog(want))
+                return coerce(v, fromType, want);
+        }
+        if (argIndex < fn->arg_size()) return coerceToType(v, fn->getArg(argIndex)->getType());
         return v;
     }
 
@@ -6715,8 +6744,8 @@ struct CodeGenerator::Impl {
                 for (std::size_t i = 0; i < nw.args.size(); ++i) {
                     llvm::Value* v = emitExpr(*nw.args[i]);
                     if (v == nullptr) return nullptr;
-                    if (i + 1 < fnit->second->arg_size())  // coerce to the ctor's param width/type
-                        v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
+                    // to what the ctor DECLARED, not merely its param width
+                    v = coerceArg(v, typeName(*nw.args[i]), fnit->second, i + 1);
                     args.push_back(v);
                     if (ctor != nullptr && i < ctor->params.size())
                         if (std::string acn = ownedHeapNewArg(*nw.args[i],
@@ -6835,9 +6864,7 @@ struct CodeGenerator::Impl {
             for (std::size_t i = 0; i < cargs.size(); ++i) {
                 llvm::Value* v = emitExpr(*cargs[i]);
                 if (v == nullptr) return nullptr;
-                if (i + 1 < fnit->second->arg_size()) {
-                    v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
-                }
+                v = coerceArg(v, typeName(*cargs[i]), fnit->second, i + 1);
                 args.push_back(v);
             }
             emitMaybeInvoke(fnit->second, args);
@@ -9095,8 +9122,8 @@ struct CodeGenerator::Impl {
                         }
                         llvm::Value* v = emitExpr(*call.args[i]);
                         if (v == nullptr) return nullptr;
-                        if (i < fnit->second->arg_size())  // static: no implicit `this`
-                            v = coerceToType(v, fnit->second->getArg(i)->getType());
+                        // static: no implicit `this`
+                        v = coerceArg(v, typeName(*call.args[i]), fnit->second, i);
                         args.push_back(v);
                         if (asyncSM && laterArgAwaits(call.args, i)) atk[i] = spillAcrossAwait(v);
                     }
@@ -9133,8 +9160,7 @@ struct CodeGenerator::Impl {
                         for (std::size_t i = 0; i < call.args.size(); ++i) {
                             llvm::Value* v = emitExpr(*call.args[i]);
                             if (v == nullptr) return nullptr;
-                            if (i + 1 < fnit->second->arg_size())
-                                v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
+                            v = coerceArg(v, typeName(*call.args[i]), fnit->second, i + 1);
                             args.push_back(v);
                         }
                         return emitMaybeInvoke(fnit->second, args);
@@ -9186,8 +9212,8 @@ struct CodeGenerator::Impl {
                                 args.push_back(ord);
                             for (std::size_t i = 0; i < argVals.size(); ++i) {
                                 llvm::Value* v = argVals[i];
-                                if (i + 1 < fnit->second->arg_size())
-                                    v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
+                                v = coerceArg(v, i < call.args.size() ? typeName(*call.args[i]) : "",
+                                              fnit->second, i + 1);
                                 args.push_back(v);
                             }
                             return builder.CreateCall(fnit->second, args);
@@ -9309,8 +9335,7 @@ struct CodeGenerator::Impl {
             for (std::size_t i = 0; i < call.args.size(); ++i) {
                 llvm::Value* v = emitExpr(*call.args[i]);
                 if (v == nullptr) return nullptr;
-                if (i + 1 < fnit->second->arg_size())
-                    v = coerceToType(v, fnit->second->getArg(i + 1)->getType());
+                v = coerceArg(v, typeName(*call.args[i]), fnit->second, i + 1);
                 args.push_back(v);
                 if (mdecl != nullptr && i < mdecl->params.size())
                     if (std::string cn = ownedHeapNewArg(*call.args[i],
@@ -14022,9 +14047,15 @@ struct CodeGenerator::Impl {
                                 continue;
                             }
                             std::vector<llvm::Type*> ptypes;
-                            if (!m->isStatic) ptypes.push_back(builder.getPtrTy());
-                            for (const auto& p : m->params)
+                            std::vector<std::string> pnames;
+                            if (!m->isStatic) {
+                                ptypes.push_back(builder.getPtrTy());
+                                pnames.emplace_back();  // `this` holds a slot so indices line up
+                            }
+                            for (const auto& p : m->params) {
                                 ptypes.push_back(llvmType(typeRefName(p.type)));
+                                pnames.push_back(typeRefName(p.type));
+                            }
                             const std::string mangled = cls.name + "." + m->name;
                             if (m->isAsync) {
                                 // Wrapper returns a Task<T> object (ptr); a separate resume
@@ -14081,18 +14112,25 @@ struct CodeGenerator::Impl {
                                 fn->addFnAttr(llvm::Attribute::OptimizeNone);
                             }
                             functions[mangled] = fn;
+                            paramTypeNames[fn] = pnames;
                         } else if (const auto* c =
                                        dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                             hasCtor = true;
                             std::vector<llvm::Type*> ptypes;
+                            std::vector<std::string> pnames;
                             ptypes.push_back(builder.getPtrTy());  // this
-                            for (const auto& p : c->params)
+                            pnames.emplace_back();                 // ...and its empty slot
+                            for (const auto& p : c->params) {
                                 ptypes.push_back(llvmType(typeRefName(p.type)));
+                                pnames.push_back(typeRefName(p.type));
+                            }
                             llvm::FunctionType* ty =
                                 llvm::FunctionType::get(builder.getVoidTy(), ptypes, false);
                             const std::string mangled = cls.name + "." + cls.name;
-                            functions[mangled] = llvm::Function::Create(
+                            llvm::Function* cf = llvm::Function::Create(
                                 ty, llvm::Function::ExternalLinkage, mangled, module);
+                            functions[mangled] = cf;
+                            paramTypeNames[cf] = pnames;
                         } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) !=
                                    nullptr) {
                             llvm::FunctionType* ty = llvm::FunctionType::get(

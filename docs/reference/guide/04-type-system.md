@@ -589,6 +589,19 @@ Catalogs may provide default implementations, may extend other catalogs, and an
 enum may satisfy several catalogs at once — giving enums a form of multiple
 "interface" conformance that carries required values along with required methods.
 
+A **catalog-typed value** is a first-class one: it may be stored, returned, and
+passed as an argument to a method, a class constructor, or an enum constant's
+constructor, and calling a catalog method on it dispatches to the constant's own
+implementation whichever enum that constant came from.
+
+```ldp3
+public class Scale {
+    public static method weigh(Heavy h) returns int {
+        return h.weight();          // dispatches to Ingot's or Stone's, by what was passed
+    }
+}
+```
+
 ### Catalogs and Java-style enums compose
 
 A catalog-implementing enum may be Java-style: each constant — the enum's own

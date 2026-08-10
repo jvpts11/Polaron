@@ -1,0 +1,106 @@
+import System.IO.Console;
+program CatalogArgPassing;
+
+// A catalog-typed value passed as an ARGUMENT (spec 12.6): to a method, to a class constructor,
+// and to an enum constant's constructor -- from an ordinal implementer and from a java-style one.
+//
+// REGRESSION, and the worst shape this compiler admits. A catalog value is a tagged ordinal
+// (typeId << 32 | ordinal) and lowers to i64, which is also what `long` lowers to, so an argument
+// coerced to the parameter's LLVM shape alone arrived UNTAGGED: `Scale.weigh(Stone.Slate)` read
+// tag 0 and dispatched as `Ingot`, answering 11 where the stone weighs 200. No error, no crash,
+// wrong number. From a java-style implementer the same path failed module verification instead.
+// Arguments are coerced to what the callee DECLARED now, so both arrive as themselves.
+
+public bundle main {
+    public namespace App {
+
+        public catalog Heavy {
+            method weight() returns int;
+        }
+
+        // An ordinal implementer: its constants are plain i32.
+        public enum Ingot extends Heavy {
+            Iron,
+            Lead;
+
+            public method weight() returns int {
+                return this == Ingot.Iron ? 7 : 11;
+            }
+        }
+
+        // A second one, so a dropped tag has somewhere wrong to land.
+        public enum Stone extends Heavy {
+            Flint,
+            Slate;
+
+            public method weight() returns int {
+                return this == Stone.Flint ? 100 : 200;
+            }
+        }
+
+        // A java-style implementer: its constants are singleton pointers.
+        public enum Timber extends Heavy {
+            Oak(30),
+            Pine(20);
+
+            private int w;
+
+            public constructor Timber(int w) {
+                this.w = w;
+            }
+
+            public method weight() returns int {
+                return this.w;
+            }
+        }
+
+        public class Scale {
+            public static method weigh(Heavy h) returns int {
+                return h.weight();
+            }
+        }
+
+        // A class constructor taking one.
+        public class Crate {
+            private Heavy load;
+
+            public constructor Crate(Heavy load) {
+                this.load = load;
+            }
+
+            public method weighs() returns int {
+                return this.load.weight();
+            }
+        }
+
+        // And an enum constant's constructor taking one.
+        public enum Cart {
+            Light(Ingot.Iron),
+            Heavy(Stone.Slate);
+
+            private Heavy load;
+
+            public constructor Cart(Heavy load) {
+                this.load = load;
+            }
+
+            public method carries() returns int {
+                return this.load.weight();
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Crate c = new Crate(Timber.Oak) on stack;
+                System.IO.Console.printf("m=%d %d %d c=%d e=%d %d\n",
+                    Scale.weigh(Ingot.Lead),      // 11 -- its own tag
+                    Scale.weigh(Stone.Slate),     // 200 -- NOT 11
+                    Scale.weigh(Timber.Pine),     // 20 -- a singleton, packed
+                    c.weighs(),                   // 30
+                    Cart.Light.carries(),         // 7
+                    Cart.Heavy.carries());        // 200
+                return;
+            }
+        }
+    }
+}
