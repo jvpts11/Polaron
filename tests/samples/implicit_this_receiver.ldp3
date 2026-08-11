@@ -1,0 +1,59 @@
+import System.IO.Console;
+program ImplicitThisReceiver;
+
+// A CALL TO THE TYPE'S OWN METHOD IS THE TYPE IT RETURNS, including when something is read off it.
+//
+// Every way of typing a call needs a receiver to read the return type from, so a call written
+// without one -- `own()` rather than `this.own()` -- fell through to the fallback and was typed
+// `int`. Nothing noticed while the answer was merely being called or assigned, because those paths
+// do not ask. It surfaced only when a member was read off the result: `own().field` looked `field`
+// up on an `int` and reported "no such field", pointing at the field rather than at the call whose
+// type had been invented.
+//
+// The two shapes below are the ones that were broken and the one that was not, kept together so a
+// regression cannot pass by fixing only half of it.
+public bundle Probe {
+    public namespace App {
+
+        public class Holder {
+            public mutable int n;
+
+            public constructor Holder() {
+                n = 4;
+            }
+
+            private method table() returns Holder* {
+                return this;
+            }
+
+            public method twice() returns int {
+                return n + n;
+            }
+
+            // a FIELD off a call with no receiver written
+            public method fieldOffCall() returns int {
+                return table().n;
+            }
+
+            // a METHOD off the same call
+            public method methodOffCall() returns int {
+                return table().twice();
+            }
+
+            // and through a local, which always worked -- the control
+            public method viaLocal() returns int {
+                Holder* t = table();
+                return t.n;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Holder h = new Holder() on stack;
+                System.IO.Console.printf("%d %d %d\n", h.fieldOffCall(), h.methodOffCall(),
+                                         h.viaLocal());
+                return;
+            }
+        }
+    }
+}

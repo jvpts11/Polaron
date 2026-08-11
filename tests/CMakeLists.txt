@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.32")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.33")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.32")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.33")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -6374,6 +6374,19 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interp_percent.ldp3"
             "-DEXPECTED=50% of 1 | 1.2% | 1% and 2 | 100%success 1 | 1.2%%"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A call to the type's OWN method is the type it returns, including when a member is read off
+        # it. Every path that types a call needs a receiver to read the return type from, so a call
+        # written without one fell through to the fallback and was typed `int` -- invisible until
+        # something read a member off the result, and then reported as "no such field" pointing at
+        # the field rather than at the call whose type was invented.
+        add_test(NAME codegen_implicit_this_receiver_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/implicit_this_receiver.ldp3"
+            "-DEXPECTED=4 8 4"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

@@ -6595,6 +6595,28 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                             return mit->second.returnType;
                         }
                     }
+                    // AND WHEN THE SHORT NAME IS AMBIGUOUS, the advice above is impossible to take.
+                    // Two namespaces declaring `Widget` are renamed apart (`Alpha__Widget`), so
+                    // `lookupClass("Widget")` finds nothing and the fall-through reported "use of
+                    // undeclared variable 'Alpha'" -- which says the opposite of the truth: the name
+                    // exists twice, not zero times, and no import can disambiguate it.
+                    //
+                    // What DOES work is the qualified name in a type position; only a static call
+                    // through it does not, because `Alpha.Widget` in an expression is three AST
+                    // nodes rather than one name and the qualifying substitution never matches it.
+                    // Say exactly that, rather than sending the reader to an import that cannot help.
+                    std::string qualifiedHead = flat.substr(0, dot);
+                    for (char& ch : qualifiedHead)
+                        if (ch == '.') ch = '_';
+                    if (classes_.count(qualifiedHead + "__" + cls) > 0) {
+                        error("'" + cls + "' is declared in more than one namespace, so the short "
+                              "name cannot be imported. '" + flat + "' names it in a TYPE position "
+                              "(`" + flat + " v = new " + flat + "()`), but a static call through a "
+                              "qualified path is not resolved yet -- reach '" + mem->member +
+                              "' through an instance, or give one of the two types a distinct name",
+                              call->loc);
+                        return "";
+                    }
                 }
             }
         }
