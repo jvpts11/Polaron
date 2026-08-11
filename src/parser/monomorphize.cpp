@@ -750,6 +750,39 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         n->body = cloneBlock(x->body, s);
         return n;
     }
+    // THE OTHER TWO KINDS OF MEMBER, and leaving them out DELETED them.
+    //
+    // A member this function does not recognize returned null, and `cloneClass` pushed that null
+    // into the member list -- so a `comptime literal` and a `fixed` did not survive a rewrite. The
+    // rewrite is not a rare event: `qualifyNamespaces` re-clones classes as soon as one type name in
+    // the program is ambiguous, and an explicit `Bundle.Namespace.Type` reference anywhere is enough
+    // on its own.
+    //
+    // What it cost: declaring a class in two of your own namespaces made
+    // `import System.Memory.Units.megabytes` fail as an UNKNOWN SYMBOL -- an import of the standard
+    // library, in a file the collision has nothing to do with, reported at a line the author cannot
+    // connect to the cause. The suffix survived and only the import broke, which is the worst
+    // version: the error names the one thing that was still right.
+    if (const auto* x = dynamic_cast<const ast::LiteralDecl*>(m)) {
+        auto n = std::make_unique<ast::LiteralDecl>();
+        n->loc = x->loc;
+        n->visibility = x->visibility;
+        n->isComptime = x->isComptime;
+        n->name = x->name;
+        n->param = {substType(x->param.type, s), x->param.name, x->param.loc};
+        n->returnType = substType(x->returnType, s);
+        n->body = cloneBlock(x->body, s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::ConstDecl*>(m)) {
+        auto n = std::make_unique<ast::ConstDecl>();
+        n->loc = x->loc;
+        n->visibility = x->visibility;
+        n->type = substType(x->type, s);
+        n->name = x->name;
+        n->init = cloneExpr(x->init.get(), s);
+        return n;
+    }
     return nullptr;
 }
 
@@ -782,7 +815,20 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
         }
         c.interfaceTypeArgs.push_back(std::move(sub));
     }
-    for (const auto& m : d.members) c.members.push_back(cloneMember(m.get(), s));
+    // A member the cloner does not know about must not become a null entry in the list: that is how
+    // a `comptime literal` and a `fixed` were silently deleted by a rewrite. Say so instead -- a
+    // seventh kind of member added later is a bug in THIS function, and it should report itself
+    // here rather than surface as a name that has gone missing three passes downstream.
+    for (const auto& m : d.members) {
+        ast::MemberPtr cm = cloneMember(m.get(), s);
+        if (cm == nullptr) {
+            monoWarn(m->loc, "internal: this member is not preserved when its class is rewritten, "
+                             "so it will be missing from '" + newName +
+                                 "' -- cloneMember does not handle its kind");
+            continue;
+        }
+        c.members.push_back(std::move(cm));
+    }
     c.annotations = cloneAnnotations(d.annotations, s);
     return c;
 }

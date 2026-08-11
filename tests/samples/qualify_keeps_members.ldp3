@@ -1,0 +1,57 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program QualifyKeepsMembers;
+
+// A NAME COLLISION IN YOUR PROGRAM MUST NOT DELETE MEMBERS OF SOMEBODY ELSE'S CLASS.
+//
+// `qualifyNamespaces` re-clones classes as soon as one type name in the program is declared in two
+// namespaces -- and the cloner knew four of the six kinds of member. The other two, `comptime
+// literal` and `fixed`, came back as null and were dropped from the member list.
+//
+// So declaring `Widget` twice, below, used to make `import System.Memory.Units.kilobytes` fail
+// with "import of unknown symbol": an import of the standard library, in a file that has nothing
+// to do with the collision, reported at a line nobody can connect to the cause. The suffix itself
+// still worked -- only the import broke, which is the worst version of the bug, because the
+// diagnostic names the one part that was still right.
+//
+// Two namespaces declaring `Widget` is the trigger; the rest of the file is what must survive it.
+public bundle Probe {
+
+    public namespace Alpha {
+        public class Widget {
+            public method who() returns int {
+                return 1;
+            }
+        }
+    }
+
+    public namespace Beta {
+        public class Widget {
+            public method who() returns int {
+                return 2;
+            }
+        }
+    }
+
+    public namespace App {
+        // A `fixed` is the other member kind the cloner dropped. It is in the same namespace as a
+        // class being rewritten, which is where the loss would happen.
+        public class Limits {
+            public static fixed int MAX = 42;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                region pen = itself.allocate(1 kilobytes);
+                System.IO.Console.printf("%d\n", Limits.MAX);
+                release region pen;
+                // Through instances, not `Alpha.Widget.who()`: a static call by qualified path is
+                // still unresolved (the diagnostic for it says so and names this way round).
+                Alpha.Widget one = new Alpha.Widget() on stack;
+                Beta.Widget two = new Beta.Widget() on stack;
+                System.IO.Console.printf("%d\n", one.who() + two.who());
+                return;
+            }
+        }
+    }
+}
