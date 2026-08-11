@@ -52,6 +52,13 @@ private:
     const Token& expect(TokenKind kind, const char* what);
     [[noreturn]] void fail(const std::string& message, SourceLocation loc);
 
+    // spec 37: which declaration each modifier may appear on, and the canonical order (37.9).
+    // `from`/`to` bound the token span parseMember consumed while collecting modifiers.
+    enum class MemberShape { Method, Field, Constructor, Destructor, Operator, Literal, Fixed, Local,
+                             Interrupt };
+    std::string pendingFieldInRegion_;  // spec 18.7 `in region X`, from parseMember to parseField
+    void checkMemberModifiers(std::size_t from, std::size_t to, MemberShape shape);
+
     std::string parseVisibilityOpt();
     std::string parseDottedName();
 
@@ -86,7 +93,7 @@ private:
                                                  bool isDeprecated = false, bool isNaked = false);
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
                               bool isPersistent, bool isEternal, bool isTransient,
-                              bool isVolatile = false, bool isLazy = false,
+                              bool isVolatile = false, bool isLazy = false, bool isComptime = false,
                               bool isExternal = false, bool isDelegate = false, bool isMovable = false,
                               bool isUnique = false, bool isWeak = false, bool isAbstract = false,
                               bool isOverride = false, bool isFinal = false,
@@ -107,6 +114,13 @@ private:
     std::unique_ptr<ast::ConstructorDecl> parseConstructor(std::string visibility);
     std::unique_ptr<ast::DestructorDecl> parseDestructor(std::string visibility);
     std::unique_ptr<ast::MethodDecl> parseOperator(std::string visibility);
+    std::unique_ptr<ast::MethodDecl> parseInterrupt(std::string visibility);
+    bool inTransformer_ = false;                // inside a transformer body, `itself` is the receiver
+    bool inProcedure_ = false;                  // ...and inside a `procedure` written on a type too
+    // `call T.p()` sites seen while parsing the current declaration; drained into its `procCalls`.
+    std::vector<ast::ClassDecl::ProcCall> pendingProcCalls_;
+    ast::ClassDecl parseTransformer();          // `public [mutual] [explicit] transformer N { }`
+    void parseAppliesOpt(ast::ClassDecl& c);    // the `applies A, B` clause on a declaration line
     ast::ExprPtr parseNew();
     ast::ExprPtr parseUnimportExpr();  // `unimport X expecting [using ...] { ... }` (spec 30.18)
     // Parses `[using a, b] { ... }` after `expecting`; fills usingVars and returns the block.

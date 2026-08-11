@@ -22,6 +22,7 @@ set(LDP3_CORE_SOURCES
     src/parser/ipc.cpp  # spec 2.8: IPC proxy + dispatcher synthesis
     src/parser/loopopt.cpp
     src/parser/boundscheck.cpp
+    src/parser/transformers.cpp  # `applies`: a transformer's members land in the type that takes it
     src/semantic/analyzer.cpp
     src/semantic/comptime.cpp
     src/semantic/asmcheck.cpp  # semantic analysis of inline assembly, per architecture and dialect
@@ -82,7 +83,7 @@ if(NOT LDP3_CLANG)
 endif()
 configure_file(src/driver/config.h.in "${CMAKE_BINARY_DIR}/ldp3_config.h" @ONLY)
 
-# The region core (runtime/ldp3_region_core.h) is compiled TWICE: once into ldp3_rt above, and once for
+# The region core (runtime/ldp3_region_core.hpp) is compiled TWICE: once into ldp3_rt above, and once for
 # the bare-metal target by `ldp3 build`. Embed its text in the driver so the second compilation uses the
 # very same source rather than a copy that drifts. configure_file makes the header a configure-time
 # dependency, so editing it regenerates this automatically.
@@ -91,7 +92,7 @@ configure_file(src/driver/config.h.in "${CMAKE_BINARY_DIR}/ldp3_config.h" @ONLY)
 # bytes (C2026) and the core is past that, so one literal builds under clang and fails under the
 # toolset this repository targets. Adjacent literals concatenate, so the value is identical either way
 # and the chunk size is nobody's business but this loop's.
-file(READ runtime/ldp3_region_core.h LDP3_REGION_CORE_RAW)
+file(READ runtime/ldp3_region_core.hpp LDP3_REGION_CORE_RAW)
 string(LENGTH "${LDP3_REGION_CORE_RAW}" LDP3_RC_LEN)
 set(LDP3_REGION_CORE_SRC "")
 set(LDP3_RC_POS 0)

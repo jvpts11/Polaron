@@ -1,0 +1,31 @@
+import System.IO.Console;
+program InterpPercent;
+
+// A percent sign inside an interpolation is TEXT, not a conversion specifier.
+//
+// Interpolation lowers to printf, and the literal segments used to be pasted into the format string
+// raw -- so `100%success` became `%s`, printf read a value nobody passed, treated it as a char* and
+// followed it. That was an arbitrary-pointer dereference reachable from ordinary source text
+// (exit 0xC0000005), in a language whose claim is that there is no exploitable undefined behaviour.
+//
+// A percent in every position: leading, between holes, trailing, doubled, and immediately before a
+// letter that is a live printf conversion (`s`, `o`, `a`) -- which is the one that crashed.
+//
+// Prints: 50% of 1 | 1.2% | 1% and 2 | 100%success 1 | 1.2%%
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = 1;
+                int b = 2;
+                System.IO.Console.printf("%s", $"50% of {a} | ");
+                System.IO.Console.printf("%s", $"{a}.{b}% | ");
+                System.IO.Console.printf("%s", $"{a}% and {b} | ");
+                System.IO.Console.printf("%s", $"100%success {a} | ");
+                System.IO.Console.println($"{a}.{b}%%");
+                return;
+            }
+        }
+    }
+}

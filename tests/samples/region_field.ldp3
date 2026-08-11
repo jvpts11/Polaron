@@ -16,6 +16,9 @@ public bundle main {
             public constructor Pool() {
                 this.arena = itself.allocate(1 kilobytes);
             }
+            // A region field is memory this object owns, and nothing gives it back on its own --
+            // definite release (spec 17) says so at compile time rather than leaking quietly.
+            public destructor ~Pool() returns void { release region this.arena; }
             public method makeDog(int n) returns Dog* {
                 Dog* d = new Dog(n) in region this.arena;
                 return d;

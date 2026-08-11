@@ -1,0 +1,48 @@
+import System.IO.Console;
+program TransformerEach;
+
+// `procedure into<each Other>` -- a PER-TARGET family: one implementation per target type, not one
+// body over every T. Only a per-target body can write `new Fahrenheit(...)`, so conversion is
+// inexpressible without it.
+//
+// THE MARKER IS ON THE SOCKET, not on the implementation and not inferred from whether the name
+// inside `<>` happens to be a known type. That last rule is decidable and poisonous: declaring a
+// class named `T` would silently change what `method foo<T>()` means in another file.
+//
+// `mutual` then has something to read: `into$Fahrenheit` is a MEMBER of Celsius, so the compiler can
+// demand that Fahrenheit answer with `into<Celsius>`. Nothing declares "A converts to B" -- two
+// types apply the same transformer and the relation emerges from the pair.
+
+public bundle Main {
+    public namespace App {
+        public mutual transformer TConverter {
+            public procedure into<each Other>() returns Other;
+        }
+
+        public class Celsius applies TConverter {
+            public mutable int degrees;
+            public constructor Celsius(int d) { this.degrees = d; }
+            public procedure into<Fahrenheit>() returns Fahrenheit {
+                return new Fahrenheit(itself.degrees * 9 / 5 + 32);
+            }
+        }
+
+        public class Fahrenheit applies TConverter {
+            public mutable int degrees;
+            public constructor Fahrenheit(int d) { this.degrees = d; }
+            public procedure into<Celsius>() returns Celsius {
+                return new Celsius((itself.degrees - 32) * 5 / 9);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Celsius c = new Celsius(100);
+                Fahrenheit f = c.into<Fahrenheit>();
+                Celsius back = f.into<Celsius>();
+                System.IO.Console.printf("%d %d\n", f.degrees, back.degrees);
+                return;
+            }
+        }
+    }
+}

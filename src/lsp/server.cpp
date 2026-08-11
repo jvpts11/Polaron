@@ -455,7 +455,8 @@ std::vector<std::pair<int, int>> occurrences(const std::string& text, const std:
 
 const char* const kKeywords[] = {
     "program", "bundle", "namespace", "class", "interface", "struct", "record", "union", "enum", "catalog",
-    "method", "constructor", "destructor", "returns", "return", "public", "private", "protected", "internal",
+    "method", "constructor", "destructor", "interrupt", "returns", "return", "public", "private", "protected",
+    "internal",
     "static", "abstract", "final", "override", "mutable", "nullable", "sealed", "permits", "extends",
     "implements", "this", "super", "var", "new", "delete", "on", "in", "is", "as", "cast", "move", "region",
     "defer", "using", "synchronized", "async", "await", "extern", "import", "if", "else", "while", "do", "for",

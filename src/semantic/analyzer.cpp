@@ -1123,7 +1123,33 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         // A movable/unique field is reassignable (it is moved out and reassigned).
                         info.fields[f->name] =
                             FieldInfo{typeRefStr(f->type), f->isMutable || f->isMovable || f->isUnique,
-                                      f->isStatic, f->isMovable, f->isUnique, f->bitWidth};
+                                      f->isStatic, f->isMovable, f->isUnique, f->bitWidth,
+                                      f->isVolatile};
+                        // `atomic<T>` is one `lock`-prefixed instruction when T fits in a word, and
+                        // a call to `__atomic_load`/`__atomic_store` when it does not. Bare metal
+                        // there is nothing to link those against, so the declaration compiles and
+                        // the KERNEL fails at link time naming a symbol the author never wrote.
+                        // Refuse it here, where the type is written.
+                        //
+                        // Only a type we can SEE is wide is refused -- a class, a struct, a record.
+                        // An unresolved name is left alone on purpose: inside a generic template
+                        // `atomic<T>` mangles with the parameter's name still in it, and rejecting
+                        // that would reject every correct instantiation along with the wrong one.
+                        if (freestanding_) {
+                            const std::string ft = baseType(typeRefStr(f->type));
+                            if (ft.rfind("atomic$", 0) == 0) {
+                                const std::string arg = ft.substr(7);
+                                if (classes_.count(arg) > 0 || arg == "Decimal")
+                                    error("`atomic<" + arg + ">` is wider than a machine word, so it "
+                                          "lowers to `__atomic_*` library calls -- and freestanding "
+                                          "has no library to link them against. The failure would "
+                                          "surface as an unresolved symbol in the kernel, naming "
+                                          "nothing the author wrote. Make the field a word-sized "
+                                          "`atomic` (an int, a flag, an index) and guard the rest "
+                                          "with it.",
+                                          f->loc);
+                            }
+                        }
                         checkBitField(cls, *f,
                                       [this](const std::string& m, const SourceLocation& l) {
                                           error(m, l);
@@ -1135,11 +1161,22 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         // (invalid DWARF). A property get/set pair legitimately shares a name, so only two
                         // plain methods collide.
                         if (auto prev = info.methods.find(m->name);
-                            prev != info.methods.end() && !prev->second.isProperty && !m->isProperty)
-                            error("method '" + m->name + "' is already declared in class '" + cls.name +
-                                      "' -- LDP3 has no method overloading, so each method name must be "
-                                      "unique",
-                                  m->loc);
+                            prev != info.methods.end() && !prev->second.isProperty && !m->isProperty) {
+                            // An interrupt is nameless in the source, so "each method name must be
+                            // unique" would explain a rule the author never invoked. The real rule
+                            // is the one the namelessness expresses: one device, one handler.
+                            if (m->isInterrupt && prev->second.isInterrupt)
+                                error("class '" + cls.name + "' already declares an interrupt -- one "
+                                      "device, one handler. A second handler means a second object; "
+                                      "if these are two vectors of one device, dispatch on the trap.",
+                                      m->loc);
+                            else
+                                error("method '" + m->name + "' is already declared in class '" +
+                                          cls.name +
+                                          "' -- LDP3 has no method overloading, so each method name "
+                                          "must be unique",
+                                      m->loc);
+                        }
                         MethodInfo mi{typeRefStr(m->returnType), m->isStatic,
                                       m->isAbstract, m->isProperty,
                                       m->params.size(), m->isFinal, m->isAsync};
@@ -1151,6 +1188,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         mi.returnIsMove = m->returnType.isMove;
                         mi.isVariadic = m->isVariadic;
                         mi.isDeprecated = m->isDeprecated;
+                        mi.isInterrupt = m->isInterrupt;
                         info.methods[m->name] = std::move(mi);
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
@@ -1766,10 +1804,150 @@ void SemanticAnalyzer::findEntryPoint(const ast::Program& program) {
 }
 
 // ---- Pass 3: type-check the body of every method and constructor. ----
+// DEFINITE RELEASE -- the other half of definite assignment.
+//
+// A constructor must assign every field; nothing said anything about giving one back. A `region`
+// field is memory the object OWNS, and when the object dies the region does not go with it unless
+// somebody says so -- so a class with a region field and no `release region` in its destructor leaks
+// the whole region, silently, on every instance. That is not hypothetical: it is the bug the pico
+// kernel carried, and what fixes it is one line the compiler never asked for.
+//
+// This checks the two mistakes that actually happen -- no destructor at all, and a destructor that
+// forgets a field. It does NOT yet check "released on only some paths": that needs a `Released` fact
+// alongside `Init` in FlowFacts, which is where it should go when someone wants the early-return case
+// too. Stated rather than implied, so nobody reads more assurance into it than it gives.
+static void collectReleasedRegions(const ast::Stmt* s, std::set<std::string>& out);
+
+static void collectReleasedInBlock(const ast::Block* b, std::set<std::string>& out) {
+    if (b == nullptr) return;
+    for (const ast::StmtPtr& st : b->statements) collectReleasedRegions(st.get(), out);
+}
+
+static void collectReleasedRegions(const ast::Stmt* s, std::set<std::string>& out) {
+    if (s == nullptr) return;
+    if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(s)) {
+        if (!rel->region.empty()) {
+            // `release region this.store` and `release region store` name the same field.
+            const std::size_t dot = rel->region.rfind('.');
+            out.insert(dot == std::string::npos ? rel->region : rel->region.substr(dot + 1));
+        }
+        return;
+    }
+    // Anything with a body: a release inside an `if` still counts for "did you remember it at all".
+    if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(s)) {
+        collectReleasedInBlock(&ifs->thenBlock, out);
+        if (ifs->elseBlock) collectReleasedInBlock(ifs->elseBlock.get(), out);
+        return;
+    }
+    if (const auto* wh = dynamic_cast<const ast::WhileStmt*>(s)) {
+        collectReleasedInBlock(&wh->body, out);
+        return;
+    }
+}
+
+// The body of a method of the class being analyzed, or null if there is no such method here (it may
+// be inherited, or the call may be `super(...)` -- both of which the caller treats conservatively).
+const ast::Block* SemanticAnalyzer::methodBodyInCurrentClass(const std::string& name) const {
+    if (currentClassDecl_ == nullptr) return nullptr;
+    for (const ast::MemberPtr& m : currentClassDecl_->members)
+        if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
+            md != nullptr && md->name == name && !md->isAbstract)
+            return &md->body;
+    return nullptr;
+}
+
+// Which fields a helper actually assigns -- `this.f = ...` and, since `this.` is optional, a bare
+// `f = ...` naming a field. Follows further helper calls with a visited set, because the common shape
+// is a constructor calling one `init()` which calls `reset()`.
+void SemanticAnalyzer::collectFieldsAssigned(const ast::Block* body, std::set<std::string>& assigned,
+                                             std::set<std::string>& visited) const {
+    if (body == nullptr || currentClassDecl_ == nullptr) return;
+    const ClassInfo* ci = nullptr;
+    if (auto it = classes_.find(currentClassDecl_->name); it != classes_.end()) ci = &it->second;
+    std::function<void(const ast::Stmt*)> walkStmt;
+    std::function<void(const ast::Block*)> walkBlock = [&](const ast::Block* b) {
+        if (b == nullptr) return;
+        for (const ast::StmtPtr& s : b->statements) walkStmt(s.get());
+    };
+    std::function<void(const ast::Expr*)> walkExpr = [&](const ast::Expr* e) {
+        const auto* call = dynamic_cast<const ast::CallExpr*>(e);
+        if (call == nullptr) return;
+        std::string callee;
+        if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(cm->object.get());
+                oid != nullptr && oid->name == "this")
+                callee = cm->member;
+        } else if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
+            callee = cid->name;
+        }
+        if (callee.empty() || visited.count(callee) > 0) return;
+        if (const ast::Block* nested = methodBodyInCurrentClass(callee); nested != nullptr) {
+            visited.insert(callee);
+            walkBlock(nested);
+        }
+    };
+    walkStmt = [&](const ast::Stmt* s) {
+        if (s == nullptr) return;
+        if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) {
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(as->target.get())) {
+                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                    oid != nullptr && oid->name == "this")
+                    assigned.insert(mem->member);
+            } else if (const auto* id =
+                           dynamic_cast<const ast::IdentifierExpr*>(as->target.get())) {
+                if (ci != nullptr && ci->fields.count(id->name) > 0) assigned.insert(id->name);
+            }
+            return;
+        }
+        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s)) { walkExpr(es->expr.get()); return; }
+        if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(s)) {
+            walkBlock(&ifs->thenBlock);
+            if (ifs->elseBlock) walkBlock(ifs->elseBlock.get());
+            return;
+        }
+        if (const auto* wh = dynamic_cast<const ast::WhileStmt*>(s)) { walkBlock(&wh->body); return; }
+    };
+    walkBlock(body);
+}
+
 void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
     scopes_.clear();
     currentClass_ = cls.name;
     pushScope();
+    {
+        std::vector<std::pair<std::string, SourceLocation>> owned;  // region fields, in declaration order
+        const ast::DestructorDecl* dtor = nullptr;
+        for (const ast::MemberPtr& m : cls.members) {
+            if (const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get())) {
+                // `eternal` is the way out, and this is the first thing in the language that ever
+                // FORCED anyone to reach for it. A kernel singleton -- the VGA, the framebuffer, the
+                // device registry -- is never destroyed, so its region is never given back and that is
+                // correct rather than a leak. `eternal region store` says so in the declaration, where
+                // a reader sees it, instead of in a comment or in nobody's head. A prefix goes unused
+                // when nothing asks the question; this asks it.
+                if (typeRefStr(f->type) == "region" && !f->isStatic && !f->isEternal)
+                    owned.push_back({f->name, f->loc});
+            } else if (const auto* d = dynamic_cast<const ast::DestructorDecl*>(m.get())) {
+                dtor = d;
+            }
+        }
+        if (!owned.empty()) {
+            std::set<std::string> released;
+            if (dtor != nullptr) collectReleasedInBlock(&dtor->body, released);
+            for (const auto& [fname, floc] : owned) {
+                if (released.count(fname) > 0) continue;
+                error(dtor == nullptr
+                          ? "class '" + cls.name + "' owns the region field '" + fname +
+                                "' and has no destructor, so the region is never given back -- every "
+                                "instance leaks all of it. Add `public destructor ~" + cls.name +
+                                "() returns void { release region this." + fname + "; }`"
+                          : "the destructor of '" + cls.name + "' does not release the region field '" +
+                                fname + "'. A region is memory this object owns; nothing gives it back "
+                                "on its own. Add `release region this." + fname + ";`",
+                      floc);
+            }
+        }
+    }
     for (const ast::MemberPtr& member : cls.members) {
         const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
         if (f == nullptr) continue;
@@ -1778,6 +1956,59 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
         // opposite -- state that outlives the instance -- so the pair is a contradiction (spec).
         if (f->isTransient && f->isPersistent)
             error("field '" + f->name + "' cannot be both 'transient' and 'persistent'", f->loc);
+        // `eternal` means ONE thing in this compiler: suppress the automatic teardown. An eternal
+        // region never enters the scope's region list, and an eternal persistent never requires an
+        // explicit release. A plain field has no teardown to suppress -- measured, the IR is
+        // byte-identical with and without it -- so the word was being accepted and doing nothing.
+        if (f->isEternal && !f->isPersistent && typeRefStr(f->type) != "region")
+            error("'eternal' has nothing to do on field '" + f->name +
+                      "': it suppresses automatic teardown, and only a `region` or a `persistent` "
+                      "field has any. Drop it, or say which of the two this is (spec 37.2).",
+                  f->loc);
+        // spec 18.7 promises `in region X` places a field's storage in that region. It does not: the
+        // emitted IR is byte-identical with and without it. A warning rather than an error because the
+        // spec documents the syntax and code in this repository writes it -- but it says so, because
+        // a placement clause that silently places nothing is a promise the compiler is not keeping.
+        if (!f->inRegion.empty())
+            warn("'in region " + f->inRegion + "' on field '" + f->name +
+                     "' has no effect yet: the field keeps its ordinary storage (spec 18.7).",
+                 f->loc);
+        // spec 32.2: a snapshot is a captured state, not a variable. Checked on the WRITTEN type name,
+        // because `RegionSnapshot` canonicalizes to `address` and the two are indistinguishable after.
+        if (f->isMutable && f->type.name == "RegionSnapshot")
+            error("a snapshot is constant: '" + f->name +
+                      "' cannot be 'mutable'. It names a state that was captured; re-capturing is "
+                      "`snapshot region <name> into " + f->name + ";` (spec 32.2).",
+                  f->loc);
+        // `comptime T f = ...` (spec 37.4): the INITIALIZER is evaluated during compilation, so it has
+        // to fold. This is not `fixed`, which is a class-level constant with no storage and no
+        // `mutable` -- a comptime field is an ordinary field whose starting value costs nothing to
+        // produce, which is what makes it worth having on a per-instance, mutable field.
+        //
+        // The guarantee is the point: a static field with a foldable initializer was ALREADY folded by
+        // emitStaticFields, but by luck. `comptime` turns that into a promise the compiler keeps or
+        // refuses, which is the difference between an optimization and a declaration.
+        if (f->isComptime) {
+            if (f->init == nullptr) {
+                error("'comptime' needs an initializer to evaluate: field '" + f->name + "' has none.",
+                      f->loc);
+            } else {
+                const std::string ft = typeRefStr(f->type);
+                bool folds = false;
+                if (isFloatType(ft)) {
+                    double d;
+                    folds = evalConstDouble(*f->init, d, &constDoubles_, &constInts_, &comptimeMethods_);
+                } else {
+                    long long v;
+                    folds = evalConstInt(*f->init, v, &constInts_, &comptimeMethods_, &constDoubles_);
+                }
+                if (!folds)
+                    error("'comptime " + ft + " " + f->name +
+                              "' must have an initializer the compiler can evaluate -- a literal, a "
+                              "`fixed` constant, or a call to a `comptime` method (spec 37.4).",
+                          f->loc);
+            }
+        }
         // A `weak T*` observes an object by identity and auto-nulls when it dies, so its target must be a
         // heap/stack object with identity -- i.e. a pointer to a class. Reject `weak int`, `weak T` (not a
         // pointer) and `weak int*` (no identity, no weak-list head): the intrusive auto-null has nowhere to
@@ -2016,6 +2247,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
             currentNamespace_ = ns.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 currentClass_ = cls.name;  // keep accurate for checkTypeAccessible's mono exemption
+                currentClassDecl_ = &cls;  // so a delegating call can be followed into its own body
                 enclosingClass_ = cls.name;  // active from here so field inits resolve unqualified calls too
                 // Member signature types must also be visible from this namespace -- except for
                 // monomorphized generic instances (name contains '$'), whose members reference the
@@ -2049,6 +2281,28 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         if (m->isAsync && freestanding_)
                             error("async methods are not available in freestanding mode (spec 36.3)",
                                   m->loc);
+                        // The trap parameter is WORLD-SHAPED, and it has to be, because it names
+                        // what the outside world actually handed over on the way in. Bare metal
+                        // that is the frame the CPU pushed, which is an object with fields. Hosted
+                        // it is a code -- SIGINT, a console control type -- and no frame exists to
+                        // point at. The parameterless form is the intersection, so a handler that
+                        // does not care where it came from compiles for both worlds unchanged.
+                        if (m->isInterrupt && !m->params.empty()) {
+                            const std::string pt = baseType(typeRefStr(m->params[0].type));
+                            const bool isClass = classes_.count(pt) > 0;
+                            if (freestanding_ && !isClass)
+                                error("a freestanding interrupt receives the frame the CPU pushed, "
+                                      "so its parameter must be a class with the fields of that "
+                                      "frame -- not '" + pt + "'. Declare a `Trap` type, or take no "
+                                      "parameter at all.",
+                                      m->params[0].loc);
+                            if (!freestanding_ && isClass)
+                                error("a hosted interrupt is entered with a CODE -- a signal number, "
+                                      "a console control type -- not a CPU frame, so its parameter "
+                                      "cannot be the class '" + pt + "'. Declare an integer, or take "
+                                      "no parameter at all.",
+                                      m->params[0].loc);
+                        }
                         // A value Result/Option rides the Task's 64-bit result slot boxed (codegen copies
                         // the { tag, payload } struct to the heap on completion and unboxes it on await),
                         // so both the value and boxed forms of an async Result/Option are allowed.
@@ -2079,9 +2333,20 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // so the same write is not a lie, and reporting it would reject every boot stub
                         // ever written.
                         inNakedFn_ = m->isNaked;
+                        // Names this body's row in the call graph the interrupt check walks later.
+                        // Set around the body only, so a field initializer or a contract analyzed
+                        // outside one does not get attributed to whichever method ran last.
+                        currentMethodKey_ = cls.name + "." + m->name;
+                        methodFacts_[currentMethodKey_];  // exists even when it does nothing
+                        if (m->isInterrupt) {
+                            interruptRoots_.emplace_back(cls.name, m->loc);
+                            if (!m->params.empty()) interruptTrapParam_ = m->params[0].name;
+                        }
                         analyzeMethodBody(m->body, m->params,
                                           m->isStatic ? std::string() : cls.name, false, contracts,
                                           posts, retT == "void" ? std::string() : retT);
+                        currentMethodKey_.clear();
+                        interruptTrapParam_.clear();
                         inNakedFn_ = false;
                         // A non-void method that can reach its end without returning. LDP3-0501 was
                         // written in the catalog and had NO producer, so `returns int { if (n > 0) {
@@ -2334,13 +2599,13 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
         if (!b.name.empty() && lowerInitial(b.name))
             warn("bundle '" + b.name +
                      "' should start with a capital letter (bundle names are conventionally PascalCase)",
-                 b.loc);
+                 b.nameLoc);
         for (const ast::Namespace& ns : b.namespaces)
             if (!ns.name.empty() && lowerInitial(ns.name))
                 warn("namespace '" + ns.name +
                          "' should start with a capital letter (namespace names are conventionally "
                          "PascalCase)",
-                     ns.loc);
+                     ns.nameLoc);
     }
     // Generic templates (stdlib collections and user generics alike) are erased by monomorphization,
     // which rewrites each use to an instance (ArrayList$int) in the user's namespace. The base name ->
@@ -2377,7 +2642,181 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     validateAnnotations(program);  // spec 14.3: applied [Name(...)] match a declared annotation
     validateTestDeclarations(program);  // spec 32.11: [Test]/[Cases]/hooks are well formed
     checkPersistentReleases();  // spec 18.15: after all bodies, so releases are collected
+    checkInterruptReach();      // after all bodies, so the call graph is whole
+    checkProcedureTotality(program);
     return errors_.empty();
+}
+
+// spec 32.13, TOTALITY. Partiality is DEDUCED, never annotated:
+//
+//   a procedure whose SOURCE is a CLOSED kind may be total, and is checked;
+//   a procedure whose source is an OPEN type is fallible by construction.
+//
+// The source of a per-target `procedure into<X>()` is the type it is written on -- you are
+// converting FROM it. `class`/`record` is closed over its FIELDS, so a conversion that never reads
+// one of them is either wrong or that field does not belong in the conversion, and both are worth
+// being told. `Errno -> int` is total because the constants are a finite list you own; `int ->
+// Errno` is not, and no annotation says so -- there is no list to cover and the compiler knows it.
+//
+// This is constructor definite assignment generalised: the same dataflow, over a different list.
+// The `enum` and `union` rows of the spec's table are NOT checked yet, and that is stated rather
+// than hidden -- `match` exhaustiveness already covers the natural way to write those, which is why
+// they were the cheaper half to leave.
+void SemanticAnalyzer::checkProcedureTotality(const ast::Program& program) {
+    for (const ast::Bundle& b : program.bundles) {
+        if (b.isPrelude || b.isImported) continue;
+        for (const ast::Namespace& ns : b.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
+                // A value aggregate or a plain class is closed over its fields. An interface has
+                // none, and an abstract class's are somebody else's problem.
+                if (cls.isInterface || cls.isAbstract) continue;
+                for (const ast::MemberPtr& m : cls.members) {
+                    const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
+                    if (md == nullptr || !md->isEachFamily || md->isAbstract) continue;
+                    // A STATIC per-target procedure converts *to* this type, not *from* it: its
+                    // source is the parameter, which is why it exists at all -- one end of a
+                    // relation is often a type you do not own, and `int` applies nothing. That
+                    // source is OPEN, so the procedure is fallible by construction and there is no
+                    // list to cover. `Errno -> int` is total; `int -> Errno` is not, and nothing
+                    // had to be annotated to say so.
+                    if (md->isStatic) continue;
+                    auto fit = methodFacts_.find(cls.name + "." + md->name);
+                    if (fit == methodFacts_.end()) continue;
+                    std::vector<std::string> missed;
+                    for (const ast::MemberPtr& fm : cls.members) {
+                        const auto* fd = dynamic_cast<const ast::FieldDecl*>(fm.get());
+                        if (fd == nullptr || fd->isStatic || fd->isTransient) continue;
+                        if (fit->second.ownFieldsTouched.count(fd->name) == 0)
+                            missed.push_back(fd->name);
+                    }
+                    if (missed.empty()) continue;
+                    std::string list;
+                    for (std::size_t i = 0; i < missed.size(); ++i)
+                        list += (i != 0 ? ", " : "") + missed[i];
+                    const std::string target =
+                        md->name.substr(md->name.find('$') == std::string::npos
+                                            ? md->name.size()
+                                            : md->name.find('$') + 1);
+                    error("`procedure " + md->name.substr(0, md->name.find('$')) + "<" + target +
+                              ">` converts FROM '" + cls.name + "', which is closed over its fields, "
+                              "so the conversion must be total -- and it never reads: " + list +
+                              ". Read them, or say why they are not part of this conversion by "
+                              "marking them `transient`.",
+                          md->loc);
+                }
+            }
+        }
+    }
+}
+
+// The row for the body being analyzed, or null when we are not inside one (a field initializer, a
+// class invariant, a contract on a declaration). Anything recorded outside a method belongs to no
+// method, and attributing it to whichever ran last would be worse than not recording it.
+SemanticAnalyzer::MethodFacts* SemanticAnalyzer::facts() {
+    if (currentMethodKey_.empty()) return nullptr;
+    auto it = methodFacts_.find(currentMethodKey_);
+    return it == methodFacts_.end() ? nullptr : &it->second;
+}
+
+void SemanticAnalyzer::noteUnsafeForInterrupt(const std::string& what, SourceLocation loc) {
+    if (MethodFacts* f = facts()) f->unsafeOps.emplace_back(what, loc);
+}
+
+// Rule 3, recorded per access. An interrupt and the code it preempts share memory, and the question
+// "what may both of them touch?" already has an answer in LDP3: `volatile` for device memory,
+// `atomic<T>` for counters and flags. So the rule requires ONE OF THOSE and invents no marker of its
+// own -- the same argument `identity` settled: what makes two of these the same already has a name.
+//
+// Only MUTABLE fields qualify, and that is what makes the rule livable rather than theoretical.
+// Everything in LDP3 is immutable by default, so a handler reading `this.port` or `this.buffer` --
+// a base address fixed at construction -- is untouched by this. What it catches is exactly the
+// state a handler and a main loop both write: a ring buffer's head, a tick counter, a ready flag.
+// THE RECEIVER DECIDES WHETHER THE STATE IS SHARED AT ALL, and getting that wrong is what a first
+// version of this check did: it flagged `e.code` on an `Entry` the handler had just created two
+// lines above, which is private to the handler by construction and cannot be seen by anything it
+// preempted. A rule that fires on code that cannot possibly be wrong teaches people to reach for the
+// escape hatch, and then it protects nothing.
+//
+// So: `this.field` and `Class.staticField` only. Those two ARE shared by construction -- the object
+// outlives the entry (something else holds it, or the handler could not have been bound to it) and a
+// static outlives everything. A field of a LOCAL is the case that needs real escape analysis to
+// answer, and this does not have it.
+//
+// STATED LIMITATION, not a hidden one: a shared object passed in as a PARAMETER and written through
+// that parameter is not caught. In practice the call graph closes most of that gap on its own -- a
+// method called on the shared object checks its own `this` -- but a method handed someone else's
+// object and writing its fields directly is a hole, and it is better written down than discovered.
+void SemanticAnalyzer::noteFieldForInterrupt(const std::string& owner, const std::string& field,
+                                             const FieldInfo& info, const ast::Expr* receiver,
+                                             SourceLocation loc) {
+    MethodFacts* f = facts();
+    // Totality reads this: which of the source type's own fields the body actually touched.
+    if (f != nullptr && !info.isStatic)
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(receiver);
+            id != nullptr && id->name == "this")
+            f->ownFieldsTouched.insert(field);
+    if (f == nullptr || !info.isMutable || info.isVolatile) return;
+    if (baseType(info.type).rfind("atomic", 0) == 0) return;  // atomic<T> says it outright
+    if (!info.isStatic) {
+        const auto* id = dynamic_cast<const ast::IdentifierExpr*>(receiver);
+        if (id == nullptr || id->name != "this") return;
+    }
+    f->unsharedState.emplace_back(owner + "." + field, loc);
+}
+
+// Walks out from every `interrupt` over the recorded call graph and reports what it finds, with the
+// PATH that reached it. The path is the point: "Ring.push allocates on the heap" is a fact about
+// Ring, and a fact about Ring is not a bug. "Keyboard's interrupt reaches it, via push" is the bug,
+// and it is the sentence that says which of the two to change.
+void SemanticAnalyzer::checkInterruptReach() {
+    for (const auto& [cls, loc] : interruptRoots_) {
+        const std::string root = cls + ".interrupt";
+        // BFS, keeping for each method the chain that first reached it -- the first chain found is
+        // the shortest, which is the one worth printing.
+        std::map<std::string, std::vector<std::string>> pathTo{{root, {}}};
+        std::vector<std::string> queue{root};
+        std::set<std::string> seen{root};
+        std::set<std::string> reportedState;  // one diagnostic per field, however many times reached
+        for (std::size_t i = 0; i < queue.size(); ++i) {
+            const std::string here = queue[i];
+            auto it = methodFacts_.find(here);
+            if (it == methodFacts_.end()) continue;  // extern, abstract, or not ours to see
+            const std::vector<std::string>& path = pathTo[here];
+            // How the reader gets from the declaration to the line: " (reached via push, refill)".
+            std::string via;
+            if (!path.empty()) {
+                via = " (reached via ";
+                for (std::size_t j = 0; j < path.size(); ++j) {
+                    if (j != 0) via += ", ";
+                    via += path[j];
+                }
+                via += ")";
+            }
+            for (const auto& [what, where] : it->second.unsafeOps)
+                error("an interrupt must not " + what + via +
+                          ". The code this handler interrupted may be standing inside the very "
+                          "machinery this reaches -- the allocator, or the lock -- so it can be "
+                          "entered while that machinery is half-way through its own work. C states "
+                          "this rule in prose and checks none of it.",
+                      where);
+            for (const auto& [name, where] : it->second.unsharedState) {
+                if (!reportedState.insert(name).second) continue;
+                error("'" + name + "' is mutable state an interrupt reaches" + via +
+                          ", so the handler and the code it preempts both touch it. Say so: "
+                          "`volatile` when hardware is on the other end, `atomic<T>` for a counter "
+                          "or a flag. Both are one instruction on x86-64 and neither needs a "
+                          "runtime.",
+                      where);
+            }
+            for (const std::string& callee : it->second.callees) {
+                if (!seen.insert(callee).second) continue;
+                std::vector<std::string> next = path;
+                next.push_back(callee.substr(callee.find('.') + 1));
+                pathTo[callee] = std::move(next);
+                queue.push_back(callee);
+            }
+        }
+    }
 }
 
 // Registers each namespace-level `comptime literal` suffix function and checks
@@ -2593,6 +3032,27 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
         // Cross-program (spec 2.7/2.8): reached over IPC, the path rooted at the program name
         // (`import from program GameEngine GameEngine.audio.mixers.Foo;`). Its types are synthesized as
         // IPC proxies, so validate leniently -- just require the symbol to exist locally as a proxy.
+        // WHAT BARE METAL CANNOT HAVE, REFUSED AT THE IMPORT.
+        //
+        // The restriction was never "the standard library needs a runtime" -- most of it does not. A
+        // collection compiles freestanding today and links against the program's own `heap class`;
+        // `Buffer`, `Math`, `Raw` and the unit literals need nothing at all. What genuinely cannot work
+        // is the part that is a call into a HOST OPERATING SYSTEM: there is no stdio to print through,
+        // no filesystem, no sockets, no process to spawn, no OS thread to create.
+        //
+        // Reported HERE, at the import, rather than at the first use. The import is where the
+        // programmer said they wanted it, it is one line instead of thirty, and it is the difference
+        // between "you cannot have this" and "this one call happens to be unavailable" -- which reads
+        // like an oversight and invites working around it.
+        if (freestanding_ && std::string(imp.loc.file) != "<prelude>") {
+            const std::string why = SemanticAnalyzer::hostedOnlyReason(symbol);
+            if (!why.empty()) {
+                error("'" + symbol + "' is not available in freestanding mode (spec 36.3): " + why,
+                      imp.loc);
+                bringIntoScope();   // keep going: one honest error beats a cascade of unknown names
+                return;
+            }
+        }
         if (!imp.programName.empty()) {
             if (typeNamespace_.find(symbol) == typeNamespace_.end())
                 error("import of unknown symbol '" + full + "' from program '" + imp.programName + "'",
@@ -2945,6 +3405,28 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             return;
         }
         const FieldInfo* f = findField(objType, mem->member);
+        if (f != nullptr)
+            noteFieldForInterrupt(objType, mem->member, *f, mem->object.get(), loc);  // rule 3, write
+        // THE TRAP IS READ-ONLY, and this is measured rather than conservative. `x86_intrcc` takes
+        // the frame as a `byval` parameter, which promises the callee a PRIVATE COPY -- so LLVM is
+        // entitled to treat writes through it as writes to that copy, and it does. At -O2 a plain
+        // store is deleted outright; a `volatile` one survives but lands in a scratch buffer the
+        // epilogue discards (`subq $16,%rsp` ... `addq $16,%rsp`), never touching the frame `iretq`
+        // pops. A scheduler written this way compiles, runs, and never schedules.
+        //
+        // So the language refuses it instead of letting it look like it works. Preemption -- the
+        // one case that needs a writable frame -- stays out of reach of this calling convention,
+        // which is what the design note predicted and this now proves.
+        if (!interruptTrapParam_.empty())
+            if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                tid != nullptr && tid->name == interruptTrapParam_)
+                error("the trap an interrupt receives is READ-ONLY. It arrives as a `byval` "
+                      "parameter, which promises a private copy, so the optimizer deletes a write "
+                      "to it (or lands it in scratch the epilogue throws away) and `iretq` still "
+                      "returns exactly where it came from -- measured, at -O2. Resuming somewhere "
+                      "else is not expressible through this calling convention: read the frame "
+                      "here, and switch on the way out.",
+                      loc);
         if (f == nullptr) {
             // A computed property with a custom setter (spec 8.4): `obj.prop = v` routes to prop$set.
             if (findMethod(objType, mem->member + "$set") != nullptr) {
@@ -3068,6 +3550,44 @@ void SemanticAnalyzer::checkWideningLostBits(const ast::CastExpr& cst, const std
               std::to_string(intBits(src)) + " bits, so bits are lost BEFORE this cast to '" + dst +
               "'. Widen the operand instead: cast<" + dst + ">(x) " + op + " y",
           cst.loc);
+}
+
+// Which standard-library names a freestanding program cannot have, and WHY -- one sentence each,
+// naming what is actually missing underneath.
+//
+// THE LIST IS SHORT ON PURPOSE, and getting it right is the whole point of having it. It was believed
+// for a long time that freestanding meant "no standard library at all"; it does not, and the spec said
+// so more strongly than the compiler ever enforced. Everything absent from this list works, or works
+// once the program declares a `heap class` -- which is exactly the split C++ makes when it excludes
+// <iostream> and <thread> from a freestanding implementation and keeps the rest.
+//
+// The test for membership is "does this reach for the operating system", not "does this allocate".
+// Allocation has an answer bare metal: the program's own heap. A socket does not.
+std::string SemanticAnalyzer::hostedOnlyReason(const std::string& symbol) {
+    if (symbol == "Console")
+        return "it prints through the managed runtime's stdio, which bare metal does not have. Write "
+               "to your own device -- a serial port or a framebuffer -- through FFI or MMIO";
+    if (symbol == "File" || symbol == "Paths" || symbol == "Directory")
+        return "it calls the host operating system's filesystem. A freestanding program IS the system: "
+               "it must reach its storage through its own block device";
+    if (symbol == "Net" || symbol == "Socket" || symbol == "TcpClient" || symbol == "TcpListener")
+        return "it calls the host's socket layer. Bare metal has a network card, not a socket API";
+    if (symbol == "Process" || symbol == "Env" || symbol == "Subproc" || symbol == "Conpty")
+        return "there is no operating system underneath to spawn a process or hold an environment";
+    if (symbol == "Time")
+        return "it asks the host for the clock. Read your own timer or real-time clock instead";
+    if (symbol == "Thread" || symbol == "Task" || symbol == "Channel" || symbol == "Mutex"
+        || symbol == "Semaphore" || symbol == "Latch")
+        return "it creates OS threads and OS locks, and schedules through the managed runtime. A "
+               "freestanding program schedules itself";
+    if (symbol == "String" || symbol == "StringBuilder")
+        return "a managed String lowers to __ldp3_str_copy/__ldp3_str_free, which no bare-metal "
+               "runtime provides. Use a byte literal `b\"...\"` for fixed text, or `byte*`/`byte[]` and "
+               "the raw Memory API for text you build";
+    if (symbol == "Test")
+        return "the test framework reports through printf and builds Strings. Test a freestanding "
+               "program from outside: boot it and assert on what it emits";
+    return "";
 }
 
 void SemanticAnalyzer::checkBitCounted(const std::string& typeName, SourceLocation loc) {
@@ -3444,6 +3964,64 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const std::string initType = vd->init ? typeOf(*vd->init) : std::string();
         const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);
         if (!vd->isVar) checkTypeAccessible(declType, vd->loc);
+        // spec 32.2: a snapshot is a captured state, not a variable. Checked on the WRITTEN type name,
+        // because `RegionSnapshot` canonicalizes to `address` and afterwards the two cannot be told
+        // apart -- which is the price of spelling it as an alias, paid here rather than hidden.
+        // A LOCAL THAT SHADOWS A FIELD. The assignment cases are already refused twice over -- a
+        // parameter is immutable, and the field-initialisation check then reports the field as never
+        // set -- but a shadowed READ is silent: `mutable int width = 5; return width;` answers 5 while
+        // the field says 77. It bit twice during a `this.`-removal sweep and was caught only by an
+        // accident of type; a shadow of the SAME type goes through and changes what the program
+        // computes. A warning, not an error, because shadowing is legal and sometimes meant.
+        if (!currentClass_.empty()) {
+            if (auto ci = classes_.find(currentClass_);
+                ci != classes_.end() && ci->second.fields.count(vd->name) > 0)
+                warn("local '" + vd->name + "' shadows the field of the same name. Reads of '" +
+                         vd->name + "' in this scope see the local; write `this." + vd->name +
+                         "` for the field.",
+                     vd->loc);
+        }
+        if (vd->isMutable && vd->type.name == "RegionSnapshot")
+            error("a snapshot is constant: '" + vd->name +
+                      "' cannot be 'mutable'. It names a state that was captured; re-capturing is "
+                      "`snapshot region <name> into " + vd->name + ";` (spec 32.2).",
+                  vd->loc);
+        // spec 32.2: a snapshot's home has to be a region whose slots carry a header, because that is
+        // what tells a later `snapshot ... into k` how much room k has. A plain (bump) region has no
+        // per-slot header at all -- that absence is exactly what makes its allocation cost what a
+        // hand-written arena costs -- so a snapshot placed in one used to be an access violation.
+        // The runtime traps it; the flavor is right here on the declaration, so this is the place.
+        if (const auto* sn = dynamic_cast<const ast::SnapshotExpr*>(vd->init.get())) {
+            const std::string hf =
+                regionFlavor_.count(sn->home) ? regionFlavor_[sn->home] : std::string();
+            if (hf != "pool" && hf != "fixedslot" && hf != "stack")
+                error("a snapshot cannot live in region '" + sn->home +
+                          "': a plain (bump) region has no per-slot header, and a snapshot needs one "
+                          "so that re-capturing into it can tell how much room it has. Declare the "
+                          "home as `pool`, `fixedslot` or `stack` (spec 32.2).",
+                      sn->loc);
+        }
+        // `comptime T x = ...` (spec 37.4): the value is computed during compilation and embedded, so
+        // the initializer HAS to fold. This was parsed, recorded on the declaration and then read by
+        // nobody -- `comptime int a = Main.fib(10)` emitted a real `call @Main.fib(i32 10)` and stored
+        // the result, which is the one thing the prefix promises will not happen. Checked here, where a
+        // `fixed` initializer is already checked the same way, so both answer the same question alike.
+        if (vd->isComptime && vd->init != nullptr) {
+            bool folds = false;
+            if (isFloatType(declType)) {
+                double d;
+                folds = evalConstDouble(*vd->init, d, &constDoubles_, &constInts_, &comptimeMethods_);
+            } else {
+                long long v;
+                folds = evalConstInt(*vd->init, v, &constInts_, &comptimeMethods_, &constDoubles_);
+            }
+            if (!folds)
+                error("'comptime " + declType + " " + vd->name +
+                          "' must have an initializer the compiler can evaluate -- a literal, a `fixed` "
+                          "constant, or a call to a `comptime` method. Without one there is nothing to "
+                          "embed, and the value would be computed at run time like any other (spec 37.4).",
+                      vd->loc);
+        }
         // Region flavor / growth modifiers (spec 17, flavors expansion): a flavor word only qualifies a
         // region (LDP3-1719), and a region has exactly one flavor (LDP3-1710). The parser space-joins two
         // flavor words into regionFlavor so both names surface here.
@@ -3952,6 +4530,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
+        noteUnsafeForInterrupt("free memory", del->loc);
         auto checkTarget = [&](const ast::Expr& target) {
             const std::string t = typeOf(target);
             // `delete p` where p is a class, or a pointer/reference to one (see through T*/T&). Try the
@@ -4177,6 +4756,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(&stmt)) {
+        // The lock this would take may be the one the interrupted code is already holding, and an
+        // interrupt cannot wait for it to be released -- the holder cannot run until the handler
+        // returns. That is a deadlock with no other party to blame.
+        noteUnsafeForInterrupt("take a lock", sy->loc);
         const std::string mt = baseType(typeOf(*sy->mutex));  // expect a Mutex<...> instance
         if (!mt.empty() && mt.rfind("Mutex", 0) != 0)
             error("synchronized requires a Mutex value, got '" + mt + "'", sy->loc);
@@ -4458,6 +5041,9 @@ void SemanticAnalyzer::bindNamedArgs(ast::CallExpr* call, const std::vector<std:
 }
 
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
+    // spec 32.2: `snapshot region W in region B` yields a handle to a block the caller placed and
+    // owns -- which is what an `address` is. `RegionSnapshot` is the spelling; see ast.h.
+    if (dynamic_cast<const ast::SnapshotExpr*>(&expr) != nullptr) return "address";
     if (const auto* il = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
         // A literal WRITTEN with more than 32 bits of digits is 64-bit, whatever signed value it
         // happens to equal -- so `int m = 0xFFFFFFFFFFFFF000;` is the error it should be instead of a
@@ -4621,6 +5207,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
         if (freestanding_)
             error("async/await is not available in freestanding mode (spec 36.3)", aw->loc);
+        // Suspending means "resume me later, on the scheduler". There is no later for a handler:
+        // the machine is inside the interrupt until it returns.
+        noteUnsafeForInterrupt("suspend", aw->loc);
         // await ch.receive() (spec 20.7): a channel receive already blocks for the value, so `await`
         // is a passthrough and yields the element type.
         if (const auto* call = dynamic_cast<const ast::CallExpr*>(aw->operand.get()))
@@ -5209,6 +5798,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     }
 
     if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
+        // `on stack` is fine -- it moves the stack pointer and nothing else. `on heap` enters the
+        // allocator, which is precisely the machinery the interrupted code may be standing inside.
+        if (nw->location == "heap") noteUnsafeForInterrupt("allocate on the heap", nw->loc);
         // region-binder DATA-RACE (§14): a closure handed to a Thread may only capture state that is safe to
         // share across threads -- atomic<T>/Mutex<T>/Channel<T>, or a copied value. Capturing a plain mutable
         // reference (byref, or byvalue a pointer) shares mutable state between two threads -> a data race.
@@ -5403,20 +5995,51 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // every field would be reported as unset. That is not a stricter check, it is a wrong one, and
         // it would reject a pattern the standard library itself uses.
         //
-        // Discharging ALL of them rather than guessing which the callee touches: seeing through the
-        // call needs interprocedural analysis, and a check that is sometimes wrong teaches people to
-        // ignore it -- which costs more than the cases it would have caught. Done HERE, inside the
-        // traversal that already visits every expression, so a delegation nested in a branch is found
-        // without a second walker that could disagree with this one about where it looked.
+        // IT USED TO DISCHARGE EVERY PENDING FIELD, and that was too much in two ways.
+        //
+        // It was decided BY A PREFIX: only a `MemberExpr` whose object is `this` counted, so
+        // `this.setUp()` discharged and a bare `setUp()` did not. Since `this.` became optional
+        // (spec 8.2) that meant whether the check ran at all depended on how somebody typed the call.
+        //
+        // And it hid real defects -- a field read before any write, in a class whose constructor
+        // happened to call a helper. Both showed up the moment a `this.` came off an unrelated call.
+        //
+        // So: find the callee in this class and discharge only the fields it ACTUALLY assigns,
+        // following private helpers transitively with a visited set. When the callee cannot be found
+        // -- `super(...)`, an inherited or external method -- fall back to discharging everything,
+        // which is the old behaviour and the only safe answer when the body is not in reach.
         if (inConstructor_ && !pendingCtorFields_.empty()) {
             bool delegates = dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr;
-            if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(call->callee.get()))
+            std::string calleeName;
+            if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
                 if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(cm->object.get());
-                    oid != nullptr && oid->name == "this")
+                    oid != nullptr && oid->name == "this") {
                     delegates = true;
-            if (delegates)
-                for (const auto& [fname, floc] : pendingCtorFields_)
-                    markInitialized("this." + fname);
+                    calleeName = cm->member;
+                }
+            } else if (const auto* cid =
+                           dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
+                // A BARE call to a method of this class is the same delegation written without the
+                // prefix, and must be treated the same or the check depends on spelling.
+                if (methodBodyInCurrentClass(cid->name) != nullptr) {
+                    delegates = true;
+                    calleeName = cid->name;
+                }
+            }
+            if (delegates) {
+                const ast::Block* body =
+                    calleeName.empty() ? nullptr : methodBodyInCurrentClass(calleeName);
+                if (body == nullptr) {
+                    for (const auto& [fname, floc] : pendingCtorFields_)
+                        markInitialized("this." + fname);
+                } else {
+                    std::set<std::string> assigned;
+                    std::set<std::string> visited{calleeName};
+                    collectFieldsAssigned(body, assigned, visited);
+                    for (const auto& [fname, floc] : pendingCtorFields_)
+                        if (assigned.count(fname) > 0) markInitialized("this." + fname);
+                }
+            }
         }
         // `itself(...)` inside a lambda: the lambda calling itself. Handled before every other call
         // shape because there `itself` resolves to no class, no local and no method -- the enclosing
@@ -6009,6 +6632,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                                   call->loc);
                             return "";
                         }
+                        // `Class.method(...)` -- the other edge into the call graph. A driver reaches
+                        // most of what it reaches this way (`Serial.puts`, `Frames.alloc`), so
+                        // leaving static calls out would let a handler allocate one hop away.
+                        if (MethodFacts* mf = facts())
+                            mf->callees.insert(objId->name + "." + mem->member);
                         if (mit->second.isVariadic) {
                             // A variadic extern (spec 26): the fixed params are checked, extra args are
                             // the `...` and pass through.
@@ -6371,6 +6999,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("class '" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";
             }
+            if (m->isInterrupt) {
+                error("an interrupt cannot be called -- it is ENTERED, by something outside the "
+                      "program, at a moment the program did not choose. Calling it would be "
+                      "simulating an interrupt, which is a different thing wearing the same name. "
+                      "To install it, write `" + mem->member + "` without '()': that yields the "
+                      "entry point bound to this object.",
+                      call->loc);
+                return "";
+            }
+            // One edge of the call graph the interrupt check walks, recorded where the analyzer has
+            // just done the hard part: `objType` is the RESOLVED receiver type, so a field, a
+            // local, a parameter and a static receiver all arrive here already answered.
+            if (MethodFacts* mf = facts()) mf->callees.insert(objType + "." + mem->member);
             // Named arguments (spec 22.4): rewrite into parameter order before anything checks the args.
             if (m->isDeprecated)
                 warn("'" + mem->member + "' is deprecated (spec 14.2)", call->loc);
@@ -6457,6 +7098,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     // An instance-method call needs a receiver; `this` exists only in an instance context
                     // (currentClass_ is cleared inside a static method).
                     if (m->isStatic || !currentClass_.empty()) {
+                        // Inside the class that declares it, `interrupt()` reads as an ordinary
+                        // implicit-`this` call. It is the same mistake as the qualified one, and
+                        // the likelier of the two -- a handler tail-calling itself to "re-run".
+                        if (m->isInterrupt) {
+                            error("an interrupt cannot be called -- it is ENTERED, not called. Move "
+                                  "the work into a method and call that from both places.",
+                                  call->loc);
+                            return "";
+                        }
+                        if (MethodFacts* mf = facts())
+                            mf->callees.insert(enclosingClass_ + "." + name);  // implicit `this`
                         if (m->isDeprecated) warn("'" + name + "' is deprecated (spec 14.2)", call->loc);
                         bindNamedArgs(const_cast<ast::CallExpr*>(call), m->paramNames, m->namedOnlyParams,
                                       "method '" + name + "'");
@@ -6561,6 +7213,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         std::string memType;
         if (const FieldInfo* f = findField(objType, mem->member)) {
             memType = f->type;
+            noteFieldForInterrupt(objType, mem->member, *f, mem->object.get(), mem->loc);  // rule 3, read
             // Partial move (spec 19.9): a field moved out of its parent is inaccessible until reassign.
             if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
                 oid != nullptr && moved_.count(oid->name + "." + mem->member) > 0)
@@ -6570,6 +7223,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         } else if (const MethodInfo* pm = findMethod(objType, mem->member);
                    pm != nullptr && pm->isProperty) {
             memType = pm->returnType;  // computed get-only property read as obj.name (no parens)
+        } else if (const MethodInfo* im = findMethod(objType, "interrupt");
+                   mem->member == "interrupt" && im != nullptr && im->isInterrupt) {
+            // `keyboard.interrupt` -- the installable handle. It BINDS this object to the handler
+            // and yields the entry point the hardware jumps to, which is an `address` and
+            // deliberately not a callable: that is what stops "an interrupt cannot be called" from
+            // leaking back out through the reference that installs it.
+            memType = "address";
         } else {
             error(diag::Code::NoSuchField,
                   "class '" + objType + "' has no field '" + mem->member + "'" +

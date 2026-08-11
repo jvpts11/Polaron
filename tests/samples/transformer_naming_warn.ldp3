@@ -1,0 +1,24 @@
+// The naming convention: `T` + stem + `er`. A transformer is the COUPLING between two types and not
+// either of them -- an electrical transformer has two windings and is neither -- so it is named for
+// the agent of the relation, and the `T` says which of the three clauses on a class line you are
+// reading. A warning rather than an error, like the PascalCase one, so it nudges without breaking.
+//
+// The suggestion is generated, not just demanded: `able`/`ible` are trimmed first, so `Describable`
+// comes out as `TDescriber` rather than `TDescribableer`.
+program TransformerNamingWarn;
+
+public bundle Main {
+    public namespace App {
+        public transformer Describable {
+            public procedure label() returns String { return "x"; }
+        }
+
+        public class Dog applies Describable {
+            public procedure label() returns String { return "dog"; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

@@ -18,7 +18,7 @@ public bundle main {
         }
         public class Derived extends Base {
             public constructor Derived() {}
-            public override destructor ~Derived() returns void { System.IO.Console.printf("~Derived\n"); }
+            public destructor ~Derived() returns void { System.IO.Console.printf("~Derived\n"); }
         }
 
         public class Main {

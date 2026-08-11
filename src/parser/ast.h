@@ -95,7 +95,13 @@ inline std::string makeNullable(const std::string& t) {
     return typeIsNullable(t) ? t : kNullablePrefix + t;
 }
 inline std::string canonicalType(const TypeRef& t) {
-    const std::string core = mangleGeneric(t.name, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
+    // spec 32.2: `RegionSnapshot` IS an `address` -- a handle to a block the caller placed and owns.
+    // It gets its own spelling because a snapshot handle and a raw address say different things to a
+    // reader, and it is mapped HERE, at the one place both the analyzer and codegen ask what a type is
+    // called, so the two can never end up disagreeing about it. (It was tried as a `typealias` in the
+    // prelude first; adding one to `namespace Memory` breaks `System.Memory.Units.kilobytes`.)
+    const std::string base = t.name == "RegionSnapshot" ? std::string("address") : t.name;
+    const std::string core = mangleGeneric(base, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
                              arrayDimsSuffix(t.arrayDims) + std::string(t.pointerDepth, '*') +
                              (t.isRef ? "&" : "");
     return t.isNullable ? makeNullable(core) : core;
@@ -564,6 +570,32 @@ struct RollbackStmt : Stmt {
     void dump(std::string& out, int indent) const override;
 };
 
+// `snapshot region W in region B` (spec 32.2): capture W's state into a block placed in B, and yield
+// the handle. An EXPRESSION because the declaring form is an initializer:
+//   RegionSnapshot k = snapshot region world in region backups;
+// `snapshot` is a SOFT keyword -- an ordinary identifier everywhere else, because pico already has a
+// `restore()` method and the pair has to stay usable as names.
+struct SnapshotExpr : Expr {
+    std::string region;   // the region being captured
+    std::string home;     // `in region B` -- where the snapshot's bytes live; the caller owns them
+    void dump(std::string& out, int indent) const override;
+};
+
+// `snapshot region W into k;` -- re-capture into a snapshot that already has its block.
+struct SnapshotIntoStmt : Stmt {
+    std::string region;
+    ExprPtr into;
+    void dump(std::string& out, int indent) const override;
+};
+
+// `restore k into W;` / `restore k into region W;` -- put W back the way k found it. The destructors
+// of everything allocated since the capture run FIRST; see runtime/ldp3_region_core.hpp.
+struct RestoreStmt : Stmt {
+    std::string region;
+    ExprPtr snapshot;
+    void dump(std::string& out, int indent) const override;
+};
+
 // `unimport X;` / `reimport X;` (spec 30): logically remove a class at runtime (and
 // physically overwrite its code), or re-enable it.
 struct UnimportStmt : Stmt {
@@ -947,6 +979,33 @@ struct MethodDecl : MemberDecl {
     // state exactly as the hardware handed it over (a reset vector with no stack, a syscall entry running
     // on the caller's stack, an ISR that must not disturb the CPU-pushed frame).
     bool isNaked = false;
+    // `public interrupt(Trap t) returns void { }` -- ENTERED, not called. Modeled as a MethodDecl
+    // named "interrupt" (the source form is nameless) for the same reason `operator+` is: everything
+    // downstream -- monomorphization, implicit `this`, contracts, the region binder -- already knows
+    // how to handle a method, and an interrupt body IS an ordinary method body. What differs is
+    // entirely at the edges: nothing may call it, and codegen emits a second function beside it
+    // carrying `x86_intrcc` so LLVM writes the register save/restore and the `iretq`.
+    bool isInterrupt = false;
+    // Written `procedure` rather than `method`. A METHOD's signature is fixed where it is declared;
+    // a PROCEDURE's is completed at the type that applies it, which is the whole distinction and the
+    // reason the second word exists. Checked in BOTH directions at the applying type -- `method` for
+    // something a transformer brought is an error, and `procedure` for something no transformer
+    // declares is too -- so provenance survives a terminal, a diff and a review, which is what
+    // Java's `@Override` tries to be and fails at because it can be left out.
+    bool isProcedure = false;
+    // `procedure into<each Other>() returns Other;` -- a socket that names a FAMILY of procedures
+    // indexed by the target type, one implementation per target, instead of one body over every T.
+    //
+    // The two are genuinely different features and the language wants both: `tag<T>(T v)` is one
+    // algorithm over any T (ordinary generics, monomorphized); `into<Fahrenheit>()` is one of
+    // several bodies, and only a per-target body can write `new Fahrenheit(...)`. Conversion --
+    // Celsius/Fahrenheit, Errno/int, HidUsage/ScanCode -- is inexpressible without it.
+    //
+    // THE MARKER LIVES ON THE SOCKET, not on the implementation, and not on "is the name inside
+    // <> already a type?". That last rule is decidable and poisonous: declaring a class named `T`
+    // would silently change what `method foo<T>()` means in another file. Whoever designs the
+    // relation decides whether it is per-target; whoever uses it writes nothing extra.
+    bool isEachFamily = false;
     // spec 22.6 generators: a method whose body yields. The synthesis pass (monomorphize) turns the
     // original method into a factory returning a synthesized Iterator class, and parks the original
     // body in a hidden twin flagged here. Codegen emits that twin as four raw functions
@@ -984,6 +1043,13 @@ struct FieldDecl : MemberDecl {
     bool isTransient = false;   // excluded from serialization
     bool isVolatile = false;    // spec 37.5: loads/stores are never optimized away
     bool isLazy = false;        // spec 28.4: a class-typed field initialized on first access
+    // spec 37.4: the INITIALIZER is evaluated during compilation. Not the same thing as `fixed`, which
+    // is a class-level constant with no storage and no `mutable` -- a `comptime` field is an ordinary
+    // field, possibly per-instance and possibly mutable, whose starting value costs nothing to produce.
+    bool isComptime = false;
+    // spec 18.7: `in region X` field placement, as WRITTEN. Kept only so the analyzer can say that it
+    // currently does nothing -- measured, the IR is byte-identical with and without it.
+    std::string inRegion;
     bool isExternal = false;    // spec 37.1: an association, not owned; cascade does not follow it
     // `delegate T f` -- this class satisfies its interfaces BY FORWARDING to this field. Every method an
     // interface declares and the class does not define is synthesized as `return this.f.m(args);`.
@@ -1026,6 +1092,7 @@ struct DestructorDecl : MemberDecl {
 struct ClassDecl {
     std::string visibility;
     std::string name;
+    SourceLocation nameLoc;   // the name itself; `loc` is the `public` that starts the declaration
     std::vector<std::string> typeParams;  // generic parameters, e.g. Box<T> -> ["T"]
     // Variance per type param (spec 15.3): "out" covariant, "in" contravariant, "" invariant.
     std::vector<std::string> typeParamVariance;
@@ -1043,6 +1110,32 @@ struct ClassDecl {
     // value aggregate arranges itself, and is consumed entirely by the compiler. Never a type: no
     // variable has a layout type, no value is ever one, and nothing of it reaches the executable.
     bool isLayout = false;
+    // Declared with `transformer`: what a type GAINS by applying it. Never instantiated, never a
+    // type -- like `layout`, it is consumed by the compiler and nothing of it reaches the executable
+    // under its own name. Kept in `Namespace::transformers`, never in `classes`, so nothing
+    // downstream has to learn that some "classes" are not.
+    bool isTransformer = false;
+    bool isMutualTransformer = false;     // `mutual`: a pair must be symmetric, and it is checked
+    bool isExplicitTransformer = false;   // `explicit`: only applied directly, never transported
+    // The transformers this type applies. A separate clause from `implements` on purpose: the class
+    // line runs identity -> obligation -> equipment. `implements` is a promise made to the outside
+    // world; `applies` is equipment, purely additive, and nobody outside needs to know about it.
+    std::vector<std::string> applies;
+    std::vector<SourceLocation> appliesLocs;  // per entry, so a diagnostic points at the right name
+    // Every `call T.p()` written inside this type, recorded at the parse site. Kept as a list rather
+    // than found by walking the bodies later: the expansion pass needs to check that T is applied
+    // here and that `p` is reachable, and a second full traversal to rediscover what the parser had
+    // in its hand is exactly the kind of walk that goes silently out of date.
+    struct ProcCall {
+        std::string transformer;
+        std::string procedure;
+        SourceLocation loc;
+    };
+    std::vector<ProcCall> procCalls;
+    // `error Failed;` inside a transformer -- the failure type it declares for its own conversions,
+    // so a failure names the conversion that failed instead of surfacing as somebody else's
+    // exception. Synthesized as an ordinary class in the transformer's namespace.
+    std::vector<std::pair<std::string, SourceLocation>> errorTypes;
     bool isAbstract = false;              // `abstract class` (interfaces are abstract too)
     bool isFinal = false;                 // `final class` -- cannot be extended
     bool isSealed = false;                // `sealed` -- only `permits` types may extend it
@@ -1161,7 +1254,12 @@ struct TypeAliasDecl {
 struct Namespace {
     std::string visibility;
     std::string name;
+    SourceLocation nameLoc;   // the name itself, not the `public` that starts the declaration
     std::vector<ClassDecl> classes;
+    // Transformers live apart from classes because they are not types. `expandTransformers` copies
+    // their members into every type that applies them and nothing else ever looks here, so no later
+    // pass has to know the difference -- the same treatment `layout` gets, for the same reason.
+    std::vector<ClassDecl> transformers;
     std::vector<EnumDecl> enums;
     std::vector<CatalogDecl> catalogs;
     std::vector<LiteralDecl> literals;
@@ -1188,6 +1286,13 @@ struct ImportDecl {
 struct Bundle {
     std::string visibility;
     std::string name;
+    // WHERE THE NAME IS, which is not where the declaration starts.
+    //
+    // `loc` is the `public` keyword, because that is where parsing began. A diagnostic ABOUT THE NAME
+    // pointed there instead: `bundle 'main' should start with a capital letter` put its caret under
+    // `public`, fourteen columns from the word it was talking about. A caret that points at the wrong
+    // token is worse than no caret -- it sends the reader to inspect something that is not the subject.
+    SourceLocation nameLoc;
     bool isFreestanding = false;  // `bundle X freestanding { ... }` (spec 36)
     bool isPrelude = false;       // from the embedded prelude, not user source; excluded from the .ldh
     bool isImported = false;      // from a depended-on .ldb (parsed from its .ldh): types are visible,

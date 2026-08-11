@@ -1,0 +1,46 @@
+import System.Concurrency.atomic;
+program InterruptAtomicOk freestanding;
+
+// The other half of rule 3: the escape hatch has to EXIST, or the rule just makes correct programs
+// inexpressible. It does, and it costs one instruction -- `atomic<T>` on x86-64 is a `lock`-prefixed
+// instruction with no runtime behind it, which is why this compiles freestanding at all.
+//
+// So the shape of a real handler survives: a counter the handler increments and the main loop reads,
+// a ring index, a ready flag. What the rule removes is the version that does the same thing while
+// saying nothing about it.
+
+public bundle Kernel {
+    public namespace Arch {
+        public class Trap {
+            public mutable address rip;
+            public constructor Trap() { this.rip = 0; }
+        }
+
+        public class Timer {
+            // `atomic<T>`: shared with whatever this preempts, and said so.
+            private mutable atomic<int> ticks;
+            // Immutable by default, so it needs no marking at all -- nothing writes it after the
+            // constructor, which is most of a driver's fields and most of why this rule is livable.
+            private int hz;
+            public constructor Timer() {
+                this.ticks = new atomic<int>(0);
+                this.hz = 100;
+            }
+            public interrupt(Trap t) returns void {
+                this.bump();
+            }
+            public method bump() returns void { this.ticks.add(1); }
+            public method elapsed() returns int { return this.ticks.get(); }
+            public method rate() returns int { return this.hz; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Timer clock = new Timer();
+                address entry = clock.interrupt;
+                if (entry == 0) { return 1; }
+                return clock.elapsed() + clock.rate();
+            }
+        }
+    }
+}

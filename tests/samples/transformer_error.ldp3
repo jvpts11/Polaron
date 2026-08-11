@@ -1,0 +1,43 @@
+import System.IO.Console;
+program TransformerError;
+
+// `error Failed;` -- a transformer declares its OWN failure type, so a failure names the conversion
+// that failed instead of surfacing as somebody else's exception.
+//
+// The shape: an ordinary class in the transformer's namespace, under the name written, carrying a
+// `String reason`. Referenced as `ParseFailed`, not `TParser.ParseFailed` -- a nested spelling would
+// need a new resolution rule for `Type.Type` in every position a type can appear, to buy a
+// qualification the namespace already provides. The cost is that the name must be free in its
+// namespace, which is checked.
+
+public bundle Main {
+    public namespace App {
+        public transformer TParser {
+            error ParseFailed;
+
+            public procedure parse<each Other>(String text) returns Other;
+        }
+
+        public class Port applies TParser {
+            public mutable int number;
+            public constructor Port(int n) { this.number = n; }
+
+            public static procedure parse<Port>(String text) returns Port {
+                if (text.length() == 0) {
+                    ParseFailed why = new ParseFailed("empty port");
+                    System.IO.Console.printf("%s\n", why.reason);
+                    return new Port(0);
+                }
+                return new Port(text.length());
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Port p = Port.parse<Port>("");
+                System.IO.Console.printf("port=%d\n", p.number);
+                return;
+            }
+        }
+    }
+}

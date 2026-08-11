@@ -1,0 +1,20 @@
+// Calling an interrupt is simulating one, which is a different thing wearing the same name.
+program InterruptCallBad freestanding;
+
+public bundle Kernel {
+    public namespace Arch {
+        public class Timer {
+            private volatile mutable int ticks;
+            public constructor Timer() { this.ticks = 0; }
+            public interrupt() returns void { this.ticks = this.ticks + 1; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Timer t = new Timer();
+                t.interrupt();   // rejected: entered, not called
+                return 0;
+            }
+        }
+    }
+}

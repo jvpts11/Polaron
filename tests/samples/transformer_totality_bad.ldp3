@@ -1,0 +1,33 @@
+// TOTALITY. A per-target procedure converts FROM the type it is written on, and a `class`/`record`
+// is closed over its FIELDS -- so a conversion that never reads one of them is either wrong or that
+// field does not belong in the conversion. Both are worth being told.
+//
+// Partiality is DEDUCED, never annotated: the source here is closed, so the conversion must be
+// total. Nobody wrote `total` anywhere.
+program TransformerTotalityBad;
+
+public bundle Main {
+    public namespace App {
+        public transformer TConverter {
+            public procedure into<each Other>() returns Other;
+        }
+
+        public class Metres {
+            public mutable int value;
+            public constructor Metres(int v) { this.value = v; }
+        }
+
+        public class Distance applies TConverter {
+            public mutable int whole;
+            public mutable int fraction;   // never read by the conversion below
+            public constructor Distance(int w, int f) { this.whole = w; this.fraction = f; }
+            public procedure into<Metres>() returns Metres {
+                return new Metres(itself.whole);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}
