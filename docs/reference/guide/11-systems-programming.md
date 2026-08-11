@@ -28,10 +28,11 @@ It helps to draw a line first. LDP3 has two very different kinds of "built-in" t
   a `String`'s `{length, data}` layout, a `vec4`'s SSE register, a `Decimal`'s 128-bit mantissa, a
   raw `Memory.write<int>`. They are the bedrock the standard library stands on.
 
-This distinction matters enormously for the rest of the chapter, and especially for freestanding
-mode. When there is no operating system, the standard library — which assumes a heap, a
-filesystem, threads — largely evaporates. The builtins do not. They are what you have left, and
-they are exactly enough to build a kernel.
+This distinction matters for the rest of the chapter, and especially for freestanding mode — where
+the builtins are always available, and the library is available in the part that does not need an
+operating system, which turns out to be most of it. Collections, `Buffer`, `Math` and the value types
+all work bare metal; what does not is the handful of things that call the host — see
+[what is removed](#what-is-removed-in-freestanding-mode) for the list and the reasoning.
 
 Let us walk through the builtins first.
 
@@ -467,10 +468,33 @@ concrete technical reason:
 - **Reflection (`reflect.*`).** Reflection needs enormous runtime metadata — type tables, method
   names as strings, parameters, annotations. A kernel has no room for it and no need to inspect
   types dynamically.
-- **The managed `Console` (and the managed standard library generally).** `Console`, `File`,
-  `ArrayList`, `HashMap`, `Thread`, `Instant`, and the rest assume dynamic allocation, an OS, or
-  both. *Alternative:* the kernel builds its own data structures on the primitives that remain, and
-  does I/O through FFI or memory-mapped hardware.
+- **The parts of the standard library that call an OPERATING SYSTEM.** This entry used to say "the
+  managed standard library generally", and list `ArrayList` and `HashMap` alongside `Console` and
+  `Thread`. That was wrong, and wrong in a way that cost real work: it sent people to reimplement
+  collections by hand under a prohibition the compiler never enforced.
+
+  The real test is not *"does this allocate"* — allocation has an answer bare metal, namely the
+  program's own [`heap class`](#heap-class). It is *"does this reach for a host operating system"*,
+  which has no answer at all. So the list is short, and the compiler now refuses exactly it, **at
+  the `import`** rather than at the first use:
+
+  `Console` · `File`/`Paths`/`Directory` · `Net`/`Socket`/`TcpClient`/`TcpListener` ·
+  `Process`/`Env`/`Subproc`/`Conpty` · `Time` · `Thread`/`Task`/`Channel`/`Mutex`/`Semaphore`/`Latch`
+  · `String`/`StringBuilder` · `Test`
+
+  Everything else works. `ArrayList<T>`, `HashMap<K, V>` and the rest of the collections compile in a
+  freestanding program and link against your `heap class`; `System.Memory.Buffer` — a library class
+  with a contract on every access and a destructor — works, and so do `Math`, `Raw`, `Allocator`, the
+  unit literals, `Result`/`Option`, and every value type.
+
+  This is the same split C++ makes: a freestanding implementation drops `<iostream>`, `<fstream>` and
+  `<thread>` and keeps the rest. LDP3 is in that position, not in C's.
+
+  **`String` is on the list for now, and only for now.** It lowers to a family of eleven
+  `__ldp3_str_*` symbols (copy, free, eq, hash, index, trim, upper, lower, repeat, ...) that no
+  bare-metal runtime provides yet. They need nothing a kernel does not have — the program's heap and
+  `memcpy` — so this is code nobody has written rather than a restriction. Until then, use a byte
+  literal `b"..."` for fixed text and `byte*`/`byte[]` with the raw Memory API for text you build.
 
 ### What is kept — and this is the point
 

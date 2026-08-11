@@ -1461,11 +1461,13 @@ struct CodeGenerator::Impl {
     // entered.
     void emitGuardFail(const std::string& headline, const char* aLabel, llvm::Value* aVal,
                        const char* bLabel, llvm::Value* bVal, int code) {
-        const std::string msg = "LDP3 panic: " + headline + "\n" + whereLine();
-        if (program.isFreestanding || aVal == nullptr || bVal == nullptr) {
-            // Bare metal has no stdio to format numbers with, and a guard with nothing to show has
-            // nothing to gain from the wider path.
-            emitPanic(headline + "\n" + whereLine());
+        // Freestanding's `__ldp3_panic` prints its own `ldp3 panic: ` tag, so the headline must not
+        // arrive carrying a second one; hosted has no tag and says it itself.
+        const std::string msg = (program.isFreestanding ? std::string() : std::string("LDP3 panic: ")) +
+                                headline + "\n" + whereLine();
+        if (aVal == nullptr || bVal == nullptr) {
+            // A guard with nothing to show has nothing to gain from the wider path.
+            emitPanic(msg);
             return;
         }
         llvm::FunctionType* ft = llvm::FunctionType::get(
@@ -3071,10 +3073,14 @@ struct CodeGenerator::Impl {
             return "int";
         }
         if (dynamic_cast<const ast::RegionInitExpr*>(&expr) != nullptr) return "region";
+        // spec 32.2: a snapshot handle is an address -- see the note in ast.h's canonicalType.
+        if (dynamic_cast<const ast::SnapshotExpr*>(&expr) != nullptr) return "address";
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
             const std::string objT = typeName(*mem->object);  // ONCE -- see the BinaryExpr note
             if (vecWidth(objT) > 0 && vecLane(mem->member) >= 0)
                 return "float";  // v.x / v.y / v.z / v.w
+            // `obj.interrupt` is the installable handle: an address, deliberately not a callable.
+            if (mem->member == "interrupt" && declaresInterrupt(baseType(objT))) return "address";
             if (const std::string key = staticFieldKey(*mem); !key.empty()) {
                 return staticFieldType[key];
             }
@@ -3248,8 +3254,7 @@ struct CodeGenerator::Impl {
         const bool comparison =
             cmp != nullptr && (cmp->op == "==" || cmp->op == "!=" || cmp->op == "<" ||
                                cmp->op == ">" || cmp->op == "<=" || cmp->op == ">=");
-        if (!program.isFreestanding && comparison && isPureToReread(cmp->lhs.get()) &&
-            isPureToReread(cmp->rhs.get())) {
+        if (comparison && isPureToReread(cmp->lhs.get()) && isPureToReread(cmp->rhs.get())) {
             llvm::Value* lv = emitExpr(*cmp->lhs);
             llvm::Value* rv = emitExpr(*cmp->rhs);
             if (lv != nullptr && rv != nullptr && lv->getType()->isIntegerTy() &&
@@ -3259,31 +3264,27 @@ struct CodeGenerator::Impl {
             }
         }
 
-        // Freestanding has no stdio and no exit: report through `__ldp3_panic`, the same deterministic
-        // stop the div-by-zero, overflow and bounds guards use. Without this, a single `requires` in a
-        // kernel pulled in `puts`/`exit` and failed to link -- which made contracts unusable in exactly
-        // the code that benefits from them most. It takes a fixed string, so the values are the one
-        // part of the message a kernel does without.
-        if (program.isFreestanding) {
-            emitPanic(msg);
-        } else {
-            llvm::FunctionType* ft = llvm::FunctionType::get(
-                builder.getVoidTy(),
-                {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
-                 builder.getInt64Ty(), builder.getInt32Ty()},
-                false);
-            llvm::Value* zero = builder.getInt64(0);
-            llvm::Value* none = llvm::ConstantPointerNull::get(builder.getPtrTy());
-            const bool has = !args.empty();
-            builder.CreateCall(
-                module.getOrInsertFunction("__ldp3_fail", ft),
-                {createGlobalStringPtr(builder, msg, ".contract"),
-                 has ? createGlobalStringPtr(builder, "left", ".cl") : none,
-                 has ? args[0] : zero,
-                 has ? createGlobalStringPtr(builder, "right", ".cr") : none,
-                 has ? args[1] : zero, builder.getInt32(1)});
-            builder.CreateUnreachable();
-        }
+        // ONE call for both targets. `__ldp3_fail` used to be the hosted path only -- freestanding
+        // reported through `__ldp3_panic`, which takes a finished string, so the values were the part
+        // a kernel did without. They are now formatted bare metal too, by a generated reporter that
+        // hands the composed message to that same `__ldp3_panic` (src/driver/build.cpp). What differs
+        // between the targets is where the message ends up, which was never codegen's business.
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            builder.getVoidTy(),
+            {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
+             builder.getInt64Ty(), builder.getInt32Ty()},
+            false);
+        llvm::Value* zero = builder.getInt64(0);
+        llvm::Value* none = llvm::ConstantPointerNull::get(builder.getPtrTy());
+        const bool has = !args.empty();
+        builder.CreateCall(
+            module.getOrInsertFunction("__ldp3_fail", ft),
+            {createGlobalStringPtr(builder, msg, ".contract"),
+             has ? createGlobalStringPtr(builder, "left", ".cl") : none,
+             has ? args[0] : zero,
+             has ? createGlobalStringPtr(builder, "right", ".cr") : none,
+             has ? args[1] : zero, builder.getInt32(1)});
+        builder.CreateUnreachable();
         builder.SetInsertPoint(contBB);
     }
 
@@ -3402,6 +3403,28 @@ struct CodeGenerator::Impl {
         llvm::FunctionType* ty = llvm::FunctionType::get(
             builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy()}, false);
         return module.getOrInsertFunction("__ldp3_region_untrack", ty);
+    }
+    // ---- region snapshots (spec 32.2) ----
+    llvm::FunctionCallee regionSnapshotSizeFn() {  // (block) -> bytes needed to hold a snapshot
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getInt64Ty(), {builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_region_snapshot_size", ty);
+    }
+    llvm::FunctionCallee regionSnapshotFn() {  // (block, into, room) -> void
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty()},
+            false);
+        return module.getOrInsertFunction("__ldp3_region_snapshot", ty);
+    }
+    llvm::FunctionCallee regionRestoreFn() {  // (block, from) -> void; runs destructors first
+        llvm::FunctionType* ty = llvm::FunctionType::get(
+            builder.getVoidTy(), {builder.getPtrTy(), builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_region_restore", ty);
+    }
+    llvm::FunctionCallee regionSlotSizeFn() {  // (ptr) -> the payload size of that region slot
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getInt64Ty(), {builder.getPtrTy()}, false);
+        return module.getOrInsertFunction("__ldp3_region_slot_size", ty);
     }
     llvm::FunctionCallee regionRollbackFn() {  // (block, mark) -> void  (stack: destruct + reset cursor)
         llvm::FunctionType* ty = llvm::FunctionType::get(
@@ -5336,6 +5359,22 @@ struct CodeGenerator::Impl {
             if (mem->safe && &expr != safeGuardNode_) {  // obj?.field (spec 3.7)
                 return emitSafeNav(expr, *mem->object);
             }
+            // `keyboard.interrupt` -- BIND this object to its handler and yield the entry point the
+            // IDT wants. One expression because it is one act: an interrupt vector holds an address
+            // and nothing else, so there is no way to obtain the address without saying whose
+            // handler it is. What comes back is an `address`, not a callable, which is what keeps
+            // "an interrupt cannot be called" true through the reference that installs it --
+            // `keyboard.interrupt()` fails on its own, because an address is not a method.
+            if (mem->member == "interrupt") {
+                if (auto ie = interruptEntries_.find(baseType(typeName(*mem->object)));
+                    ie != interruptEntries_.end()) {
+                    llvm::Value* recv = emitExpr(*mem->object);
+                    if (recv == nullptr) return nullptr;
+                    builder.CreateStore(recv, ie->second.self);
+                    return builder.CreatePtrToInt(ie->second.entry, builder.getInt64Ty(),
+                                                  "interrupt.entry");
+                }
+            }
             // SIMD vector lane read: v.x / v.y / v.z / v.w -> extractelement. Gate on the lane
             // name first so a class/enum-name receiver isn't type-probed here.
             if (int lane = vecLane(mem->member); lane >= 0) {
@@ -5712,6 +5751,24 @@ struct CodeGenerator::Impl {
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
             return emitRegionAllocate(ri->size.get(), ri->atAddress.get(), pendingRegionFlavor_,
                                       pendingRegionGrowable_, pendingRegionRegistry_);
+        }
+        // `snapshot region W in region B` (spec 32.2): ask how much room the capture needs, take that
+        // much from B, and fill it. The block is an ordinary region slot, which is what makes the
+        // snapshot's memory visible to the ownership tree instead of sitting beside it -- and what
+        // makes `release` the programmer's, by design.
+        if (const auto* sn = dynamic_cast<const ast::SnapshotExpr*>(&expr)) {
+            llvm::Value* srcSlot = regionStorageSlot(sn->region);
+            if (srcSlot == nullptr) { error("unknown region '" + sn->region + "'", sn->loc); return nullptr; }
+            llvm::Value* homeSlot = regionStorageSlot(sn->home);
+            if (homeSlot == nullptr) { error("unknown region '" + sn->home + "'", sn->loc); return nullptr; }
+            llvm::Value* src = builder.CreateLoad(builder.getPtrTy(), srcSlot, "snap.src");
+            llvm::Value* home = builder.CreateLoad(builder.getPtrTy(), homeSlot, "snap.home");
+            llvm::Value* size = builder.CreateCall(regionSnapshotSizeFn(), {src}, "snap.size");
+            llvm::Value* into = builder.CreateCall(regionNewFn(), {home, size}, "snap.block");
+            builder.CreateCall(regionSnapshotFn(), {src, into, size});
+            // The handle's LDP3 type is `address`, which is an integer here -- the block pointer has
+            // to cross that boundary explicitly rather than by luck.
+            return builder.CreatePtrToInt(into, llvmType("address"), "snap.handle");
         }
         if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
             // `x is T` (op 1) / `x as? T` (op 2), spec 6.4: a runtime is-a test on a class value.
@@ -6875,13 +6932,36 @@ struct CodeGenerator::Impl {
         return builder.CreateLoad(builder.getPtrTy(), g, en.name);
     }
 
+    // THE LITERAL TEXT OF AN INTERPOLATION IS NOT A FORMAT STRING.
+    //
+    // Interpolation lowers to printf, and the literal segments between the holes used to be pasted
+    // into the format string RAW. A percent sign the programmer wrote as text therefore became a
+    // conversion specifier and printf went looking for an argument nobody passed:
+    //
+    //     $"{a}.{b}% <- expected 1.2%"      printed `1.2<- expected 1.2`   (the "% " was eaten)
+    //     $"about to try 100%success"       read a value nobody passed as a char* and FOLLOWED IT
+    //                                       -- exit 0xC0000005, ACCESS_VIOLATION
+    //
+    // An arbitrary-pointer dereference reachable from ordinary source text, in a language whose whole
+    // claim is that there is no exploitable undefined behaviour. Every literal segment is escaped, and
+    // there is one after the last hole as well as between them.
+    static std::string escapePercents(const std::string& s) {
+        std::string out;
+        out.reserve(s.size());
+        for (char c : s) {
+            out += c;
+            if (c == '%') out += '%';
+        }
+        return out;
+    }
+
     // Lowers $"lit {e0} lit {e1} ..." to a printf: builds a format string with a
     // specifier per expression (%c for char, %d otherwise) and passes the values.
     llvm::Value* emitInterp(const ast::InterpStringExpr& is, bool addNewline, bool asString = false) {
         std::string fmt;
         std::vector<llvm::Value*> values;
         for (std::size_t i = 0; i < is.exprs.size(); ++i) {
-            fmt += resolveEscapes(is.literals[i]);
+            fmt += escapePercents(resolveEscapes(is.literals[i]));
             const std::string et = typeName(*is.exprs[i]);
             llvm::Value* v = emitExpr(*is.exprs[i]);
             if (v == nullptr) return nullptr;
@@ -6948,7 +7028,7 @@ struct CodeGenerator::Impl {
             }
             values.push_back(v);
         }
-        fmt += resolveEscapes(is.literals.back());
+        fmt += escapePercents(resolveEscapes(is.literals.back()));  // the trailing segment too
         // As a String value (spec 4.1): snprintf measures the length, then formats into a fresh
         // buffer, producing a String object instead of printing.
         if (asString) {
@@ -10944,6 +11024,31 @@ struct CodeGenerator::Impl {
             // A class-typed slot is the one exception: it is left as a null pointer so that scope
             // teardown, which walks the live stack objects, finds nothing to destruct rather than a
             // garbage address. `region r;` keeps its own long-standing path further down.
+            // `comptime T x = <constexpr>;` (spec 37.4): the value is computed during compilation and
+            // embedded -- no code runs for it. This was parsed, recorded and then read by nobody, so
+            // `comptime int a = Main.fib(10)` emitted a real `call @Main.fib(i32 10)` and stored the
+            // result, which is the one thing the prefix promises will not happen. The analyzer has
+            // already refused any initializer that does not fold, so a miss here can only be a scalar
+            // shape this folder does not cover, and the ordinary path below is then right.
+            if (vd->isComptime && vd->init != nullptr && !vd->isVar) {
+                const std::string dt = typeRefName(vd->type);
+                llvm::Type* lty = llvmType(dt);
+                llvm::Constant* folded = nullptr;
+                if (isFloatType(dt)) {
+                    double d = 0;
+                    if (foldConstDouble(*vd->init, d)) folded = llvm::ConstantFP::get(lty, d);
+                } else {
+                    long long v = 0;
+                    if (foldConstInt(*vd->init, v))
+                        folded = llvm::ConstantInt::get(lty, static_cast<std::uint64_t>(v), true);
+                }
+                if (folded != nullptr) {
+                    llvm::Value* slot = createEntryAlloca(vd->name, lty);
+                    builder.CreateStore(folded, slot);
+                    locals[vd->name] = LocalSlot{slot, dt};
+                    return;
+                }
+            }
             if (vd->init == nullptr && !vd->isVar && typeRefName(vd->type) != "region") {
                 const std::string dt = typeRefName(vd->type);
                 llvm::Type* lty = llvmType(dt);
@@ -11971,6 +12076,36 @@ struct CodeGenerator::Impl {
                     builder.CreateCall(regionReleaseFn(), {block});
                 builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), rslot);
             }
+            return;
+        }
+        // `snapshot region W into k;` (spec 32.2): re-capture into k's existing block. The room comes
+        // from k's own slot header, so a region that grew since k was declared trips a named panic
+        // instead of writing past the end of the very block whose job is to be a faithful copy.
+        if (const auto* si = dynamic_cast<const ast::SnapshotIntoStmt*>(&stmt)) {
+            llvm::Value* slot = regionStorageSlot(si->region);
+            if (slot == nullptr) { error("unknown region '" + si->region + "'", si->loc); return; }
+            llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
+            llvm::Value* into = si->into ? emitExpr(*si->into) : nullptr;
+            if (into == nullptr) return;
+            // A snapshot handle is an `address`, i.e. an integer here.
+            if (into->getType()->isIntegerTy())
+                into = builder.CreateIntToPtr(into, builder.getPtrTy(), "snap.p");
+            llvm::Value* room = builder.CreateCall(regionSlotSizeFn(), {into}, "snap.room");
+            builder.CreateCall(regionSnapshotFn(), {block, into, room});
+            return;
+        }
+        // `restore k into W;` -- the runtime runs the destructors of everything allocated since the
+        // capture BEFORE it puts the bytes back. See runtime/ldp3_region_core.hpp for why that order
+        // is the whole feature and not a detail.
+        if (const auto* rs = dynamic_cast<const ast::RestoreStmt*>(&stmt)) {
+            llvm::Value* slot = regionStorageSlot(rs->region);
+            if (slot == nullptr) { error("unknown region '" + rs->region + "'", rs->loc); return; }
+            llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
+            llvm::Value* snap = rs->snapshot ? emitExpr(*rs->snapshot) : nullptr;
+            if (snap == nullptr) return;
+            if (snap->getType()->isIntegerTy())
+                snap = builder.CreateIntToPtr(snap, builder.getPtrTy(), "snap.p");
+            builder.CreateCall(regionRestoreFn(), {block, snap});
             return;
         }
         if (const auto* rb = dynamic_cast<const ast::RollbackStmt*>(&stmt)) {
@@ -13786,6 +13921,23 @@ struct CodeGenerator::Impl {
                         llvm::Type* lty = llvmType(ftype);
                         llvm::Constant* init =
                             f->init ? constFold(*f->init, ftype) : nullptr;
+                        // `comptime` (spec 37.4) promises the initializer is evaluated during
+                        // compilation -- but `constFold` does not know how to CALL a `comptime`
+                        // method, and foldConstInt/foldConstDouble do. Two folders answering the same
+                        // question differently is how `static mutable comptime int t = fib(10)` came
+                        // to be refused by LDP3-0608 as unevaluable, one pass after the analyzer had
+                        // evaluated it and got 55.
+                        if (init == nullptr && f->init != nullptr && f->isComptime) {
+                            if (isFloatType(ftype)) {
+                                double d = 0;
+                                if (foldConstDouble(*f->init, d)) init = llvm::ConstantFP::get(lty, d);
+                            } else {
+                                long long v = 0;
+                                if (foldConstInt(*f->init, v))
+                                    init = llvm::ConstantInt::get(lty, static_cast<std::uint64_t>(v),
+                                                                  /*isSigned=*/true);
+                            }
+                        }
                         if (f->init != nullptr && init == nullptr && isNumericStaticType(ftype)) {
                             // An initializer that was written and cannot be evaluated is the failure
                             // this whole pass exists to stop being silent. Zeroing it is never what
@@ -13992,6 +14144,112 @@ struct CodeGenerator::Impl {
               "' after `unknown` (expected pe/elf/macho, or raw win64/sysv/aapcs)", loc);
         return llvm::CallingConv::C;
     }
+    // `public interrupt(Trap t) returns void { }` needs TWO functions, and the split is the whole
+    // design. The body is emitted as an ordinary method -- a receiver, a parameter, a normal ABI --
+    // so everything inside it is plain LDP3. Beside it goes this entry point, carrying
+    // `x86_intrcc`, which is what the hardware actually jumps to: LLVM writes the save of every
+    // register the body clobbers, the `cld`, the pop of a pushed error code, and the `iretq`.
+    //
+    // The two are joined by one global holding the bound receiver. That global is the only reason
+    // the entry can be a plain symbol the IDT stores while the handler is still a method with an
+    // object -- an interrupt vector has room for an address and nothing else, so the receiver has
+    // to be waiting somewhere when the CPU arrives.
+    //
+    // ONE SLOT PER CLASS, so binding a second instance of the same class replaces the first. That
+    // is the `nameless` rule showing up in the machine code: one device, one handler.
+    void declareInterruptEntry(const std::string& className, const ast::MethodDecl& m,
+                               llvm::Function* impl) {
+        const std::string entry = className + "$interrupt";
+        // THE MEANING IS PORTABLE; ONLY THE LOWERING IS NOT -- the shape LDP3 already uses for
+        // `asm`, for regions over fixed memory, and for the bit-counted integer names.
+        //
+        //   freestanding -> `x86_intrcc`: LLVM writes the save of every register the body clobbers,
+        //                   the `cld`, the pop of a pushed error code, and the `iretq`.
+        //   hosted       -> `void(i32)` on the ordinary C ABI, which is exactly what `signal()`
+        //                   takes on POSIX *and* through the Windows CRT. One shape that installs
+        //                   on both, rather than an answer per operating system.
+        //
+        // The MODE decides this, not the target triple, and the difference is not pedantry: the
+        // triple answers an ABI question (is there an OS to promise a red zone), while
+        // `freestanding` answers a language one (is there a runtime at all). The analyzer knows
+        // only the mode, so keying codegen off the triple would let the two disagree -- a `Trap`
+        // accepted at the declaration and then never delivered, which is the exact silent gap this
+        // feature exists to close.
+        const bool bare = freestandingProgram();
+        auto* self = new llvm::GlobalVariable(
+            module, builder.getPtrTy(), /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
+            llvm::ConstantPointerNull::get(builder.getPtrTy()), entry + "$self");
+        llvm::Type* handedTy = bare ? static_cast<llvm::Type*>(builder.getPtrTy())
+                                    : static_cast<llvm::Type*>(builder.getInt32Ty());
+        llvm::FunctionType* ty =
+            llvm::FunctionType::get(builder.getVoidTy(), {handedTy}, false);
+        // External linkage on purpose: nothing in the program calls this, so internalization plus
+        // DCE would delete the one symbol the declaration exists to produce.
+        llvm::Function* fn =
+            llvm::Function::Create(ty, llvm::Function::ExternalLinkage, entry, module);
+        if (bare) {
+            fn->setCallingConv(llvm::CallingConv::X86_INTR);
+            // The frame the CPU pushed. `byval` is not decoration: it is how x86_intrcc is told how
+            // much stack the frame occupies, and LLVM rejects the convention without it.
+            llvm::Type* frameTy = nullptr;
+            if (!m.params.empty()) {
+                auto it = classes.find(baseType(typeRefName(m.params[0].type)));
+                if (it != classes.end() && it->second.type != nullptr) frameTy = it->second.type;
+            }
+            if (frameTy == nullptr) {
+                // No declared trap, or one whose type is not a class we laid out: model the frame
+                // the x86-64 hardware pushes -- rip, cs, rflags, rsp, ss -- so the size is right.
+                frameTy = llvm::StructType::get(context, {builder.getInt64Ty(), builder.getInt64Ty(),
+                                                          builder.getInt64Ty(), builder.getInt64Ty(),
+                                                          builder.getInt64Ty()});
+            }
+            fn->addParamAttr(0, llvm::Attribute::getWithByValType(context, frameTy));
+        }
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(context, "entry", fn);
+        llvm::IRBuilder<> b(bb);
+        llvm::Value* recv = b.CreateLoad(builder.getPtrTy(), self, "self");
+        std::vector<llvm::Value*> args{recv};
+        if (!m.params.empty()) {
+            llvm::Value* handed = fn->getArg(0);  // the frame bare metal, the code hosted
+            if (!bare) {
+                // Widen or narrow to whatever integer width the handler declared.
+                llvm::Type* want = impl->getFunctionType()->getParamType(1);
+                if (want->isIntegerTy() && want != handed->getType())
+                    handed = b.CreateIntCast(handed, want, /*isSigned=*/true, "code");
+            }
+            args.push_back(handed);
+        }
+        b.CreateCall(impl, args);
+        b.CreateRetVoid();
+        // The IDT stores this address; NOTHING in the program calls it. Without this line
+        // internalization plus DCE deletes the one symbol the whole declaration exists to produce,
+        // and the failure is silent -- a kernel that installs a vector pointing at nothing.
+        foreignEntryPoints_.insert(entry);
+        interruptEntries_[className] = {fn, self};
+    }
+    // spec 36: `freestanding` is declared on the program, on a bundle, or on both. Mirrors what the
+    // analyzer does, so the two passes cannot disagree about which world they are compiling for.
+    bool freestandingProgram() const {
+        if (program.isFreestanding) return true;
+        for (const ast::Bundle& b : program.bundles)
+            if (b.isFreestanding) return true;
+        return false;
+    }
+    // Asked from `typeName`, which runs before the entries exist, so it reads the LAYOUT rather than
+    // `interruptEntries_` -- the layout pass has already run by then and the answer is the same.
+    bool declaresInterrupt(const std::string& className) const {
+        auto c = classes.find(className);
+        if (c == classes.end()) return false;
+        auto m = c->second.ownMethods.find("interrupt");
+        return m != c->second.ownMethods.end() && m->second != nullptr && m->second->isInterrupt;
+    }
+    // Per class: the x86_intrcc entry point and the global holding the receiver bound to it.
+    struct InterruptEntry {
+        llvm::Function* entry = nullptr;
+        llvm::GlobalVariable* self = nullptr;
+    };
+    std::unordered_map<std::string, InterruptEntry> interruptEntries_;
+
     void declareFunctions() {
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
@@ -14113,6 +14371,7 @@ struct CodeGenerator::Impl {
                             }
                             functions[mangled] = fn;
                             paramTypeNames[fn] = pnames;
+                            if (m->isInterrupt) declareInterruptEntry(cls.name, *m, fn);
                         } else if (const auto* c =
                                        dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                             hasCtor = true;

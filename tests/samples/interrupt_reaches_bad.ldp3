@@ -1,0 +1,49 @@
+// The rules an interrupt must obey are about what its body REACHES, not about the body itself. This
+// handler looks innocent: it reads a port and calls one method. Two hops down, that method allocates
+// and touches a counter nobody said was shared -- and the code the handler interrupted may have been
+// standing inside the allocator at the time.
+program InterruptReachesBad freestanding;
+
+public bundle Kernel {
+    public namespace Arch {
+        public class Trap {
+            public mutable address rip;
+            public constructor Trap() { this.rip = 0; }
+        }
+
+        public class Entry {
+            public mutable int code;
+            public constructor Entry() { this.code = 0; }
+        }
+
+        public class Log {
+            // Neither `volatile` nor `atomic<T>`: nothing here says the main loop also touches it,
+            // and the main loop does -- `count()` is how it reads this.
+            private mutable int written;
+            public constructor Log() { this.written = 0; }
+            public method record(int code) returns void {
+                Entry e = new Entry() on heap;   // the allocator, from inside an interrupt
+                e.code = code;
+                this.written = this.written + 1;
+                delete e;
+            }
+            public method count() returns int { return this.written; }
+        }
+
+        public class Keyboard {
+            private Log sink;
+            public constructor Keyboard() { this.sink = new Log(); }
+            public method drain(int scancode) returns void { this.sink.record(scancode); }
+            public interrupt(Trap t) returns void {
+                this.drain(1);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Keyboard k = new Keyboard();
+                return 0;
+            }
+        }
+    }
+}

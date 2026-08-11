@@ -1,0 +1,15 @@
+// ...and the other direction: `procedure` claims a signature completed by a transformer, and this
+// type applies none. Without this half, `procedure` would decay into a synonym for `method`.
+program TransformerProcedureBad;
+
+public bundle Main {
+    public namespace App {
+        public class Dog {
+            public procedure label() returns String { return "dog"; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

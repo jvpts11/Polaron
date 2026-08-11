@@ -37,7 +37,22 @@ enum class TokenKind : std::uint8_t {
     KwProgram, KwBundle, KwNamespace,
     KwClass, KwInterface, KwStruct, KwRecord, KwUnion, KwEnum, KwCatalog, KwByCatalog,
     KwLayout,   // an interface for memory: how a value aggregate arranges itself
+    // `transformer` says what a type GAINS by applying it -- the one thing none of the other
+    // declarations say. A noun, never instantiated; `applies` is the clause that takes it, and
+    // `procedure` is the member kind whose signature is completed at the type that applies it.
+    KwTransformer, KwApplies, KwProcedure,
+    // `call T.p()` -- reach the TRANSFORMER's body rather than this type's override. It exists
+    // because there is no receiver to write to the left of the dot: a transformer is not a value.
+    //
+    // A HARD keyword, by the author's decision after being shown the cost: `decomp/src/lift.ldp3`
+    // declares `mutable String call` and uses it dozens of times, so that file needs a rename. The
+    // measurement is recorded rather than the breakage discovered.
+    KwCall,
     KwMethod, KwConstructor, KwDestructor, KwOperator,
+    // `public interrupt(Trap t) returns void { }` -- a method the program never calls, because
+    // something outside it ENTERS the method at a moment the program did not choose. Nameless, like
+    // the destructor, and for the same reason: one device, one handler.
+    KwInterrupt,
     KwReturns, KwReturn,
 
     // Keywords -- modifiers / visibility

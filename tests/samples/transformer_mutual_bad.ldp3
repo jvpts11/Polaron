@@ -1,0 +1,44 @@
+// `mutual` says the pair must be symmetric. Celsius knows the way to Fahrenheit; Fahrenheit does not
+// know the way back. The error lands on Celsius, naming the Fahrenheit that did not answer.
+//
+// Checkable only because the family is per-target: `into$Fahrenheit` is a MEMBER of Celsius, so it
+// can be read. With one generic body there would be nothing but call sites to look at.
+program TransformerMutualBad;
+
+public bundle Main {
+    public namespace App {
+        public mutual transformer TConverter {
+            public procedure into<each Other>() returns Other;
+        }
+
+        public class Celsius applies TConverter {
+            public mutable int degrees;
+            public constructor Celsius(int d) { this.degrees = d; }
+            public procedure into<Fahrenheit>() returns Fahrenheit {
+                return new Fahrenheit(itself.degrees * 9 / 5 + 32);
+            }
+        }
+
+        public class Fahrenheit applies TConverter {
+            public mutable int degrees;
+            public constructor Fahrenheit(int d) { this.degrees = d; }
+            public procedure into<Celsius>() returns Celsius {
+                return new Celsius((itself.degrees - 32) * 5 / 9);
+            }
+        }
+
+        // Applies the same mutual transformer and converts to Celsius -- but Celsius answers only
+        // Fahrenheit, so this half of the relation is missing.
+        public class Kelvin applies TConverter {
+            public mutable int degrees;
+            public constructor Kelvin(int d) { this.degrees = d; }
+            public procedure into<Celsius>() returns Celsius {
+                return new Celsius(itself.degrees - 273);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

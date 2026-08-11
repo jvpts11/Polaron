@@ -1,5 +1,8 @@
 #pragma once
 
+#include <map>
+#include <string>
+
 #include "parser/ast.h"
 
 namespace ldp3 {
@@ -36,5 +39,12 @@ bool expandDelegates(ast::Program& program);
 // passes (e.g. loop interchange) that need to duplicate sub-trees.
 ast::ExprPtr cloneExprDeep(const ast::Expr* e);
 ast::StmtPtr cloneStmtDeep(const ast::Stmt* s);
+
+// Deep-clone of a MEMBER with type-name substitution -- the same machinery that copies a generic
+// class per instantiation. `expandTransformers` uses it to copy a transformer's members into every
+// type that applies it, binding `itself` to that type's name. Two features, one copier: a
+// transformer costs nothing at run time for exactly the reason a generic does not.
+ast::MemberPtr cloneMemberSubst(const ast::MemberDecl* m,
+                                const std::map<std::string, std::string>& subst);
 
 }  // namespace ldp3

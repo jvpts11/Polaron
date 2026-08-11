@@ -1,0 +1,46 @@
+import System.IO.Console;
+program RegionSnapshot;
+
+// Region snapshots (spec 32.2): capture a region's state, keep working, put it back.
+//
+// A snapshot is a COPY, not a mark, so that it works with any region flavor -- and that is why it
+// needs somewhere to live (`in region backups`) and why releasing it is the programmer's job.
+//
+// The restore runs the destructors of everything allocated since the capture BEFORE it puts the bytes
+// back. Without that, a pointer to a newer object would end up aiming at an address holding old
+// content carrying a live stamp: not a dangling pointer but a live one to a different object, which
+// no guard would catch.
+//
+// Prints: before=2 after=1
+
+public bundle main {
+    public namespace app {
+        public class Cell {
+            public mutable int v;
+            public constructor Cell() { this.v = 0; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                stack region world = itself.allocate(cast<address>(4096));
+                pool region backups = itself.allocate(cast<address>(8192));
+
+                Cell* a = new Cell() in region world;
+                a.v = 1;
+
+                RegionSnapshot save = snapshot region world in region backups;
+
+                Cell* b = new Cell() in region world;   // allocated after the capture
+                b.v = 2;
+                System.IO.Console.printf("before=%d ", b.v);
+
+                restore save into region world;         // b is gone; a is back the way it was
+
+                Cell* c = new Cell() in region world;   // reuses the space b had
+                c.v = a.v;
+                System.IO.Console.printf("after=%d\n", c.v);
+                return;
+            }
+        }
+    }
+}

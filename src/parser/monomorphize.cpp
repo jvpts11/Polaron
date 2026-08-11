@@ -21,6 +21,17 @@ void monoError(const SourceLocation& loc, const std::string& message) {
                    .c_str(),
                stderr);
 }
+
+// The same, said as a warning. This pass had no way to say anything short of stopping the build, and
+// the one thing it most needed to say -- "the name you just declared is also the standard library's"
+// -- is not an error: your type wins, which is the intended rule. It is simply something you have to
+// know, because from that point an unqualified use of the name means yours everywhere in the bundle.
+void monoWarn(const SourceLocation& loc, const std::string& message) {
+    std::fputs(diag::render("warning", std::string(loc.file), loc.line, loc.col, message,
+                            diag::classify(message), "", diag::conciseMode())
+                   .c_str(),
+               stderr);
+}
 }  // namespace
 namespace {
 
@@ -693,6 +704,29 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         n->isExternal = x->isExternal;
         n->isMovable = x->isMovable;
         n->isUnique = x->isUnique;
+        // THE FIVE THAT WERE MISSING, and every one of them changes what the field MEANS.
+        //
+        // A clone is not made only for generics. `qualifyNamespaces` rewrites EVERY class in a
+        // namespace as soon as ONE name in it is ambiguous -- so declaring a class whose name the
+        // standard library also uses silently re-made every field in that namespace without these:
+        //
+        //   `weak T*`   became an OWNING pointer. The whole point of `weak` is that it does not keep
+        //               the pointee alive and is nulled when it dies; dropped, two objects own one
+        //               thing and the second release is a double free.
+        //   `delegate`  stopped forwarding, so a class that satisfied an interface BY delegation no
+        //               longer satisfied it -- reported as a missing method it never had.
+        //   region flavor / `growable`
+        //               turned every pool/stack region back into a plain bump region, and a growable
+        //               one into a fixed one that panics when it fills.
+        //   `affinity`  lost the field grouping: a layout promise silently withdrawn.
+        //
+        // None of them fails AT the clone. They fail later, somewhere else, as something else -- which
+        // is why a missing line here cost a whole session to find from the far end.
+        n->isWeak = x->isWeak;
+        n->isDelegate = x->isDelegate;
+        n->affinity = x->affinity;
+        n->regionFlavor = x->regionFlavor;
+        n->regionGrowable = x->regionGrowable;
         n->type = substType(x->type, s);
         n->name = x->name;
         n->bitWidth = x->bitWidth;
@@ -1182,6 +1216,18 @@ bool expandGenericMethods(ast::Program& program) {
                 for (auto& m : c.members)
                     if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
                         if (!meth->typeParams.empty()) genNames.insert(meth->name);
+    // A transformer's generic socket -- `procedure into<Other>() returns Other` -- names a FAMILY of
+    // procedures indexed by the target type, and the applying type supplies one member per target it
+    // can reach (`procedure into<Fahrenheit>`, parsed as `into$Fahrenheit`). The call site is an
+    // ordinary generic call, `c.into<Fahrenheit>()`, so it needs the family name registered here or
+    // the rewrite below leaves it as `into` and nothing resolves. Transformers are not in
+    // `ns.classes`, which is exactly why this second loop is needed and not a duplicate.
+    for (auto& b : program.bundles)
+        for (auto& ns : b.namespaces)
+            for (auto& t : ns.transformers)
+                for (auto& m : t.members)
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
+                        if (!meth->typeParams.empty()) genNames.insert(meth->name);
     g_genericMethodNames = &genNames;
     for (auto& b : program.bundles)
         for (auto& ns : b.namespaces)
@@ -1387,6 +1433,34 @@ void qualifyNamespaces(ast::Program& program) {
             for (auto& e : ns.enums) note(e.name);
             for (auto& cat : ns.catalogs) note(cat.name);
         }
+    // SAY SO WHEN YOU HAVE SHADOWED THE STANDARD LIBRARY.
+    //
+    // Not an error: your type wins, and that is the intended rule. But it is something you have to be
+    // told, because everything downstream changes -- the whole namespace is rewritten, and an
+    // unqualified use of that name now means yours rather than the library's, everywhere in the bundle.
+    //
+    // It was told to nobody. Declaring a class called `Utf8` in a kernel produced twenty-five errors in
+    // files that had not been touched (`b"K:"` has type `String`; `class 'Process' has no static field
+    // 'KernelStackPages'`) and not one of them named `Utf8`. The cascade had a second cause, since
+    // fixed, but even with that gone the shadowing itself deserves one line at the place it happened.
+    for (auto& b : program.bundles) {
+        if (b.isPrelude || b.isImported) continue;
+        for (auto& ns : b.namespaces) {
+            auto shadows = [&](const std::string& n, const SourceLocation& where) {
+                auto po = preludeOwner.find(n);
+                if (po == preludeOwner.end()) return;
+                monoWarn(where, "'" + n + "' is also declared by the standard library, in '" +
+                                    po->second + "'. Yours wins: from here an unqualified '" + n +
+                                    "' means this one throughout the bundle, and the standard "
+                                    "library's is reachable only by its full path. Rename yours if "
+                                    "that was not the intention");
+            };
+            for (auto& c : ns.classes) shadows(c.name, c.nameLoc);
+            for (auto& e : ns.enums) shadows(e.name, e.loc);
+            for (auto& cat : ns.catalogs) shadows(cat.name, cat.loc);
+        }
+    }
+
     std::set<std::string> ambiguous;
     for (auto& [name, nss] : declNs)
         if (nss.size() > 1) ambiguous.insert(name);
@@ -2080,6 +2154,13 @@ bool monomorphize(ast::Program& program) {
 // out per instantiation like everything else. The synthesized methods are ordinary AST from here on, so
 // type checking, `override`, codegen and reflection all see real methods -- an `implements` that is not
 // a lie.
+// The generic copier, published for `expandTransformers`. Nothing here is generic-specific: it is a
+// deep clone that renames types as it goes, and a transformer needs exactly that with one binding.
+ast::MemberPtr cloneMemberSubst(const ast::MemberDecl* m,
+                                const std::map<std::string, std::string>& subst) {
+    return cloneMember(m, subst);
+}
+
 static size_t delegateErrorCount = 0;
 static void delegateError(const SourceLocation& loc, const std::string& message) {
     ++delegateErrorCount;

@@ -7,7 +7,7 @@ program PersistDemo;
 public bundle main {
     public namespace app {
         public class Counter {
-            public eternal static persistent mutable int runs = 0;
+            public static eternal persistent mutable int runs = 0;
             public static method bump() returns void { Counter.runs = Counter.runs + 1; }
             public static method get() returns int { return Counter.runs; }
         }

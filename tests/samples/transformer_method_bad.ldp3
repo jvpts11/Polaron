@@ -1,0 +1,19 @@
+// Provenance is checked in BOTH directions, so it survives a terminal, a diff and a review. Here the
+// name came from a transformer and the type wrote `method` -- which reads as the type's own.
+program TransformerMethodBad;
+
+public bundle Main {
+    public namespace App {
+        public transformer TDescriber {
+            public procedure label() returns String;
+        }
+
+        public class Dog applies TDescriber {
+            public method label() returns String { return "dog"; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

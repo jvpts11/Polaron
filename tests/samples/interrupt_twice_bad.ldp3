@@ -1,0 +1,18 @@
+// One device, one handler. That is what `nameless` buys, and it is a rule worth having rather than a
+// limitation: two handlers means two objects, which is what the driver model already says.
+program InterruptTwiceBad freestanding;
+
+public bundle Kernel {
+    public namespace Arch {
+        public class Timer {
+            private volatile mutable int ticks;
+            public constructor Timer() { this.ticks = 0; }
+            public interrupt() returns void { this.ticks = this.ticks + 1; }
+            public interrupt() returns void { this.ticks = this.ticks + 2; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int { return 0; }
+        }
+    }
+}

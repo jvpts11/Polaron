@@ -1,0 +1,22 @@
+// A hosted world hands over a CODE, not a CPU frame. Accepting a `Trap` here would type-check and
+// then deliver a signal number reinterpreted as a pointer.
+program InterruptHostedFrameBad;
+
+public bundle App {
+    public namespace Sig {
+        public class Trap {
+            public mutable address rip;
+            public constructor Trap() { this.rip = 0; }
+        }
+
+        public class Interruptible {
+            private volatile mutable int caught;
+            public constructor Interruptible() { this.caught = 0; }
+            public interrupt(Trap t) returns void { this.caught = 1; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int { return 0; }
+        }
+    }
+}

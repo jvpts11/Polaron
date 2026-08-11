@@ -1,0 +1,16 @@
+// An interrupt returns void: it is entered, not called, so a returned value has nowhere to go.
+program InterruptReturnsBad freestanding;
+
+public bundle Kernel {
+    public namespace Arch {
+        public class Timer {
+            private mutable int ticks;
+            public constructor Timer() { this.ticks = 0; }
+            public interrupt() returns int { return this.ticks; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int { return 0; }
+        }
+    }
+}

@@ -1,0 +1,28 @@
+// Preemption is the one case `x86_intrcc` does not cover, and this sample is the proof rather than
+// the claim: the frame arrives as a `byval` parameter, which promises the callee a PRIVATE COPY. At
+// -O2 a plain store to it is deleted; a volatile one survives into a scratch buffer the epilogue
+// throws away (`subq $16,%rsp` ... `addq $16,%rsp`). Either way `iretq` returns exactly where it
+// came from, and a scheduler written this way runs forever without ever scheduling.
+program InterruptTrapWriteBad freestanding;
+
+public bundle Kernel {
+    public namespace Arch {
+        public class Trap {
+            public volatile mutable address rip;
+            public volatile mutable address rsp;
+            public constructor Trap() { this.rip = 0; this.rsp = 0; }
+        }
+
+        public class Scheduler {
+            private volatile mutable address nextRip;
+            public constructor Scheduler() { this.nextRip = 0; }
+            public interrupt(Trap t) returns void {
+                t.rip = this.nextRip;   // rejected: the trap is read-only
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int { return 0; }
+        }
+    }
+}

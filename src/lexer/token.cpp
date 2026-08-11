@@ -30,6 +30,11 @@ std::string_view tokenKindName(TokenKind kind) {
         case TokenKind::KwMethod:      return "KwMethod";
         case TokenKind::KwConstructor: return "KwConstructor";
         case TokenKind::KwDestructor:  return "KwDestructor";
+        case TokenKind::KwInterrupt:   return "KwInterrupt";
+        case TokenKind::KwTransformer: return "KwTransformer";
+        case TokenKind::KwApplies:     return "KwApplies";
+        case TokenKind::KwProcedure:   return "KwProcedure";
+        case TokenKind::KwCall:        return "KwCall";
         case TokenKind::KwOperator:    return "KwOperator";
         case TokenKind::KwReturns:     return "KwReturns";
         case TokenKind::KwReturn:      return "KwReturn";

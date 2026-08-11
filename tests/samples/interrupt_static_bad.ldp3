@@ -1,0 +1,17 @@
+// `static` would take away the object the handler exists to reach, which is the whole reason
+// `interrupt` is a declaration form rather than a free function.
+program InterruptStaticBad freestanding;
+
+public bundle Kernel {
+    public namespace Arch {
+        public class Timer {
+            private static mutable int ticks;
+            public constructor Timer() { }
+            public static interrupt() returns void { Timer.ticks = Timer.ticks + 1; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int { return 0; }
+        }
+    }
+}
