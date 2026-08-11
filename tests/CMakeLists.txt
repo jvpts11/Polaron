@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.33")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.34")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.33")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.34")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3730,6 +3730,18 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/delete_from_region.ldp3"
             "-DEXPECTED=before ~Dog 1 mid ~Dog 2 after"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A name declared in two namespaces re-clones every class, and the cloner knew four of the
+        # six kinds of member: a `comptime literal` and a `fixed` came back null and were DROPPED.
+        # The visible failure was `import System.Memory.Units.kilobytes` reported as an unknown
+        # symbol -- an import of the standard library breaking because of a collision elsewhere.
+        add_test(NAME codegen_qualify_keeps_members_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/qualify_keeps_members.ldp3"
+            "-DEXPECTED=42 3"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
