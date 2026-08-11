@@ -3070,6 +3070,21 @@ struct CodeGenerator::Impl {
                 if (auto rit = literalReturnType.find(key); rit != literalReturnType.end())
                     return rit->second;
             }
+            // A CALL TO THE ENCLOSING TYPE'S OWN METHOD, with no receiver written. Every branch
+            // above needs a receiver to read the return type off, so `own()` reached the fallback
+            // and was typed `int` -- which nothing noticed while the answer was only being called,
+            // and surfaced the moment somebody read a member off it: `own().field` looked the field
+            // up on an `int` and reported "no such field", pointing at the field rather than at the
+            // call whose type was invented.
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
+                id != nullptr && !currentClass.empty()) {
+                if (const std::string owner = methodOwner(currentClass, id->name); !owner.empty()) {
+                    const std::string rt = classes[owner].methodReturnType[id->name];
+                    const ast::MethodDecl* md = findMethodDecl(owner, id->name);
+                    if (md != nullptr && md->isAsync) return ast::mangleGeneric("Task", {rt});
+                    if (!rt.empty()) return rt;
+                }
+            }
             return "int";
         }
         if (dynamic_cast<const ast::RegionInitExpr*>(&expr) != nullptr) return "region";
