@@ -1,0 +1,35 @@
+import System.IO.Console;
+program StaticAllocInit;
+
+// The other half of `static_alloc_init_bad`: the way that WORKS, kept beside the way that is
+// refused so the error's advice is checked and not merely written.
+//
+// `onClassLoad` runs when the class comes up, which is after the program has started and therefore
+// after allocation is possible. Both an array and a String are filled there.
+public bundle Probe {
+    public namespace App {
+
+        public class Table {
+            public static mutable long[] rows;
+            public static mutable String tag;
+            // A scalar still takes an initializer at the declaration: it IS a constant, so there is
+            // something to write into the binary. This is the line the guard was already covering.
+            public static mutable int count = 7;
+
+            onClassLoad {
+                Table.rows = new long[9]();
+                Table.rows[8] = 42;
+                Table.tag = "hello";
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("%d %d %d\n", Table.rows.length(),
+                                         cast<int>(Table.rows[8]), Table.count);
+                System.IO.Console.println(Table.tag);
+                return;
+            }
+        }
+    }
+}

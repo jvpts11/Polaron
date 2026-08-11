@@ -13953,15 +13953,29 @@ struct CodeGenerator::Impl {
                                                                   /*isSigned=*/true);
                             }
                         }
-                        if (f->init != nullptr && init == nullptr && isNumericStaticType(ftype)) {
+                        if (f->init != nullptr && init == nullptr) {
                             // An initializer that was written and cannot be evaluated is the failure
                             // this whole pass exists to stop being silent. Zeroing it is never what
                             // was meant, and the resulting program is wrong in a way no test of the
                             // program's OUTPUT can localise back to this line.
+                            //
+                            // THIS USED TO ASK `isNumericStaticType` FIRST, and so it covered half
+                            // the types. The other half is the half that ALLOCATES: a `String` or a
+                            // `new T[n]()` cannot be folded into a global, no error was raised, and
+                            // the field was quietly zeroed -- a null pointer that reads as an empty
+                            // array or crashes on first use, far from the line that caused it.
+                            // `public static mutable String tag = "hello";` compiled clean and took
+                            // the process down with an access violation.
+                            const bool allocates = !isNumericStaticType(ftype);
                             error("the initializer for static field '" + key +
                                       "' cannot be evaluated before the program starts: it is "
                                       "neither a constant nor built from other static fields "
-                                      "without a cycle",
+                                      "without a cycle" +
+                                      (allocates ? ". A value that must be ALLOCATED cannot exist "
+                                                   "before the program runs -- give it a value in "
+                                                   "`onClassLoad`, which is where the standard "
+                                                   "library builds its own tables"
+                                                 : ""),
                                   f->init->loc);
                         }
                         if (init == nullptr) init = llvm::Constant::getNullValue(lty);

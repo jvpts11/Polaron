@@ -1,0 +1,34 @@
+import System.IO.Console;
+program StaticAllocInitBad;
+
+// A STATIC FIELD WHOSE INITIALIZER MUST ALLOCATE CANNOT HAVE ONE, and saying so is the whole point.
+//
+// A global exists before the program starts, so its value has to be a constant the compiler can
+// write into the binary. A `String` and a `new T[n]()` are heap objects: there is nothing to write.
+// The guard that refuses an unevaluable initializer asked `isNumericStaticType` first, so it covered
+// the numeric half and let this half through -- no error, no warning, and the field quietly zeroed
+// to a null pointer.
+//
+// What that cost, twice, on the day it was found: `static mutable long[] stageMs = new long[9]()`
+// came out with length ZERO and failed later and elsewhere as a bounds panic inside an unrelated
+// method; `static mutable String tag = "hello"` compiled clean and took the process down with an
+// access violation on first read. Neither failure points anywhere near the line that caused it.
+//
+// The standard library's own `Test` class was written this way too and only survived because its
+// runner calls `reset()` before every test. It uses `onClassLoad` now, which is the answer this
+// error names.
+public bundle Probe {
+    public namespace App {
+
+        public class Table {
+            public static mutable String tag = "hello";
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println(Table.tag);
+                return;
+            }
+        }
+    }
+}

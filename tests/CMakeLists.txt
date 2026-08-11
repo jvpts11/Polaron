@@ -702,6 +702,26 @@ add_test(NAME sema_rejects_unimplemented_socket
 set_tests_properties(sema_rejects_unimplemented_socket PROPERTIES
     PASS_REGULAR_EXPRESSION "requires `procedure label`, and does not implement it")
 
+# A STATIC FIELD WHOSE INITIALIZER MUST ALLOCATE. A global's value is written into the binary
+# before the program starts, so a `String` or a `new T[n]()` has nothing to write. The guard that
+# refuses an unevaluable initializer asked `isNumericStaticType` first and so covered only the
+# numeric half: this half was silently zeroed to a null pointer, and failed later and elsewhere --
+# once as a bounds panic on an array whose length came out 0, once as an access violation on first
+# read of a String. The standard library's own `Test` class was written this way and survived only
+# because its runner calls `reset()` first; it uses `onClassLoad` now.
+#
+# A FULL COMPILE AND NOT `--check`, which is itself worth knowing: the guard lives in codegen, so
+# semantic analysis alone reports this file as OK. An editor or the LSP would show it clean and the
+# error would arrive at build time. Moving the check to the analyzer wants the folder that decides
+# "can this be evaluated", which is codegen's -- so it is stated here rather than half-moved.
+add_test(NAME codegen_rejects_allocating_static_initializer
+    COMMAND ldp3c "${CMAKE_CURRENT_SOURCE_DIR}/samples/static_alloc_init_bad.ldp3"
+                  -o "${CMAKE_CURRENT_BINARY_DIR}/static_alloc_init_bad.ll")
+set_tests_properties(codegen_rejects_allocating_static_initializer PROPERTIES
+    # Short on purpose: the diagnostic is wrapped for the terminal, so a regex spanning the wrap
+    # would match the message as a string and not as it is printed.
+    PASS_REGULAR_EXPRESSION "must be ALLOCATED")
+
 # Provenance is checked in BOTH directions, and both halves are needed. Without the first, a
 # transformer-brought member could be written `method` and read as the type's own; without the
 # second, `procedure` would quietly decay into a synonym for `method` on types that apply nothing.
@@ -6387,6 +6407,18 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/implicit_this_receiver.ldp3"
             "-DEXPECTED=4 8 4"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # And the way that WORKS, beside the way that is refused, so the error's advice is checked
+        # rather than merely written: `onClassLoad` runs after the program has started, which is
+        # when allocation becomes possible. A scalar keeps its declaration initializer, because a
+        # scalar IS a constant and there is something to write into the binary.
+        add_test(NAME codegen_static_alloc_init_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/static_alloc_init.ldp3"
+            "-DEXPECTED=9 42 7 hello"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
