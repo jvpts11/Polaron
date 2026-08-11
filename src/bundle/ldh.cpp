@@ -92,7 +92,12 @@ void emitMethod(Emitter& e, const MethodDecl& m) {
     // Interface methods have implicit (empty) visibility and are always public API; class members
     // with an explicit private/internal visibility are not exposed.
     if (!m.visibility.empty() && !exposed(m.visibility)) return;
+    // THE ORDER HERE IS THE ORDER THE PARSER DEMANDS (spec 37.9): visibility, foreignness, binding,
+    // then the rest. It is not cosmetic -- a header is re-parsed by this same compiler, so writing
+    // `static extern` produces a file that cannot be read back, and the failure surfaces far away
+    // as "failed to parse the header of bundle X" on a file nobody wrote by hand.
     std::string s = m.visibility.empty() ? "" : m.visibility + " ";
+    if (m.isExtern) s += "extern " + (m.externConvention.empty() ? "" : m.externConvention + " ");
     if (m.isStatic) s += "static ";
     if (m.isAbstract) s += "abstract ";
     if (m.isOverride) s += "override ";
@@ -100,7 +105,6 @@ void emitMethod(Emitter& e, const MethodDecl& m) {
     if (m.isAsync) s += "async ";
     if (m.isComptime) s += "comptime ";
     if (m.isVolatile) s += "volatile ";
-    if (m.isExtern) s += "extern " + (m.externConvention.empty() ? "" : m.externConvention + " ");
     // Operators are stored as methods named "operator<sym>" (spec 6.5) / "operator cast$T" (6.6). Spell
     // them back as operator syntax: a literal "method operator+" is not valid LDP3 and would not re-parse.
     if (m.name.rfind("operator", 0) == 0) {

@@ -1156,6 +1156,17 @@ if(LDP3_WITH_LLVM)
         "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_test.cmake")
 
+    # A GENERATED HEADER MUST PARSE WITH THE PARSER THAT GENERATED IT. The emitter wrote
+    # `static extern` where spec 37.9 demands `extern static`, so any bundle with an external static
+    # method produced a .ldh this compiler could not read back -- surfacing far from the cause, as
+    # "failed to parse the header of bundle X". The .ldh is checked for the canonical order.
+    add_test(NAME bundle_ldh_modifier_order COMMAND "${CMAKE_COMMAND}"
+        "-DLDP3C=$<TARGET_FILE:ldp3c>"
+        "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ldh_modifier_order.ldp3"
+        "-DCONTAINS=public extern cdecl static method time(long ptr) returns long"
+        "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ldb_test.cmake")
+
     # F9 phase 2: two bundles whose vtable layouts collide cannot be linked together; depending on
     # both is rejected rather than silently dispatching through the wrong slot. (No clang needed.)
     add_test(NAME bundle_vtable_conflict_rejected COMMAND "${CMAKE_COMMAND}"
@@ -6453,7 +6464,7 @@ endif()
 # concurrently with each other under `ctest -j`. A shared resource lock serializes them among themselves
 # while they still overlap the (parallel-safe) codegen tests. The `if(TEST ...)` guard keeps this valid
 # in configurations where a given bundle test was not defined.
-foreach(_bt bundle_lib_roundtrip bundle_vtable_conflict_rejected bundle_static_call_runs
+foreach(_bt bundle_lib_roundtrip bundle_ldh_modifier_order bundle_vtable_conflict_rejected bundle_static_call_runs
         bundle_instance_runs bundle_virtual_runs bundle_plugin_runs bundle_dynamic_runs
         bundle_dynamic_instance_runs bundle_dynamic_virtual_runs bundle_absent_caught
         bundle_abi_mismatch_caught)
