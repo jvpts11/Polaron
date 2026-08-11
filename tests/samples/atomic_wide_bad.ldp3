@@ -1,0 +1,25 @@
+import System.Concurrency.atomic;
+program AtomicWideBad freestanding;
+
+// `atomic<T>` is one `lock`-prefixed instruction when T fits in a machine word and a `__atomic_*`
+// library call when it does not. Freestanding has no library to link those against, so without this
+// check the kernel fails at LINK time naming a symbol nobody wrote.
+public bundle Kernel {
+    public namespace Arch {
+        public class Pair {
+            public mutable int a;
+            public mutable int b;
+            public mutable int c;
+            public constructor Pair() { this.a = 0; this.b = 0; this.c = 0; }
+        }
+
+        public class Shared {
+            private mutable atomic<Pair> both;
+            public constructor Shared() { this.both = new atomic<Pair>(new Pair()); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int { return 0; }
+        }
+    }
+}

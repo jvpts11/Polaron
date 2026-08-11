@@ -98,6 +98,20 @@ void RollbackStmt::dump(std::string& out, int indent) const {
     if (checkpoint) checkpoint->dump(out, indent + 1);
 }
 
+void SnapshotExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "Snapshot region " + region + " in region " + home);
+}
+
+void SnapshotIntoStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "SnapshotInto region " + region);
+    if (into) into->dump(out, indent + 1);
+}
+
+void RestoreStmt::dump(std::string& out, int indent) const {
+    line(out, indent, "Restore into region " + region);
+    if (snapshot) snapshot->dump(out, indent + 1);
+}
+
 void RegionInitExpr::dump(std::string& out, int indent) const {
     std::string head = "RegionInit";
     for (const auto& a : accepts) head += " accepts " + a;

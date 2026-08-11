@@ -111,25 +111,245 @@ path rather than the pattern.
 `Deadline` type is already the library answer to bounded waiting. Leave it out; a rule that cannot be
 enforced should not be pretended.
 
-## Open questions — these need the author
+## ANSWERED 2026-08-11 — three of the four are decided
 
-1. **Modifier or a distinct kind of method?** Leaning modifier, beside `naked`. But if `interrupt`
-   carries enough meaning to be its own declaration form, that is a call about the language's shape.
-2. **Binding to a vector: explicit registration or a declaration-site annotation?**
-   `Idt.install(32, Isr.onTimer)` has no magic and lets one handler serve several vectors; an annotation
-   puts the fact where the handler is. Leaning explicit.
-3. **Is rule 3 an error or a warning in v1?** An error is what the language promises. But it can make
-   existing code inexpressible before `atomic<T>` is known to work bare-metal — **and that has not been
-   verified**. Worth checking before deciding.
-4. **Hosted lowering: which one?** A POSIX signal handler and a Windows Ctrl-C handler are both honest
-   readings of "entered, not called". Picking one, both, or making it a world-level decision changes how
-   portable a handler's source is.
+**1. Modifier or its own declaration form? → ITS OWN FORM, and nameless:**
 
-## What exists today
+```ldp3
+public interrupt(Trap t) returns void { }
+```
 
-Nothing. No lexer token, no parser support, no AST node, no codegen. `interrupt` is not currently a
-reserved word, so adding it is a breaking change for any program using it as an identifier — worth a
-grep across his own LDP3 before committing to the spelling.
+João's call, and the argument that carries it is not the resemblance to a constructor: **it is the
+only form that gives the handler an OBJECT.** A free interrupt function has no state; an instance
+method reads `this.buffer` and `this.head`. The kernel is already built that way — sixteen
+`Peripheral` objects — and a handler that could not reach its device would drag the whole driver model
+back to statics with a C shape.
+
+Nameless means **one per class**, like the destructor, and that is a rule worth having rather than a
+limitation: **one device, one handler.** Two handlers means two objects. The keyboard has one IRQ, the
+timer has one, the NIC has one — the model already says so.
+
+**2. Binding to a vector? → EXPLICIT, AND IT TAKES THE OBJECT.** This falls out of answer 1 rather
+than being chosen separately. The CPU jumps to an address: no receiver, no argument, nothing but a
+vector and a frame. If the handler is an instance method, something has to bind it to an instance:
+
+```ldp3
+Idt.install(33, keyboard);   // the OBJECT, not the method
+```
+
+and the compiler emits the per-vector trampoline that saves what must be saved, loads `this`, and
+calls — precisely the code pico writes by hand and that **was wrong for two days**.
+
+**3. Error or warning in v1? → ERROR.** This was blocked on whether `atomic<T>` works bare metal, and
+it does — **verified 2026-08-11**: `atomic<int>` in a freestanding build emits `atomicrmw` and
+`load atomic` inline, and the link reports no `__atomic_*` undefined symbol. On x86-64 word-sized
+atomics are `lock`-prefixed instructions with no runtime behind them, so the alternative the rule
+offers exists on the target where the rule matters most, and costs one instruction.
+*(A caveat that deserves an error of its own: a `T` wider than the word makes LLVM emit `__atomic_*`
+libcalls, which a kernel cannot link. Today's uses are counters and flags, so it does not bite — but it
+should be refused rather than surface later as an unresolved symbol.)*
+
+**The parameter is NOT optional in general.** `public interrupt()` alone cannot express preemption: the
+timer ISR returns to a DIFFERENT context, so the handler must be able to modify the saved frame, which
+means the frame has to reach it. Both spellings should be legal — a keyboard handler does not want it —
+but if the parameterless form were the only one, pico's scheduler could not be written, and that is the
+reason this word exists at all.
+
+> *Superseded 2026-08-11 by measurement.* The frame reaches the handler, but writing it does nothing:
+> see "Preemption: SETTLED" below. The parameter is still worth having — a fault handler reads the
+> error code and the faulting RIP — but the argument above for why it must exist was wrong.
+
+## BUILT 2026-08-11 — what the compiler does today
+
+`interrupt` is a hard keyword. Grepped first across pico, psh and the samples: every occurrence was a
+comment or a string, so nothing broke by reserving it.
+
+**It is NOT a declaration node of its own.** It parses into a `MethodDecl` named `"interrupt"` with
+`isInterrupt`, the way `operator+` already does. A `DestructorDecl` touches twenty places —
+monomorphization, `loopopt`, implicit-`this`, three points in codegen — and an interrupt body is an
+ordinary method body that every one of those passes already knows how to walk. What makes an interrupt
+different lives at the two EDGES, not in the middle: nobody may call it, and codegen emits a second
+function beside it. Modelling it as a method is what made this a day's work instead of a week's.
+
+**Two functions come out.** The body is emitted as a normal method (`@Keyboard.interrupt(ptr this,
+ptr trap)`), and beside it goes the entry the hardware jumps to:
+
+```llvm
+@"Keyboard$interrupt$self" = internal global ptr null
+define x86_intrcc void @"Keyboard$interrupt"(ptr byval(%class.Trap) %0) {
+  %self = load ptr, ptr @"Keyboard$interrupt$self"
+  call void @Keyboard.interrupt(ptr %self, ptr %0)
+  ret void
+}
+```
+
+which at -O2 becomes the whole handler in five instructions:
+
+```asm
+pushq %rax
+movq  Keyboard$interrupt$self(%rip), %rax
+incl  (%rax)
+popq  %rax
+iretq
+```
+
+LLVM saved exactly the one register the body touched and wrote the `iretq`. Measured, both forms of the
+convention work: with an error code it emits `addq $8, %rsp` before the `iretq` — the same correction
+pico writes by hand.
+
+**`byval` is not decoration.** It is how `x86_intrcc` is told the size of what the CPU pushed, and LLVM
+rejects the convention without it. The declared `Trap` supplies it; the parameterless form gets a
+five-word struct modelling rip/cs/rflags/rsp/ss so the size is still right.
+
+**Binding: `keyboard.interrupt`**, a member access with no `()`. It stores the receiver into that
+global and yields the entry address, and it is ONE expression because it is one act — a vector holds
+an address and nothing else, so there is no way to obtain the address without saying whose handler it
+is. This also settles the "installable handle" question from the top of this note without inventing a
+type: what comes back is an `address`, not a callable, so the cannot-be-called rule does not leak back
+out through the reference that installs it — `keyboard.interrupt()` fails on its own.
+
+**One slot per class**, so binding a second instance of the same class replaces the first. That is the
+nameless rule showing up in the machine code, and every real case is one class per device anyway.
+
+**The entry is registered as a foreign entry point.** Without that, internalization plus DCE deletes
+the only symbol the declaration exists to produce — and the failure is silent: a kernel that installs a
+vector pointing at nothing. The first probe of this feature emitted the handler and then dropped it
+exactly that way.
+
+Rejections implemented, each with a message that explains the rule rather than the parse: calling it
+(qualified or via implicit `this`), returning non-void, any modifier at all (`static` first among them
+— it would take away the object the handler exists to reach), and a second interrupt in one class,
+which reports *one device, one handler* instead of the generic no-overloading message.
+
+Thirteen tests, covering the declaration, both lowerings, and both reachability rules. Suite
+682/682, pico 132/132.
+
+## Hosted, and the shape of the answer
+
+`interrupt` works outside freestanding. **The meaning is what makes it portable** — a method entered
+by something outside the program, at a moment the program did not choose — and a POSIX signal is
+exactly that. Only the lowering differs:
+
+| | entry point | installed with |
+|---|---|---|
+| freestanding | `x86_intrcc`, `byval` frame | `Idt.install(vector, obj.interrupt)` |
+| hosted | `void(i32)`, ordinary C ABI | `signal(SIGINT, obj.interrupt)` |
+
+`void(int)` was chosen over a per-OS answer because it is what `signal()` takes on POSIX *and*
+through the Windows CRT, so one shape installs on both. `codegen_interrupt_hosted_runs` proves it by
+handing the entry to the C runtime's own `signal()` and raising the signal for real — nothing short
+of running it shows that an entry point is genuinely callable by something that never heard of LDP3.
+
+**The MODE decides the lowering, not the target triple.** The triple answers an ABI question (is
+there an OS to promise a red zone); `freestanding` answers a language one (is there a runtime at
+all). The analyzer knows only the mode, so keying codegen off the triple would let the two disagree —
+a `Trap` accepted at the declaration and then never delivered.
+
+**The trap parameter is world-shaped**, and both halves are errors. Bare metal hands over the frame
+the CPU pushed, so the parameter is a class; a hosted world hands over a *code* — a signal number, a
+console control type — so it is an integer, and no frame exists to point at. **The parameterless form
+is the intersection**: a handler that does not care where it came from compiles for both worlds
+unchanged.
+
+## Rules 2 and 3 — built, and how
+
+Both are about what the handler REACHES, not about its own body: the code it interrupted may be
+standing inside the allocator, or holding the very lock a method three calls down would take.
+
+**The call graph is recorded during the analyzer's ordinary walk, not by a second traversal.** That
+is not just economy. A hand-written visitor over seventy AST node types has one failure mode — a node
+nobody remembered — and it is silent: the analysis does not see that branch and reports nothing.
+Recording at the points where the analyzer has ALREADY resolved a call or a field means anything it
+can typecheck, this can follow.
+
+**Every diagnostic carries the path.** `Log.record allocates on the heap` is a fact about `Log`, and
+a fact about `Log` is not a bug. `an interrupt must not allocate on the heap (reached via drain,
+record)` is, and it is the sentence that says which of the two to change.
+
+**Rule 2** rejects, transitively: `new ... on heap`, `delete`, `synchronized`, and `await`.
+
+**Rule 3** requires every MUTABLE field an interrupt reaches to be `volatile` or `atomic<T>` — the
+rule invents no marker of its own, because "state something that can preempt me also touches" already
+has two names in LDP3, for two real cases. Immutable is the default, so a driver's ports, buffers and
+base addresses need no marking at all; what it catches is exactly the state a handler and a main loop
+both write.
+
+**The receiver decides whether state is shared, and the first version of this got it wrong.** It
+flagged `e.code` on an `Entry` the handler had created two lines above — private by construction,
+invisible to anything it preempted. A rule that fires on code that cannot be wrong teaches people to
+reach for the escape hatch, and then protects nothing. So it fires on `this.field` and
+`Class.staticField` only: both are shared by construction. *Stated limitation:* a shared object
+passed in as a parameter and written through that parameter is not caught. The call graph closes most
+of that gap on its own — a method called on the shared object checks its own `this` — but it is a
+hole, and better written down than discovered.
+
+**The escape hatch was verified, not assumed.** `atomic<int>` in a freestanding build emits
+`atomicrmw add ... seq_cst` and `load atomic` inline, with no `__atomic_*` symbol to link. A rule
+whose alternative did not exist on the target that needs it would only make correct programs
+inexpressible.
+
+Measured against the shape that matters: a handler reading a port and pushing into a ring the main
+loop drains — `volatile` head and tail, an immutable `Ring` field, an immutable capacity — compiles
+clean.
+
+## Preemption: SETTLED, and not the way the tension above guessed
+
+The section "The tension that decides the design" recommended (a) — cover handlers that do not switch
+context, leave the timer's stub hand-written — and kept (b) as designed-not-built. **(b) is not
+buildable on this calling convention, and that is now measured rather than suspected.**
+
+The obvious route to (b) is to rewrite the frame in place: `iretq` pops RIP/CS/RFLAGS/RSP/SS off the
+stack, so a handler that changes RIP and RSP resumes somewhere else. The handler HAS a pointer to
+that frame — the `byval` parameter. Three experiments, all at -O2:
+
+1. **Plain stores through the frame pointer are DELETED.** The whole function compiles to a single
+   `iretq`. `byval` promises the callee a private copy, so dead-store elimination is entitled to
+   remove writes nobody reads, and it does.
+2. **A `volatile` store survives** — and in a hand-written IR function with no prologue it landed at
+   `(%rsp)`, which looked like the real frame. That was a coincidence of that function having
+   nothing else on its stack.
+3. **The same thing written in LDP3, with `volatile` fields throughout, lands in SCRATCH.** The
+   emitted handler is `subq $16,%rsp` … two stores … `addq $16,%rsp` … `iretq`. LLVM materialised
+   the copy, wrote into it, and discarded it before returning.
+
+So a scheduler written this way compiles, runs, and never schedules — the exact failure class this
+keyword exists to make impossible, arrived at through the keyword itself.
+
+**The trap is therefore READ-ONLY**, enforced, with the measurement in the error message. Read the
+frame in the handler; switch on the way out, at a controlled point, which is what Linux's
+`need_resched` does and for the same reason. A handler that must switch context still writes its
+entry by hand — one stub, not the pattern, exactly as (a) said.
+
+## DEBT — agreed 2026-08-11, to be resolved
+
+**A `Signal` class in the standard library, so installing a hosted handler does not start with an
+`extern cdecl` in user code.** Today the test writes its own:
+
+```ldp3
+public extern cdecl static method signal(int sig, address handler) returns address;
+Posix.signal(2, box.interrupt);
+```
+
+That works and is not a gap in the keyword — `extern cdecl` is how LDP3 reaches a C symbol, by
+design, and `signal()` belongs to the C runtime rather than to us. **What the debt buys is moving the
+declaration once into the library** so the user writes an import instead:
+
+```ldp3
+import System.Os.Signal;
+Signal.on(Signal.Interrupt, box.interrupt);
+```
+
+The `extern cdecl` still exists — inside that class. It does not disappear from the program, only
+from everybody's program. Worth doing because the signal NUMBERS want naming too (`2` is not a
+readable SIGINT), and because Windows and POSIX disagree about which ones exist, which is exactly the
+kind of thing a library should absorb once.
+
+Note the asymmetry that makes this hosted-only: **freestanding needs no `extern` at all.** The IDT is
+the kernel's own table, so installing is a write to memory we own. The C boundary appears only
+because a hosted program has an operating system in the middle holding the pointer.
+
+**Full context switching from inside a handler**, per the section above. Not a gap to close later:
+the convention cannot express it, so the language says so instead of pretending.
 
 Related: [`persistent-keys.md`](persistent-keys.md) for the shape of a design note that settled an open
 question before implementation, and §11.1 of the specification for the bit-field packing decided the

@@ -1,0 +1,76 @@
+import System.IO.Console;
+program CloneKeepsFieldKind;
+
+// A NAME COLLISION MUST NOT CHANGE WHAT THE FIELDS AROUND IT MEAN.
+//
+// `qualifyNamespaces` rewrites every class in a namespace as soon as ONE name in it is ambiguous with
+// the standard library's -- and the rewrite went through `cloneMember`, which copied thirteen of a
+// field's eighteen properties. `weak`, `delegate`, the affinity and the region flavor were dropped.
+//
+// So declaring a class called `Utf8` (or `File`, or `Regex`, or `Buffer`) turned every `weak T*` in
+// that namespace into an owning pointer and un-delegated every delegating class -- silently, at a
+// distance, in code that had nothing to do with the name that collided.
+//
+// This program declares `Utf8`, which the prelude also declares, to force the rewrite. Then it checks
+// the two properties that survive only if the clone carries them:
+//
+//   * `weak` -- the pointee is deleted and the reference must go null BY ITSELF. An owning copy would
+//     leave it dangling, and the read below would be a use-after-free rather than a `null`.
+//   * `delegate` -- `Sink` satisfies `Drain` by forwarding to a field. Dropped, the class no longer
+//     implements the interface and this does not compile at all.
+//
+// Prints:
+//   weak=null delegated=7
+public bundle main {
+    public namespace app {
+
+        // The collision itself. Nothing uses it: its only job is to make the namespace ambiguous.
+        public class Utf8 {
+            public fixed int Marker = 1;
+        }
+
+        public interface Drain {
+            method take() returns int;
+        }
+        public class Pipe implements Drain {
+            public override method take() returns int { return 7; }
+        }
+        // Satisfies `Drain` BY FORWARDING. If `isDelegate` is lost in the clone, this class stops
+        // implementing the interface and the build fails.
+        public class Sink implements Drain {
+            private delegate Pipe out;
+            public constructor Sink(Pipe p) { this.out = p; }
+        }
+
+        public class Target {
+            public mutable int value;
+            public constructor Target() { this.value = 42; }
+        }
+        // A NON-OWNING reference. If `isWeak` is lost, this owns the target instead, and deleting the
+        // target below leaves this pointing at freed memory rather than at null.
+        public class Watcher {
+            private mutable weak Target* seen;
+            public constructor Watcher(Target* t) { this.seen = t; }
+            public method stillThere() returns boolean { return this.seen != null; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Target* t = new Target() on heap;
+                Watcher w = new Watcher(t) on stack;
+                delete t;
+                mutable int alive = 1;
+                if (!w.stillThere()) { alive = 0; }
+
+                Pipe* p = new Pipe() on heap;
+                Sink s = new Sink(p) on stack;
+                Drain d = &s;
+                // `weak=0` is the pass: the reference nulled itself when the target died. A `1` means
+                // the clone dropped `weak` and this object is holding freed memory.
+                System.IO.Console.printf("weak=%d delegated=%d\n", alive, d.take());
+                delete p;
+                return;
+            }
+        }
+    }
+}

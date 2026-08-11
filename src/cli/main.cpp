@@ -32,6 +32,7 @@
 #include <chrono>
 #include "parser/monomorphize.h"
 #include "parser/parser.h"
+#include "parser/transformers.h"
 #include "semantic/analyzer.h"
 #include "semantic/implicitthis.h"
 #include "semantic/layouts.h"
@@ -10329,6 +10330,11 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // drops. Left in place, two classes named Main would look like a name clash and both would be
     // renamed -- and this program would lose its entry point.
     if (!ldp3::synthesizeIpc(program)) return 1;  // spec 2.8: IPC proxies + this program's dispatcher
+    // BEFORE qualifyNamespaces, so a transformer is matched by the name the author wrote, and before
+    // everything that reads a class body -- from here on a procedure a transformer brought IS an
+    // ordinary member of the type, and no later pass has to know a transformer existed.
+    if (!ldp3::expandTransformers(program)) return 1;
+    phase("expandTransformers");
     ldp3::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
     phase("qualifyNamespaces");
     assignObjectRoot(program);                   // a class with no `extends` implicitly extends Object

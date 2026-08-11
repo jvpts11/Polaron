@@ -1,0 +1,34 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program PrimesTrialStd;
+
+// Same trial-division prime count, but written in idiomatic stdlib style:
+// build an ArrayList of the candidate range, then count with a functional predicate lambda.
+// Measures the cost of the stdlib collection + functional pipeline vs the raw-loop "brute" version.
+// Expected: 22044.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+
+            public static method isPrime(int n) returns boolean {
+                for (mutable int i = 2; i <= n / 2; i++) {
+                    if (n % i == 0) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> nums = new ArrayList<int>();
+                for (mutable int i = 2; i < 250001; i++) {
+                    nums.add(i);
+                }
+                int numPrimes = nums.count(lambda(int x) returns boolean { return Main.isPrime(x); });
+                System.IO.Console.printf("%d\n", numPrimes);
+                return;
+            }
+        }
+    }
+}

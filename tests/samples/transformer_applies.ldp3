@@ -1,0 +1,47 @@
+import System.IO.Console;
+program TransformerApplies;
+
+// `class` says what a thing IS. `interface` says what it MUST BE ABLE TO DO.
+// `transformer` says what a type GAINS by applying it -- the one thing none of the others said.
+//
+// The distinction that makes the second member word necessary: a METHOD's signature is fixed where
+// it is declared; a PROCEDURE's is completed at the type that applies it. Inside a transformer,
+// `itself` is the type that will apply this -- a type that does not exist yet.
+
+public bundle Main {
+    public namespace App {
+        public transformer TDescriber {
+            // A BODY: the applying type gets this for free and may replace it. It calls a socket,
+            // which is what makes a transformer more than a bag of defaults -- the transformer
+            // writes the algorithm and the type supplies the parts.
+            public procedure describe() returns String {
+                return "<" + itself.label() + ">";
+            }
+
+            // A SOCKET: no body, so the applying type must implement it or the error lands on its
+            // `applies` line naming what is missing.
+            public procedure label() returns String;
+        }
+
+        // The class line runs identity -> obligation -> equipment. `implements` is a promise made
+        // outward; `applies` is equipment, purely additive, and nobody outside needs to know.
+        public class Dog applies TDescriber {
+            public procedure label() returns String { return "dog"; }
+        }
+
+        public class Cat applies TDescriber {
+            public procedure label() returns String { return "cat"; }
+            // ...and a bodied procedure may be replaced outright.
+            public procedure describe() returns String { return "[cat]"; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog d = new Dog();
+                Cat c = new Cat();
+                System.IO.Console.printf("%s %s\n", d.describe(), c.describe());
+                return;
+            }
+        }
+    }
+}

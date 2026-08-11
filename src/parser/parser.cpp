@@ -435,6 +435,9 @@ ast::Bundle Parser::parseBundle() {
     b.loc = current().loc;
     b.visibility = parseVisibilityOpt();
     expect(TokenKind::KwBundle, "'bundle'");
+    // Taken BEFORE the token is consumed: a diagnostic about the NAME has to point at the name, and
+    // `b.loc` is the `public` that started the declaration.
+    b.nameLoc = current().loc;
     b.name = expect(TokenKind::Identifier, "the bundle name").lexeme;
     if (match(TokenKind::KwFreestanding)) {
         b.isFreestanding = true;  // spec 36.8
@@ -457,6 +460,7 @@ ast::Namespace Parser::parseNamespace() {
     ns.loc = current().loc;
     ns.visibility = parseVisibilityOpt();
     expect(TokenKind::KwNamespace, "'namespace'");
+    ns.nameLoc = current().loc;
     ns.name = parseDottedName();
     expect(TokenKind::LBrace, "'{'");
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
@@ -471,6 +475,22 @@ ast::Namespace Parser::parseNamespace() {
         if (kind == TokenKind::KwAnnotation) {
             ns.annotationDecls.push_back(parseAnnotationDecl(anns));
             continue;
+        }
+        // A transformer needs more than the one-token peek the others use: `mutual` and `explicit`
+        // are SOFT keywords, so they lex as identifiers and sit between the visibility and the word
+        // that decides the declaration. Scan past them rather than reserving two more words.
+        {
+            int i = (current().kind == TokenKind::KwPublic || current().kind == TokenKind::KwPrivate ||
+                     current().kind == TokenKind::KwProtected || current().kind == TokenKind::KwInternal)
+                        ? 1
+                        : 0;
+            while (peek(i).kind == TokenKind::Identifier &&
+                   (peek(i).lexeme == "mutual" || peek(i).lexeme == "explicit"))
+                ++i;
+            if (peek(i).kind == TokenKind::KwTransformer) {
+                ns.transformers.push_back(parseTransformer());
+                continue;
+            }
         }
         if (kind == TokenKind::KwEnum) {
             ast::EnumDecl en = parseEnum();
@@ -852,6 +872,72 @@ ast::CatalogDecl Parser::parseCatalog() {
 
 ast::ClassDecl Parser::parseClassForSynthesis() { return parseClassOrInterface(); }
 
+// `applies A, B` on a declaration line. Shared by class/interface and record, because a record can
+// gain things too -- the design says so, and a record is exactly where a derived `clone` belongs.
+void Parser::parseAppliesOpt(ast::ClassDecl& c) {
+    if (!match(TokenKind::KwApplies)) return;
+    do {
+        c.appliesLocs.push_back(current().loc);
+        c.applies.push_back(expect(TokenKind::Identifier, "a transformer name").lexeme);
+    } while (match(TokenKind::Comma));
+}
+
+// `public [mutual] [explicit] transformer Name { ... }`
+//
+// Parsed into a ClassDecl, the way `operator+` is parsed into a MethodDecl: its members are
+// ordinary members and every pass that walks a class body already knows how to walk them. What is
+// different about a transformer is not its inside -- it is that it is never instantiated and never a
+// type, and that is expressed by keeping it out of `Namespace::classes` entirely.
+ast::ClassDecl Parser::parseTransformer() {
+    ast::ClassDecl c;
+    c.loc = current().loc;
+    c.visibility = parseVisibilityOpt();
+    // `mutual` and `explicit` are SOFT keywords: both are ordinary words a program may already use
+    // as a name, and neither needs to be reserved to be recognised here -- nothing else can appear
+    // between the visibility and `transformer`.
+    for (;;) {
+        if (check(TokenKind::Identifier) && current().lexeme == "mutual") {
+            advance();
+            c.isMutualTransformer = true;
+            continue;
+        }
+        if (check(TokenKind::Identifier) && current().lexeme == "explicit") {
+            advance();
+            c.isExplicitTransformer = true;
+            continue;
+        }
+        break;
+    }
+    expect(TokenKind::KwTransformer, "'transformer'");
+    c.isTransformer = true;
+    c.nameLoc = current().loc;
+    c.name = expect(TokenKind::Identifier, "the transformer name").lexeme;
+    parseAppliesOpt(c);  // `transformer A applies B` -- whoever applies A also applies B
+    expect(TokenKind::LBrace, "'{'");
+    inTransformer_ = true;
+    pendingProcCalls_.clear();
+    while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+        // `error Failed;` -- the transformer's own failure type. A soft keyword: it is recognised
+        // only here, followed by a name and a semicolon, and stays usable as an identifier
+        // everywhere else in the language.
+        if (check(TokenKind::Identifier) && current().lexeme == "error" &&
+            peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::Semicolon) {
+            advance();  // error
+            const SourceLocation nameLoc = current().loc;
+            c.errorTypes.emplace_back(expect(TokenKind::Identifier, "the error type name").lexeme,
+                                      nameLoc);
+            expect(TokenKind::Semicolon, "';'");
+            continue;
+        }
+        c.members.push_back(parseMember(/*inInterface=*/false));
+    }
+    inTransformer_ = false;
+    c.procCalls = std::move(pendingProcCalls_);
+    pendingProcCalls_.clear();
+    expect(TokenKind::RBrace, "'}'");
+    return c;
+}
+
 ast::ClassDecl Parser::parseClassOrInterface() {
     ast::ClassDecl c;
     c.loc = current().loc;
@@ -903,6 +989,7 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     } else {
         expect(TokenKind::KwClass, "'class', 'struct', 'union', 'interface' or 'layout'");
     }
+    c.nameLoc = current().loc;   // before consuming it: a diagnostic about the NAME points at the name
     c.name = expect(TokenKind::Identifier, "the type name").lexeme;
     // Generic parameters: class Box<T>, class Pair<K, V>.
     if (match(TokenKind::Lt)) {
@@ -961,6 +1048,10 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             c.interfaceTypeArgs.push_back(std::move(args));
         } while (match(TokenKind::Comma));
     }
+    // `applies A, B` -- LAST on the class line, and the order is the argument: identity, then
+    // obligation, then equipment. `extends` is one and is-a; `implements` is many and is a promise
+    // made outward; `applies` is many, purely additive, and nobody outside needs to know about it.
+    parseAppliesOpt(c);
     // `sealed ... permits A, B, C`: only the listed types may extend it (spec 12/16).
     if (match(TokenKind::KwPermits)) {
         do {
@@ -1021,6 +1112,8 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         extraMembers_.clear();
     }
     expect(TokenKind::RBrace, "'}'");
+    c.procCalls = std::move(pendingProcCalls_);  // every `call T.p()` written in this body
+    pendingProcCalls_.clear();
     // Union fields are written/read freely (manual memory); make them mutable.
     if (c.isUnion) {
         for (const ast::MemberPtr& member : c.members) {
@@ -1060,6 +1153,7 @@ ast::ClassDecl Parser::parseRecord() {
             c.interfaceTypeArgs.push_back(std::move(args));
         } while (match(TokenKind::Comma));
     }
+    parseAppliesOpt(c);  // a record gains things too -- it is where a derived `clone` belongs
 
     // A field per parameter (immutable).
     for (const ast::Param& f : fields) {
@@ -1178,9 +1272,205 @@ void Parser::parseAffinityBlock(ast::ClassDecl& c) {
     expect(TokenKind::RBrace, "'}'");
 }
 
+// SPEC 37: WHERE EACH MODIFIER MAY APPEAR, AND IN WHAT ORDER.
+//
+// parseMember collects every modifier in ONE shared loop and then hands a SUBSET of them to whichever
+// declaration follows: parseMethod takes ten of them, parseField takes fifteen, and parseConstructor,
+// parseDestructor and parseOperator take NONE. Everything not handed over was silently discarded --
+// `public eternal method f()` parsed, compiled and did nothing, with no diagnostic, because MethodDecl
+// has nowhere to put it. Six modifiers behaved that way on a method alone, and `comptime` did on a
+// field, which spec 37.4 shows as valid.
+//
+// That is the worst shape a gap can take: the programmer believes they declared something. So the span
+// of tokens the loop consumed is checked against the declaration that followed it, and a modifier that
+// cannot be carried is an error naming where it does belong. A prefix the spec calls universal has to
+// either work or say why not; silence is the one answer it must never give.
+namespace {
+
+enum ModShape : unsigned {
+    kOnMethod = 1u << 0, kOnField = 1u << 1, kOnCtor = 1u << 2, kOnDtor = 1u << 3,
+    kOnOperator = 1u << 4, kOnLiteral = 1u << 5, kOnFixed = 1u << 6, kOnLocal = 1u << 7,
+};
+
+struct ModifierRule {
+    TokenKind kind;
+    const char* name;
+    unsigned carriedBy;   // the declarations that can actually carry it
+    int rank;             // canonical order (spec 37.9); 0 = the spec does not rank it
+    const char* belongs;  // where it DOES apply -- the half of the message that helps
+};
+
+// THE CANONICAL ORDER (spec 37.9), AND WHY IT IS NOT THE ONE THE SPEC USED TO PRINT.
+//
+// The old order -- `eternal lazy final comptime volatile cascade static mutable persistent transient`
+// -- was not organized by anything: the three LIFETIME words were split apart with `static` and
+// `mutable` between them. That is why nothing followed it. Turning it on rejected 17 tests in this
+// repository's own suite, and reading them said the paragraph was wrong rather than the code.
+//
+// A declaration now reads left to right as one question per group:
+//
+//   visibility   who may touch this?        public private protected internal
+//   deprecation  should anyone still?       deprecated
+//   foreignness  is it even an LDP3 method? extern <conv>  unknown <world>  naked
+//   binding      one per class or object?   static abstract override final
+//   lifetime     how long does it exist?    eternal lazy persistent transient
+//   access       how must it be touched?    volatile
+//   mutability   may the program change it? mutable
+//   compilation  when is it computed?       comptime
+//   ownership    who owns it?               weak unique movable delegate external
+//   concurrency  how does it run?           async
+//   placement    where does it live?        in region X
+//
+// Binding before lifetime is deliberate: `static` decides WHERE THE STORAGE IS -- on the class or on
+// the object -- and a lifetime modifies that storage, so the storage is named first. It also keeps
+// `static` next to the visibility, which is how a declaration is read everywhere else.
+//
+// Foreignness comes before ALL of it, and that is measured, not chosen: the samples write
+// `extern cdecl static method` 13 times and pico writes `unknown sysv naked static method` 15 times,
+// with no counter-example. It reads correctly too -- these say the declaration is not an ordinary
+// LDP3 method at all, which is the outermost fact about it. `async` does NOT belong with them: it
+// describes how OUR method runs, not how it is called from outside, and the corpus agrees --
+// `static async method` appears 14 times and `async static` never.
+//
+// THE ORDER IS BETWEEN QUESTIONS, NOT BETWEEN ANSWERS TO ONE. Members of a group share a rank, so
+// `static override` and `override static` are both fine. The language has an opinion about which
+// question comes first; it has none about which of two binding words comes first, and the compiler
+// must not invent one.
+//
+// Measured against the whole corpus (samples + pico + psh) this order costs exactly TWO declarations:
+// `persist_demo.ldp3` and `cascade_graph.ldp3`. Everything else already satisfies it, including
+// `mutable weak` (18 uses), `static async` (14), `static comptime` (15) and `persistent mutable` (5).
+constexpr bool kEnforceCanonicalOrder = true;
+
+constexpr ModifierRule kModifierRules[] = {
+    {TokenKind::KwDeprecated, "deprecated", kOnMethod, 10, "a method (spec 14.2)"},
+
+    {TokenKind::KwExtern,     "extern",     kOnMethod, 15, "a method (spec 26)"},
+    {TokenKind::KwUnknown,    "unknown",    kOnMethod, 15,
+     "a method (spec 26: the calling convention of a foreign binary's world)"},
+    {TokenKind::KwNaked,      "naked",      kOnMethod, 15, "a method (spec 36)"},
+
+    // `fixed` members are static by nature; spelling it out is redundant but legal, and used.
+    {TokenKind::KwStatic,     "static",     kOnMethod | kOnField | kOnFixed, 20, "a method or a field"},
+    {TokenKind::KwAbstract,   "abstract",   kOnMethod | kOnField, 20, "a method or a field"},
+    // NOT on a destructor. `cascade_inherited` wrote it and I let it through on that evidence; then I
+    // compiled the sample with and without and the IR was byte-identical. A destructor does not
+    // override anything -- the chain runs derived-then-base by itself -- so the word said nothing, and
+    // saying nothing quietly is the shape this check exists to stop.
+    {TokenKind::KwOverride,   "override",   kOnMethod | kOnField, 20, "a method or a field"},
+    {TokenKind::KwFinal,      "final",      kOnMethod | kOnField | kOnLocal, 20,
+     "a class, a method, a field, a local or an import (spec 37.6)"},
+
+    {TokenKind::KwEternal,    "eternal",    kOnField | kOnLocal, 30, "a field or a local (spec 37.2)"},
+    {TokenKind::KwLazy,       "lazy",       kOnField | kOnLocal, 30,
+     "a field, a local or an import (spec 37.3)"},
+    {TokenKind::KwPersistent, "persistent", kOnField | kOnLocal, 30, "a field or a local (spec 18)"},
+    {TokenKind::KwTransient,  "transient",  kOnField, 30, "a field"},
+
+    // Access before mutability, and the language had already voted: the LOCAL declaration parser only
+    // accepts `volatile` BEFORE `mutable` -- written the other way round it is consumed and dropped,
+    // and `volatile mutable int sum` stops emitting a volatile store with nothing said. `volatile` is
+    // a fact about the storage itself (how it must be touched, because hardware is on the other end);
+    // `mutable` is the program's permission to write it. The storage comes first.
+    {TokenKind::KwVolatile,   "volatile",   kOnMethod | kOnField | kOnLocal, 40,
+     "a method, a field, a local or a region (spec 37.5)"},
+
+    {TokenKind::KwMutable,    "mutable",    kOnField | kOnLocal, 50, "a field or a local"},
+
+    {TokenKind::KwComptime,   "comptime",   kOnMethod | kOnField | kOnLiteral, 60,
+     "a method, a field, a local or a literal suffix (spec 37.4)"},
+
+    {TokenKind::KwWeak,       "weak",       kOnField, 70, "a field"},
+    {TokenKind::KwUnique,     "unique",     kOnField, 70, "a field (spec 19.9)"},
+    {TokenKind::KwMovable,    "movable",    kOnField, 70, "a field (spec 19.9)"},
+    {TokenKind::KwDelegate,   "delegate",   kOnField, 70,
+     "a field -- delegation names the target that receives the calls, and the target is the field"},
+    {TokenKind::KwExternal,   "external",   kOnField, 70,
+     "a field (spec 37.1: an association, which cascade does not follow)"},
+
+    {TokenKind::KwAsync,      "async",      kOnMethod, 80, "a method"},
+};
+
+// The group each rank names, for the error message -- a reordering is easier to act on when the
+// message says WHY one comes first rather than just listing the order.
+const char* groupOfRank(int rank) {
+    switch (rank) {
+        case 10: return "deprecation";
+        case 15: return "foreignness";
+        case 20: return "binding";
+        case 30: return "lifetime";
+        case 40: return "access";
+        case 50: return "mutability";
+        case 60: return "compilation";
+        case 70: return "ownership";
+        case 80: return "concurrency";
+        default: return "";
+    }
+}
+
+}  // namespace
+
+void Parser::checkMemberModifiers(std::size_t from, std::size_t to, MemberShape shape) {
+    unsigned bit = 0;
+    const char* what = "";
+    switch (shape) {
+        case MemberShape::Method:      bit = kOnMethod;   what = "a method";           break;
+        case MemberShape::Field:       bit = kOnField;    what = "a field";            break;
+        case MemberShape::Constructor: bit = kOnCtor;     what = "a constructor";      break;
+        case MemberShape::Destructor:  bit = kOnDtor;     what = "a destructor";       break;
+        case MemberShape::Operator:    bit = kOnOperator; what = "an operator";        break;
+        case MemberShape::Literal:     bit = kOnLiteral;  what = "a literal suffix";   break;
+        case MemberShape::Fixed:       bit = kOnFixed;    what = "a `fixed` constant"; break;
+        case MemberShape::Local:       bit = kOnLocal;    what = "a local";            break;
+        // No rule carries this bit, so an interrupt accepts visibility and nothing else -- and that
+        // is the point rather than an omission. `static` would take away the object the handler
+        // exists to reach; `abstract`/`override` describe dispatch through a table nobody calls
+        // through; `async` describes a method that suspends and resumes, which is the one thing an
+        // interrupt may never do.
+        case MemberShape::Interrupt:   bit = 0;           what = "an interrupt";       break;
+    }
+    int lastRank = 0;
+    const char* lastRanked = nullptr;
+    bool sawFinal = false;
+    bool sawMutable = false;
+    for (std::size_t i = from; i < to && i < tokens_.size(); ++i) {
+        const ModifierRule* rule = nullptr;
+        for (const ModifierRule& r : kModifierRules)
+            if (r.kind == tokens_[i].kind) { rule = &r; break; }
+        // Not a modifier: the region name after `in region`, the convention after `extern`, and so on.
+        if (rule == nullptr) continue;
+        if ((rule->carriedBy & bit) == 0)
+            fail(std::string("'") + rule->name + "' cannot be applied to " + what + ". It applies to " +
+                     rule->belongs + ".",
+                 tokens_[i].loc);
+        // spec 37.8: the one contradiction the grammar cannot express, because both words are legal
+        // in the same place. It used to be caught by accident -- the local parser stopped after
+        // `final`, so `final mutable int x` failed with "expected a type but found 'mutable'", which
+        // explains the parse and not the mistake.
+        if (rule->kind == TokenKind::KwFinal) sawFinal = true;
+        if (rule->kind == TokenKind::KwMutable) sawMutable = true;
+        if (sawFinal && sawMutable)
+            fail("'final' and 'mutable' are contradictory (spec 37.8): 'final' means the value cannot "
+                 "be modified after initialization, 'mutable' allows reassignment. Use one.",
+                 tokens_[i].loc);
+        if (!kEnforceCanonicalOrder || rule->rank == 0) continue;
+        if (rule->rank < lastRank)
+            fail(std::string("modifier order: '") + rule->name + "' must come before '" + lastRanked +
+                     "'. A declaration answers one question per group, in this order (spec 37.9): "
+                     "visibility, deprecation, foreignness, binding, lifetime, access, mutability, "
+                     "compilation, ownership, concurrency, placement -- and '" + rule->name + "' is " +
+                     groupOfRank(rule->rank) + " while '" + lastRanked + "' is " +
+                     groupOfRank(lastRank) + ".",
+                 tokens_[i].loc);
+        lastRank = rule->rank;
+        lastRanked = rule->name;
+    }
+}
+
 ast::MemberPtr Parser::parseMember(bool inInterface) {
     std::vector<ast::AnnotationUse> anns = parseAnnotationUsesOpt();  // leading `[Name(...)]` (spec 14.3)
     std::string visibility = parseVisibilityOpt();
+    const std::size_t modFrom = pos_;   // the modifier span, checked once the declaration is known
     bool isStatic = false;
     bool isMutable = false;
     bool isAbstract = false;
@@ -1202,6 +1492,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isWeakField = false;
     bool isExtern = false;          // spec 26: extern C method member
     std::string externConvention;
+    std::string fieldInRegion;      // spec 18.7: `in region X` placement, as written
     for (;;) {
         if (!isStatic && check(TokenKind::KwStatic)) {
             advance();
@@ -1254,7 +1545,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         if (check(TokenKind::KwIn) && peek(1).kind == TokenKind::KwRegion) {
             advance();  // 'in'
             advance();  // 'region'
-            expect(TokenKind::Identifier, "the region name after 'in region'");
+            fieldInRegion = expect(TokenKind::Identifier, "the region name after 'in region'").lexeme;
             continue;
         }
         if (!isVolatile && check(TokenKind::KwVolatile)) {
@@ -1331,6 +1622,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         }
         break;
     }
+    const std::size_t modTo = pos_;
     ast::MemberPtr member;
     // spec 32.6: `bidirectional T name { src to name: expr; name to src: expr; }` -- a property that
     // converts both ways over a backing field. `bidirectional` is a soft keyword (still usable as a name).
@@ -1338,24 +1630,35 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         advance();
         return parseBidirectional(std::move(visibility), isStatic);
     }
-    if (check(TokenKind::KwMethod)) {
+    if (check(TokenKind::KwMethod) || check(TokenKind::KwProcedure)) {
+        checkMemberModifiers(modFrom, modTo, MemberShape::Method);
         member = parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
                              inInterface, isComptime, isAsync, isVolatile, isExtern,
                              std::move(externConvention), isDeprecated, isNaked);
     } else if (check(TokenKind::KwConstructor)) {
+        checkMemberModifiers(modFrom, modTo, MemberShape::Constructor);
         member = parseConstructor(std::move(visibility));
     } else if (check(TokenKind::KwDestructor)) {
+        checkMemberModifiers(modFrom, modTo, MemberShape::Destructor);
         member = parseDestructor(std::move(visibility));
+    } else if (check(TokenKind::KwInterrupt)) {
+        checkMemberModifiers(modFrom, modTo, MemberShape::Interrupt);
+        member = parseInterrupt(std::move(visibility));
     } else if (check(TokenKind::KwOperator)) {
+        checkMemberModifiers(modFrom, modTo, MemberShape::Operator);
         member = parseOperator(std::move(visibility));
     } else if (check(TokenKind::KwLiteral)) {  // a literal suffix is a member of its result type's class
+        checkMemberModifiers(modFrom, modTo, MemberShape::Literal);
         member = parseLiteralMember(std::move(visibility), isComptime);
     } else if (check(TokenKind::KwFixed)) {  // a compile-time constant as a static class member
+        checkMemberModifiers(modFrom, modTo, MemberShape::Fixed);
         member = parseConstMember(std::move(visibility));
     } else {
+        checkMemberModifiers(modFrom, modTo, MemberShape::Field);
+        pendingFieldInRegion_ = fieldInRegion;
         // Otherwise it is a field:  <type> <name> ;
         member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
-                            isTransient, isVolatile, isLazy, isExternal, isDelegateField,
+                            isTransient, isVolatile, isLazy, isComptime, isExternal, isDelegateField,
                             isMovableField, isUniqueField, isWeakField, isAbstract, isOverride,
                             isFinal, inInterface);
     }
@@ -1431,12 +1734,28 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     m->isVolatile = isVolatile;  // spec 37.5: always executed; never inlined/elided
     m->isDeprecated = isDeprecated;  // spec 14.2: warn at every call site
     m->isNaked = isNaked;            // spec 36: no prologue/epilogue; the body is raw assembly
-    expect(TokenKind::KwMethod, "'method'");
-    m->name = expectMemberName("the method name");
+    // `procedure` takes the same path as `method` because the difference is not in the parse: a
+    // procedure has a name, parameters, a return type and (usually) a body, exactly like a method.
+    // What differs is WHERE its signature is completed -- at the type that applies it -- and that is
+    // a question for the expansion pass, not the grammar.
+    if (check(TokenKind::KwProcedure)) {
+        advance();
+        m->isProcedure = true;
+    } else {
+        expect(TokenKind::KwMethod, "'method'");
+    }
+    m->name = expectMemberName(m->isProcedure ? "the procedure name" : "the method name");
     // Generic method type parameters: method identity<T>(...) (spec 15). Each
     // (method-name, type-args) call is monomorphized into a concrete method.
     if (match(TokenKind::Lt)) {
         do {
+            // `<each Other>` on a procedure: the implementations bind this one per target rather
+            // than sharing a body. A soft keyword -- `each` stays usable as a name everywhere else.
+            if (m->isProcedure && check(TokenKind::Identifier) && current().lexeme == "each" &&
+                peek(1).kind == TokenKind::Identifier) {
+                advance();
+                m->isEachFamily = true;
+            }
             const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
             m->typeParams.push_back(tp);
             // Constraint (spec 15.2): `<T extends Numeric>` / `<T implements Comparable<T>>`, exactly like
@@ -1499,6 +1818,16 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
         } else {
             m->body = parseBlock();
         }
+    } else if (m->isProcedure && !check(TokenKind::Semicolon) && !headerMode_) {
+        inProcedure_ = true;   // so `itself.x` in the body is the receiver, on the type too
+        m->body = parseBlock();
+        inProcedure_ = false;
+    } else if (m->isProcedure && check(TokenKind::Semicolon)) {
+        // A SOCKET: a procedure with no body. The applying type must supply one, or the error lands
+        // on its `applies` line naming what is missing. This is how a transformer declares the parts
+        // of its own algorithm instead of borrowing an interface to hold them.
+        m->isAbstract = true;
+        advance();
     } else if (m->isAbstract) {
         expect(TokenKind::Semicolon, "';' (an abstract method has no body)");
     } else if (m->isExtern) {
@@ -1511,7 +1840,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
 
 ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool isMutable,
                                   bool isPersistent, bool isEternal, bool isTransient,
-                                  bool isVolatile, bool isLazy, bool isExternal, bool isDelegate,
+                                  bool isVolatile, bool isLazy, bool isComptime, bool isExternal, bool isDelegate,
                                   bool isMovable, bool isUnique, bool isWeak, bool isAbstract,
                                   bool isOverride, bool isFinal, bool inInterface) {
     const SourceLocation loc = current().loc;
@@ -1543,6 +1872,9 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->isTransient = isTransient;
     f->isVolatile = isVolatile;
     f->isLazy = isLazy;
+    f->isComptime = isComptime;  // spec 37.4: the initializer is evaluated during compilation
+    f->inRegion = pendingFieldInRegion_;  // spec 18.7, carried only so the analyzer can say it is inert
+    pendingFieldInRegion_.clear();
     f->isExternal = isExternal;
     f->isDelegate = isDelegate;
     f->isMovable = isMovable;
@@ -1872,6 +2204,50 @@ std::unique_ptr<ast::ConstructorDecl> Parser::parseConstructor(std::string visib
     }
     c->body = parseBlock();
     return c;
+}
+
+// `public interrupt(Trap t) returns void { }` -- a method the program does not call, because
+// something outside it enters the method at a moment the program did not choose.
+//
+// NAMELESS, like the destructor, which makes it one per class: one device, one handler. That is not
+// a limitation to work around, it is the model the kernel already has -- sixteen `Peripheral`
+// objects, each owning one IRQ. Two handlers means two objects.
+//
+// Modeled as a `MethodDecl` named "interrupt" rather than a declaration node of its own. The body is
+// an ordinary method body and every pass downstream already knows how to walk one; what makes an
+// interrupt different lives at the two edges (nobody may call it, and codegen emits the
+// `x86_intrcc` trampoline beside it), not in the middle.
+std::unique_ptr<ast::MethodDecl> Parser::parseInterrupt(std::string visibility) {
+    auto m = std::make_unique<ast::MethodDecl>();
+    m->loc = current().loc;
+    m->visibility = std::move(visibility);
+    m->isInterrupt = true;
+    m->name = "interrupt";
+    expect(TokenKind::KwInterrupt, "'interrupt'");
+    expect(TokenKind::LParen, "'(' after 'interrupt' -- an interrupt has no name of its own");
+    m->params = parseParams();
+    expect(TokenKind::RParen, "')'");
+    // At most one, and it is not the compiler being frugal: the CPU pushes ONE frame, so a second
+    // parameter would name something no hardware ever supplies and no caller exists to pass.
+    if (m->params.size() > 1) {
+        fail("an interrupt takes at most one parameter -- the trap the hardware handed over. Nothing "
+             "calls an interrupt, so there is nobody to pass a second argument.",
+             m->params[1].loc);
+    }
+    expect(TokenKind::KwReturns, "'returns'");
+    m->returnType = parseTypeRef();
+    if (m->returnType.name != "void" || m->returnType.isArray) {
+        fail("an interrupt must return void -- it is entered, not called, so a returned value would "
+             "have nowhere to go. To resume somewhere else, modify the trap.",
+             m->returnType.loc);
+    }
+    currentMethodReturnType_ = m->returnType;
+    if (headerMode_ && check(TokenKind::Semicolon)) {
+        advance();  // a .ldh signature: the .ldb carries the body
+        return m;
+    }
+    m->body = parseBlock();
+    return m;
 }
 
 std::unique_ptr<ast::DestructorDecl> Parser::parseDestructor(std::string visibility) {
@@ -2468,6 +2844,16 @@ ast::StmtPtr Parser::parseStatement() {
         // `cascade release persistent X` (spec 37.1): release every persistent in X's owned graph.
         if (check(TokenKind::KwRelease)) {
             advance();  // 'release'
+            // `cascade release region r` used to die on "expected an expression but found 'region'",
+            // which explains the parse and not the mistake. It is not a missing feature: releasing a
+            // region ALREADY runs the destructors of the objects inside it, and those destructors
+            // release whatever regions those objects own. The recursion the prefix asks for is what
+            // the ownership model does by itself, so the honest answer is to say so.
+            if (check(TokenKind::KwRegion))
+                fail("'cascade' is not needed on 'release region': releasing a region already runs the "
+                     "destructors of the objects in it, and those release the regions those objects "
+                     "own. Write 'release region ...'.",
+                     current().loc);
             auto cs = std::make_unique<ast::CascadeStmt>();
             cs->loc = cloc;
             cs->op = ast::CascadeOpKind::Release;
@@ -2574,6 +2960,44 @@ ast::StmtPtr Parser::parseStatement() {
         }
         expect(TokenKind::Semicolon, "';'");
         return del;
+    }
+    // `snapshot region W into k;` (spec 32.2) -- re-capture into a snapshot that already has a block.
+    if (check(TokenKind::Identifier) && current().lexeme == "snapshot" &&
+        peek(1).kind == TokenKind::KwRegion) {
+        auto st = std::make_unique<ast::SnapshotIntoStmt>();
+        st->loc = current().loc;
+        advance();  // 'snapshot'
+        advance();  // 'region'
+        st->region = parseRegionName();
+        if (!(check(TokenKind::Identifier) && current().lexeme == "into"))
+            fail("expected 'into <snapshot>' after 'snapshot region " + st->region +
+                     "'. To declare a new one, write 'RegionSnapshot k = snapshot region " +
+                     st->region + " in region <name>;'.",
+                 current().loc);
+        advance();  // 'into'
+        st->into = parseExpression();
+        expect(TokenKind::Semicolon, "';'");
+        return st;
+    }
+    // `restore k into W;` / `restore k into region W;` (spec 32.2).
+    //
+    // A SOFT keyword, and not by preference: pico has a `restore()` METHOD that puts the video mode
+    // back (dev/core/hardware.ldp3, dev/display/font.ldp3). `saved.restore()` starts with `saved` and a
+    // bare call starts with `restore` followed by '(', so requiring an IDENTIFIER after it tells the
+    // two apart exactly, and a hard keyword would have broken the kernel.
+    if (check(TokenKind::Identifier) && current().lexeme == "restore" &&
+        peek(1).kind == TokenKind::Identifier) {
+        auto st = std::make_unique<ast::RestoreStmt>();
+        st->loc = current().loc;
+        advance();  // 'restore'
+        st->snapshot = parseExpression();
+        if (!(check(TokenKind::Identifier) && current().lexeme == "into"))
+            fail("expected 'into <region>' after 'restore <snapshot>'", current().loc);
+        advance();  // 'into'
+        match(TokenKind::KwRegion);  // `into region W` and `into W` are both accepted
+        st->region = parseRegionName();
+        expect(TokenKind::Semicolon, "';'");
+        return st;
     }
     if (check(TokenKind::KwRelease)) {
         auto rel = std::make_unique<ast::ReleaseStmt>();
@@ -3092,18 +3516,25 @@ ast::ExprPtr Parser::parseMatchExpr() {
 std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
     auto decl = std::make_unique<ast::VarDeclStmt>();
     decl->loc = current().loc;
-    while (check(TokenKind::KwPersistent) || check(TokenKind::KwEternal) ||
-           check(TokenKind::KwVolatile) || check(TokenKind::KwLazy)) {
-        if (match(TokenKind::KwPersistent)) decl->isPersistent = true;
-        else if (match(TokenKind::KwVolatile)) decl->isVolatile = true;  // spec 37.5
-        else if (match(TokenKind::KwLazy)) decl->isLazy = true;          // spec 37.3
-        else { advance(); decl->isEternal = true; }  // eternal [persistent]
+    // ONE loop, not a fixed sequence. This used to be `[persistent|eternal|volatile|lazy]*` followed
+    // by `[final|mutable]`, which silently lost anything written after `mutable`: in
+    // `mutable volatile int x` the loop had already finished, `mutable` was consumed, and `volatile`
+    // was handed to parseTypeRef -- so the declaration compiled to a PLAIN store with nothing said.
+    // A local now collects its modifiers in any order and has them checked, by the same rules a class
+    // member obeys (spec 37.9), so a wrong order is a message instead of a missing guarantee.
+    const std::size_t modFrom = pos_;
+    bool sawFinal = false;
+    for (;;) {
+        if (match(TokenKind::KwPersistent)) { decl->isPersistent = true; continue; }
+        if (match(TokenKind::KwEternal))    { decl->isEternal = true;    continue; }  // eternal [persistent]
+        if (match(TokenKind::KwVolatile))   { decl->isVolatile = true;   continue; }  // spec 37.5
+        if (match(TokenKind::KwLazy))       { decl->isLazy = true;       continue; }  // spec 37.3
+        if (match(TokenKind::KwFinal))      { sawFinal = true;           continue; }
+        if (match(TokenKind::KwMutable))    { decl->isMutable = true;    continue; }
+        break;
     }
-    if (match(TokenKind::KwFinal)) {  // final = explicitly immutable (the default)
-        decl->isMutable = false;
-    } else {
-        decl->isMutable = match(TokenKind::KwMutable);
-    }
+    checkMemberModifiers(modFrom, pos_, MemberShape::Local);
+    if (sawFinal) decl->isMutable = false;  // final = explicitly immutable (the default)
     // Region flavor / growth soft keywords (spec 17, flavors expansion), consumed just before the type.
     // A second flavor word is space-joined into `regionFlavor` so the analyzer can report LDP3-1710 with
     // both names; `growable` sets its own flag. These stay ordinary identifiers unless a type follows.
@@ -3780,6 +4211,25 @@ ast::ExprPtr Parser::maybeLiteralSuffix(ast::ExprPtr literal) {
 
 ast::ExprPtr Parser::parsePrimary() {
     const Token& tok = current();
+    // `snapshot region W in region B` (spec 32.2) -- capture W into a block placed in B, yield the
+    // handle. A SOFT keyword: this is only a snapshot when `region` follows, so `snapshot` stays an
+    // ordinary name everywhere else. The address is not optional: a snapshot of a 64 MiB region is
+    // 64 MiB, and in this language those bytes have an owner or they do not exist.
+    if (tok.kind == TokenKind::Identifier && tok.lexeme == "snapshot" &&
+        peek(1).kind == TokenKind::KwRegion) {
+        auto e = std::make_unique<ast::SnapshotExpr>();
+        e->loc = tok.loc;
+        advance();  // 'snapshot'
+        advance();  // 'region'
+        e->region = parseRegionName();
+        if (!match(TokenKind::KwIn))
+            fail("a snapshot needs somewhere to live: write 'snapshot region " + e->region +
+                     " in region <name>'. The bytes are the caller's, and releasing them is too.",
+                 current().loc);
+        expect(TokenKind::KwRegion, "'region' after 'in'");
+        e->home = parseRegionName();
+        return e;
+    }
     // `old(expr)` inside an ensures clause (spec 29): the value captured at method entry.
     if (parsingEnsures_ && tok.kind == TokenKind::Identifier && tok.lexeme == "old" &&
         peek(1).kind == TokenKind::LParen) {
@@ -3964,9 +4414,39 @@ ast::ExprPtr Parser::parsePrimary() {
             // so no user name can collide with it.
             auto e = std::make_unique<ast::IdentifierExpr>();
             e->loc = tok.loc;
-            e->name = "itself";
+            // IN A PROCEDURE -- in the transformer or in the type that applies it -- `itself` IS
+            // THE RECEIVER, so it is written as `this` here rather than substituted later. In a
+            // TYPE position `itself` stays the word and the expansion binds it to the applying
+            // type's name. Two jobs for one word, and they are genuinely two: `itself.degrees` is
+            // an object, `returns itself` is a type. Resolving the expression case at the parse
+            // site is what keeps the substitution map honest -- doing it there instead turned
+            // `itself.label()` into the STATIC call `Dog.label()`.
+            e->name = (inTransformer_ || inProcedure_) ? "this" : "itself";
             advance();
             return e;
+        }
+        case TokenKind::KwCall: {
+            // `call T.p(args)` -- reach the TRANSFORMER's body rather than this type's override.
+            // The word exists because there is no receiver to write to the left of the dot: a
+            // transformer is not a value, so `T.p()` would be a static call on a type that is not
+            // one. It means *"my type replaced this, and I want the original anyway"*.
+            //
+            // Desugared right here to `this.T$p(args)`, which is where the expansion pass copied
+            // the transformer's own body. No new AST node and no codegen: the feature is a name.
+            advance();  // call
+            const std::string transformer = expect(TokenKind::Identifier, "a transformer name").lexeme;
+            expect(TokenKind::Dot, "'.' after the transformer name");
+            const SourceLocation procLoc = current().loc;
+            const std::string proc = expectMemberName("a procedure name");
+            pendingProcCalls_.push_back({transformer, proc, procLoc});
+            auto self = std::make_unique<ast::IdentifierExpr>();
+            self->loc = tok.loc;
+            self->name = "this";
+            auto m = std::make_unique<ast::MemberExpr>();
+            m->loc = tok.loc;
+            m->object = std::move(self);
+            m->member = transformer + "$" + proc;
+            return m;  // parsePostfixOps attaches the argument list
         }
         case TokenKind::LParen: {
             const SourceLocation lp = tok.loc;

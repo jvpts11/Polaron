@@ -606,6 +606,148 @@ add_test(NAME sema_rejects_second_constructor
 set_tests_properties(sema_rejects_second_constructor PROPERTIES
     PASS_REGULAR_EXPRESSION "already has a constructor")
 
+# `interrupt` -- the three things the declaration exists to forbid. The value of the keyword is in
+# what it refuses, not in the calling convention: that is about fifty lines of codegen and LLVM
+# already had it.
+#
+# Calling one is simulating an interrupt, which is a different thing wearing the same name.
+add_test(NAME sema_rejects_interrupt_call
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_call_bad.ldp3")
+set_tests_properties(sema_rejects_interrupt_call PROPERTIES
+    PASS_REGULAR_EXPRESSION "an interrupt cannot be called")
+
+# It is ENTERED, so there is no caller for a value to go back to. The one way to resume somewhere
+# else is to modify the trap the hardware pushed -- which is why the parameter is not decoration.
+add_test(NAME sema_rejects_interrupt_returning_value
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_returns_bad.ldp3")
+set_tests_properties(sema_rejects_interrupt_returning_value PROPERTIES
+    PASS_REGULAR_EXPRESSION "an interrupt must return void")
+
+# `static` would take away the object the handler exists to reach. That object is the entire
+# argument for `interrupt` being its own declaration form: a free handler has no state, an instance
+# one reads `this.buffer` and `this.head`, and a kernel built on sixteen device objects needs the
+# second. Accepting `static interrupt` would quietly hand the driver model back to C.
+add_test(NAME sema_rejects_static_interrupt
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_static_bad.ldp3")
+set_tests_properties(sema_rejects_static_interrupt PROPERTIES
+    PASS_REGULAR_EXPRESSION "'static' cannot be applied to an interrupt")
+
+# Two in one class. The duplicate is caught by the existing no-overloading rule -- an interrupt is a
+# `MethodDecl` -- but that message explains "each method name must be unique" for a declaration whose
+# name the author never wrote. This test pins the message to the rule the namelessness actually
+# expresses, so it cannot quietly regress to the generic one.
+add_test(NAME sema_rejects_two_interrupts
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_twice_bad.ldp3")
+set_tests_properties(sema_rejects_two_interrupts PROPERTIES
+    PASS_REGULAR_EXPRESSION "already declares an interrupt -- one device, one handler")
+
+# The trap parameter is WORLD-SHAPED, and the two halves of that rule are what keep the portable
+# meaning from becoming a portable lie. Bare metal hands over the frame the CPU pushed (an object
+# with fields); a hosted world hands over a code -- a signal number, a console control type -- and
+# no frame exists to point at. Getting either wrong type-checks and then delivers the wrong thing:
+# a signal number reinterpreted as a pointer, or a frame that never arrives.
+add_test(NAME sema_rejects_hosted_interrupt_frame
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_hosted_frame_bad.ldp3")
+set_tests_properties(sema_rejects_hosted_interrupt_frame PROPERTIES
+    PASS_REGULAR_EXPRESSION "a hosted interrupt is entered with a CODE")
+
+add_test(NAME sema_rejects_freestanding_interrupt_code
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_freestanding_code_bad.ldp3")
+set_tests_properties(sema_rejects_freestanding_interrupt_code PROPERTIES
+    PASS_REGULAR_EXPRESSION "a freestanding interrupt receives the frame the CPU pushed")
+
+# Rules 2 and 3 are about what the handler REACHES, and these two pin the reachability rather than
+# the local case. The sample's handler is innocent on its own -- it calls one method -- and the
+# allocation is two hops down. Both messages must carry the PATH: "Log.record allocates" is a fact
+# about Log, and a fact about Log is not a bug; "the interrupt reaches it, via drain and record" is,
+# and it is the sentence that says which of the two to change.
+add_test(NAME sema_rejects_interrupt_reaching_heap
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_reaches_bad.ldp3")
+set_tests_properties(sema_rejects_interrupt_reaching_heap PROPERTIES
+    PASS_REGULAR_EXPRESSION "must not allocate on the heap \\(reached via drain, record\\)")
+
+add_test(NAME sema_rejects_interrupt_reaching_shared_state
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_reaches_bad.ldp3")
+set_tests_properties(sema_rejects_interrupt_reaching_shared_state PROPERTIES
+    PASS_REGULAR_EXPRESSION "'Log.written' is mutable state an interrupt reaches \\(reached via drain, record\\)")
+
+# THE TRAP IS READ-ONLY, and this is a measurement rather than caution. `x86_intrcc` takes the frame
+# as `byval`, which promises the callee a private copy, so LLVM is entitled to treat writes through
+# it as writes to that copy -- and does: at -O2 a plain store is deleted outright, and a `volatile`
+# one lands in a scratch buffer the epilogue discards (`subq $16,%rsp` ... `addq $16,%rsp`). Both
+# were compiled and read. `iretq` returns exactly where it came from either way, so a scheduler
+# written this way runs forever without ever scheduling -- the precise failure this keyword exists
+# to make impossible, arrived at through the keyword itself.
+add_test(NAME sema_rejects_writing_the_trap
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_trap_write_bad.ldp3")
+set_tests_properties(sema_rejects_writing_the_trap PROPERTIES
+    PASS_REGULAR_EXPRESSION "the trap an interrupt receives is READ-ONLY")
+
+# `atomic<T>` is one `lock`-prefixed instruction when T fits a machine word and a `__atomic_*`
+# library call when it does not. Freestanding has nothing to link those against, so the declaration
+# used to compile and the KERNEL failed at link time naming a symbol nobody wrote. Refused where the
+# type is written instead. `interrupt_atomic_ok` is the other side of this: `atomic<int>` still
+# compiles, so the check does not over-fire on the case the rules above depend on.
+add_test(NAME sema_rejects_wide_atomic_freestanding
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/atomic_wide_bad.ldp3")
+set_tests_properties(sema_rejects_wide_atomic_freestanding PROPERTIES
+    PASS_REGULAR_EXPRESSION "is wider than a machine word")
+
+# `transformer` -- what a type GAINS by applying it, which is the one thing none of the other
+# declarations said. A procedure with no body is a SOCKET, and the error lands on the `applies` line
+# because that line is where the obligation was taken on -- not inside the transformer, which is
+# correct and is somebody else's file.
+add_test(NAME sema_rejects_unimplemented_socket
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_socket_bad.ldp3")
+set_tests_properties(sema_rejects_unimplemented_socket PROPERTIES
+    PASS_REGULAR_EXPRESSION "requires `procedure label`, and does not implement it")
+
+# Provenance is checked in BOTH directions, and both halves are needed. Without the first, a
+# transformer-brought member could be written `method` and read as the type's own; without the
+# second, `procedure` would quietly decay into a synonym for `method` on types that apply nothing.
+# Together they are what makes provenance survive a terminal, a diff and a review -- which is what
+# Java's `@Override` tries to be and fails at, because it can be left out.
+add_test(NAME sema_rejects_method_for_procedure
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_method_bad.ldp3")
+set_tests_properties(sema_rejects_method_for_procedure PROPERTIES
+    PASS_REGULAR_EXPRESSION "is written `procedure`, not `method`")
+
+add_test(NAME sema_rejects_procedure_without_transformer
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_procedure_bad.ldp3")
+set_tests_properties(sema_rejects_procedure_without_transformer PROPERTIES
+    PASS_REGULAR_EXPRESSION "no transformer this type applies declares it")
+
+# The naming convention, `T` + stem + `er`. A WARNING, so it nudges without breaking code that
+# predates it -- and it generates the name rather than only demanding one, because a diagnostic that
+# says "wrong" and stops costs the reader the rename. `able`/`ible` are trimmed first, which is what
+# makes the design note's own examples come out right: Describable -> TDescriber, not TDescribableer.
+# `mutual`: the pair must be symmetric. Kelvin knows the way to Celsius; Celsius answers only
+# Fahrenheit, so half the relation is missing and the error lands on the side that took the
+# obligation on, naming the type that did not answer.
+#
+# Checkable ONLY because the family is per-target -- `into$Celsius` is a member you can read on
+# Kelvin. With one generic body over every T there would be nothing but call sites to inspect, which
+# is a different and much stronger promise. That is the capability `each` bought back.
+add_test(NAME sema_rejects_asymmetric_mutual
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_mutual_bad.ldp3")
+set_tests_properties(sema_rejects_asymmetric_mutual PROPERTIES
+    PASS_REGULAR_EXPRESSION "is `mutual`, and 'Kelvin' implements `into<Celsius>`")
+
+# TOTALITY, and partiality DEDUCED rather than annotated. A per-target procedure converts FROM the
+# type it is written on, and a class is closed over its fields, so the conversion must cover them --
+# nobody wrote `total` anywhere. The dual is what makes the rule honest: a STATIC per-target
+# procedure converts *to* this type, its source is the parameter, that source is open, and it is
+# fallible by construction. `Errno -> int` is total; `int -> Errno` is not, and neither needed a word.
+add_test(NAME sema_rejects_partial_conversion
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_totality_bad.ldp3")
+set_tests_properties(sema_rejects_partial_conversion PROPERTIES
+    PASS_REGULAR_EXPRESSION "must be total -- and it never reads: fraction")
+
+add_test(NAME sema_warns_transformer_naming
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_naming_warn.ldp3")
+set_tests_properties(sema_warns_transformer_naming PROPERTIES
+    PASS_REGULAR_EXPRESSION "transformer 'Describable' should be named `TDescriber`")
+
 # The region binder is ON by default. Returning a pointer to an object in this method's own frame is
 # rejected -- the gap the analysis was named for and did not close until now.
 add_test(NAME sema_rejects_escape_by_return
@@ -1151,6 +1293,24 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A NAME COLLISION MUST NOT CHANGE WHAT THE FIELDS AROUND IT MEAN.
+        #
+        # Resolving an ambiguous name rewrites every class in the namespace, and the rewrite went
+        # through a clone that copied thirteen of a field's eighteen properties. `weak`, `delegate`,
+        # the affinity and the region flavor were dropped -- so declaring a class the standard library
+        # also names turned every `weak T*` there into an OWNING pointer and un-delegated every class
+        # that satisfied an interface by forwarding.
+        #
+        # It RUNS rather than only checking, because the two halves fail differently: losing `delegate`
+        # fails to compile, and losing `weak` compiles perfectly and reads freed memory.
+        add_test(NAME codegen_clone_keeps_field_kind COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/clone_keeps_field_kind.ldp3"
+            "-DEXPECTED=weak=0 delegated=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # `layout`: an interface for memory. The printed number is the proof that implementing one
         # ORDERED THE FIELDS -- the struct is written worst-first (a byte between two ints, twice),
         # which measures 16 as declared and 12 ordered widest-first. 16 would not have compiled at
@@ -1607,6 +1767,93 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ffi_callback.ldp3"
             "-DEXPECTED=r=49"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `interrupt` OUTSIDE freestanding, and the only test in this file that proves the entry
+        # point is real by handing it to something that has never heard of LDP3: it installs the
+        # handler with the C runtime's own `signal()` and raises the signal for real. A hosted
+        # interrupt lowers to `void(int)` -- what `signal()` takes on POSIX and through the Windows
+        # CRT -- so one shape installs on both instead of an answer per operating system.
+        #
+        # `caught=2` means the CRT entered a method whose receiver was bound by `box.interrupt`, and
+        # the field it wrote was read back afterwards. Nothing short of running it shows that: the
+        # IR tests beside it would pass just as happily on an entry nobody can call.
+        add_test(NAME codegen_interrupt_hosted_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_hosted.ldp3"
+            "-DEXPECTED=caught=2"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A transformer end to end, run rather than inspected. `<dog>` is the transformer's OWN body
+        # executing inside Dog and calling back into the socket Dog implemented -- the transformer
+        # writes the algorithm and the type supplies the parts. `[cat]` is Cat having replaced that
+        # body outright. Both halves in one line of output.
+        #
+        # It also proves the cost claim: a transformer is resolved entirely at compile time, by the
+        # same copier that expands a generic, so what runs here is exactly the code someone would
+        # have written by hand -- no vtable, no allocation, no indirection.
+        add_test(NAME codegen_transformer_applies_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_applies.ldp3"
+            "-DEXPECTED=<dog> [cat]"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `call T.p()` reaching the transformer's own body from inside the type's override. `[<cat>]`
+        # is both at once: the brackets are Cat's replacement, the angle brackets are the original it
+        # asked for anyway. Without `call` the original is UNREACHABLE -- `this.describe()` from
+        # inside `describe()` is the override calling itself -- which is the whole reason the word
+        # exists, alongside there being no receiver to write to the left of the dot.
+        add_test(NAME codegen_transformer_call_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_call.ldp3"
+            "-DEXPECTED=[<cat>]"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A GENERIC PROCEDURE, and its generics are ORDINARY ones: a real type parameter,
+        # monomorphized per instantiation exactly like a generic method. `procedure` changes where a
+        # signature is completed, not what `<T>` means.
+        #
+        # `s:42 m:7` is the transformer's one algorithm over any T, running inside two different
+        # types, each answering the socket only it knows.
+        add_test(NAME codegen_transformer_generic_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_generic.ldp3"
+            "-DEXPECTED=s:42 m:7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `procedure into<each Other>` -- the PER-TARGET family, and the capability the whole design
+        # note is built on. Only a per-target body can write `new Fahrenheit(...)`, so conversion is
+        # inexpressible with one generic body over every T: Celsius/Fahrenheit, Errno/int,
+        # HidUsage/ScanCode all die without it, and `mutual`, totality and derivation lose the
+        # declaration they read.
+        #
+        # `212 100` is the round trip: Celsius(100) -> Fahrenheit(212) -> Celsius(100).
+        add_test(NAME codegen_transformer_each_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_each.ldp3"
+            "-DEXPECTED=212 100"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `error ParseFailed;` -- a transformer's own failure type, so a failure names the conversion
+        # that failed instead of surfacing as somebody else's exception. Synthesized ONCE, at the
+        # transformer, as an ordinary class in its namespace: two types that fail the same conversion
+        # must raise the same thing or a caller cannot write one `catch`.
+        add_test(NAME codegen_transformer_error_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_error.ldp3"
+            "-DEXPECTED=empty port port=0"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -3265,6 +3512,67 @@ if(LDP3_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
 
+        # spec 37.4: a `comptime` local is computed during compilation and EMBEDDED. An IR test and not
+        # a behaviour one on purpose -- a local that recomputed the same answer at run time would print
+        # exactly the same thing and pass a `_runs` test. That is what used to happen: the prefix was
+        # parsed, stored on the declaration and read by nobody, so the program emitted a real
+        # `call @Main.fib(i32 10)`. fib(10) = 55, so the folded constant must be in the IR.
+        add_test(NAME codegen_comptime_local_folds COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/comptime_local_folds.ldp3"
+            "-DNEEDLE=store i32 55"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+        # An `interrupt` emits TWO functions: the body as an ordinary method, and beside it the
+        # entry the hardware jumps to, carrying `x86_intrcc` so LLVM writes the register save, the
+        # pop of a pushed error code, and the `iretq`. IR tests and not behaviour ones because
+        # nothing in a hosted process can enter one -- and because the defect these guard against
+        # is exactly a keyword that parses and generates nothing.
+        #
+        # This is the strongest argument for the keyword and it is not "it would be tidier": pico's
+        # equivalent stub is forty lines of hand-written assembly that a careful human wrote, twice
+        # reviewed, and got wrong -- the entry gate decided whether to `swapgs` off the interrupted
+        # code's `rax` instead of the saved CS, and reading never found it.
+        add_test(NAME codegen_interrupt_entry_uses_x86_intrcc COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_entry.ldp3"
+            "-DNEEDLE=define x86_intrcc void @\"Keyboard$interrupt\"(ptr byval(%class.Trap)"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+        # `kbd.interrupt` BINDS the object and yields the entry point in one act, because an
+        # interrupt vector holds an address and nothing else -- there is nowhere to put the receiver
+        # except a slot the entry reads on arrival. Without the store the entry would load null and
+        # the kernel would fault inside its own handler, so the store IS the feature.
+        add_test(NAME codegen_interrupt_binds_receiver COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_entry.ldp3"
+            "-DNEEDLE=store ptr %kbd1, ptr @\"Keyboard$interrupt$self\""
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+        # The OTHER half of rule 3, and the half that decides whether the rule is worth having: the
+        # escape hatch must EXIST bare metal, or a correct program becomes inexpressible and the rule
+        # only teaches people to route around it. `atomic<T>` on x86-64 is a `lock`-prefixed
+        # instruction with no runtime behind it, so this sample compiles freestanding and the IR
+        # carries a real `atomicrmw` -- no `__atomic_*` libcall a kernel could not link.
+        add_test(NAME codegen_interrupt_atomic_state_ok COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_atomic_ok.ldp3"
+            "-DNEEDLE=atomicrmw add ptr %atomic.value, i32 1 seq_cst"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+        # The parameterless form still gets a frame-sized `byval`, because x86_intrcc is how LLVM is
+        # told the size of what the CPU pushed -- it is not the handler's argument list.
+        add_test(NAME codegen_interrupt_without_trap COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_entry.ldp3"
+            "-DNEEDLE=define x86_intrcc void @\"Spurious$interrupt\"(ptr byval({ i64, i64, i64, i64, i64 })"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
         # `cast<T*>` on a nullable ASSERTS non-null and now verifies it: an exception when hosted, a
         # panic in freestanding. It used to reinterpret with no check, so a broken promise surfaced as an
         # access violation with nothing naming who promised -- while `cast<Dog>(animal)` verified and
@@ -4194,6 +4502,34 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/contract_report.ldp3"
             "-DPANIC=left = 4, right = 9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+
+        # AND THE SAME BARE METAL. The values were the one part of the message a freestanding program
+        # did without: `__ldp3_panic` takes a finished string and a kernel has no stdio to build one
+        # with, so codegen dropped them before the call. They now go through the same `__ldp3_fail` in
+        # both targets, and the driver emits a reporter that formats them and hands the whole message
+        # to that same panic (src/driver/build.cpp).
+        #
+        # A SEPARATE test from the hosted one above rather than a second needle on it: what regresses
+        # here is a branch on `isFreestanding`, so a hosted program can keep passing while every kernel
+        # loses the line -- which is exactly what used to happen. This sample is a `freestanding`
+        # program compiled and run hosted, the way the other freestanding samples are; the bare-metal
+        # formatter itself is proved by the kernel that dogfoods it.
+        add_test(NAME codegen_freestanding_contract_shows_the_values COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/contract_report_freestanding.ldp3"
+            "-DPANIC=left = 4, right = 9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+        # The clause, the place and the method were never missing bare metal -- only the values were.
+        # Pinned so a future simplification of the message cannot take the rest of it with them.
+        add_test(NAME codegen_freestanding_contract_names_the_clause COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/contract_report_freestanding.ldp3"
+            "-DPANIC=requires this.seats >= wanted"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
 
@@ -5991,6 +6327,29 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_raii.ldp3"
             "-DEXPECTED=a = 5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A '%' inside an interpolation is TEXT. The literal segments used to be pasted into the
+        # printf format string raw, so `100%success` became `%s`: printf read a value nobody passed,
+        # treated it as a char* and followed it (exit 0xC0000005). One percent in every position --
+        # leading, between holes, trailing, doubled, and right before a live conversion letter.
+        add_test(NAME codegen_interp_percent_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interp_percent.ldp3"
+            "-DEXPECTED=50% of 1 | 1.2% | 1% and 2 | 100%success 1 | 1.2%%"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # spec 32.2: capture a region, keep working, put it back. Exercises all three forms and, more
+        # to the point, that the restore RUNS DESTRUCTORS before it copies the bytes -- without that,
+        # the space the newer object had is reused while a pointer to it still looks valid.
+        add_test(NAME codegen_region_snapshot_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_snapshot.ldp3"
+            "-DEXPECTED=before=2 after=1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

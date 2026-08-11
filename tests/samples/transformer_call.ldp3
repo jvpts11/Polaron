@@ -1,0 +1,40 @@
+import System.IO.Console;
+program TransformerCall;
+
+// `call T.p()` -- reach the TRANSFORMER's body rather than this type's override. The word exists
+// because there is no receiver to write to the left of the dot: a transformer is not a value, so
+// `TDescriber.describe()` would be a static call on a type that is not one.
+//
+// It means: *"my type replaced this, and I want the original anyway."*
+//
+// The naming convention is `T` + stem + `er`: a transformer is the COUPLING between two types and
+// not either of them -- an electrical transformer has two windings and is neither.
+
+public bundle Main {
+    public namespace App {
+        public transformer TDescriber {
+            public procedure describe() returns String {
+                return "<" + itself.label() + ">";
+            }
+            public procedure label() returns String;
+        }
+
+        public class Cat applies TDescriber {
+            public procedure label() returns String { return "cat"; }
+
+            // Replaces the transformer's body, and then asks for it anyway. Without `call` the
+            // original would be unreachable: `this.describe()` is this very method.
+            public procedure describe() returns String {
+                return "[" + call TDescriber.describe() + "]";
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Cat c = new Cat();
+                System.IO.Console.printf("%s\n", c.describe());
+                return;
+            }
+        }
+    }
+}
