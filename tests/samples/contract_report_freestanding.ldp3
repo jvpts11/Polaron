@@ -1,0 +1,54 @@
+program ContractReportFreestanding freestanding;
+
+// WHAT A VIOLATED CONTRACT SAYS BARE METAL (spec 29 + 36).
+//
+// Freestanding already carried the clause, the place and the method: those are all in the fixed string
+// the panic takes. What it could not carry was THE TWO VALUES, because `__ldp3_panic` takes a finished
+// string and a kernel has no stdio to build one with. So the one line that usually makes the mistake
+// obvious on sight -- `left = 4, right = 9` -- was the line that went missing exactly where a wrong
+// value is hardest to see by other means, and where the guards are the whole claim that the language
+// has no undefined behaviour.
+//
+// The values are now formatted by a reporter the driver emits beside the image, which composes the
+// message and hands it to that same `__ldp3_panic` -- so a kernel that overrides the panic still gets
+// all of it. This sample is the codegen half: a `freestanding` program must emit the same wider call
+// as a hosted one. It is compiled and run HOSTED here, the way the other freestanding samples are, so
+// the values land on stderr through the runtime's `__ldp3_fail`; the bare-metal formatter is proved by
+// the kernel that dogfoods it.
+//
+// The clause names two things the caller cannot see from outside, which is exactly when the values in
+// the message earn their place.
+
+public bundle main freestanding {
+    public namespace app {
+
+        public class Sys {
+            public extern cdecl static method putchar(int c) returns int;
+        }
+
+        public class Gate {
+            private mutable int seats;
+
+            public constructor Gate(int howMany) {
+                this.seats = howMany;
+            }
+
+            public method admit(int wanted) returns void
+                requires this.seats >= wanted
+            {
+                this.seats = this.seats - wanted;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Gate g = new Gate(4) on stack;
+                Sys.putchar(79);        // 'O': the program really got this far
+                g.admit(9);             // 4 >= 9 is false: this is the last line that runs
+                Sys.putchar(78);        // 'N': never reached
+                return 0;
+            }
+        }
+    }
+}

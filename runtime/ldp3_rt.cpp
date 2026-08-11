@@ -173,7 +173,7 @@ LDP3_RT_API void __ldp3_fail(const char* headline, const char* aLabel, long long
 // disagreeing about where a region's data starts. __ldp3_panic is already defined above, so the
 // header's declaration of it (which bare metal needs) would clash with its dllexport -- suppress it.
 #define LDP3_PANIC_DECLARED
-#include "ldp3_region_core.h"
+#include "ldp3_region_core.hpp"
 
 static thread_local Ldp3FreeNode* g_ldp3_free[LDP3_NCLASSES];
 static thread_local char* g_ldp3_slab_cur;
@@ -500,20 +500,32 @@ void __ldp3_region_release(void* block) {
 }
 
 // ---- Flavored regions (spec 17): the shared core, backed by this runtime's allocator ----
-// The implementation lives in ldp3_region_core.h because `ldp3 build` compiles that same file for
-// bare metal. Only the backing differs, and it differs here, in five macros. Including it in THIS
+// The implementation lives in ldp3_region_core.hpp because `ldp3 build` compiles that same file for
+// bare metal. Only the backing differs, and it differs here, in this one class. Including it in THIS
 // translation unit (rather than linking a separate object) keeps every call site visible to the
 // optimizer exactly as it was when these bodies sat inline in this file.
-#define LDP3_RGN_BLOCK_ALLOC(bytes) __ldp3_malloc((size_t)(bytes))
-#define LDP3_RGN_BLOCK_FREE(p) __ldp3_free(p)
-// The registry arrays are small metadata that must not come out of the region itself, and libc's
-// realloc already grows them in place when it can.
-#define LDP3_RGN_META_ALLOC(p, oldBytes, newBytes) realloc((p), (size_t)(newBytes))
-#define LDP3_RGN_META_FREE(p, bytes) free(p)
-#define LDP3_RGN_PROF_ALLOC() do { if (g_prof_on) prof_add(&g_prof_total_alloc, 1); } while (0)
-#define LDP3_RGN_PROF_FREE() do { if (g_prof_on) prof_add(&g_prof_total_free, 1); } while (0)
+class Ldp3HostedRegionBacking {
+  public:
+    static void* blockAlloc(unsigned long long bytes) {
+        return __ldp3_malloc(static_cast<size_t>(bytes));
+    }
+    static void blockFree(void* p) { __ldp3_free(p); }
+    // The registry arrays are small metadata that must not come out of the region itself, and libc's
+    // realloc already grows them in place when it can -- so the old size is not needed here.
+    static void* metaAlloc(void* p, unsigned long long, unsigned long long newBytes) {
+        return realloc(p, static_cast<size_t>(newBytes));
+    }
+    static void metaFree(void* p, unsigned long long) { free(p); }
+    static void profileAlloc() {
+        if (g_prof_on) prof_add(&g_prof_total_alloc, 1);
+    }
+    static void profileFree() {
+        if (g_prof_on) prof_add(&g_prof_total_free, 1);
+    }
+};
+#define LDP3_REGION_BACKEND Ldp3HostedRegionBacking
 #define LDP3_REGION_CORE_IMPL
-#include "ldp3_region_core.h"
+#include "ldp3_region_core.hpp"
 
 LDP3_RT_API void* __ldp3_realloc(void* ptr, size_t size) {
     if (ptr == NULL) return __ldp3_malloc(size);

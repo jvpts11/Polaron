@@ -1,0 +1,27 @@
+program ComptimeLocalFolds;
+
+// `comptime T x = <constexpr>` (spec 37.4): the value is computed DURING COMPILATION and embedded.
+//
+// The property under test is in the emitted code, not in the output, which is why this is an
+// IR test and not a `_runs` one: a local that computed the same answer at run time would print
+// exactly the same thing and pass a behaviour test. That is precisely what used to happen --
+// the prefix was parsed, recorded on the declaration and read by nobody, so this program emitted
+// `call @Main.fib(i32 10)` and stored the result.
+//
+// fib(10) = 55, so the IR must contain `store i32 55`.
+
+public bundle main freestanding {
+    public namespace app {
+        public class Main {
+            public static comptime method fib(int n) returns int {
+                if (n < 2) { return n; }
+                return Main.fib(n - 1) + Main.fib(n - 2);
+            }
+
+            public static method main(string[] args) returns int {
+                comptime int a = Main.fib(10);
+                return a;
+            }
+        }
+    }
+}

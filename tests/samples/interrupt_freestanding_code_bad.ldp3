@@ -1,0 +1,17 @@
+// Bare metal hands over the frame the CPU pushed, which is an object with fields. An integer here
+// would also be rejected by LLVM: `x86_intrcc` requires the first parameter to be a byval pointer.
+program InterruptFreestandingCodeBad freestanding;
+
+public bundle Kernel {
+    public namespace Arch {
+        public class Timer {
+            private volatile mutable int ticks;
+            public constructor Timer() { this.ticks = 0; }
+            public interrupt(int vector) returns void { this.ticks = vector; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int { return 0; }
+        }
+    }
+}

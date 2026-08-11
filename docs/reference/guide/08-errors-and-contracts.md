@@ -404,11 +404,36 @@ The compiler weaves the checks into the generated code:
 - `invariant` clauses are also evaluated on method exit, so every public operation
   leaves the object in a valid state.
 
-When a clause holds, execution proceeds. When one fails, the program prints
-`contract violated: requires` (or `ensures`, or `invariant`) and exits with a
+When a clause holds, execution proceeds. When one fails, the program stops with a
 non-zero status. A violation is a bug in the program, so it stops deterministically
 rather than raising a catchable exception — you are meant to fix the caller or the
 method, not to `catch` a broken contract.
+
+### What a violation says
+
+A contract exists to name a disagreement, so one that fails says **which** one, and
+on stderr rather than in the middle of the program's own output:
+
+```
+contract violated: requires
+  --> src/gfx/GlWorld3D.ldp3:345:32  in GlWorld3D.upload
+   |  requires wrote == counted
+   |  left = 17561340, right = 23966928
+```
+
+The clause is quoted as you wrote it, read back out of the source. The last line
+appears whenever the clause is a comparison whose two sides can be read a second
+time **without consequences** — identifiers, fields, literals, casts of those.
+Never a call: a diagnostic that changes the state it is diagnosing is worse than
+none, so anything that could log, mutate or allocate simply goes unquoted.
+
+The no-UB guards — an index off the end, a division by zero, a full region — report
+in the same shape, with their own two numbers (`index = 9, length = 6`).
+
+**All of it holds in `freestanding` too**, including the values, which a kernel
+formats without stdio. There it arrives through `__ldp3_panic`, which a kernel may
+override to route reports to its own console; overriding it keeps the whole message,
+because everything is composed before that call rather than printed around it.
 
 ### `old(...)` in postconditions
 

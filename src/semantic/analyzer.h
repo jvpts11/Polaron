@@ -77,6 +77,9 @@ struct FieldInfo {
     bool isUnique = false;
     int bitWidth = 0;  // spec 11.1: declared bit-field width, 0 for an ordinary field. A field with one
                        // shares a storage unit with its neighbours and therefore HAS NO ADDRESS.
+    // spec 37.5. Read by the interrupt check: `volatile` is one of the two ways to say "something
+    // that can preempt me also touches this", and a handler may only reach state said to be shared.
+    bool isVolatile = false;
 };
 struct MethodInfo {
     std::string returnType;
@@ -97,6 +100,10 @@ struct MethodInfo {
     std::vector<bool> moveParams;
     bool returnIsMove = false;
     bool isDeprecated = false;            // spec 14.2: each call site gets a warning
+    // `public interrupt(Trap t) returns void { }` -- entered by the hardware, never called. Read at
+    // two places only: the call site, which must refuse it, and `obj.interrupt`, which is how it is
+    // installed and yields an `address` rather than anything callable.
+    bool isInterrupt = false;
 };
 struct ClassInfo {
     std::string name;
@@ -262,6 +269,9 @@ private:
     void checkWideningLostBits(const ast::CastExpr& cst, const std::string& src,
                                const std::string& dst);
     void checkBitCounted(const std::string& typeName, SourceLocation loc);
+    // Why a standard-library name cannot exist bare metal, or "" when it can. The list is deliberately
+    // short: only what reaches for a host OPERATING SYSTEM is on it. See the definition.
+    static std::string hostedOnlyReason(const std::string& symbol);
     void checkIncDecTarget(const ast::Expr& target, bool isIncrement, SourceLocation loc);
     std::string typeOf(const ast::Expr& expr);  // "" on error
     // Type-check call/constructor arguments against declared parameter types (spec 6.4, 3.7):
@@ -339,6 +349,12 @@ private:
     std::vector<SemaError> warnings_;
     EntryPoint entry_;
     std::unordered_map<std::string, ClassInfo> classes_;
+    // The class being analyzed, so a delegating call inside a constructor can be followed into the
+    // callee's own body and discharge only the fields it really assigns.
+    const ast::ClassDecl* currentClassDecl_ = nullptr;
+    const ast::Block* methodBodyInCurrentClass(const std::string& name) const;
+    void collectFieldsAssigned(const ast::Block* body, std::set<std::string>& assigned,
+                               std::set<std::string>& visited) const;
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants
     std::unordered_set<std::string> javaEnums_;  // enums with fields/methods (spec 12.2), orderable by ordinal
     // `newtype Name = Underlying;` (spec 24): a distinct nominal type. Maps the newtype name to its
@@ -393,6 +409,47 @@ private:
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
     std::string enclosingClass_;  // class the current method belongs to, set even for static methods
                                   // (unlike currentClass_) -- used to point unqualified calls at their owner
+
+    // ---- the interrupt reachability check (rules 2 and 3 of docs/design/interrupt.md) ----
+    //
+    // An interrupt's rules are about what its body REACHES, not about the body itself: the code it
+    // interrupted may be standing inside the allocator, or holding the very lock a method three
+    // calls down would take. So the check needs a call graph, and the honest way to get one here is
+    // to record it WHILE THE ORDINARY WALK HAPPENS rather than to write a second traversal.
+    //
+    // That choice is not just economy. A hand-written visitor over seventy AST node types has one
+    // failure mode -- a node nobody remembered -- and it is silent: the analysis simply does not see
+    // that branch and reports nothing. Recording at the points where the analyzer ALREADY resolved a
+    // call or a field means anything it can typecheck, this can follow.
+    struct MethodFacts {
+        std::set<std::string> callees;  // "Class.method", as resolved at the call site
+        // Every `this.<field>` this body touched. Read by the TOTALITY check: a per-target
+        // procedure whose source is a closed kind must cover it, and for a class or a record the
+        // thing to cover is every field. Recorded during the ordinary walk for the same reason the
+        // call graph is -- a second traversal to rediscover it would go silently out of date.
+        std::set<std::string> ownFieldsTouched;
+        // Rule 2: what the body does that a preempted program cannot survive. `.first` is the
+        // phrase for the message ("allocates on the heap"), `.second` points at the act.
+        std::vector<std::pair<std::string, SourceLocation>> unsafeOps;
+        // Rule 3: mutable state touched that is neither `volatile` nor `atomic<T>`, i.e. shared with
+        // no way of saying so. "Class.field" plus where it was touched.
+        std::vector<std::pair<std::string, SourceLocation>> unsharedState;
+    };
+    std::map<std::string, MethodFacts> methodFacts_;   // "Class.method" -> what it did and called
+    std::string currentMethodKey_;                     // "Class.method" being analyzed, "" outside one
+    // The trap parameter's name while an interrupt body is being analyzed ("" otherwise). Writing
+    // through it must be refused -- see the assignment check for the measurement that decided it.
+    std::string interruptTrapParam_;
+    // Every `interrupt` declared in the program: its class and where to point the diagnostic.
+    std::vector<std::pair<std::string, SourceLocation>> interruptRoots_;
+    MethodFacts* facts();               // the current method's row, or null outside a method body
+    void noteUnsafeForInterrupt(const std::string& what, SourceLocation loc);
+    void noteFieldForInterrupt(const std::string& owner, const std::string& field,
+                               const FieldInfo& info, const ast::Expr* receiver, SourceLocation loc);
+    void checkInterruptReach();         // the BFS, run once after every body has been walked
+    // spec 32.13: a per-target `procedure` whose SOURCE is a closed kind is total, and is checked.
+    // Constructor definite assignment, generalised -- same dataflow, a different list to cover.
+    void checkProcedureTotality(const ast::Program& program);
     std::unordered_set<std::string> deleted_;  // locals deleted in this scope (spec 18.2 reattach)
     std::unordered_set<std::string> freed_;    // ... of those, the ones whose memory is gone
     std::vector<std::string> currentThrows_;  // base names in the method's `throws` clause (spec 21.1)

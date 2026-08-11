@@ -174,6 +174,15 @@ void Rewriter::expr(ast::ExprPtr& slot) {
         for (auto& a : x->args) expr(a);
         return;
     }
+    // `for (int i in 0..n)` -- the bounds of a range were never visited by this pass at all, so a
+    // bare field in one came out as `use of undeclared variable 'n'` while the same name resolved
+    // everywhere else in the same method. Nothing subtle: RangeExpr simply had no case here.
+    if (auto* x = dynamic_cast<ast::RangeExpr*>(e)) {
+        expr(x->start);
+        expr(x->end);
+        if (x->step) expr(x->step);
+        return;
+    }
     if (auto* x = dynamic_cast<ast::MemberExpr*>(e)) {
         // `itself.member`: the pronoun followed by a '.' names the declared entity's TYPE, so the
         // member is read off the type rather than off a value that does not exist yet. Taken before
@@ -345,6 +354,21 @@ void runOnBody(ast::Block& body, const std::vector<ast::Param>& params, const Me
     r.closeScope();
 }
 
+// Contract clauses (spec 29) live on the declaration, NOT in the body, so `runOnBody` never saw them
+// and a bare field in a `requires` came out as an undeclared variable while the same name resolved
+// two lines below in the body. Same rewriter, same scope shape -- the parameters are in scope for a
+// precondition exactly as they are for the body.
+void runOnContracts(std::vector<ast::ExprPtr>& clauses, const std::vector<ast::Param>& params,
+                    const Members& members, const std::string& className, bool isStatic,
+                    const std::set<std::string>& typeNames) {
+    if (clauses.empty()) return;
+    Rewriter r(members, className, isStatic, typeNames);
+    r.openScope();
+    for (const ast::Param& p : params) r.declare(p.name);
+    for (ast::ExprPtr& c : clauses) r.expr(c);
+    r.closeScope();
+}
+
 }  // namespace
 
 bool resolveImplicitThis(ast::Program& program) {
@@ -366,11 +390,16 @@ bool resolveImplicitThis(ast::Program& program) {
                          const Members& seenMembers) {
         for (ast::MemberPtr& m : members) {
             if (auto* md = dynamic_cast<ast::MethodDecl*>(m.get())) {
-                if (md->isAbstract) continue;
+                runOnContracts(md->requiresClauses, md->params, seenMembers, owner, md->isStatic,
+                               typeNames);
+                runOnContracts(md->ensuresClauses, md->params, seenMembers, owner, md->isStatic,
+                               typeNames);
+                if (md->isAbstract) continue;   // contracts are rewritten even without a body
                 runOnBody(md->body, md->params, seenMembers, owner, md->isStatic, typeNames);
                 continue;
             }
             if (auto* cd = dynamic_cast<ast::ConstructorDecl*>(m.get())) {
+                runOnContracts(cd->requiresClauses, cd->params, seenMembers, owner, false, typeNames);
                 runOnBody(cd->body, cd->params, seenMembers, owner, false, typeNames);
                 continue;
             }

@@ -1,0 +1,38 @@
+import System.IO.Console;
+program TransformerGeneric;
+
+// A PROCEDURE MAY BE GENERIC, and its generics are ordinary ones: a real type parameter,
+// monomorphized per instantiation exactly like a generic method. Nothing about `procedure` changes
+// what `<T>` means -- what it changes is WHERE the signature is completed, which is the type that
+// applies the transformer.
+//
+// So the transformer writes one algorithm over any T, calls back into a socket for the part only
+// the type knows, and each applying type answers that part once.
+
+public bundle Main {
+    public namespace App {
+        public transformer TTagger {
+            public procedure tag<T>(T value) returns String {
+                return itself.prefix().concat($"{value}");
+            }
+            public procedure prefix() returns String;
+        }
+
+        public class Sensor applies TTagger {
+            public procedure prefix() returns String { return "s:"; }
+        }
+
+        public class Meter applies TTagger {
+            public procedure prefix() returns String { return "m:"; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Sensor s = new Sensor();
+                Meter m = new Meter();
+                System.IO.Console.printf("%s %s\n", s.tag<int>(42), m.tag<int>(7));
+                return;
+            }
+        }
+    }
+}

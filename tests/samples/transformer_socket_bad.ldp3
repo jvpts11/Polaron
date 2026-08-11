@@ -1,0 +1,19 @@
+// A procedure with no body is a SOCKET: the applying type must implement it. The error lands on the
+// `applies` line, because that line is where the obligation was taken on -- not inside the
+// transformer, which is correct and is somebody else's file.
+program TransformerSocketBad;
+
+public bundle Main {
+    public namespace App {
+        public transformer TDescriber {
+            public procedure describe() returns String { return itself.label(); }
+            public procedure label() returns String;
+        }
+
+        public class Dog applies TDescriber { }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}
