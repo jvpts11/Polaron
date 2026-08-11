@@ -8816,9 +8816,20 @@ R"LDP3(
             private static mutable int fails = 0;
             // What the next assertions are checking (Test.checking). Not named `label`: that is a
             // keyword, for the loop labels of `break label:`.
-            private static mutable String criterion = "";
+            // NO INITIALIZER ON THESE TWO, and that is not an oversight. A `String` has to be
+            // ALLOCATED, so it cannot exist before the program starts; written as `= ""` here it
+            // was silently zeroed to a null pointer, and only `reset()` -- which the runner calls
+            // before every test -- made that harmless. `onClassLoad` gives them a real value at the
+            // moment the class comes up, which is the same answer the standard library's tables
+            // already use and no longer depends on the runner having run first.
+            private static mutable String criterion;
             private static mutable boolean skipping = false;
-            private static mutable String skipWhy = "";
+            private static mutable String skipWhy;
+
+            onClassLoad {
+                Test.criterion = "";
+                Test.skipWhy = "";
+            }
 
             // The --test runner calls this before EVERY test, so the failure count, the label and the
             // skip flag never bleed from one test into the next.
