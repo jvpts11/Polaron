@@ -3798,6 +3798,11 @@ ast::ExprPtr Parser::parseExpression() {
         advance();  // '..' or '..='
         r->start = std::move(e);
         r->end = parseTernary();
+        // `step k`, and `step` is a HARD keyword rather than a contextual one -- which is not for
+        // want of trying. Matching it by text here works everywhere except where it has to: a
+        // numeric literal may carry a UNIT SUFFIX (`64 kilobytes`, spec 3.9), so `10 step` parses as
+        // the end of the range with `step` as its suffix, and the count after it has nowhere to go.
+        // The two features want the same grammar and only one of them can have it.
         if (match(TokenKind::KwStep)) r->step = parseTernary();
         return r;
     }
