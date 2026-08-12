@@ -238,6 +238,26 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     const std::string triple = targetTriple(m.target);
     const bool crossTarget = !m.target.empty() && m.target != "x86_64-windows";
 
+    // THE FLOOR OF THE MACHINE A HOSTED BINARY IS ALLOWED TO ASSUME.
+    //
+    // clang's default x86_64 baseline is the original 2003 AMD64: SSE2, and nothing added since. That
+    // default is not free and it is not theoretical. `Math.floor`, `ceil`, `round` and `trunc` have no
+    // SSE2 instruction, so at the default baseline every one of them becomes a CALL INTO LIBM, register
+    // spills included -- while one line of SSE4.1 does each of them. Measured in the inner loop of a game
+    // built with this compiler: two floors cost 8.6 ns as calls, and are two instructions here.
+    //
+    // The language SHIPS those functions as builtins that lower to LLVM intrinsics, which reads as a
+    // promise that they are instructions. At the old default they were not, on any program, ever.
+    //
+    // v2 COSTS THIS TARGET NOTHING. It means SSE4.1, SSE4.2 and POPCNT -- Nehalem, 2008 -- and Windows
+    // 11, which is what this compiler builds for, refuses to install without SSE4.2 and POPCNT. There is
+    // no machine that can run the operating system and not this.
+    //
+    // NOT v3 (AVX2, 2013), which WOULD exclude machines running Windows 11 today. Not freestanding
+    // either: that path compiles -mgeneral-regs-only, with no vector unit at all, and returns above.
+    const bool x86Host = triple.find("x86_64") != std::string::npos;
+    const std::string baseline = "-march=x86-64-v2";
+
     // Freestanding (spec 36): there is no hosted runtime to link and no C entry, so compile to a
     // bare-metal object and stop. The user links that object with their own boot stub and linker script
     // (see kernel/ for a worked example). Dependencies are not supported in this mode yet.
@@ -1090,8 +1110,13 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
             return rc == -1 ? 1 : rc;
         }
         const fs::path obj = outDir / (ldb.stem().string() + ".obj");
-        if (int rc = runProcess(tc.clang, {"-O2", "-Wno-override-module", "-c", bc.string(), "-o", obj.string()});
-            rc != 0) {
+        std::vector<std::string> depCompile = {"-O2", "-Wno-override-module"};
+        if (x86Host) depCompile.push_back(baseline);
+        depCompile.push_back("-c");
+        depCompile.push_back(bc.string());
+        depCompile.push_back("-o");
+        depCompile.push_back(obj.string());
+        if (int rc = runProcess(tc.clang, depCompile); rc != 0) {
             std::fprintf(stderr, "ldp3: compiling dependency object from '%s' failed\n", ldb.string().c_str());
             return rc == -1 ? 1 : rc;
         }
@@ -1107,6 +1132,7 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         if (!m.sysroot.empty()) mainCompile.push_back("--sysroot=" + m.sysroot);
         if (opts.debug) { mainCompile.push_back("-g"); mainCompile.push_back("-O0"); }
         else mainCompile.push_back("-O2");
+        if (x86Host) mainCompile.push_back(baseline);
         mainCompile.push_back("-Wno-override-module");
         mainCompile.push_back("-c");
         mainCompile.push_back(ll.string());
@@ -1141,6 +1167,7 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         if (!m.sysroot.empty()) linkArgs.push_back("--sysroot=" + m.sysroot);
         if (opts.debug) { linkArgs.push_back("-g"); linkArgs.push_back("-O0"); }
         else linkArgs.push_back("-O2");
+        if (x86Host) linkArgs.push_back(baseline);   // this path compiles the .ll as well as links it
 #ifdef _WIN32
         // Force lld as the linker so the choice is deterministic -- a native object input can otherwise
         // flip clang to the MSVC link.exe, which does not pull in the UCRT the runtime needs.
