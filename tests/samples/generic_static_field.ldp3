@@ -1,0 +1,57 @@
+import System.IO.Console;
+program GenericStaticField;
+
+// A STATIC FIELD IN A GENERIC CLASS -- which could not be used at all until now.
+//
+// `resolveImplicitThis` runs before monomorphization, so a bare `made` inside `Box<T>` is already
+// rewritten to `Box.made` when the template is cloned -- carrying the TEMPLATE's name. After
+// expansion the class is `Box$int`, `Box` names nothing, and the error read "use of undeclared
+// variable 'Box'" on a line that does not mention `Box`.
+//
+// It cannot be fixed by adding the name to the ordinary substitution map, because that map is
+// applied to TYPES as well: `ArrayList` inside `ArrayList<T>` becomes `ArrayList$long$long` and the
+// standard library stops compiling. The self-reference is rewritten only where it is an EXPRESSION
+// -- a receiver -- which is the one position where the name means "the class I am in".
+//
+// WHAT IT IS FOR: state shared by every instance of one instantiation. A chain of links drawn from
+// one pool per element type is written exactly this way, and per-instantiation is the right
+// sharing -- a chain of ids and a chain of strings have nothing in common but the shape.
+public bundle Probe {
+    public namespace App {
+
+        public class Box<T> {
+            private static mutable int made;
+            private mutable T held;
+
+            public constructor Box(T item) {
+                held = item;
+            }
+
+            public method get() returns T {
+                return held;
+            }
+
+            // Bare, so the implicit-this pass qualifies it with the class name -- which is the
+            // whole point of the test.
+            public method bump() returns int {
+                made = made + 1;
+                return made;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box<int> a = new Box<int>(7) on stack;
+                Box<int> b = new Box<int>(9) on stack;
+                a.bump();
+                // Shared by every Box<int>: b sees what a did.
+                int shared = b.bump();
+                // A different instantiation has its OWN, which is the correct sharing rather than
+                // an accident of it.
+                Box<boolean> c = new Box<boolean>(true) on stack;
+                System.IO.Console.printf("%d shared=%d other=%d\n", a.get(), shared, c.bump());
+                return;
+            }
+        }
+    }
+}
