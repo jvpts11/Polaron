@@ -147,28 +147,45 @@ void checkBitField(const ast::ClassDecl& cls, const ast::FieldDecl& f,
 // True if `init` is an integer literal (optionally negated) whose value fits the integer type
 // `target`. A compile-time literal coerces to a narrower type when it fits, so `byte b = 5;` and
 // `short s = 300;` are accepted without an explicit cast (the value is known at compile time).
-bool intLiteralFits(const ast::Expr& init, const std::string& target) {
-    if (!isIntName(target)) return false;
-    const ast::Expr* e = &init;
+// The value of an integer literal, if that is what this expression is -- `-3`, `0x1f`, `0b1010`,
+// `1_000` and plain decimal, with the leading minus folded in. False for anything else, and false
+// for a literal too large to read, so a caller never acts on a number that was not there.
+//
+// Split out of `intLiteralFits` rather than copied: two readers of the same lexeme is two chances
+// to disagree about what `0b` means, and this project has paid for that shape more than once.
+bool readIntLiteral(const ast::Expr& e, long long& out) {
+    const ast::Expr* p = &e;
     bool neg = false;
-    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e); u != nullptr && u->op == "-") {
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(p); u != nullptr && u->op == "-") {
         neg = true;
-        e = u->operand.get();
+        p = u->operand.get();
     }
-    const auto* lit = dynamic_cast<const ast::IntLiteralExpr*>(e);
+    const auto* lit = dynamic_cast<const ast::IntLiteralExpr*>(p);
     if (lit == nullptr) return false;
     std::string s;
     for (char c : lit->text) if (c != '_') s += c;
-    long long v = 0;
     try {
         if (s.size() > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B'))
-            v = std::stoll(s.substr(2), nullptr, 2);
+            out = std::stoll(s.substr(2), nullptr, 2);
         else
-            v = std::stoll(s, nullptr, 0);  // 0x / 0 (octal) / decimal
+            out = std::stoll(s, nullptr, 0);  // 0x / 0 (octal) / decimal
     } catch (...) {
-        return true;  // unparseable here -> don't block; codegen handles the value
+        return false;
     }
-    if (neg) v = -v;
+    if (neg) out = -out;
+    return true;
+}
+
+bool intLiteralFits(const ast::Expr& init, const std::string& target) {
+    if (!isIntName(target)) return false;
+    long long v = 0;
+    if (!readIntLiteral(init, v)) {
+        // Either not a literal at all, or one this cannot read. The second case must not block:
+        // codegen handles the value, and refusing here would reject a program for a limitation of
+        // this function.
+        return dynamic_cast<const ast::IntLiteralExpr*>(&init) != nullptr ||
+               dynamic_cast<const ast::UnaryExpr*>(&init) != nullptr;
+    }
     const unsigned bits = intBits(target);
     const bool uns = !target.empty() && target[0] == 'u';
     if (uns) {
@@ -4262,6 +4279,64 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                     }
         const std::string vt = typeOf(*assign->value);
         checkAssignTarget(*assign->target, vt, assign->loc, assign->value.get());
+        // A CONSTANT THAT DOES NOT FIT A BIT FIELD STORES A DIFFERENT VALUE, and says so.
+        //
+        // A WARNING AND NOT AN ERROR, deliberately. Truncation on store is spec 11.1 -- "a value
+        // that overflows N bits is truncated on store" -- and `bit_fields.ldp3` tests it on purpose
+        // with `f.a = 20` into four bits. That is a decided semantics and this is not the place to
+        // overturn it; what it is not is a reason to stay SILENT when the value is a literal, which
+        // the compiler can read at the declaration with nothing to run.
+        //
+        // What it catches, and did on the day it was written: the fauna layout budgets a beast at
+        // twenty bytes with `int species : 5` and `int state : 3`, and writes beside them that the
+        // field "holds eight values and the tick needs exactly eight". True about the count and
+        // wrong about the range -- a signed 3-bit field stops at 3, and a signed 5-bit one at 15
+        // against eighteen species. Four states and two species would have been stored as something
+        // else, in silence, in a document whose every other number had been measured.
+        //
+        // A computed value is a different question: it needs a check at the store, and refusing to
+        // answer the half that is free is not made better by the half that is not.
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
+            // NOT THROUGH A CLASS NAME. `Test.criterion = ""` is a static field, and asking
+            // `typeOf` for the type of `Test` reports it as an undeclared VARIABLE -- which is how
+            // the first version of this check broke the standard library's own prelude for every
+            // program that compiled. A bit field cannot be static anyway (`checkBitField` says so:
+            // a static field has storage of its own, which is the opposite of sharing a unit), so
+            // there is nothing here to check and nothing is lost by not asking.
+            const auto* base = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+            const bool throughClassName = base != nullptr && classes_.count(base->name) > 0;
+            const std::string owner = throughClassName ? std::string() : baseType(typeOf(*mem->object));
+            const FieldInfo* fi = owner.empty() ? nullptr : findField(owner, mem->member);
+            if (fi != nullptr && fi->bitWidth > 0 && fi->bitWidth < 64) {
+                long long v = 0;
+                if (readIntLiteral(*assign->value, v)) {
+                    const std::string ft = baseType(fi->type);
+                    const bool uns = !ft.empty() && ft[0] == 'u';
+                    const long long lo = uns ? 0 : -(1LL << (fi->bitWidth - 1));
+                    const long long hi = uns ? (1LL << fi->bitWidth) - 1
+                                             : (1LL << (fi->bitWidth - 1)) - 1;
+                    if (v < lo || v > hi) {
+                        const long long kept =
+                            uns ? (v & ((1LL << fi->bitWidth) - 1))
+                                : ((v & ((1LL << fi->bitWidth) - 1)) ^ (1LL << (fi->bitWidth - 1))) -
+                                      (1LL << (fi->bitWidth - 1));
+                        const std::string fix =
+                            (!uns && v > hi)
+                                ? ". A SIGNED field spends one of its " +
+                                  std::to_string(fi->bitWidth) + " bits on the sign, so it stops at " +
+                                  std::to_string(hi) + " -- if these are counts or ordinals, declare "
+                                  "it unsigned"
+                                : ". Widen the field, or store a value in range";
+                        warn("the value " + std::to_string(v) + " does not fit '" + mem->member +
+                                 "', a " + std::to_string(fi->bitWidth) + "-bit '" + ft +
+                                 "' field holding " + std::to_string(lo) + " to " +
+                                 std::to_string(hi) + ". It is truncated on store (spec 11.1) and "
+                                 "reads back as " + std::to_string(kept) + fix,
+                             assign->loc);
+                    }
+                }
+            }
+        }
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get())) {
             moved_.erase(id->name);  // reassignment reactivates the variable
             activationOwned_.erase(id->name);  // reassigned: no longer the tracked activation-owned object

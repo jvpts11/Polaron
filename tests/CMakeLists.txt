@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.35")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.36")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.35")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.36")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3732,6 +3732,16 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=before ~Dog 1 mid ~Dog 2 after"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A literal that does not fit a bit field WARNS and still truncates: truncation on store is
+        # spec 11.1 and `bit_fields.ldp3` tests it on purpose, so this does not overturn it -- it
+        # refuses to be silent about the half the compiler can read with nothing to run. Found in a
+        # real spec: the fauna layout budgets `int state : 3` for eight states, and a signed 3-bit
+        # field stops at 3.
+        add_test(NAME sema_warns_on_bitfield_overflow COMMAND ldp3c
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/bit_fields.ldp3")
+        set_tests_properties(sema_warns_on_bitfield_overflow PROPERTIES
+            PASS_REGULAR_EXPRESSION "does not fit 'a'")
 
         # `System.Os.Signals`: installing an interrupt handler without an `extern cdecl` in user
         # code. The debt is recorded in docs/design/interrupt.md -- the keyword worked and every
