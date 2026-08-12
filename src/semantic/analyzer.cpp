@@ -1284,6 +1284,16 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
 void SemanticAnalyzer::registerNewtypes(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            // A TRANSFORMER MUST BE IMPORTABLE, or it can only be applied in the file that declares
+            // it. It is not a type -- it is never instantiated and never names a value -- but
+            // `applies TRoster` in another file is exactly the ordinary thing to do with one, and
+            // the import validator answers from this registry. Without it the whole feature was
+            // single-file, which is the opposite of "a transformer is the coupling between two
+            // types": the two types are rarely in the same file, and neither is the coupling.
+            for (const ast::ClassDecl& t : ns.transformers) {
+                typeNamespace_[t.name] = ns.name;
+                typeBundle_[t.name] = bundle.name;
+            }
             for (const ast::TypeAliasDecl& a : ns.typeAliases) {
                 if (!a.isNewtype) continue;  // `typealias` is resolved before sema; only newtypes survive
                 if (newtypes_.count(a.name) > 0 || classes_.count(a.name) > 0 ||
@@ -1294,6 +1304,13 @@ void SemanticAnalyzer::registerNewtypes(const ast::Program& program) {
                 const std::string under = typeRefStr(a.target);
                 checkBitCounted(under, a.target.loc);  // newtype over int64 etc. is freestanding-only
                 newtypes_[a.name] = under;
+                // A NEWTYPE IS A TYPE, SO IT CAN BE IMPORTED. Without this the import validator --
+                // which answers from `typeNamespace_` -- reported `import Agents.Sim.BeastId;` as an
+                // unknown symbol, so a newtype could only be used in the file that declared it. That
+                // is the opposite of what it is for: the whole point is to carry a distinct type
+                // ACROSS a seam, and every seam in a real program crosses a file.
+                typeNamespace_[a.name] = ns.name;
+                typeBundle_[a.name] = bundle.name;
             }
         }
     }

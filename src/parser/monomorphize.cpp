@@ -43,6 +43,23 @@ using InstMap = std::map<std::string, std::pair<std::string, std::vector<std::st
 // must survive to the analyzer. Populated by resolveTypeAliases and consulted by substType, so the
 // rest of the pipeline only ever sees concrete types.
 std::map<std::string, ast::TypeRef> g_aliases;
+
+// A GENERIC CLASS REFERRING TO ITSELF BY NAME, in expression position.
+//
+// `resolveImplicitThis` runs BEFORE monomorphization, so a bare static field inside `Box<T>` is
+// already rewritten to `Box.made` by the time the template is cloned -- with the TEMPLATE's name.
+// After expansion the class is `Box$int` and `Box` names nothing, so the error was "use of
+// undeclared variable 'Box'" on a line that does not mention `Box`. The visible effect was that a
+// generic class could not have a static field at all.
+//
+// It cannot be fixed by putting the name in the ordinary substitution map: that map is applied to
+// TYPES as well, so `ArrayList` inside `ArrayList<T>` became `ArrayList$long$long` and the prelude
+// stopped compiling. The name is only rewritten where it is an EXPRESSION -- a receiver -- which is
+// the one position where it means "the class I am in" rather than "this type".
+//
+// Set for the duration of one instantiation's clone, and empty otherwise.
+std::string g_selfTemplate;
+std::string g_selfConcrete;
 std::set<std::string> g_enumNames;  // enum names in the program (for EnumName.parse() force-mono)
 
 // Resolve a bare type-name string (a typeArg, superclass, interface, or cast target) through the
@@ -163,7 +180,7 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
     if (const auto* x = dynamic_cast<const ast::IdentifierExpr*>(e)) {
         auto n = std::make_unique<ast::IdentifierExpr>();
         n->loc = x->loc;
-        n->name = x->name;
+        n->name = (!g_selfTemplate.empty() && x->name == g_selfTemplate) ? g_selfConcrete : x->name;
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::IntLiteralExpr*>(e)) {
@@ -2108,7 +2125,14 @@ bool monomorphize(ast::Program& program) {
         }
         Subst s;
         for (std::size_t i = 0; i < args.size(); ++i) s[tit->second->typeParams[i]] = args[i];
+        // NOT `s[name] = m`: that map is applied to types too, and `ArrayList` inside
+        // `ArrayList<T>` would become `ArrayList$long$long`. The self-reference is rewritten only
+        // where it is an expression -- see `g_selfTemplate`.
+        g_selfTemplate = tit->second->name;
+        g_selfConcrete = m;
         ast::ClassDecl concrete = cloneClass(*tit->second, s, m);
+        g_selfTemplate.clear();
+        g_selfConcrete.clear();
         // A generic base (`extends Base<T>`) is itself an instantiation to generate.
         if (!concrete.superclassTypeArgs.empty() && generics.count(concrete.superclass) > 0) {
             const std::string sm =
