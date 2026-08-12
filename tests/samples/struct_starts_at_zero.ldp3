@@ -1,0 +1,58 @@
+import System.IO.Console;
+program StructStartsAtZero;
+
+// A VALUE STRUCT WITH NO CONSTRUCTOR STARTS AT ZERO.
+//
+// A class was always safe: the analyzer refuses a constructor that leaves a field unassigned, so
+// every field of a class is written before anything can read it. A struct that declares no
+// constructor has nobody to hold to that promise -- and it used to be handed back with whatever was
+// on the stack. A bitmask read as a set with eleven things in it; a count read as two billion.
+//
+// Found in a real game the first time one was used: a fresh `Belonging` claimed nationalities nobody
+// had given it, and a fresh `Mind` had conditions nobody had diagnosed. Reading uninitialized memory
+// is the no-UB principle's own case, so the answer is the plain one.
+//
+// A struct that DOES declare a constructor is untouched: the author is saying there what the initial
+// values are, and `Counted` below proves the constructor still wins.
+// Prints:
+//   fresh: n=0 bits=0 flag=0
+//   set: bit3=1 bit4=0
+//   own: n=7
+public bundle main {
+    public namespace app {
+
+        public struct Bare {
+            public mutable int n;
+            public mutable long bits;
+            public mutable boolean flag;
+
+            public method take(int k) returns void {
+                bits = bits | (cast<long>(1) << k);
+            }
+
+            public method has(int k) returns boolean {
+                return ((bits >> k) & cast<long>(1)) != 0;
+            }
+        }
+
+        public struct Counted {
+            public mutable int n;
+            public constructor Counted() {
+                n = 7;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Bare fresh = new Bare();
+                System.IO.Console.printf("fresh: n=%d bits=%d flag=%d\n",
+                                         fresh.n, cast<int>(fresh.bits), fresh.flag);
+                fresh.take(3);
+                System.IO.Console.printf("set: bit3=%d bit4=%d\n", fresh.has(3), fresh.has(4));
+                Counted own = new Counted();
+                System.IO.Console.printf("own: n=%d\n", own.n);
+                return;
+            }
+        }
+    }
+}

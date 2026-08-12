@@ -313,6 +313,21 @@ void Parser::fail(const std::string& message, SourceLocation loc) {
     throw ParseError{message, loc};
 }
 
+// A SOFT KEYWORD is an ordinary identifier that means something in exactly one position. It is the
+// difference between a language that reserves a word and one that merely recognizes it: `expecting`
+// means something after `unimport Foo`, and is a field name anywhere else -- which it has to be,
+// because an agent's `byte expecting` (how many children are coming) is an ordinary thing to write.
+bool Parser::checkWord(const char* word) const {
+    return current().kind == TokenKind::Identifier && current().lexeme == word;
+}
+
+void Parser::expectWord(const char* word, const char* what) {
+    if (!checkWord(word))
+        fail(std::string("expected ") + what + " but found '" + current().lexeme + "'",
+             current().loc);
+    advance();
+}
+
 std::string Parser::parseVisibilityOpt() {
     switch (current().kind) {
         case TokenKind::KwPublic:    advance(); return "public";
@@ -2619,7 +2634,7 @@ ast::StmtPtr Parser::parseStatement() {
             ++k;
             while (peek(k).kind == TokenKind::Dot && peek(k + 1).kind == TokenKind::Identifier) k += 2;
         }
-        const bool validated = peek(k).kind == TokenKind::KwExpecting;
+        const bool validated = peek(k).kind == TokenKind::Identifier && peek(k).lexeme == "expecting";
 
         // `unimport X expecting { ... }` as a bare statement: an expression statement.
         if (check(TokenKind::KwUnimport) && validated) {
@@ -2637,7 +2652,7 @@ ast::StmtPtr Parser::parseStatement() {
             r->target = expect(TokenKind::Identifier, "a type name").lexeme;
             while (match(TokenKind::Dot))
                 r->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
-            expect(TokenKind::KwExpecting, "'expecting'");
+            expectWord("expecting", "'expecting'");
             r->expected = parseExpression();  // the value produced by the matching unimport
             r->expecting = parseExpectingTail(r->usingVars);
             expect(TokenKind::KwOnFailure, "'onFailure' (mandatory for a validated reimport)");
@@ -4565,7 +4580,7 @@ ast::ExprPtr Parser::parseUnimportExpr() {
     expect(TokenKind::KwUnimport, "'unimport'");
     e->target = expect(TokenKind::Identifier, "a type name").lexeme;
     while (match(TokenKind::Dot)) e->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
-    expect(TokenKind::KwExpecting, "'expecting'");
+    expectWord("expecting", "'expecting'");
     e->expecting = parseExpectingTail(e->usingVars);
     return e;
 }

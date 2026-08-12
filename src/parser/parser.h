@@ -70,6 +70,11 @@ private:
     ast::EnumDecl parseEnum();
     // Methods alone never make an enum java-style. Shared by both spellings of its body.
     static void normalizeEnumStyle(ast::EnumDecl& e);
+    // SOFT KEYWORDS: a word that means something in exactly one position and is an ordinary name
+    // everywhere else. `within`, `get`/`set`/`init` and `expecting` are the ones; each costs the
+    // language nothing and gives every program its word back.
+    bool checkWord(const char* word) const;
+    void expectWord(const char* word, const char* what);
     ast::CatalogDecl parseCatalog();
     ast::LiteralDecl parseLiteral();
     std::unique_ptr<ast::LiteralDecl> parseLiteralMember(std::string visibility, bool isComptime);
