@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.39")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.40")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.39")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.40")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3764,6 +3764,21 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sealed_enum_match.ldp3"
             "-DEXPECTED=40 0 0 count=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A `permits` enum with a BODY, and a total match-EXPRESSION over its own constants inside
+        # one of its methods. Two halves of the same missing thing: `permits` said what the constants
+        # are and then refused to let them do anything, and the expression form of `match` looked
+        # every case name up as a TYPE -- so the two spellings of `sealed enum` and the two forms of
+        # `match` each disagreed about what they could handle, for no reason anybody chose. An enum
+        # whose whole point is that every case is named is the first thing you want to answer a
+        # question with, arm by arm, with no `default` to hide the constant added next year.
+        add_test(NAME codegen_sealed_enum_permits_body_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sealed_enum_permits_body.ldp3"
+            "-DEXPECTED=it was caught it got away it ran out of food n=3 ord=2 sz=4"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

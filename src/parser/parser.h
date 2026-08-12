@@ -68,6 +68,8 @@ private:
     ast::ClassDecl parseClassOrInterface();
     ast::ClassDecl parseRecord();
     ast::EnumDecl parseEnum();
+    // Methods alone never make an enum java-style. Shared by both spellings of its body.
+    static void normalizeEnumStyle(ast::EnumDecl& e);
     ast::CatalogDecl parseCatalog();
     ast::LiteralDecl parseLiteral();
     std::unique_ptr<ast::LiteralDecl> parseLiteralMember(std::string visibility, bool isComptime);

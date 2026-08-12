@@ -5454,6 +5454,56 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string subjBase = baseType(subjType);
         std::string resultType;
         const auto subjDollarM = subjBase.find('$');
+        // AN ENUM SUBJECT, exactly as the statement form takes one. The cases name CONSTANTS rather
+        // than types, so the type lookup below would call every one of them an unknown type -- which
+        // it did, and which made the two forms of `match` disagree about what they can match on for
+        // no reason anybody chose. An enum whose whole point is that every case is named is the
+        // first thing you want to write a total match-EXPRESSION over: one arm per constant, each
+        // yielding a value, no `default` to hide the constant added next year.
+        if (auto en = enums_.find(subjBase); en != enums_.end()) {
+            const std::vector<std::string>& constants = en->second;
+            for (const ast::MatchCase& c : me->cases) {
+                if (std::find(constants.begin(), constants.end(), c.typeName) == constants.end())
+                    error("'" + c.typeName + "' is not a constant of enum '" + subjBase + "'",
+                          c.loc);
+                if (!c.bindings.empty())
+                    error("'case " + c.typeName + "' cannot bind anything: an enum constant is a "
+                          "value, not a shape with fields to take apart",
+                          c.loc);
+                pushScope();
+                const std::string at = c.result ? typeOf(*c.result) : analyzeYieldBlock(c.body);
+                popScope();
+                if (resultType.empty()) resultType = at;
+            }
+            if (me->defaultResult) {
+                const std::string dt = typeOf(*me->defaultResult);
+                if (resultType.empty()) resultType = dt;
+            } else if (me->defaultBody) {
+                const std::string dt = analyzeYieldBlock(*me->defaultBody);
+                if (resultType.empty()) resultType = dt;
+            }
+            const bool hasDefault = me->defaultResult != nullptr || me->defaultBody != nullptr;
+            if (sealedEnums_.count(subjBase) > 0) {
+                std::string missing;
+                for (const std::string& k : constants) {
+                    bool covered = false;
+                    for (const ast::MatchCase& c : me->cases)
+                        if (c.typeName == k) covered = true;
+                    if (!covered) missing += (missing.empty() ? "" : ", ") + k;
+                }
+                if (!missing.empty() && !hasDefault)
+                    error("match on sealed enum '" + subjBase + "' is not exhaustive: missing " +
+                              missing,
+                          me->loc);
+            } else if (!hasDefault) {
+                error("match on enum '" + subjBase + "' requires a 'default' arm, or declare the "
+                      "enum `sealed` so every constant must be covered and a new one cannot be "
+                      "forgotten here",
+                      me->loc);
+            }
+            me->resultType = resultType;
+            return resultType;
+        }
         for (const ast::MatchCase& c : me->cases) {
             // Map a bare case name to the subject's instantiation (Ok -> Ok$int$int) when that exists;
             // fall back to the bare name for a non-generic concrete subclass (Leaf extends Base<int>).
