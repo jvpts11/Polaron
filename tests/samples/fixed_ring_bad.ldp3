@@ -1,0 +1,26 @@
+import System.IO.Console;
+program FixedRingBad;
+
+// Constants fold to a fixed point, so order does not matter -- but a RING of them has no value to
+// start from and never resolves. It is refused, and the message says which of the two it might be:
+// a genuine non-constant, or constants defined in terms of each other. From the compiler's side,
+// after nothing more can move, those two look the same.
+public bundle main {
+    public namespace app {
+
+        public class Here {
+            public static fixed int A = There.B + 1;
+        }
+
+        public class There {
+            public static fixed int B = Here.A + 1;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("a=%d\n", Here.A);
+                return;
+            }
+        }
+    }
+}

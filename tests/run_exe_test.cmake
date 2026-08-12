@@ -90,7 +90,15 @@ endif()
 if(NOT err STREQUAL "")
     message(STATUS "stderr: ${err}")   # keep panics/alerts visible in the test log
 endif()
-if(NOT rc EQUAL 0)
+# EXPECTCODE is optional: the exit code the program must end with. Without it, anything but 0 is a
+# failure -- which was the only thing this harness could express until an LDP3 program could fail on
+# purpose (`System.Os.Exit`). A run that is SUPPOSED to refuse has to be told apart from one that
+# crashed, and the number is the only thing that tells them apart.
+if(DEFINED EXPECTCODE)
+    if(NOT rc EQUAL ${EXPECTCODE})
+        message(FATAL_ERROR "program exited with ${rc}, expected ${EXPECTCODE}")
+    endif()
+elseif(NOT rc EQUAL 0)
     message(FATAL_ERROR "program exited with ${rc}")
 endif()
 

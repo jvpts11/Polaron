@@ -3012,41 +3012,79 @@ void SemanticAnalyzer::checkPersistentReleases() {
     }
 }
 
-// Pass 2: fold each const initializer (in declaration order, so a const may refer
-// to earlier ones) and validate it is a compile-time constant of the right kind.
+// Pass 2: fold every const initializer and validate it is a compile-time constant of the right kind.
+//
+// TO A FIXED POINT, AND NOT IN DECLARATION ORDER. A constant defined in terms of another one is the
+// ordinary way to say "this is the same number as that" -- `fixed int HIGH_CUT = Contour.HIGHLAND;`
+// -- and folding in declaration order made that legal only when the other constant happened to be
+// declared earlier, in a file the compiler happened to read first. The diagnostic was worse than the
+// limit: it said the initializer "must be a compile-time constant" about something that plainly was
+// one, so the reader went looking for the wrong thing (ledger RL-9, found while relayouting a
+// world's contour table).
+//
+// So: sweep, and sweep again while anything new resolved. Order stops mattering, across classes and
+// across files. Only what is still unresolved when nothing more can move is reported -- which is a
+// genuine non-constant, or a ring of constants defined in terms of each other, and the message says
+// both are possible because from here they look the same.
 void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
-    auto fold = [&](const ast::ConstDecl& c, const std::string& owner) {
-        const std::string key = owner.empty() ? c.name : owner + "." + c.name;
-        if (constTypes_.count(key) == 0) return;  // rejected in pass 1
-        const std::string type = constTypes_[key];
-        if (c.init == nullptr) {
-            error("fixed '" + key + "' must have an initializer", c.loc);
-            return;
-        }
-        if (isFloatType(type)) {
-            double d;
-            if (!evalConstDouble(*c.init, d, &constDoubles_, &constInts_, &comptimeMethods_,
-                                 &enums_))
-                error("fixed '" + key + "' initializer must be a compile-time constant", c.loc);
-            else
-                constDoubles_[key] = d;
-        } else {
-            long long v;
-            if (!evalConstInt(*c.init, v, &constInts_, &comptimeMethods_, &constDoubles_, &enums_))
-                error("fixed '" + key + "' initializer must be a compile-time constant", c.loc);
-            else
-                constInts_[key] = v;
-        }
+    struct Pending {
+        const ast::ConstDecl* decl;
+        std::string owner;
     };
+    std::vector<Pending> waiting;
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
-            for (const ast::ConstDecl& c : ns.consts) fold(c, "");
+            for (const ast::ConstDecl& c : ns.consts) waiting.push_back({&c, ""});
             for (const ast::ClassDecl& cls : ns.classes)
                 for (const ast::MemberPtr& m : cls.members)
                     if (const auto* c = dynamic_cast<const ast::ConstDecl*>(m.get()))
-                        fold(*c, cls.name);
+                        waiting.push_back({c, cls.name});
         }
     }
+    // Answers whether it resolved. Silent while sweeping; the last call reports.
+    auto fold = [&](const Pending& p, bool report) -> bool {
+        const ast::ConstDecl& c = *p.decl;
+        const std::string key = p.owner.empty() ? c.name : p.owner + "." + c.name;
+        if (constTypes_.count(key) == 0) return true;  // rejected in pass 1: nothing to wait for
+        if (c.init == nullptr) {
+            if (report) error("fixed '" + key + "' must have an initializer", c.loc);
+            return true;  // never going to resolve, and the reason is not order
+        }
+        const std::string type = constTypes_[key];
+        if (isFloatType(type)) {
+            double d;
+            if (evalConstDouble(*c.init, d, &constDoubles_, &constInts_, &comptimeMethods_,
+                                &enums_)) {
+                constDoubles_[key] = d;
+                return true;
+            }
+        } else {
+            long long v;
+            if (evalConstInt(*c.init, v, &constInts_, &comptimeMethods_, &constDoubles_, &enums_)) {
+                constInts_[key] = v;
+                return true;
+            }
+        }
+        if (report)
+            error("fixed '" + key + "' initializer must be a compile-time constant. If it names "
+                  "another `fixed`, check that one is not defined in terms of this one -- a ring of "
+                  "constants has no value to start from",
+                  c.loc);
+        return false;
+    };
+    bool moved = true;
+    while (moved) {
+        moved = false;
+        for (auto it = waiting.begin(); it != waiting.end();) {
+            if (fold(*it, /*report=*/false)) {
+                it = waiting.erase(it);
+                moved = true;
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const Pending& p : waiting) fold(p, /*report=*/true);
 }
 
 // Resolves each import against the spec 2.7 model: an intra-program import names the FULL path,
@@ -4297,13 +4335,18 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                     }
         const std::string vt = typeOf(*assign->value);
         checkAssignTarget(*assign->target, vt, assign->loc, assign->value.get());
-        // A CONSTANT THAT DOES NOT FIT A BIT FIELD STORES A DIFFERENT VALUE, and says so.
+        // A LITERAL THAT DOES NOT FIT A BIT FIELD IS REFUSED.
         //
-        // A WARNING AND NOT AN ERROR, deliberately. Truncation on store is spec 11.1 -- "a value
-        // that overflows N bits is truncated on store" -- and `bit_fields.ldp3` tests it on purpose
-        // with `f.a = 20` into four bits. That is a decided semantics and this is not the place to
-        // overturn it; what it is not is a reason to stay SILENT when the value is a literal, which
-        // the compiler can read at the declaration with nothing to run.
+        // AN ERROR FOR A LITERAL, AND TRUNCATION FOR EVERYTHING ELSE, which is a line drawn on
+        // purpose (2026-08-13). Truncation on store is spec 11.1 -- "a value that overflows N bits
+        // is truncated on store" -- and that stands for a value the compiler cannot read: a count, a
+        // sum, anything computed. It is what `bit_fields.ldp3` tests, through a variable.
+        //
+        // A LITERAL IS A DIFFERENT CLAIM. The compiler holds the value and the width and can see
+        // they do not fit, and there is no reading of `state = 6` into three bits under which the
+        // author wanted 6 to become -2. Nothing is lost by refusing it -- the author writes a value
+        // that fits, or widens the field, and both are things they meant. It began as a warning; the
+        // warning was right about the danger and too quiet for what it had found.
         //
         // What it catches, and did on the day it was written: the fauna layout budgets a beast at
         // twenty bytes with `int species : 5` and `int state : 3`, and writes beside them that the
@@ -4345,12 +4388,12 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                                   std::to_string(hi) + " -- if these are counts or ordinals, declare "
                                   "it unsigned"
                                 : ". Widen the field, or store a value in range";
-                        warn("the value " + std::to_string(v) + " does not fit '" + mem->member +
-                                 "', a " + std::to_string(fi->bitWidth) + "-bit '" + ft +
-                                 "' field holding " + std::to_string(lo) + " to " +
-                                 std::to_string(hi) + ". It is truncated on store (spec 11.1) and "
-                                 "reads back as " + std::to_string(kept) + fix,
-                             assign->loc);
+                        error("the value " + std::to_string(v) + " does not fit '" + mem->member +
+                                  "', a " + std::to_string(fi->bitWidth) + "-bit '" + ft +
+                                  "' field holding " + std::to_string(lo) + " to " +
+                                  std::to_string(hi) + ". It would be truncated on store and read "
+                                  "back as " + std::to_string(kept) + fix,
+                              assign->loc);
                     }
                 }
             }

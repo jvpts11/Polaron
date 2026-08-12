@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.40")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.41")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.40")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.41")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3789,15 +3789,55 @@ if(LDP3_WITH_LLVM)
         set_tests_properties(sema_rejects_inexhaustive_sealed_enum_match PROPERTIES
             PASS_REGULAR_EXPRESSION "not exhaustive: missing Escaped")
 
-        # A literal that does not fit a bit field WARNS and still truncates: truncation on store is
-        # spec 11.1 and `bit_fields.ldp3` tests it on purpose, so this does not overturn it -- it
-        # refuses to be silent about the half the compiler can read with nothing to run. Found in a
-        # real spec: the fauna layout budgets `int state : 3` for eight states, and a signed 3-bit
-        # field stops at 3.
-        add_test(NAME sema_warns_on_bitfield_overflow COMMAND ldp3c
+        # A LITERAL that does not fit a bit field is REFUSED, and a computed value is still
+        # truncated. The line is drawn between what the compiler can read and what it cannot:
+        # `b.state = 6` into three signed bits is a mistake it can see with nothing to run, and
+        # there is no reading of it under which the author wanted -2. Truncation stays for counts
+        # and sums -- spec 11.1 -- and `bit_fields.ldp3` tests that half, through variables.
+        #
+        # Raised from a warning on 2026-08-13 because of what the warning found: the fauna layout of
+        # a real game budgeted `int state : 3` for eight states and `int species : 5` for eighteen,
+        # in a document whose every other number had been measured.
+        add_test(NAME sema_rejects_bitfield_literal_overflow COMMAND ldp3c
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/bit_field_literal_bad.ldp3")
+        set_tests_properties(sema_rejects_bitfield_literal_overflow PROPERTIES
+            PASS_REGULAR_EXPRESSION "does not fit 'state'")
+
+        # And the computed half still compiles clean: same struct, same overflow, through a variable.
+        add_test(NAME sema_accepts_bitfield_runtime_truncation COMMAND ldp3c
             --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/bit_fields.ldp3")
-        set_tests_properties(sema_warns_on_bitfield_overflow PROPERTIES
-            PASS_REGULAR_EXPRESSION "does not fit 'a'")
+
+        # A `fixed` may be defined in terms of another one, in another class, declared LATER --
+        # constants fold to a fixed point rather than in declaration order. It was legal only when
+        # the other constant happened to come first, in a file the compiler happened to read first,
+        # and the diagnostic blamed the initializer for not being constant when it plainly was.
+        add_test(NAME codegen_fixed_from_other_class_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/fixed_from_other_class.ldp3"
+            "-DEXPECTED=cut=6200 half=3100 band=2 name=6200"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # And a ring of them still fails, with a message that says so rather than blaming the
+        # initializer for not being a constant.
+        add_test(NAME sema_rejects_constant_ring COMMAND ldp3c
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/fixed_ring_bad.ldp3")
+        set_tests_properties(sema_rejects_constant_ring PROPERTIES
+            PASS_REGULAR_EXPRESSION "ring of")
+
+        # A PROGRAM CAN FAIL ON PURPOSE. `main` returns void, so every LDP3 program exited 0 -- one
+        # that printed "I do not know that command" and one that did what it was asked were the same
+        # run to a script, a build, or a gate. Checked on both halves: the code arrives, and what was
+        # printed before it still reaches the reader (`exit`, not `_exit`).
+        add_test(NAME codegen_exit_code_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/exit_code.ldp3"
+            "-DEXPECTED=refused: I do not know that command"
+            "-DEXPECTCODE=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # `System.Os.Signals`: installing an interrupt handler without an `extern cdecl` in user
         # code. The debt is recorded in docs/design/interrupt.md -- the keyword worked and every
