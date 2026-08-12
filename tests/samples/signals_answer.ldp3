@@ -1,0 +1,59 @@
+import System.IO.Console;
+import System.Os.Signals;
+program SignalsAnswer;
+
+// `System.Os.Signals` -- installing a handler without an `extern cdecl` in your own code.
+//
+// The debt this pays is recorded in docs/design/interrupt.md: the keyword worked, and every user of
+// it had to begin by declaring `signal()` themselves. The extern still exists; it exists ONCE,
+// inside the library, instead of in everybody's program.
+//
+// The handler does almost nothing, and that is the shape rather than a shortcut. An interrupt may
+// not allocate or block -- the code it interrupted may be standing inside the allocator, or holding
+// the lock this body would take -- so it stores a flag and the main loop reads it at a point of its
+// own choosing. That is what `need_resched` is, and it is what the design note settled on after
+// measuring that the alternative does not survive the optimizer.
+public bundle Probe {
+    public namespace App {
+
+        public class Watcher {
+            // Shared with something that can preempt this program, so it says so. `volatile` and
+            // `atomic<T>` are the two ways LDP3 already has to say it, and the rule invents no
+            // third.
+            private volatile mutable int asked;
+
+            public constructor Watcher() {
+                asked = 0;
+            }
+
+            public interrupt(int sig) returns void {
+                asked = sig;
+            }
+
+            public method asked() returns int {
+                return asked;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Watcher w = new Watcher();
+                // Binding and taking the entry point are ONE act: a vector holds an address and
+                // nothing else, so there is no way to get the address without saying whose handler
+                // it is.
+                boolean took = Signals.answer(Signals.INTERRUPT, w.interrupt);
+                System.IO.Console.printf("installed=%d asked=%d\n", took, w.asked());
+                // And it fires for real: a program can signal itself, which is how a supervisor's
+                // request reaches the same shutdown path an operator's Ctrl-C takes -- and the only
+                // way to exercise a handler without a second process.
+                Signals.sendToSelf(Signals.INTERRUPT);
+                System.IO.Console.printf("after=%d\n", w.asked());
+                // And handing it back is how a program that has finished its own shutdown stops
+                // swallowing a second Ctrl-C.
+                boolean gave = Signals.giveBack(Signals.INTERRUPT);
+                System.IO.Console.printf("gaveback=%d\n", gave);
+                return;
+            }
+        }
+    }
+}
