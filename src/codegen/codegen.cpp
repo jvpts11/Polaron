@@ -12827,10 +12827,42 @@ struct CodeGenerator::Impl {
         builder.SetInsertPoint(endBB);
     }
 
+    // A match whose subject is an ENUM: the arms name constants, so the test is the ordinal and not
+    // a vtable. Nothing is bound out of a constant -- it is a value, not a shape with fields.
+    //
+    // The arms are compared in the order they were written, which matters for nothing here (a value
+    // equals exactly one constant) and keeps the emitted branch chain readable beside the source.
+    void emitEnumMatch(const ast::MatchStmt& s, llvm::Value* subj,
+                       const std::vector<std::string>& constants) {
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "match.end", fn);
+        for (const ast::MatchCase& c : s.cases) {
+            const auto at = std::find(constants.begin(), constants.end(), c.typeName);
+            if (at == constants.end()) continue;  // the analyzer has already refused this
+            const long long ord = std::distance(constants.begin(), at);
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "match.case", fn);
+            llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(context, "match.next", fn);
+            llvm::Value* want = llvm::ConstantInt::get(subj->getType(), ord);
+            builder.CreateCondBr(builder.CreateICmpEQ(subj, want, "is"), bodyBB, nextBB);
+            builder.SetInsertPoint(bodyBB);
+            emitBlock(c.body);
+            if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
+            builder.SetInsertPoint(nextBB);
+        }
+        if (s.defaultBody) emitBlock(*s.defaultBody);
+        if (builder.GetInsertBlock()->getTerminator() == nullptr) builder.CreateBr(endBB);
+        builder.SetInsertPoint(endBB);
+    }
+
     void emitMatch(const ast::MatchStmt& s) {
         llvm::Value* subj = emitExpr(*s.subject);
         if (subj == nullptr) return;
         if (isValueVariant(typeName(*s.subject))) { emitValueMatch(s, subj); return; }
+        if (auto en = enums.find(baseType(typeName(*s.subject)));
+            en != enums.end() && subj->getType()->isIntegerTy()) {
+            emitEnumMatch(s, subj, en->second);
+            return;
+        }
         auto sit = classes.find(clsKey(typeName(*s.subject)));
         if (sit == classes.end() || !sit->second.hasVtable) {
             error("match subject must be a polymorphic class", s.loc);

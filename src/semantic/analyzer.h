@@ -356,6 +356,10 @@ private:
     void collectFieldsAssigned(const ast::Block* body, std::set<std::string>& assigned,
                                std::set<std::string>& visited) const;
     std::unordered_map<std::string, std::vector<std::string>> enums_;  // name -> constants
+    // The enums declared `sealed` (spec 12/16). An enum's constants are a closed list either way;
+    // sealing it says a `match` must COVER them, so a constant added later is reported at every
+    // match that forgot it rather than swallowed by a `default`.
+    std::set<std::string> sealedEnums_;
     std::unordered_set<std::string> javaEnums_;  // enums with fields/methods (spec 12.2), orderable by ordinal
     // `newtype Name = Underlying;` (spec 24): a distinct nominal type. Maps the newtype name to its
     // underlying type. Distinct for type-checking (no implicit conversion either way), but shares

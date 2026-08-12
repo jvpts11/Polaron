@@ -1,0 +1,44 @@
+import System.IO.Console;
+program SealedEnumMatch;
+
+// `sealed enum E permits A, B, C;` and a `match` over its constants -- the form the specifications
+// write throughout and the compiler refused twice over.
+//
+// SEALED MEANS SOMETHING DIFFERENT ON AN ENUM THAN ON A CLASS. A class is sealed to stop anyone
+// extending it; an enum's constants are already a closed list. What the word buys here is that a
+// `match` over it must COVER them: the compiler names the ones that were forgotten, instead of a
+// `default` quietly swallowing the constant somebody adds next year. That is the entire value --
+// "every ending named and counted", as the layouts that asked for it put it.
+//
+// The constants ARE the permits list; there is no body. `{ ... }` remains for the ordinary case and
+// for anything java-style, which needs somewhere to put its members.
+public bundle Probe {
+    public namespace App {
+
+        // How a chase ends. Three outcomes, and a fourth cannot be added without every match over
+        // it being told.
+        public sealed enum Quarry permits Caught, HunterGaveOut, Escaped;
+
+        public class Main {
+            // No `default`, and none is wanted: a default is what makes a new constant invisible.
+            private static method worth(Quarry q) returns int {
+                mutable int meat = 0;
+                match (q) {
+                    case Caught { meat = 40; }
+                    case HunterGaveOut { meat = 0; }
+                    case Escaped { meat = 0; }
+                }
+                return meat;
+            }
+
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("%d %d %d count=%d\n",
+                                         Main.worth(Quarry.Caught),
+                                         Main.worth(Quarry.HunterGaveOut),
+                                         Main.worth(Quarry.Escaped),
+                                         Quarry.count());
+                return;
+            }
+        }
+    }
+}
