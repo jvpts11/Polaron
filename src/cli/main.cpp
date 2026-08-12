@@ -50,7 +50,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "ldp3c 1.0.34";
+constexpr std::string_view kVersion = "ldp3c 1.0.35";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -6124,6 +6124,74 @@ R"LDP3(
                 }
                 sb.append(suf);
                 return sb.toString();
+            }
+        }
+    }
+    )LDP3"
+    // A SEGMENT BOUNDARY, not a section boundary. MSVC accepts at most 65,535 characters in one
+    // string literal, and adding `System.Os` pushed the segment above it -- which the compiler
+    // reports as `error C2026: string too big, TRAILING CHARACTERS TRUNCATED`, so the failure is a
+    // prelude quietly missing its tail rather than a refusal. Splitting costs nothing: the pieces
+    // are concatenated back into one source before anything parses them.
+    R"LDP3(
+    public namespace Os {
+        // THE SIGNALS AN OPERATING SYSTEM CAN SEND A RUNNING PROGRAM, and the way to answer one.
+        //
+        // This exists so that installing a handler does not begin with an `extern cdecl` in
+        // somebody's own code. The `extern` has not disappeared -- it is right here, and reaching a
+        // C symbol that way is the design -- it has disappeared from EVERYBODY'S program, which is
+        // what a standard library is for.
+        //
+        // The numbers are the reason it earns its place. `2` is not a readable SIGINT, and the two
+        // families disagree about which signals exist at all: SIGBREAK is Windows and has no POSIX
+        // counterpart, SIGHUP is POSIX and does not exist on Windows. Only the two named below are
+        // the same number in both, so only those are offered -- a constant that is portable in name
+        // and not in behaviour is worse than no constant.
+        //
+        // What it is FOR: `interrupt` (spec 36 / docs/design/interrupt.md) is a method entered by
+        // something outside the program at a moment the program did not choose, and on a hosted
+        // system that is a signal. The handler must do almost nothing -- it may not allocate or
+        // block, because the code it interrupted may be standing inside the allocator -- so the
+        // shape that works is a flag stored into an `atomic<T>` or a `volatile` field, read by the
+        // main loop at a point of its own choosing.
+        //
+        //     public interrupt(int sig) returns void { itself.asked.store(true); }
+        //     Signals.answer(Signals.INTERRUPT, box.interrupt);
+        public class Signals {
+            // Ctrl-C, and the closest thing to "the user asked you to stop" that exists on both.
+            public static fixed int INTERRUPT = 2;
+            // A polite request to end, from `kill` or from a service manager.
+            public static fixed int TERMINATE = 15;
+
+            private extern cdecl static method signal(int sig, address handler) returns address;
+            private extern cdecl static method raise(int sig) returns int;
+
+            // Send a signal to THIS program. A real part of the interface -- a process asking
+            // itself to stop is how a supervisor's request gets turned into the same shutdown path
+            // an operator's Ctrl-C takes -- and the only way to exercise a handler without another
+            // process, which is what makes the path testable at all.
+            public static method sendToSelf(int sig) returns boolean {
+                return Signals.raise(sig) == 0;
+            }
+
+            // Install `handler` for `sig`, and answer whether it took. The address comes from
+            // binding an interrupt to an object -- `box.interrupt`, with no parentheses -- which is
+            // one act because a vector holds an address and nothing else.
+            //
+            // False means the C runtime refused, which it does for a signal it does not know. The
+            // caller is told rather than left with a handler that will never fire.
+            public static method answer(int sig, address handler) returns boolean {
+                address was = Signals.signal(sig, handler);
+                // SIG_ERR is -1 cast to a pointer, and it is the one answer that means refused.
+                return cast<long>(was) != (0 - 1);
+            }
+
+            // Put a signal back to what the runtime does by default -- for INTERRUPT, ending the
+            // process. A program that has finished its own shutdown wants this before it stops
+            // reading the flag, so a second Ctrl-C is not ignored by a handler nobody is watching.
+            public static method giveBack(int sig) returns boolean {
+                address was = Signals.signal(sig, cast<address>(0));
+                return cast<long>(was) != (0 - 1);
             }
         }
     }
