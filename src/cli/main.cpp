@@ -50,7 +50,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "ldp3c 1.0.35";
+constexpr std::string_view kVersion = "ldp3c 1.0.36";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
