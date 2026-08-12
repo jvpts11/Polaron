@@ -146,6 +146,15 @@ TokenKind keywordKind(std::string_view text) {
         {"default", TokenKind::KwDefault},
         {"break", TokenKind::KwBreak},
         {"continue", TokenKind::KwContinue},
+        // `step` IS HARD, AND IT WAS TRIED AS A SOFT ONE. It costs every program a natural name --
+        // `float step = ...` for a distance walked in one go is a parse error -- so it was made
+        // contextual, matched by text after `a..b` where nothing else may follow. It does not work,
+        // and the reason is a feature one file away: a numeric literal may take a UNIT SUFFIX
+        // (`64 kilobytes`, spec 3.9), which is exactly the shape `10 step`. As an identifier, `step`
+        // is eaten as the suffix of the range's end and the count after it has nowhere to go --
+        // `for (int i in 0..10 step 2)` fails on the `2`. The two features want the same grammar,
+        // and a keyword is the cheaper of them to give up. Left reserved on purpose; see the note
+        // in parseExpression.
         {"step", TokenKind::KwStep},
         {"index", TokenKind::KwIndex},
         {"void", TokenKind::KwVoid},
