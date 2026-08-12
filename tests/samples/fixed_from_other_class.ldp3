@@ -1,0 +1,42 @@
+import System.IO.Console;
+program FixedFromOtherClass;
+
+// A CONSTANT MAY BE DEFINED IN TERMS OF ANOTHER ONE, in another class, declared LATER. That is the
+// ordinary way to say "this is the same number as that", and it was legal only when the other
+// constant happened to be declared earlier -- in a file the compiler happened to read first.
+//
+// The diagnostic was worse than the limit: it said the initializer "must be a compile-time constant"
+// about something that plainly was one, so the reader went looking for the wrong thing. Constants
+// now fold to a fixed point rather than in declaration order (ledger RL-9).
+//
+// `Screen` is declared BEFORE `Contour` and reads from it, which is the case that failed.
+// Prints:
+//   cut=6200 half=3100 band=2 name=6200
+public bundle main {
+    public namespace app {
+
+        public class Screen {
+            public static fixed int HIGH_CUT = Contour.HIGHLAND;      // forward, across classes
+            public static fixed int HALF_CUT = Screen.HIGH_CUT / 2;   // and one off itself
+            public static fixed int BANDS = Contour.STEPS - 1;
+        }
+
+        public class Contour {
+            public static fixed int HIGHLAND = 6200;
+            public static fixed int STEPS = 3;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Read back at runtime AND used where only a constant may go, so the test covers
+                // both halves: the value is right, and it is still a compile-time constant.
+                mutable int[] room = new int[Screen.BANDS]();
+                System.IO.Console.printf("cut=%d half=%d band=%d name=%d\n",
+                                         Screen.HIGH_CUT, Screen.HALF_CUT, room.length(),
+                                         Contour.HIGHLAND);
+                delete room;
+                return;
+            }
+        }
+    }
+}

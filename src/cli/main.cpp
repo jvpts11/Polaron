@@ -50,7 +50,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "ldp3c 1.0.40";
+constexpr std::string_view kVersion = "ldp3c 1.0.41";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -6192,6 +6192,44 @@ R"LDP3(
             public static method giveBack(int sig) returns boolean {
                 address was = Signals.signal(sig, cast<address>(0));
                 return cast<long>(was) != (0 - 1);
+            }
+        }
+
+        // ENDING THE RUN WITH A VERDICT, which is the other half of what the operating system and a
+        // program say to each other. A signal is the world speaking to the program; the exit code is
+        // the program answering, and it is the only thing a caller who is not a person can read.
+        //
+        // WITHOUT THIS AN LDP3 PROGRAM COULD NOT FAIL. `main` returns `void` and there was no way to
+        // set the code, so every run exited 0 -- a program that printed "I do not know that command"
+        // and a program that did exactly what it was asked were indistinguishable to a script, a
+        // build, or a gate. Found by a gate that wanted to judge a refusal and could not.
+        //
+        // `exit` and not `_exit`: buffered output is flushed and anything registered to run at exit
+        // runs, so the last thing the program said actually reaches whoever is reading. A program
+        // that wants to be killed without that is a program that should not be printing.
+        //
+        // The `extern` is here rather than in everybody's code, which is the same bargain `Signals`
+        // makes one class up: reaching a C symbol is the design; reaching it in your own program for
+        // something this ordinary is not.
+        public class Exit {
+            private extern cdecl static method exit(int code) returns void;
+
+            // Stop now, and hand this number back. Zero means it went well, by the convention every
+            // shell on earth already holds.
+            public static method now(int code) returns void {
+                Exit.exit(code);
+                return;
+            }
+
+            // The two that have names, so a caller reads a verdict rather than a number.
+            public static method ok() returns void {
+                Exit.exit(0);
+                return;
+            }
+
+            public static method failed() returns void {
+                Exit.exit(1);
+                return;
             }
         }
     }

@@ -13867,26 +13867,47 @@ struct CodeGenerator::Impl {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
                             m != nullptr && m->isComptime && !m->isAbstract)
                             comptimeMethods.emplace(m->name, m);
-        auto fold = [&](const ast::ConstDecl& c, const std::string& owner) {
+        // TO A FIXED POINT, THE SAME WAY THE ANALYZER DOES IT, and it has to be both or neither: a
+        // constant defined in terms of one declared later folded fine in sema and reached here
+        // unresolved, so the program compiled clean and read back ZERO. Silent, and worse than the
+        // error it replaced. Anything still unfolded after nothing moves has already been reported
+        // by the analyzer, so this one stays quiet and leaves it out.
+        auto fold = [&](const ast::ConstDecl& c, const std::string& owner) -> bool {
             const std::string key = owner.empty() ? c.name : owner + "." + c.name;
             const std::string type = typeRefName(c.type);
             namespaceConstTypes[key] = type;
-            if (c.init == nullptr) return;
+            if (c.init == nullptr) return true;
             if (isFloatType(type)) {
                 double d;
-                if (foldConstDouble(*c.init, d)) constDblVals[key] = d;
-            } else {
-                long long v;
-                if (foldConstInt(*c.init, v)) constIntVals[key] = v;
+                if (!foldConstDouble(*c.init, d)) return false;
+                constDblVals[key] = d;
+                return true;
             }
+            long long v;
+            if (!foldConstInt(*c.init, v)) return false;
+            constIntVals[key] = v;
+            return true;
         };
+        std::vector<std::pair<const ast::ConstDecl*, std::string>> waiting;
         for (const ast::Bundle& bundle : program.bundles) {
             for (const ast::Namespace& ns : bundle.namespaces) {
-                for (const ast::ConstDecl& c : ns.consts) fold(c, "");
+                for (const ast::ConstDecl& c : ns.consts) waiting.push_back({&c, ""});
                 for (const ast::ClassDecl& cls : ns.classes)
                     for (const ast::MemberPtr& m : cls.members)
                         if (const auto* c = dynamic_cast<const ast::ConstDecl*>(m.get()))
-                            fold(*c, cls.name);
+                            waiting.push_back({c, cls.name});
+            }
+        }
+        bool moved = true;
+        while (moved) {
+            moved = false;
+            for (auto it = waiting.begin(); it != waiting.end();) {
+                if (fold(*it->first, it->second)) {
+                    it = waiting.erase(it);
+                    moved = true;
+                } else {
+                    ++it;
+                }
             }
         }
     }
