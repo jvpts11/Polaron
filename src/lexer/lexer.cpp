@@ -115,7 +115,12 @@ TokenKind keywordKind(std::string_view text) {
         {"reinstate", TokenKind::KwReinstate},
         {"unimport", TokenKind::KwUnimport},
         {"reimport", TokenKind::KwReimport},
-        {"expecting", TokenKind::KwExpecting},
+        // NOTE: `expecting` is a SOFT keyword -- recognized by the unimport/reimport parser, in the
+        // one position it can appear in (after the dotted type name), and an ordinary identifier
+        // everywhere else. It was hard, and it took a word an ordinary program wants: a `Body` in
+        // the agent layout has `byte expecting` for how many children are coming, which would not
+        // parse. Unlike `step` there is nothing to be ambiguous with -- it follows a NAME, not a
+        // numeric literal, so no unit suffix can claim it.
         {"onFailure", TokenKind::KwOnFailure},
         {"yield", TokenKind::KwYield},
         {"try", TokenKind::KwTry},

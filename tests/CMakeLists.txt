@@ -1752,7 +1752,7 @@ if(LDP3_WITH_LLVM)
             "-DLDP3C=$<TARGET_FILE:ldp3c>"
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/reimport_expecting.ldp3"
-            "-DEXPECTED=proof=1007 validated rejected done"
+            "-DEXPECTED=named=4 proof=1007 validated rejected done"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -3825,6 +3825,19 @@ if(LDP3_WITH_LLVM)
             --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/fixed_ring_bad.ldp3")
         set_tests_properties(sema_rejects_constant_ring PROPERTIES
             PASS_REGULAR_EXPRESSION "ring of")
+
+        # A value struct with no constructor starts at ZERO. A class was always safe -- the analyzer
+        # refuses a constructor that leaves a field unassigned -- and a struct that declares none had
+        # nobody to hold to that promise, so it came back holding the stack. Found in a real game the
+        # first time one was used: a fresh bitmask claimed memberships nobody had granted. A struct
+        # that DOES declare a constructor is untouched, which the sample checks too.
+        add_test(NAME codegen_struct_starts_at_zero_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/struct_starts_at_zero.ldp3"
+            "-DEXPECTED=fresh: n=0 bits=0 flag=0 set: bit3=1 bit4=0 own: n=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # A PROGRAM CAN FAIL ON PURPOSE. `main` returns void, so every LDP3 program exited 0 -- one
         # that printed "I do not know that command" and one that did what it was asked were the same

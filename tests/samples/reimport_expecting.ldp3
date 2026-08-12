@@ -21,6 +21,13 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 int salt = 7;
+                // `expecting` is a SOFT keyword: it means this here, and is an ordinary name
+                // anywhere else. Both halves are exercised -- the field below is called
+                // `expecting` for the same reason an agent's `Body` has one (how many children are
+                // coming), and it used to be a parse error.
+                mutable int expecting = 3;
+                expecting = expecting + 1;
+                System.IO.Console.printf("named=%d\n", expecting);
                 var proof = unimport Plugin expecting using salt {
                     return Plugin.fingerprint(salt);
                 };

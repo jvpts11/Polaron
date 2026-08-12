@@ -3631,6 +3631,16 @@ struct CodeGenerator::Impl {
         }
     }
 
+    // Whether the type wrote a constructor of its own. A struct that did is saying what its initial
+    // values are; one that did not gets zeroed at `new` -- see emitNew.
+    bool hasDeclaredConstructor(const std::string& cn) {
+        auto it = classes.find(cn);
+        if (it == classes.end() || it->second.decl == nullptr) return false;
+        for (const ast::MemberPtr& m : it->second.decl->members)
+            if (dynamic_cast<const ast::ConstructorDecl*>(m.get()) != nullptr) return true;
+        return false;
+    }
+
     llvm::FunctionCallee memsetFn() {
         llvm::FunctionType* ty = llvm::FunctionType::get(
             builder.getPtrTy(), {builder.getPtrTy(), builder.getInt32Ty(), builder.getInt64Ty()},
@@ -6702,6 +6712,22 @@ struct CodeGenerator::Impl {
         } else {
             error("'new' location must be 'stack' or 'heap', got '" + nw.location + "'", nw.loc);
             return nullptr;
+        }
+        // A VALUE STRUCT WITH NO CONSTRUCTOR STARTS AT ZERO, and it did not before.
+        //
+        // A class is safe without this: the analyzer refuses a constructor that leaves a field
+        // unassigned, so every field of a class is written before anything can read it. A struct
+        // with no declared constructor has no constructor to hold to that promise -- so `new Mind()`
+        // handed back whatever was on the stack, and a bitmask of conditions read as a person with
+        // eleven of them. Found in the first slice that used one (agents-exe S2.1): a fresh
+        // `Belonging` claimed nationalities nobody had given it.
+        //
+        // Reading uninitialized memory is the no-UB principle's own case, so the fix is the plain
+        // one: zero the storage. Only for a struct, and only when nothing else is going to write
+        // those bytes -- a declared constructor is the author saying what the initial values are.
+        if (cit->second.isStruct && !hasDeclaredConstructor(cn)) {
+            builder.CreateCall(memsetFn(),
+                               {objPtr, builder.getInt32(0), sizeOf(cit->second.type)});
         }
         // Null the weak intrusive state (WeakSlot fields + weak-list head) BEFORE the constructor runs, so
         // a ctor that assigns a `weak T*` field unlinks from an empty (null) slot rather than garbage.
