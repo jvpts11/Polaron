@@ -434,7 +434,35 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->defaultResult = cloneExpr(x->defaultResult.get(), s);
         return n;
     }
-    return nullptr;  // unknown node: should not happen for well-formed input
+    // A RANGE. `for (int i in 0..n)` inside a generic class CRASHED THE COMPILER without this: the
+    // clone returned null, the analyzer's foreach saw an iterable that was not a range, fell through
+    // to `typeOf(*fe->iterable)` and dereferenced nothing. Eighteen lines reproduced it -- a generic
+    // class and `for (int i in 0..3)` -- and the standard library never met it because its own loops
+    // are all written in the classic three-part form.
+    if (const auto* x = dynamic_cast<const ast::RangeExpr*>(e)) {
+        auto n = std::make_unique<ast::RangeExpr>();
+        n->loc = x->loc;
+        n->start = cloneExpr(x->start.get(), s);
+        n->end = cloneExpr(x->end.get(), s);
+        n->step = cloneExpr(x->step.get(), s);
+        n->inclusive = x->inclusive;
+        return n;
+    }
+    // AND SAY SO RATHER THAN RETURNING NOTHING.
+    //
+    // "should not happen for well-formed input" was the comment here, and it was wrong in exactly
+    // the way such comments are: the input was well-formed and the node was one this function had
+    // never been taught. What came back was a null the caller stored and something else dereferenced
+    // later -- an access violation with no message, in a phase nobody would look at, from a program
+    // that is perfectly legal.
+    //
+    // This is the second time in two days: `cloneMember` silently dropped `comptime literal` and
+    // `fixed`, and the same shape produced a missing standard-library import instead of a crash.
+    // A clone that meets a node it does not know is a bug in THIS function, and it should report
+    // itself here rather than surface three passes downstream as something else.
+    monoWarn(e->loc, "internal: this expression is not preserved when a generic is expanded, so it "
+                     "will be missing from the instantiation -- cloneExpr does not handle its kind");
+    return nullptr;
 }
 
 ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
@@ -663,6 +691,10 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->body = cloneBlock(x->body, s);
         return n;
     }
+    // Same rule as `cloneExpr`: a statement kind this has not been taught is a bug here, and it
+    // says so instead of returning a null that something downstream will dereference.
+    monoWarn(st->loc, "internal: this statement is not preserved when a generic is expanded, so it "
+                      "will be missing from the instantiation -- cloneStmt does not handle its kind");
     return nullptr;
 }
 
