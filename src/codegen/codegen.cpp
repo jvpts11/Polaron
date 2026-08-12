@@ -12996,10 +12996,67 @@ struct CodeGenerator::Impl {
         return phi;
     }
 
+    // An enum subject, as an EXPRESSION: one arm per constant, each yielding a value, and a phi over
+    // them. The same comparison of ordinals the statement form does -- an enum value IS its ordinal
+    // -- with the arms producing values instead of running blocks.
+    llvm::Value* emitEnumMatchExpr(const ast::MatchExpr& s, llvm::Value* subj,
+                                   const std::vector<std::string>& constants) {
+        const std::string rtype = s.resultType.empty() ? std::string("int") : s.resultType;
+        llvm::Type* rty = llvmType(rtype);
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* endBB = llvm::BasicBlock::Create(context, "matchx.end", fn);
+        std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+        for (const ast::MatchCase& c : s.cases) {
+            const auto at = std::find(constants.begin(), constants.end(), c.typeName);
+            if (at == constants.end()) continue;  // the analyzer has already refused this
+            const long long ord = std::distance(constants.begin(), at);
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "matchx.case", fn);
+            llvm::BasicBlock* nextBB = llvm::BasicBlock::Create(context, "matchx.next", fn);
+            llvm::Value* want = llvm::ConstantInt::get(subj->getType(), ord);
+            builder.CreateCondBr(builder.CreateICmpEQ(subj, want, "is"), bodyBB, nextBB);
+            builder.SetInsertPoint(bodyBB);
+            llvm::Value* v;
+            if (c.result) {
+                v = emitExpr(*c.result);
+                if (v != nullptr) v = coerce(v, typeName(*c.result), rtype);
+            } else {
+                v = emitYieldBlock(c.body, rty, rtype);
+            }
+            if (v == nullptr) v = llvm::Constant::getNullValue(rty);
+            incoming.push_back({v, builder.GetInsertBlock()});
+            builder.CreateBr(endBB);
+            builder.SetInsertPoint(nextBB);
+        }
+        if (s.defaultResult) {
+            llvm::Value* v = emitExpr(*s.defaultResult);
+            v = (v == nullptr) ? llvm::Constant::getNullValue(rty)
+                               : coerce(v, typeName(*s.defaultResult), rtype);
+            incoming.push_back({v, builder.GetInsertBlock()});
+            builder.CreateBr(endBB);
+        } else if (s.defaultBody) {
+            llvm::Value* v = emitYieldBlock(*s.defaultBody, rty, rtype);
+            incoming.push_back({v, builder.GetInsertBlock()});
+            builder.CreateBr(endBB);
+        } else {
+            // Sema guarantees a sealed enum's match covers every constant, so the fall-through of
+            // the last comparison is a place the program cannot reach.
+            builder.CreateUnreachable();
+        }
+        builder.SetInsertPoint(endBB);
+        if (incoming.empty()) return llvm::Constant::getNullValue(rty);
+        llvm::PHINode* phi = builder.CreatePHI(rty, static_cast<unsigned>(incoming.size()), "matchx");
+        for (auto& in : incoming) phi->addIncoming(in.first, in.second);
+        return phi;
+    }
+
     llvm::Value* emitMatchExpr(const ast::MatchExpr& s) {
         llvm::Value* subj = emitExpr(*s.subject);
         if (subj == nullptr) return nullptr;
         if (isValueVariant(typeName(*s.subject))) return emitValueMatchExpr(s, subj);
+        if (auto en = enums.find(baseType(typeName(*s.subject)));
+            en != enums.end() && subj->getType()->isIntegerTy()) {
+            return emitEnumMatchExpr(s, subj, en->second);
+        }
         auto sit = classes.find(clsKey(typeName(*s.subject)));
         if (sit == classes.end() || !sit->second.hasVtable) {
             error("match subject must be a polymorphic class", s.loc);

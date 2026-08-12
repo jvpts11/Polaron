@@ -775,6 +775,23 @@ ast::EnumDecl Parser::parseEnum() {
             e.constantArgs.push_back({});
         } while (match(TokenKind::Comma));
         expect(TokenKind::Semicolon, "';' to close a `permits` enum");
+        // AND IT MAY STILL HAVE BEHAVIOUR. `permits` says what the constants ARE; it says nothing
+        // about what they can do, and an enum whose whole point is that every case is named is
+        // exactly the enum you want to `match` over inside a method of its own -- the sealing is
+        // what makes that match total. Refusing the body meant the two spellings of `sealed enum`
+        // were not interchangeable after all: one could answer questions and the other could not.
+        //
+        // Methods alone never make an enum java-style; the normalisation below is shared, so these
+        // constants stay i32 ordinals with value semantics exactly as they would in the `{ ... }`
+        // spelling (see the note on it, and RL-7 for what it costs when that slips).
+        if (match(TokenKind::LBrace)) {
+            while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
+                e.members.push_back(parseMember(/*inInterface=*/false));
+            }
+            expect(TokenKind::RBrace, "'}' to close the enum body");
+            e.isJavaStyle = true;
+            normalizeEnumStyle(e);
+        }
         return e;
     }
     expect(TokenKind::LBrace, "'{'");
@@ -837,37 +854,43 @@ ast::EnumDecl Parser::parseEnum() {
         }
     }
     expect(TokenKind::RBrace, "'}'");
-    // What makes an enum java-style is STATE -- per-constant constructor arguments, instance
-    // fields, a constructor -- never methods alone. A methods-only enum is normalised back to
-    // ordinal whether or not it implements a catalog: its constants stay i32 ordinals with value
-    // semantics, its methods dispatch on the ordinal, and `;` is only ever a separator. (Before
-    // 2026-08-09 this normalisation existed only for catalog-implementing enums, so a plain enum
-    // that declared one method silently turned its constants into heap singletons -- found by the
-    // relayout when Biome gained its questions, as an 8-byte sizeof where 4 was promised.)
-    if (e.isJavaStyle) {
-        bool hasCtorArgs = false;
-        for (const auto& a : e.constantArgs) {
-            if (!a.empty()) {
-                hasCtorArgs = true;
-                break;
-            }
+    normalizeEnumStyle(e);
+    return e;
+}
+
+// What makes an enum java-style is STATE -- per-constant constructor arguments, instance fields, a
+// constructor -- never methods alone. A methods-only enum is normalised back to ordinal whether or
+// not it implements a catalog: its constants stay i32 ordinals with value semantics, its methods
+// dispatch on the ordinal, and `;` is only ever a separator. (Before 2026-08-09 this normalisation
+// existed only for catalog-implementing enums, so a plain enum that declared one method silently
+// turned its constants into heap singletons -- found by the relayout when Biome gained its
+// questions, as an 8-byte sizeof where 4 was promised.)
+//
+// Shared by both spellings of an enum body, so `permits ...; { ... }` cannot drift from `{ ... }`
+// on the one question where drifting is silent and expensive.
+void Parser::normalizeEnumStyle(ast::EnumDecl& e) {
+    if (!e.isJavaStyle) return;
+    bool hasCtorArgs = false;
+    for (const auto& a : e.constantArgs) {
+        if (!a.empty()) {
+            hasCtorArgs = true;
+            break;
         }
-        bool hasStateOrCtor = false;
-        for (const auto& m : e.members) {
-            if (dynamic_cast<const ast::ConstructorDecl*>(m.get()) != nullptr) {
+    }
+    bool hasStateOrCtor = false;
+    for (const auto& m : e.members) {
+        if (dynamic_cast<const ast::ConstructorDecl*>(m.get()) != nullptr) {
+            hasStateOrCtor = true;
+            break;
+        }
+        if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get())) {
+            if (!fd->isStatic) {
                 hasStateOrCtor = true;
                 break;
             }
-            if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get())) {
-                if (!fd->isStatic) {
-                    hasStateOrCtor = true;
-                    break;
-                }
-            }
         }
-        if (!hasCtorArgs && !hasStateOrCtor) e.isJavaStyle = false;
     }
-    return e;
+    if (!hasCtorArgs && !hasStateOrCtor) e.isJavaStyle = false;
 }
 
 // A catalog (spec 12.3): an interface for enums declaring required VALUES and

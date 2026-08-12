@@ -1,0 +1,46 @@
+import System.IO.Console;
+import System.Memory.Raw;
+program SealedEnumPermitsBody;
+
+// A `permits` enum MAY HAVE BEHAVIOUR. `permits` says what the constants ARE and says nothing about
+// what they can do -- and an enum whose whole point is that every case is named is exactly the one
+// you want to `match` over inside a method of its own, because the sealing is what makes that match
+// total. Until this, the two spellings of `sealed enum` were not interchangeable after all: the
+// braced one could answer questions and the `permits` one could not.
+//
+// And methods alone must not make it java-style: the constants stay plain ordinals, four bytes, with
+// value semantics -- the same normalisation the braced spelling gets, out of the same function.
+// Prints:
+//   it was caught / it got away / it ran out of food
+//   n=3 ord=2 sz=4
+public bundle main {
+    public namespace app {
+
+        public sealed enum Ending permits
+            Caught,
+            Escaped,
+            Starved;
+        {
+            // A total match over its own constants: no `default`, and a fourth constant could not be
+            // added without this method being told about it.
+            public method said() returns String {
+                return match (this) {
+                    case Caught -> "it was caught";
+                    case Escaped -> "it got away";
+                    case Starved -> "it ran out of food";
+                };
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println(Ending.Caught.said());
+                System.IO.Console.println(Ending.Escaped.said());
+                System.IO.Console.println(Ending.Starved.said());
+                System.IO.Console.println(
+                    $"n={Ending.count()} ord={cast<int>(Ending.Starved)} sz={Raw.sizeof(Ending)}");
+                return;
+            }
+        }
+    }
+}
