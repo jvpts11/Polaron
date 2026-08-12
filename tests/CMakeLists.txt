@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.36")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.37")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.36")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.37")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3732,6 +3732,25 @@ if(LDP3_WITH_LLVM)
             "-DEXPECTED=before ~Dog 1 mid ~Dog 2 after"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `sealed enum E permits A, B, C;` and a `match` over its constants -- the form the
+        # specifications write throughout, refused twice over until now: at the parser (`sealed`
+        # was only for classes; `case Caught {` wanted positional bindings) and at the analyzer
+        # (a case name was looked up as a TYPE).
+        add_test(NAME codegen_sealed_enum_match_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sealed_enum_match.ldp3"
+            "-DEXPECTED=40 0 0 count=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # And what the word buys: the constant added later is NAMED at every match that forgot it,
+        # instead of being swallowed by a `default`.
+        add_test(NAME sema_rejects_inexhaustive_sealed_enum_match COMMAND ldp3c
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/sealed_enum_match_bad.ldp3")
+        set_tests_properties(sema_rejects_inexhaustive_sealed_enum_match PROPERTIES
+            PASS_REGULAR_EXPRESSION "not exhaustive: missing Escaped")
 
         # A literal that does not fit a bit field WARNS and still truncates: truncation on store is
         # spec 11.1 and `bit_fields.ldp3` tests it on purpose, so this does not overturn it -- it

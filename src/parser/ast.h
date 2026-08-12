@@ -1183,6 +1183,11 @@ struct EnumDecl {
     std::vector<std::vector<ExprPtr>> constantArgs;  // java-style: ctor args, parallel to constants
     std::vector<MemberPtr> members;                // java-style: fields/constructor/methods
     bool isJavaStyle = false;
+    // `sealed enum E permits A, B, C;` (spec 12/16). An enum's constants are a closed list either
+    // way -- what the word buys is that a `match` over it must COVER them, with the compiler naming
+    // the ones that were forgotten, instead of quietly requiring a `default` that swallows the
+    // constant added next year.
+    bool isSealed = false;
     // Catalogs implemented by this enum (spec 12.4): `enum Motor extends TipoMotor`.
     std::vector<std::string> extendsCatalogs;      // catalogs this enum satisfies (IS-A)
     std::vector<std::string> byCatalogValues;      // constants provided via `byCatalog { ... }`

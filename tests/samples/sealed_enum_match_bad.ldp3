@@ -1,0 +1,34 @@
+import System.IO.Console;
+program SealedEnumMatchBad;
+
+// WHAT `sealed` BUYS ON AN ENUM, stated as the thing it refuses.
+//
+// A constant is added to the enum -- here `Escaped` -- and a `match` written before it exists does
+// not mention it. With a `default` that arm would swallow the new outcome and nobody would hear
+// about it; with none and no sealing, the compiler would demand a default and produce the same
+// silence by a different route.
+//
+// Sealed, the compiler names what is missing at every match that forgot it. That is the whole of
+// "every ending named and counted", and it is why the layouts asked for the word.
+public bundle Probe {
+    public namespace App {
+
+        public sealed enum Quarry permits Caught, HunterGaveOut, Escaped;
+
+        public class Main {
+            private static method worth(Quarry q) returns int {
+                mutable int meat = 0;
+                match (q) {
+                    case Caught { meat = 40; }
+                    case HunterGaveOut { meat = 0; }
+                }
+                return meat;
+            }
+
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("%d\n", Main.worth(Quarry.Caught));
+                return;
+            }
+        }
+    }
+}

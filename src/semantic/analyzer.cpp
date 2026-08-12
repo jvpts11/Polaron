@@ -1611,6 +1611,7 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                                       en.name + "'",
                                   en.loc);
                 enums_[en.name] = en.constants;
+                if (en.isSealed) sealedEnums_.insert(en.name);
                 if (en.isJavaStyle) javaEnums_.insert(en.name);
                 if (!en.extendsCatalogs.empty()) enumCatalogs_[en.name] = en.extendsCatalogs;
                 // Methods declared on the enum (e.g. catalog method impls) -- recorded so
@@ -4427,6 +4428,51 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const std::string subjType = typeOf(*ms->subject);
         const std::string subjBaseM = baseType(subjType);
         const auto subjDollarM = subjBaseM.find('$');
+        // AN ENUM SUBJECT: the cases name CONSTANTS, not types.
+        //
+        // `match` began as dispatch over a sealed hierarchy, so every arm was looked up as a class
+        // and `case Caught` was reported as an unknown TYPE -- on the form the specifications write
+        // wherever the point is that every outcome is named and counted. A constant is a value and
+        // not a shape: nothing is bound out of it, and its exhaustiveness question is answered from
+        // the enum's own list rather than from a `permits` clause on a base class.
+        if (auto en = enums_.find(subjBaseM); en != enums_.end()) {
+            const std::vector<std::string>& constants = en->second;
+            for (const ast::MatchCase& c : ms->cases) {
+                if (std::find(constants.begin(), constants.end(), c.typeName) == constants.end())
+                    error("'" + c.typeName + "' is not a constant of enum '" + subjBaseM + "'",
+                          c.loc);
+                if (!c.bindings.empty())
+                    error("'case " + c.typeName + "' cannot bind anything: an enum constant is a "
+                          "value, not a shape with fields to take apart",
+                          c.loc);
+                pushScope();
+                for (const auto& st : c.body.statements) analyzeStatement(*st);
+                popScope();
+            }
+            if (ms->defaultBody) analyzeBlock(*ms->defaultBody);
+            if (sealedEnums_.count(subjBaseM) > 0) {
+                // Every constant, or say which is missing. This is the whole of what `sealed` buys
+                // on an enum: the constant added next year is reported at each match that forgot
+                // it, instead of disappearing into a `default`.
+                std::string missing;
+                for (const std::string& k : constants) {
+                    bool covered = false;
+                    for (const ast::MatchCase& c : ms->cases)
+                        if (c.typeName == k) covered = true;
+                    if (!covered) missing += (missing.empty() ? "" : ", ") + k;
+                }
+                if (!missing.empty() && !ms->defaultBody)
+                    error("match on sealed enum '" + subjBaseM + "' is not exhaustive: missing " +
+                              missing,
+                          ms->loc);
+            } else if (!ms->defaultBody) {
+                error("match on enum '" + subjBaseM + "' requires a 'default' case, or declare the "
+                      "enum `sealed` so every constant must be covered and a new one cannot be "
+                      "forgotten here",
+                      ms->loc);
+            }
+            return;
+        }
         for (const ast::MatchCase& c : ms->cases) {
             // A bare case name (Ok) on a monomorphized sealed subject (Result$int$int) may name the
             // matching instantiation (Ok$int$int) -- but a non-generic concrete subclass of a generic

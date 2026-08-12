@@ -468,9 +468,19 @@ ast::Namespace Parser::parseNamespace() {
         std::vector<ast::AnnotationUse> anns = parseAnnotationUsesOpt();
         // Peek past an optional visibility modifier to tell enums from classes.
         TokenKind kind = current().kind;
+        std::size_t kindAt = 0;
         if (kind == TokenKind::KwPublic || kind == TokenKind::KwPrivate ||
             kind == TokenKind::KwProtected || kind == TokenKind::KwInternal) {
+            kindAt = 1;
             kind = peek(1).kind;
+        }
+        // ... and past `sealed`, which an ENUM may also carry. `sealed enum` is not the same
+        // question as `sealed class`: a class is sealed to stop anyone extending it, and an enum's
+        // constants are already a closed list -- what the word buys is that a `match` over it must
+        // COVER them, with the compiler naming the ones it forgot. Without this the declaration was
+        // refused by a message about classes, on a form the specifications write throughout.
+        if (kind == TokenKind::KwSealed && peek(kindAt + 1).kind == TokenKind::KwEnum) {
+            kind = TokenKind::KwEnum;
         }
         if (kind == TokenKind::KwAnnotation) {
             ns.annotationDecls.push_back(parseAnnotationDecl(anns));
@@ -740,6 +750,7 @@ ast::EnumDecl Parser::parseEnum() {
     ast::EnumDecl e;
     e.loc = current().loc;
     e.visibility = parseVisibilityOpt();
+    if (match(TokenKind::KwSealed)) e.isSealed = true;
     expect(TokenKind::KwEnum, "'enum'");
     e.name = expect(TokenKind::Identifier, "the enum name").lexeme;
     // Catalogs implemented by this enum (spec 12.4): `enum Motor extends TipoMotor`.
@@ -747,6 +758,24 @@ ast::EnumDecl Parser::parseEnum() {
         do {
             e.extendsCatalogs.push_back(expect(TokenKind::Identifier, "a catalog name").lexeme);
         } while (match(TokenKind::Comma));
+    }
+    // `sealed enum Ending permits Caught, Escaped;` -- the constants ARE the permits list, and
+    // there is no body. The two spellings say the same thing and the specifications use this one
+    // wherever the point is that every outcome is named and counted; `{ ... }` remains for the
+    // ordinary case and for anything java-style, which needs somewhere to put its members.
+    if (check(TokenKind::KwPermits)) {
+        if (!e.isSealed) {
+            fail("`permits` lists the constants of a SEALED enum; write `sealed enum " + e.name +
+                     " permits ...`, or give it a `{ ... }` body",
+                 current().loc);
+        }
+        advance();
+        do {
+            e.constants.push_back(expect(TokenKind::Identifier, "an enum constant").lexeme);
+            e.constantArgs.push_back({});
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Semicolon, "';' to close a `permits` enum");
+        return e;
     }
     expect(TokenKind::LBrace, "'{'");
     // Constants: NAME [ (ctor args) ], comma-separated. Args make it Java-style.
@@ -3459,9 +3488,17 @@ ast::StmtPtr Parser::parseMatch() {
         ast::MatchCase c;
         c.loc = current().loc;
         c.typeName = expect(TokenKind::Identifier, "a case type name").lexeme;
-        expect(TokenKind::LParen, "'(' (positional field bindings)");
-        c.bindings = parseParams();  // (type name, ...) -- may be empty
-        expect(TokenKind::RParen, "')'");
+        // THE BINDINGS ARE OPTIONAL, because an enum constant has nothing to bind.
+        //
+        // `match` began as dispatch over a sealed hierarchy, where every arm names a type and takes
+        // its fields apart -- so the parentheses were required, and `case Grazing { ... }` over an
+        // enum failed at the parser with a message about positional field bindings. An enum
+        // constant is a value and not a shape: there is nothing inside it to name, and demanding
+        // `case Grazing()` would be punctuation standing in for a promise nobody made.
+        if (match(TokenKind::LParen)) {
+            c.bindings = parseParams();  // (type name, ...) -- may be empty
+            expect(TokenKind::RParen, "')'");
+        }
         c.body = parseBlock();
         m->cases.push_back(std::move(c));
     }
@@ -3496,9 +3533,10 @@ ast::ExprPtr Parser::parseMatchExpr() {
         ast::MatchCase c;
         c.loc = current().loc;
         c.typeName = expect(TokenKind::Identifier, "a case type name").lexeme;
-        expect(TokenKind::LParen, "'(' (positional field bindings)");
-        c.bindings = parseParams();  // (type name, ...) -- may be empty
-        expect(TokenKind::RParen, "')'");
+        if (match(TokenKind::LParen)) {  // optional: an enum constant has nothing to bind
+            c.bindings = parseParams();  // (type name, ...) -- may be empty
+            expect(TokenKind::RParen, "')'");
+        }
         expect(TokenKind::Arrow, "'->' (a match-expression arm yields a value)");
         if (check(TokenKind::LBrace)) {  // block arm: yields via `yield expr;` (spec 16.2)
             c.body = parseBlock();
