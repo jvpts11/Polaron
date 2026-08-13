@@ -50,7 +50,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "ldp3c 1.0.43";
+constexpr std::string_view kVersion = "ldp3c 1.0.44";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -3420,6 +3420,17 @@ R"LDP3(
             public method length() returns int { return this.count; }
             public method toString() returns String {
                 return Raw.readString(this.buf, this.count);
+            }
+            // EMPTY IT AND KEEP THE ROOM IT HAS GROWN TO, which is the whole point of the method.
+            //
+            // A builder used in batches -- fill, hand the text somewhere, fill again -- had no way to
+            // start over: the only way was to delete it and make another, which gives back the
+            // buffer that had just been grown to exactly the right size and then grows a new one
+            // from sixteen bytes on the next batch. Found writing a per-tick log of a whole
+            // population, where the batch repeats a thousand times.
+            public method clear() returns StringBuilder {
+                this.count = 0;
+                return this;
             }
             // The buffer is raw memory, so nothing else can reclaim it: without this every builder
             // leaked at least its initial 16 bytes plus whatever it grew to. Guarded and nulled so a

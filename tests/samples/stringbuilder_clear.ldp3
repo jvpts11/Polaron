@@ -1,0 +1,33 @@
+import System.IO.Console;
+import System.Text.StringBuilder;
+program StringBuilderClear;
+
+// `StringBuilder.clear()` (spec 34.2): empty it and keep the room it has grown to.
+//
+// A builder used in BATCHES -- fill, hand the text off, fill again -- had no way to start over
+// except being deleted and made again, which throws away a buffer that was just grown to the right
+// size. Three batches here, and the third must be exactly itself rather than the three run
+// together.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                StringBuilder sb = new StringBuilder() on heap;
+                sb.append("first");
+                System.IO.Console.println(sb.toString());
+                sb.clear();
+                System.IO.Console.printf("emptied to %d\n", sb.length());
+                sb.append("second");
+                sb.append(" batch");
+                System.IO.Console.println(sb.toString());
+                sb.clear();
+                for (mutable int i = 0; i < 3; i++) {
+                    sb.appendInt(i);
+                }
+                System.IO.Console.println(sb.toString());
+                return;
+            }
+        }
+    }
+}
