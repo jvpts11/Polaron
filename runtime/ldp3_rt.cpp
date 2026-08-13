@@ -1009,6 +1009,37 @@ static void __ldp3_spawn_worker(void) {
 }
 #endif
 
+// THE SAME COUNT, TO A PROGRAM (spec 20), behind System.Os.Machine.threads().
+//
+// The async pool above has always asked the machine how many threads it will run at once. A program
+// written in the language could not, which left every worker pool anybody writes holding a number
+// somebody guessed -- right on the desk it was written at, leaving three quarters of a big machine
+// idle, and oversubscribing a small one into being slower than one thread. Never less than one:
+// a program is going to divide by it.
+extern "C" int __ldp3_machine_threads(void) {
+    const int n = __ldp3_cpu_count();
+    return n > 0 ? n : 1;
+}
+
+// GIVE UP THE REST OF THIS THREAD'S TURN (spec 20), behind System.Concurrency.Thread.yieldNow().
+//
+// The missing half of every spin-wait. A thread that spins on an atomic and never yields is fast
+// while there is a free core for it and catastrophic the moment there is not: it holds a core that
+// the thread it is waiting for needs, and the operating system has to preempt it to make progress.
+// Measured in a game whose crew was opened with one hand per hardware thread -- the frame went from
+// 15 to 102 microseconds an animal, seven times WORSE than one thread, because the renderer and the
+// worker it was waiting on were fighting spinners for the machine.
+//
+// SwitchToThread rather than Sleep(0): it will hand the core to a thread of lower priority too,
+// which is exactly the case that deadlocks a pure spin under oversubscription.
+extern "C" void __ldp3_thread_yield(void) {
+#ifdef _WIN32
+    SwitchToThread();
+#else
+    sched_yield();
+#endif
+}
+
 static void __ldp3_pool_start(void) {
     if (g_pool_started) return;
     g_pool_started = 1;

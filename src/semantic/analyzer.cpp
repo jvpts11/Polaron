@@ -679,6 +679,29 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     return false;
 }
 
+// Whether a type says of itself that it is safe to reach from several threads at once -- that is,
+// whether it implements System.Concurrency.Shared, directly or through what it extends.
+//
+// This is the ONLY way a program written in this language can hand its own type to a thread, and
+// that is deliberate: the data-race rule below knows three stdlib types by name, and without this a
+// worker pool, a lock-free queue or any other concurrent structure could be written in the standard
+// library and nowhere else. The promise is not weakened by moving it here -- it is written down, in
+// the type, where a reader and a reviewer can find it.
+bool SemanticAnalyzer::declaresShared(const std::string& name) const {
+    std::string cur = baseType(name);
+    const int limit = static_cast<int>(classes_.size()) + 1;
+    for (int steps = 0; !cur.empty() && steps <= limit; ++steps) {
+        const ClassInfo* c = lookupClass(cur);
+        if (c == nullptr) return false;
+        for (const std::string& iface : c->interfaces) {
+            if (baseType(iface) == "Shared") return true;
+            if (declaresShared(iface)) return true;   // an interface may extend Shared
+        }
+        cur = c->superclass;
+    }
+    return false;
+}
+
 bool SemanticAnalyzer::isPolymorphic(const std::string& name) const {
     const ClassInfo* c = lookupClass(name);
     if (c == nullptr) return false;
@@ -6058,8 +6081,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // allocator, which is precisely the machinery the interrupted code may be standing inside.
         if (nw->location == "heap") noteUnsafeForInterrupt("allocate on the heap", nw->loc);
         // region-binder DATA-RACE (§14): a closure handed to a Thread may only capture state that is safe to
-        // share across threads -- atomic<T>/Mutex<T>/Channel<T>, or a copied value. Capturing a plain mutable
-        // reference (byref, or byvalue a pointer) shares mutable state between two threads -> a data race.
+        // share across threads -- atomic<T>/Mutex<T>/Channel<T>, a type that declares itself Shared, or a
+        // copied value. Capturing a plain mutable reference (byref, or byvalue a pointer) shares mutable
+        // state between two threads -> a data race.
+        //
+        // `Shared` is what makes this rule liveable. Without it the three names below are the only things
+        // that may cross a thread boundary, so a worker pool -- an object whose every field is an atomic --
+        // is unwritable outside the standard library, and so is every other concurrent structure a program
+        // might need. The escape is a declaration rather than a hole: a type states the promise, and the
+        // reader of that type can hold it to it.
         if (regionBinder_ && nw->className == "Thread" && !nw->args.empty()) {
             const ast::LambdaExpr* lam = dynamic_cast<const ast::LambdaExpr*>(nw->args[0].get());
             if (lam == nullptr)
@@ -6073,12 +6103,14 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     if (lv == nullptr) continue;
                     const std::string b = baseType(lv->type);
                     const bool safe = b.rfind("atomic", 0) == 0 || b.rfind("Mutex", 0) == 0 ||
-                                      b.rfind("Channel", 0) == 0;
+                                      b.rfind("Channel", 0) == 0 || declaresShared(b);
                     const bool shares = cap.byRef || isRefType(lv->type);  // shares the var / the pointee
                     if (shares && !safe)
                         error("region-binder: thread closure captures shared mutable '" + cap.name +
                                   "' (type '" + lv->type + "') -- a data race; share it via atomic<T> / "
-                                  "Mutex<T> / Channel<T>, or capture an immutable copy (byvalue a value)",
+                                  "Mutex<T> / Channel<T>, declare its type 'implements Shared' if it is "
+                                  "safe to reach from several threads at once, or capture an immutable "
+                                  "copy (byvalue a value)",
                               nw->loc);
                 }
         }

@@ -50,7 +50,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "ldp3c 1.0.42";
+constexpr std::string_view kVersion = "ldp3c 1.0.43";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -298,9 +298,43 @@ public bundle System {
         }
     }
     public namespace Concurrency {
+        // A TYPE THAT SAYS OF ITSELF THAT SEVERAL THREADS MAY REACH IT AT ONCE (spec 14, 20).
+        //
+        // A closure handed to a Thread may not capture a pointer to mutable state -- that is a data race,
+        // and the language refuses it rather than leaving it to be found later. The three types below are
+        // exempt because their operations are the synchronisation. Everything else is refused.
+        //
+        // Which leaves a hole this closes: an object whose every field is an atomic<T> -- a worker pool, a
+        // lock-free queue, a counter shared by a fleet of threads -- is exactly as safe as the atomics it is
+        // made of, and until now could be written in this standard library and nowhere else. `implements
+        // Shared` is how a program says so about its own type.
+        //
+        // IT IS A PROMISE AND NOT A PROOF, and it is worth being plain about that: writing it does not make
+        // a type safe, it says the author has made it safe, and the compiler stops asking. That is the same
+        // trade as `unsafe` in other languages, with two differences that matter here -- it is attached to
+        // the TYPE rather than to a block of code, so it is declared once where the design lives instead of
+        // at each of a hundred call sites, and it is greppable: every type in a program that may cross a
+        // thread boundary can be listed by searching for this word.
+        public interface Shared {
+        }
         // An OS thread (spec 20.1). Holds a function<void> and its OS handle; start()/join() call
         // the low-level thread builtins, which lower to CreateThread / WaitForSingleObject.
         public class Thread {
+            private extern cdecl static method __ldp3_thread_yield() returns void;
+
+            // GIVE UP THE REST OF THIS THREAD'S TURN to whoever else is ready to run.
+            //
+            // What a spin-wait needs to be safe. Waiting on an atomic by reading it in a loop is the
+            // fastest way to wait when a core is free for the waiter, and the worst possible way when
+            // one is not: the spinner holds the core that the thread it is waiting for needs. A wait
+            // that spins for a while and then calls this degrades into taking turns instead of into
+            // a stall -- and a program cannot know in advance which case it is in, because that
+            // depends on the machine it is running on and on what else the program itself is doing.
+            public static method yieldNow() returns void {
+                Thread.__ldp3_thread_yield();
+                return;
+            }
+
             private function<void> work;
             private mutable long handle;
             public constructor Thread(function<void> w) {
@@ -6211,6 +6245,26 @@ R"LDP3(
         // The `extern` is here rather than in everybody's code, which is the same bargain `Signals`
         // makes one class up: reaching a C symbol is the design; reaching it in your own program for
         // something this ordinary is not.
+        // WHAT THE MACHINE IS, for a program that has to decide how much of it to use.
+        //
+        // WITHOUT THIS, EVERY THREADED LDP3 PROGRAM HOLDS A NUMBER SOMEBODY GUESSED. A worker pool
+        // needs to know how many workers to open, and the honest answer is a property of the machine
+        // it is running on -- not of the machine it was written on. Six hardcoded is right on one
+        // desk, leaves three quarters of a big machine idle, and oversubscribes a small one into
+        // being slower than a single thread.
+        //
+        // COUNTS WHAT THE OPERATING SYSTEM SAYS IT WILL RUN AT ONCE, which on a machine with both
+        // fast and efficient cores counts all of them, and counts each thread of a core that runs
+        // two. It is the number to divide work by, not a promise about how fast any one of them is.
+        public class Machine {
+            private extern cdecl static method __ldp3_machine_threads() returns int;
+
+            // How many threads this machine will run at once. Never less than one.
+            public static method threads() returns int {
+                return Machine.__ldp3_machine_threads();
+            }
+        }
+
         public class Exit {
             private extern cdecl static method exit(int code) returns void;
 
