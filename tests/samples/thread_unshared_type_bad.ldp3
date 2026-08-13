@@ -1,0 +1,44 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
+program ThreadUnsharedTypeBad;
+
+// The other side of `Shared` (spec 14): a type that does NOT declare itself shareable is still
+// refused, and it must be. This one holds a plain int and would lose counts to a race; the only
+// difference between it and the tally that compiles is the declaration -- which is the point.
+// Expected: region-binder rejects the capture.
+
+public bundle main {
+    public namespace app {
+
+        public class Loose {
+            private mutable int hits;
+
+            public constructor Loose() {
+                this.hits = 0;
+            }
+
+            public method add() returns void {
+                this.hits = this.hits + 1;
+                return;
+            }
+
+            public method count() returns int {
+                return this.hits;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Loose* loose = new Loose() on heap;
+                function<void> work = lambda[captures: byvalue loose]() returns void {
+                    loose.add();
+                };
+                Thread t = new Thread(work) on heap;
+                t.start();
+                t.join();
+                System.IO.Console.printf("%d\n", loose.count());
+                return;
+            }
+        }
+    }
+}

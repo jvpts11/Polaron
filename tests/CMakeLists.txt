@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.42")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.43")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.42")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.43")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -692,6 +692,15 @@ add_test(NAME sema_rejects_wide_atomic_freestanding
     COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/atomic_wide_bad.ldp3")
 set_tests_properties(sema_rejects_wide_atomic_freestanding PROPERTIES
     PASS_REGULAR_EXPRESSION "is wider than a machine word")
+
+# `implements Shared` opens the thread boundary to a program's own types, so the check that it did
+# not open it to EVERY type: the same closure, over a class that holds a plain int, is still a data
+# race and still refused. `thread_shared_type` is the other side -- the declaration is the whole
+# difference between the two samples.
+add_test(NAME sema_rejects_unshared_type_in_thread
+    COMMAND ldp3c --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/thread_unshared_type_bad.ldp3")
+set_tests_properties(sema_rejects_unshared_type_in_thread PROPERTIES
+    PASS_REGULAR_EXPRESSION "thread closure captures shared mutable")
 
 # `transformer` -- what a type GAINS by applying it, which is the one thing none of the other
 # declarations said. A procedure with no body is a SOCKET, and the error lands on the `applies` line
@@ -1648,6 +1657,26 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/atomic_counter.ldp3"
             "-DEXPECTED=total=200000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # F8: System.Os.Machine.threads() -- how many threads the machine runs at once, so a worker
+        # pool does not hold a number somebody guessed.
+        add_test(NAME codegen_machine_threads_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/machine_threads.ldp3"
+            "-DEXPECTED=threads: plausible"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # F8: `implements Shared` -- a program's own type crossing a thread boundary. Two threads
+        # count into one object whose fields are atomics; the total is exact.
+        add_test(NAME codegen_thread_shared_type_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/thread_shared_type.ldp3"
+            "-DEXPECTED=total=100000"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

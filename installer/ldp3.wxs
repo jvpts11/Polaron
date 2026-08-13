@@ -4,7 +4,7 @@
      the compiler (required), the ldp3-studio TUI, and installing the VS Code extension. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="LDP3 Toolchain" Manufacturer="Joao Victor Pereira Tavares"
-           Version="1.0.42.0" UpgradeCode="7f3a1c9e-2b4d-4e6a-9f10-3c5d7e8a1b20"
+           Version="1.0.43.0" UpgradeCode="7f3a1c9e-2b4d-4e6a-9f10-3c5d7e8a1b20"
            Scope="perMachine" Compressed="yes">
     <MajorUpgrade DowngradeErrorMessage="A newer version of LDP3 is already installed." />
     <MediaTemplate EmbedCab="yes" />

@@ -1,0 +1,55 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
+import System.Concurrency.atomic;
+import System.Concurrency.Shared;
+program ThreadSharedType;
+
+// `implements Shared` (spec 14, 20): a program's OWN type crossing a thread boundary.
+//
+// The data-race rule refuses a thread closure that captures a pointer to mutable state, and knows
+// atomic<T>, Mutex<T> and Channel<T> by name. A tally whose every field is an atomic is exactly as
+// safe as those, and says so. Two threads count into it; the total is exact because every write
+// went through an atomic.
+
+public bundle main {
+    public namespace app {
+
+        // A counter shared by whoever wants to count. Nothing in it is reachable except through
+        // atomics, which is the promise `Shared` states.
+        public class Tally implements Shared {
+            private mutable atomic<int>* hits;
+
+            public constructor Tally() {
+                this.hits = new atomic<int>(0) on heap;
+            }
+
+            public method add() returns void {
+                this.hits.increment();
+                return;
+            }
+
+            public method count() returns int {
+                return this.hits.get();
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Tally* tally = new Tally() on heap;
+                function<void> work = lambda[captures: byvalue tally]() returns void {
+                    for (mutable int i = 0; i < 50000; i++) {
+                        tally.add();
+                    }
+                };
+                Thread t1 = new Thread(work) on heap;
+                Thread t2 = new Thread(work) on heap;
+                t1.start();
+                t2.start();
+                t1.join();
+                t2.join();
+                System.IO.Console.printf("total=%d\n", tally.count());
+                return;
+            }
+        }
+    }
+}

@@ -316,6 +316,9 @@ private:
     // interface, or is extended/implemented elsewhere) -- so it carries a vtable and
     // can be matched by dynamic type in a catch.
     bool isPolymorphic(const std::string& name) const;
+    // Whether a type declares itself safe to reach from several threads at once (implements
+    // System.Concurrency.Shared) -- the one way a program's own type may cross a thread boundary.
+    bool declaresShared(const std::string& name) const;
 
     // Lexical scopes (innermost last); shadowing is forbidden.
     void pushScope();
