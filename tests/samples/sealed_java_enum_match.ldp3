@@ -1,0 +1,81 @@
+import System.IO.Console;
+program SealedJavaEnumMatch;
+
+// A SEALED ENUM THAT CARRIES DATA, MATCHED OVER, WITH A NAMED THRESHOLD OF ITS OWN.
+//
+// Three separate holes met here, and all three were invisible until an enum was asked to do all of
+// it at once:
+//
+//   1. `sealed enum X { A(1), B(2); ... }` lost its sealing. A java-style enum is desugared into a
+//      twin class plus a light enum, and the light enum was built field by field with `isSealed`
+//      left out -- so a `match` over it demanded a `default`, which is exactly the arm that swallows
+//      the constant somebody adds next year. The other spelling, `sealed enum X permits A, B;`,
+//      never lost it, so the same word meant two different things.
+//
+//   2. A `static fixed` declared inside an enum could not be read back. `Enum.NAME` looked only at
+//      the constant list and called anything else a missing constant, though the static was sitting
+//      on the twin class the whole time.
+//
+//   3. And matching on one TRAPPED. An int-style constant is already its ordinal; a java-style one
+//      is a cached singleton, and only the first was handled. The second fell through to the
+//      polymorphic-class path, which found the twin class, then skipped every arm -- because the
+//      cases name enum CONSTANTS and there is no class called `Slow`. No error, no arm, no value:
+//      the program died before it printed a line.
+public bundle Main {
+    public namespace App {
+
+        public sealed enum Pace {
+            Slow(1, "slow"),
+            Fast(9, "fast");
+
+            // A threshold belonging to the enum, named where it is used (hole 2).
+            public static fixed int BRISK = 5;
+
+            private int n;
+            private String said;
+
+            public constructor Pace(int n, String said) {
+                this.n = n;
+                this.said = said;
+            }
+
+            public method steps() returns int {
+                return n;
+            }
+
+            public method label() returns String {
+                return said;
+            }
+
+            // An exhaustive match with no default, which only compiles if the sealing survived
+            // the desugaring (hole 1) and only runs if the subject reaches it as an ordinal
+            // (hole 3).
+            public method score() returns float {
+                return match (this) {
+                    case Slow -> 0.25;
+                    case Fast -> 0.75;
+                };
+            }
+
+            // Read straight inside the comparison, which is where it broke: the same read in a
+            // plain initializer took a different path and worked.
+            public method brisk() returns boolean {
+                return n >= Pace.BRISK;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"how many {Pace.values().length()}");
+                System.IO.Console.println($"ordinal {cast<int>(Pace.Fast)}");
+                System.IO.Console.println($"label {Pace.Fast.label()}");
+                System.IO.Console.println($"score {Pace.Slow.score()} {Pace.Fast.score()}");
+                System.IO.Console.println($"brisk {Pace.Slow.brisk()} {Pace.Fast.brisk()}");                // And over a value held in a variable rather than named directly, which is how a
+                // field of an object reaches a match.
+                mutable Pace held = Pace.Slow;
+                System.IO.Console.println($"held {held.label()} {held.score()}");
+                return;
+            }
+        }
+    }
+}

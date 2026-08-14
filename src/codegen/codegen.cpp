@@ -3100,8 +3100,17 @@ struct CodeGenerator::Impl {
                 return staticFieldType[key];
             }
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
-                if (locals.find(objId->name) == locals.end() && enums.count(objId->name) > 0) {
-                    return objId->name;  // EnumName.CONSTANT -> the enum type
+                // EnumName.CONSTANT -> the enum type, and ONLY when it names a constant. An enum
+                // may also carry a `static fixed` of its own, and calling that the enum's type made
+                // `n >= Pace.BRISK` compare an int against a singleton -- an ICmp of two different
+                // types, which LLVM refuses and which the same read in a plain initializer never
+                // produced, because that path asked the class first.
+                if (locals.find(objId->name) == locals.end()) {
+                    if (auto eit = enums.find(objId->name);
+                        eit != enums.end() &&
+                        std::find(eit->second.begin(), eit->second.end(), mem->member) !=
+                            eit->second.end())
+                        return objId->name;
                 }
                 if (auto ct = namespaceConstTypes.find(objId->name + "." + mem->member);
                     ct != namespaceConstTypes.end())
@@ -5424,11 +5433,24 @@ struct CodeGenerator::Impl {
             if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
                 if (locals.find(objId->name) == locals.end()) {
                     // Java-style enum constant -> materialize the instance.
+                    //
+                    // ONLY IF IT REALLY IS ONE. An enum may also declare a `static fixed` of its
+                    // own, which lives on the twin class, and this branch claimed the name before
+                    // anybody asked whether the enum had a constant by it. In a binary expression
+                    // that produced a POINTER where an int was wanted -- `n >= Pace.BRISK` built an
+                    // ICmp of an i32 against a singleton -- while the same read in a plain
+                    // initializer took the static path above and worked. Two spellings of one read,
+                    // one of them silently a different thing.
                     auto jit = javaEnums.find(objId->name);
-                    if (jit != javaEnums.end()) return emitEnumConstant(*jit->second, mem->member);
+                    if (jit != javaEnums.end() &&
+                        std::find(jit->second->constants.begin(), jit->second->constants.end(),
+                                  mem->member) != jit->second->constants.end())
+                        return emitEnumConstant(*jit->second, mem->member);
                     // Int-style enum constant -> its ordinal (i32).
                     auto eit = enums.find(objId->name);
-                    if (eit != enums.end()) {
+                    if (eit != enums.end() &&
+                        std::find(eit->second.begin(), eit->second.end(), mem->member) !=
+                            eit->second.end()) {
                         // If the enum can be unimported (spec 30), guard the access: a use after
                         // `unimport enum X` throws UnimportedTypeException.
                         emitAliveGuard(objId->name);
@@ -12884,9 +12906,14 @@ struct CodeGenerator::Impl {
         llvm::Value* subj = emitExpr(*s.subject);
         if (subj == nullptr) return;
         if (isValueVariant(typeName(*s.subject))) { emitValueMatch(s, subj); return; }
-        if (auto en = enums.find(baseType(typeName(*s.subject)));
-            en != enums.end() && subj->getType()->isIntegerTy()) {
-            emitEnumMatch(s, subj, en->second);
+        if (auto en = enums.find(baseType(typeName(*s.subject))); en != enums.end()) {
+            // The same repair as `emitMatchExpr`: an enum is matched on its ordinal, and a
+            // java-style value is a singleton that has to be asked which one it is.
+            llvm::Value* ord =
+                subj->getType()->isIntegerTy()
+                    ? subj
+                    : emitJavaEnumOrdinal(subj, baseType(typeName(*s.subject)));
+            emitEnumMatch(s, ord, en->second);
             return;
         }
         auto sit = classes.find(clsKey(typeName(*s.subject)));
@@ -13079,9 +13106,19 @@ struct CodeGenerator::Impl {
         llvm::Value* subj = emitExpr(*s.subject);
         if (subj == nullptr) return nullptr;
         if (isValueVariant(typeName(*s.subject))) return emitValueMatchExpr(s, subj);
-        if (auto en = enums.find(baseType(typeName(*s.subject)));
-            en != enums.end() && subj->getType()->isIntegerTy()) {
-            return emitEnumMatchExpr(s, subj, en->second);
+        if (auto en = enums.find(baseType(typeName(*s.subject))); en != enums.end()) {
+            // AN ENUM SUBJECT IS MATCHED ON ITS ORDINAL, whichever kind of enum it is. An int-style
+            // constant already IS the ordinal; a java-style one is a cached singleton, so ask which
+            // singleton it is. Only the first was handled, and the second fell through to the
+            // polymorphic-class path below -- which found the twin class, then skipped every arm,
+            // because the case names are enum CONSTANTS and there is no class called `Slow`. Nothing
+            // was reported: the match simply had no arm to land in, and the program trapped before
+            // it printed a line. See `emitMatchStmt` for the same repair.
+            llvm::Value* ord =
+                subj->getType()->isIntegerTy()
+                    ? subj
+                    : emitJavaEnumOrdinal(subj, baseType(typeName(*s.subject)));
+            return emitEnumMatchExpr(s, ord, en->second);
         }
         auto sit = classes.find(clsKey(typeName(*s.subject)));
         if (sit == classes.end() || !sit->second.hasVtable) {

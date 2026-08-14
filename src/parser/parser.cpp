@@ -539,6 +539,13 @@ ast::Namespace Parser::parseNamespace() {
                 // linkage so the analyzer validates the contract and codegen finds the implementer.
                 light.extendsCatalogs = std::move(en.extendsCatalogs);
                 light.byCatalogValues = std::move(en.byCatalogValues);
+                // AND IT KEEPS ITS SEALING. Everything else about the enum was carried over here
+                // and this was not, so `sealed enum X { A(1), B(2); ... }` produced a light enum
+                // that was not sealed: a match over it demanded a `default`, and a `default` is
+                // exactly the arm that swallows the constant added next year. The other spelling,
+                // `sealed enum X permits A, B;`, never lost it -- so the two spellings of the same
+                // word meant different things, and only the one nobody had matched on yet was wrong.
+                light.isSealed = en.isSealed;
                 light.isJavaStyle = true;
                 ns.enums.push_back(std::move(light));
             } else {
