@@ -1,0 +1,685 @@
+    public namespace Formats {
+        // TOML AND YAML PARSE INTO `Json`, AND THAT IS THE DESIGN.
+        //
+        // They are two more syntaxes for the same thing: a tree of maps, lists, strings, numbers and
+        // booleans. Giving each its own document type would mean three sets of accessors, three
+        // pointer languages, and a program that reads configuration caring which file it came out of.
+        // Sharing the model means `JsonPointer` works on a TOML file, and anything later built over
+        // `Json` -- serialization, schema, diff -- gets all three for nothing.
+        //
+        // XML does NOT share it, and that is the same principle read the other way: an element has a
+        // tag, attributes AND children, and flattening that into a map is a lie that costs you the
+        // distinction between an attribute and a child element. It gets its own tree below.
+
+        // A TOML document (v1.0 subset). What it reads:
+        //   key = value, with `#` comments to end of line
+        //   [table] and [table.sub] headers
+        //   [[array of tables]]
+        //   strings ("basic" and 'literal'), integers, reals, booleans, and inline [a, b, c] arrays
+        // What it does not: dates, inline tables, multi-line strings, or the `_` digit separator.
+        // Said plainly because a parser that silently drops what it does not understand is worse than
+        // one that never claimed to.
+        public class Toml {
+            public static method parse(String src) returns Json {
+                mutable Json root = Json.object();
+                mutable Json* table = root;                 // where bare keys land right now
+                mutable ArrayList<String> lines = Strings.split(src, "\n");
+                for (mutable int i = 0; i < lines.size(); i++) {
+                    String line = Toml.trim(Toml.stripComment(lines.get(i)));
+                    if (line.length() == 0) { continue; }
+                    if (line.charAt(0) == '[') {
+                        // `[[x]]` appends to an array of tables; `[x]` names one.
+                        boolean isArray = line.length() > 1 && line.charAt(1) == '[';
+                        int cut = isArray ? 2 : 1;
+                        String path = Toml.trim(line.substring(cut, line.length() - cut));
+                        table = Toml.tableAt(root, path, isArray);
+                        continue;
+                    }
+                    int eq = line.indexOf("=");
+                    if (eq < 0) { continue; }
+                    String key = Toml.unquote(Toml.trim(line.substring(0, eq)));
+                    String rest = Toml.trim(line.substring(eq + 1, line.length()));
+                    table.put(key, Toml.value(rest));
+                }
+                return root;
+            }
+
+            // Walks (and builds) `a.b.c` from the root. `asArray` makes the LAST segment an array of
+            // tables and returns a fresh element of it, which is what `[[servers]]` means: the header
+            // may appear many times and each one starts another table.
+            private static method tableAt(Json* root, String path, boolean asArray) returns Json {
+                mutable ArrayList<String> parts = Strings.split(path, ".");
+                mutable nullable Json* cur = root;
+                for (mutable int i = 0; i < parts.size(); i++) {
+                    String name = Toml.unquote(Toml.trim(parts.get(i)));
+                    boolean last = i == parts.size() - 1;
+                    mutable nullable Json* found = cur.field(name);
+                    if (last && asArray) {
+                        if (found == null || found.kindOf() != 4) {
+                            found = Json.array();
+                            cur.put(name, found);
+                        }
+                        Json fresh = Json.object();
+                        found.add(fresh);
+                        return fresh;
+                    }
+                    if (found == null || found.kindOf() != 5) {
+                        // An array of tables in the middle of a path means "the one most recently
+                        // started", which is how `[[a]]` then `[a.b]` is read.
+                        if (found != null && found.kindOf() == 4 && found.size() > 0) {
+                            cur = found.at(found.size() - 1);
+                            continue;
+                        }
+                        found = Json.object();
+                        cur.put(name, found);
+                    }
+                    cur = found;
+                }
+                return cur;
+            }
+
+            // One value: quoted string, inline array, boolean, or a number.
+            private static method value(String raw) returns Json {
+                String v = Toml.trim(raw);
+                if (v.length() == 0) { return Json.ofStr(""); }
+                char c = v.charAt(0);
+                if (c == '"' || c == '\'') { return Json.ofStr(Toml.unquote(v)); }
+                if (c == '[') {
+                    mutable Json arr = Json.array();
+                    String inner = Toml.trim(v.substring(1, v.length() - 1));
+                    if (inner.length() == 0) { return arr; }
+                    mutable ArrayList<String> items = Toml.splitTop(inner);
+                    for (mutable int i = 0; i < items.size(); i++) {
+                        arr.add(Toml.value(items.get(i)));
+                    }
+                    return arr;
+                }
+                if (v.equals("true")) { return Json.ofBool(true); }
+                if (v.equals("false")) { return Json.ofBool(false); }
+                return Toml.number(v);
+            }
+
+            // Shared by TOML and YAML: an integer unless a '.' or an exponent says otherwise, and a
+            // string when it is not a number at all -- an unquoted scalar has to fall back to text
+            // rather than to zero, which is the difference between reading a hostname and losing it.
+            internal static method number(String v) returns Json {
+                mutable int i = 0;
+                mutable boolean neg = false;
+                if (i < v.length() && (v.charAt(i) == '-' || v.charAt(i) == '+')) {
+                    neg = v.charAt(i) == '-';
+                    i = i + 1;
+                }
+                if (i >= v.length()) { return Json.ofStr(v); }
+                mutable long whole = cast<long>(0);
+                mutable int digits = 0;
+                while (i < v.length() && v.charAt(i) >= '0' && v.charAt(i) <= '9') {
+                    whole = whole * cast<long>(10) + cast<long>(v.charAt(i) - '0');
+                    i = i + 1;
+                    digits = digits + 1;
+                }
+                if (digits == 0) { return Json.ofStr(v); }
+                mutable boolean isReal = false;
+                mutable double val = cast<double>(whole);
+                if (i < v.length() && v.charAt(i) == '.') {
+                    isReal = true;
+                    i = i + 1;
+                    mutable double scale = cast<double>(1);
+                    while (i < v.length() && v.charAt(i) >= '0' && v.charAt(i) <= '9') {
+                        scale = scale / cast<double>(10);
+                        val = val + cast<double>(v.charAt(i) - '0') * scale;
+                        i = i + 1;
+                    }
+                }
+                if (i < v.length() && (v.charAt(i) == 'e' || v.charAt(i) == 'E')) {
+                    isReal = true;
+                    i = i + 1;
+                    mutable boolean eneg = false;
+                    if (i < v.length() && (v.charAt(i) == '-' || v.charAt(i) == '+')) {
+                        eneg = v.charAt(i) == '-';
+                        i = i + 1;
+                    }
+                    mutable int ex = 0;
+                    while (i < v.length() && v.charAt(i) >= '0' && v.charAt(i) <= '9') {
+                        ex = ex * 10 + cast<int>(v.charAt(i) - '0');
+                        i = i + 1;
+                    }
+                    for (mutable int k = 0; k < ex; k++) {
+                        if (eneg) { val = val / cast<double>(10); } else { val = val * cast<double>(10); }
+                    }
+                }
+                // Trailing anything means it was never a number: `1.2.3` is a version, not a real.
+                if (i != v.length()) { return Json.ofStr(v); }
+                if (isReal) {
+                    if (neg) { val = cast<double>(0) - val; }
+                    return Json.ofReal(val);
+                }
+                if (neg) { whole = cast<long>(0) - whole; }
+                return Json.ofNum(whole);
+            }
+
+            // Commas at depth zero only, so `[[1, 2], [3]]` splits into two and not four.
+            private static method splitTop(String s) returns ArrayList<String> {
+                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                mutable int depth = 0;
+                mutable int start = 0;
+                mutable boolean inStr = false;
+                mutable char quote = ' ';
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (inStr) {
+                        if (c == quote) { inStr = false; }
+                        continue;
+                    }
+                    if (c == '"' || c == '\'') { inStr = true; quote = c; continue; }
+                    if (c == '[') { depth = depth + 1; }
+                    if (c == ']') { depth = depth - 1; }
+                    if (c == ',' && depth == 0) {
+                        out.add(s.substring(start, i));
+                        start = i + 1;
+                    }
+                }
+                if (start <= s.length()) { out.add(s.substring(start, s.length())); }
+                return out;
+            }
+
+            // A '#' outside a string ends the line. Inside one it is just a character, which is why
+            // this cannot be `indexOf("#")`.
+            internal static method stripComment(String line) returns String {
+                mutable boolean inStr = false;
+                mutable char quote = ' ';
+                for (mutable int i = 0; i < line.length(); i++) {
+                    char c = line.charAt(i);
+                    if (inStr) {
+                        if (c == quote) { inStr = false; }
+                        continue;
+                    }
+                    if (c == '"' || c == '\'') { inStr = true; quote = c; continue; }
+                    if (c == '#') { return line.substring(0, i); }
+                }
+                return line;
+            }
+
+            internal static method trim(String s) returns String {
+                mutable int a = 0;
+                mutable int b = s.length();
+                while (a < b && Toml.isSpace(s.charAt(a))) { a = a + 1; }
+                while (b > a && Toml.isSpace(s.charAt(b - 1))) { b = b - 1; }
+                return s.substring(a, b);
+            }
+            internal static method isSpace(char c) returns boolean {
+                return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+            }
+            // Drops one matching pair of quotes and decodes \n \t \\ \" inside a basic string. A
+            // literal ('...') string keeps its backslashes, which is what makes it literal.
+            internal static method unquote(String s) returns String {
+                if (s.length() < 2) { return s; }
+                char a = s.charAt(0);
+                char b = s.charAt(s.length() - 1);
+                if (a != b) { return s; }
+                if (a == '\'') { return s.substring(1, s.length() - 1); }
+                if (a != '"') { return s; }
+                String body = s.substring(1, s.length() - 1);
+                StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < body.length()) {
+                    char c = body.charAt(i);
+                    if (c == '\\' && i + 1 < body.length()) {
+                        char e = body.charAt(i + 1);
+                        if (e == 'n') { sb.appendChar('\n'); }
+                        else { if (e == 't') { sb.appendChar('\t'); } else { sb.appendChar(e); } }
+                        i = i + 2;
+                    } else {
+                        sb.appendChar(c);
+                        i = i + 1;
+                    }
+                }
+                return sb.toString();
+            }
+        }
+
+        // A YAML document (the block subset), into the same `Json` tree TOML uses. What it reads:
+        //   nested mappings by INDENTATION, `key: value` and `key:` followed by a deeper block
+        //   sequences of `- item`, including `- key: value` (a mapping as a sequence element)
+        //   scalars: quoted strings, integers, reals, true/false, null/~, and bare text
+        //   `#` comments to end of line
+        // What it does not: anchors and aliases, multiple documents in one file, flow style
+        // (`{a: 1}` / `[1, 2]`), block scalars (`|` and `>`), and tags. Named, because a parser that
+        // silently drops an anchor gives you a document that is quietly wrong.
+        //
+        // Indentation is the whole grammar here, so tabs are refused rather than guessed at: YAML
+        // forbids them for indentation precisely because their width is a display setting.
+        public class Yaml {
+            public static method parse(String src) returns Json {
+                mutable ArrayList<String> lines = Strings.split(src, "\n");
+                mutable Yaml* p = new Yaml(lines) on heap;
+                return p.block(0);
+            }
+
+            private mutable ArrayList<String> lines;
+            private mutable int at;
+            private constructor Yaml(ArrayList<String> lines) {
+                this.lines = lines;
+                this.at = 0;
+            }
+
+            // Everything at `indent` or deeper, as one value. Whether it is a mapping or a sequence is
+            // decided by the first line that carries content -- which is exactly how a reader decides.
+            private method block(int indent) returns Json {
+                this.skipBlank();
+                if (this.at >= this.lines.size()) { return Json.object(); }
+                String first = this.lines.get(this.at);
+                if (Yaml.indentOf(first) < indent) { return Json.object(); }
+                if (Yaml.isItem(first)) { return this.sequence(indent); }
+                return this.mapping(indent);
+            }
+
+            private method mapping(int indent) returns Json {
+                mutable Json map = Json.object();
+                while (true) {
+                    this.skipBlank();
+                    if (this.at >= this.lines.size()) { return map; }
+                    String line = this.lines.get(this.at);
+                    int ind = Yaml.indentOf(line);
+                    if (ind < indent || Yaml.isItem(line)) { return map; }
+                    String body = Toml.trim(Toml.stripComment(line));
+                    int colon = Yaml.keyEnd(body);
+                    if (colon < 0) { this.at = this.at + 1; continue; }
+                    String key = Toml.unquote(Toml.trim(body.substring(0, colon)));
+                    String rest = Toml.trim(body.substring(colon + 1, body.length()));
+                    this.at = this.at + 1;
+                    if (rest.length() > 0) {
+                        map.put(key, Yaml.scalar(rest));
+                    } else {
+                        // `key:` with nothing after it opens a block -- and an EMPTY one is a null,
+                        // not an empty map, because that is what a reader sees.
+                        map.put(key, this.child(ind));
+                    }
+                }
+                return map;
+            }
+
+            private method sequence(int indent) returns Json {
+                mutable Json arr = Json.array();
+                while (true) {
+                    this.skipBlank();
+                    if (this.at >= this.lines.size()) { return arr; }
+                    String line = this.lines.get(this.at);
+                    int ind = Yaml.indentOf(line);
+                    if (ind < indent || !Yaml.isItem(line)) { return arr; }
+                    String body = Toml.trim(Toml.stripComment(line));
+                    String item = Toml.trim(body.substring(1, body.length()));   // past the '-'
+                    this.at = this.at + 1;
+                    if (item.length() == 0) {
+                        arr.add(this.child(ind));
+                        continue;
+                    }
+                    // `- key: value` is a one-line mapping that may continue on the lines below it,
+                    // indented to where the key started rather than to the dash.
+                    int colon = Yaml.keyEnd(item);
+                    if (colon >= 0) {
+                        mutable Json obj = Json.object();
+                        String key = Toml.unquote(Toml.trim(item.substring(0, colon)));
+                        String val = Toml.trim(item.substring(colon + 1, item.length()));
+                        int keyIndent = ind + 1 + (body.length() - item.length() - 1);
+                        if (val.length() > 0) {
+                            obj.put(key, Yaml.scalar(val));
+                        } else {
+                            obj.put(key, this.child(keyIndent));
+                        }
+                        this.mergeInto(obj, keyIndent);
+                        arr.add(obj);
+                    } else {
+                        arr.add(Yaml.scalar(item));
+                    }
+                }
+                return arr;
+            }
+
+            // The remaining keys of a mapping that began on a `- ` line.
+            private method mergeInto(Json* obj, int indent) returns void {
+                while (true) {
+                    this.skipBlank();
+                    if (this.at >= this.lines.size()) { return; }
+                    String line = this.lines.get(this.at);
+                    if (Yaml.indentOf(line) != indent || Yaml.isItem(line)) { return; }
+                    String body = Toml.trim(Toml.stripComment(line));
+                    int colon = Yaml.keyEnd(body);
+                    if (colon < 0) { return; }
+                    String key = Toml.unquote(Toml.trim(body.substring(0, colon)));
+                    String rest = Toml.trim(body.substring(colon + 1, body.length()));
+                    this.at = this.at + 1;
+                    if (rest.length() > 0) { obj.put(key, Yaml.scalar(rest)); }
+                    else { obj.put(key, this.child(indent)); }
+                }
+                return;
+            }
+
+            // The block belonging to a key at `parentIndent`: whatever follows that is deeper.
+            private method child(int parentIndent) returns Json {
+                this.skipBlank();
+                if (this.at >= this.lines.size()) { return Json.ofNull(); }
+                int ind = Yaml.indentOf(this.lines.get(this.at));
+                if (ind <= parentIndent) { return Json.ofNull(); }
+                return this.block(ind);
+            }
+
+            private method skipBlank() returns void {
+                while (this.at < this.lines.size()) {
+                    String t = Toml.trim(Toml.stripComment(this.lines.get(this.at)));
+                    if (t.length() == 0) { this.at = this.at + 1; } else { return; }
+                }
+                return;
+            }
+
+            // A ':' that ends a key: outside quotes, and followed by a space or the end of the line.
+            // Without the second half, `time: 12:30` would split at the wrong colon.
+            private static method keyEnd(String s) returns int {
+                mutable boolean inStr = false;
+                mutable char quote = ' ';
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (inStr) {
+                        if (c == quote) { inStr = false; }
+                        continue;
+                    }
+                    if (c == '"' || c == '\'') { inStr = true; quote = c; continue; }
+                    if (c == ':') {
+                        if (i + 1 >= s.length() || s.charAt(i + 1) == ' ') { return i; }
+                    }
+                }
+                return -1;
+            }
+
+            private static method isItem(String line) returns boolean {
+                String t = Toml.trim(Toml.stripComment(line));
+                if (t.length() == 0) { return false; }
+                if (t.charAt(0) != '-') { return false; }
+                return t.length() == 1 || t.charAt(1) == ' ';
+            }
+
+            // Spaces only. A tab is refused rather than counted, because YAML forbids it for
+            // indentation for the reason it should: a tab's width is a display setting, so a file
+            // indented with them means different things to different readers.
+            private static method indentOf(String line) returns int {
+                mutable int n = 0;
+                while (n < line.length() && line.charAt(n) == ' ') { n = n + 1; }
+                return n;
+            }
+
+            // Quoted stays a string; `null` and `~` are null; true/false are booleans; the rest goes
+            // through the same number reader TOML uses, which falls back to text.
+            private static method scalar(String raw) returns Json {
+                String v = Toml.trim(raw);
+                if (v.length() == 0) { return Json.ofNull(); }
+                char c = v.charAt(0);
+                if (c == '"' || c == '\'') { return Json.ofStr(Toml.unquote(v)); }
+                if (v.equals("null") || v.equals("~")) { return Json.ofNull(); }
+                if (v.equals("true") || v.equals("yes")) { return Json.ofBool(true); }
+                if (v.equals("false") || v.equals("no")) { return Json.ofBool(false); }
+                return Toml.number(v);
+            }
+        }
+
+        // AN XML ELEMENT, and it does NOT share the Json tree.
+        //
+        // TOML and YAML are other syntaxes for the same thing, so they share the model. XML is not:
+        // an element has a tag, ATTRIBUTES and children, and flattening that into a map costs the
+        // distinction between an attribute and a child element -- a lie that a document round-tripping
+        // through it would make visible immediately.
+        //
+        // What it reads: elements, attributes (single- or double-quoted), text, nesting, self-closing
+        // tags, comments, CDATA, and the five predefined entities. What it does not: namespaces as
+        // anything but part of the name, DTDs, processing instructions beyond skipping them, and
+        // numeric character references.
+        public class Xml {
+            private mutable String tag;
+            private mutable String text;
+            private mutable ArrayList<String> attrNames;
+            private mutable ArrayList<String> attrValues;
+            // CHILDREN ARE A SIBLING CHAIN, not an `ArrayList<Xml>`, and `Json` next door made the same
+            // choice for the same reason. A container of the type being declared is a generic
+            // instantiation over it, and that instantiation reaches `indexOf`, which calls `equalsKey`,
+            // which resolves onto `Object` -- a class a freestanding build does not emit. The first
+            // version used a list and broke every bare-metal program in the suite with
+            // `unknown method 'equalsKey'` pointing into the standard library, from a prelude type the
+            // kernel never mentions.
+            //
+            // The chain costs nothing here: this tree is walked, never indexed into randomly.
+            private mutable nullable Xml* firstKid;
+            private mutable nullable Xml* lastKid;
+            private mutable nullable Xml* nextKid;
+            private mutable int kidCount;
+
+            public constructor Xml(String tag) {
+                this.tag = tag;
+                this.text = "";
+                this.attrNames = new ArrayList<String>() on heap;
+                this.attrValues = new ArrayList<String>() on heap;
+                this.firstKid = null;
+                this.lastKid = null;
+                this.nextKid = null;
+                this.kidCount = 0;
+            }
+            // What the reader needs to BUILD one, and no more than that. `internal` rather than
+            // public: filling an element is the parser's job, not a caller's, and these are not part
+            // of the surface a document consumer reads. (The first version had `XmlReader` writing the
+            // fields directly, and the member-visibility check refused it -- correctly.)
+            internal method addAttribute(String name, String value) returns void {
+                this.attrNames.add(name);
+                this.attrValues.add(value);
+                return;
+            }
+            internal method addChild(Xml* node) returns void {
+                if (this.lastKid == null) { this.firstKid = node; } else { this.lastKid.nextKid = node; }
+                this.lastKid = node;
+                this.kidCount = this.kidCount + 1;
+                return;
+            }
+            internal method setContent(String value) returns void {
+                this.text = value;
+                return;
+            }
+
+            public method name() returns String { return this.tag; }
+            // The element's own text, with the text of its children left to them -- so `<a>x<b/>y</a>`
+            // reports "xy" for `a` and nothing for `b`, which is what a reader means by "the text".
+            public method content() returns String { return this.text; }
+            public method attributeCount() returns int { return this.attrNames.size(); }
+            public method attributeName(int i) returns String { return this.attrNames.get(i); }
+            public method attribute(String name) returns String {
+                for (mutable int i = 0; i < this.attrNames.size(); i++) {
+                    if (this.attrNames.get(i).equals(name)) { return this.attrValues.get(i); }
+                }
+                return "";
+            }
+            public method hasAttribute(String name) returns boolean {
+                for (mutable int i = 0; i < this.attrNames.size(); i++) {
+                    if (this.attrNames.get(i).equals(name)) { return true; }
+                }
+                return false;
+            }
+            public method childCount() returns int { return this.kidCount; }
+            public method child(int i) returns nullable Xml {
+                mutable nullable Xml* cur = this.firstKid;
+                for (mutable int j = 0; j < i && cur != null; j++) { cur = cur.nextKid; }
+                return cur;
+            }
+            // The first child with this tag, or an empty element of that name -- so a chain of
+            // `.childNamed` over a path the document does not have reads as empty rather than trapping.
+            public method childNamed(String name) returns Xml {
+                mutable nullable Xml* cur = this.firstKid;
+                while (cur != null) {
+                    if (cur.name().equals(name)) { return cur; }
+                    cur = cur.nextKid;
+                }
+                return new Xml(name) on heap;
+            }
+            public method countNamed(String name) returns int {
+                mutable int n = 0;
+                mutable nullable Xml* cur = this.firstKid;
+                while (cur != null) {
+                    if (cur.name().equals(name)) { n = n + 1; }
+                    cur = cur.nextKid;
+                }
+                return n;
+            }
+            // The next sibling with the same tag, which is how a repeated element is walked without a
+            // list: `for (x = root.childNamed("item"); x != null; x = x.nextNamed("item"))`.
+            public method nextNamed(String name) returns nullable Xml {
+                mutable nullable Xml* cur = this.nextKid;
+                while (cur != null) {
+                    if (cur.name().equals(name)) { return cur; }
+                    cur = cur.nextKid;
+                }
+                return null;
+            }
+
+            public static method parse(String src) returns Xml {
+                mutable XmlReader* r = new XmlReader(src) on heap;
+                return r.document();
+            }
+        }
+
+        // The scanner behind Xml.parse. Separate from the element for the reason the JSON parser is
+        // separate from the value: a document is a thing you keep, and a position in a string is not.
+        internal class XmlReader {
+            private mutable String s;
+            private mutable int pos;
+            public constructor XmlReader(String src) { this.s = src; this.pos = 0; }
+
+            public method document() returns Xml {
+                this.skipProlog();
+                return this.element();
+            }
+
+            // `<?xml ...?>`, comments and doctypes before the root.
+            private method skipProlog() returns void {
+                mutable boolean more = true;
+                while (more) {
+                    this.skipSpace();
+                    if (this.pos + 1 >= this.s.length()) { return; }
+                    if (this.s.charAt(this.pos) != '<') { return; }
+                    char c = this.s.charAt(this.pos + 1);
+                    if (c == '?' || c == '!') { this.skipTo(">"); } else { more = false; }
+                }
+                return;
+            }
+
+            private method element() returns Xml {
+                this.skipSpace();
+                if (this.pos >= this.s.length() || this.s.charAt(this.pos) != '<') {
+                    return new Xml("") on heap;
+                }
+                this.pos = this.pos + 1;
+                String name = this.readName();
+                mutable Xml node = new Xml(name) on heap;
+                // Attributes, up to '>' or '/>'.
+                mutable boolean selfClosing = false;
+                mutable boolean inTag = true;
+                while (inTag) {
+                    this.skipSpace();
+                    if (this.pos >= this.s.length()) { return node; }
+                    char c = this.s.charAt(this.pos);
+                    if (c == '/') { selfClosing = true; this.pos = this.pos + 1; continue; }
+                    if (c == '>') { this.pos = this.pos + 1; inTag = false; continue; }
+                    String attr = this.readName();
+                    if (attr.length() == 0) { this.pos = this.pos + 1; continue; }
+                    this.skipSpace();
+                    if (this.pos < this.s.length() && this.s.charAt(this.pos) == '=') {
+                        this.pos = this.pos + 1;
+                        node.addAttribute(attr, this.readQuoted());
+                    } else {
+                        // A valueless attribute is HTML's habit, not XML's; kept as empty rather than
+                        // dropped, so a document that has one still reports it.
+                        node.addAttribute(attr, "");
+                    }
+                }
+                if (selfClosing) { return node; }
+
+                StringBuilder text = new StringBuilder() on heap;
+                mutable boolean open = true;
+                while (open && this.pos < this.s.length()) {
+                    char c = this.s.charAt(this.pos);
+                    if (c != '<') {
+                        text.appendChar(c);
+                        this.pos = this.pos + 1;
+                        continue;
+                    }
+                    if (this.startsWith("</")) {
+                        this.skipTo(">");
+                        open = false;
+                        continue;
+                    }
+                    if (this.startsWith("<!--")) { this.skipTo("-->"); continue; }
+                    if (this.startsWith("<![CDATA[")) {
+                        this.pos = this.pos + 9;
+                        mutable boolean inData = true;
+                        while (inData && this.pos < this.s.length()) {
+                            if (this.startsWith("]]>")) { this.pos = this.pos + 3; inData = false; }
+                            else { text.appendChar(this.s.charAt(this.pos)); this.pos = this.pos + 1; }
+                        }
+                        continue;
+                    }
+                    if (this.startsWith("<?") || this.startsWith("<!")) { this.skipTo(">"); continue; }
+                    node.addChild(this.element());
+                }
+                node.setContent(XmlReader.decode(Toml.trim(text.toString())));
+                return node;
+            }
+
+            private method readName() returns String {
+                mutable int start = this.pos;
+                while (this.pos < this.s.length()) {
+                    char c = this.s.charAt(this.pos);
+                    if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '>' || c == '/' ||
+                        c == '=') {
+                        break;
+                    }
+                    this.pos = this.pos + 1;
+                }
+                return this.s.substring(start, this.pos);
+            }
+            // Either quote, because XML allows both and a parser that insists on one rejects half the
+            // documents in the world.
+            private method readQuoted() returns String {
+                this.skipSpace();
+                if (this.pos >= this.s.length()) { return ""; }
+                char q = this.s.charAt(this.pos);
+                if (q != '"' && q != '\'') { return this.readName(); }
+                this.pos = this.pos + 1;
+                mutable int start = this.pos;
+                while (this.pos < this.s.length() && this.s.charAt(this.pos) != q) {
+                    this.pos = this.pos + 1;
+                }
+                String v = this.s.substring(start, this.pos);
+                this.pos = this.pos + 1;
+                return XmlReader.decode(v);
+            }
+            private method skipSpace() returns void {
+                while (this.pos < this.s.length() && Toml.isSpace(this.s.charAt(this.pos))) {
+                    this.pos = this.pos + 1;
+                }
+                return;
+            }
+            private method startsWith(String what) returns boolean {
+                if (this.pos + what.length() > this.s.length()) { return false; }
+                return this.s.substring(this.pos, this.pos + what.length()).equals(what);
+            }
+            private method skipTo(String what) returns void {
+                while (this.pos < this.s.length()) {
+                    if (this.startsWith(what)) { this.pos = this.pos + what.length(); return; }
+                    this.pos = this.pos + 1;
+                }
+                return;
+            }
+            // The five predefined entities. &amp; is decoded LAST so that "&amp;lt;" comes back as
+            // "&lt;" and not as "<" -- decoding it first would make the escape of an escape vanish.
+            internal static method decode(String s) returns String {
+                mutable String v = Strings.replace(s, "&lt;", "<");
+                v = Strings.replace(v, "&gt;", ">");
+                v = Strings.replace(v, "&quot;", "\"");
+                v = Strings.replace(v, "&apos;", "'");
+                return Strings.replace(v, "&amp;", "&");
+            }
+        }
+    }
