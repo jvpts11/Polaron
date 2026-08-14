@@ -2550,8 +2550,122 @@ int __polaron_file_write_all(const char* path, const char* data, long long len, 
     const size_t n = std::fwrite(data, 1, static_cast<size_t>(len), file.get());
     return n == static_cast<size_t>(len) ? 1 : 0;
 }
-int __polaron_file_exists(const char* path) { return StdioFile(path, "rb").isOpen() ? 1 : 0; }
+// EXISTS MEANS "SOMETHING IS AT THIS PATH", not "a file I can open for reading". This used to be
+// `fopen(path, "rb")`, which answers NO for a directory that is plainly there -- and that lie hid a
+// second bug behind it: `deleteRecursively` checked its own work by asking whether the directory still
+// existed, was told no, and reported success while the tree was untouched. Two defects agreeing.
+//
+// It also said no for a file that exists but cannot be opened (permissions, an exclusive lock), which
+// is a different question wearing the same name.
+int __polaron_file_exists(const char* path) {
+#ifdef _WIN32
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES ? 1 : 0;
+#else
+    struct stat st;
+    return stat(path, &st) == 0 ? 1 : 0;
+#endif
+}
 int __polaron_file_delete(const char* path) { return remove(path) == 0 ? 1 : 0; }
+
+// ---- OPEN FILES. ----
+//
+// Everything above reads or writes a WHOLE file, which is the only shape the language had: a program
+// that wanted the first line of a log had to bring the log into memory, and one that wanted to append
+// a record re-read and rewrote the file. Neither is a limitation of the platform -- it is that no
+// handle ever crossed into Polaron.
+//
+// The handle is an opaque `long` (the FILE* as an integer), for the same reason the subprocess handle
+// is: the language has no type for a foreign pointer that it should be storing in a field, and an
+// integer that is only ever handed back to this runtime cannot be dereferenced by accident.
+//
+// Modes are the C ones, and deliberately so -- "rb"/"wb"/"ab"/"r+b" name themselves, and inventing an
+// enum here would mean maintaining a translation table whose only content is those four strings.
+long long __polaron_fopen(const char* path, const char* mode) {
+    std::FILE* f = std::fopen(path, mode);
+    return f == nullptr ? 0 : static_cast<long long>(reinterpret_cast<std::uintptr_t>(f));
+}
+// Bytes actually read, which is short at end-of-file and 0 there -- the caller's loop condition.
+long long __polaron_fread(long long h, char* buf, long long n) {
+    if (h == 0) { return 0; }
+    std::FILE* f = reinterpret_cast<std::FILE*>(static_cast<std::uintptr_t>(h));
+    return static_cast<long long>(std::fread(buf, 1, static_cast<size_t>(n), f));
+}
+long long __polaron_fwrite(long long h, const char* buf, long long n) {
+    if (h == 0) { return 0; }
+    std::FILE* f = reinterpret_cast<std::FILE*>(static_cast<std::uintptr_t>(h));
+    return static_cast<long long>(std::fwrite(buf, 1, static_cast<size_t>(n), f));
+}
+// `whence`: 0 from the start, 1 from here, 2 from the end -- SEEK_SET/CUR/END, passed as numbers
+// because the constants are not the same integers on every platform and the language must not depend
+// on which ones this one uses.
+int __polaron_fseek(long long h, long long off, int whence) {
+    if (h == 0) { return 0; }
+    std::FILE* f = reinterpret_cast<std::FILE*>(static_cast<std::uintptr_t>(h));
+    const int w = whence == 1 ? SEEK_CUR : (whence == 2 ? SEEK_END : SEEK_SET);
+#ifdef _WIN32
+    return _fseeki64(f, off, w) == 0 ? 1 : 0;
+#else
+    return fseeko(f, static_cast<off_t>(off), w) == 0 ? 1 : 0;
+#endif
+}
+long long __polaron_ftell(long long h) {
+    if (h == 0) { return -1; }
+    std::FILE* f = reinterpret_cast<std::FILE*>(static_cast<std::uintptr_t>(h));
+#ifdef _WIN32
+    return _ftelli64(f);
+#else
+    return static_cast<long long>(ftello(f));
+#endif
+}
+int __polaron_fflush(long long h) {
+    if (h == 0) { return 0; }
+    return std::fflush(reinterpret_cast<std::FILE*>(static_cast<std::uintptr_t>(h))) == 0 ? 1 : 0;
+}
+int __polaron_fclose(long long h) {
+    if (h == 0) { return 0; }
+    return std::fclose(reinterpret_cast<std::FILE*>(static_cast<std::uintptr_t>(h))) == 0 ? 1 : 0;
+}
+// End-of-file is only true AFTER a read came up short -- C's rule, kept rather than smoothed, because
+// smoothing it means a peek, and a peek on a pipe blocks.
+int __polaron_feof(long long h) {
+    if (h == 0) { return 1; }
+    return std::feof(reinterpret_cast<std::FILE*>(static_cast<std::uintptr_t>(h))) != 0 ? 1 : 0;
+}
+
+// A DIRECTORY IS NOT DELETED BY `remove`. On Windows it takes RemoveDirectory and nothing else, so
+// `File.remove` on a directory returned 0 and the caller had no other call to reach for. Kept as its
+// own primitive rather than folded into file_delete: one syscall per runtime entry point, with the
+// library deciding which to use from `isDir` -- the layer that can afford the question.
+// The directory must be empty; emptying it is the caller's walk.
+int __polaron_rmdir(const char* path) {
+#ifdef _WIN32
+    return RemoveDirectoryA(path) != 0 ? 1 : 0;
+#else
+    return rmdir(path) == 0 ? 1 : 0;
+#endif
+}
+
+// Last modification, in seconds since the epoch; -1 when the path is not there. Seconds because that
+// is the resolution every filesystem this runs on agrees about -- finer units differ per platform and
+// per filesystem, and a build tool comparing two of them wants one unit that never lies.
+long long __polaron_file_mtime(const char* path) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA d;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &d)) {
+        return -1;
+    }
+    // FILETIME is 100ns ticks since 1601; the constant is the seconds between 1601 and 1970.
+    unsigned long long t = (static_cast<unsigned long long>(d.ftLastWriteTime.dwHighDateTime) << 32) |
+                           d.ftLastWriteTime.dwLowDateTime;
+    return static_cast<long long>(t / 10000000ULL) - 11644473600LL;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    return static_cast<long long>(st.st_mtime);
+#endif
+}
 
 // ---- Directory / filesystem metadata (spec 34.4). ----
 // The directory's entries as a NUL-terminated, newline-separated string ("" if not a directory or

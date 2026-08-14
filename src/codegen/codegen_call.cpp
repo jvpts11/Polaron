@@ -1004,22 +1004,85 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                 module.getOrInsertFunction("__polaron_dir_list", ft), {stringData(path), lenSlot});
             return ownedStr(emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot, "dl.n"), buf));
         }
-        if (fn == "size") {
+        // Open files: the handle is a `long`, and the buffer crosses as an `address` (already 64 bits
+        // on every target, by the rule in docs/design/porting.md), so nothing here has to know how wide
+        // a pointer is on the machine it is compiled for.
+        if (fn == "open") {
+            llvm::Value* path = emitExpr(*call.args[0]);
+            llvm::Value* mode = emitExpr(*call.args[1]);
+            if (path == nullptr || mode == nullptr) {
+                return nullptr;
+            }
+            llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt64Ty(), {p, p}, false);
+            return builder.CreateCall(module.getOrInsertFunction("__polaron_fopen", ft),
+                                      {stringData(path), stringData(mode)});
+        }
+        if (fn == "readInto" || fn == "writeFrom") {
+            llvm::Value* h = emitExpr(*call.args[0]);
+            llvm::Value* addr = emitExpr(*call.args[1]);
+            llvm::Value* n = emitExpr(*call.args[2]);
+            if (h == nullptr || addr == nullptr || n == nullptr) {
+                return nullptr;
+            }
+            llvm::Type* i64 = builder.getInt64Ty();
+            llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64, p, i64}, false);
+            const char* rfn = fn == "readInto" ? "__polaron_fread" : "__polaron_fwrite";
+            return builder.CreateCall(
+                module.getOrInsertFunction(rfn, ft),
+                {builder.CreateIntCast(h, i64, true), builder.CreateIntToPtr(addr, p),
+                 builder.CreateIntCast(n, i64, true)});
+        }
+        if (fn == "seek") {
+            llvm::Value* h = emitExpr(*call.args[0]);
+            llvm::Value* off = emitExpr(*call.args[1]);
+            llvm::Value* whence = emitExpr(*call.args[2]);
+            if (h == nullptr || off == nullptr || whence == nullptr) {
+                return nullptr;
+            }
+            llvm::Type* i64 = builder.getInt64Ty();
+            llvm::FunctionType* ft =
+                llvm::FunctionType::get(builder.getInt32Ty(), {i64, i64, builder.getInt32Ty()}, false);
+            return builder.CreateCall(module.getOrInsertFunction("__polaron_fseek", ft),
+                                      {builder.CreateIntCast(h, i64, true),
+                                       builder.CreateIntCast(off, i64, true),
+                                       builder.CreateIntCast(whence, builder.getInt32Ty(), true)});
+        }
+        if (fn == "tell" || fn == "flush" || fn == "close" || fn == "atEnd") {
+            llvm::Value* h = emitExpr(*call.args[0]);
+            if (h == nullptr) {
+                return nullptr;
+            }
+            llvm::Type* i64 = builder.getInt64Ty();
+            llvm::Type* ret = fn == "tell" ? i64 : static_cast<llvm::Type*>(builder.getInt32Ty());
+            llvm::FunctionType* ft = llvm::FunctionType::get(ret, {i64}, false);
+            const char* rfn = fn == "tell"    ? "__polaron_ftell"
+                              : fn == "flush" ? "__polaron_fflush"
+                              : fn == "close" ? "__polaron_fclose"
+                                              : "__polaron_feof";
+            return builder.CreateCall(module.getOrInsertFunction(rfn, ft),
+                                      {builder.CreateIntCast(h, i64, true)});
+        }
+        if (fn == "size" || fn == "mtime") {
             llvm::Value* path = emitExpr(*call.args[0]);
             if (path == nullptr) {
                 return nullptr;
             }
             llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt64Ty(), {p}, false);
-            return builder.CreateCall(module.getOrInsertFunction("__polaron_file_size", ft),
-                                      {stringData(path)});
+            const char* rfn = fn == "size" ? "__polaron_file_size" : "__polaron_file_mtime";
+            return builder.CreateCall(module.getOrInsertFunction(rfn, ft), {stringData(path)});
         }
-        if (fn == "mkdir" || fn == "isDir") {
+        // `rmdir` is its own primitive because `remove` does not take a directory on Windows: the call
+        // returned 0 and there was nothing else to reach for, so a recursive delete could not be
+        // written at all. The library picks between them from `isDir`.
+        if (fn == "mkdir" || fn == "isDir" || fn == "rmdir") {
             llvm::Value* path = emitExpr(*call.args[0]);
             if (path == nullptr) {
                 return nullptr;
             }
             llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt32Ty(), {p}, false);
-            const char* rfn = fn == "mkdir" ? "__polaron_mkdir" : "__polaron_is_dir";
+            const char* rfn = fn == "mkdir"   ? "__polaron_mkdir"
+                              : fn == "rmdir" ? "__polaron_rmdir"
+                                              : "__polaron_is_dir";
             return builder.CreateCall(module.getOrInsertFunction(rfn, ft), {stringData(path)});
         }
         if (fn == "rename") {

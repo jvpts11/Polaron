@@ -39,6 +39,242 @@
                 }
                 return entries;
             }
+
+            // WHOLE CONTENTS, which `Files` did not offer at all: a program that wanted the text of a
+            // file rather than its lines had to reach past the library to `File.readAll`, the compiler
+            // builtin. Six of the ten builtins were unreachable this way -- the runtime has had
+            // exists/size/remove/isDir/mkdir/rename since file I/O landed, and only four of them ever
+            // came out through a class.
+            public static method read(String path) returns String {
+                return File.readAll(path);
+            }
+            public static method write(String path, String content) returns void {
+                File.writeAll(path, content);
+                return;
+            }
+            public static method append(String path, String content) returns void {
+                File.appendAll(path, content);
+                return;
+            }
+
+            // ---- Metadata. Asking is not the same as trying and failing. ----
+            public static method exists(String path) returns boolean {
+                return File.exists(path);
+            }
+            // Bytes, or -1 when the path does not exist. Kept as the runtime reports it rather than
+            // trapping: "how big is it" is a question a program asks about files it is not sure of.
+            public static method size(String path) returns long {
+                return File.size(path);
+            }
+            public static method isDirectory(String path) returns boolean {
+                return File.isDir(path);
+            }
+            public static method isFile(String path) returns boolean {
+                return File.exists(path) && !File.isDir(path);
+            }
+            // Last modification, in seconds since the epoch; -1 when the path is not there. Seconds
+            // because that is the resolution every filesystem this runs on agrees about, and a build
+            // tool comparing two timestamps wants one unit that never lies.
+            public static method modifiedAt(String path) returns long {
+                return File.mtime(path);
+            }
+            // True when `path` is newer than `other`, or when `other` is not there at all -- the
+            // question a build asks, phrased the way it asks it.
+            public static method isNewerThan(String path, String other) returns boolean {
+                return File.mtime(path) > File.mtime(other);
+            }
+
+            // ---- Mutating the tree. Each answers whether it worked, rather than trapping: a
+            // directory that already exists is the ordinary case, not a failure. ----
+            // Either kind. `remove` does not take a directory on Windows, so a caller who did not
+            // already know which it was had no call that worked -- and the failure was silent, because
+            // it returned false into code that mostly ignores it. The library asks; the caller should
+            // not have to.
+            public static method delete(String path) returns boolean {
+                if (File.isDir(path)) { return File.rmdir(path); }
+                return File.remove(path);
+            }
+            // An empty directory, and only that. Separate from `delete` for the callers who want the
+            // refusal: removing a directory you believed was empty and was not is worth an answer.
+            public static method deleteDirectory(String path) returns boolean {
+                return File.rmdir(path);
+            }
+            public static method createDirectory(String path) returns boolean {
+                return File.mkdir(path);
+            }
+            // Every missing parent, then the leaf -- `mkdir -p`. Already-there counts as success,
+            // which is what makes it usable at the top of a program that just wants the path to be
+            // there. Walks forward so each parent exists before its child is attempted.
+            public static method createDirectories(String path) returns boolean {
+                if (File.isDir(path)) { return true; }
+                mutable int i = 0;
+                while (i < path.length()) {
+                    char c = path.charAt(i);
+                    if ((c == '/' || c == cast<char>(92)) && i > 0) {   // 92 = backslash
+                        String parent = path.substring(0, i);
+                        if (parent.length() > 0 && !File.isDir(parent)) {
+                            File.mkdir(parent);
+                        }
+                    }
+                    i = i + 1;
+                }
+                File.mkdir(path);
+                return File.isDir(path);
+            }
+            public static method rename(String from, String to) returns boolean {
+                return File.rename(from, to);
+            }
+            // Contents, not the file: metadata and permissions are not carried, and the destination is
+            // replaced. Written over read/write rather than a runtime call so it works on every target
+            // the language reaches, including the ones with no copy syscall of their own.
+            public static method copy(String from, String to) returns boolean {
+                if (!File.exists(from)) { return false; }
+                File.writeAll(to, File.readAll(from));
+                return File.exists(to);
+            }
+
+            // ---- Walking. `listDir` gives one level; this gives all of them. ----
+            // Every file beneath `root`, as full paths, directories descended into but not themselves
+            // listed. Depth-first, with a bound: a filesystem can contain a cycle through a link, and a
+            // walk with no floor turns that into a hang rather than an error.
+            public static method walk(String root) returns ArrayList<String> {
+                mutable ArrayList<String>* found = new ArrayList<String>() on heap;
+                Files.walkInto(root, found, 64);
+                return found;
+            }
+            // The accumulator is a POINTER and has to be. Passing it by value is a deep copy in
+            // Polaron, so each level filled a list of its own and the caller got back the empty one it
+            // started with -- a walk that answered 0 on a tree with three files in it, with nothing
+            // failing anywhere. This is the language working as designed; `T*` is how you say "the
+            // same list".
+            private static method walkInto(String dir, ArrayList<String>* found, int depth) returns void {
+                if (depth <= 0) { return; }
+                mutable ArrayList<String> entries = Files.listDir(dir);
+                for (mutable int i = 0; i < entries.size(); i++) {
+                    String full = Paths.join(dir, entries.get(i));
+                    if (File.isDir(full)) {
+                        Files.walkInto(full, found, depth - 1);
+                    } else {
+                        found.add(full);
+                    }
+                }
+                return;
+            }
+            // The directories beneath `root`, same bound and same order as `walk`.
+            public static method walkDirectories(String root) returns ArrayList<String> {
+                mutable ArrayList<String>* found = new ArrayList<String>() on heap;
+                Files.walkDirsInto(root, found, 64);
+                return found;
+            }
+            private static method walkDirsInto(String dir, ArrayList<String>* found, int depth) returns void {
+                if (depth <= 0) { return; }
+                mutable ArrayList<String> entries = Files.listDir(dir);
+                for (mutable int i = 0; i < entries.size(); i++) {
+                    String full = Paths.join(dir, entries.get(i));
+                    if (File.isDir(full)) {
+                        found.add(full);
+                        Files.walkDirsInto(full, found, depth - 1);
+                    }
+                }
+                return;
+            }
+            // A directory and everything under it. Depth-first so a directory is emptied before it is
+            // removed, which is the only order the underlying call accepts.
+            public static method deleteRecursively(String path) returns boolean {
+                if (!File.isDir(path)) { return File.remove(path); }
+                mutable ArrayList<String> entries = Files.listDir(path);
+                for (mutable int i = 0; i < entries.size(); i++) {
+                    Files.deleteRecursively(Paths.join(path, entries.get(i)));
+                }
+                return File.rmdir(path);
+            }
+        }
+        // AN OPEN FILE, which the language did not have.
+        //
+        // Everything in `Files` moves a whole file: the first line of a log cost the whole log, and
+        // appending a record meant reading and rewriting. That was never a limit of the platform --
+        // no handle had ever crossed into Polaron.
+        //
+        // The handle is closed by `close()`, and by the destructor if the caller forgets, so a stream
+        // bound to a local is safe under RAII the way every other owned resource is. Closing twice is
+        // harmless: the handle is cleared, and a cleared handle is what `isOpen` reports on.
+        public class FileStream {
+            private mutable long handle;
+
+            // The C modes, deliberately: "rb", "wb", "ab", "r+b" name themselves, and an enum here
+            // would be a translation table whose entire content is those four strings.
+            private constructor FileStream(long handle) {
+                this.handle = handle;
+            }
+            // `null` is not the answer for a file that will not open, because the caller who ignores it
+            // gets a null dereference two lines later instead of here. A closed stream is returned and
+            // `isOpen()` is the question.
+            public static method open(String path, String mode) returns FileStream {
+                return new FileStream(File.open(path, mode)) on heap;
+            }
+            public static method read(String path) returns FileStream {
+                return FileStream.open(path, "rb");
+            }
+            public static method write(String path) returns FileStream {
+                return FileStream.open(path, "wb");
+            }
+            public static method append(String path) returns FileStream {
+                return FileStream.open(path, "ab");
+            }
+            public method isOpen() returns boolean {
+                return this.handle != 0;
+            }
+
+            // ---- Bytes. The buffer is a System.Memory.Buffer, which is the language's own name for
+            // a block of bytes with a length -- so binary I/O needs no new type. ----
+            // Bytes actually read: short at the end of the file, and 0 there. That IS the loop
+            // condition, which is why it is returned rather than swallowed.
+            public method readBytes(Buffer* into, int count) returns int {
+                if (this.handle == 0) { return 0; }
+                return cast<int>(File.readInto(this.handle, into.start(), cast<long>(count)));
+            }
+            public method writeBytes(Buffer* from, int count) returns int {
+                if (this.handle == 0) { return 0; }
+                return cast<int>(File.writeFrom(this.handle, from.start(), cast<long>(count)));
+            }
+
+            // ---- Position. `seek` is from the start; the other two say where from, because a stream
+            // reading fixed-size records wants "back one record" and a tail wants "from the end". ----
+            public method seek(long offset) returns boolean {
+                return File.seek(this.handle, offset, 0);
+            }
+            public method seekFromHere(long offset) returns boolean {
+                return File.seek(this.handle, offset, 1);
+            }
+            public method seekFromEnd(long offset) returns boolean {
+                return File.seek(this.handle, offset, 2);
+            }
+            public method position() returns long {
+                return File.tell(this.handle);
+            }
+            // End-of-file is only true AFTER a read came up short -- C's rule, kept rather than
+            // smoothed, because smoothing it means peeking one byte ahead and a peek on a pipe blocks.
+            public method atEnd() returns boolean {
+                return File.atEnd(this.handle);
+            }
+            public method flush() returns boolean {
+                return File.flush(this.handle);
+            }
+            public method close() returns boolean {
+                if (this.handle == 0) { return false; }
+                boolean ok = File.close(this.handle);
+                this.handle = 0;
+                return ok;
+            }
+            // The forgotten close. A stream on a local is closed at scope exit like any other owned
+            // resource; one that was closed by hand has a zero handle here and does nothing.
+            public destructor ~FileStream() returns void {
+                if (this.handle != 0) {
+                    File.close(this.handle);
+                    this.handle = 0;
+                }
+                return;
+            }
         }
         // Path-string manipulation (spec 34.4): join segments, and pull apart a path into its directory,
         // final component, and extension. Pure string work over "/" -- it does not touch the filesystem.

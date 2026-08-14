@@ -2634,6 +2634,29 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # THE FILESYSTEM THE LIBRARY DID NOT REACH. The runtime has had exists/size/remove/isDir/mkdir/
+        # rename since file I/O landed and the compiler exposed all ten File builtins -- `Files` wrapped
+        # four, so a stdlib with HyperLogLog and Manacher in it could not tell you whether a file
+        # existed. Builds a tree, asks about it, walks it, copies, renames, and takes it down.
+        add_test(NAME codegen_files_metadata_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/files_metadata.pol"
+            "-DEXPECTED=made=1 isdir=1 size=5 file=1 walk=3 copied=hello renamed=1 gone=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # AN OPEN FILE, which the language did not have: every other file call moves a WHOLE file, so
+        # the first line of a log cost the whole log. Never a limit of the platform -- no handle had
+        # crossed into Polaron. Writes 26 bytes, then seeks around the file without reading it in.
+        add_test(NAME codegen_file_stream_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_stream.pol"
+            "-DEXPECTED=wrote=26 at10=KLMN tail=WXYZ pos=26 closed=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # THE OTHER HALF OF THE RULE. A visibility check that only refuses is half-measured, and every
         # way to get this wrong is an over-refusal: own private through `this`, `protected` in a
         # subclass, a private constructor reached from the type's own static maker, and `internal`,

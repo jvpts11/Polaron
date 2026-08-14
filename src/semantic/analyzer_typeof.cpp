@@ -1888,8 +1888,33 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
                 return fn == "readAll" ? "String" : "boolean";
             }
-            // Directory / filesystem metadata (spec 34.4): list, mkdir, rename, size, isDir.
-            if (fn == "list" || fn == "mkdir" || fn == "rename" || fn == "size" || fn == "isDir") {
+            // OPEN FILES (spec 34.4). Everything else here reads or writes a WHOLE file, which was the
+            // only shape the language had: the first line of a log cost the whole log. The handle is an
+            // opaque `long` -- the runtime's FILE* as an integer -- for the same reason the subprocess
+            // handle is one: an integer that is only ever handed back cannot be dereferenced by
+            // accident, and the language has no type for a foreign pointer it should be keeping.
+            if (fn == "open" || fn == "readInto" || fn == "writeFrom" || fn == "seek" ||
+                fn == "tell" || fn == "flush" || fn == "close" || fn == "atEnd") {
+                checkTypeAccessible("File", call->loc);
+                for (const auto& a : call->args) {
+                    typeOf(*a);
+                }
+                std::size_t want = 1u;
+                if (fn == "open" || fn == "readInto" || fn == "writeFrom") { want = 3u; }
+                if (fn == "seek") { want = 3u; }
+                if (fn == "open") { want = 2u; }
+                if (call->args.size() != want) {
+                    error("File." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
+                }
+                if (fn == "open" || fn == "readInto" || fn == "writeFrom" || fn == "tell") {
+                    return "long";   // the handle; bytes moved; the position
+                }
+                return "boolean";    // seek / flush / close / atEnd
+            }
+            // Directory / filesystem metadata (spec 34.4): list, mkdir, rmdir, rename, size, isDir,
+            // mtime.
+            if (fn == "list" || fn == "mkdir" || fn == "rmdir" || fn == "rename" || fn == "size" ||
+                fn == "isDir" || fn == "mtime") {
                 checkTypeAccessible("File", call->loc);
                 for (const auto& a : call->args) {
                     typeOf(*a);
@@ -1901,10 +1926,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (fn == "list") {
                     return "String";  // newline-separated entries
                 }
-                if (fn == "size") {
-                    return "long";  // byte count (-1 if missing)
+                if (fn == "size" || fn == "mtime") {
+                    return "long";  // byte count / epoch seconds (-1 if missing)
                 }
-                return "boolean";                          // mkdir / rename / isDir
+                return "boolean";                          // mkdir / rmdir / rename / isDir
             }
         }
         // Time (spec 34): clock + sleep builtins. Require `import System.Time.Time;`.

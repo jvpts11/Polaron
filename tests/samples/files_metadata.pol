@@ -1,0 +1,54 @@
+import System.IO.Console;
+import System.IO.Files;
+import System.IO.Paths;
+import System.Collections.ArrayList;
+program FilesMetadata;
+
+// THE FILESYSTEM THE LIBRARY DID NOT REACH.
+//
+// The runtime has had exists/size/remove/isDir/mkdir/rename since file I/O landed, and the compiler
+// exposed all ten of its File builtins -- but `Files` wrapped four of them, so a program that wanted to
+// ask whether a file was there had to reach past the library to `System.IO.File`, the raw builtin.
+// A stdlib with HyperLogLog and Manacher in it could not tell you if a file existed.
+//
+// What this exercises, all of it through `Files`: create a tree, ask about it, walk it, copy, rename,
+// and take it down again.
+//
+// Prints: made=1 isdir=1 size=5 file=1 walk=3 copied=hello renamed=1 gone=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String root = "polaron_fs_probe";
+                String inner = Paths.join(root, "inner");
+
+                // A tree two levels deep, built in one call.
+                boolean made = Files.createDirectories(inner);
+                Files.write(Paths.join(root, "a.txt"), "hello");
+                Files.write(Paths.join(root, "b.txt"), "world");
+                Files.write(Paths.join(inner, "c.txt"), "deep");
+
+                String a = Paths.join(root, "a.txt");
+                System.IO.Console.printf("made=%d isdir=%d size=%d file=%d ",
+                                         made, Files.isDirectory(root), cast<int>(Files.size(a)),
+                                         Files.isFile(a));
+
+                // walk descends; listDir would have answered 3 (two files and a directory).
+                ArrayList<String> all = Files.walk(root);
+                System.IO.Console.printf("walk=%d ", all.size());
+
+                String copy = Paths.join(root, "a-copy.txt");
+                Files.copy(a, copy);
+                System.IO.Console.printf("copied=%s ", Files.read(copy));
+
+                String moved = Paths.join(root, "a-moved.txt");
+                boolean renamed = Files.rename(copy, moved);
+                System.IO.Console.printf("renamed=%d ", renamed && Files.exists(moved));
+
+                Files.deleteRecursively(root);
+                System.IO.Console.printf("gone=%d\n", !Files.exists(root));
+                return;
+            }
+        }
+    }
+}
