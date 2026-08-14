@@ -1,0 +1,62 @@
+import System.IO.Console;
+import System.IO.Files;
+import System.IO.FileStream;
+import System.Memory.Buffer;
+program FileStreamSample;
+
+// AN OPEN FILE, which the language did not have.
+//
+// Every other file call moves a WHOLE file: the first line of a log cost the whole log, and appending
+// a record meant reading and rewriting one. That was never a limit of the platform -- no handle had
+// ever crossed into Polaron, so there was nothing to seek on.
+//
+// This writes 26 bytes, then reads the file back WITHOUT bringing it into memory: seek to byte 10,
+// read four, seek four from the end, read to the end. A `Buffer` is the language's own name for a
+// block of bytes with a length, so binary I/O needed no new type.
+//
+// Prints: wrote=26 at10=KLMN tail=WXYZ pos=26 closed=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String path = "polaron_stream_probe.bin";
+
+                // 26 bytes: 'A'..'Z'.
+                mutable Buffer* out = new Buffer(26) on heap;
+                for (mutable int i = 0; i < 26; i++) {
+                    out.writeByte(i, cast<byte>(65 + i));
+                }
+                mutable FileStream w = FileStream.write(path);
+                int wrote = w.writeBytes(out, 26);
+                w.close();
+                System.IO.Console.printf("wrote=%d ", wrote);
+
+                mutable FileStream r = FileStream.read(path);
+                mutable Buffer* into = new Buffer(8) on heap;
+
+                // Four bytes from position 10 -- 'K','L','M','N'.
+                r.seek(cast<long>(10));
+                r.readBytes(into, 4);
+                System.IO.Console.printf("at10=%c%c%c%c ",
+                                         cast<char>(into.readByte(0)), cast<char>(into.readByte(1)),
+                                         cast<char>(into.readByte(2)), cast<char>(into.readByte(3)));
+
+                // The last four, without knowing how long the file is.
+                r.seekFromEnd(cast<long>(0) - cast<long>(4));
+                r.readBytes(into, 4);
+                System.IO.Console.printf("tail=%c%c%c%c ",
+                                         cast<char>(into.readByte(0)), cast<char>(into.readByte(1)),
+                                         cast<char>(into.readByte(2)), cast<char>(into.readByte(3)));
+
+                System.IO.Console.printf("pos=%d ", cast<int>(r.position()));
+                boolean closed = r.close();
+                System.IO.Console.printf("closed=%d\n", closed);
+
+                Files.delete(path);
+                delete out;
+                delete into;
+                return;
+            }
+        }
+    }
+}
