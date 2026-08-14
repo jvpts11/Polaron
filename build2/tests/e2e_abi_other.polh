@@ -1,0 +1,12 @@
+program CounterLib;
+
+public bundle counters {
+    public namespace count {
+        public class Counter extends Object {
+            private mutable int __reserved0;
+            public constructor Counter(int start);
+            public method increment() returns void;
+            public method value() returns int;
+        }
+    }
+}

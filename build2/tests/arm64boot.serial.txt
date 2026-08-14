@@ -1,0 +1,3 @@
+polaron on aarch64
+sum1..100^2 = 0x00000000000529ae
+done

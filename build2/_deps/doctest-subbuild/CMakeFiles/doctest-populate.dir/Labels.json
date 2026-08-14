@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/doctest-populate"
+		},
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/261af767be54feaed0e3d65c691d0cad/doctest-populate.rule"
+		},
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/c9a0698a7d4aa735f8c104a785c1a867/doctest-populate-complete.rule"
+		},
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/4445f7a80e2426e98bca8c4730ff9ef3/doctest-populate-build.rule"
+		},
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/4445f7a80e2426e98bca8c4730ff9ef3/doctest-populate-configure.rule"
+		},
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/4445f7a80e2426e98bca8c4730ff9ef3/doctest-populate-download.rule"
+		},
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/4445f7a80e2426e98bca8c4730ff9ef3/doctest-populate-install.rule"
+		},
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/4445f7a80e2426e98bca8c4730ff9ef3/doctest-populate-mkdir.rule"
+		},
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/4445f7a80e2426e98bca8c4730ff9ef3/doctest-populate-patch.rule"
+		},
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/4445f7a80e2426e98bca8c4730ff9ef3/doctest-populate-test.rule"
+		},
+		{
+			"file" : "C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-subbuild/CMakeFiles/4445f7a80e2426e98bca8c4730ff9ef3/doctest-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"doctest-populate"
+		],
+		"name" : "doctest-populate"
+	}
+}

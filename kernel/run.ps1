@@ -1,5 +1,5 @@
-# Boot the LDP3 kernel under QEMU.
-#   (default)  open a VGA window showing "LDP3 kernel OK"
+# Boot the Polaron kernel under QEMU.
+#   (default)  open a VGA window showing "Polaron kernel OK"
 #   -Verify    headless: boot, read the VGA text buffer over the QEMU monitor, and check the text
 #   -Headless  headless: boot and confirm it does not fault (spins) within the timeout
 # Requires qemu-system-x86_64 (found on PATH or under C:\Program Files\qemu).
@@ -43,7 +43,7 @@ if ($Verify) {
     }
     $text = $sb.ToString()
     Write-Host "VGA: '$text'"
-    if ($text -like "LDP3 kernel OK*") { Write-Host "PASS"; exit 0 } else { Write-Host "FAIL"; exit 1 }
+    if ($text -like "Polaron kernel OK*") { Write-Host "PASS"; exit 0 } else { Write-Host "FAIL"; exit 1 }
 } elseif ($Headless) {
     $log = "$here\qemu.log"
     $p = Start-Process $Qemu -PassThru -NoNewWindow -ArgumentList `

@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Security.Hmac;
+import System.Codecs.Base32;
+program HmacBase32;
+
+// HMAC-SHA256 (RFC 2104) and Base32 (RFC 4648), both pure Polaron.
+// Verified against reference vectors. Prints:
+//   hmac=f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8
+//   b32=MZXW6YTBOI====== back=foobar
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String mac = Hmac.sha256("key", "The quick brown fox jumps over the lazy dog");
+                System.IO.Console.printf("hmac=%s\n", mac);
+                String enc = Base32.encode("foobar");
+                String dec = Base32.decode(enc);
+                System.IO.Console.printf("b32=%s back=%s\n", enc, dec);
+                return;
+            }
+        }
+    }
+}

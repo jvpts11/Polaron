@@ -1,0 +1,1520 @@
+    public namespace Math {
+        // Math (spec 34.6) is a compiler builtin (its functions lower to LLVM intrinsics), not a
+        // real class -- a real `Math` class would clash with user classes named Math via namespace
+        // disambiguation. The name `Math` is registered virtually so `import System.Math.Math;`
+        // resolves (see the analyzer). Only Random is a real class here.
+        // A deterministic PRNG (xorshift64), pure Polaron over a ulong state (spec 34.6 Random).
+        public class Random {
+            private mutable ulong state;
+            public constructor Random(ulong seed) {
+                this.state = seed;
+                if (this.state == cast<ulong>(0)) { this.state = cast<ulong>(1); }
+            }
+            public method nextInt() returns int {
+                mutable ulong x = this.state;
+                x = x ^ (x << 13);
+                x = x ^ (x >> 7);
+                x = x ^ (x << 17);
+                this.state = x;
+                return cast<int>(x >> 33);   // a non-negative 31-bit value
+            }
+            public method nextIntMax(int max) returns int {
+                return this.nextInt() % max;   // [0, max)
+            }
+            public method nextRange(int lo, int hi) returns int {
+                return lo + this.nextIntMax(hi - lo);   // [lo, hi)
+            }
+            public method nextDouble() returns double {
+                return cast<double>(this.nextInt()) / 2147483648.0;   // [0, 1)
+            }
+            public method nextBool() returns boolean {
+                return this.nextIntMax(2) == 0;
+            }
+            // sqrt/ln are kept private here so Random depends on no external class name -- the `Math`
+            // builtin name can be shadowed by a user class, and the prelude must never rely on it. The
+            // algorithms mirror System.Math.Math (Newton's method; atanh series after range reduction).
+            private method sqrtD(double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                mutable double g = x;
+                if (g > 1.0) { g = x / 2.0; }
+                for (mutable int i = 0; i < 40; i++) { g = 0.5 * (g + x / g); }
+                return g;
+            }
+            private method lnD(double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                mutable double v = x;
+                mutable int e = 0;
+                while (v >= 2.0) { v = v / 2.0; e = e + 1; }
+                while (v < 1.0) { v = v * 2.0; e = e - 1; }
+                double t = (v - 1.0) / (v + 1.0);
+                double t2 = t * t;
+                mutable double term = t;
+                mutable double sum = 0.0;
+                mutable int k = 1;
+                while (k <= 25) { sum = sum + term / cast<double>(k); term = term * t2; k = k + 2; }
+                return 2.0 * sum + cast<double>(e) * 0.6931471805599453;
+            }
+            // A standard-normal N(0, 1) sample via the Marsaglia polar method (spec 34.6): rejection
+            // sampling inside the unit disc, then a sqrt/ln scale. nextGaussianScaled shifts and scales it.
+            public method nextGaussian() returns double {
+                mutable double s = 0.0;
+                mutable double u = 0.0;
+                mutable boolean ok = false;
+                while (ok == false) {
+                    u = 2.0 * this.nextDouble() - 1.0;
+                    double v = 2.0 * this.nextDouble() - 1.0;
+                    s = u * u + v * v;
+                    if (s < 1.0) { if (s > 0.0) { ok = true; } }
+                }
+                return u * this.sqrtD(-2.0 * this.lnD(s) / s);
+            }
+            public method nextGaussianScaled(double mean, double stddev) returns double {
+                return mean + stddev * this.nextGaussian();
+            }
+            // A generator seeded from the monotonic clock -- a fresh, non-reproducible sequence per run,
+            // for when reproducibility is not wanted (the seeded constructor stays for deterministic runs).
+            public static method seededNow() returns Random {
+                return new Random(cast<ulong>(Time.nanos())) on heap;
+            }
+        }
+    }
+    public namespace Math {
+        // Arbitrary-precision integer (spec 34): decimal digits (0..9) stored least-significant
+        // first in an int[] (arrays of int work; this avoids the ArrayList<class> path). Supports
+        // construction from long, same-sign add, multiply, compareTo, toString.
+        public class BigInteger {
+            private mutable int[] dig;
+            private mutable int len;
+            private mutable boolean neg;
+            public constructor BigInteger(long value) {
+                this.neg = value < cast<long>(0);
+                mutable long v = value;
+                if (this.neg) { v = cast<long>(0) - v; }
+                this.dig = new int[24]();
+                this.len = 1;
+                this.dig[0] = 0;
+                if (v > cast<long>(0)) {
+                    this.len = 0;
+                    while (v > cast<long>(0)) {
+                        this.dig[this.len] = cast<int>(v % cast<long>(10));
+                        v = v / cast<long>(10);
+                        this.len = this.len + 1;
+                    }
+                }
+            }
+            private method ensure(int n) returns void {
+                if (n <= this.dig.length()) { return; }
+                mutable int cap = this.dig.length() * 2;
+                while (cap < n) { cap = cap * 2; }
+                mutable int[] nd = new int[cap]();
+                for (mutable int i = 0; i < this.len; i++) { nd[i] = this.dig[i]; }
+                delete this.dig;
+                this.dig = nd;
+            }
+            public method isZero() returns boolean { return this.len == 1 && this.dig[0] == 0; }
+            private method cmpMag(BigInteger o) returns int {  // compare magnitudes, ignoring sign
+                if (this.len != o.len) { return this.len < o.len ? -1 : 1; }
+                for (mutable int i = this.len - 1; i >= 0; i--) {
+                    if (this.dig[i] != o.dig[i]) { return this.dig[i] < o.dig[i] ? -1 : 1; }
+                }
+                return 0;
+            }
+            private method copyMag() returns BigInteger {  // a fresh non-negative copy of this magnitude
+                BigInteger r = new BigInteger(cast<long>(0)) on heap;
+                r.ensure(this.len + 1);
+                r.len = this.len;
+                for (mutable int i = 0; i < this.len; i++) { r.dig[i] = this.dig[i]; }
+                r.neg = false;
+                return r;
+            }
+            private method subInPlace(BigInteger o) returns void {  // this.mag -= o.mag; assumes this.mag >= o.mag
+                mutable int borrow = 0;
+                mutable int i = 0;
+                while (i < this.len) {
+                    mutable int s = this.dig[i] - borrow;
+                    if (i < o.len) { s = s - o.dig[i]; }
+                    if (s < 0) { s = s + 10; borrow = 1; } else { borrow = 0; }
+                    this.dig[i] = s;
+                    i = i + 1;
+                }
+                while (this.len > 1 && this.dig[this.len - 1] == 0) { this.len = this.len - 1; }
+            }
+            private method mulTenAddInPlace(int d) returns void {  // this.mag = this.mag * 10 + d
+                if (this.len == 1 && this.dig[0] == 0) { this.dig[0] = d; return; }
+                this.ensure(this.len + 1);
+                for (mutable int i = this.len; i > 0; i--) { this.dig[i] = this.dig[i - 1]; }
+                this.dig[0] = d;
+                this.len = this.len + 1;
+            }
+            private static method normSign(BigInteger r) returns void {  // -0 -> +0
+                if (r.len == 1 && r.dig[0] == 0) { r.neg = false; }
+            }
+            private static method addMag(BigInteger a, BigInteger b) returns BigInteger {
+                BigInteger r = new BigInteger(cast<long>(0)) on heap;
+                int n = a.len > b.len ? a.len : b.len;
+                r.ensure(n + 2);
+                mutable int carry = 0;
+                mutable int i = 0;
+                r.len = 0;
+                while (i < n || carry > 0) {
+                    mutable int s = carry;
+                    if (i < a.len) { s = s + a.dig[i]; }
+                    if (i < b.len) { s = s + b.dig[i]; }
+                    r.dig[i] = s % 10;
+                    carry = s / 10;
+                    i = i + 1;
+                    r.len = i;
+                }
+                return r;
+            }
+            private method addSigned(BigInteger other, boolean otherNeg) returns BigInteger {
+                if (this.neg == otherNeg) {   // like signs: add magnitudes, keep the sign
+                    BigInteger r = BigInteger.addMag(this, other);
+                    r.neg = this.neg;
+                    BigInteger.normSign(r);
+                    return r;
+                }
+                int c = this.cmpMag(other);   // unlike signs: the larger magnitude decides the sign
+                if (c == 0) { return new BigInteger(cast<long>(0)) on heap; }
+                if (c > 0) {
+                    BigInteger r = this.copyMag();
+                    r.subInPlace(other);
+                    r.neg = this.neg;
+                    BigInteger.normSign(r);
+                    return r;
+                }
+                BigInteger r2 = other.copyMag();
+                r2.subInPlace(this);
+                r2.neg = otherNeg;
+                BigInteger.normSign(r2);
+                return r2;
+            }
+            public method add(BigInteger other) returns BigInteger { return this.addSigned(other, other.neg); }
+            public method subtract(BigInteger other) returns BigInteger {
+                boolean flipped = other.isZero() ? false : (other.neg == false);  // this - other = this + (-other)
+                return this.addSigned(other, flipped);
+            }
+            public method multiply(BigInteger other) returns BigInteger {
+                BigInteger r = new BigInteger(cast<long>(0)) on heap;
+                int n = this.len + other.len;
+                r.ensure(n + 1);
+                r.len = n;
+                for (mutable int i = 0; i < n; i++) { r.dig[i] = 0; }
+                for (mutable int i = 0; i < this.len; i++) {
+                    for (mutable int j = 0; j < other.len; j++) {
+                        r.dig[i + j] = r.dig[i + j] + this.dig[i] * other.dig[j];
+                    }
+                }
+                mutable int carry = 0;
+                for (mutable int k = 0; k < n; k++) {
+                    int s = r.dig[k] + carry;
+                    r.dig[k] = s % 10;
+                    carry = s / 10;
+                }
+                while (r.len > 1 && r.dig[r.len - 1] == 0) { r.len = r.len - 1; }
+                r.neg = this.neg != other.neg;
+                return r;
+            }
+            public method compareTo(BigInteger other) returns int {  // sign-aware
+                boolean nt = this.neg && (this.isZero() == false);
+                boolean no = other.neg && (other.isZero() == false);
+                if (nt && (no == false)) { return -1; }
+                if ((nt == false) && no) { return 1; }
+                if (nt && no) { return 0 - this.cmpMag(other); }   // both negative: order reverses
+                return this.cmpMag(other);
+            }
+            public method divide(BigInteger other) returns BigInteger {   // truncated toward zero
+                if (other.isZero()) { return new BigInteger(cast<long>(0)) on heap; }
+                BigInteger q = new BigInteger(cast<long>(0)) on heap;
+                q.ensure(this.len + 1);
+                q.len = this.len;
+                for (mutable int z = 0; z < q.len; z++) { q.dig[z] = 0; }
+                BigInteger rem = new BigInteger(cast<long>(0)) on heap;   // running remainder magnitude
+                for (mutable int i = this.len - 1; i >= 0; i--) {
+                    rem.mulTenAddInPlace(this.dig[i]);                    // bring down the next digit
+                    mutable int d = 0;
+                    while (rem.cmpMag(other) >= 0) { rem.subInPlace(other); d = d + 1; }
+                    q.dig[i] = d;
+                }
+                while (q.len > 1 && q.dig[q.len - 1] == 0) { q.len = q.len - 1; }
+                q.neg = this.neg != other.neg;
+                BigInteger.normSign(q);
+                return q;
+            }
+            public method remainder(BigInteger other) returns BigInteger {   // sign follows the dividend
+                if (other.isZero()) { return new BigInteger(cast<long>(0)) on heap; }
+                BigInteger rem = new BigInteger(cast<long>(0)) on heap;
+                for (mutable int i = this.len - 1; i >= 0; i--) {
+                    rem.mulTenAddInPlace(this.dig[i]);
+                    while (rem.cmpMag(other) >= 0) { rem.subInPlace(other); }
+                }
+                rem.neg = this.neg;
+                BigInteger.normSign(rem);
+                return rem;
+            }
+            public method toString() returns String {
+                StringBuilder sb = new StringBuilder() on heap;
+                if (this.neg && this.isZero() == false) { sb.appendChar('-'); }
+                for (mutable int i = this.len - 1; i >= 0; i--) {
+                    sb.appendChar(cast<char>(48 + this.dig[i]));
+                }
+                return sb.toString();
+            }
+        }
+        // Integer math helpers (spec 34.6): gcd/lcm (Euclid), factorial, primality by trial division,
+        // integer power and integer square root. All operate on plain ints, no floating point. (Named
+        // IntMath, not MathX, to avoid shadowing a user class.)
+        public class IntMath {
+            public static method gcd(int a, int b) returns int {
+                mutable int x = a;
+                if (x < 0) { x = 0 - x; }
+                mutable int y = b;
+                if (y < 0) { y = 0 - y; }
+                while (y != 0) {
+                    int t = y;
+                    y = x % y;
+                    x = t;
+                }
+                return x;
+            }
+            public static method lcm(int a, int b) returns int {
+                if (a == 0 || b == 0) { return 0; }
+                int g = IntMath.gcd(a, b);
+                int r = (a / g) * b;
+                if (r < 0) { return 0 - r; }
+                return r;
+            }
+            public static method factorial(int n) returns int {
+                mutable int r = 1;
+                for (mutable int i = 2; i <= n; i++) { r = r * i; }
+                return r;
+            }
+            public static method isPrime(int n) returns boolean {
+                if (n < 2) { return false; }
+                mutable int i = 2;
+                while (i * i <= n) {
+                    if (n % i == 0) { return false; }
+                    i = i + 1;
+                }
+                return true;
+            }
+            public static method ipow(int base, int exp) returns int {
+                mutable int r = 1;
+                for (mutable int i = 0; i < exp; i++) { r = r * base; }
+                return r;
+            }
+            public static method isqrt(int n) returns int {
+                if (n < 0) { return 0; }
+                mutable int r = 0;
+                while ((r + 1) * (r + 1) <= n) { r = r + 1; }
+                return r;
+            }
+            // Binomial coefficient n-choose-r, multiplying and dividing as it goes so the running value
+            // stays an exact integer and does not overflow as fast as n! would.
+            public static method nCr(int n, int r) returns int {
+                if (r < 0 || r > n) { return 0; }
+                mutable int k = r;
+                if (k > n - k) { k = n - k; }
+                mutable int result = 1;
+                for (mutable int i = 1; i <= k; i++) { result = result * (n - k + i) / i; }
+                return result;
+            }
+            // Number of ordered arrangements of r items from n: n * (n-1) * ... * (n-r+1).
+            public static method nPr(int n, int r) returns int {
+                if (r < 0 || r > n) { return 0; }
+                mutable int result = 1;
+                for (mutable int i = 0; i < r; i++) { result = result * (n - i); }
+                return result;
+            }
+            // Modular exponentiation base^exp mod m by repeated squaring (spec 34.6), using 64-bit
+            // intermediates so the products do not overflow for moduli up to ~2^31.
+            public static method modpow(int base, int exp, int mod) returns int {
+                mutable long result = cast<long>(1);
+                mutable long b = cast<long>(base % mod);
+                mutable int e = exp;
+                while (e > 0) {
+                    if (e % 2 == 1) { result = (result * b) % cast<long>(mod); }
+                    b = (b * b) % cast<long>(mod);
+                    e = e / 2;
+                }
+                return cast<int>(result);
+            }
+            // Sum of the decimal digits of |n| (spec 34.6).
+            public static method digitSum(int n) returns int {
+                mutable int x = n;
+                if (x < 0) { x = 0 - x; }
+                mutable int s = 0;
+                while (x > 0) {
+                    s = s + x % 10;
+                    x = x / 10;
+                }
+                return s;
+            }
+            // The digits of |n| reversed, as an integer (e.g. 123 -> 321).
+            public static method reverseDigits(int n) returns int {
+                mutable int x = n;
+                if (x < 0) { x = 0 - x; }
+                mutable int r = 0;
+                while (x > 0) {
+                    r = r * 10 + x % 10;
+                    x = x / 10;
+                }
+                return r;
+            }
+            // Whether n is a non-negative decimal palindrome.
+            public static method isPalindrome(int n) returns boolean {
+                return n >= 0 && IntMath.reverseDigits(n) == n;
+            }
+        }
+        // An exact fraction kept in lowest terms with a positive denominator (spec 34.6). The constructor
+        // divides out the gcd and normalizes the sign; arithmetic returns new reduced Rationals.
+        public class Rational {
+            private mutable int num;
+            private mutable int den;
+            public constructor Rational(int n, int d) {
+                mutable int g = IntMath.gcd(n, d);
+                if (g == 0) { g = 1; }
+                mutable int sign = 1;
+                if (d < 0) { sign = 0 - 1; }
+                this.num = sign * n / g;
+                this.den = sign * d / g;
+            }
+            public method numerator() returns int { return this.num; }
+            public method denominator() returns int { return this.den; }
+            public method add(Rational o) returns Rational {
+                return new Rational(this.num * o.denominator() + o.numerator() * this.den,
+                                    this.den * o.denominator()) on heap;
+            }
+            public method sub(Rational o) returns Rational {
+                return new Rational(this.num * o.denominator() - o.numerator() * this.den,
+                                    this.den * o.denominator()) on heap;
+            }
+            public method mul(Rational o) returns Rational {
+                return new Rational(this.num * o.numerator(), this.den * o.denominator()) on heap;
+            }
+            public method toDouble() returns double {
+                return cast<double>(this.num) / cast<double>(this.den);
+            }
+        }
+        // A complex number with double real and imaginary parts (spec 34.6): add/sub/mul and conjugate.
+        public class Complex {
+            private mutable double re;
+            private mutable double im;
+            public constructor Complex(double re, double im) {
+                this.re = re;
+                this.im = im;
+            }
+            public method real() returns double { return this.re; }
+            public method imag() returns double { return this.im; }
+            public method add(Complex o) returns Complex {
+                return new Complex(this.re + o.real(), this.im + o.imag()) on heap;
+            }
+            public method sub(Complex o) returns Complex {
+                return new Complex(this.re - o.real(), this.im - o.imag()) on heap;
+            }
+            public method mul(Complex o) returns Complex {
+                return new Complex(this.re * o.real() - this.im * o.imag(),
+                                   this.re * o.imag() + this.im * o.real()) on heap;
+            }
+            public method conjugate() returns Complex {
+                return new Complex(this.re, 0.0 - this.im) on heap;
+            }
+        }
+        // Summary statistics over an int array (spec 34.6): sum, integer mean, minimum and maximum.
+        public class Stats {
+            public static method sum(int[] xs) returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < xs.length(); i++) { s = s + xs[i]; }
+                return s;
+            }
+            public static method mean(int[] xs) returns int {
+                if (xs.length() == 0) { return 0; }
+                return Stats.sum(xs) / xs.length();
+            }
+            public static method min(int[] xs) returns int {
+                mutable int m = xs[0];
+                for (mutable int i = 1; i < xs.length(); i++) { if (xs[i] < m) { m = xs[i]; } }
+                return m;
+            }
+            public static method max(int[] xs) returns int {
+                mutable int m = xs[0];
+                for (mutable int i = 1; i < xs.length(); i++) { if (xs[i] > m) { m = xs[i]; } }
+                return m;
+            }
+            // Population variance about the integer mean (spec 34.6): the mean of the squared deviations.
+            public static method variance(int[] xs) returns int {
+                if (xs.length() == 0) { return 0; }
+                int mean = Stats.mean(xs);
+                mutable int acc = 0;
+                for (mutable int i = 0; i < xs.length(); i++) {
+                    int d = xs[i] - mean;
+                    acc = acc + d * d;
+                }
+                return acc / xs.length();
+            }
+            // Population standard deviation, the integer square root of the variance.
+            public static method stddev(int[] xs) returns int {
+                return IntMath.isqrt(Stats.variance(xs));
+            }
+            // The middle value of a sorted copy (spec 34.6); for an even count this is the upper-middle.
+            public static method median(int[] xs) returns int {
+                int n = xs.length();
+                if (n == 0) { return 0; }
+                mutable int[] c = new int[n]();
+                for (mutable int i = 0; i < n; i++) { c[i] = xs[i]; }
+                for (mutable int i = 1; i < n; i++) {
+                    int key = c[i];
+                    mutable int j = i - 1;
+                    while (j >= 0 && c[j] > key) {
+                        c[j + 1] = c[j];
+                        j = j - 1;
+                    }
+                    c[j + 1] = key;
+                }
+                return c[n / 2];
+            }
+            // Sum of all values (spec 34.6).
+            // Spread between the largest and smallest values.
+            public static method range(int[] xs) returns int {
+                if (xs.length() == 0) { return 0; }
+                return Stats.max(xs) - Stats.min(xs);
+            }
+            // The most frequently occurring value; ties resolve to the first one reaching the top count.
+            public static method mode(int[] xs) returns int {
+                if (xs.length() == 0) { return 0; }
+                mutable int best = xs[0];
+                mutable int bestCount = 0;
+                for (mutable int i = 0; i < xs.length(); i++) {
+                    mutable int c = 0;
+                    for (mutable int j = 0; j < xs.length(); j++) {
+                        if (xs[j] == xs[i]) { c = c + 1; }
+                    }
+                    if (c > bestCount) {
+                        bestCount = c;
+                        best = xs[i];
+                    }
+                }
+                return best;
+            }
+            // The value at the given percentile p in [0,100] of a sorted copy (spec 34.6), by nearest-rank
+            // on the index (p of the way from first to last element).
+            public static method percentile(int[] xs, int p) returns int {
+                int n = xs.length();
+                if (n == 0) { return 0; }
+                mutable int[] c = new int[n]();
+                for (mutable int i = 0; i < n; i++) { c[i] = xs[i]; }
+                for (mutable int i = 1; i < n; i++) {
+                    int key = c[i];
+                    mutable int j = i - 1;
+                    while (j >= 0 && c[j] > key) {
+                        c[j + 1] = c[j];
+                        j = j - 1;
+                    }
+                    c[j + 1] = key;
+                }
+                return c[(p * (n - 1)) / 100];
+            }
+        }
+        // Forward-mode automatic differentiation via dual numbers (spec 34.6): each value carries its
+        // derivative alongside it, and the arithmetic propagates the chain rule. Evaluate a function with
+        // variable(x) and the result's deriv() is the exact derivative at x; constant(c) has derivative 0.
+        public class Dual {
+            private mutable double v;
+            private mutable double d;
+            public constructor Dual(double value, double deriv) {
+                this.v = value;
+                this.d = deriv;
+            }
+            public static method variable(double x) returns Dual { return new Dual(x, 1.0) on heap; }
+            public static method constant(double x) returns Dual { return new Dual(x, 0.0) on heap; }
+            public method value() returns double { return this.v; }
+            public method deriv() returns double { return this.d; }
+            public method add(Dual o) returns Dual {
+                return new Dual(this.v + o.value(), this.d + o.deriv()) on heap;
+            }
+            public method sub(Dual o) returns Dual {
+                return new Dual(this.v - o.value(), this.d - o.deriv()) on heap;
+            }
+            public method mul(Dual o) returns Dual {
+                return new Dual(this.v * o.value(), this.v * o.deriv() + this.d * o.value()) on heap;
+            }
+        }
+        // A dense matrix of integers stored row-major in a flat array (spec 34.6): set/get by (row, col),
+        // matrix multiply, transpose, and elementwise add. No per-element objects, just one int array.
+        public class Matrix {
+            private mutable int[] cells;
+            private mutable int nrows;
+            private mutable int ncols;
+            public constructor Matrix(int rows, int cols) {
+                this.nrows = rows;
+                this.ncols = cols;
+                this.cells = new int[rows * cols]();
+            }
+            public method rows() returns int { return this.nrows; }
+            public method cols() returns int { return this.ncols; }
+            public method set(int r, int c, int value) returns void {
+                this.cells[r * this.ncols + c] = value;
+                return;
+            }
+            public method get(int r, int c) returns int { return this.cells[r * this.ncols + c]; }
+            public method multiply(Matrix o) returns Matrix {
+                mutable Matrix m = new Matrix(this.nrows, o.cols()) on heap;
+                for (mutable int i = 0; i < this.nrows; i++) {
+                    for (mutable int j = 0; j < o.cols(); j++) {
+                        mutable int s = 0;
+                        for (mutable int k = 0; k < this.ncols; k++) { s = s + this.get(i, k) * o.get(k, j); }
+                        m.set(i, j, s);
+                    }
+                }
+                return m;
+            }
+            public method transpose() returns Matrix {
+                mutable Matrix m = new Matrix(this.ncols, this.nrows) on heap;
+                for (mutable int i = 0; i < this.nrows; i++) {
+                    for (mutable int j = 0; j < this.ncols; j++) { m.set(j, i, this.get(i, j)); }
+                }
+                return m;
+            }
+            public method add(Matrix o) returns Matrix {
+                mutable Matrix m = new Matrix(this.nrows, this.ncols) on heap;
+                for (mutable int i = 0; i < this.nrows; i++) {
+                    for (mutable int j = 0; j < this.ncols; j++) { m.set(i, j, this.get(i, j) + o.get(i, j)); }
+                }
+                return m;
+            }
+            // Exact integer determinant via the Bareiss fraction-free elimination (spec 34.6): every division
+            // is exact, so it stays in integers. Returns 0 for a singular matrix; assumes a square matrix.
+            public method determinant() returns int {
+                int n = this.nrows;
+                mutable int[] m = new int[n * n]();
+                for (mutable int i = 0; i < n * n; i++) { m[i] = this.cells[i]; }
+                mutable int prev = 1;
+                mutable int sign = 1;
+                for (mutable int k = 0; k < n - 1; k++) {
+                    if (m[k * n + k] == 0) {
+                        mutable int sw = 0 - 1;
+                        for (mutable int r = k + 1; r < n; r++) {
+                            if (m[r * n + k] != 0) { sw = r; }
+                        }
+                        if (sw < 0) { return 0; }
+                        for (mutable int c = 0; c < n; c++) {
+                            int t = m[k * n + c];
+                            m[k * n + c] = m[sw * n + c];
+                            m[sw * n + c] = t;
+                        }
+                        sign = 0 - sign;
+                    }
+                    for (mutable int i = k + 1; i < n; i++) {
+                        for (mutable int j = k + 1; j < n; j++) {
+                            m[i * n + j] = (m[i * n + j] * m[k * n + k] - m[i * n + k] * m[k * n + j]) / prev;
+                        }
+                    }
+                    prev = m[k * n + k];
+                }
+                return sign * m[(n - 1) * n + (n - 1)];
+            }
+        }
+        // A polynomial with integer coefficients in ascending order, coeff i multiplying x^i (spec 34.6).
+        // evaluate uses Horner's method; derivative returns the differentiated polynomial.
+        public class Polynomial {
+            private mutable int[] c;
+            public constructor Polynomial(int[] coeffs) { this.c = coeffs; }
+            public method degree() returns int { return this.c.length() - 1; }
+            public method coeff(int i) returns int {
+                if (i < 0 || i >= this.c.length()) { return 0; }
+                return this.c[i];
+            }
+            public method evaluate(int x) returns int {
+                mutable int r = 0;
+                for (mutable int i = this.c.length() - 1; i >= 0; i--) { r = r * x + this.c[i]; }
+                return r;
+            }
+            public method derivative() returns Polynomial {
+                if (this.c.length() <= 1) {
+                    mutable int[] z = new int[1]();
+                    return new Polynomial(z) on heap;
+                }
+                mutable int[] d = new int[this.c.length() - 1]();
+                for (mutable int i = 1; i < this.c.length(); i++) { d[i - 1] = this.c[i] * i; }
+                return new Polynomial(d) on heap;
+            }
+        }
+        // A fixed-length vector of integers (spec 34.6): dot product and squared length. For the floating
+        // SIMD vectors see the built-in vec2/vec3/vec4 types.
+        public class IntVector {
+            private mutable int[] e;
+            public constructor IntVector(int[] elems) { this.e = elems; }
+            public method get(int i) returns int { return this.e[i]; }
+            public method size() returns int { return this.e.length(); }
+            public method dot(IntVector o) returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < this.e.length(); i++) { s = s + this.e[i] * o.get(i); }
+                return s;
+            }
+            public method normSquared() returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < this.e.length(); i++) { s = s + this.e[i] * this.e[i]; }
+                return s;
+            }
+        }
+        // The sieve of Eratosthenes up to a limit (spec 34.6): the constructor marks composites once, then
+        // isPrime answers in constant time and count totals the primes found.
+        public class Sieve {
+            private mutable boolean[] composite;
+            private mutable int limit;
+            public constructor Sieve(int limit) {
+                this.limit = limit;
+                this.composite = new boolean[limit + 1]();
+                for (mutable int i = 2; i * i <= limit; i++) {
+                    if (!this.composite[i]) {
+                        for (mutable int j = i * i; j <= limit; j = j + i) { this.composite[j] = true; }
+                    }
+                }
+            }
+            public method isPrime(int n) returns boolean {
+                if (n < 2) { return false; }
+                return !this.composite[n];
+            }
+            public method count() returns int {
+                mutable int c = 0;
+                for (mutable int i = 2; i <= this.limit; i++) {
+                    if (!this.composite[i]) { c = c + 1; }
+                }
+                return c;
+            }
+        }
+        // A fast deterministic pseudo-random generator (xorshift32, spec 34.6): the same seed always yields
+        // the same sequence, unlike the wall-clock-seeded Random. next returns the raw 32 bits; nextInRange
+        // maps to [0, n).
+        public class Xorshift {
+            private mutable uint state;
+            public constructor Xorshift(int seed) {
+                this.state = cast<uint>(seed);
+                if (this.state == cast<uint>(0)) { this.state = cast<uint>(1); }
+            }
+            public method next() returns int {
+                mutable uint x = this.state;
+                x = x ^ (x << 13);
+                x = x ^ (x >> 17);
+                x = x ^ (x << 5);
+                this.state = x;
+                return cast<int>(x);
+            }
+            public method nextInRange(int n) returns int {
+                int v = this.next();
+                int r = v % n;
+                if (r < 0) { return r + n; }
+                return r;
+            }
+        }
+        // A dense linear-system solver (spec 34.6) via Gaussian elimination with partial pivoting. solve takes
+        // the system as a flat row-major n-by-(n+1) augmented matrix [A|b] (which it overwrites) and returns
+        // the solution vector x. Uses double throughout.
+        public class GaussSolver {
+            private static method dabs(double x) returns double { if (x < 0.0) { return 0.0 - x; } return x; }
+            public static method solve(double[] aug, int n) returns double[] {
+                int w = n + 1;
+                for (mutable int col = 0; col < n; col++) {
+                    mutable int piv = col;
+                    for (mutable int r = col + 1; r < n; r++) {
+                        if (GaussSolver.dabs(aug[r*w + col]) > GaussSolver.dabs(aug[piv*w + col])) { piv = r; }
+                    }
+                    if (piv != col) {
+                        for (mutable int c = 0; c < w; c++) {
+                            double tmp = aug[col*w + c];
+                            aug[col*w + c] = aug[piv*w + c];
+                            aug[piv*w + c] = tmp;
+                        }
+                    }
+                    double d = aug[col*w + col];
+                    for (mutable int r = col + 1; r < n; r++) {
+                        double factor = aug[r*w + col] / d;
+                        for (mutable int c = col; c < w; c++) {
+                            aug[r*w + c] = aug[r*w + c] - factor * aug[col*w + c];
+                        }
+                    }
+                }
+                mutable double[] x = new double[n]();
+                for (mutable int i = n - 1; i >= 0; i = i - 1) {
+                    mutable double s = aug[i*w + n];
+                    for (mutable int j = i + 1; j < n; j++) { s = s - aug[i*w + j] * x[j]; }
+                    x[i] = s / aug[i*w + i];
+                }
+                return x;
+            }
+        }
+        // Online mean and variance (spec 34.6) via Welford's algorithm: add samples one at a time in O(1) space,
+        // then read the running mean and the population or sample variance without keeping the data.
+        public class RunningStats {
+            private mutable int cnt;
+            private mutable double mean;
+            private mutable double m2;
+            public constructor RunningStats() {
+                this.cnt = 0;
+                this.mean = 0.0;
+                this.m2 = 0.0;
+            }
+            public method add(double x) returns void {
+                this.cnt = this.cnt + 1;
+                double delta = x - this.mean;
+                this.mean = this.mean + delta / cast<double>(this.cnt);
+                double delta2 = x - this.mean;
+                this.m2 = this.m2 + delta * delta2;
+                return;
+            }
+            public method getMean() returns double { return this.mean; }
+            public method populationVariance() returns double {
+                if (this.cnt < 1) { return 0.0; }
+                return this.m2 / cast<double>(this.cnt);
+            }
+            public method sampleVariance() returns double {
+                if (this.cnt < 2) { return 0.0; }
+                return this.m2 / cast<double>(this.cnt - 1);
+            }
+            public method count() returns int { return this.cnt; }
+        }
+        // Number-theory toolkit (spec 34.6): gcd/lcm, fast modular exponentiation, deterministic Miller-Rabin
+        // primality for 32-bit ints (witnesses 2,3,5,7), and modular inverse via the extended Euclidean
+        // algorithm (returns -1 when a is not invertible mod m).
+        public class NumberTheory {
+            public static method gcd(int a, int b) returns int {
+                mutable int x = a; if (x < 0) { x = 0 - x; }
+                mutable int y = b; if (y < 0) { y = 0 - y; }
+                while (y != 0) { int t = y; y = x % y; x = t; }
+                return x;
+            }
+            public static method lcm(int a, int b) returns int {
+                if (a == 0 || b == 0) { return 0; }
+                return (a / NumberTheory.gcd(a, b)) * b;
+            }
+            public static method modpow(long base, long exp, long mod) returns long {
+                mutable long result = 1;
+                mutable long b = base % mod;
+                mutable long e = exp;
+                while (e > 0) {
+                    if ((e & 1) == 1) { result = (result * b) % mod; }
+                    b = (b * b) % mod;
+                    e = e >> 1;
+                }
+                return result;
+            }
+            private static method millerTest(long d, long n, long a) returns boolean {
+                mutable long x = NumberTheory.modpow(a, d, n);
+                if (x == 1 || x == n - 1) { return true; }
+                mutable long dd = d;
+                while (dd != n - 1) {
+                    x = (x * x) % n;
+                    dd = dd * 2;
+                    if (x == 1) { return false; }
+                    if (x == n - 1) { return true; }
+                }
+                return false;
+            }
+            public static method isPrime(int num) returns boolean {
+                long n = cast<long>(num);
+                if (n < 2) { return false; }
+                if (n < 4) { return true; }
+                if (n % 2 == 0) { return false; }
+                mutable long d = n - 1;
+                while (d % 2 == 0) { d = d / 2; }
+                if (cast<long>(2) < n && !NumberTheory.millerTest(d, n, 2)) { return false; }
+                if (cast<long>(3) < n && !NumberTheory.millerTest(d, n, 3)) { return false; }
+                if (cast<long>(5) < n && !NumberTheory.millerTest(d, n, 5)) { return false; }
+                if (cast<long>(7) < n && !NumberTheory.millerTest(d, n, 7)) { return false; }
+                return true;
+            }
+            public static method modInverse(int a, int m) returns int {
+                mutable int t = 0; mutable int newt = 1;
+                mutable int r = m; mutable int newr = a % m;
+                while (newr != 0) {
+                    int q = r / newr;
+                    int tmpt = t - q * newt; t = newt; newt = tmpt;
+                    int tmpr = r - q * newr; r = newr; newr = tmpr;
+                }
+                if (r > 1) { return -1; }
+                if (t < 0) { t = t + m; }
+                return t;
+            }
+        }
+        // Chinese remainder theorem (spec 34.6): solve x = a[i] (mod n[i]) for pairwise-coprime moduli,
+        // returning the least non-negative solution. Combines congruences one at a time using modInverse.
+        public class Crt {
+            public static method solve(int[] a, int[] n, int k) returns long {
+                mutable long x = cast<long>(a[0]);
+                mutable long m = cast<long>(n[0]);
+                for (mutable int i = 1; i < k; i++) {
+                    int ni = n[i];
+                    long inv = cast<long>(NumberTheory.modInverse(cast<int>(m % cast<long>(ni)), ni));
+                    long diff = ((cast<long>(a[i]) - x) % cast<long>(ni) + cast<long>(ni)) % cast<long>(ni);
+                    long t = (diff * inv) % cast<long>(ni);
+                    x = x + m * t;
+                    m = m * cast<long>(ni);
+                }
+                return ((x % m) + m) % m;
+            }
+        }
+        // Integer factorization by trial division (spec 34.6): the largest prime factor and the count of
+        // prime factors with multiplicity.
+        public class Factorize {
+            public static method largestPrimeFactor(int num) returns int {
+                mutable long m = cast<long>(num);
+                mutable int largest = 1;
+                mutable long d = 2;
+                while (d * d <= m) {
+                    while (m % d == 0) { largest = cast<int>(d); m = m / d; }
+                    d = d + 1;
+                }
+                if (m > 1) { largest = cast<int>(m); }
+                return largest;
+            }
+            public static method factorCount(int num) returns int {
+                mutable int m = num;
+                mutable int count = 0;
+                mutable int d = 2;
+                while (d * d <= m) {
+                    while (m % d == 0) { count = count + 1; m = m / d; }
+                    d = d + 1;
+                }
+                if (m > 1) { count = count + 1; }
+                return count;
+            }
+        }
+        // Combinatorics (spec 34.6): factorial and binomial coefficients in long, the nth Catalan number, and
+        // an in-place next-lexicographic-permutation (returns false past the last permutation).
+        public class Combinatorics {
+            public static method factorial(int n) returns long {
+                mutable long r = 1;
+                for (mutable int i = 2; i <= n; i++) { r = r * cast<long>(i); }
+                return r;
+            }
+            public static method choose(int n, int k) returns long {
+                if (k < 0 || k > n) { return cast<long>(0); }
+                mutable int kk = k;
+                if (kk > n - kk) { kk = n - kk; }
+                mutable long r = 1;
+                for (mutable int i = 0; i < kk; i++) {
+                    r = r * cast<long>(n - i);
+                    r = r / cast<long>(i + 1);
+                }
+                return r;
+            }
+            public static method catalan(int n) returns long {
+                return Combinatorics.choose(2 * n, n) / cast<long>(n + 1);
+            }
+            public static method nextPermutation(int[] a, int n) returns boolean {
+                mutable int i = n - 2;
+                while (i >= 0 && a[i] >= a[i + 1]) { i = i - 1; }
+                if (i < 0) { return false; }
+                mutable int j = n - 1;
+                while (a[j] <= a[i]) { j = j - 1; }
+                int tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+                mutable int lo = i + 1; mutable int hi = n - 1;
+                while (lo < hi) { int t2 = a[lo]; a[lo] = a[hi]; a[hi] = t2; lo = lo + 1; hi = hi - 1; }
+                return true;
+            }
+        }
+        // Planar geometry over integer coordinates (spec 34.6): Polygon.area2 is twice the shoelace area
+        // (kept doubled so integer inputs stay integer), and contains tests point-in-polygon by ray casting.
+        public class Polygon {
+            public static method area2(int[] xs, int[] ys, int n) returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < n; i++) {
+                    int j = (i + 1) % n;
+                    s = s + xs[i] * ys[j] - xs[j] * ys[i];
+                }
+                if (s < 0) { s = 0 - s; }
+                return s;
+            }
+            public static method contains(int[] xs, int[] ys, int n, int px, int py) returns boolean {
+                mutable boolean inside = false;
+                mutable int j = n - 1;
+                for (mutable int i = 0; i < n; i++) {
+                    boolean straddles = (ys[i] > py) != (ys[j] > py);
+                    if (straddles) {
+                        int dx = xs[j] - xs[i];
+                        int dy = ys[j] - ys[i];
+                        int lhs = (px - xs[i]) * dy;
+                        int rhs = dx * (py - ys[i]);
+                        if (dy > 0) {
+                            if (lhs < rhs) { inside = !inside; }
+                        } else {
+                            if (lhs > rhs) { inside = !inside; }
+                        }
+                    }
+                    j = i;
+                }
+                return inside;
+            }
+        }
+        // Convex hull of a point set (spec 34.6) by Andrew's monotone chain; size returns the number of hull
+        // vertices, dropping collinear points. Points are given as parallel xs/ys arrays.
+        public class ConvexHull {
+            private static method cross(int[] xs, int[] ys, int o, int a, int b) returns int {
+                return (xs[a] - xs[o]) * (ys[b] - ys[o]) - (ys[a] - ys[o]) * (xs[b] - xs[o]);
+            }
+            public static method size(int[] xs, int[] ys, int n) returns int {
+                if (n < 3) { return n; }
+                mutable int[] idx = new int[n]();
+                for (mutable int i = 0; i < n; i++) { idx[i] = i; }
+                for (mutable int i = 1; i < n; i++) {
+                    int key = idx[i];
+                    mutable int j = i - 1;
+                    while (j >= 0 && (xs[idx[j]] > xs[key] || (xs[idx[j]] == xs[key] && ys[idx[j]] > ys[key]))) {
+                        idx[j + 1] = idx[j];
+                        j = j - 1;
+                    }
+                    idx[j + 1] = key;
+                }
+                mutable int[] hull = new int[2 * n]();
+                mutable int k = 0;
+                for (mutable int t = 0; t < n; t++) {
+                    int p = idx[t];
+                    while (k >= 2 && ConvexHull.cross(xs, ys, hull[k-2], hull[k-1], p) <= 0) { k = k - 1; }
+                    hull[k] = p; k = k + 1;
+                }
+                int lower = k + 1;
+                for (mutable int t = n - 2; t >= 0; t = t - 1) {
+                    int p = idx[t];
+                    while (k >= lower && ConvexHull.cross(xs, ys, hull[k-2], hull[k-1], p) <= 0) { k = k - 1; }
+                    hull[k] = p; k = k + 1;
+                }
+                return k - 1;
+            }
+        }
+        // Count-Min sketch (spec 34.1): a sub-linear frequency estimator. add accumulates counts across depth
+        // independent hash rows; estimate returns the minimum row, which never underestimates (and is exact
+        // when the width is large enough to avoid collisions).
+        public class CountMinSketch {
+            private mutable int[] table;
+            private mutable int d;
+            private mutable int w;
+            public constructor CountMinSketch(int width, int depth) {
+                this.w = width;
+                this.d = depth;
+                this.table = new int[width * depth]();
+            }
+            private method hash(String key, int row) returns int {
+                mutable int acc = 17 + row * 31;
+                for (mutable int i = 0; i < key.length(); i++) {
+                    acc = acc * 131 + (cast<int>(key.charAt(i)) & 255);
+                }
+                acc = acc & 2147483647;
+                return acc % this.w;
+            }
+            public method add(String key, int count) returns void {
+                for (mutable int r = 0; r < this.d; r++) {
+                    int idx = r * this.w + this.hash(key, r);
+                    this.table[idx] = this.table[idx] + count;
+                }
+                return;
+            }
+            public method estimate(String key) returns int {
+                mutable int best = 2147483647;
+                for (mutable int r = 0; r < this.d; r++) {
+                    int v = this.table[r * this.w + this.hash(key, r)];
+                    if (v < best) { best = v; }
+                }
+                return best;
+            }
+        }
+        // HyperLogLog (spec 34.1): estimates the number of distinct items in near-constant memory. Each key's
+        // hash picks a register (low bits) and contributes the rank of its leading one-bit; estimate combines
+        // the registers, with linear counting in the small-cardinality range. precision is log2 of the register
+        // count (e.g. 10 -> 1024 registers, ~3% error).
+        public class HyperLogLog {
+            private mutable int[] reg;
+            private mutable int p;
+            private mutable int m;
+            public constructor HyperLogLog(int precision) {
+                this.p = precision;
+                this.m = 1 << precision;
+                this.reg = new int[this.m]();
+            }
+            private static method mix(String s) returns uint {
+                mutable uint h = cast<uint>(2166136261);
+                for (mutable int i = 0; i < s.length(); i++) {
+                    h = (h ^ cast<uint>(cast<int>(s.charAt(i)) & 255)) * cast<uint>(16777619);
+                }
+                h = h ^ (h >> 16);
+                h = h * cast<uint>(2246822519);
+                h = h ^ (h >> 13);
+                h = h * cast<uint>(3266489917);
+                h = h ^ (h >> 16);
+                return h;
+            }
+            private static method clz(uint x) returns int {
+                if (x == cast<uint>(0)) { return 32; }
+                mutable int n = 0;
+                mutable uint v = x;
+                while ((v & cast<uint>(2147483648)) == cast<uint>(0)) { n = n + 1; v = v << 1; }
+                return n;
+            }
+            // Natural log without the Math builtin (whose bare name can bind to a user class named Math):
+            // reduce x to [1,2) tracking the power of two, then sum the atanh series.
+            private static method ln(double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                mutable double v = x;
+                mutable int e = 0;
+                while (v >= 2.0) { v = v / 2.0; e = e + 1; }
+                while (v < 1.0) { v = v * 2.0; e = e - 1; }
+                double t = (v - 1.0) / (v + 1.0);
+                double t2 = t * t;
+                mutable double term = t;
+                mutable double sum = 0.0;
+                mutable int k = 1;
+                while (k <= 15) {
+                    sum = sum + term / cast<double>(k);
+                    term = term * t2;
+                    k = k + 2;
+                }
+                return 2.0 * sum + cast<double>(e) * 0.6931471805599453;
+            }
+            public method add(String key) returns void {
+                uint h = HyperLogLog.mix(key);
+                int idx = cast<int>(h & cast<uint>(this.m - 1));
+                uint rest = (h >> this.p) | (cast<uint>(1) << (31 - this.p));
+                mutable int rank = HyperLogLog.clz(rest) + 1 - this.p;
+                if (rank < 1) { rank = 1; }
+                if (rank > this.reg[idx]) { this.reg[idx] = rank; }
+                return;
+            }
+            public method estimate() returns int {
+                double alpha = 0.7213 / (1.0 + 1.079 / cast<double>(this.m));
+                mutable double sum = 0.0;
+                mutable int zeros = 0;
+                for (mutable int i = 0; i < this.m; i++) {
+                    sum = sum + 1.0 / cast<double>(1 << this.reg[i]);
+                    if (this.reg[i] == 0) { zeros = zeros + 1; }
+                }
+                mutable double est = alpha * cast<double>(this.m) * cast<double>(this.m) / sum;
+                if (est <= 2.5 * cast<double>(this.m) && zeros > 0) {
+                    est = cast<double>(this.m) * HyperLogLog.ln(cast<double>(this.m) / cast<double>(zeros));
+                }
+                return cast<int>(est);
+            }
+        }
+        // Self-contained transcendental functions (spec 34.6) in pure Polaron, so scientific classes never
+        // depend on the Math builtin (whose bare name can bind to a user class called Math). sqrt is Newton's
+        // method; ln reduces to [1,2) then an atanh series; exp reduces by ln2 then a Taylor series; sin/cos
+        // reduce modulo 2*pi then Taylor; pow is exp(e*ln(b)) for positive b.
+        public class Numerics {
+            public static method pi() returns double { return 3.14159265358979323846; }
+            public static method abs(double x) returns double { if (x < 0.0) { return 0.0 - x; } return x; }
+            public static method sqrt(double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                mutable double g = x;
+                if (g > 1.0) { g = x / 2.0; }
+                for (mutable int i = 0; i < 40; i++) { g = 0.5 * (g + x / g); }
+                return g;
+            }
+            public static method ln(double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                mutable double v = x;
+                mutable int e = 0;
+                while (v >= 2.0) { v = v / 2.0; e = e + 1; }
+                while (v < 1.0) { v = v * 2.0; e = e - 1; }
+                double t = (v - 1.0) / (v + 1.0);
+                double t2 = t * t;
+                mutable double term = t;
+                mutable double sum = 0.0;
+                mutable int k = 1;
+                while (k <= 25) { sum = sum + term / cast<double>(k); term = term * t2; k = k + 2; }
+                return 2.0 * sum + cast<double>(e) * 0.6931471805599453;
+            }
+            public static method exp(double x) returns double {
+                double ln2 = 0.6931471805599453;
+                double xr = x / ln2;
+                mutable int k = cast<int>(xr + 0.5);
+                if (x < 0.0) { k = cast<int>(xr - 0.5); }
+                double r = x - cast<double>(k) * ln2;
+                mutable double term = 1.0;
+                mutable double sum = 1.0;
+                for (mutable int i = 1; i <= 18; i++) { term = term * r / cast<double>(i); sum = sum + term; }
+                mutable double p = 1.0;
+                mutable int kk = k;
+                if (kk >= 0) { for (mutable int i = 0; i < kk; i++) { p = p * 2.0; } }
+                else { for (mutable int i = 0; i < 0 - kk; i++) { p = p / 2.0; } }
+                return sum * p;
+            }
+            private static method reduce(double x) returns double {
+                double tau = 6.283185307179586;
+                mutable double r = x;
+                while (r > 3.141592653589793) { r = r - tau; }
+                while (r < 0.0 - 3.141592653589793) { r = r + tau; }
+                return r;
+            }
+            public static method sin(double x) returns double {
+                double r = Numerics.reduce(x);
+                double r2 = r * r;
+                mutable double term = r;
+                mutable double sum = r;
+                mutable int n = 1;
+                while (n <= 12) {
+                    term = 0.0 - term * r2 / cast<double>((2*n) * (2*n + 1));
+                    sum = sum + term;
+                    n = n + 1;
+                }
+                return sum;
+            }
+            public static method cos(double x) returns double {
+                double r = Numerics.reduce(x);
+                double r2 = r * r;
+                mutable double term = 1.0;
+                mutable double sum = 1.0;
+                mutable int n = 1;
+                while (n <= 12) {
+                    term = 0.0 - term * r2 / cast<double>((2*n - 1) * (2*n));
+                    sum = sum + term;
+                    n = n + 1;
+                }
+                return sum;
+            }
+            public static method pow(double b, double e) returns double {
+                if (b <= 0.0) { return 0.0; }
+                return Numerics.exp(e * Numerics.ln(b));
+            }
+        }
+        // Interpolation helpers (spec 34.6): linear interpolate and its inverse, clamp, Hermite smoothstep,
+        // and remap of a value from one range to another. Handy for animation and graphics.
+        public class Interpolation {
+            public static method lerp(double a, double b, double t) returns double { return a + (b - a) * t; }
+            public static method inverseLerp(double a, double b, double v) returns double {
+                if (b == a) { return 0.0; }
+                return (v - a) / (b - a);
+            }
+            public static method clamp(double v, double lo, double hi) returns double {
+                if (v < lo) { return lo; }
+                if (v > hi) { return hi; }
+                return v;
+            }
+            public static method smoothstep(double edge0, double edge1, double x) returns double {
+                double t = Interpolation.clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+                return t * t * (3.0 - 2.0 * t);
+            }
+            public static method remap(double v, double inLo, double inHi, double outLo, double outHi) returns double {
+                double t = Interpolation.inverseLerp(inLo, inHi, v);
+                return Interpolation.lerp(outLo, outHi, t);
+            }
+        }
+        // Bit-twiddling helpers (spec 34.6) over 32-bit words: population count, leading/trailing zero counts,
+        // power-of-two test and round-up, and full bit reversal. Uses uint for logical (zero-fill) shifts.
+        public class Bits {
+            public static method popcount(int x) returns int {
+                mutable uint v = cast<uint>(x);
+                mutable int c = 0;
+                while (v != cast<uint>(0)) { c = c + cast<int>(v & cast<uint>(1)); v = v >> 1; }
+                return c;
+            }
+            public static method leadingZeros(int x) returns int {
+                mutable uint v = cast<uint>(x);
+                if (v == cast<uint>(0)) { return 32; }
+                mutable int n = 0;
+                while ((v & cast<uint>(2147483648)) == cast<uint>(0)) { n = n + 1; v = v << 1; }
+                return n;
+            }
+            public static method trailingZeros(int x) returns int {
+                if (x == 0) { return 32; }
+                mutable uint v = cast<uint>(x);
+                mutable int n = 0;
+                while ((v & cast<uint>(1)) == cast<uint>(0)) { n = n + 1; v = v >> 1; }
+                return n;
+            }
+            public static method isPow2(int n) returns boolean { return n > 0 && (n & (n - 1)) == 0; }
+            public static method nextPow2(int n) returns int {
+                if (n <= 1) { return 1; }
+                return 1 << (32 - Bits.leadingZeros(n - 1));
+            }
+            public static method reverse(int x) returns int {
+                mutable uint v = cast<uint>(x);
+                mutable uint r = cast<uint>(0);
+                for (mutable int i = 0; i < 32; i++) {
+                    r = (r << 1) | (v & cast<uint>(1));
+                    v = v >> 1;
+                }
+                return cast<int>(r);
+            }
+        }
+// Graphics/animation math in its own literal; still System.Math.
+        // A 2D vector (spec 34.6): add/sub/scale return new vectors; dot and length are scalars.
+        public class Vector2 {
+            public mutable double x;
+            public mutable double y;
+            public constructor Vector2(double x, double y) { this.x = x; this.y = y; }
+            public method add(Vector2 o) returns Vector2 { return new Vector2(this.x + o.x, this.y + o.y) on heap; }
+            public method sub(Vector2 o) returns Vector2 { return new Vector2(this.x - o.x, this.y - o.y) on heap; }
+            public method scale(double s) returns Vector2 { return new Vector2(this.x * s, this.y * s) on heap; }
+            public method dot(Vector2 o) returns double { return this.x * o.x + this.y * o.y; }
+            public method length() returns double { return Numerics.sqrt(this.x * this.x + this.y * this.y); }
+        }
+        // A 4D vector (spec 34.6), e.g. homogeneous coordinates: add, dot, and length.
+        public class Vector4 {
+            public mutable double x;
+            public mutable double y;
+            public mutable double z;
+            public mutable double w;
+            public constructor Vector4(double x, double y, double z, double w) {
+                this.x = x; this.y = y; this.z = z; this.w = w;
+            }
+            public method add(Vector4 o) returns Vector4 { return new Vector4(this.x+o.x, this.y+o.y, this.z+o.z, this.w+o.w) on heap; }
+            public method dot(Vector4 o) returns double { return this.x*o.x + this.y*o.y + this.z*o.z + this.w*o.w; }
+            public method length() returns double { return Numerics.sqrt(this.x*this.x + this.y*this.y + this.z*this.z + this.w*this.w); }
+        }
+        // Easing curves (spec 34.6) mapping t in [0,1] to [0,1] for animation: quadratic and cubic in/out.
+        public class Easing {
+            public static method quadIn(double t) returns double { return t * t; }
+            public static method quadOut(double t) returns double { return t * (2.0 - t); }
+            public static method cubicIn(double t) returns double { return t * t * t; }
+            public static method cubicOut(double t) returns double { double u = 1.0 - t; return 1.0 - u * u * u; }
+        }
+        // Angle conversions (spec 34.6) between degrees and radians.
+        public class Angle {
+            public static method toRadians(double deg) returns double { return deg * Numerics.pi() / 180.0; }
+            public static method toDegrees(double rad) returns double { return rad * 180.0 / Numerics.pi(); }
+        }
+        // A 4x4 matrix (spec 34.6) in row-major storage for 3D transforms: identity factory, get/set,
+        // matrix product, and transpose (each returns a new matrix). Pairs with Vector4.
+        public class Mat4 {
+            private mutable double[] m;
+            public constructor Mat4() { this.m = new double[16](); }
+            public static method identity() returns Mat4 {
+                mutable Mat4 r = new Mat4() on heap;
+                for (mutable int i = 0; i < 4; i++) { r.set(i, i, 1.0); }
+                return r;
+            }
+            public method get(int r, int c) returns double { return this.m[r * 4 + c]; }
+            public method set(int r, int c, double v) returns void { this.m[r * 4 + c] = v; return; }
+            public method multiply(Mat4 o) returns Mat4 {
+                mutable Mat4 r = new Mat4() on heap;
+                for (mutable int i = 0; i < 4; i++) {
+                    for (mutable int j = 0; j < 4; j++) {
+                        mutable double s = 0.0;
+                        for (mutable int k = 0; k < 4; k++) { s = s + this.get(i, k) * o.get(k, j); }
+                        r.set(i, j, s);
+                    }
+                }
+                return r;
+            }
+            public method transpose() returns Mat4 {
+                mutable Mat4 r = new Mat4() on heap;
+                for (mutable int i = 0; i < 4; i++) {
+                    for (mutable int j = 0; j < 4; j++) { r.set(j, i, this.get(i, j)); }
+                }
+                return r;
+            }
+        }
+        // Radix-2 fast Fourier transform (spec 34.6), iterative Cooley-Tukey over parallel real/imag arrays
+        // whose length is a power of two. forward transforms in place; inverse transforms and divides by n so
+        // that inverse(forward(x)) == x. Twiddle factors advance by complex multiplication from Numerics.
+        public class Fft {
+            private static method transform(double[] re, double[] im, int n, int sign) returns void {
+                mutable int j = 0;
+                for (mutable int i = 1; i < n; i++) {
+                    mutable int bit = n >> 1;
+                    while ((j & bit) != 0) { j = j ^ bit; bit = bit >> 1; }
+                    j = j | bit;
+                    if (i < j) {
+                        double tr = re[i]; re[i] = re[j]; re[j] = tr;
+                        double ti = im[i]; im[i] = im[j]; im[j] = ti;
+                    }
+                }
+                double tau = 6.283185307179586;
+                mutable int len = 2;
+                while (len <= n) {
+                    double ang = cast<double>(sign) * tau / cast<double>(len);
+                    double wr = Numerics.cos(ang);
+                    double wi = Numerics.sin(ang);
+                    mutable int base = 0;
+                    while (base < n) {
+                        mutable double cwr = 1.0;
+                        mutable double cwi = 0.0;
+                        int half = len / 2;
+                        for (mutable int k = 0; k < half; k++) {
+                            int a = base + k;
+                            int b = base + k + half;
+                            double ure = re[a];
+                            double uim = im[a];
+                            double vre = re[b] * cwr - im[b] * cwi;
+                            double vim = re[b] * cwi + im[b] * cwr;
+                            re[a] = ure + vre; im[a] = uim + vim;
+                            re[b] = ure - vre; im[b] = uim - vim;
+                            double ncwr = cwr * wr - cwi * wi;
+                            cwi = cwr * wi + cwi * wr;
+                            cwr = ncwr;
+                        }
+                        base = base + len;
+                    }
+                    len = len << 1;
+                }
+                return;
+            }
+            public static method forward(double[] re, double[] im, int n) returns void {
+                Fft.transform(re, im, n, -1);
+                return;
+            }
+            public static method inverse(double[] re, double[] im, int n) returns void {
+                Fft.transform(re, im, n, 1);
+                for (mutable int i = 0; i < n; i++) {
+                    re[i] = re[i] / cast<double>(n);
+                    im[i] = im[i] / cast<double>(n);
+                }
+                return;
+            }
+        }
+        // Ordinary least-squares linear regression (spec 34.6): fit y = slope*x + intercept from parallel
+        // arrays and report the coefficient of determination r-squared (computed without a square root).
+        public class Regression {
+            private mutable double slope;
+            private mutable double intercept;
+            private mutable double r2;
+            public constructor Regression(double[] x, double[] y, int n) {
+                mutable double sx = 0.0; mutable double sy = 0.0; mutable double sxy = 0.0;
+                mutable double sxx = 0.0; mutable double syy = 0.0;
+                for (mutable int i = 0; i < n; i++) {
+                    sx = sx + x[i]; sy = sy + y[i]; sxy = sxy + x[i] * y[i];
+                    sxx = sxx + x[i] * x[i]; syy = syy + y[i] * y[i];
+                }
+                double dn = cast<double>(n);
+                this.slope = (dn * sxy - sx * sy) / (dn * sxx - sx * sx);
+                this.intercept = (sy - this.slope * sx) / dn;
+                double num = dn * sxy - sx * sy;
+                double den = (dn * sxx - sx * sx) * (dn * syy - sy * sy);
+                this.r2 = (num * num) / den;
+            }
+            public method getSlope() returns double { return this.slope; }
+            public method getIntercept() returns double { return this.intercept; }
+            public method getR2() returns double { return this.r2; }
+            public method predict(double x) returns double { return this.slope * x + this.intercept; }
+        }
+        // Pearson correlation coefficient (spec 34.6) between two equal-length samples, in [-1, 1].
+        public class Correlation {
+            public static method pearson(double[] x, double[] y, int n) returns double {
+                mutable double sx = 0.0; mutable double sy = 0.0; mutable double sxy = 0.0;
+                mutable double sxx = 0.0; mutable double syy = 0.0;
+                for (mutable int i = 0; i < n; i++) {
+                    sx = sx + x[i]; sy = sy + y[i]; sxy = sxy + x[i] * y[i];
+                    sxx = sxx + x[i] * x[i]; syy = syy + y[i] * y[i];
+                }
+                double dn = cast<double>(n);
+                double num = dn * sxy - sx * sy;
+                double den = Numerics.sqrt((dn * sxx - sx * sx) * (dn * syy - sy * sy));
+                if (den == 0.0) { return 0.0; }
+                return num / den;
+            }
+        }
+        // Quaternions (spec 34.6) for 3D rotation math: Hamilton product, conjugate, magnitude and
+        // normalize (via the Numerics square root). Immutable; operations return new heap quaternions.
+        public class Quaternion {
+            private mutable double w;
+            private mutable double x;
+            private mutable double y;
+            private mutable double z;
+            public constructor Quaternion(double w, double x, double y, double z) {
+                this.w = w; this.x = x; this.y = y; this.z = z;
+            }
+            public method getW() returns double { return this.w; }
+            public method getX() returns double { return this.x; }
+            public method getY() returns double { return this.y; }
+            public method getZ() returns double { return this.z; }
+            public method magnitude() returns double {
+                return Numerics.sqrt(this.w*this.w + this.x*this.x + this.y*this.y + this.z*this.z);
+            }
+            public method conjugate() returns Quaternion {
+                return new Quaternion(this.w, 0.0 - this.x, 0.0 - this.y, 0.0 - this.z) on heap;
+            }
+            public method mul(Quaternion o) returns Quaternion {
+                double nw = this.w*o.getW() - this.x*o.getX() - this.y*o.getY() - this.z*o.getZ();
+                double nx = this.w*o.getX() + this.x*o.getW() + this.y*o.getZ() - this.z*o.getY();
+                double ny = this.w*o.getY() - this.x*o.getZ() + this.y*o.getW() + this.z*o.getX();
+                double nz = this.w*o.getZ() + this.x*o.getY() - this.y*o.getX() + this.z*o.getW();
+                return new Quaternion(nw, nx, ny, nz) on heap;
+            }
+            public method normalize() returns Quaternion {
+                double m = this.magnitude();
+                if (m == 0.0) { return new Quaternion(1.0, 0.0, 0.0, 0.0) on heap; }
+                return new Quaternion(this.w/m, this.x/m, this.y/m, this.z/m) on heap;
+            }
+        }
+        // Dense double matrix (spec 34.6) stored row-major: element get/set, matrix multiply and transpose
+        // (returning new matrices), and determinant by Gaussian elimination with partial pivoting.
+        public class MatrixD {
+            private mutable int rows;
+            private mutable int cols;
+            private mutable double[] data;
+            public constructor MatrixD(int rows, int cols) {
+                this.rows = rows; this.cols = cols; this.data = new double[rows * cols]();
+            }
+            public method set(int r, int c, double v) returns void { this.data[r * this.cols + c] = v; return; }
+            public method get(int r, int c) returns double { return this.data[r * this.cols + c]; }
+            public method rowCount() returns int { return this.rows; }
+            public method colCount() returns int { return this.cols; }
+            public method mul(MatrixD o) returns MatrixD {
+                mutable MatrixD res = new MatrixD(this.rows, o.colCount()) on heap;
+                for (mutable int i = 0; i < this.rows; i++) {
+                    for (mutable int j = 0; j < o.colCount(); j++) {
+                        mutable double s = 0.0;
+                        for (mutable int k = 0; k < this.cols; k++) { s = s + this.get(i, k) * o.get(k, j); }
+                        res.set(i, j, s);
+                    }
+                }
+                return res;
+            }
+            public method transpose() returns MatrixD {
+                mutable MatrixD res = new MatrixD(this.cols, this.rows) on heap;
+                for (mutable int i = 0; i < this.rows; i++) {
+                    for (mutable int j = 0; j < this.cols; j++) { res.set(j, i, this.get(i, j)); }
+                }
+                return res;
+            }
+            public method determinant() returns double {
+                int n = this.rows;
+                mutable double[] a = new double[n * n]();
+                for (mutable int i = 0; i < n * n; i++) { a[i] = this.data[i]; }
+                mutable double det = 1.0;
+                for (mutable int col = 0; col < n; col++) {
+                    mutable int piv = col;
+                    for (mutable int r = col + 1; r < n; r++) {
+                        if (Numerics.abs(a[r*n + col]) > Numerics.abs(a[piv*n + col])) { piv = r; }
+                    }
+                    if (Numerics.abs(a[piv*n + col]) == 0.0) { return 0.0; }
+                    if (piv != col) {
+                        for (mutable int c = 0; c < n; c++) {
+                            double t = a[col*n + c]; a[col*n + c] = a[piv*n + c]; a[piv*n + c] = t;
+                        }
+                        det = 0.0 - det;
+                    }
+                    det = det * a[col*n + col];
+                    for (mutable int r = col + 1; r < n; r++) {
+                        double f = a[r*n + col] / a[col*n + col];
+                        for (mutable int c = col; c < n; c++) { a[r*n + c] = a[r*n + c] - f * a[col*n + c]; }
+                    }
+                }
+                return det;
+            }
+        }
+        // A 3D vector (spec 34.6) of doubles: add/sub/scale, dot and cross products, length and normalize (via
+        // the Numerics square root). Immutable; operations return new heap vectors.
+        public class Vector3 {
+            private mutable double x;
+            private mutable double y;
+            private mutable double z;
+            public constructor Vector3(double x, double y, double z) { this.x = x; this.y = y; this.z = z; }
+            public method getX() returns double { return this.x; }
+            public method getY() returns double { return this.y; }
+            public method getZ() returns double { return this.z; }
+            public method add(Vector3 o) returns Vector3 { return new Vector3(this.x+o.getX(), this.y+o.getY(), this.z+o.getZ()) on heap; }
+            public method sub(Vector3 o) returns Vector3 { return new Vector3(this.x-o.getX(), this.y-o.getY(), this.z-o.getZ()) on heap; }
+            public method scale(double s) returns Vector3 { return new Vector3(this.x*s, this.y*s, this.z*s) on heap; }
+            public method dot(Vector3 o) returns double { return this.x*o.getX() + this.y*o.getY() + this.z*o.getZ(); }
+            public method cross(Vector3 o) returns Vector3 {
+                return new Vector3(this.y*o.getZ() - this.z*o.getY(),
+                                   this.z*o.getX() - this.x*o.getZ(),
+                                   this.x*o.getY() - this.y*o.getX()) on heap;
+            }
+            public method length() returns double { return Numerics.sqrt(this.dot(this)); }
+            public method normalize() returns Vector3 {
+                double m = this.length();
+                if (m == 0.0) { return new Vector3(0.0, 0.0, 0.0) on heap; }
+                return this.scale(1.0 / m);
+            }
+        }
+    }

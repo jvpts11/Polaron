@@ -1,0 +1,21 @@
+import System.IO.Console;
+import System.Codecs.Radix;
+program RadixDemo;
+
+// Arbitrary-base integer conversion (spec 4) in pure Polaron. Prints:
+//   hex=ff bin=1010 zero=0 neg=-ff
+//   fhex=255 fbin=10 rt=123456
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("hex=%s bin=%s zero=%s neg=%s\n",
+                    Radix.toBase(255, 16), Radix.toBase(10, 2), Radix.toBase(0, 16), Radix.toBase(0 - 255, 16));
+                System.IO.Console.printf("fhex=%d fbin=%d rt=%d\n",
+                    cast<int>(Radix.fromBase("ff", 16)), cast<int>(Radix.fromBase("1010", 2)),
+                    cast<int>(Radix.fromBase(Radix.toBase(123456, 36), 36)));
+                return;
+            }
+        }
+    }
+}

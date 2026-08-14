@@ -1,0 +1,116 @@
+    public namespace Ecs {
+        // An entity-component-system core (spec 34, data-oriented identity of Polaron). World hands out integer
+        // entity ids and recycles destroyed ones; component data lives outside the entity in ComponentStore.
+        public class World {
+            private mutable boolean[] alive;
+            private mutable int[] freeList;
+            private mutable int freeCount;
+            private mutable int next;
+            private mutable int cap;
+            private mutable int count;
+            public constructor World() {
+                this.cap = 16;
+                this.alive = new boolean[16]();
+                this.freeList = new int[16]();
+                this.freeCount = 0;
+                this.next = 0;
+                this.count = 0;
+            }
+            private method grow() returns void {
+                int nc = this.cap * 2;
+                mutable boolean[] na = new boolean[nc]();
+                mutable int[] nf = new int[nc]();
+                for (mutable int i = 0; i < this.cap; i++) { na[i] = this.alive[i]; }
+                for (mutable int i = 0; i < this.freeCount; i++) { nf[i] = this.freeList[i]; }
+                this.alive = na;
+                this.freeList = nf;
+                this.cap = nc;
+                return;
+            }
+            public method createEntity() returns int {
+                mutable int id = 0;
+                if (this.freeCount > 0) {
+                    id = this.freeList[this.freeCount - 1];
+                    this.freeCount = this.freeCount - 1;
+                } else {
+                    if (this.next == this.cap) { this.grow(); }
+                    id = this.next;
+                    this.next = this.next + 1;
+                }
+                this.alive[id] = true;
+                this.count = this.count + 1;
+                return id;
+            }
+            public method destroyEntity(int e) returns void {
+                if (e >= 0 && e < this.cap && this.alive[e]) {
+                    this.alive[e] = false;
+                    this.freeList[this.freeCount] = e;
+                    this.freeCount = this.freeCount + 1;
+                    this.count = this.count - 1;
+                }
+                return;
+            }
+            public method isAlive(int e) returns boolean { return e >= 0 && e < this.cap && this.alive[e]; }
+            public method size() returns int { return this.count; }
+            public method capacity() returns int { return this.cap; }
+        }
+        // A sparse-set store mapping an entity id to one component of type T (spec 34). Components live in a
+        // dense array for fast iteration (size/entityAt index it); the sparse array maps entity -> dense slot.
+        // remove is a swap-with-last. Sized for entity ids in [0, maxEntities).
+        public class ComponentStore<T> {
+            private mutable T[] dense;
+            private mutable int[] denseEntity;
+            private mutable int[] sparse;
+            private mutable int count;
+            private mutable int cap;
+            public constructor ComponentStore(int maxEntities) {
+                this.sparse = new int[maxEntities]();
+                for (mutable int i = 0; i < maxEntities; i++) { this.sparse[i] = 0 - 1; }
+                this.dense = new T[8]();
+                this.denseEntity = new int[8]();
+                this.count = 0;
+                this.cap = 8;
+            }
+            private method grow() returns void {
+                int nc = this.cap * 2;
+                mutable T[] nd = new T[nc]();
+                mutable int[] ne = new int[nc]();
+                for (mutable int i = 0; i < this.count; i++) {
+                    nd[i] = this.dense[i];
+                    ne[i] = this.denseEntity[i];
+                }
+                this.dense = nd;
+                this.denseEntity = ne;
+                this.cap = nc;
+                return;
+            }
+            public method add(int e, T component) returns void {
+                if (this.count == this.cap) { this.grow(); }
+                this.dense[this.count] = component;
+                this.denseEntity[this.count] = e;
+                this.sparse[e] = this.count;
+                this.count = this.count + 1;
+                return;
+            }
+            public method has(int e) returns boolean { return this.sparse[e] >= 0; }
+            public method get(int e) returns T { return this.dense[this.sparse[e]]; }
+            public method set(int e, T component) returns void {
+                this.dense[this.sparse[e]] = component;
+                return;
+            }
+            public method remove(int e) returns void {
+                int idx = this.sparse[e];
+                if (idx < 0) { return; }
+                int last = this.count - 1;
+                this.dense[idx] = this.dense[last];
+                this.denseEntity[idx] = this.denseEntity[last];
+                this.sparse[this.denseEntity[last]] = idx;
+                this.sparse[e] = 0 - 1;
+                this.count = this.count - 1;
+                return;
+            }
+            public method size() returns int { return this.count; }
+            public method entityAt(int i) returns int { return this.denseEntity[i]; }
+            public method at(int i) returns T { return this.dense[i]; }
+        }
+    }

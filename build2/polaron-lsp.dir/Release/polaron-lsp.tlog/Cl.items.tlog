@@ -1,0 +1,7 @@
+C:\Users\jvpts\Documents\GitHub\LDP3\src\lsp\main.cpp;C:\Users\jvpts\Documents\GitHub\LDP3\build2\polaron-lsp.dir\Release\main.obj
+C:\Users\jvpts\Documents\GitHub\LDP3\src\lsp\json.cpp;C:\Users\jvpts\Documents\GitHub\LDP3\build2\polaron-lsp.dir\Release\json.obj
+C:\Users\jvpts\Documents\GitHub\LDP3\src\lsp\server.cpp;C:\Users\jvpts\Documents\GitHub\LDP3\build2\polaron-lsp.dir\Release\server.obj
+C:\Users\jvpts\Documents\GitHub\LDP3\src\lexer\token.cpp;C:\Users\jvpts\Documents\GitHub\LDP3\build2\polaron-lsp.dir\Release\token.obj
+C:\Users\jvpts\Documents\GitHub\LDP3\src\lexer\lexer.cpp;C:\Users\jvpts\Documents\GitHub\LDP3\build2\polaron-lsp.dir\Release\lexer.obj
+C:\Users\jvpts\Documents\GitHub\LDP3\src\parser\ast.cpp;C:\Users\jvpts\Documents\GitHub\LDP3\build2\polaron-lsp.dir\Release\ast.obj
+C:\Users\jvpts\Documents\GitHub\LDP3\src\parser\parser.cpp;C:\Users\jvpts\Documents\GitHub\LDP3\build2\polaron-lsp.dir\Release\parser.obj

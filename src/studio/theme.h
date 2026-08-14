@@ -1,9 +1,9 @@
 #pragma once
 #include <ftxui/screen/color.hpp>
 
-// The approved LDP3 Studio palette (see docs/superpowers/specs/2026-07-04-ldp3-studio-tui-design.md).
+// The approved Polaron Studio palette (see docs/superpowers/specs/2026-07-04-polaron-studio-tui-design.md).
 // Single dark theme by deliberate choice -- it is a terminal.
-namespace ldp3::studio::theme {
+namespace polaron::studio::theme {
 
 using ftxui::Color;
 
@@ -20,4 +20,4 @@ inline const Color green = Color::RGB(0x93, 0xc9, 0x7e);   // pass
 inline const Color red = Color::RGB(0xe5, 0x7f, 0x70);     // fail
 inline const Color violet = Color::RGB(0xb7, 0x9a, 0xe0);  // environment
 
-}  // namespace ldp3::studio::theme
+}  // namespace polaron::studio::theme

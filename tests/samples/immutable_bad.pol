@@ -1,0 +1,16 @@
+import System.IO.Console;
+program Immutable;
+
+// Assigning to a value not declared `mutable`. The compiler infers the rich code Polaron-0401 from the
+// message alone -- no per-call-site change -- so the error explains immutability, not just rejects it.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int x = 0;
+                x = 5;
+                return;
+            }
+        }
+    }
+}

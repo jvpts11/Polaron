@@ -1,16 +1,16 @@
 # Cross-program IPC end-to-end (spec 2.8), invoked via `cmake -P`.
 #
-# Two programs. The engine is compiled twice: as an executable (it serves) and as a bundle, whose .ldh
+# Two programs. The engine is compiled twice: as an executable (it serves) and as a bundle, whose .polh
 # is what the client type-checks against (--use-remote) -- the client never links a line of its code.
 # The client is then run with the engine's path: it starts it, connects to it BY NAME over the named
 # pipe / unix socket, creates an object in it, calls methods on it, and exercises the capability policy.
 #
-# Required -D args: LDP3C, CLANG, SERVER, CLIENT, EXPECTED, WORKDIR
+# Required -D args: POLC, CLANG, SERVER, CLIENT, EXPECTED, WORKDIR
 
-set(rt "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp")
+set(rt "${CMAKE_CURRENT_LIST_DIR}/../runtime/polaron_rt.cpp")
 set(engine_ll "${WORKDIR}/ipc_engine.ll")
 set(engine_exe "${WORKDIR}/ipc_engine.exe")
-set(engine_ldb "${WORKDIR}/ipc_engine.ldb")
+set(engine_polb "${WORKDIR}/ipc_engine.polb")
 set(client_ll "${WORKDIR}/ipc_client.ll")
 set(client_exe "${WORKDIR}/ipc_client.exe")
 
@@ -37,12 +37,12 @@ function(run_or_die)
 endfunction()
 
 # The engine: an executable that serves, and a bundle the client compiles against.
-run_or_die("${LDP3C}" "${SERVER}" -o "${engine_ll}")
+run_or_die("${POLC}" "${SERVER}" -o "${engine_ll}")
 run_or_die("${CLANG}" -Wno-override-module "${engine_ll}" "${rt}" -o "${engine_exe}" ${_platlibs})
-run_or_die("${LDP3C}" --lib "${SERVER}" -o "${engine_ldb}")
+run_or_die("${POLC}" --lib "${SERVER}" -o "${engine_polb}")
 
 # The client: it knows the engine's types from that bundle's header, and nothing else about it.
-run_or_die("${LDP3C}" "${CLIENT}" --use-remote "${engine_ldb}" -o "${client_ll}")
+run_or_die("${POLC}" "${CLIENT}" --use-remote "${engine_polb}" -o "${client_ll}")
 run_or_die("${CLANG}" -Wno-override-module "${client_ll}" "${rt}" -o "${client_exe}" ${_platlibs})
 
 execute_process(COMMAND "${client_exe}" "${engine_exe}"

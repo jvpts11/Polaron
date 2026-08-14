@@ -4,11 +4,11 @@ import { runInteractiveIn, runVerbIn } from './commands';
 
 let panel: vscode.WebviewPanel | undefined;
 
-// The "LDP3 Studio" dashboard: a webview reusing the studio's amber design, showing project cards with action
+// The "Polaron Studio" dashboard: a webview reusing the studio's amber design, showing project cards with action
 // buttons. Buttons post messages back to run the corresponding command in that project.
 export function registerDashboard(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
-    vscode.commands.registerCommand('ldp3.dashboard', () => void openDashboard()),
+    vscode.commands.registerCommand('polaron.dashboard', () => void openDashboard()),
   );
 }
 
@@ -18,7 +18,7 @@ async function openDashboard(): Promise<void> {
     await refresh();
     return;
   }
-  panel = vscode.window.createWebviewPanel('ldp3Dashboard', 'LDP3 Studio', vscode.ViewColumn.Active, {
+  panel = vscode.window.createWebviewPanel('polaronDashboard', 'Polaron Studio', vscode.ViewColumn.Active, {
     enableScripts: true,
     retainContextWhenHidden: true,
   });
@@ -69,7 +69,7 @@ function html(): string {
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LDP3 Studio</title>
+<title>Polaron Studio</title>
 <style>
   :root {
     --ground:#0d1417; --panel:#101c1f; --line:#23383c; --ink:#e4ece9; --muted:#86a09b; --faint:#58726e;
@@ -99,7 +99,7 @@ function html(): string {
 </head>
 <body>
 <header>
-  <span class="mark">▲ LDP3 Studio</span>
+  <span class="mark">▲ Polaron Studio</span>
   <span class="count" id="count"></span>
   <button class="refresh" id="refreshBtn">↻ Refresh</button>
 </header>
@@ -116,7 +116,7 @@ function html(): string {
     const projects = (data && data.projects) || [];
     count.textContent = projects.length + ' project' + (projects.length === 1 ? '' : 's');
     if (projects.length === 0) {
-      cards.innerHTML = '<div class="empty">No LDP3 projects in this folder.</div>';
+      cards.innerHTML = '<div class="empty">No Polaron projects in this folder.</div>';
       return;
     }
     cards.innerHTML = '';

@@ -4,7 +4,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace ldp3 {
+namespace polaron {
 
 namespace {
 
@@ -205,8 +205,11 @@ Lexer::Lexer(std::string_view source, std::string_view file, bool keepComments)
 void Lexer::skipWhitespace() {
     while (!atEnd()) {
         const char c = peek();
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') advance();
-        else break;
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            advance();
+        } else {
+            break;
+        }
     }
 }
 
@@ -215,8 +218,12 @@ bool Lexer::tryComment(Token& out) {
     if (c == '/' && peek(1) == '/') {  // // or /// line comment: keep the whole line's text
         const SourceLocation loc = here();
         std::string text;
-        while (!atEnd() && peek() != '\n') text += advance();
-        while (!text.empty() && text.back() == '\r') text.pop_back();
+        while (!atEnd() && peek() != '\n') {
+            text += advance();
+        }
+        while (!text.empty() && text.back() == '\r') {
+            text.pop_back();
+        }
         out = make(TokenKind::Comment, std::move(text), loc);
         return true;
     }
@@ -235,7 +242,9 @@ bool Lexer::tryComment(Token& out) {
             }
             text += advance();
         }
-        if (!closed) error("unterminated block comment", loc);
+        if (!closed) {
+            error("unterminated block comment", loc);
+        }
         out = make(TokenKind::Comment, std::move(text), loc);
         return true;
     }
@@ -261,7 +270,9 @@ char Lexer::advance() {
 }
 
 bool Lexer::match(char expected) {
-    if (atEnd() || source_[pos_] != expected) return false;
+    if (atEnd() || source_[pos_] != expected) {
+        return false;
+    }
     advance();
     return true;
 }
@@ -287,13 +298,21 @@ void Lexer::skipWhitespaceAndComments() {
                 advance();  // '/'
                 advance();  // '/'
                 advance();  // '/'
-                if (peek() == ' ') advance();  // drop one conventional leading space
+                if (peek() == ' ') {
+                    advance();  // drop one conventional leading space
+                }
                 std::string text;
-                while (!atEnd() && peek() != '\n') text += advance();
-                while (!text.empty() && (text.back() == '\r' || text.back() == ' ')) text.pop_back();
+                while (!atEnd() && peek() != '\n') {
+                    text += advance();
+                }
+                while (!text.empty() && (text.back() == '\r' || text.back() == ' ')) {
+                    text.pop_back();
+                }
                 docComments_.push_back({line, std::move(text)});
             } else {
-                while (!atEnd() && peek() != '\n') advance();  // ordinary line comment
+                while (!atEnd() && peek() != '\n') {
+                    advance();  // ordinary line comment
+                }
             }
         } else if (c == '/' && peek(1) == '*') {
             SourceLocation start = here();
@@ -309,7 +328,9 @@ void Lexer::skipWhitespaceAndComments() {
                 }
                 advance();
             }
-            if (!closed) error("unterminated block comment", start);
+            if (!closed) {
+                error("unterminated block comment", start);
+            }
         } else {
             break;
         }
@@ -350,25 +371,30 @@ std::vector<Token> Lexer::tokenize() {
 Token Lexer::scanIdentifierOrKeyword() {
     SourceLocation loc = here();
     std::size_t start = pos_;
-    while (!atEnd() && isIdentCont(peek())) advance();
+    while (!atEnd() && isIdentCont(peek())) {
+        advance();
+    }
     std::string text(source_.substr(start, pos_ - start));
     TokenKind kind = keywordKind(text);
     // Inline assembly (spec issue 1): `asm("arch") { raw }` -- only when `(` follows, so `asm` stays
-    // usable as an ordinary identifier elsewhere. The raw body is captured verbatim (the LDP3 lexer
+    // usable as an ordinary identifier elsewhere. The raw body is captured verbatim (the Polaron lexer
     // does not tokenize it); the token's lexeme is arch + '\x1f' + body.
     // b"..." -- a raw byte-string literal. Only when the quote follows IMMEDIATELY, so an ordinary
     // identifier named `b` is untouched. Yields `byte*` at the bytes, NUL-terminated: what freestanding
     // code needs, since a String object requires a runtime that a kernel does not have.
     if (text == "b" && peek() == '"') {
         Token str = scanString();
-        if (str.kind == TokenKind::StringLiteral) str.kind = TokenKind::BytesLiteral;
+        if (str.kind == TokenKind::StringLiteral) {
+            str.kind = TokenKind::BytesLiteral;
+        }
         str.loc = loc;
         return str;
     }
     if (text == "asm") {
         auto skipWs = [&]() {
-            while (!atEnd() && (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r'))
+            while (!atEnd() && (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r')) {
                 advance();
+            }
         };
         std::size_t save = pos_;
         skipWs();
@@ -382,13 +408,17 @@ Token Lexer::scanIdentifierOrKeyword() {
             }
             advance();  // opening '"'
             std::size_t as = pos_;
-            while (!atEnd() && peek() != '"') advance();
+            while (!atEnd() && peek() != '"') {
+                advance();
+            }
             std::string arch(source_.substr(as, pos_ - as));
-            if (peek() == '"') advance();  // closing '"'
+            if (peek() == '"') {
+                advance();  // closing '"'
+            }
             skipWs();
             // Optional second string: the assembly DIALECT -- `asm("x86_64", "att") { ... }`. Without it
             // the dialect follows the architecture (Intel on x86, the native syntax elsewhere), which is
-            // what an LDP3 asm block is written in; name it explicitly to paste in code written the other
+            // what a Polaron asm block is written in; name it explicitly to paste in code written the other
             // way (a GCC/AT&T snippet, say) instead of hand-translating it.
             std::string dialect;
             if (peek() == ',') {
@@ -399,14 +429,21 @@ Token Lexer::scanIdentifierOrKeyword() {
                 } else {
                     advance();  // opening '"'
                     std::size_t ds = pos_;
-                    while (!atEnd() && peek() != '"') advance();
+                    while (!atEnd() && peek() != '"') {
+                        advance();
+                    }
                     dialect = std::string(source_.substr(ds, pos_ - ds));
-                    if (peek() == '"') advance();  // closing '"'
+                    if (peek() == '"') {
+                        advance();  // closing '"'
+                    }
                     skipWs();
                 }
             }
-            if (peek() == ')') advance();
-            else error("expected ')' after the asm target", loc);
+            if (peek() == ')') {
+                advance();
+            } else {
+                error("expected ')' after the asm target", loc);
+            }
             skipWs();
             if (peek() != '{') {
                 error("expected '{' to open the asm block", loc);
@@ -416,12 +453,17 @@ Token Lexer::scanIdentifierOrKeyword() {
             std::size_t bs = pos_;
             int depth = 1;
             while (!atEnd() && depth > 0) {
-                if (peek() == '{') depth++;
-                else if (peek() == '}' && --depth == 0) break;
+                if (peek() == '{') {
+                    depth++;
+                } else if (peek() == '}' && --depth == 0) {
+                    break;
+                }
                 advance();
             }
             std::string body(source_.substr(bs, pos_ - bs));
-            if (peek() == '}') advance();  // closing '}'
+            if (peek() == '}') {
+                advance();  // closing '}'
+            }
             // arch \x1e dialect \x1f body
             return make(TokenKind::AsmBlock, arch + '\x1e' + dialect + '\x1f' + body, loc);
         }
@@ -445,13 +487,19 @@ Token Lexer::scanNumber() {
     } else if (peek() == '0' && (peek(1) == 'b' || peek(1) == 'B')) {
         advance();
         advance();
-        while (!atEnd() && (peek() == '0' || peek() == '1' || peek() == '_')) advance();
+        while (!atEnd() && (peek() == '0' || peek() == '1' || peek() == '_')) {
+            advance();
+        }
     } else {
-        while (!atEnd() && (isDigit(peek()) || peek() == '_')) advance();
+        while (!atEnd() && (isDigit(peek()) || peek() == '_')) {
+            advance();
+        }
         if (peek() == '.' && isDigit(peek(1))) {
             isFloat = true;
             advance();  // '.'
-            while (!atEnd() && (isDigit(peek()) || peek() == '_')) advance();
+            while (!atEnd() && (isDigit(peek()) || peek() == '_')) {
+                advance();
+            }
         }
         // Scientific notation: 1.0e30, 1e-9, 6.022E+23. Without this the exponent was not part of the
         // number at all -- `1.0e30` lexed as `1.0` followed by the IDENTIFIER `e30`, which the parser then
@@ -467,8 +515,12 @@ Token Lexer::scanNumber() {
             (isDigit(peek(1)) || ((peek(1) == '+' || peek(1) == '-') && isDigit(peek(2))))) {
             isFloat = true;
             advance();                                        // 'e' / 'E'
-            if (peek() == '+' || peek() == '-') advance();     // optional sign
-            while (!atEnd() && (isDigit(peek()) || peek() == '_')) advance();
+            if (peek() == '+' || peek() == '-') {
+                advance();  // optional sign
+            }
+            while (!atEnd() && (isDigit(peek()) || peek() == '_')) {
+                advance();
+            }
         }
     }
 
@@ -485,7 +537,9 @@ Token Lexer::scanNumber() {
     }
 
     std::string text(source_.substr(start, pos_ - start));
-    if (isDecimal) text.pop_back();  // drop the 'm'; keep just the numeric text
+    if (isDecimal) {
+        text.pop_back();  // drop the 'm'; keep just the numeric text
+    }
     return make(isDecimal  ? TokenKind::DecimalLiteral
                 : isFloat  ? TokenKind::FloatLiteral
                            : TokenKind::IntLiteral,
@@ -507,7 +561,9 @@ Token Lexer::scanChar() {
     }
     if (peek() == '\\') {
         value += advance();              // backslash
-        if (!atEnd()) value += advance();  // escaped char
+        if (!atEnd()) {
+            value += advance();  // escaped char
+        }
     } else {
         value += advance();
     }
@@ -525,7 +581,9 @@ Token Lexer::scanString() {
     while (!atEnd() && peek() != '"' && peek() != '\n') {
         if (peek() == '\\') {
             value += advance();              // backslash
-            if (!atEnd()) value += advance();  // escaped char
+            if (!atEnd()) {
+                value += advance();  // escaped char
+            }
         } else {
             value += advance();
         }
@@ -548,21 +606,39 @@ Token Lexer::scanInterpString() {
     int braceDepth = 0;  // >0 while inside a {expr} region
     while (!atEnd() && peek() != '\n') {
         char c = peek();
-        if (c == '"' && braceDepth == 0) break;  // the interp string's own closing quote
+        if (c == '"' && braceDepth == 0) {
+            break;  // the interp string's own closing quote
+        }
         if (c == '\\') {                         // escape (in literal text or in an expr)
             value += advance();                  // backslash
-            if (!atEnd()) value += advance();    // escaped char
+            if (!atEnd()) {
+                value += advance();  // escaped char
+            }
             continue;
         }
         if (c == '{') { ++braceDepth; value += advance(); continue; }
-        if (c == '}') { if (braceDepth > 0) --braceDepth; value += advance(); continue; }
+        if (c == '}') {
+            if (braceDepth > 0) {
+                --braceDepth;
+            }
+            value += advance();
+            continue;
+        }
         if (c == '"') {                          // braceDepth>0: a nested string literal inside {expr}
             value += advance();                  // opening quote, kept verbatim
             while (!atEnd() && peek() != '"' && peek() != '\n') {
-                if (peek() == '\\') { value += advance(); if (!atEnd()) value += advance(); }
-                else                { value += advance(); }
+                if (peek() == '\\') {
+                    value += advance();
+                    if (!atEnd()) {
+                        value += advance();
+                    }
+                } else {
+                    value += advance();
+                }
             }
-            if (!atEnd() && peek() == '"') value += advance();  // closing quote
+            if (!atEnd() && peek() == '"') {
+                value += advance();  // closing quote
+            }
             continue;
         }
         value += advance();
@@ -578,11 +654,21 @@ Token Lexer::scanToken() {
     SourceLocation loc = here();
     char c = peek();
 
-    if (isIdentStart(c)) return scanIdentifierOrKeyword();
-    if (isDigit(c)) return scanNumber();
-    if (c == '\'') return scanChar();
-    if (c == '"') return scanString();
-    if (c == '$' && peek(1) == '"') return scanInterpString();
+    if (isIdentStart(c)) {
+        return scanIdentifierOrKeyword();
+    }
+    if (isDigit(c)) {
+        return scanNumber();
+    }
+    if (c == '\'') {
+        return scanChar();
+    }
+    if (c == '"') {
+        return scanString();
+    }
+    if (c == '$' && peek(1) == '"') {
+        return scanInterpString();
+    }
 
     advance();  // consume the operator/punctuation lead character
     switch (c) {
@@ -596,65 +682,109 @@ Token Lexer::scanToken() {
         case ';': return make(TokenKind::Semicolon, ";", loc);
         case ',': return make(TokenKind::Comma, ",", loc);
         case '?':
-            if (match('?')) return make(TokenKind::QuestionQuestion, "??", loc);  // null-coalescing
-            if (match('.')) return make(TokenKind::QuestionDot, "?.", loc);        // safe navigation
+            if (match('?')) {
+                return make(TokenKind::QuestionQuestion, "??", loc);  // null-coalescing
+            }
+            if (match('.')) {
+                return make(TokenKind::QuestionDot, "?.", loc);  // safe navigation
+            }
             return make(TokenKind::Question, "?", loc);
         case ':': return make(TokenKind::Colon, ":", loc);
         case '~': return make(TokenKind::Tilde, "~", loc);
         case '.':
             if (match('.')) {
-                if (match('=')) return make(TokenKind::DotDotEq, "..=", loc);
+                if (match('=')) {
+                    return make(TokenKind::DotDotEq, "..=", loc);
+                }
                 return make(TokenKind::DotDot, "..", loc);
             }
             return make(TokenKind::Dot, ".", loc);
         case '+':
-            if (match('+')) return make(TokenKind::PlusPlus, "++", loc);
-            if (match('=')) return make(TokenKind::PlusEq, "+=", loc);
+            if (match('+')) {
+                return make(TokenKind::PlusPlus, "++", loc);
+            }
+            if (match('=')) {
+                return make(TokenKind::PlusEq, "+=", loc);
+            }
             return make(TokenKind::Plus, "+", loc);
         case '-':
-            if (match('-')) return make(TokenKind::MinusMinus, "--", loc);
-            if (match('=')) return make(TokenKind::MinusEq, "-=", loc);
-            if (match('>')) return make(TokenKind::Arrow, "->", loc);
+            if (match('-')) {
+                return make(TokenKind::MinusMinus, "--", loc);
+            }
+            if (match('=')) {
+                return make(TokenKind::MinusEq, "-=", loc);
+            }
+            if (match('>')) {
+                return make(TokenKind::Arrow, "->", loc);
+            }
             return make(TokenKind::Minus, "-", loc);
         case '*':
-            if (match('=')) return make(TokenKind::StarEq, "*=", loc);
+            if (match('=')) {
+                return make(TokenKind::StarEq, "*=", loc);
+            }
             return make(TokenKind::Star, "*", loc);
         case '/':
-            if (match('=')) return make(TokenKind::SlashEq, "/=", loc);
+            if (match('=')) {
+                return make(TokenKind::SlashEq, "/=", loc);
+            }
             return make(TokenKind::Slash, "/", loc);
         case '%':
-            if (match('=')) return make(TokenKind::PercentEq, "%=", loc);
+            if (match('=')) {
+                return make(TokenKind::PercentEq, "%=", loc);
+            }
             return make(TokenKind::Percent, "%", loc);
         case '=':
-            if (match('=')) return make(TokenKind::EqEq, "==", loc);
+            if (match('=')) {
+                return make(TokenKind::EqEq, "==", loc);
+            }
             return make(TokenKind::Assign, "=", loc);
         case '!':
-            if (match('=')) return make(TokenKind::BangEq, "!=", loc);
+            if (match('=')) {
+                return make(TokenKind::BangEq, "!=", loc);
+            }
             return make(TokenKind::Bang, "!", loc);
         case '<':
-            if (match('=')) return make(TokenKind::LtEq, "<=", loc);
+            if (match('=')) {
+                return make(TokenKind::LtEq, "<=", loc);
+            }
             if (match('<')) {
-                if (match('=')) return make(TokenKind::ShlEq, "<<=", loc);
+                if (match('=')) {
+                    return make(TokenKind::ShlEq, "<<=", loc);
+                }
                 return make(TokenKind::Shl, "<<", loc);
             }
             return make(TokenKind::Lt, "<", loc);
         case '>':
-            if (match('=')) return make(TokenKind::GtEq, ">=", loc);
+            if (match('=')) {
+                return make(TokenKind::GtEq, ">=", loc);
+            }
             if (match('>')) {
-                if (match('=')) return make(TokenKind::ShrEq, ">>=", loc);
+                if (match('=')) {
+                    return make(TokenKind::ShrEq, ">>=", loc);
+                }
                 return make(TokenKind::Shr, ">>", loc);
             }
             return make(TokenKind::Gt, ">", loc);
         case '&':
-            if (match('&')) return make(TokenKind::AmpAmp, "&&", loc);
-            if (match('=')) return make(TokenKind::AmpEq, "&=", loc);
+            if (match('&')) {
+                return make(TokenKind::AmpAmp, "&&", loc);
+            }
+            if (match('=')) {
+                return make(TokenKind::AmpEq, "&=", loc);
+            }
             return make(TokenKind::Amp, "&", loc);
         case '|':
-            if (match('|')) return make(TokenKind::PipePipe, "||", loc);
-            if (match('=')) return make(TokenKind::PipeEq, "|=", loc);
+            if (match('|')) {
+                return make(TokenKind::PipePipe, "||", loc);
+            }
+            if (match('=')) {
+                return make(TokenKind::PipeEq, "|=", loc);
+            }
             return make(TokenKind::Pipe, "|", loc);
         case '^':
-            if (match('=')) return make(TokenKind::CaretEq, "^=", loc);
+            if (match('=')) {
+                return make(TokenKind::CaretEq, "^=", loc);
+            }
             return make(TokenKind::Caret, "^", loc);
         default: {
             std::string msg = "unexpected character '";
@@ -666,4 +796,4 @@ Token Lexer::scanToken() {
     }
 }
 
-}  // namespace ldp3
+}  // namespace polaron

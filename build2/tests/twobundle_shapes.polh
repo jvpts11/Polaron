@@ -1,0 +1,12 @@
+program TwoBundleShapes;
+
+public bundle TwoBundleShapes {
+    public namespace Shapes {
+        public class Shape extends Object {
+            public method area() returns int;
+        }
+        public class Square extends Shape {
+            public override method area() returns int;
+        }
+    }
+}

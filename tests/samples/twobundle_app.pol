@@ -1,0 +1,38 @@
+import TwoBundleShapes.Shapes.Square;
+import TwoBundleAnimals.Animals.Dog;
+import System.IO.Console;
+program TwoBundleApp;
+
+// TWO SEPARATELY BUILT LIBRARIES IN ONE PROGRAM. This did not work, and "did not work" was not a wrong
+// answer at run time -- the compiler refused outright:
+//
+//     error: bundle '...' has a vtable layout incompatible with another depended-on bundle;
+//     they cannot be linked together
+//
+// Slots are numbered GLOBALLY BY METHOD NAME, which is what lets one object satisfy several interfaces
+// through a single table. The cost is that the numbering depends on which bundles are in the room: a
+// library of shapes compiled alone gives `area` slot 0, a library of animals compiled alone gives
+// `speak` slot 0, and neither can move. For a language that ships binary libraries, refusing the
+// combination is not a rough edge -- it is the feature not existing.
+//
+// The fix is to TRANSLATE rather than to standardise. This compile is the only place that sees both
+// bundles, so its merged numbering is the authority (`--emit-vtable-slots`), and each dependency's
+// baked tables are permuted into it as its code is extracted (`--extract-code --remap-slots`). Nothing
+// about dispatch changes.
+//
+// Both calls below are virtual and each goes through a table its own bundle baked before this program
+// existed. Getting the permutation wrong does not fail to link; it calls the wrong slot.
+//
+// Prints: 4 7
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Square* s = new Square() on heap;
+                Dog* d = new Dog() on heap;
+                System.IO.Console.printf("%d %d\n", s.area(), d.speak());
+                return;
+            }
+        }
+    }
+}

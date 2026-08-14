@@ -5,7 +5,7 @@
 
 #include "parser/ast.h"
 
-namespace ldp3 {
+namespace polaron {
 
 // Monomorphizes generic classes: replaces each `class Box<T>` template with one
 // concrete copy per instantiation used in the program (Box<int>, Box<double>,
@@ -47,4 +47,4 @@ ast::StmtPtr cloneStmtDeep(const ast::Stmt* s);
 ast::MemberPtr cloneMemberSubst(const ast::MemberDecl* m,
                                 const std::map<std::string, std::string>& subst);
 
-}  // namespace ldp3
+}  // namespace polaron

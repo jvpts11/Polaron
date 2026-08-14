@@ -1,0 +1,41 @@
+// A freestanding program that DECLARES ITS OWN HEAP and uses it.
+//
+// The heap class makes codegen emit `define @__polaron_malloc` bridging to it. The driver, meanwhile,
+// supplies a bare-metal allocator to any image that needs one -- and decided that by looking for the
+// symbol's NAME in the IR, so it saw codegen's own definition and supplied a second one. The image
+// then failed to link on `duplicate symbol: __polaron_malloc`, which is the one kind of program the
+// shim exists to leave alone.
+//
+// The right question is whether the module DECLARES the symbol without defining it, which is what
+// the `__polaron_check_live` test beside it had always asked.
+program FsHeap freestanding;
+
+public bundle Kernel {
+    public namespace Boot {
+        public heap class Heap {
+            private static mutable address next;
+            private static mutable boolean armed;
+            public static method allocate(address size) returns address {
+                if (!Heap.armed) { Heap.next = 1048576; Heap.armed = true; }
+                address at = Heap.next;
+                Heap.next = Heap.next + size + 15;
+                return at;
+            }
+            public static method release(address p) returns void { return; }
+        }
+
+        public class Cell {
+            public mutable int value;
+            public constructor Cell(int v) { this.value = v; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Cell c = new Cell(7) on heap;
+                int v = c.value;
+                delete c;
+                return v;
+            }
+        }
+    }
+}

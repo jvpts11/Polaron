@@ -1,0 +1,141 @@
+    public namespace App {
+        // Circuit breaker (spec 34): trips to open after threshold consecutive failures and rejects calls
+        // until a cooldown passes, then allows one trial (half-open); a success closes it again, a failure
+        // reopens it. Time is passed in explicitly (milliseconds) so behavior is deterministic and testable.
+        public class CircuitBreaker {
+            private mutable int st;          // 0=closed, 1=open, 2=half-open
+            private mutable int failures;
+            private mutable int threshold;
+            private mutable long openUntil;
+            private mutable long cooldownMs;
+            public constructor CircuitBreaker(int threshold, long cooldownMs) {
+                this.st = 0;
+                this.failures = 0;
+                this.threshold = threshold;
+                this.openUntil = 0;
+                this.cooldownMs = cooldownMs;
+            }
+            public method allow(long now) returns boolean {
+                if (this.st == 1) {
+                    if (now >= this.openUntil) { this.st = 2; return true; }
+                    return false;
+                }
+                return true;
+            }
+            public method recordSuccess() returns void { this.st = 0; this.failures = 0; return; }
+            public method recordFailure(long now) returns void {
+                this.failures = this.failures + 1;
+                if (this.st == 2) { this.st = 1; this.openUntil = now + this.cooldownMs; return; }
+                if (this.failures >= this.threshold) { this.st = 1; this.openUntil = now + this.cooldownMs; }
+                return;
+            }
+            public method getState() returns int { return this.st; }
+        }
+        // Token-bucket rate limiter (spec 34): tokens refill continuously at ratePerMs up to capacity; each
+        // acquire spends tokens if enough are available. Time is passed in explicitly (milliseconds).
+        public class TokenBucket {
+            private mutable double tokens;
+            private mutable double capacity;
+            private mutable double ratePerMs;
+            private mutable long last;
+            public constructor TokenBucket(double capacity, double ratePerMs) {
+                this.tokens = capacity;
+                this.capacity = capacity;
+                this.ratePerMs = ratePerMs;
+                this.last = 0;
+            }
+            public method tryAcquire(long now, int count) returns boolean {
+                double elapsed = cast<double>(now - this.last);
+                this.tokens = this.tokens + elapsed * this.ratePerMs;
+                if (this.tokens > this.capacity) { this.tokens = this.capacity; }
+                this.last = now;
+                if (this.tokens >= cast<double>(count)) { this.tokens = this.tokens - cast<double>(count); return true; }
+                return false;
+            }
+        }
+        // A tiny stack virtual machine (spec 34): executes a flat program of (opcode, operand) pairs against
+        // an operand stack and a small memory. Opcodes: 0 HALT, 1 PUSH v, 2 STORE a, 3 LOAD a, 4 MUL, 5 SUB,
+        // 6 JZ t, 7 JMP t, 8 ADD (jump targets are instruction indices). run returns the top of the stack.
+        public class StackVm {
+            public static method run(int[] prog, int plen, int memSize) returns int {
+                mutable int[] stack = new int[256]();
+                mutable int sp = 0;
+                mutable int[] mem = new int[memSize]();
+                mutable int ip = 0;
+                mutable boolean running = true;
+                while (running && ip * 2 < plen) {
+                    int op = prog[ip * 2];
+                    int arg = prog[ip * 2 + 1];
+                    if (op == 0) { running = false; }
+                    else {
+                        if (op == 1) { stack[sp] = arg; sp = sp + 1; ip = ip + 1; }
+                        else { if (op == 2) { sp = sp - 1; mem[arg] = stack[sp]; ip = ip + 1; }
+                        else { if (op == 3) { stack[sp] = mem[arg]; sp = sp + 1; ip = ip + 1; }
+                        else { if (op == 4) { sp = sp - 1; int b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] * b; sp = sp + 1; ip = ip + 1; }
+                        else { if (op == 5) { sp = sp - 1; int b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] - b; sp = sp + 1; ip = ip + 1; }
+                        else { if (op == 6) { sp = sp - 1; if (stack[sp] == 0) { ip = arg; } else { ip = ip + 1; } }
+                        else { if (op == 7) { ip = arg; }
+                        else { if (op == 8) { sp = sp - 1; int b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] + b; sp = sp + 1; ip = ip + 1; }
+                        else { ip = ip + 1; } } } } } } } }
+                    }
+                }
+                if (sp > 0) { return stack[sp - 1]; }
+                return 0;
+            }
+        }
+        // Named feature flags (spec 34): enable/disable toggles by name, defaulting to off when unset.
+        public class FeatureFlags {
+            private mutable HashMap<String, boolean> flags;
+            public constructor FeatureFlags() { this.flags = new HashMap<String, boolean>() on heap; }
+            public method enable(String name) returns void { this.flags.put(name, true); return; }
+            public method disable(String name) returns void { this.flags.put(name, false); return; }
+            public method isEnabled(String name) returns boolean {
+                if (this.flags.containsKey(name)) { return this.flags.get(name); }
+                return false;
+            }
+        }
+        // A fixed-capacity pool of reusable integer ids (spec 34): acquire hands out a fresh or recycled id
+        // (or -1 when exhausted); recycle returns one for reuse. inUse reports the live count.
+        public class ObjectPool {
+            private mutable int[] freeIds;
+            private mutable int freeCount;
+            private mutable int nextId;
+            private mutable int capacity;
+            public constructor ObjectPool(int capacity) {
+                this.capacity = capacity; this.freeIds = new int[capacity](); this.freeCount = 0; this.nextId = 0;
+            }
+            public method acquire() returns int {
+                if (this.freeCount > 0) { this.freeCount = this.freeCount - 1; return this.freeIds[this.freeCount]; }
+                if (this.nextId < this.capacity) { int id = this.nextId; this.nextId = this.nextId + 1; return id; }
+                return -1;
+            }
+            public method recycle(int id) returns void {
+                if (this.freeCount < this.capacity) { this.freeIds[this.freeCount] = id; this.freeCount = this.freeCount + 1; }
+                return;
+            }
+            public method inUse() returns int { return this.nextId - this.freeCount; }
+        }
+        // Fixed-point money as integer cents (spec 34), avoiding floating-point rounding. plus/minus/times
+        // return new amounts; format renders a signed dollar string like "$12.34".
+        public class Money {
+            private mutable long cents;
+            public constructor Money(long cents) { this.cents = cents; }
+            public method getCents() returns long { return this.cents; }
+            public method plus(Money o) returns Money { return new Money(this.cents + o.getCents()) on heap; }
+            public method minus(Money o) returns Money { return new Money(this.cents - o.getCents()) on heap; }
+            public method times(int factor) returns Money { return new Money(this.cents * cast<long>(factor)) on heap; }
+            public method format() returns String {
+                mutable long c = this.cents;
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                if (c < 0) { sb.appendChar('-'); c = 0 - c; }
+                sb.appendChar('$');
+                long dollars = c / 100;
+                long rem = c % 100;
+                sb.appendInt(cast<int>(dollars));
+                sb.appendChar('.');
+                if (rem < 10) { sb.appendChar('0'); }
+                sb.appendInt(cast<int>(rem));
+                return sb.toString();
+            }
+        }
+    }

@@ -1,0 +1,18 @@
+import System.Test.Test;
+program MyLib;
+
+public bundle MyLib {
+    public namespace Core {
+        public class Adder {
+            public static method add(int a, int b) returns int {
+                return a + b;
+            }
+
+            [Test]
+            public static method add_works() returns void {
+                Test.assertEqual(Adder.add(2, 2), 4);
+                return;
+            }
+        }
+    }
+}

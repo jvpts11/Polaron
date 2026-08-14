@@ -10,7 +10,7 @@
 #include "diag/diagnostic.h"
 #include "diag/render.h"
 
-namespace ldp3 {
+namespace polaron {
 namespace {
 
 void layoutError(const SourceLocation& loc, const std::string& message) {
@@ -25,10 +25,18 @@ void layoutError(const SourceLocation& loc, const std::string& message) {
 // version allocates a ByteSize on the heap to express a constant, which cannot happen at all in a
 // block that runs during the build. Reading the unit here costs nothing and works in both modes.
 long long unitScale(const std::string& suffix) {
-    if (suffix == "bytes") return 1;
-    if (suffix == "kilobytes") return 1024LL;
-    if (suffix == "megabytes") return 1024LL * 1024;
-    if (suffix == "gigabytes") return 1024LL * 1024 * 1024;
+    if (suffix == "bytes") {
+        return 1;
+    }
+    if (suffix == "kilobytes") {
+        return 1024LL;
+    }
+    if (suffix == "megabytes") {
+        return 1024LL * 1024;
+    }
+    if (suffix == "gigabytes") {
+        return 1024LL * 1024 * 1024;
+    }
     return 0;  // not a byte unit
 }
 
@@ -40,13 +48,21 @@ bool byteCount(const ast::Expr* e, long long& out) {
         return true;
     }
     const auto* call = dynamic_cast<const ast::CallExpr*>(e);
-    if (call == nullptr || call->args.size() != 1) return false;
+    if (call == nullptr || call->args.size() != 1) {
+        return false;
+    }
     const auto* name = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
-    if (name == nullptr) return false;
+    if (name == nullptr) {
+        return false;
+    }
     const long long scale = unitScale(name->name);
-    if (scale == 0) return false;
+    if (scale == 0) {
+        return false;
+    }
     long long n = 0;
-    if (!byteCount(call->args[0].get(), n)) return false;
+    if (!byteCount(call->args[0].get(), n)) {
+        return false;
+    }
     out = n * scale;
     return true;
 }
@@ -55,20 +71,30 @@ bool byteCount(const ast::Expr* e, long long& out) {
 // statement is not a call on the pronoun.
 std::string arrangementCall(const ast::Stmt* st, const ast::CallExpr*& call) {
     const auto* es = dynamic_cast<const ast::ExprStmt*>(st);
-    if (es == nullptr) return "";
+    if (es == nullptr) {
+        return "";
+    }
     call = dynamic_cast<const ast::CallExpr*>(es->expr.get());
-    if (call == nullptr) return "";
+    if (call == nullptr) {
+        return "";
+    }
     const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-    if (mem == nullptr) return "";
+    if (mem == nullptr) {
+        return "";
+    }
     const auto* recv = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-    if (recv == nullptr || recv->name != "itself") return "";
+    if (recv == nullptr || recv->name != "itself") {
+        return "";
+    }
     return mem->member;
 }
 
 }  // namespace
 
 bool readArrangement(const ast::ClassDecl& layout, Arrangement& out) {
-    if (layout.onArrange == nullptr) return true;   // a layout may carry only helpers
+    if (layout.onArrange == nullptr) {
+        return true;  // a layout may carry only helpers
+    }
     bool ok = true;
     for (const ast::StmtPtr& st : layout.onArrange->statements) {
         const ast::CallExpr* call = nullptr;
@@ -108,19 +134,28 @@ bool readArrangement(const ast::ClassDecl& layout, Arrangement& out) {
 
 bool resolveLayouts(ast::Program& program) {
     std::map<std::string, const ast::ClassDecl*> layouts;
-    for (const auto& b : program.bundles)
-        for (const auto& ns : b.namespaces)
-            for (const auto& c : ns.classes)
-                if (c.isLayout) layouts[c.name] = &c;
-    if (layouts.empty()) return true;
+    for (const auto& b : program.bundles) {
+        for (const auto& ns : b.namespaces) {
+            for (const auto& c : ns.classes) {
+                if (c.isLayout) {
+                    layouts[c.name] = &c;
+                }
+            }
+        }
+    }
+    if (layouts.empty()) {
+        return true;
+    }
 
     bool ok = true;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) {
                 if (c.isLayout) {
                     Arrangement discard;
-                    if (!readArrangement(c, discard)) ok = false;
+                    if (!readArrangement(c, discard)) {
+                        ok = false;
+                    }
                     // A layout refines a layout and nothing else: `extends` on one names a kind of
                     // thing it is, and the only kind it can be is another arrangement. `Object` is
                     // skipped because every declaration is given it implicitly -- it is the absence
@@ -141,10 +176,11 @@ bool resolveLayouts(ast::Program& program) {
                     const std::string& name = c.interfaces[i];
                     if (layouts.count(name) == 0) {
                         keptInterfaces.push_back(name);
-                        if (i < c.interfaceTypeArgs.size())
+                        if (i < c.interfaceTypeArgs.size()) {
                             keptTypeArgs.push_back(c.interfaceTypeArgs[i]);
-                        else
+                        } else {
                             keptTypeArgs.emplace_back();
+                        }
                         continue;
                     }
                     // Only a value aggregate has a layout of its own at the point of use. A class is
@@ -164,7 +200,9 @@ bool resolveLayouts(ast::Program& program) {
                 c.interfaces = std::move(keptInterfaces);
                 c.interfaceTypeArgs = std::move(keptTypeArgs);
             }
+        }
+    }
     return ok;
 }
 
-}  // namespace ldp3
+}  // namespace polaron

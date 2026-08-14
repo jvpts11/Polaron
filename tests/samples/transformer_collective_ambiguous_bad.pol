@@ -1,0 +1,43 @@
+program TransformerCollectiveAmbiguousBad;
+
+// A DIAMOND. `A` reaches `D` through `B` and through `C`, both in exactly two hops, and the two
+// routes do not agree -- `C` adds one on the way. A composed conversion may not pick between them.
+//
+// Refused rather than resolved, which is the same rule the rest of the feature already follows:
+// there is never an implicit winner and never an order. Two transformers bringing the same member
+// is settled by the type; two equally short routes are settled by writing the conversion.
+public bundle Main {
+    public namespace App {
+        public collective transformer TScaler {
+            public procedure into<each Other>() returns Other;
+        }
+        public class A applies TScaler {
+            public mutable int v;
+            public constructor A(int d) { this.v = d; }
+            public procedure into<B>() returns B { return new B(itself.v); }
+            public procedure into<C>() returns C { return new C(itself.v); }
+        }
+        public class B applies TScaler {
+            public mutable int v;
+            public constructor B(int d) { this.v = d; }
+            public procedure into<D>() returns D { return new D(itself.v); }
+            public procedure into<A>() returns A { return new A(itself.v); }
+        }
+        public class C applies TScaler {
+            public mutable int v;
+            public constructor C(int d) { this.v = d; }
+            public procedure into<D>() returns D { return new D(itself.v + 1); }
+            public procedure into<A>() returns A { return new A(itself.v); }
+        }
+        public class D applies TScaler {
+            public mutable int v;
+            public constructor D(int d) { this.v = d; }
+            public procedure into<A>() returns A { return new A(itself.v); }
+            public procedure into<B>() returns B { return new B(itself.v); }
+            public procedure into<C>() returns C { return new C(itself.v); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

@@ -1,0 +1,24 @@
+import System.Memory.Units.kilobytes;
+program RegionBadRingDelete;
+
+public bundle main {
+    public namespace app {
+
+        public class Log {
+            public mutable int id;
+            public constructor Log(int i) {
+                this.id = i;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                ring region h = itself.allocate(1 kilobytes).accepts({Log});
+                Log* e = new Log(1) in region h;
+                delete e from region h;   // Polaron-1715: a ring auto-evicts
+                release region h;
+                return;
+            }
+        }
+    }
+}

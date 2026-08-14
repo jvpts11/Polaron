@@ -1,0 +1,29 @@
+import System.IO.Console;
+import System.Collections.WeightedGraph;
+import System.Collections.LruCache;
+program GraphLru;
+
+// Graph algorithms and an LRU cache (spec 34.1) in pure Polaron. Prints:
+//   dist=0,3,1,4,7 mst=7
+//   g1=10 miss2=-1 g3=30 g1b=10 cnt=2
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable WeightedGraph g = new WeightedGraph(5) on heap;
+                g.addEdge(0, 1, 4); g.addEdge(0, 2, 1); g.addEdge(2, 1, 2);
+                g.addEdge(1, 3, 1); g.addEdge(2, 3, 5); g.addEdge(3, 4, 3);
+                int[] d = g.dijkstra(0);
+                System.IO.Console.printf("dist=%d,%d,%d,%d,%d mst=%d\n", d[0], d[1], d[2], d[3], d[4], g.mstWeight());
+
+                mutable LruCache c = new LruCache(2) on heap;
+                c.put(1, 10); c.put(2, 20);
+                int g1 = c.get(1);          // touch 1 -> 2 becomes least-recent
+                c.put(3, 30);               // evicts 2
+                System.IO.Console.printf("g1=%d miss2=%d g3=%d g1b=%d cnt=%d\n",
+                    g1, c.get(2), c.get(3), c.get(1), c.count());
+                return;
+            }
+        }
+    }
+}

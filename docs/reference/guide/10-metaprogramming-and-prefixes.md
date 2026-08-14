@@ -1,6 +1,6 @@
 # 10. Compile-Time, Reflection & Universal Prefixes
 
-Most of what you have read so far describes what an LDP3 program *does* when it runs. This chapter
+Most of what you have read so far describes what a Polaron program *does* when it runs. This chapter
 is about the two moments that bracket runtime: the work the compiler performs *before* the program
 exists, and the questions the program can ask *about itself* while it runs. Between those two poles
 sits a small, deliberately chosen vocabulary of **universal prefixes** — six keywords that attach to
@@ -24,7 +24,7 @@ step, and §10.6 collects the answers in one place.
 
 ## 10.1 Compile-time evaluation
 
-LDP3 has a real compile-time evaluator. It is not a preprocessor and it is not string substitution:
+Polaron has a real compile-time evaluator. It is not a preprocessor and it is not string substitution:
 it interprets a genuine subset of the language — arithmetic, comparisons, locals, loops, recursion,
 and calls to other compile-time functions — and folds the result straight into the binary. Anything
 it computes has **zero runtime cost**, because by the time the program runs the answer is already a
@@ -32,12 +32,12 @@ constant baked into the machine code.
 
 ### Named constants with `fixed`
 
-The simplest compile-time value is a named constant. In LDP3 a constant is introduced with the
+The simplest compile-time value is a named constant. In Polaron a constant is introduced with the
 `fixed` keyword (the specification's prose calls this a `const`; the compiler spells the keyword
 `fixed`). A `fixed` value must be initialized by a constant expression, and the analyzer evaluates
 that expression at compile time.
 
-```ldp3
+```polaron
 public class Cfg {
     public static fixed int MAX = 100;
     public static fixed int DOUBLED = Cfg.MAX * 2;   // 200, folded at compile time
@@ -55,7 +55,7 @@ Inside a method you can force a local to be computed at compile time by prefixin
 `comptime`. The initializer runs during compilation, and the variable becomes a constant you can use
 in constant contexts — for example, as an array length:
 
-```ldp3
+```polaron
 comptime int x = 2 + 3 * 4;   // evaluated to 14 during compilation
 int[] buf = new int[x]();     // a comptime value is a valid array size
 ```
@@ -67,7 +67,7 @@ is the mechanism behind precomputed lookup tables, perfect hashes, and build-tim
 evaluator handles recursion, iteration, and local mutation — it is a small interpreter, not a peephole
 folder:
 
-```ldp3
+```polaron
 public class Math {
     public static comptime method fib(int n) returns int {
         if (n < 2) { return n; }
@@ -89,7 +89,7 @@ public class Math {
 The evaluator is numeric over both integers and doubles, so a `comptime` method may mix an integer
 loop counter with a floating-point accumulator and return a `double` constant:
 
-```ldp3
+```polaron
 public static comptime method scale(int n, double factor) returns double {
     mutable double acc = 0.0;
     for (mutable int i = 0; i < n; i++) { acc = acc + factor; }
@@ -108,7 +108,7 @@ A `comptime if` chooses its branch at compile time from a constant condition, an
 branch that is not taken produces *no code at all*. This is how you compile out debug instrumentation
 or select a code path per build without a runtime test:
 
-```ldp3
+```polaron
 public class Cfg {
     public static fixed boolean DEBUG = false;
     public static fixed int LEVEL = 2;
@@ -131,7 +131,7 @@ Because the evaluator understands string operations too, a `comptime` method can
 compile-time DSL with no runtime parser. The classic use is validating a query, a regex, or a format
 string before the program ever runs. Here a comptime method counts the columns in a CSV header:
 
-```ldp3
+```polaron
 public static comptime method colCount(comptime string s) returns int {
     mutable int n = 1;
     mutable int i = 0;
@@ -147,7 +147,7 @@ public static fixed int COLS = Sql.colCount("id,name,email,age");   // folds to 
 The argument to a `comptime` parameter must itself be a compile-time constant. Passing a runtime
 value is a compile error, which keeps the "no runtime parser" guarantee honest:
 
-```ldp3
+```polaron
 mutable string r = "hello";
 int n = Sql.len(r);   // error: the argument to a comptime parameter must be constant
 ```
@@ -160,7 +160,7 @@ receiver, returns nothing and emits nothing. It shares the one compile-time eval
 `comptime` and `fixed`, so its condition may reference named constants *and* call `comptime`
 methods:
 
-```ldp3
+```polaron
 demand 2 + 2 == 4 otherwise "math is broken";
 demand 16 * 1024 < 65536 otherwise "the buffer does not fit";
 demand Math.fib(10) == 55 otherwise "fib(10) must be 55";   // calls a comptime method
@@ -172,7 +172,7 @@ size is settled the moment the declaration is parsed. That is what lets a table 
 several enums hold its own arithmetic together — give each family a slice of one index space and
 the offset of a family is the size of everything before it, so
 
-```ldp3
+```polaron
 demand 3 == Fruit.count() otherwise "crates are numbered after the fruit";
 ```
 
@@ -182,7 +182,7 @@ stops the build when somebody adds a fourth fruit, instead of silently renumberi
 If the condition holds, nothing at all reaches the executable. If it fails, compilation stops:
 
 ```
-error[LDP3-0806]: demand not met: fib(10) must be 55
+error[Polaron-0806]: demand not met: fib(10) must be 55
 ```
 
 The `otherwise` text is the **reason**, not a restatement of the condition. The condition already
@@ -203,7 +203,7 @@ The compile-time evaluator is bounded. A recursion or step budget protects the c
 programs that would otherwise loop forever at build time — an unbounded `comptime` recursion is
 rejected with a clear error rather than hanging the compiler:
 
-```ldp3
+```polaron
 public static comptime method spin(int n) returns int {
     return M.spin(n) + 1;   // unbounded: rejected by the step budget, does not hang the build
 }
@@ -218,10 +218,10 @@ compile-time machinery. They emit no runtime support code, so they are fully ava
 ## 10.2 Reflection
 
 Reflection is the runtime counterpart to compile-time evaluation: instead of the compiler asking
-questions about your program, the *program* asks questions about its own types while it runs. LDP3
+questions about your program, the *program* asks questions about its own types while it runs. Polaron
 exposes this through the `reflect` namespace, and using any of it requires an explicit import:
 
-```ldp3
+```polaron
 import reflect;
 ```
 
@@ -236,7 +236,7 @@ which exist in the bare-metal subset. Attempting it there fails with
 The entry point is `reflect.typeOf<T>()`, which returns a `Type` token describing a class. From a
 `Type` you can read the class name as a real `String`:
 
-```ldp3
+```polaron
 Type t = reflect.typeOf<Dog>();
 System.IO.Console.println(t.name());    // Dog
 String n = t.name();
@@ -248,7 +248,7 @@ System.IO.Console.printf("len=%d\n", n.length());   // 3
 A `Type` exposes the class's declared methods and fields. You can enumerate them by name through the
 count/index pair, or take them as collections:
 
-```ldp3
+```polaron
 Type t = reflect.typeOf<Dog>();
 System.IO.Console.printf("methods=%d fields=%d\n", t.methodCount(), t.fieldCount());
 for (mutable int i = 0; i < t.methodCount(); i++) {
@@ -264,7 +264,7 @@ A `Field` token reads and writes a field on a live object. Values cross the refl
 as `Object` — a reference passes through directly, and a primitive is boxed, so you cast it back on
 the way out:
 
-```ldp3
+```polaron
 Point p = new Point() on heap;
 Field f = reflect.typeOf<Point>().fields().get(0);
 int before = cast<int>(f.get(p));   // read, unboxing the Object
@@ -278,7 +278,7 @@ A `Method` token dispatches a call by name (scoped to no-argument methods), and 
 allocates an object and runs its no-argument constructor, returning it as `Object`. Together they let
 you drive an object known only at runtime:
 
-```ldp3
+```polaron
 Type t = reflect.typeOf<Dog>();
 Dog d = cast<Dog>(t.instantiate());   // dynamic construction via the no-arg ctor
 Method m = t.method("bark");
@@ -293,7 +293,7 @@ Both `Type` and `Method` report the annotations applied to them, as an `ArrayLis
 `Annotation` exposes its `name()`. This is what makes user annotations useful — a framework can
 discover them at runtime and act on them:
 
-```ldp3
+```polaron
 Type t = reflect.typeOf<Widget>();
 ArrayList<Annotation> anns = t.annotations();
 System.IO.Console.printf("count=%d\n", anns.size());
@@ -310,7 +310,7 @@ tagged `[Audited]` and wrap it.
 ## 10.3 Annotations
 
 Annotations attach declarative metadata to a class, method, or field without changing what that
-declaration *does*. LDP3 keeps a sharp line between language concepts and user metadata: built-in
+declaration *does*. Polaron keeps a sharp line between language concepts and user metadata: built-in
 modifiers such as `override`, `final`, `static`, and `volatile` are **keywords**, while everything
 else that decorates a declaration is an annotation.
 
@@ -319,7 +319,7 @@ else that decorates a declaration is an annotation.
 An annotation may be written either way, and the two are **exactly** equivalent — same meaning, same
 parsed result:
 
-```ldp3
+```polaron
 [Test]                      @Test
 [Ignore(reason: "flaky")]   @Ignore(reason: "flaky")
 [MaxLength(value: 100)]     @MaxLength(value: 100)
@@ -339,7 +339,7 @@ form — `[[no_bounds_check]]` (§11). Attributes instruct the compiler; annotat
 You declare an annotation with the `annotation` keyword. Its body lists fields, each of which is
 either required or carries a `default`:
 
-```ldp3
+```polaron
 public annotation MaxLength {
     int value;
     String errorMessage default "too long";   // optional, has a default
@@ -351,7 +351,7 @@ public annotation MaxLength {
 Applications sit on the line above the thing they annotate and pass fields by name. They can decorate
 a class, a method, or a field:
 
-```ldp3
+```polaron
 [MaxLength(value: 100, errorMessage: "name too long")]
 public class UserName {
     [MaxLength(value: 50)]
@@ -372,7 +372,7 @@ annotations ride along on the declaration and become visible to reflection (§10
 compile-time processing — the hook by which an annotation can drive code generation during the build
 rather than being read back at runtime:
 
-```ldp3
+```polaron
 [CompileTimeProcessor]
 public annotation Marker { }
 ```
@@ -388,7 +388,7 @@ Constructors and destructors describe the life of an *instance*. Lifecycle hooks
 the *class itself* — moments that have nothing to do with any single object. They are written as bare
 named blocks in the class body, with no visibility and no parameters:
 
-```ldp3
+```polaron
 public class Server {
     onClassLoad          { System.IO.Console.printf("Server loaded\n"); }
     onFirstInstance      { System.IO.Console.println("pool setup"); }
@@ -415,7 +415,7 @@ object and tears down when the last one dies, without any global flag written by
 
 ### `unimport` and `reimport`: hot unloading a class
 
-LDP3's managed runtime can unload a class's *code* at runtime and load it back. This is the
+Polaron's managed runtime can unload a class's *code* at runtime and load it back. This is the
 basis for hot-reload and plugin systems.
 
 **`unimport X`** does two things: it marks the class dead, and it physically overwrites its
@@ -425,7 +425,7 @@ instance — is caught by the alive guard and throws `UnimportedTypeException`, 
 branches into the destroyed code. `onClassUnload` (above) fires just before the code is torn
 out.
 
-```ldp3
+```polaron
 import System.Runtime.UnimportedTypeException;
 
 unimport Dog;
@@ -446,7 +446,7 @@ runs a block in the **old** code to produce a validation value, and the matching
 **new** code and compares its result, bit for bit, with the saved value. On a match the program
 continues; on a mismatch the `onFailure` block runs instead.
 
-```ldp3
+```polaron
 int salt = 7;
 var proof = unimport Plugin expecting using salt {
     return Plugin.fingerprint(salt);
@@ -483,7 +483,7 @@ it respects visibility.
 The most common form is `cascade delete`, which frees an object and everything reachable through
 ownership. A plain `delete` would run only the outermost destructor and leak the rest:
 
-```ldp3
+```polaron
 Outer o = new Outer() on heap;
 cascade delete o;   // runs ~Outer, then ~Mid, then ~Leaf — the whole owned graph
 ```
@@ -492,7 +492,7 @@ This works through *inherited* ownership too: if a value field is declared in a 
 cascade-deleting a derived object still frees it. Ownership propagates the same way through owned
 pointers, and the visited-set makes even a cyclic owned graph free exactly once:
 
-```ldp3
+```polaron
 Node* a = new Node() on heap;   // a -> b -> c -> a, an owned cycle
 // ... link them ...
 b.owner = a;                    // an `external` pointer: an association, skipped
@@ -506,7 +506,7 @@ between regions (§ regions), so the graph survives even after the source region
 plain operation can be cascaded across the graph — `cascade validate(x)` checks each node's
 invariant, and `cascade Console.println(x)` describes every node:
 
-```ldp3
+```polaron
 cascade clone a into c;                          // c is an independent deep copy of a's graph
 cascade move t from region old to region fresh;  // t and its Leaf now live in `fresh`
 cascade validate(a);                             // check the invariant of every node
@@ -525,7 +525,7 @@ runtime and is rejected there along with plain `unimport`.
 requiring explicit cleanup, and — importantly — an eternal object's destructor is **not** run at
 scope end:
 
-```ldp3
+```polaron
 public class Res {
     public destructor ~Res() returns void { System.IO.Console.printf("freed\n"); }
     public method use() returns int { return 1; }
@@ -546,7 +546,7 @@ by *omitting* cleanup code, so it adds no runtime machinery and is available in 
 runs it at most once. A `lazy` binding that is never touched is never initialized at all — which is
 exactly the point when the initializer is expensive:
 
-```ldp3
+```polaron
 lazy Thing a = new Thing(1) on heap;   // deferred
 lazy Thing b = new Thing(2) on heap;   // never accessed -> never constructed
 int x = a.get();   // first access triggers construction of `a` now
@@ -556,7 +556,7 @@ int y = a.get();   // already built -> not repeated
 The same applies to a class **field**: a `lazy` field is built on first access rather than during
 construction, so building a `Holder` does not yet build its `Thing`:
 
-```ldp3
+```polaron
 public class Holder {
     private lazy Thing* thing = new Thing() on heap;   // not built at construction
     public method use() returns int { return this.thing.val(); }   // first call builds it
@@ -585,7 +585,7 @@ duplicated, folded, or removed. Every read performs a real load and every write 
 store. This does not change the result of a single-threaded program, but it is essential for
 memory-mapped I/O and hardware registers, whose values change outside the program's control:
 
-```ldp3
+```polaron
 public class Device {
     private volatile mutable int reg;
     public method poke(int v) returns void { this.reg = v; }   // every store really happens
@@ -601,7 +601,7 @@ d.poke(42);   // the first write is NOT folded away, even though it looks dead
 is always executed and never optimized away; and a `volatile region` marks every access to objects
 placed in it as volatile — the natural way to describe an MMIO window:
 
-```ldp3
+```polaron
 public class Sensor {
     public volatile method read() returns int { return 42; }   // never inlined or elided
 }
@@ -619,7 +619,7 @@ r.ctrl = 7;   // a volatile store into mapped memory
 `final` freezes something. On a field or a local it means explicitly immutable — the value is set
 once and can never be reassigned (this is the deliberate opposite of `mutable`):
 
-```ldp3
+```polaron
 public class C {
     private final int x;
     public constructor C() { this.x = 5; }   // set once, in the constructor
@@ -631,7 +631,7 @@ On a class, `final` forbids inheritance; on a method, it forbids overriding. Use
 compile like any other declaration; misused, they are hard errors — extending a `final class` or
 overriding a `final method` is rejected:
 
-```ldp3
+```polaron
 public final class Color {
     public final method value() returns int { return this.rgb; }
 }

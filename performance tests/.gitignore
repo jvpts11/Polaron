@@ -1,4 +1,4 @@
-# Build artifacts from the benchmarks -- only the .ldp3 sources + README are tracked.
+# Build artifacts from the benchmarks -- only the .pol sources + README are tracked.
 *.ll
 *.exe
 *.obj

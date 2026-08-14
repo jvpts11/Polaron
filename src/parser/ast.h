@@ -13,7 +13,7 @@
 // (see --dump-ast). The shape grows phase by phase; for now it covers the
 // program/bundle/namespace/class/method hierarchy plus the expression
 // statements the hello-world walking skeleton needs.
-namespace ldp3::ast {
+namespace polaron::ast {
 
 // Mangled name of a generic instantiation: Box<int> -> "Box$int",
 // Pair<int, double> -> "Pair$int$double". No args returns the base unchanged.
@@ -37,10 +37,13 @@ inline std::string mangleGeneric(const std::string& base, const std::vector<std:
             };
             bool wb = (p == 0) || !ident(enc[p - 1]);
             bool we = (p + 6 >= enc.size()) || !ident(enc[p + 6]);
-            if (wb && we) enc.replace(p, 6, "String");
+            if (wb && we) {
+                enc.replace(p, 6, "String");
+            }
         }
-        for (std::size_t p = enc.find("[]"); p != std::string::npos; p = enc.find("[]", p))
+        for (std::size_t p = enc.find("[]"); p != std::string::npos; p = enc.find("[]", p)) {
             enc.replace(p, 2, "~arr");
+        }
         s += "$" + enc;
     }
     return s;
@@ -71,14 +74,16 @@ struct TypeRef {
 // The `[]...[]` suffix for `dims` array dimensions (e.g. 2 -> "[][]").
 inline std::string arrayDimsSuffix(int dims) {
     std::string s;
-    for (int i = 0; i < dims; ++i) s += "[]";
+    for (int i = 0; i < dims; ++i) {
+        s += "[]";
+    }
     return s;
 }
 
 // Canonical type string of a TypeRef, matching the form sema/codegen key on:
 // generic args mangled into the name, then [] / * / & markers (e.g. "Box$int*", "int[][]").
 // A tuple type already carries its full spelling in `name` (e.g. "(int,int)").
-// LDP3 spells qualities as PREFIX WORDS, not suffix punctuation (`nullable T`, `mutable T`): a prefix
+// Polaron spells qualities as PREFIX WORDS, not suffix punctuation (`nullable T`, `mutable T`): a prefix
 // says what kind of thing is coming before you read it, which is why the language has almost no suffixes.
 // The canonical form keeps that shape -- "nullable Dog*", never "Dog*?".
 //
@@ -112,12 +117,16 @@ inline std::string canonicalType(const TypeRef& t) {
 // funcptr<...>`). These recover / strip it so every substring-splitter (codegen + sema) stays in
 // sync; a plain funcptr (no leading '$') is returned unchanged. `inner` = text between funcptr< and >.
 inline std::string funcptrWorld(const std::string& inner) {  // "" if none; else e.g. "unknown:pe"
-    if (inner.empty() || inner[0] != '$') return "";
+    if (inner.empty() || inner[0] != '$') {
+        return "";
+    }
     std::size_t c = inner.find(',');
     return inner.substr(1, (c == std::string::npos ? inner.size() : c) - 1);
 }
 inline std::string funcptrBody(const std::string& inner) {   // `inner` with any "$<conv>," removed
-    if (inner.empty() || inner[0] != '$') return inner;
+    if (inner.empty() || inner[0] != '$') {
+        return inner;
+    }
     std::size_t c = inner.find(',');
     return c == std::string::npos ? std::string() : inner.substr(c + 1);
 }
@@ -157,15 +166,21 @@ struct FloatLiteralExpr : Expr {
 inline bool intLiteralNeeds64(const std::string& lexeme) {
     std::string s;
     for (char c : lexeme) {
-        if (c == '_' || c == 'L' || c == 'l') continue;
+        if (c == '_' || c == 'L' || c == 'l') {
+            continue;
+        }
         s += c;
     }
     std::size_t start = 0;
     int bitsPerDigit = 0;
     if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { start = 2; bitsPerDigit = 4; }
     else if (s.size() >= 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) { start = 2; bitsPerDigit = 1; }
-    if (bitsPerDigit == 0) return false;      // decimal: its value already decides, and it cannot lie
-    while (start < s.size() && s[start] == '0') ++start;   // leading zeros are not significant
+    if (bitsPerDigit == 0) {
+        return false;  // decimal: its value already decides, and it cannot lie
+    }
+    while (start < s.size() && s[start] == '0') {
+        ++start;  // leading zeros are not significant
+    }
     return (s.size() - start) * static_cast<std::size_t>(bitsPerDigit) > 32;
 }
 
@@ -249,7 +264,7 @@ struct UnaryExpr : Expr {
 };
 
 // The stdlib's BUILTIN STATIC CLASSES: types whose static methods are compiler intrinsics rather
-// than LDP3 code. Written down ONCE, for the same reason as the predicate below -- two copies of a
+// than Polaron code. Written down ONCE, for the same reason as the predicate below -- two copies of a
 // list like this are a defect waiting for the day they disagree, and that day already came: the
 // monomorphizer had its own copy, so a class declaring a generic `read<T>` rewrote every
 // `Raw.read<int>` in the program into a builtin that does not exist.
@@ -280,8 +295,11 @@ inline const std::vector<BuiltinStaticClass>& builtinStaticClasses() {
     return kAll;
 }
 inline bool isBuiltinStaticClassName(const std::string& n) {
-    for (const BuiltinStaticClass& b : builtinStaticClasses())
-        if (n == b.name) return true;
+    for (const BuiltinStaticClass& b : builtinStaticClasses()) {
+        if (n == b.name) {
+            return true;
+        }
+    }
     return n == "reflect";  // a builtin NAMESPACE rather than a class, but calls on it read the same
 }
 
@@ -289,7 +307,11 @@ inline bool isBuiltinStaticClassName(const std::string& n) {
 // copies of this predicate would eventually disagree about, which is why there is one and both the
 // analyzer and the code generator call it.
 inline bool isUnsignedIntName(const std::string& t) {
-    return t.rfind("uint", 0) == 0 || t == "address" || t == "ubyte" || t == "ushort" || t == "ulong";
+    // Every address is unsigned, the narrow ones included: there is no negative address, and a SIGNED
+    // 16-bit one would sign-extend on the way to a wider type -- turning 0xFFF0 into
+    // 0xFFFFFFFFFFFFFFF0, which is the whole class of bug these types exist to make unwritable.
+    return t.rfind("uint", 0) == 0 || t == "address" || t == "ubyte" || t == "ushort" ||
+           t == "ulong" || t == "halfaddress" || t == "shortaddress" || t == "byteaddress";
 }
 
 // What a field contributes to a type's IDENTITY -- the generated equalsKey/hash/compareTo, and the
@@ -307,9 +329,15 @@ enum class KeyFieldKind {
     Nested,  // a struct/record of the above: recurse in declaration order
 };
 inline KeyFieldKind keyFieldKind(const TypeRef& t, const std::set<std::string>& valueTypeNames) {
-    if (t.isArray || t.isPointer || t.isRef || t.isNullable) return KeyFieldKind::None;
-    if (t.name == "String") return KeyFieldKind::Text;
-    if (valueTypeNames.count(t.name) > 0) return KeyFieldKind::Nested;
+    if (t.isArray || t.isPointer || t.isRef || t.isNullable) {
+        return KeyFieldKind::None;
+    }
+    if (t.name == "String") {
+        return KeyFieldKind::Text;
+    }
+    if (valueTypeNames.count(t.name) > 0) {
+        return KeyFieldKind::Nested;
+    }
     static const std::set<std::string> scalars = {
         "byte", "ubyte", "short", "ushort", "int", "uint", "long", "ulong", "address",
         "smallfloat", "float", "double", "quadruple", "char", "boolean",
@@ -325,10 +353,15 @@ inline KeyFieldKind keyFieldKind(const TypeRef& t, const std::set<std::string>& 
 // idiom there is, and `(0 - 4096)` is a BinaryExpr of two literals. A rule that exempted only single
 // literals would reject exactly the code it was written to keep working.
 inline bool isLiteralOnlyExpr(const Expr& e) {
-    if (dynamic_cast<const IntLiteralExpr*>(&e) != nullptr) return true;
-    if (const auto* u = dynamic_cast<const UnaryExpr*>(&e)) return isLiteralOnlyExpr(*u->operand);
-    if (const auto* b = dynamic_cast<const BinaryExpr*>(&e))
+    if (dynamic_cast<const IntLiteralExpr*>(&e) != nullptr) {
+        return true;
+    }
+    if (const auto* u = dynamic_cast<const UnaryExpr*>(&e)) {
+        return isLiteralOnlyExpr(*u->operand);
+    }
+    if (const auto* b = dynamic_cast<const BinaryExpr*>(&e)) {
         return isLiteralOnlyExpr(*b->lhs) && isLiteralOnlyExpr(*b->rhs);
+    }
     return false;
 }
 
@@ -589,7 +622,7 @@ struct SnapshotIntoStmt : Stmt {
 };
 
 // `restore k into W;` / `restore k into region W;` -- put W back the way k found it. The destructors
-// of everything allocated since the capture run FIRST; see runtime/ldp3_region_core.hpp.
+// of everything allocated since the capture run FIRST; see runtime/polaron_region_core.hpp.
 struct RestoreStmt : Stmt {
     std::string region;
     ExprPtr snapshot;
@@ -973,7 +1006,7 @@ struct MethodDecl : MemberDecl {
     bool isAsync = false;     // spec 20.2: returns a Task<T>; body becomes a state machine
     bool isVolatile = false;  // spec 37.5: always executed; never inlined or optimized away
     bool isDeprecated = false;  // spec 14.2: every call site gets a warning
-    bool isExtern = false;    // spec 26: an external C function (no LDP3 body); links to a C symbol
+    bool isExtern = false;    // spec 26: an external C function (no Polaron body); links to a C symbol
     bool isVariadic = false;  // spec 26: an extern C function with a trailing `...` (e.g. printf)
     // spec 36: `naked` -- no prologue/epilogue is emitted; the body is raw assembly that owns the machine
     // state exactly as the hardware handed it over (a reset vector with no stack, a syscall entry running
@@ -1006,6 +1039,16 @@ struct MethodDecl : MemberDecl {
     // would silently change what `method foo<T>()` means in another file. Whoever designs the
     // relation decides whether it is per-target; whoever uses it writes nothing extra.
     bool isEachFamily = false;
+    // Non-empty on a member copied out of a `freestanding` transformer, naming it. The bare-metal
+    // subset is then applied to THIS body even when the program around it is hosted, which is the
+    // whole point of the modifier: the author of the transformer learns, rather than the author of
+    // the kernel that applies it.
+    std::string freestandingFrom;
+    // Set on a per-target conversion the compiler COMPOSED rather than the programmer wrote, naming
+    // the intermediate types it went through ("Fahrenheit" for Celsius -> Fahrenheit -> Kelvin).
+    // Only a `collective` transformer produces these, and they are listed in the generated docs --
+    // a derived conversion that nobody can see is a conversion nobody can audit.
+    std::vector<std::string> composedVia;
     // spec 22.6 generators: a method whose body yields. The synthesis pass (monomorphize) turns the
     // original method into a factory returning a synthesized Iterator class, and parks the original
     // body in a hidden twin flagged here. Codegen emits that twin as four raw functions
@@ -1014,6 +1057,14 @@ struct MethodDecl : MemberDecl {
     std::string genElem;  // the element type T of the Iterator<T> the generator produces
     std::string genSym;   // symbol prefix of its four raw functions, e.g. "Primes$upTo"
     std::string externConvention;  // "cdecl"/"stdcall"/"fastcall" when isExtern
+    // `symbol("...")`: the linker name, when it differs from the Polaron name.
+    //
+    // Without this the C symbol IS the method's name, so binding `SDL_CreateWindow` forced a Polaron
+    // method to be called `SDL_CreateWindow` -- foreign naming pushed into Polaron source, which is
+    // the one thing the object model is meant to keep out. It has to be a string and not an
+    // identifier: a mangled C++ symbol (`?f@@YAXXZ`, `_ZN3Foo3barEv`) is not an identifier in any
+    // language, and being able to paste one here is what makes `cppdecl` usable without a mangler.
+    std::string externSymbol;
     std::string name;
     std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
     // spec 15.2: constraints on those parameters -- `clamp<T extends Numeric>` -> [{"T","Numeric"}].
@@ -1022,7 +1073,7 @@ struct MethodDecl : MemberDecl {
     std::vector<Param> params;
     TypeRef returnType;
     std::vector<TypeRef> throwsTypes;  // `throws(...)` declared exceptions (spec 21.1)
-    // region-binder escape summary, so it survives across compilation units in the .ldh. Each entry is a
+    // region-binder escape summary, so it survives across compilation units in the .polh. Each entry is a
     // pair (paramIndex, targetSlot) meaning "parameter paramIndex is stored into targetSlot", where slot
     // -1 = the receiver (`this`) and j>=0 = parameter j. Emitted as `escapes(i>t, ...)`; parsed back on
     // import; computed by the analyzer for local methods (written back here for emission).
@@ -1117,6 +1168,38 @@ struct ClassDecl {
     bool isTransformer = false;
     bool isMutualTransformer = false;     // `mutual`: a pair must be symmetric, and it is checked
     bool isExplicitTransformer = false;   // `explicit`: only applied directly, never transported
+    // `collective`: the relation ranges over EVERY type that applies this transformer, not over a
+    // declared pair. `mutual` says a pair is symmetric; `collective` says the appliers form one
+    // transformation set, so each of them can become any of the others. What makes it affordable
+    // rather than N-squared is that the missing conversions are COMPOSED along the ones written:
+    // three types need three procedures, not six.
+    bool isCollectiveTransformer = false;
+    // `freestanding`: the bodies obey the bare-metal subset, checked at the transformer instead of
+    // in somebody else's kernel. Without it a transformer whose body interpolates a string or throws
+    // compiles perfectly here and fails three layers down, on a line its reader never wrote.
+    bool isFreestandingTransformer = false;
+    // `transformer T satisfies I` -- whoever applies T implements I, and T's procedures are the
+    // implementation. A separate word from `implements` because it is a separate act: the transformer
+    // is never instantiated, so it cannot itself satisfy anything; what it does is make a promise ON
+    // BEHALF OF the types that apply it. Without this clause the common case -- give me the code AND
+    // make me polymorphic -- is written twice on every applying type, with nothing saying the second
+    // half answers the first.
+    std::vector<std::string> satisfies;
+    std::vector<SourceLocation> satisfiesLocs;
+    // A TRANSFORMER'S OWN SOURCE, kept verbatim so it can cross a bundle boundary.
+    //
+    // A `.polh` carries signatures, because that is all a caller of a compiled method needs. A
+    // transformer is not compiled: it is expanded, and what the applying type receives is the BODY.
+    // So a header that carried only its signatures would ship half the feature -- sockets would work
+    // and every free implementation would vanish. The declaration has no runtime existence at all,
+    // which is exactly why shipping its text is the honest thing rather than a shortcut: its source
+    // IS its interface, the way a header-only template's is.
+    //
+    // Captured at parse time rather than printed back from the AST, because there is no AST-to-source
+    // printer in this compiler and a second one written for this would drift from what the parser
+    // accepts. What is stored is what was written.
+    std::string sourceText;
+    SourceLocation declEnd;   // the closing brace, so the span above can be sliced
     // The transformers this type applies. A separate clause from `implements` on purpose: the class
     // line runs identity -> obligation -> equipment. `implements` is a promise made to the outside
     // world; `applies` is equipment, purely additive, and nobody outside needs to know about it.
@@ -1145,6 +1228,14 @@ struct ClassDecl {
     // to allocate from, so `new T() on heap` (and dynamic arrays) route to its static allocate/release.
     // Exactly one per program. It is legitimately static: the allocator IS the bottom of the memory
     // system, so it cannot own heap state -- the same reason the physical frame allocator is static.
+    // `region class A`: every instance comes from ONE region owned by the type, and that region holds
+    // nothing else. The class is implicitly `sealed` -- a fixedslot region has one slot size, and a
+    // subclass with more fields does not fit it.
+    // `class Sdl library SDL2` -- the logical name of the foreign library this class's externs live in.
+    // Logical because the real file differs per platform (SDL2.lib, libSDL2-2.0.so.0), and that mapping
+    // belongs in the manifest rather than in the source.
+    std::string foreignLibrary;
+    bool isRegionClass = false;
     bool isHeap = false;
     bool isUnique = false;                // `unique class` -- single live reference
     bool isPartitionable = false;         // `partitionable class` -- fields movable separately (spec 19.9)
@@ -1188,6 +1279,12 @@ struct EnumDecl {
     // the ones that were forgotten, instead of quietly requiring a `default` that swallows the
     // constant added next year.
     bool isSealed = false;
+    // The transformers this enum applies. An enum is the flagship of the totality rule -- `Errno ->
+    // int` is total because the constants are a finite list you own -- so it has to be able to take
+    // the clause that carries the conversion. Its constants stay ordinals; what it gains is members.
+    std::vector<std::string> applies;
+    std::vector<SourceLocation> appliesLocs;
+    std::vector<ClassDecl::ProcCall> procCalls;    // every `call T.p()` written in this enum's body
     // Catalogs implemented by this enum (spec 12.4): `enum Motor extends TipoMotor`.
     std::vector<std::string> extendsCatalogs;      // catalogs this enum satisfies (IS-A)
     std::vector<std::string> byCatalogValues;      // constants provided via `byCatalog { ... }`
@@ -1299,11 +1396,11 @@ struct Bundle {
     // token is worse than no caret -- it sends the reader to inspect something that is not the subject.
     SourceLocation nameLoc;
     bool isFreestanding = false;  // `bundle X freestanding { ... }` (spec 36)
-    bool isPrelude = false;       // from the embedded prelude, not user source; excluded from the .ldh
-    bool isImported = false;      // from a depended-on .ldb (parsed from its .ldh): types are visible,
-                                  // but bodies live in the .ldb -- sema skips them, codegen externs them
+    bool isPrelude = false;       // from the embedded prelude, not user source; excluded from the .polh
+    bool isImported = false;      // from a depended-on .polb (parsed from its .polh): types are visible,
+                                  // but bodies live in the .polb -- sema skips them, codegen externs them
     bool isDynamic = false;       // imported via --use-dynamic: loaded at runtime; codegen emits thunks
-                                  // that load the .ldb and resolve the symbol instead of linking it
+                                  // that load the .polb and resolve the symbol instead of linking it
     bool isRemote = false;        // imported via --use-remote (spec 2.8): its code runs in ANOTHER
                                   // PROGRAM; the compiler synthesizes IPC proxies for its classes
     std::vector<ImportDecl> imports;
@@ -1333,4 +1430,4 @@ struct Program {
     void dump(std::string& out, int indent) const;
 };
 
-}  // namespace ldp3::ast
+}  // namespace polaron::ast

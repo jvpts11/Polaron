@@ -1,0 +1,29 @@
+import System.IO.Console;
+import System.Math.GaussSolver;
+import System.Math.RunningStats;
+program MathSci;
+
+// Numerical linear algebra + streaming statistics (spec 34.6) in pure Polaron. Prints:
+//   x=1 y=3
+//   mean=5 popvar=4 n=8
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // 2x + y = 5 ; x + 3y = 10  =>  x = 1, y = 3
+                mutable double[] aug = new double[6]();
+                aug[0]=2.0; aug[1]=1.0; aug[2]=5.0;
+                aug[3]=1.0; aug[4]=3.0; aug[5]=10.0;
+                double[] x = GaussSolver.solve(aug, 2);
+                System.IO.Console.println($"x={x[0]} y={x[1]}");
+
+                mutable RunningStats st = new RunningStats() on heap;
+                int[] xs = new int[8]();
+                xs[0]=2; xs[1]=4; xs[2]=4; xs[3]=4; xs[4]=5; xs[5]=5; xs[6]=7; xs[7]=9;
+                for (mutable int i = 0; i < 8; i++) { st.add(cast<double>(xs[i])); }
+                System.IO.Console.println($"mean={st.getMean()} popvar={st.populationVariance()} n={st.count()}");
+                return;
+            }
+        }
+    }
+}

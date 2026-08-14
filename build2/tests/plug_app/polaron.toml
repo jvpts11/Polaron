@@ -1,0 +1,8 @@
+[polaron_project]
+[program]
+name = "consumer"
+version = "0.1.0"
+language_version = "1.0"
+entry = "src/main.pol"
+
+[dependencies]

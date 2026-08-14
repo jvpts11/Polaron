@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <sstream>
 
-namespace ldp3::lsp {
+namespace polaron::lsp {
 namespace {
 
 // ---- serialization ----
@@ -50,7 +50,9 @@ void dumpValue(std::string& o, const Json& j) {
         case Json::Type::Array: {
             o += '[';
             for (std::size_t i = 0; i < j.arr.size(); ++i) {
-                if (i != 0) o += ',';
+                if (i != 0) {
+                    o += ',';
+                }
                 dumpValue(o, j.arr[i]);
             }
             o += ']';
@@ -59,7 +61,9 @@ void dumpValue(std::string& o, const Json& j) {
         case Json::Type::Object: {
             o += '{';
             for (std::size_t i = 0; i < j.obj.size(); ++i) {
-                if (i != 0) o += ',';
+                if (i != 0) {
+                    o += ',';
+                }
                 dumpString(o, j.obj[i].first);
                 o += ':';
                 dumpValue(o, j.obj[i].second);
@@ -78,18 +82,32 @@ struct Parser {
     bool ok = true;
 
     void skipWs() {
-        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i;
+        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) {
+            ++i;
+        }
     }
 
     bool parseValue(Json& out) {
         skipWs();
-        if (i >= s.size()) return fail();
+        if (i >= s.size()) {
+            return fail();
+        }
         const char c = s[i];
-        if (c == '{') return parseObject(out);
-        if (c == '[') return parseArray(out);
-        if (c == '"') return parseString(out);
-        if (c == 't' || c == 'f') return parseBool(out);
-        if (c == 'n') return parseNull(out);
+        if (c == '{') {
+            return parseObject(out);
+        }
+        if (c == '[') {
+            return parseArray(out);
+        }
+        if (c == '"') {
+            return parseString(out);
+        }
+        if (c == 't' || c == 'f') {
+            return parseBool(out);
+        }
+        if (c == 'n') {
+            return parseNull(out);
+        }
         return parseNumber(out);
     }
 
@@ -100,19 +118,27 @@ struct Parser {
 
     bool parseString(Json& out) {
         std::string result;
-        if (!parseRawString(result)) return false;
+        if (!parseRawString(result)) {
+            return false;
+        }
         out = Json::of(std::move(result));
         return true;
     }
 
     bool parseRawString(std::string& result) {
-        if (i >= s.size() || s[i] != '"') return fail();
+        if (i >= s.size() || s[i] != '"') {
+            return fail();
+        }
         ++i;
         while (i < s.size()) {
             const char c = s[i++];
-            if (c == '"') return true;
+            if (c == '"') {
+                return true;
+            }
             if (c == '\\') {
-                if (i >= s.size()) return fail();
+                if (i >= s.size()) {
+                    return fail();
+                }
                 const char e = s[i++];
                 switch (e) {
                     case '"': result += '"'; break;
@@ -124,7 +150,9 @@ struct Parser {
                     case 'b': result += '\b'; break;
                     case 'f': result += '\f'; break;
                     case 'u': {
-                        if (i + 4 > s.size()) return fail();
+                        if (i + 4 > s.size()) {
+                            return fail();
+                        }
                         const int cp = std::stoi(s.substr(i, 4), nullptr, 16);
                         i += 4;
                         appendUtf8(result, cp);
@@ -158,7 +186,9 @@ struct Parser {
                                 s[i] == '.' || s[i] == 'e' || s[i] == 'E')) {
             ++i;
         }
-        if (i == start) return fail();
+        if (i == start) {
+            return fail();
+        }
         try {
             out = Json::of(std::stod(s.substr(start, i - start)));
         } catch (...) {
@@ -200,10 +230,14 @@ struct Parser {
         }
         while (true) {
             Json v;
-            if (!parseValue(v)) return false;
+            if (!parseValue(v)) {
+                return false;
+            }
             out.push(std::move(v));
             skipWs();
-            if (i >= s.size()) return fail();
+            if (i >= s.size()) {
+                return fail();
+            }
             if (s[i] == ',') {
                 ++i;
                 continue;
@@ -227,15 +261,23 @@ struct Parser {
         while (true) {
             skipWs();
             std::string key;
-            if (!parseRawString(key)) return false;
+            if (!parseRawString(key)) {
+                return false;
+            }
             skipWs();
-            if (i >= s.size() || s[i] != ':') return fail();
+            if (i >= s.size() || s[i] != ':') {
+                return fail();
+            }
             ++i;
             Json v;
-            if (!parseValue(v)) return false;
+            if (!parseValue(v)) {
+                return false;
+            }
             out.set(key, std::move(v));
             skipWs();
-            if (i >= s.size()) return fail();
+            if (i >= s.size()) {
+                return fail();
+            }
             if (s[i] == ',') {
                 ++i;
                 continue;
@@ -252,9 +294,14 @@ struct Parser {
 }  // namespace
 
 const Json* Json::get(const std::string& key) const {
-    if (type != Type::Object) return nullptr;
-    for (const auto& [k, v] : obj)
-        if (k == key) return &v;
+    if (type != Type::Object) {
+        return nullptr;
+    }
+    for (const auto& [k, v] : obj) {
+        if (k == key) {
+            return &v;
+        }
+    }
     return nullptr;
 }
 
@@ -276,8 +323,10 @@ std::string Json::dump() const {
 
 bool Json::parse(const std::string& text, Json& out) {
     Parser p{text};
-    if (!p.parseValue(out)) return false;
+    if (!p.parseValue(out)) {
+        return false;
+    }
     return p.ok;
 }
 
-}  // namespace ldp3::lsp
+}  // namespace polaron::lsp

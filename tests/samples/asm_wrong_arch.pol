@@ -1,0 +1,29 @@
+program AsmWrongArch;
+
+// An `asm` block names the architecture it is written for, and that name is CHECKED against the one
+// being built for.
+//
+// It used to be an unchecked "intent tag", so an x86 block compiled for ARM travelled all the way down
+// to clang's assembler and failed there with
+//     <inline asm>:1:3: error: too few operands for instruction
+// -- a message about a line of assembly, in a file called `<inline asm>`, with no path back to the
+// Polaron source that wrote it or the target that made it wrong. Porting a program consists mostly of
+// finding exactly these, so the compiler now says it itself, at the right line.
+//
+// Compiled for aarch64, this must fail with: this `asm` block is written for x86_64
+public bundle main {
+    public namespace app {
+        public class Cpu {
+            public static method halt() returns void {
+                asm("x86_64") { hlt }
+                return;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Cpu.halt();
+                return;
+            }
+        }
+    }
+}

@@ -6,7 +6,7 @@
 
 #include "lexer/lexer.h"
 
-using namespace ldp3;
+using namespace polaron;
 
 namespace {
 std::vector<TokenKind> kindsOf(std::string_view src) {

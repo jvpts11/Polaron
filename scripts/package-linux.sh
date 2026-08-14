@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build a self-contained Linux x86-64 distribution tarball for LDP3.
+# Build a self-contained Linux x86-64 distribution tarball for Polaron.
 #
-# Mirrors the self-contained Windows .msi: the tarball carries the LDP3 tools (ldp3, ldp3c, ldp3-studio,
-# ldp3-lsp), the prebuilt runtime, AND a bundled clang + lld so the golden rule holds -- a fresh Linux x64
-# machine can compile and run LDP3 with nothing pre-installed but its own libc (always present) and the
+# Mirrors the self-contained Windows .msi: the tarball carries the Polaron tools (polaron, polc, polaron-studio,
+# polaron-lsp), the prebuilt runtime, AND a bundled clang + lld so the golden rule holds -- a fresh Linux x64
+# machine can compile and run Polaron with nothing pre-installed but its own libc (always present) and the
 # usual libc dev files needed to link (present on any machine that compiles).
 #
 # The bundled clang is taken from --llvm-dir. Point it at a system LLVM (e.g. /usr/lib/llvm-21, glibc,
@@ -13,7 +13,7 @@
 #   scripts/package-linux.sh [--build-dir DIR] [--llvm-dir DIR] [--version V] [--out DIR]
 set -euo pipefail
 
-BUILD_DIR="${BUILD_DIR:-/root/ldp3-build-linux}"
+BUILD_DIR="${BUILD_DIR:-/root/polaron-build-linux}"
 LLVM_DIR="${LLVM_DIR:-/usr/lib/llvm-21}"
 VERSION="${VERSION:-0.2.0}"
 OUT="${OUT:-/tmp}"
@@ -28,16 +28,16 @@ while [ $# -gt 0 ]; do
 done
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-name="ldp3-${VERSION}-linux-x64"
+name="polaron-${VERSION}-linux-x64"
 stage="$(mktemp -d)/${name}"
 trap 'rm -rf "$(dirname "$stage")"' EXIT
 mkdir -p "$stage/bin" "$stage/lib"
 
-echo "==> staging LDP3 tools from $BUILD_DIR"
-for t in ldp3 ldp3c ldp3-studio ldp3-lsp; do
+echo "==> staging Polaron tools from $BUILD_DIR"
+for t in polaron polc polaron-studio polaron-lsp; do
   cp "$BUILD_DIR/bin/$t" "$stage/bin/$t"
 done
-cp "$BUILD_DIR/bin/libldp3_rt.a" "$stage/bin/libldp3_rt.a"   # sibling of ldp3, where the driver looks
+cp "$BUILD_DIR/bin/libpolaron_rt.a" "$stage/bin/libpolaron_rt.a"   # sibling of polaron, where the driver looks
 
 echo "==> bundling clang + lld from $LLVM_DIR"
 # The real clang binary (a versioned name like clang-21) and lld.
@@ -60,7 +60,7 @@ if [ -n "$res_src" ]; then
 fi
 
 # A thin wrapper so the driver's plain "clang" resolves to the bundled binary with its libraries on the
-# search path. The driver finds this as a sibling of ldp3 (see locateToolchain).
+# search path. The driver finds this as a sibling of polaron (see locateToolchain).
 cat > "$stage/bin/clang" <<'WRAP'
 #!/bin/sh
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -71,19 +71,19 @@ chmod +x "$stage/bin/clang"
 echo "==> writing install.sh"
 cat > "$stage/install.sh" <<'INSTALL'
 #!/usr/bin/env bash
-# Install LDP3 into a prefix and put its tools on PATH. Re-runnable.
+# Install Polaron into a prefix and put its tools on PATH. Re-runnable.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-PREFIX="${PREFIX:-$HOME/.local/share/ldp3}"
+PREFIX="${PREFIX:-$HOME/.local/share/polaron}"
 BINDIR="${BINDIR:-$HOME/.local/bin}"
 
-echo "installing LDP3 -> $PREFIX"
+echo "installing Polaron -> $PREFIX"
 mkdir -p "$PREFIX" "$BINDIR"
 cp -r "$here/bin" "$here/lib" "$PREFIX/"
 
 # Symlink the user-facing tools. /proc/self/exe resolves the symlink, so the driver still finds its
-# siblings (clang, libldp3_rt.a) in the real bin directory.
-for t in ldp3 ldp3c ldp3-studio ldp3-lsp; do
+# siblings (clang, libpolaron_rt.a) in the real bin directory.
+for t in polaron polc polaron-studio polaron-lsp; do
   ln -sf "$PREFIX/bin/$t" "$BINDIR/$t"
 done
 
@@ -93,17 +93,17 @@ case ":$PATH:" in
      echo "export PATH=\"$BINDIR:\$PATH\"" >> "$profile"
      echo "added $BINDIR to PATH in $profile (open a new shell, or: export PATH=\"$BINDIR:\$PATH\")" ;;
 esac
-echo "done. try: ldp3 --version"
+echo "done. try: polaron --version"
 INSTALL
 chmod +x "$stage/install.sh"
 
 cat > "$stage/README.txt" <<EOF
-LDP3 ${VERSION} — Linux x86-64 (self-contained)
+Polaron ${VERSION} — Linux x86-64 (self-contained)
 
 Run ./install.sh to install into ~/.local (no root needed), then open a new shell.
-  ldp3 new hello && cd hello && ldp3 run
+  polaron new hello && cd hello && polaron run
 
-Bundled: the LDP3 toolchain, runtime, and a clang/lld linker -- nothing else to install.
+Bundled: the Polaron toolchain, runtime, and a clang/lld linker -- nothing else to install.
 Compiling links against the system C library (present on every Linux); a bare machine still
 needs the usual libc dev files to link, like any C toolchain.
 EOF

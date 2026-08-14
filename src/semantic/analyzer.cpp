@@ -1,4 +1,6 @@
 #include "semantic/analyzer.h"
+#include "semantic/semutil.h"   // the pure helpers this file used to carry at its top
+#include "semantic/analyzer_private.h"  // what analyzer_typeof.cpp / analyzer_stmt.cpp share with it
 
 #include "semantic/asmcheck.h"
 #include "semantic/comptime.h"
@@ -10,327 +12,30 @@
 #include <utility>
 #include <vector>
 
-namespace ldp3 {
+namespace polaron {
 
-namespace {
-// Levenshtein edit distance, capped: the number of single-character insertions, deletions or
-// substitutions to turn `a` into `b`. Used only to say "did you mean X?" on a name error, so a small
-// classic DP is plenty -- the strings are identifiers.
-int editDistance(const std::string& a, const std::string& b) {
-    const std::size_t n = a.size(), m = b.size();
-    std::vector<int> prev(m + 1), cur(m + 1);
-    for (std::size_t j = 0; j <= m; ++j) prev[j] = static_cast<int>(j);
-    for (std::size_t i = 1; i <= n; ++i) {
-        cur[0] = static_cast<int>(i);
-        for (std::size_t j = 1; j <= m; ++j) {
-            const int cost = a[i - 1] == b[j - 1] ? 0 : 1;
-            cur[j] = std::min({prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost});
-        }
-        std::swap(prev, cur);
-    }
-    return prev[m];
-}
+// The pure helpers (did-you-mean, type-name questions, small AST walks) now live in semutil.{h,cpp}.
+// Pulled in unqualified so every call site below reads exactly as it did, and at namespace scope
+// rather than inside the anonymous namespace they used to fill -- the lookup rules make the two
+// equivalent, and only one of them says so.
+using namespace semutil;   // NOLINT(google-build-using-namespace): a deliberate re-export
 
-// The candidate closest to `typed`, or "" if none is close enough to be worth suggesting. The threshold
-// scales with the typed length -- one edit for a short name, up to a third of it for a long one -- so a
-// genuine typo is caught but two unrelated names are not paired up. A case-only difference always wins.
-std::string closestName(const std::string& typed, const std::vector<std::string>& candidates) {
-    if (typed.empty()) return "";
-    const int budget = std::max(1, static_cast<int>(typed.size()) / 3 + 1);
-    std::string best;
-    int bestDist = budget + 1;
-    for (const std::string& c : candidates) {
-        if (c == typed || c.empty()) continue;
-        const int d = editDistance(typed, c);
-        if (d < bestDist || (d == bestDist && c.size() == typed.size())) {
-            bestDist = d;
-            best = c;
-        }
-    }
-    return bestDist <= budget ? best : "";
-}
-
-// The "; did you mean 'X'?" suffix for a name error, or "" when nothing is close. Kept as a suffix so the
-// existing error text is untouched and an editor can pattern-match "did you mean '<name>'" to offer a fix.
-std::string didYouMean(const std::string& typed, const std::vector<std::string>& candidates) {
-    const std::string best = closestName(typed, candidates);
-    return best.empty() ? "" : "; did you mean '" + best + "'?";
-}
-
-// Array types are spelled with a trailing "[]" in the analyzer (e.g. "int[]").
-bool isArrayType(const std::string& t) {
-    return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;
-}
-std::string elementOf(const std::string& t) {
-    return isArrayType(t) ? t.substr(0, t.size() - 2) : t;
-}
-// Pointer/reference types end with '*' or '&' (e.g. "Dog*", "Dog&").
-bool isRefType(const std::string& t) {
-    return !t.empty() && (t.back() == '*' || t.back() == '&');
-}
-std::string baseType(const std::string& t) {
-    std::string s = ast::stripNullable(t);           // strip the `nullable ` prefix (spec 3.7)
-    // Strip ONE trailing pointer/reference marker: a generic with a pointer type argument mangles to a
-    // name ending in '*', and only the outermost '*' is the receiver's own pointer (see codegen baseType).
-    if (!s.empty() && (s.back() == '*' || s.back() == '&')) s.pop_back();
-    return s;
-}
-// True if the type is declared `nullable` (canonical "nullable T" -- a prefix word, not a suffix mark).
-inline bool isNullableType(const std::string& t) { return ast::typeIsNullable(t); }
-std::string typeRefStr(const ast::TypeRef& t) { return ast::canonicalType(t); }
-bool isFloatType(const std::string& t) {
-    // Normal names: smallfloat(16)/float(32)/double(64)/quadruple(128). Bit-counted float32/float64
-    // are freestanding-only aliases (enforced elsewhere).
-    return t == "float" || t == "float32" || t == "double" || t == "float64" ||
-           t == "smallfloat" || t == "quadruple";
-}
-bool isIntName(const std::string& t) {
-    // Normal: byte/short/int/long (signed), ubyte/ushort/uint/ulong (unsigned). Bit-counted
-    // int8..int64/uint8..uint64 are freestanding-only aliases (enforced elsewhere). address: raw.
-    return t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" ||
-           t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" || t == "short" ||
-           t == "long" || t == "byte" || t == "address" || t == "ubyte" || t == "ushort" ||
-           t == "uint" || t == "ulong";
-}
-unsigned intBits(const std::string& t) {
-    if (t == "int8" || t == "uint8" || t == "byte" || t == "ubyte") return 8;
-    if (t == "int16" || t == "uint16" || t == "short" || t == "ushort") return 16;
-    if (t == "int64" || t == "uint64" || t == "long" || t == "address" || t == "ulong") return 64;
-    return 32;
-}
-bool isNumeric(const std::string& t) { return isIntName(t) || isFloatType(t); }
-
-// Everything a bit field must be, checked where it is declared (spec 11.1).
-//
-// A bit field is not a narrower field -- it is a field with NO STORAGE OF ITS OWN, sharing a unit with
-// the fields declared beside it. That is what makes it able to describe a hardware register or a wire
-// format, and it is also what makes every one of these rules load-bearing rather than tidiness: a
-// declaration the compiler cannot lay out unambiguously becomes a struct whose bits are somewhere
-// other than where its author reads them, which is a bug no test of the program's logic can find.
-void checkBitField(const ast::ClassDecl& cls, const ast::FieldDecl& f,
-                   const std::function<void(const std::string&, const SourceLocation&)>& error) {
-    if (f.bitWidth <= 0) {
-        if (f.bitWidth == 0) return;  // no `: n` at all
-        error("bit field '" + f.name + "' must have a width of at least 1", f.loc);
-        return;
-    }
-    const std::string t = ast::canonicalType(f.type);
-    if (!isIntName(t) || t == "address") {
-        error("bit field '" + f.name + "' has type '" + t + "'; only integer types can be packed into "
-              "bits, because a bit field is a range of bits inside a shared unit rather than a value "
-              "with its own storage", f.loc);
-        return;
-    }
-    if (static_cast<unsigned>(f.bitWidth) > intBits(t)) {
-        error("bit field '" + f.name + "' is declared " + std::to_string(f.bitWidth) + " bits wide but "
-              "its type '" + t + "' holds only " + std::to_string(intBits(t)) + "; widen the type or "
-              "narrow the field", f.loc);
-        return;
-    }
-    if (f.isStatic)
-        error("bit field '" + f.name + "' cannot be static: a static field has one storage location of "
-              "its own, which is the opposite of sharing a unit with its neighbours", f.loc);
-    if (f.isPersistent)
-        error("bit field '" + f.name + "' cannot be persistent: a persistent field is stored "
-              "individually outside the object, so it has no unit to be packed into", f.loc);
-    if (f.isWeak || f.isUnique || f.isMovable)
-        error("bit field '" + f.name + "' cannot be weak, unique or movable: those describe ownership "
-              "of a referenced object, and a bit field holds bits", f.loc);
-    if (f.isLazy)
-        error("bit field '" + f.name + "' cannot be lazy: a lazy field uses its own null value to mean "
-              "'not yet computed', and a range of bits has no spare value to spend on that", f.loc);
-    if (cls.isUnion)
-        error("bit field '" + f.name + "' cannot be declared in a union: every union member starts at "
-              "offset 0, so there is no run of neighbours for it to pack with", f.loc);
-}
-
-// True if `init` is an integer literal (optionally negated) whose value fits the integer type
-// `target`. A compile-time literal coerces to a narrower type when it fits, so `byte b = 5;` and
-// `short s = 300;` are accepted without an explicit cast (the value is known at compile time).
-// The value of an integer literal, if that is what this expression is -- `-3`, `0x1f`, `0b1010`,
-// `1_000` and plain decimal, with the leading minus folded in. False for anything else, and false
-// for a literal too large to read, so a caller never acts on a number that was not there.
-//
-// Split out of `intLiteralFits` rather than copied: two readers of the same lexeme is two chances
-// to disagree about what `0b` means, and this project has paid for that shape more than once.
-bool readIntLiteral(const ast::Expr& e, long long& out) {
-    const ast::Expr* p = &e;
-    bool neg = false;
-    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(p); u != nullptr && u->op == "-") {
-        neg = true;
-        p = u->operand.get();
-    }
-    const auto* lit = dynamic_cast<const ast::IntLiteralExpr*>(p);
-    if (lit == nullptr) return false;
-    std::string s;
-    for (char c : lit->text) if (c != '_') s += c;
-    try {
-        if (s.size() > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B'))
-            out = std::stoll(s.substr(2), nullptr, 2);
-        else
-            out = std::stoll(s, nullptr, 0);  // 0x / 0 (octal) / decimal
-    } catch (...) {
-        return false;
-    }
-    if (neg) out = -out;
-    return true;
-}
-
-bool intLiteralFits(const ast::Expr& init, const std::string& target) {
-    if (!isIntName(target)) return false;
-    long long v = 0;
-    if (!readIntLiteral(init, v)) {
-        // Either not a literal at all, or one this cannot read. The second case must not block:
-        // codegen handles the value, and refusing here would reject a program for a limitation of
-        // this function.
-        return dynamic_cast<const ast::IntLiteralExpr*>(&init) != nullptr ||
-               dynamic_cast<const ast::UnaryExpr*>(&init) != nullptr;
-    }
-    const unsigned bits = intBits(target);
-    const bool uns = !target.empty() && target[0] == 'u';
-    if (uns) {
-        if (v < 0) return false;
-        if (bits >= 64) return true;
-        return static_cast<unsigned long long>(v) < (1ull << bits);
-    }
-    if (bits >= 64) return true;
-    const long long lo = -(1ll << (bits - 1));
-    const long long hi = (1ll << (bits - 1)) - 1;
-    return v >= lo && v <= hi;
-}
-
-// Whether an `await` (spec 20.2) appears anywhere in an expression / statement / block. Used to
-// reject awaiting while holding a mutex (spec 22), which would risk a deadlock.
-bool exprHasAwait(const ast::Expr* e);
-bool stmtHasAwait(const ast::Stmt* s);
-bool blockHasAwait(const ast::Block& b) {
-    for (const auto& s : b.statements) if (stmtHasAwait(s.get())) return true;
-    return false;
-}
-bool exprHasAwait(const ast::Expr* e) {
-    if (e == nullptr) return false;
-    if (dynamic_cast<const ast::AwaitExpr*>(e)) return true;
-    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e))
-        return exprHasAwait(b->lhs.get()) || exprHasAwait(b->rhs.get());
-    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e)) return exprHasAwait(u->operand.get());
-    if (const auto* c = dynamic_cast<const ast::CallExpr*>(e)) {
-        if (exprHasAwait(c->callee.get())) return true;
-        for (const auto& a : c->args) if (exprHasAwait(a.get())) return true;
-        return false;
-    }
-    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) return exprHasAwait(m->object.get());
-    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e))
-        return exprHasAwait(ix->array.get()) || exprHasAwait(ix->index.get());
-    if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(e))
-        return exprHasAwait(nc->lhs.get()) || exprHasAwait(nc->rhs.get());
-    if (const auto* ca = dynamic_cast<const ast::CastExpr*>(e)) return exprHasAwait(ca->operand.get());
-    return false;
-}
-bool stmtHasAwait(const ast::Stmt* s) {
-    if (s == nullptr) return false;
-    if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) return exprHasAwait(vd->init.get());
-    if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s)) return exprHasAwait(es->expr.get());
-    if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(s)) return exprHasAwait(rs->value.get());
-    if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) return exprHasAwait(as->value.get());
-    if (const auto* i = dynamic_cast<const ast::IfStmt*>(s))
-        return exprHasAwait(i->cond.get()) || blockHasAwait(i->thenBlock) ||
-               (i->elseBlock && blockHasAwait(*i->elseBlock));
-    if (const auto* w = dynamic_cast<const ast::WhileStmt*>(s))
-        return exprHasAwait(w->cond.get()) || blockHasAwait(w->body);
-    if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(s))
-        return blockHasAwait(d->body) || exprHasAwait(d->cond.get());
-    if (const auto* f = dynamic_cast<const ast::ForStmt*>(s)) return blockHasAwait(f->body);
-    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(s)) return blockHasAwait(fe->body);
-    if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(s)) return blockHasAwait(sy->body);
-    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(s)) {
-        if (blockHasAwait(tr->body)) return true;
-        for (const auto& c : tr->catches) if (blockHasAwait(c.body)) return true;
-        return tr->finallyBlock && blockHasAwait(*tr->finallyBlock);
-    }
-    return false;
-}
-
-// Bit-counted type names exist only in freestanding mode (the normal names are byte/short/int/long,
-// ubyte/ushort/uint/ulong, smallfloat/float/double/quadruple). Used to reject them in normal mode.
-bool isBitCountedName(const std::string& t) {
-    return t == "int8" || t == "int16" || t == "int32" || t == "int64" || t == "uint8" ||
-           t == "uint16" || t == "uint32" || t == "uint64" || t == "float32" || t == "float64";
-}
-// The normal-mode replacement to suggest for a bit-counted name.
-std::string normalTypeName(const std::string& t) {
-    if (t == "int8") return "byte";
-    if (t == "int16") return "short";
-    if (t == "int32") return "int";
-    if (t == "int64") return "long";
-    if (t == "uint8") return "ubyte";
-    if (t == "uint16") return "ushort";
-    if (t == "uint32") return "uint";
-    if (t == "uint64") return "ulong";
-    if (t == "float32") return "float";
-    if (t == "float64") return "double";
-    return t;
-}
-
-// SIMD vector types vec2/vec3/vec4 (float32 elements). Width (2/3/4) or 0; lane index or -1.
-int vecWidth(const std::string& t) {
-    if (t == "vec2") return 2;
-    if (t == "vec3") return 3;
-    if (t == "vec4") return 4;
-    return 0;
-}
-int vecLane(const std::string& m) {
-    if (m == "x" || m == "r") return 0;
-    if (m == "y" || m == "g") return 1;
-    if (m == "z" || m == "b") return 2;
-    if (m == "w" || m == "a") return 3;
-    return -1;
-}
-
-// Tuple types are spelled "(T0,T1,...)" (spec 22.5).
-bool isTupleType(const std::string& t) {
-    return t.size() >= 2 && t.front() == '(' && t.back() == ')';
-}
-// Splits the components of a tuple type, honoring nested parentheses (a
-// component may itself be a tuple) so commas inside nested tuples don't split.
-std::vector<std::string> tupleElems(const std::string& t) {
-    std::vector<std::string> out;
-    if (!isTupleType(t)) return out;
-    int depth = 0;
-    std::string cur;
-    for (std::size_t i = 1; i + 1 < t.size(); ++i) {
-        const char c = t[i];
-        if (c == '(') ++depth;
-        if (c == ')') --depth;
-        if (c == ',' && depth == 0) {
-            out.push_back(cur);
-            cur.clear();
-        } else {
-            cur += c;
-        }
-    }
-    if (!cur.empty()) out.push_back(cur);
-    return out;
-}
-}  // namespace
-
-// Compile-time constant evaluators (spec 28); defined further below, but declared
-// here so const registration (above their definitions) can call them.
-static bool evalConstInt(const ast::Expr& e, long long& out,
-                         const std::unordered_map<std::string, long long>* consts = nullptr,
-                         const std::unordered_map<std::string, const ast::MethodDecl*>* methods =
-                             nullptr,
-                         const std::unordered_map<std::string, double>* dconsts = nullptr,
-                         const std::unordered_map<std::string, std::vector<std::string>>* enums =
-                             nullptr);
-static bool evalConstDouble(const ast::Expr& e, double& out,
-                            const std::unordered_map<std::string, double>* dconsts,
-                            const std::unordered_map<std::string, long long>* iconsts,
-                            const std::unordered_map<std::string, const ast::MethodDecl*>* methods =
-                                nullptr,
-                            const std::unordered_map<std::string, std::vector<std::string>>* enums =
-                                nullptr);
+// The compile-time constant evaluators (spec 28) are declared in analyzer_private.h and defined
+// further below. They stopped being `static` when `analyzeStatement` moved to its own file: internal
+// linkage means no symbol, so a second translation unit could not call them at all.
 
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
+    // A body copied out of a `freestanding` transformer is checked against the bare-metal subset even
+    // in a hosted program, so without this the reader gets "not available in freestanding mode" about
+    // a program that is nothing of the sort. The test is on the phrase every one of those messages
+    // shares by construction, and it is deliberately narrow: only they need explaining, and an
+    // ordinary type error in the same body would be made worse by the sentence, not better.
+    if (!freestandingFrom_.empty() && message.find("freestanding mode") != std::string::npos) {
+        message += " -- and this body came from `freestanding transformer " + freestandingFrom_ +
+                   "`, which promises its bodies obey that subset. The restriction applies here even "
+                   "though this program is hosted, so the transformer's author hears it instead of "
+                   "whoever applies it in a kernel.";
+    }
     // No explicit code at the call-site: infer one from the message so the diagnostic is still rich (the
     // mapping is the one table in diag/catalog.cpp). An unmatched message stays a clean one-liner.
     const diag::Code code = diag::classify(message);
@@ -377,29 +82,65 @@ void SemanticAnalyzer::detectComefromLoops(const ast::Block& block) {
         if (const auto* cf = dynamic_cast<const ast::ComefromStmt*>(st)) {
             for (std::size_t j = i; j-- > 0;) {
                 const auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(block.statements[j].get());
-                if (lm == nullptr || lm->name != cf->name) continue;
+                if (lm == nullptr || lm->name != cf->name) {
+                    continue;
+                }
                 bool clear = true;
-                for (std::size_t k = j + 1; k < i && clear; ++k)
-                    if (stmtCanExit(block.statements[k].get())) clear = false;
-                if (clear)
+                for (std::size_t k = j + 1; k < i && clear; ++k) {
+                    if (stmtCanExit(block.statements[k].get())) {
+                        clear = false;
+                    }
+                }
+                if (clear) {
                     warn("comefrom '" + cf->name +
                              "' loops back with no exit between its label and itself: infinite loop "
                              "(spec 7.10)",
                          cf->loc);
+                }
                 break;
             }
         }
         auto rec = [&](const ast::Block& b) { detectComefromLoops(b); };
-        if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st)) { rec(iff->thenBlock); if (iff->elseBlock) rec(*iff->elseBlock); }
-        else if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) rec(w->body);
-        else if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) rec(d->body);
-        else if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) rec(f->body);
-        else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) rec(fe->body);
-        else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) { for (auto& c : sw->cases) rec(c.body); if (sw->defaultBody) rec(*sw->defaultBody); }
-        else if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) { for (auto& c : ms->cases) rec(c.body); if (ms->defaultBody) rec(*ms->defaultBody); }
-        else if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) { rec(tr->body); for (auto& c : tr->catches) rec(c.body); if (tr->finallyBlock) rec(*tr->finallyBlock); }
-        else if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) rec(df->body);
-        else if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) rec(us->body);
+        if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st)) {
+            rec(iff->thenBlock);
+            if (iff->elseBlock) {
+                rec(*iff->elseBlock);
+            }
+        } else if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) {
+            rec(w->body);
+        } else if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) {
+            rec(d->body);
+        } else if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) {
+            rec(f->body);
+        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) {
+            rec(fe->body);
+        } else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) {
+            for (auto& c : sw->cases) {
+                rec(c.body);
+            }
+            if (sw->defaultBody) {
+                rec(*sw->defaultBody);
+            }
+        } else if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) {
+            for (auto& c : ms->cases) {
+                rec(c.body);
+            }
+            if (ms->defaultBody) {
+                rec(*ms->defaultBody);
+            }
+        } else if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) {
+            rec(tr->body);
+            for (auto& c : tr->catches) {
+                rec(c.body);
+            }
+            if (tr->finallyBlock) {
+                rec(*tr->finallyBlock);
+            }
+        } else if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) {
+            rec(df->body);
+        } else if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) {
+            rec(us->body);
+        }
     }
 }
 
@@ -413,11 +154,17 @@ const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
     // Try the exact name first: a generic instance can have a trailing '*' that belongs to a type
     // argument (e.g. HashMap$int$Node* is HashMap<int,Node*>), which baseType would wrongly strip.
     const ClassInfo* c = lookupClass(className);
-    if (c == nullptr) c = lookupClass(baseType(className));  // else see through outer T* / T&
+    if (c == nullptr) {
+        c = lookupClass(baseType(className));  // else see through outer T* / T&
+    }
     while (c != nullptr) {
         auto it = c->fields.find(field);
-        if (it != c->fields.end()) return &it->second;
-        if (c->superclass.empty()) break;
+        if (it != c->fields.end()) {
+            return &it->second;
+        }
+        if (c->superclass.empty()) {
+            break;
+        }
         c = lookupClass(c->superclass);
     }
     return nullptr;
@@ -429,11 +176,19 @@ const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
 // the error site actually accepts.
 std::vector<std::string> SemanticAnalyzer::namesInScope() const {
     std::vector<std::string> out;
-    for (const auto& scope : scopes_)
-        for (const auto& [name, var] : scope) out.push_back(name);
-    for (const auto& [name, type] : constTypes_) out.push_back(name);
-    if (auto it = enums_.find(currentClass_); it != enums_.end())
-        for (const std::string& c : it->second) out.push_back(c);
+    for (const auto& scope : scopes_) {
+        for (const auto& [name, var] : scope) {
+            out.push_back(name);
+        }
+    }
+    for (const auto& [name, type] : constTypes_) {
+        out.push_back(name);
+    }
+    if (auto it = enums_.find(currentClass_); it != enums_.end()) {
+        for (const std::string& c : it->second) {
+            out.push_back(c);
+        }
+    }
     return out;
 }
 
@@ -442,10 +197,16 @@ std::vector<std::string> SemanticAnalyzer::namesInScope() const {
 std::vector<std::string> SemanticAnalyzer::fieldNames(const std::string& className) const {
     std::vector<std::string> out;
     const ClassInfo* c = lookupClass(className);
-    if (c == nullptr) c = lookupClass(baseType(className));
+    if (c == nullptr) {
+        c = lookupClass(baseType(className));
+    }
     while (c != nullptr) {
-        for (const auto& [name, info] : c->fields) out.push_back(name);
-        if (c->superclass.empty()) break;
+        for (const auto& [name, info] : c->fields) {
+            out.push_back(name);
+        }
+        if (c->superclass.empty()) {
+            break;
+        }
         c = lookupClass(c->superclass);
     }
     return out;
@@ -454,9 +215,13 @@ std::vector<std::string> SemanticAnalyzer::fieldNames(const std::string& classNa
 // spec 32.8: is `expr` a class's dispatch table (`Dog.methods`)? Returns the class name, or "".
 std::string SemanticAnalyzer::dispatchTableClass(const ast::Expr& expr) const {
     const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr);
-    if (mem == nullptr || mem->member != "methods") return "";
+    if (mem == nullptr || mem->member != "methods") {
+        return "";
+    }
     const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-    if (id == nullptr || lookupClass(id->name) == nullptr) return "";
+    if (id == nullptr || lookupClass(id->name) == nullptr) {
+        return "";
+    }
     return id->name;
 }
 
@@ -489,13 +254,16 @@ std::string SemanticAnalyzer::checkMethodPatch(const std::string& className,
         return "void";
     }
     std::string want = "function<" + m->returnType + "," + className;
-    for (const std::string& pt : m->paramTypes) want += "," + pt;
+    for (const std::string& pt : m->paramTypes) {
+        want += "," + pt;
+    }
     want += ">";
     const std::string got = typeOf(*call.args[1]);
-    if (!got.empty() && got != want)
+    if (!got.empty() && got != want) {
         error("the replacement for '" + className + "." + lit->value + "' must have type '" + want +
                   "' (the receiver, then the method's parameters); got '" + got + "'",
               call.args[1]->loc);
+    }
     patchedClasses_.insert(className);
     return "void";
 }
@@ -506,15 +274,23 @@ const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
     // Exact name first (a generic instance's trailing '*' may belong to a type argument, e.g.
     // HashMap$int$Node*); only then strip an outer pointer/reference marker.
     const ClassInfo* c = lookupClass(className);
-    if (c == nullptr) c = lookupClass(baseType(className));  // see through T* / T&
+    if (c == nullptr) {
+        c = lookupClass(baseType(className));  // see through T* / T&
+    }
     while (c != nullptr) {
         auto it = c->methods.find(method);
-        if (it != c->methods.end()) return &it->second;
+        if (it != c->methods.end()) {
+            return &it->second;
+        }
         for (const std::string& iface : c->interfaces) {
             const MethodInfo* m = findMethod(iface, method);
-            if (m != nullptr) return m;
+            if (m != nullptr) {
+                return m;
+            }
         }
-        if (c->superclass.empty()) break;
+        if (c->superclass.empty()) {
+            break;
+        }
         c = lookupClass(c->superclass);
     }
     // Every object is-a Object at runtime, so Object's universal methods (equals/hashCode/equalsKey/...)
@@ -526,7 +302,9 @@ const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
     if (objectFallback && className != "Object" && baseType(className) != "Object") {
         if (const ClassInfo* obj = lookupClass("Object")) {
             auto it = obj->methods.find(method);
-            if (it != obj->methods.end()) return &it->second;
+            if (it != obj->methods.end()) {
+                return &it->second;
+            }
         }
     }
     return nullptr;
@@ -535,8 +313,11 @@ const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
 // The enums that implement `catalog` (directly or through a catalog it extends), spec 12.4.
 std::vector<std::string> SemanticAnalyzer::catalogImplementers(const std::string& catalog) const {
     std::vector<std::string> out;
-    for (const auto& [name, _] : enums_)
-        if (isSubtype(name, catalog)) out.push_back(name);
+    for (const auto& [name, _] : enums_) {
+        if (isSubtype(name, catalog)) {
+            out.push_back(name);
+        }
+    }
     return out;
 }
 
@@ -545,29 +326,44 @@ std::vector<std::string> SemanticAnalyzer::catalogImplementers(const std::string
 // are 64-bit integers, the rule that separates them is new, and the whole point is that crossing
 // between them should be a thing you decided rather than a thing that happened.
 std::string SemanticAnalyzer::addressHint(const std::string& from, const std::string& to) const {
-    if (!isIntName(from) || !isIntName(to)) return "";
-    if ((from == "address") == (to == "address")) return "";
-    if (to == "address")
-        return ". An address is not an integer that happens to be 64 bits wide -- making one out of "
-               "a number is how a program reads memory nobody gave it. Write 'cast<address>(...)' if "
-               "that is what you mean";
-    return ". An address is not an integer that happens to be 64 bits wide -- storing one in a "
+    if (!isIntName(from) || !isIntName(to)) {
+        return "";
+    }
+    // The whole family, not only the 64-bit one: `half address`, `short address` and `byte address`
+    // are addresses that are narrower, never numbers that happen to hold one.
+    if (isAddressName(from) == isAddressName(to)) {
+        return "";
+    }
+    if (isAddressName(to)) {
+        return ". An address is not an integer that happens to be that wide -- making one out of "
+               "a number is how a program reads memory nobody gave it. Write 'cast<" + to +
+               ">(...)' if that is what you mean";
+    }
+    return ". An address is not an integer that happens to be that wide -- storing one in a "
            "number loses the fact that it points at something. Write 'cast<" + to +
            ">(...)' if that is what you mean";
 }
 
 bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& super, int depth) const {
-    if (sub == super) return true;
+    if (sub == super) {
+        return true;
+    }
     // Guard against a cyclic type graph (e.g. `catalog A extends B; B extends A`):
     // bound the recursion so a malformed program errors instead of overflowing.
-    if (depth > 256) return false;
+    if (depth > 256) {
+        return false;
+    }
     // null binds ONLY to a `nullable T` target -- never to a non-nullable type, whatever its kind
     // (spec 3.7 -- the core null-safety rule: non-null by default; `nullable` opts a type into null).
-    if (sub == "null") return isNullableType(super);
+    if (sub == "null") {
+        return isNullableType(super);
+    }
     // Nullability (spec 3.7): a `nullable T` value may not flow into a non-nullable target (you must
     // check it first); a non-null value flows freely into a `nullable T`. Compare the underlying T.
     if (isNullableType(sub) || isNullableType(super)) {
-        if (isNullableType(sub) && !isNullableType(super)) return false;
+        if (isNullableType(sub) && !isNullableType(super)) {
+            return false;
+        }
         auto strip = [](const std::string& s) {
             return ast::stripNullable(s);
         };
@@ -575,15 +371,23 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     }
     // String (immutable) and string (mutable) share a representation; they interconvert freely until
     // the immutability discipline is enforced (spec 4).
-    if ((sub == "String" || sub == "string") && (super == "String" || super == "string")) return true;
+    if ((sub == "String" || sub == "string") && (super == "String" || super == "string")) {
+        return true;
+    }
     // Every value is an Object (spec 3.4): a primitive becomes one by boxing, a class by inheritance
     // (every class now extends Object, handled by the hierarchy walk below).
-    if (super == "Object" && (isNumeric(sub) || sub == "boolean" || sub == "char")) return true;
+    if (super == "Object" && (isNumeric(sub) || sub == "boolean" || sub == "char")) {
+        return true;
+    }
     // An interface (and any class) is an Object too. Interfaces have no superclass chain to Object, so
     // the hierarchy walk below never reaches it; accept any known class/interface type directly.
-    if (super == "Object" && lookupClass(baseType(sub)) != nullptr) return true;
+    if (super == "Object" && lookupClass(baseType(sub)) != nullptr) {
+        return true;
+    }
     // int and float both widen to a float type (no implicit narrowing).
-    if (isFloatType(super) && isNumeric(sub)) return true;
+    if (isFloatType(super) && isNumeric(sub)) {
+        return true;
+    }
     // Integers widen to a wider integer (no implicit narrowing).
     if (isIntName(sub) && isIntName(super)) {
         // ...but `address` is not an integer that happens to be 64 bits wide, it is a machine
@@ -597,7 +401,13 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
         // say otherwise, and there is no allocator to have given you the address instead. Measured
         // before landing: the whole hosted world is TWELVE sites -- five across 380 samples and seven
         // in agents-exe -- against 210 in the pico kernel, which is what that split looks like.
-        if (!freestanding_ && (sub == "address") != (super == "address")) return false;
+        if (!freestanding_ && isAddressName(sub) != isAddressName(super)) {
+            return false;
+        }
+        // Within the family, an address still only widens: `byte address` -> `address` is fine and
+        // the reverse is a cast, exactly as for the numbers. The narrow forms are DOMAIN types (a
+        // real-mode offset, a zero page, a physical address stored narrow in a hardware structure),
+        // so a program that mixes two of them is saying something and should be made to say it.
         return intBits(sub) <= intBits(super);
     }
     // Pointer/reference compatibility follows the pointee (T*, T& and T mix
@@ -608,20 +418,25 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     // `ArrayListIterator<Node*>`, a value -- so stripping it produces a type that does not exist and the
     // hierarchy walk below finds nothing. findField already had to learn this; the same trap is here.
     if (isRefType(sub) || isRefType(super)) {
-        if (lookupClass(sub) == nullptr || lookupClass(super) == nullptr)
+        if (lookupClass(sub) == nullptr || lookupClass(super) == nullptr) {
             return isSubtype(baseType(sub), baseType(super), depth + 1);
+        }
     }
     // An enum is a subtype of every catalog it extends (spec 12.4), transitively
     // through catalog->catalog extends.
     if (auto ecit = enumCatalogs_.find(sub); ecit != enumCatalogs_.end()) {
         for (const std::string& cat : ecit->second) {
-            if (cat == super || isSubtype(cat, super, depth + 1)) return true;
+            if (cat == super || isSubtype(cat, super, depth + 1)) {
+                return true;
+            }
         }
     }
     // A catalog is a subtype of every catalog it extends.
     if (auto ccit = catalogs_.find(sub); ccit != catalogs_.end()) {
         for (const std::string& cat : ccit->second.extendsCatalogs) {
-            if (cat == super || isSubtype(cat, super, depth + 1)) return true;
+            if (cat == super || isSubtype(cat, super, depth + 1)) {
+                return true;
+            }
         }
     }
     // Generic variance (spec 15.3): two instantiations of the same generic relate per
@@ -636,7 +451,9 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
                 std::size_t i = 0;
                 while (i < s.size()) {
                     std::size_t j = s.find('$', i);
-                    if (j == std::string::npos) j = s.size();
+                    if (j == std::string::npos) {
+                        j = s.size();
+                    }
                     out.push_back(s.substr(i, j - i));
                     i = j + 1;
                 }
@@ -647,18 +464,28 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
             if (subArgs.size() == supArgs.size() && subArgs.size() == vit->second.size()) {
                 bool ok = true;
                 for (std::size_t i = 0; i < subArgs.size() && ok; ++i) {
-                    if (subArgs[i] == supArgs[i]) continue;
+                    if (subArgs[i] == supArgs[i]) {
+                        continue;
+                    }
                     const std::string& var = vit->second[i];
-                    if (var == "out") ok = isSubtype(subArgs[i], supArgs[i], depth + 1);
-                    else if (var == "in") ok = isSubtype(supArgs[i], subArgs[i], depth + 1);
-                    else ok = false;  // invariant: arguments must be identical
+                    if (var == "out") {
+                        ok = isSubtype(subArgs[i], supArgs[i], depth + 1);
+                    } else if (var == "in") {
+                        ok = isSubtype(supArgs[i], subArgs[i], depth + 1);
+                    } else {
+                        ok = false;  // invariant: arguments must be identical
+                    }
                 }
-                if (ok) return true;
+                if (ok) {
+                    return true;
+                }
             }
         }
     }
     const ClassInfo* c = lookupClass(sub);
-    if (c == nullptr) return false;
+    if (c == nullptr) {
+        return false;
+    }
     // A monomorphized instantiation keeps its superclass and interfaces under their BASE names
     // (`Option`, `Iterator`), while `super` here is a mangled instantiation (`Option$Node`). For the
     // pass-through case -- `C<T> extends B<T>` / `implements I<T>`, which is what the stdlib's Option,
@@ -668,13 +495,19 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     const std::size_t argsAt = sub.find('$');
     const std::string suffix = (argsAt == std::string::npos) ? std::string() : sub.substr(argsAt);
     auto relates = [&](const std::string& parent) {
-        if (isSubtype(parent, super, depth + 1)) return true;
+        if (isSubtype(parent, super, depth + 1)) {
+            return true;
+        }
         return !suffix.empty() && parent.find('$') == std::string::npos &&
                isSubtype(parent + suffix, super, depth + 1);
     };
-    if (!c->superclass.empty() && relates(c->superclass)) return true;
+    if (!c->superclass.empty() && relates(c->superclass)) {
+        return true;
+    }
     for (const std::string& iface : c->interfaces) {
-        if (relates(iface)) return true;
+        if (relates(iface)) {
+            return true;
+        }
     }
     return false;
 }
@@ -704,14 +537,22 @@ bool SemanticAnalyzer::declaresShared(const std::string& name) const {
 
 bool SemanticAnalyzer::isPolymorphic(const std::string& name) const {
     const ClassInfo* c = lookupClass(name);
-    if (c == nullptr) return false;
-    if (c->isAbstract || c->isInterface || !c->superclass.empty() || !c->interfaces.empty())
+    if (c == nullptr) {
+        return false;
+    }
+    if (c->isAbstract || c->isInterface || !c->superclass.empty() || !c->interfaces.empty()) {
         return true;
+    }
     for (const auto& [n, info] : classes_) {
         (void)n;
-        if (info.superclass == name) return true;
-        for (const std::string& i : info.interfaces)
-            if (i == name) return true;
+        if (info.superclass == name) {
+            return true;
+        }
+        for (const std::string& i : info.interfaces) {
+            if (i == name) {
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -723,8 +564,11 @@ void SemanticAnalyzer::validateHierarchy() {
     std::unordered_set<std::string> sealedVariants;
     for (const auto& [name, info] : classes_) {
         (void)name;
-        if (info.isSealed)
-            for (const std::string& p : info.permits) sealedVariants.insert(p);
+        if (info.isSealed) {
+            for (const std::string& p : info.permits) {
+                sealedVariants.insert(p);
+            }
+        }
     }
     for (const auto& [name, info] : classes_) {
         if (!info.superclass.empty()) {
@@ -748,6 +592,18 @@ void SemanticAnalyzer::validateHierarchy() {
                       {});
             } else if (sup->isFinal) {
                 error("class '" + name + "' cannot extend final class '" + info.superclass + "'",
+                      {});
+            } else if (sup->isRegionClass && !info.isRegionClass) {
+                // EVERYTHING BENEATH A REGION CLASS MUST BE ONE. An abstract region class declares a
+                // region shared by its whole family; a plain class inheriting from it would allocate
+                // its instances somewhere else, and the guarantee the feature exists for -- that there
+                // IS nowhere else -- would be gone without a word. Every consequence rests on it:
+                // unimport's O(1) "is any alive?", walking every instance of a type, and the 32-bit
+                // pointer that totality would one day allow.
+                error("'" + name + "' extends the region class '" + info.superclass +
+                          "', so it has to be a `region class` too -- an instance of it would otherwise "
+                          "be allocated outside the family's region, and a region class is worth having "
+                          "precisely because there is nowhere else its instances can be",
                       {});
             } else if (sup->isSealed &&
                        std::find(sup->permits.begin(), sup->permits.end(),
@@ -775,7 +631,9 @@ void SemanticAnalyzer::validateHierarchy() {
                 break;
             }
             const ClassInfo* c = lookupClass(cur);
-            if (c == nullptr) break;
+            if (c == nullptr) {
+                break;
+            }
             cur = c->superclass;
         }
     }
@@ -784,13 +642,21 @@ void SemanticAnalyzer::validateHierarchy() {
 void SemanticAnalyzer::collectMethodNamesInto(const std::string& className,
                                               std::vector<std::string>& out) const {
     const ClassInfo* c = lookupClass(className);
-    if (c == nullptr) return;
+    if (c == nullptr) {
+        return;
+    }
     for (const auto& [mname, mi] : c->methods) {
         (void)mi;
-        if (std::find(out.begin(), out.end(), mname) == out.end()) out.push_back(mname);
+        if (std::find(out.begin(), out.end(), mname) == out.end()) {
+            out.push_back(mname);
+        }
     }
-    if (!c->superclass.empty()) collectMethodNamesInto(c->superclass, out);
-    for (const std::string& iface : c->interfaces) collectMethodNamesInto(iface, out);
+    if (!c->superclass.empty()) {
+        collectMethodNamesInto(c->superclass, out);
+    }
+    for (const std::string& iface : c->interfaces) {
+        collectMethodNamesInto(iface, out);
+    }
 }
 
 void SemanticAnalyzer::validateOverrides(const ast::Program& program) {
@@ -798,7 +664,9 @@ void SemanticAnalyzer::validateOverrides(const ast::Program& program) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ClassDecl& cls : ns.classes) {
                 const ClassInfo* ci = lookupClass(cls.name);
-                if (ci == nullptr) continue;
+                if (ci == nullptr) {
+                    continue;
+                }
 
                 // Does any superclass / interface declare `method`?
                 auto inheritedHas = [&](const std::string& method) {
@@ -806,14 +674,18 @@ void SemanticAnalyzer::validateOverrides(const ast::Program& program) {
                         return true;
                     }
                     for (const std::string& iface : ci->interfaces) {
-                        if (findMethod(iface, method) != nullptr) return true;
+                        if (findMethod(iface, method) != nullptr) {
+                            return true;
+                        }
                     }
                     return false;
                 };
 
                 for (const ast::MemberPtr& member : cls.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
-                    if (m == nullptr || m->isStatic) continue;
+                    if (m == nullptr || m->isStatic) {
+                        continue;
+                    }
                     const bool inherited = inheritedHas(m->name);
                     if (m->isOverride && !inherited) {
                         error("method '" + m->name +
@@ -828,13 +700,19 @@ void SemanticAnalyzer::validateOverrides(const ast::Program& program) {
                     // A `final` inherited method may not be overridden.
                     if (inherited) {
                         const MethodInfo* base = nullptr;
-                        if (!ci->superclass.empty()) base = findMethod(ci->superclass, m->name);
-                        for (const std::string& iface : ci->interfaces)
-                            if (base == nullptr) base = findMethod(iface, m->name);
-                        if (base != nullptr && base->isFinal)
+                        if (!ci->superclass.empty()) {
+                            base = findMethod(ci->superclass, m->name);
+                        }
+                        for (const std::string& iface : ci->interfaces) {
+                            if (base == nullptr) {
+                                base = findMethod(iface, m->name);
+                            }
+                        }
+                        if (base != nullptr && base->isFinal) {
                             error("method '" + m->name + "' cannot override final method '" +
                                       m->name + "'",
                                   m->loc);
+                        }
                     }
                 }
 
@@ -859,7 +737,9 @@ void SemanticAnalyzer::validateOverrides(const ast::Program& program) {
 void SemanticAnalyzer::pushScope() { scopes_.emplace_back(); }
 
 void SemanticAnalyzer::popScope() {
-    if (!scopes_.empty()) scopes_.pop_back();
+    if (!scopes_.empty()) {
+        scopes_.pop_back();
+    }
 }
 
 // ---- the flow machine ----
@@ -898,16 +778,21 @@ void SemanticAnalyzer::joinFlow(const FlowFacts& a, const FlowFacts& b) {
                           ? FlowFacts::Init::Uninit
                           : FlowFacts::Init::Maybe;
     }
-    for (const auto& [name, sb] : b.init)
-        if (a.init.find(name) == a.init.end() && sb != FlowFacts::Init::Init)
+    for (const auto& [name, sb] : b.init) {
+        if (a.init.find(name) == a.init.end() && sb != FlowFacts::Init::Init) {
             init_[name] = FlowFacts::Init::Maybe;
+        }
+    }
 
     // A PROOF must hold on both paths to survive; an OBLIGATION (moved, deleted) that holds on either
     // must survive. The asymmetry is the point: be pessimistic about what you know, pessimistic about
     // what you owe. Optimism in either direction is how a flow analysis starts lying.
     nonNull_.clear();
-    for (const std::string& n : a.nonNull)
-        if (b.nonNull.count(n) > 0) nonNull_.insert(n);
+    for (const std::string& n : a.nonNull) {
+        if (b.nonNull.count(n) > 0) {
+            nonNull_.insert(n);
+        }
+    }
     moved_ = a.moved;
     moved_.insert(b.moved.begin(), b.moved.end());
     deleted_ = a.deleted;
@@ -921,8 +806,11 @@ void SemanticAnalyzer::invalidateAcrossBackEdge(const FlowFacts& before) {
     // not already have at the top cannot be trusted at the top. Initialization is the opposite: it only
     // ever moves forward, so what the body initialized stays initialized.
     std::unordered_set<std::string> kept;
-    for (const std::string& n : nonNull_)
-        if (before.nonNull.count(n) > 0) kept.insert(n);
+    for (const std::string& n : nonNull_) {
+        if (before.nonNull.count(n) > 0) {
+            kept.insert(n);
+        }
+    }
     nonNull_ = std::move(kept);
 }
 
@@ -932,7 +820,9 @@ FlowFacts::Init SemanticAnalyzer::initStateOf(const std::string& name) const {
 }
 
 void SemanticAnalyzer::markInitialized(const std::string& name) {
-    if (init_.find(name) != init_.end()) init_[name] = FlowFacts::Init::Init;
+    if (init_.find(name) != init_.end()) {
+        init_[name] = FlowFacts::Init::Init;
+    }
 }
 
 // True when every path through this block leaves it -- return, throw, break or continue. Such a block
@@ -941,15 +831,24 @@ void SemanticAnalyzer::markInitialized(const std::string& name) {
 bool SemanticAnalyzer::blockAlwaysExits(const ast::Block& b) {
     for (const auto& st : b.statements) {
         const ast::Stmt* s = st.get();
-        if (dynamic_cast<const ast::ReturnStmt*>(s) != nullptr) return true;
-        if (dynamic_cast<const ast::ThrowStmt*>(s) != nullptr) return true;
-        if (dynamic_cast<const ast::BreakStmt*>(s) != nullptr) return true;
-        if (dynamic_cast<const ast::ContinueStmt*>(s) != nullptr) return true;
+        if (dynamic_cast<const ast::ReturnStmt*>(s) != nullptr) {
+            return true;
+        }
+        if (dynamic_cast<const ast::ThrowStmt*>(s) != nullptr) {
+            return true;
+        }
+        if (dynamic_cast<const ast::BreakStmt*>(s) != nullptr) {
+            return true;
+        }
+        if (dynamic_cast<const ast::ContinueStmt*>(s) != nullptr) {
+            return true;
+        }
         // A nested if counts only when BOTH of its arms exit -- otherwise a path falls through it.
         if (const auto* nested = dynamic_cast<const ast::IfStmt*>(s)) {
             if (nested->elseBlock != nullptr && blockAlwaysExits(nested->thenBlock) &&
-                blockAlwaysExits(*nested->elseBlock))
+                blockAlwaysExits(*nested->elseBlock)) {
                 return true;
+            }
         }
     }
     return false;
@@ -966,39 +865,61 @@ bool SemanticAnalyzer::blockAlwaysExits(const ast::Block& b) {
 bool SemanticAnalyzer::alwaysReturns(const ast::Block& b) {
     for (const auto& st : b.statements) {
         const ast::Stmt* s = st.get();
-        if (dynamic_cast<const ast::ReturnStmt*>(s) != nullptr) return true;
-        if (dynamic_cast<const ast::ThrowStmt*>(s) != nullptr) return true;
-        if (const auto* iff = dynamic_cast<const ast::IfStmt*>(s))
+        if (dynamic_cast<const ast::ReturnStmt*>(s) != nullptr) {
+            return true;
+        }
+        if (dynamic_cast<const ast::ThrowStmt*>(s) != nullptr) {
+            return true;
+        }
+        if (const auto* iff = dynamic_cast<const ast::IfStmt*>(s)) {
             if (iff->elseBlock != nullptr && alwaysReturns(iff->thenBlock) &&
-                alwaysReturns(*iff->elseBlock))
+                alwaysReturns(*iff->elseBlock)) {
                 return true;
+            }
+        }
         // `while (true)` with no way out is a method that ends by never ending -- the shape a dispatch
         // loop, a scheduler and a kernel's idle path all have.
-        if (const auto* w = dynamic_cast<const ast::WhileStmt*>(s))
+        if (const auto* w = dynamic_cast<const ast::WhileStmt*>(s)) {
             if (const auto* c = dynamic_cast<const ast::BoolLiteralExpr*>(w->cond.get());
-                c != nullptr && c->value && !blockHasBreak(w->body))
+                c != nullptr && c->value && !blockHasBreak(w->body)) {
                 return true;
+            }
+        }
         // try/catch: the value has to come out of the body AND out of every catch, or out of a finally
         // that returns regardless.
         if (const auto* tr = dynamic_cast<const ast::TryStmt*>(s)) {
-            if (tr->finallyBlock != nullptr && alwaysReturns(*tr->finallyBlock)) return true;
+            if (tr->finallyBlock != nullptr && alwaysReturns(*tr->finallyBlock)) {
+                return true;
+            }
             bool all = alwaysReturns(tr->body);
-            for (const auto& c : tr->catches) all = all && alwaysReturns(c.body);
-            if (all) return true;
+            for (const auto& c : tr->catches) {
+                all = all && alwaysReturns(c.body);
+            }
+            if (all) {
+                return true;
+            }
         }
         // switch/match: only when there is a default, since without one a subject that matches nothing
         // falls straight through.
         if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(s)) {
             if (sw->defaultBody != nullptr) {
                 bool all = alwaysReturns(*sw->defaultBody);
-                for (const auto& c : sw->cases) all = all && alwaysReturns(c.body);
-                if (all) return true;
+                for (const auto& c : sw->cases) {
+                    all = all && alwaysReturns(c.body);
+                }
+                if (all) {
+                    return true;
+                }
             }
         }
         if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(s)) {
             bool all = ms->defaultBody != nullptr ? alwaysReturns(*ms->defaultBody) : true;
-            for (const auto& c : ms->cases) all = all && alwaysReturns(c.body);
-            if (all && !ms->cases.empty()) return true;   // a match over a sealed type is exhaustive
+            for (const auto& c : ms->cases) {
+                all = all && alwaysReturns(c.body);
+            }
+            if (all && !ms->cases.empty()) {
+                return true;  // a match over a sealed type is exhaustive
+            }
         }
     }
     return false;
@@ -1009,15 +930,29 @@ bool SemanticAnalyzer::alwaysReturns(const ast::Block& b) {
 bool SemanticAnalyzer::blockHasBreak(const ast::Block& b) {
     for (const auto& st : b.statements) {
         const ast::Stmt* s = st.get();
-        if (dynamic_cast<const ast::BreakStmt*>(s) != nullptr) return true;
+        if (dynamic_cast<const ast::BreakStmt*>(s) != nullptr) {
+            return true;
+        }
         if (const auto* iff = dynamic_cast<const ast::IfStmt*>(s)) {
-            if (blockHasBreak(iff->thenBlock)) return true;
-            if (iff->elseBlock != nullptr && blockHasBreak(*iff->elseBlock)) return true;
+            if (blockHasBreak(iff->thenBlock)) {
+                return true;
+            }
+            if (iff->elseBlock != nullptr && blockHasBreak(*iff->elseBlock)) {
+                return true;
+            }
         }
         if (const auto* tr = dynamic_cast<const ast::TryStmt*>(s)) {
-            if (blockHasBreak(tr->body)) return true;
-            for (const auto& c : tr->catches) if (blockHasBreak(c.body)) return true;
-            if (tr->finallyBlock != nullptr && blockHasBreak(*tr->finallyBlock)) return true;
+            if (blockHasBreak(tr->body)) {
+                return true;
+            }
+            for (const auto& c : tr->catches) {
+                if (blockHasBreak(c.body)) {
+                    return true;
+                }
+            }
+            if (tr->finallyBlock != nullptr && blockHasBreak(*tr->finallyBlock)) {
+                return true;
+            }
         }
     }
     return false;
@@ -1030,7 +965,9 @@ bool SemanticAnalyzer::blockHasBreak(const ast::Block& b) {
 void SemanticAnalyzer::proofFromCondition(const ast::Expr& cond, std::string& provenThen,
                                           std::string& provenElse) {
     const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&cond);
-    if (bin == nullptr) return;
+    if (bin == nullptr) {
+        return;
+    }
     if (bin->op == "&&") {
         // `a != null && ...`: whatever the left side proves holds for the whole `then` arm, because the
         // right side only runs when the left was true. The `else` arm learns nothing.
@@ -1040,32 +977,45 @@ void SemanticAnalyzer::proofFromCondition(const ast::Expr& cond, std::string& pr
         provenThen = !lThen.empty() ? lThen : rThen;
         return;
     }
-    if (bin->op != "==" && bin->op != "!=") return;
+    if (bin->op != "==" && bin->op != "!=") {
+        return;
+    }
     const auto* lid = dynamic_cast<const ast::IdentifierExpr*>(bin->lhs.get());
     const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(bin->rhs.get());
     const bool lNull = dynamic_cast<const ast::NullLiteralExpr*>(bin->lhs.get()) != nullptr;
     const bool rNull = dynamic_cast<const ast::NullLiteralExpr*>(bin->rhs.get()) != nullptr;
     std::string name;
-    if (lid != nullptr && rNull) name = lid->name;
-    else if (rid != nullptr && lNull) name = rid->name;
-    if (name.empty()) return;
+    if (lid != nullptr && rNull) {
+        name = lid->name;
+    } else if (rid != nullptr && lNull) {
+        name = rid->name;
+    }
+    if (name.empty()) {
+        return;
+    }
     // `x != null` proves it in the `then`; `x == null` proves it in the `else`.
-    if (bin->op == "!=") provenThen = name;
-    else provenElse = name;
+    if (bin->op == "!=") {
+        provenThen = name;
+    } else {
+        provenElse = name;
+    }
 }
 
 void SemanticAnalyzer::killProofsFor(const std::string& name) {
     nonNull_.erase(name);
     // A write to `obj` says nothing about `obj.field` any more either.
     const std::string prefix = name + ".";
-    for (auto it = nonNull_.begin(); it != nonNull_.end();)
+    for (auto it = nonNull_.begin(); it != nonNull_.end();) {
         it = (it->rfind(prefix, 0) == 0) ? nonNull_.erase(it) : std::next(it);
+    }
 }
 
 const LocalVar* SemanticAnalyzer::lookupLocal(const std::string& name) const {
     for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
         auto found = it->find(name);
-        if (found != it->end()) return &found->second;
+        if (found != it->end()) {
+            return &found->second;
+        }
     }
     return nullptr;
 }
@@ -1075,12 +1025,22 @@ void SemanticAnalyzer::declareLocal(const std::string& name, LocalVar info) {
 }
 
 bool SemanticAnalyzer::isValidMainSignature(const ast::MethodDecl& method) const {
-    if (method.visibility != "public") return false;
-    if (!method.isStatic) return false;
-    if (method.params.size() != 1) return false;
+    if (method.visibility != "public") {
+        return false;
+    }
+    if (!method.isStatic) {
+        return false;
+    }
+    if (method.params.size() != 1) {
+        return false;
+    }
     const ast::Param& p = method.params.front();
-    if (p.type.name != "string" || !p.type.isArray) return false;
-    if (method.returnType.isArray) return false;
+    if (p.type.name != "string" || !p.type.isArray) {
+        return false;
+    }
+    if (method.returnType.isArray) {
+        return false;
+    }
     return method.returnType.name == "void" || method.returnType.name == "int";
 }
 
@@ -1089,10 +1049,15 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
     // Value types first: a field can name a struct/record declared further down, and `keyFieldKind` has
     // to tell "a nested value" from "a reference to another object" to answer at all.
     valueTypeNames_.clear();
-    for (const ast::Bundle& b : program.bundles)
-        for (const ast::Namespace& n : b.namespaces)
-            for (const ast::ClassDecl& c : n.classes)
-                if ((c.isStruct || c.isRecord) && !c.isUnion) valueTypeNames_.insert(c.name);
+    for (const ast::Bundle& b : program.bundles) {
+        for (const ast::Namespace& n : b.namespaces) {
+            for (const ast::ClassDecl& c : n.classes) {
+                if ((c.isStruct || c.isRecord) && !c.isUnion) {
+                    valueTypeNames_.insert(c.name);
+                }
+            }
+        }
+    }
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ClassDecl& cls : ns.classes) {
@@ -1138,6 +1103,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 info.isInterface = cls.isInterface;
                 info.isStruct = cls.isStruct;
                 info.isSealed = cls.isSealed;
+                info.isRegionClass = cls.isRegionClass;
                 info.permits = cls.permits;
                 info.isMovable = cls.isMovable;
                 info.isUnique = cls.isUnique;
@@ -1145,11 +1111,12 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 // `unique` + `partitionable` is contradictory (spec 19.9): unique keeps a
                 // single live reference to the whole object; partitionable hands out
                 // independent references to its parts.
-                if (cls.isUnique && cls.isPartitionable)
+                if (cls.isUnique && cls.isPartitionable) {
                     error("'unique' and 'partitionable' are contradictory: 'unique' guarantees a "
                           "single live reference to the whole object, 'partitionable' allows moving "
                           "its fields separately (spec 19.9)",
                           cls.loc);
+                }
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
                         // A name is unique within a class, and a silent duplicate here is worse
@@ -1157,13 +1124,14 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         // `this.name` resolves to the last one, so the earlier slot is storage that
                         // is never written and never read. If its type is owned, the destructor is
                         // handed uninitialised memory to free.
-                        if (info.fields.count(f->name))
+                        if (info.fields.count(f->name)) {
                             error("field '" + f->name + "' is already declared in class '" +
                                       cls.name +
                                       "' -- each field name must be unique, and a second declaration "
                                       "silently takes over every use of the name while leaving the "
                                       "first one as dead storage. Remove one of them",
                                   f->loc);
+                        }
                         // A movable/unique field is reassignable (it is moved out and reassigned).
                         info.fields[f->name] =
                             FieldInfo{typeRefStr(f->type), f->isMutable || f->isMovable || f->isUnique,
@@ -1183,7 +1151,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                             const std::string ft = baseType(typeRefStr(f->type));
                             if (ft.rfind("atomic$", 0) == 0) {
                                 const std::string arg = ft.substr(7);
-                                if (classes_.count(arg) > 0 || arg == "Decimal")
+                                if (classes_.count(arg) > 0 || arg == "Decimal") {
                                     error("`atomic<" + arg + ">` is wider than a machine word, so it "
                                           "lowers to `__atomic_*` library calls -- and freestanding "
                                           "has no library to link them against. The failure would "
@@ -1192,6 +1160,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                                           "`atomic` (an int, a flag, an index) and guard the rest "
                                           "with it.",
                                           f->loc);
+                                }
                             }
                         }
                         checkBitField(cls, *f,
@@ -1199,7 +1168,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                                           error(m, l);
                                       });
                     } else if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                        // LDP3 has no method overloading -- a name is unique within a class. A silent
+                        // Polaron has no method overloading -- a name is unique within a class. A silent
                         // duplicate (last-wins in this map) makes codegen emit two same-named functions;
                         // LLVM renames the second to `.1`, and -g then emits a duplicate DISubprogram
                         // (invalid DWARF). A property get/set pair legitimately shares a name, so only two
@@ -1209,26 +1178,37 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                             // An interrupt is nameless in the source, so "each method name must be
                             // unique" would explain a rule the author never invoked. The real rule
                             // is the one the namelessness expresses: one device, one handler.
-                            if (m->isInterrupt && prev->second.isInterrupt)
+                            if (m->isInterrupt && prev->second.isInterrupt) {
                                 error("class '" + cls.name + "' already declares an interrupt -- one "
                                       "device, one handler. A second handler means a second object; "
                                       "if these are two vectors of one device, dispatch on the trap.",
                                       m->loc);
-                            else
+                            } else {
                                 error("method '" + m->name + "' is already declared in class '" +
                                           cls.name +
-                                          "' -- LDP3 has no method overloading, so each method name "
+                                          "' -- Polaron has no method overloading, so each method name "
                                           "must be unique",
                                       m->loc);
+                            }
                         }
                         MethodInfo mi{typeRefStr(m->returnType), m->isStatic,
                                       m->isAbstract, m->isProperty,
                                       m->params.size(), m->isFinal, m->isAsync};
-                        for (const ast::Param& p : m->params) mi.paramTypes.push_back(typeRefStr(p.type));
-                        for (const ast::Param& p : m->params) mi.comptimeParams.push_back(p.isComptime);
-                        for (const ast::Param& p : m->params) mi.paramNames.push_back(p.name);
-                        for (const ast::Param& p : m->params) mi.namedOnlyParams.push_back(p.requiresNamed);
-                        for (const ast::Param& p : m->params) mi.moveParams.push_back(p.type.isMove);
+                        for (const ast::Param& p : m->params) {
+                            mi.paramTypes.push_back(typeRefStr(p.type));
+                        }
+                        for (const ast::Param& p : m->params) {
+                            mi.comptimeParams.push_back(p.isComptime);
+                        }
+                        for (const ast::Param& p : m->params) {
+                            mi.paramNames.push_back(p.name);
+                        }
+                        for (const ast::Param& p : m->params) {
+                            mi.namedOnlyParams.push_back(p.requiresNamed);
+                        }
+                        for (const ast::Param& p : m->params) {
+                            mi.moveParams.push_back(p.type.isMove);
+                        }
                         mi.returnIsMove = m->returnType.isMove;
                         mi.isVariadic = m->isVariadic;
                         mi.isDeprecated = m->isDeprecated;
@@ -1237,24 +1217,28 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                         // One constructor per class, for the same reason there is one method per
-                        // name: LDP3 has no overloading. A second one was accepted in silence and
+                        // name: Polaron has no overloading. A second one was accepted in silence and
                         // its parameters were APPENDED to the first's, so `P(int)` next to
                         // `P(int, int)` produced a three-parameter phantom and `new P(1)` was
                         // rejected with "expects 3 arguments" -- a message with no relation to the
                         // mistake, pointing at the call instead of the declaration. Codegen then
                         // emitted only the first, so even a program that satisfied the phantom ran
                         // the wrong body.
-                        if (info.hasConstructor)
+                        if (info.hasConstructor) {
                             error("class '" + cls.name +
-                                      "' already has a constructor -- LDP3 has no overloading, so a "
+                                      "' already has a constructor -- Polaron has no overloading, so a "
                                       "class has exactly one. Give the alternatives distinct names "
                                       "as static factory methods, or take one constructor with the "
                                       "widest parameter list",
                                   c->loc);
+                        }
                         info.hasConstructor = true;
-                        if (!c->params.empty()) info.ctorHasParams = true;
-                        for (const ast::Param& p : c->params)
+                        if (!c->params.empty()) {
+                            info.ctorHasParams = true;
+                        }
+                        for (const ast::Param& p : c->params) {
                             info.ctorParamTypes.push_back(typeRefStr(p.type));
+                        }
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) != nullptr) {
                         info.hasDestructor = true;
                     }
@@ -1270,24 +1254,31 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 if (!bundle.isPrelude) {
                     std::vector<std::string> persistNames;
                     bool hasKeyField = false, partialCapable = false;
-                    for (const ast::MemberPtr& m : cls.members)
+                    for (const ast::MemberPtr& m : cls.members) {
                         if (const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get());
                             f != nullptr && !f->isStatic) {
-                            if (f->isPersistent) persistNames.push_back(f->name);
-                            else if (ast::keyFieldKind(f->type, valueTypeNames_) !=
-                                     ast::KeyFieldKind::None)
+                            if (f->isPersistent) {
+                                persistNames.push_back(f->name);
+                            } else if (ast::keyFieldKind(f->type, valueTypeNames_) !=
+                                       ast::KeyFieldKind::None) {
                                 hasKeyField = true;
+                            }
                         }
-                    if (!persistNames.empty() && hasKeyField)
-                        for (const ast::MemberPtr& m : cls.members)
+                    }
+                    if (!persistNames.empty() && hasKeyField) {
+                        for (const ast::MemberPtr& m : cls.members) {
                             if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(m.get())) {
-                                for (const ast::Param& p : c->params)
+                                for (const ast::Param& p : c->params) {
                                     if (std::find(persistNames.begin(), persistNames.end(), p.name) !=
-                                        persistNames.end())
+                                        persistNames.end()) {
                                         partialCapable = true;
+                                    }
+                                }
                                 break;
                             }
-                    if (partialCapable)
+                        }
+                    }
+                    if (partialCapable) {
                         warn("'" + cls.name + "' has value fields that would key its persistents by "
                              "identity, but its constructor takes a parameter named after a persistent "
                              "field -- a partial constructor (spec 18.9), which reads that value out of "
@@ -1295,6 +1286,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                              "exists, so this class keeps the per-binding form. Rename the parameter if "
                              "you wanted the persistents keyed by identity instead",
                              cls.loc);
+                    }
                 }
                 classes_[cls.name] = std::move(info);
                 typeNamespace_[cls.name] = ns.name;
@@ -1318,7 +1310,9 @@ void SemanticAnalyzer::registerNewtypes(const ast::Program& program) {
                 typeBundle_[t.name] = bundle.name;
             }
             for (const ast::TypeAliasDecl& a : ns.typeAliases) {
-                if (!a.isNewtype) continue;  // `typealias` is resolved before sema; only newtypes survive
+                if (!a.isNewtype) {
+                    continue;  // `typealias` is resolved before sema; only newtypes survive
+                }
                 if (newtypes_.count(a.name) > 0 || classes_.count(a.name) > 0 ||
                     enums_.count(a.name) > 0) {
                     error("redeclaration of type '" + a.name + "'", a.loc);
@@ -1362,7 +1356,9 @@ void SemanticAnalyzer::registerAnnotations(const ast::Program& program) {
                         continue;
                     }
                     info.fields.emplace_back(f.name, typeRefStr(f.type));
-                    if (f.defaultValue == nullptr) info.required.insert(f.name);
+                    if (f.defaultValue == nullptr) {
+                        info.required.insert(f.name);
+                    }
                 }
                 annotations_[a.name] = std::move(info);
             }
@@ -1376,14 +1372,17 @@ void SemanticAnalyzer::registerAnnotations(const ast::Program& program) {
 void SemanticAnalyzer::checkAnnotationUses(const std::vector<ast::AnnotationUse>& uses) {
     for (const ast::AnnotationUse& use : uses) {
         if (use.name == "CompileTimeProcessor") {  // built-in (spec 14.4): a marker, takes no args
-            if (!use.args.empty())
+            if (!use.args.empty()) {
                 error("'[CompileTimeProcessor]' takes no arguments", use.loc);
+            }
             continue;
         }
         // Compiler attributes (spec 36.4): `[[no_bounds_check]]` -- a named, explicit opt-out of the
         // runtime bounds check on a hot path. Not a user annotation, so it needs no declaration.
         if (use.name == "no_bounds_check") {
-            if (!use.args.empty()) error("'[[no_bounds_check]]' takes no arguments", use.loc);
+            if (!use.args.empty()) {
+                error("'[[no_bounds_check]]' takes no arguments", use.loc);
+            }
             continue;
         }
         auto it = annotations_.find(use.name);
@@ -1400,14 +1399,17 @@ void SemanticAnalyzer::checkAnnotationUses(const std::vector<ast::AnnotationUse>
                 error("annotation '" + use.name + "' has no field '" + arg.name + "'", arg.loc);
                 continue;
             }
-            if (!provided.insert(arg.name).second)
+            if (!provided.insert(arg.name).second) {
                 error("duplicate argument '" + arg.name + "' for annotation '" + use.name + "'",
                       arg.loc);
+            }
         }
-        for (const std::string& req : info.required)
-            if (provided.count(req) == 0)
+        for (const std::string& req : info.required) {
+            if (provided.count(req) == 0) {
                 error("annotation '" + use.name + "' requires a value for field '" + req + "'",
                       use.loc);
+            }
+        }
     }
 }
 
@@ -1417,10 +1419,11 @@ void SemanticAnalyzer::validateAnnotations(const ast::Program& program) {
             for (const ast::ClassDecl& c : ns.classes) {
                 checkAnnotationUses(c.annotations);
                 for (const ast::MemberPtr& m : c.members) {
-                    if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()))
+                    if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get())) {
                         checkAnnotationUses(md->annotations);
-                    else if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()))
+                    } else if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get())) {
                         checkAnnotationUses(fd->annotations);
+                    }
                 }
             }
         }
@@ -1430,16 +1433,19 @@ void SemanticAnalyzer::validateAnnotations(const ast::Program& program) {
 namespace {
 // The string value of an annotation argument, e.g. the "..." of [Cases(source: "...")].
 std::string annotationText(const ast::AnnotationUse& use, const std::string& field) {
-    for (const ast::AnnotationArg& a : use.args)
-        if (a.name == field)
-            if (const auto* s = dynamic_cast<const ast::StringLiteralExpr*>(a.value.get()))
+    for (const ast::AnnotationArg& a : use.args) {
+        if (a.name == field) {
+            if (const auto* s = dynamic_cast<const ast::StringLiteralExpr*>(a.value.get())) {
                 return s->value;
+            }
+        }
+    }
     return "";
 }
 long long annotationNumber(const ast::AnnotationUse& use, const std::string& field,
                            long long fallback) {
-    for (const ast::AnnotationArg& a : use.args)
-        if (a.name == field)
+    for (const ast::AnnotationArg& a : use.args) {
+        if (a.name == field) {
             if (const auto* i = dynamic_cast<const ast::IntLiteralExpr*>(a.value.get())) {
                 try {
                     return std::stoll(i->text, nullptr, 0);
@@ -1447,39 +1453,87 @@ long long annotationNumber(const ast::AnnotationUse& use, const std::string& fie
                     return fallback;
                 }
             }
+        }
+    }
     return fallback;
 }
 }  // namespace
 
 // spec 32.11: every test declaration is well formed. This runs on EVERY compile, not only under
 // --test, because a `[Test]` that cannot be called is a broken declaration whichever way you build --
-// and finding out at build time (or in the editor, through `ldp3 check`) beats finding out on the day
+// and finding out at build time (or in the editor, through `polaron check`) beats finding out on the day
 // someone runs the suite and quietly gets one test fewer than they wrote.
 // Which classes own a fixture. Runs before the bodies, because the warning about reading somebody
 // else's fixture is raised where the call is checked.
 void SemanticAnalyzer::collectFixtureOwners(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
-        if (bundle.isImported || bundle.isPrelude) continue;
-        for (const ast::Namespace& ns : bundle.namespaces)
-            for (const ast::ClassDecl& cls : ns.classes)
+        if (bundle.isImported || bundle.isPrelude) {
+            continue;
+        }
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
-                    if (m == nullptr) continue;
-                    for (const ast::AnnotationUse& a : m->annotations)
-                        if (a.name == "BeforeAll" || a.name == "AfterAll") fixtureOwners_.insert(cls.name);
+                    if (m == nullptr) {
+                        continue;
+                    }
+                    // `cdecl` pointed at a symbol that is plainly NOT C.
+                    //
+                    // LODGED IN THE WRONG PASS, and said here rather than hidden: this is
+                    // `collectFixtureOwners`, whose name describes test fixtures and not the FFI. It
+                    // is the walk that reaches every method declaration, which is why the check works
+                    // here -- and a check whose home is "wherever the loop already was" is how a pass
+                    // stops meaning what it is called. It belongs in a declaration-checking pass of
+                    // its own.
+                    //
+                    // The FFI axis names the LANGUAGE on the other side, and the compiler cannot in
+                    // general know what a symbol was written in -- but it can know when the evidence
+                    // is in the name. A MANGLED symbol carries a signature: `_ZN3Foo3barEv` is
+                    // Itanium, `?bar@Foo@@QEAAXXZ` is MSVC, and neither is producible by a C
+                    // compiler. So `cdecl` over one is a declaration that disagrees with the thing it
+                    // names -- and the way that goes wrong (an argument in the wrong place, a `this`
+                    // that is not there) is not a link error but a crash somewhere else entirely.
+                    //
+                    // A WARNING and not an error, deliberately: pasting a mangled symbol by hand is
+                    // exactly how a C++ binding works without a mangler of our own, so this may be
+                    // only the wrong word on a declaration that otherwise does the right thing.
+                    if (m->isExtern && m->externConvention == "cdecl" && !m->externSymbol.empty()) {
+                        const std::string& sym = m->externSymbol;
+                        const bool itanium = sym.rfind("_Z", 0) == 0;
+                        const bool msvc = sym[0] == '?';
+                        if (itanium || msvc) {
+                            warn("'" + m->name + "' is declared `cdecl` -- C -- but the symbol it binds, '" +
+                                     sym + "', is " + (itanium ? "an Itanium" : "an MSVC") +
+                                     " MANGLED name, which a C compiler cannot produce. If the other "
+                                     "side is C++, say `cppdecl`: the difference is not the symbol but "
+                                     "how aggregates travel and whether a receiver is passed",
+                                 m->loc);
+                        }
+                    }
+                    for (const ast::AnnotationUse& a : m->annotations) {
+                        if (a.name == "BeforeAll" || a.name == "AfterAll") {
+                            fixtureOwners_.insert(cls.name);
+                        }
+                    }
                 }
+            }
+        }
     }
 }
 
 void SemanticAnalyzer::validateTestDeclarations(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
-        if (bundle.isImported || bundle.isPrelude) continue;
+        if (bundle.isImported || bundle.isPrelude) {
+            continue;
+        }
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ClassDecl& cls : ns.classes) {
                 std::map<std::string, std::string> hookOwner;  // hook kind -> the method holding it
                 for (const ast::MemberPtr& member : cls.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
-                    if (m == nullptr) continue;
+                    if (m == nullptr) {
+                        continue;
+                    }
                     const std::string sym = cls.name + "." + m->name;
 
                     bool isTest = false;
@@ -1489,14 +1543,20 @@ void SemanticAnalyzer::validateTestDeclarations(const ast::Program& program) {
                     const ast::AnnotationUse* bench = nullptr;
                     std::string hook;
                     for (const ast::AnnotationUse& a : m->annotations) {
-                        if (a.name == "Test") isTest = true;
-                        else if (a.name == "Ignore") ignore = &a;
-                        else if (a.name == "Cases") cases = &a;
-                        else if (a.name == "Repeat") repeat = &a;
-                        else if (a.name == "Benchmark") bench = &a;
-                        else if (a.name == "BeforeAll" || a.name == "AfterAll" || a.name == "Setup" ||
-                                 a.name == "Teardown")
+                        if (a.name == "Test") {
+                            isTest = true;
+                        } else if (a.name == "Ignore") {
+                            ignore = &a;
+                        } else if (a.name == "Cases") {
+                            cases = &a;
+                        } else if (a.name == "Repeat") {
+                            repeat = &a;
+                        } else if (a.name == "Benchmark") {
+                            bench = &a;
+                        } else if (a.name == "BeforeAll" || a.name == "AfterAll" || a.name == "Setup" ||
+                                   a.name == "Teardown") {
                             hook = a.name;
+                        }
                     }
 
                     if (!hook.empty()) {
@@ -1513,11 +1573,12 @@ void SemanticAnalyzer::validateTestDeclarations(const ast::Program& program) {
                             continue;
                         }
                         auto [it, fresh] = hookOwner.emplace(hook, sym);
-                        if (!fresh)
+                        if (!fresh) {
                             error("class '" + cls.name + "' already has a '[" + hook + "]' method ('" +
                                       it->second + "'); there may be only one, because two would have "
                                       "no defined order",
                                   m->loc);
+                        }
                         continue;
                     }
 
@@ -1528,27 +1589,30 @@ void SemanticAnalyzer::validateTestDeclarations(const ast::Program& program) {
                                   m->loc);
                             continue;
                         }
-                        if (!m->isStatic || typeRefStr(m->returnType) != "void" || !m->params.empty())
+                        if (!m->isStatic || typeRefStr(m->returnType) != "void" || !m->params.empty()) {
                             error("'[Benchmark]' method '" + sym +
                                       "' must be a public static method taking no arguments and "
                                       "returning void",
                                   m->loc);
-                        else if (annotationNumber(*bench, "iterations", 1000) < 1)
+                        } else if (annotationNumber(*bench, "iterations", 1000) < 1) {
                             error("'[Benchmark(iterations: ...)]' on '" + sym +
                                       "' needs at least 1 iteration",
                                   bench->loc);
+                        }
                         continue;
                     }
 
                     if (!isTest) {
-                        if (ignore != nullptr)
+                        if (ignore != nullptr) {
                             error("'[Ignore]' on '" + sym +
                                       "' has no effect: it only applies to a '[Test]' method",
                                   m->loc);
-                        if (cases != nullptr)
+                        }
+                        if (cases != nullptr) {
                             error("'[Cases]' on '" + sym +
                                       "' has no effect: it only applies to a '[Test]' method",
                                   m->loc);
+                        }
                         continue;
                     }
 
@@ -1560,9 +1624,10 @@ void SemanticAnalyzer::validateTestDeclarations(const ast::Program& program) {
                               m->loc);
                         continue;
                     }
-                    if (repeat != nullptr && annotationNumber(*repeat, "times", 1) < 1)
+                    if (repeat != nullptr && annotationNumber(*repeat, "times", 1) < 1) {
                         error("'[Repeat(times: ...)]' on '" + sym + "' needs a count of at least 1",
                               repeat->loc);
+                    }
                     validateTestCases(cls, *m, cases, sym);
                 }
             }
@@ -1575,11 +1640,12 @@ void SemanticAnalyzer::validateTestDeclarations(const ast::Program& program) {
 void SemanticAnalyzer::validateTestCases(const ast::ClassDecl& cls, const ast::MethodDecl& m,
                                          const ast::AnnotationUse* cases, const std::string& sym) {
     if (cases == nullptr) {
-        if (!m.params.empty())
+        if (!m.params.empty()) {
             error("[Test] method '" + sym +
                       "' takes parameters, so it needs a '[Cases(source: \"...\")]' naming the static "
                       "method that supplies its rows",
                   m.loc);
+        }
         return;
     }
     if (m.params.size() != 1) {
@@ -1606,11 +1672,12 @@ void SemanticAnalyzer::validateTestCases(const ast::ClassDecl& cls, const ast::M
         return;
     }
     const std::string got = typeRefStr(src->returnType);
-    if (!src->isStatic || got != want + "[]")
+    if (!src->isStatic || got != want + "[]") {
         error("'[Cases]' source '" + cls.name + "." + source +
                   "' must be a public static method returning '" + want + "[]' to match the parameter "
                   "of '" + sym + "' (it returns '" + got + "')",
               src->loc);
+    }
 }
 
 void SemanticAnalyzer::registerEnums(const ast::Program& program) {
@@ -1627,13 +1694,15 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                 externParamCount_[ex.name] = ex.params.size();
             }
             // A class extern method is reachable by its bare C symbol for `goto` (spec 7.9).
-            for (const ast::ClassDecl& cls : ns.classes)
-                for (const ast::MemberPtr& m : cls.members)
+            for (const ast::ClassDecl& cls : ns.classes) {
+                for (const ast::MemberPtr& m : cls.members) {
                     if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
                         md != nullptr && md->isExtern) {
                         externReturns_[md->name] = typeRefStr(md->returnType);
                         externParamCount_[md->name] = md->params.size();
                     }
+                }
+            }
             for (const ast::EnumDecl& en : ns.enums) {
                 // A java-style enum is desugared into a class of the same name, so
                 // its matching class entry is expected; only flag other clashes.
@@ -1644,16 +1713,25 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                 }
                 // Reject duplicate constant names (own constants and byCatalog values share
                 // one ordinal space; a repeat would create a hidden, unreachable constant).
-                for (std::size_t i = 0; i < en.constants.size(); ++i)
-                    for (std::size_t j = i + 1; j < en.constants.size(); ++j)
-                        if (en.constants[i] == en.constants[j])
+                for (std::size_t i = 0; i < en.constants.size(); ++i) {
+                    for (std::size_t j = i + 1; j < en.constants.size(); ++j) {
+                        if (en.constants[i] == en.constants[j]) {
                             error("duplicate enum constant '" + en.constants[i] + "' in enum '" +
                                       en.name + "'",
                                   en.loc);
+                        }
+                    }
+                }
                 enums_[en.name] = en.constants;
-                if (en.isSealed) sealedEnums_.insert(en.name);
-                if (en.isJavaStyle) javaEnums_.insert(en.name);
-                if (!en.extendsCatalogs.empty()) enumCatalogs_[en.name] = en.extendsCatalogs;
+                if (en.isSealed) {
+                    sealedEnums_.insert(en.name);
+                }
+                if (en.isJavaStyle) {
+                    javaEnums_.insert(en.name);
+                }
+                if (!en.extendsCatalogs.empty()) {
+                    enumCatalogs_[en.name] = en.extendsCatalogs;
+                }
                 // Methods declared on the enum (e.g. catalog method impls) -- recorded so
                 // `value.method()` resolves and the bodies get type-checked.
                 for (const ast::MemberPtr& member : en.members) {
@@ -1666,6 +1744,18 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                 }
                 typeNamespace_[en.name] = ns.name;
                 typeBundle_[en.name] = bundle.name;
+            }
+            // A TRANSFORMER IS IMPORTABLE, though it is never a type.
+            //
+            // It is resolved by simple name in the expansion pass, which runs long before any import
+            // is looked at, so `applies` would work with no import at all -- and that is exactly why
+            // it has to be registered here. Polaron's rule is that a name from another bundle is
+            // written down where it enters, and a declaration that quietly opted out of it would be
+            // the only one in the language that did. Registered as a name, not as a type: nothing
+            // adds it to `classes_`, so no variable can be declared of it.
+            for (const ast::ClassDecl& t : ns.transformers) {
+                typeNamespace_[t.name] = ns.name;
+                typeBundle_[t.name] = bundle.name;
             }
         }
     }
@@ -1683,12 +1773,15 @@ void SemanticAnalyzer::registerCatalogs(const ast::Program& program) {
                     continue;
                 }
                 // Reject duplicate required-value names in the catalog itself.
-                for (std::size_t i = 0; i < cat.requiredValues.size(); ++i)
-                    for (std::size_t j = i + 1; j < cat.requiredValues.size(); ++j)
-                        if (cat.requiredValues[i] == cat.requiredValues[j])
+                for (std::size_t i = 0; i < cat.requiredValues.size(); ++i) {
+                    for (std::size_t j = i + 1; j < cat.requiredValues.size(); ++j) {
+                        if (cat.requiredValues[i] == cat.requiredValues[j]) {
                             error("duplicate catalog value '" + cat.requiredValues[i] +
                                       "' in catalog '" + cat.name + "'",
                                   cat.loc);
+                        }
+                    }
+                }
                 CatalogInfo info;
                 info.requiredValues = cat.requiredValues;
                 info.extendsCatalogs = cat.extendsCatalogs;
@@ -1728,27 +1821,45 @@ void SemanticAnalyzer::validateCatalogs(const ast::Program& program) {
             const std::string cur = stack.back();
             stack.pop_back();
             if (cur == name) { cyclic = true; break; }
-            if (!visited.insert(cur).second) continue;
-            if (auto it = catalogs_.find(cur); it != catalogs_.end())
-                for (const auto& p : it->second.extendsCatalogs) stack.push_back(p);
+            if (!visited.insert(cur).second) {
+                continue;
+            }
+            if (auto it = catalogs_.find(cur); it != catalogs_.end()) {
+                for (const auto& p : it->second.extendsCatalogs) {
+                    stack.push_back(p);
+                }
+            }
         }
-        if (cyclic) error("catalog cycle involving '" + name + "'", {});
+        if (cyclic) {
+            error("catalog cycle involving '" + name + "'", {});
+        }
     }
     // Collects a catalog's required values and methods transitively through its
     // `extends` parents (deduped); the visited set bounds it against any cycle.
-    std::function<void(const std::string&, std::unordered_set<std::string>&,
-                       std::vector<std::string>&, std::vector<std::string>&)>
+    std::function<void(const std::string&, std::unordered_set<std::string>&, std::vector<std::string>&,
+                       std::vector<std::string>&)>
         collect = [&](const std::string& catName, std::unordered_set<std::string>& seen,
                       std::vector<std::string>& vals, std::vector<std::string>& meths) {
-            if (!seen.insert(catName).second) return;
+            if (!seen.insert(catName).second) {
+                return;
+            }
             auto cit = catalogs_.find(catName);
-            if (cit == catalogs_.end()) return;
-            for (const auto& v : cit->second.requiredValues)
-                if (std::find(vals.begin(), vals.end(), v) == vals.end()) vals.push_back(v);
-            for (const auto& m : cit->second.methodNames)
-                if (std::find(meths.begin(), meths.end(), m) == meths.end()) meths.push_back(m);
-            for (const auto& parent : cit->second.extendsCatalogs)
+            if (cit == catalogs_.end()) {
+                return;
+            }
+            for (const auto& v : cit->second.requiredValues) {
+                if (std::find(vals.begin(), vals.end(), v) == vals.end()) {
+                    vals.push_back(v);
+                }
+            }
+            for (const auto& m : cit->second.methodNames) {
+                if (std::find(meths.begin(), meths.end(), m) == meths.end()) {
+                    meths.push_back(m);
+                }
+            }
+            for (const auto& parent : cit->second.extendsCatalogs) {
                 collect(parent, seen, vals, meths);
+            }
         };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
@@ -1828,14 +1939,22 @@ void SemanticAnalyzer::validateCatalogs(const ast::Program& program) {
 void SemanticAnalyzer::findEntryPoint(const ast::Program& program) {
     std::vector<EntryPoint> candidates;
     for (const ast::Bundle& bundle : program.bundles) {
-        if (bundle.visibility != "public") continue;
+        if (bundle.visibility != "public") {
+            continue;
+        }
         for (const ast::Namespace& ns : bundle.namespaces) {
-            if (ns.visibility != "public") continue;
+            if (ns.visibility != "public") {
+                continue;
+            }
             for (const ast::ClassDecl& cls : ns.classes) {
-                if (cls.visibility != "public" || cls.name != "Main") continue;
+                if (cls.visibility != "public" || cls.name != "Main") {
+                    continue;
+                }
                 for (const ast::MemberPtr& member : cls.members) {
                     const auto* method = dynamic_cast<const ast::MethodDecl*>(member.get());
-                    if (method == nullptr || method->name != "main") continue;
+                    if (method == nullptr || method->name != "main") {
+                        continue;
+                    }
                     if (isValidMainSignature(*method)) {
                         EntryPoint ep;
                         ep.method = method;
@@ -1848,7 +1967,9 @@ void SemanticAnalyzer::findEntryPoint(const ast::Program& program) {
         }
     }
     if (candidates.empty()) {
-        if (libraryMode_ || testMode_) return;  // a library (.ldb) or a --test run needs no entry point
+        if (libraryMode_ || testMode_) {
+            return;  // a library (.polb) or a --test run needs no entry point
+        }
         error("program '" + program.name +
                   "' has no entry point. Provide a public bundle with a public namespace "
                   "containing 'public class Main' with 'public static method "
@@ -1881,12 +2002,18 @@ void SemanticAnalyzer::findEntryPoint(const ast::Program& program) {
 static void collectReleasedRegions(const ast::Stmt* s, std::set<std::string>& out);
 
 static void collectReleasedInBlock(const ast::Block* b, std::set<std::string>& out) {
-    if (b == nullptr) return;
-    for (const ast::StmtPtr& st : b->statements) collectReleasedRegions(st.get(), out);
+    if (b == nullptr) {
+        return;
+    }
+    for (const ast::StmtPtr& st : b->statements) {
+        collectReleasedRegions(st.get(), out);
+    }
 }
 
 static void collectReleasedRegions(const ast::Stmt* s, std::set<std::string>& out) {
-    if (s == nullptr) return;
+    if (s == nullptr) {
+        return;
+    }
     if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(s)) {
         if (!rel->region.empty()) {
             // `release region this.store` and `release region store` name the same field.
@@ -1898,7 +2025,9 @@ static void collectReleasedRegions(const ast::Stmt* s, std::set<std::string>& ou
     // Anything with a body: a release inside an `if` still counts for "did you remember it at all".
     if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(s)) {
         collectReleasedInBlock(&ifs->thenBlock, out);
-        if (ifs->elseBlock) collectReleasedInBlock(ifs->elseBlock.get(), out);
+        if (ifs->elseBlock) {
+            collectReleasedInBlock(ifs->elseBlock.get(), out);
+        }
         return;
     }
     if (const auto* wh = dynamic_cast<const ast::WhileStmt*>(s)) {
@@ -1910,11 +2039,15 @@ static void collectReleasedRegions(const ast::Stmt* s, std::set<std::string>& ou
 // The body of a method of the class being analyzed, or null if there is no such method here (it may
 // be inherited, or the call may be `super(...)` -- both of which the caller treats conservatively).
 const ast::Block* SemanticAnalyzer::methodBodyInCurrentClass(const std::string& name) const {
-    if (currentClassDecl_ == nullptr) return nullptr;
-    for (const ast::MemberPtr& m : currentClassDecl_->members)
+    if (currentClassDecl_ == nullptr) {
+        return nullptr;
+    }
+    for (const ast::MemberPtr& m : currentClassDecl_->members) {
         if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
-            md != nullptr && md->name == name && !md->isAbstract)
+            md != nullptr && md->name == name && !md->isAbstract) {
             return &md->body;
+        }
+    }
     return nullptr;
 }
 
@@ -1923,51 +2056,77 @@ const ast::Block* SemanticAnalyzer::methodBodyInCurrentClass(const std::string& 
 // is a constructor calling one `init()` which calls `reset()`.
 void SemanticAnalyzer::collectFieldsAssigned(const ast::Block* body, std::set<std::string>& assigned,
                                              std::set<std::string>& visited) const {
-    if (body == nullptr || currentClassDecl_ == nullptr) return;
+    if (body == nullptr || currentClassDecl_ == nullptr) {
+        return;
+    }
     const ClassInfo* ci = nullptr;
-    if (auto it = classes_.find(currentClassDecl_->name); it != classes_.end()) ci = &it->second;
+    if (auto it = classes_.find(currentClassDecl_->name); it != classes_.end()) {
+        ci = &it->second;
+    }
     std::function<void(const ast::Stmt*)> walkStmt;
     std::function<void(const ast::Block*)> walkBlock = [&](const ast::Block* b) {
-        if (b == nullptr) return;
-        for (const ast::StmtPtr& s : b->statements) walkStmt(s.get());
+        if (b == nullptr) {
+            return;
+        }
+        for (const ast::StmtPtr& s : b->statements) {
+            walkStmt(s.get());
+        }
     };
     std::function<void(const ast::Expr*)> walkExpr = [&](const ast::Expr* e) {
         const auto* call = dynamic_cast<const ast::CallExpr*>(e);
-        if (call == nullptr) return;
+        if (call == nullptr) {
+            return;
+        }
         std::string callee;
         if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
             if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(cm->object.get());
-                oid != nullptr && oid->name == "this")
+                oid != nullptr && oid->name == "this") {
                 callee = cm->member;
+            }
         } else if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
             callee = cid->name;
         }
-        if (callee.empty() || visited.count(callee) > 0) return;
+        if (callee.empty() || visited.count(callee) > 0) {
+            return;
+        }
         if (const ast::Block* nested = methodBodyInCurrentClass(callee); nested != nullptr) {
             visited.insert(callee);
             walkBlock(nested);
         }
     };
     walkStmt = [&](const ast::Stmt* s) {
-        if (s == nullptr) return;
+        if (s == nullptr) {
+            return;
+        }
         if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) {
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(as->target.get())) {
                 if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-                    oid != nullptr && oid->name == "this")
+                    oid != nullptr && oid->name == "this") {
                     assigned.insert(mem->member);
+                }
             } else if (const auto* id =
                            dynamic_cast<const ast::IdentifierExpr*>(as->target.get())) {
-                if (ci != nullptr && ci->fields.count(id->name) > 0) assigned.insert(id->name);
+                if (ci != nullptr && ci->fields.count(id->name) > 0) {
+                    assigned.insert(id->name);
+                }
             }
             return;
         }
-        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s)) { walkExpr(es->expr.get()); return; }
-        if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(s)) {
-            walkBlock(&ifs->thenBlock);
-            if (ifs->elseBlock) walkBlock(ifs->elseBlock.get());
+        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s)) {
+            walkExpr(es->expr.get());
             return;
         }
-        if (const auto* wh = dynamic_cast<const ast::WhileStmt*>(s)) { walkBlock(&wh->body); return; }
+        if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(s)) {
+            walkBlock(&ifs->thenBlock);
+            if (ifs->elseBlock) {
+                walkBlock(ifs->elseBlock.get());
+            }
+            return;
+        }
+        if (const auto* wh = dynamic_cast<const ast::WhileStmt*>(s)) {
+            walkBlock(&wh->body);
+            return;
+        }
     };
     walkBlock(body);
 }
@@ -1987,17 +2146,22 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
                 // correct rather than a leak. `eternal region store` says so in the declaration, where
                 // a reader sees it, instead of in a comment or in nobody's head. A prefix goes unused
                 // when nothing asks the question; this asks it.
-                if (typeRefStr(f->type) == "region" && !f->isStatic && !f->isEternal)
+                if (typeRefStr(f->type) == "region" && !f->isStatic && !f->isEternal) {
                     owned.push_back({f->name, f->loc});
+                }
             } else if (const auto* d = dynamic_cast<const ast::DestructorDecl*>(m.get())) {
                 dtor = d;
             }
         }
         if (!owned.empty()) {
             std::set<std::string> released;
-            if (dtor != nullptr) collectReleasedInBlock(&dtor->body, released);
+            if (dtor != nullptr) {
+                collectReleasedInBlock(&dtor->body, released);
+            }
             for (const auto& [fname, floc] : owned) {
-                if (released.count(fname) > 0) continue;
+                if (released.count(fname) > 0) {
+                    continue;
+                }
                 error(dtor == nullptr
                           ? "class '" + cls.name + "' owns the region field '" + fname +
                                 "' and has no destructor, so the region is never given back -- every "
@@ -2012,36 +2176,42 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
     }
     for (const ast::MemberPtr& member : cls.members) {
         const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
-        if (f == nullptr) continue;
+        if (f == nullptr) {
+            continue;
+        }
         // `transient` marks derived/scratch state, excluded from the object's canonical value (reset,
         // not copied, on a value copy; and not captured by serialization). `persistent` is the exact
         // opposite -- state that outlives the instance -- so the pair is a contradiction (spec).
-        if (f->isTransient && f->isPersistent)
+        if (f->isTransient && f->isPersistent) {
             error("field '" + f->name + "' cannot be both 'transient' and 'persistent'", f->loc);
+        }
         // `eternal` means ONE thing in this compiler: suppress the automatic teardown. An eternal
         // region never enters the scope's region list, and an eternal persistent never requires an
         // explicit release. A plain field has no teardown to suppress -- measured, the IR is
         // byte-identical with and without it -- so the word was being accepted and doing nothing.
-        if (f->isEternal && !f->isPersistent && typeRefStr(f->type) != "region")
+        if (f->isEternal && !f->isPersistent && typeRefStr(f->type) != "region") {
             error("'eternal' has nothing to do on field '" + f->name +
                       "': it suppresses automatic teardown, and only a `region` or a `persistent` "
                       "field has any. Drop it, or say which of the two this is (spec 37.2).",
                   f->loc);
+        }
         // spec 18.7 promises `in region X` places a field's storage in that region. It does not: the
         // emitted IR is byte-identical with and without it. A warning rather than an error because the
         // spec documents the syntax and code in this repository writes it -- but it says so, because
         // a placement clause that silently places nothing is a promise the compiler is not keeping.
-        if (!f->inRegion.empty())
+        if (!f->inRegion.empty()) {
             warn("'in region " + f->inRegion + "' on field '" + f->name +
                      "' has no effect yet: the field keeps its ordinary storage (spec 18.7).",
                  f->loc);
+        }
         // spec 32.2: a snapshot is a captured state, not a variable. Checked on the WRITTEN type name,
         // because `RegionSnapshot` canonicalizes to `address` and the two are indistinguishable after.
-        if (f->isMutable && f->type.name == "RegionSnapshot")
+        if (f->isMutable && f->type.name == "RegionSnapshot") {
             error("a snapshot is constant: '" + f->name +
                       "' cannot be 'mutable'. It names a state that was captured; re-capturing is "
                       "`snapshot region <name> into " + f->name + ";` (spec 32.2).",
                   f->loc);
+        }
         // `comptime T f = ...` (spec 37.4): the INITIALIZER is evaluated during compilation, so it has
         // to fold. This is not `fixed`, which is a class-level constant with no storage and no
         // `mutable` -- a comptime field is an ordinary field whose starting value costs nothing to
@@ -2064,11 +2234,12 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
                     long long v;
                     folds = evalConstInt(*f->init, v, &constInts_, &comptimeMethods_, &constDoubles_);
                 }
-                if (!folds)
+                if (!folds) {
                     error("'comptime " + ft + " " + f->name +
                               "' must have an initializer the compiler can evaluate -- a literal, a "
                               "`fixed` constant, or a call to a `comptime` method (spec 37.4).",
                           f->loc);
+                }
             }
         }
         // A `weak T*` observes an object by identity and auto-nulls when it dies, so its target must be a
@@ -2076,16 +2247,19 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
         // pointer) and `weak int*` (no identity, no weak-list head): the intrusive auto-null has nowhere to
         // hook. This keeps `weak` a precise tool rather than a footgun on a nonsensical target.
         if (f->isWeak) {
-            if (!f->type.isPointer)
+            if (!f->type.isPointer) {
                 error("'weak' requires a pointer: write 'weak " + typeRefStr(f->type) + "* " + f->name +
                           "'. A weak reference observes an object by identity, so it must be a pointer.",
                       f->loc);
-            else if (classes_.count(baseType(typeRefStr(f->type))) == 0)
+            } else if (classes_.count(baseType(typeRefStr(f->type))) == 0) {
                 error("'weak " + typeRefStr(f->type) + "' has no valid target: a weak reference must point "
                       "at a class instance (an object with identity), not a primitive or non-class type.",
                       f->loc);
+            }
         }
-        if (!f->init) continue;
+        if (!f->init) {
+            continue;
+        }
         const std::string initType = typeOf(*f->init);
         const std::string ft = typeRefStr(f->type);
         if (!initType.empty() && !isSubtype(initType, ft) && !intLiteralFits(*f->init, ft)) {
@@ -2106,17 +2280,24 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
 std::string SemanticAnalyzer::fieldTypeOf(const ast::MemberExpr& mem) {
     std::string cls;
     if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem.object.get())) {
-        if (oid->name == "this") cls = enclosingClass_;
-        else if (const LocalVar* v = lookupLocal(oid->name)) cls = baseType(v->type);
+        if (oid->name == "this") {
+            cls = enclosingClass_;
+        } else if (const LocalVar* v = lookupLocal(oid->name)) {
+            cls = baseType(v->type);
+        }
     }
-    if (cls.empty()) return "";
+    if (cls.empty()) {
+        return "";
+    }
     const FieldInfo* fi = findField(baseType(cls), mem.member);
     return fi != nullptr ? fi->type : "";
 }
 
 void SemanticAnalyzer::scanEscapes(const ast::Block& body, std::unordered_map<std::string, int>& alias,
                                    std::vector<bool>& esc) {
-    for (const auto& stmt : body.statements) scanStmt(stmt.get(), alias, esc);
+    for (const auto& stmt : body.statements) {
+        scanStmt(stmt.get(), alias, esc);
+    }
 }
 
 // Process one statement for the escape summary, recursing into EVERY block-bearing statement so a store
@@ -2124,7 +2305,9 @@ void SemanticAnalyzer::scanEscapes(const ast::Block& body, std::unordered_map<st
 // EXPRESSION -- spec 30.18 -- are the one residual, tracked.)
 void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::string, int>& alias,
                                 std::vector<bool>& esc) {
-    if (s == nullptr) return;
+    if (s == nullptr) {
+        return;
+    }
     auto paramOf = [&](const ast::Expr* e) -> int {  // the param index an expression aliases, or -1
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
             auto it = alias.find(id->name);
@@ -2139,38 +2322,58 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
     // generics (a `T[]` field is not a ref in the template but is when T = Node*).
     auto storeSlot = [&](const ast::Expr* target) -> int {
         const ast::Expr* t = target;
-        if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(t)) t = ix->array.get();
+        if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(t)) {
+            t = ix->array.get();
+        }
         const auto* mem = dynamic_cast<const ast::MemberExpr*>(t);
-        if (mem == nullptr) return -2;
+        if (mem == nullptr) {
+            return -2;
+        }
         const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-        if (oid == nullptr) return -2;
-        if (oid->name == "this") return -1;
+        if (oid == nullptr) {
+            return -2;
+        }
+        if (oid->name == "this") {
+            return -1;
+        }
         auto ta = alias.find(oid->name);              // is the target object a parameter (or its alias)?
         return (ta != alias.end() && escapeScanParams_ != nullptr &&
                 ta->second < static_cast<int>(escapeScanParams_->size())) ? ta->second : -2;
     };
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) {
         int p = vd->init ? paramOf(vd->init.get()) : -1;   // `var y = param/alias` -> y aliases it
-        if (p >= 0) alias[vd->name] = p; else alias.erase(vd->name);
+        if (p >= 0) {
+            alias[vd->name] = p;
+        } else {
+            alias.erase(vd->name);
+        }
     } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) {
         int slot = storeSlot(as->target.get());
         if (slot != -2) {
             int p = paramOf(as->value.get());   // storing parameter p into slot's ref field
             if (p >= 0 && p < static_cast<int>(esc.size())) {
-                if (slot == -1) esc[p] = true;                            // escapes into the receiver
-                else if (p < static_cast<int>(escapeScanParamTargets_.size()) &&
-                         std::find(escapeScanParamTargets_[p].begin(), escapeScanParamTargets_[p].end(),
-                                   slot) == escapeScanParamTargets_[p].end())
+                if (slot == -1) {
+                    esc[p] = true;  // escapes into the receiver
+                } else if (p < static_cast<int>(escapeScanParamTargets_.size()) &&
+                           std::find(escapeScanParamTargets_[p].begin(), escapeScanParamTargets_[p].end(),
+                                     slot) == escapeScanParamTargets_[p].end()) {
                     escapeScanParamTargets_[p].push_back(slot);          // escapes into parameter `slot`
+                }
             }
         }
         if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(as->target.get())) {
             int p = paramOf(as->value.get());              // reassigning a local: retag or clear
-            if (p >= 0) alias[tid->name] = p; else alias.erase(tid->name);
+            if (p >= 0) {
+                alias[tid->name] = p;
+            } else {
+                alias.erase(tid->name);
+            }
         }
     } else if (const auto* is = dynamic_cast<const ast::IfStmt*>(s)) {
         scanEscapes(is->thenBlock, alias, esc);
-        if (is->elseBlock) scanEscapes(*is->elseBlock, alias, esc);
+        if (is->elseBlock) {
+            scanEscapes(*is->elseBlock, alias, esc);
+        }
     } else if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(s)) {
         scanEscapes(ws->body, alias, esc);
     } else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(s)) {
@@ -2181,15 +2384,27 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
     } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(s)) {
         scanEscapes(fe->body, alias, esc);
     } else if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(s)) {
-        for (const auto& c : ms->cases) scanEscapes(c.body, alias, esc);
-        if (ms->defaultBody) scanEscapes(*ms->defaultBody, alias, esc);
+        for (const auto& c : ms->cases) {
+            scanEscapes(c.body, alias, esc);
+        }
+        if (ms->defaultBody) {
+            scanEscapes(*ms->defaultBody, alias, esc);
+        }
     } else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(s)) {
-        for (const auto& c : sw->cases) scanEscapes(c.body, alias, esc);
-        if (sw->defaultBody) scanEscapes(*sw->defaultBody, alias, esc);
+        for (const auto& c : sw->cases) {
+            scanEscapes(c.body, alias, esc);
+        }
+        if (sw->defaultBody) {
+            scanEscapes(*sw->defaultBody, alias, esc);
+        }
     } else if (const auto* ts = dynamic_cast<const ast::TryStmt*>(s)) {
         scanEscapes(ts->body, alias, esc);
-        for (const auto& c : ts->catches) scanEscapes(c.body, alias, esc);
-        if (ts->finallyBlock) scanEscapes(*ts->finallyBlock, alias, esc);
+        for (const auto& c : ts->catches) {
+            scanEscapes(c.body, alias, esc);
+        }
+        if (ts->finallyBlock) {
+            scanEscapes(*ts->finallyBlock, alias, esc);
+        }
     } else if (const auto* df = dynamic_cast<const ast::DeferStmt*>(s)) {
         scanEscapes(df->body, alias, esc);
     } else if (const auto* us = dynamic_cast<const ast::UsingStmt*>(s)) {
@@ -2201,22 +2416,26 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
     } else if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s)) {
         // TRANSITIVE escape (fixpoint): `this.M(param)` or `this.field.M(param)` where callee M stores that
         // argument into ITS receiver -- which is part of OUR `this` -- makes the argument escape US too.
-        if (const auto* call = dynamic_cast<const ast::CallExpr*>(es->expr.get()))
+        if (const auto* call = dynamic_cast<const ast::CallExpr*>(es->expr.get())) {
             if (const auto* callee = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
                 std::string calleeClass;
                 if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(callee->object.get())) {
-                    if (rid->name == "this") calleeClass = escapeScanClass_;   // this.M(...)
+                    if (rid->name == "this") {
+                        calleeClass = escapeScanClass_;  // this.M(...)
+                    }
                 } else if (const auto* rmem = dynamic_cast<const ast::MemberExpr*>(callee->object.get())) {
                     if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(rmem->object.get());
-                        oid != nullptr && oid->name == "this")                 // this.field.M(...)
-                        if (const FieldInfo* fi = findField(escapeScanClass_, rmem->member))
+                        oid != nullptr && oid->name == "this") {  // this.field.M(...)
+                        if (const FieldInfo* fi = findField(escapeScanClass_, rmem->member)) {
                             calleeClass = baseType(fi->type);
+                        }
+                    }
                 }
                 if (!calleeClass.empty()) {
                     auto sit = escapesToReceiver_.find(calleeClass + "." + callee->member);
-                    if (sit != escapesToReceiver_.end())
-                        for (std::size_t k = 0; k < call->args.size() && k < sit->second.size(); ++k)
-                            if (sit->second[k])
+                    if (sit != escapesToReceiver_.end()) {
+                        for (std::size_t k = 0; k < call->args.size() && k < sit->second.size(); ++k) {
+                            if (sit->second[k]) {
                                 if (const auto* aid =
                                         dynamic_cast<const ast::IdentifierExpr*>(call->args[k].get())) {
                                     auto it = alias.find(aid->name);
@@ -2226,49 +2445,72 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                                         escapeSummaryChanged_ = true;  // a summary grew -> another fixpoint round
                                     }
                                 }
+                            }
+                        }
+                    }
                 }
             }
+        }
     }
 }
 
 void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
     // Iterate to a fixpoint: a transitive store (`this.list.add(param)`) can only be seen once the callee's
     // own summary is known, so re-scan until no summary grows. Monotone (bits only turn on) -> it converges.
-    // IMPORTED bundles (user libraries via .ldb) carry no bodies -- their escape summary rode along in the
-    // .ldh `escapes(...)` clause, parsed onto each MethodDecl. Load it so their container methods are checked.
+    // IMPORTED bundles (user libraries via .polb) carry no bodies -- their escape summary rode along in the
+    // .polh `escapes(...)` clause, parsed onto each MethodDecl. Load it so their container methods are checked.
     for (const ast::Bundle& bundle : program.bundles) {
-        if (!bundle.isImported) continue;
-        for (const ast::Namespace& ns : bundle.namespaces)
-            for (const ast::ClassDecl& cls : ns.classes)
-                for (const ast::MemberPtr& member : cls.members)
+        if (!bundle.isImported) {
+            continue;
+        }
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
+                for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         std::string key = baseType(cls.name) + "." + m->name;
                         std::vector<bool> rec(m->params.size(), false);
-                        std::vector<std::vector<int>> par(m->params.size(), {});
-                        for (const auto& [i, slot] : m->escapeSummary)
+                        // NOT `par(n, {})`: with a vector element type, `{}` matches both the
+                        // (count, value) and the (count, allocator) constructors and libstdc++ calls
+                        // the ambiguity -- MSVC picks one and says nothing. The sized constructor
+                        // value-initializes every element anyway, which is what was meant.
+                        std::vector<std::vector<int>> par(m->params.size());
+                        for (const auto& [i, slot] : m->escapeSummary) {
                             if (i >= 0 && i < static_cast<int>(m->params.size())) {
-                                if (slot == -1) rec[i] = true; else par[i].push_back(slot);
+                                if (slot == -1) {
+                                    rec[i] = true;
+                                } else {
+                                    par[i].push_back(slot);
+                                }
                             }
+                        }
                         escapesToReceiver_[key] = std::move(rec);
                         escapesToParam_[key] = std::move(par);
                     }
+                }
+            }
+        }
     }
     int guard = 0;
     do {
         escapeSummaryChanged_ = false;
         for (const ast::Bundle& bundle : program.bundles) {
-            if (bundle.isImported) continue;
-            for (const ast::Namespace& ns : bundle.namespaces)
-                for (const ast::ClassDecl& cls : ns.classes)
-                    for (const ast::MemberPtr& member : cls.members)
+            if (bundle.isImported) {
+                continue;
+            }
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                for (const ast::ClassDecl& cls : ns.classes) {
+                    for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                            if (m->isAbstract || m->isExtern) continue;   // no LDP3 body to scan
+                            if (m->isAbstract || m->isExtern) {
+                                continue;  // no Polaron body to scan
+                            }
                             escapeScanClass_ = baseType(cls.name);
                             escapeScanParams_ = &m->params;
                             escapeScanParamTargets_.assign(m->params.size(), {});
                             std::unordered_map<std::string, int> alias;   // param/alias name -> param index
-                            for (std::size_t i = 0; i < m->params.size(); ++i)
+                            for (std::size_t i = 0; i < m->params.size(); ++i) {
                                 alias[m->params[i].name] = static_cast<int>(i);
+                            }
                             std::string key = escapeScanClass_ + "." + m->name;
                             std::vector<bool> esc = escapesToReceiver_.count(key) > 0
                                                         ? escapesToReceiver_[key]  // keep bits from prior round
@@ -2276,35 +2518,55 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                             scanEscapes(m->body, alias, esc);
                             escapesToReceiver_[key] = esc;
                             escapesToParam_[key] = escapeScanParamTargets_;  // param -> param slots it escapes to
-                            // write the summary back onto the AST so the .ldh emitter can serialize it for
+                            // write the summary back onto the AST so the .polh emitter can serialize it for
                             // downstream compilation units (an `escapes(i>slot, ...)` clause).
                             std::vector<std::pair<int, int>> sum;
-                            for (std::size_t i = 0; i < esc.size(); ++i) if (esc[i]) sum.emplace_back((int)i, -1);
-                            for (std::size_t i = 0; i < escapeScanParamTargets_.size(); ++i)
-                                for (int slot : escapeScanParamTargets_[i]) sum.emplace_back((int)i, slot);
+                            for (std::size_t i = 0; i < esc.size(); ++i) {
+                                if (esc[i]) {
+                                    sum.emplace_back(static_cast<int>(i), -1);
+                                }
+                            }
+                            for (std::size_t i = 0; i < escapeScanParamTargets_.size(); ++i) {
+                                for (int slot : escapeScanParamTargets_[i]) {
+                                    sum.emplace_back(static_cast<int>(i), slot);
+                                }
+                            }
                             const_cast<ast::MethodDecl*>(m)->escapeSummary = std::move(sum);
                         }
+                    }
+                }
+            }
         }
     } while (escapeSummaryChanged_ && ++guard < 50);   // 50 = a very high safety bound; real depth is tiny
 }
 
 void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
-        if (bundle.isImported) continue;  // bodies live in the .ldb; only its public API is visible
+        if (bundle.isImported) {
+            continue;  // bodies live in the .polb; only its public API is visible
+        }
         // The freestanding restrictions (spec 36.3) are about what the PROGRAM may use. The stdlib
-        // itself is written in full LDP3 -- System.Ipc throws, for one -- and the parts a freestanding
+        // itself is written in full Polaron -- System.Ipc throws, for one -- and the parts a freestanding
         // program cannot reach are stripped as dead code anyway. Checking the prelude's own bodies
         // against them would outlaw the stdlib for having features the program simply never calls.
         const bool wasFreestanding = freestanding_;
-        if (bundle.isPrelude) freestanding_ = false;
+        if (bundle.isPrelude) {
+            freestanding_ = false;
+        }
         // Imports are written before `program` (file level, spec 2.7); the in-bundle form is still
         // accepted during migration. Collect the imported symbol names from both.
         currentBundle_ = bundle.name;  // for the stdlib-cohesion visibility check
         currentImports_.clear();
-        for (const ast::ImportDecl& imp : program.imports)
-            if (!imp.path.empty()) currentImports_.insert(imp.path.back());
-        for (const ast::ImportDecl& imp : bundle.imports)
-            if (!imp.path.empty()) currentImports_.insert(imp.path.back());
+        for (const ast::ImportDecl& imp : program.imports) {
+            if (!imp.path.empty()) {
+                currentImports_.insert(imp.path.back());
+            }
+        }
+        for (const ast::ImportDecl& imp : bundle.imports) {
+            if (!imp.path.empty()) {
+                currentImports_.insert(imp.path.back());
+            }
+        }
         for (const ast::Namespace& ns : bundle.namespaces) {
             currentNamespace_ = ns.name;
             for (const ast::ClassDecl& cls : ns.classes) {
@@ -2317,32 +2579,41 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                 // instantiation site, and the generated class is not bound to the arg's namespace.
                 const bool isMono = cls.name.find('$') != std::string::npos;
                 for (const ast::MemberPtr& member : cls.members) {
-                    if (isMono) break;
+                    if (isMono) {
+                        break;
+                    }
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                        for (const ast::Param& p : m->params)
+                        for (const ast::Param& p : m->params) {
                             checkTypeAccessible(typeRefStr(p.type), p.loc);
+                        }
                         checkTypeAccessible(typeRefStr(m->returnType), m->loc);
                     } else if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
                         checkTypeAccessible(typeRefStr(f->type), f->loc);
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
-                        for (const ast::Param& p : c->params)
+                        for (const ast::Param& p : c->params) {
                             checkTypeAccessible(typeRefStr(p.type), p.loc);
+                        }
                     }
                 }
                 analyzeFieldInits(cls);
                 if (!cls.invariants.empty()) {
                     std::vector<const ast::Expr*> invs;
-                    for (const auto& e : cls.invariants) invs.push_back(e.get());
+                    for (const auto& e : cls.invariants) {
+                        invs.push_back(e.get());
+                    }
                     analyzeMethodBody(ast::Block{}, {}, cls.name, false, invs);
                 }
                 enclosingClass_ = cls.name;  // kept across static methods (currentClass_ is cleared there)
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                        if (m->isAbstract || m->isExtern) continue;  // no LDP3 body to analyze
-                        if (m->isAsync && freestanding_)
+                        if (m->isAbstract || m->isExtern) {
+                            continue;  // no Polaron body to analyze
+                        }
+                        if (m->isAsync && freestanding_) {
                             error("async methods are not available in freestanding mode (spec 36.3)",
                                   m->loc);
+                        }
                         // The trap parameter is WORLD-SHAPED, and it has to be, because it names
                         // what the outside world actually handed over on the way in. Bare metal
                         // that is the frame the CPU pushed, which is an object with fields. Hosted
@@ -2352,18 +2623,20 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         if (m->isInterrupt && !m->params.empty()) {
                             const std::string pt = baseType(typeRefStr(m->params[0].type));
                             const bool isClass = classes_.count(pt) > 0;
-                            if (freestanding_ && !isClass)
+                            if (freestanding_ && !isClass) {
                                 error("a freestanding interrupt receives the frame the CPU pushed, "
                                       "so its parameter must be a class with the fields of that "
                                       "frame -- not '" + pt + "'. Declare a `Trap` type, or take no "
                                       "parameter at all.",
                                       m->params[0].loc);
-                            if (!freestanding_ && isClass)
+                            }
+                            if (!freestanding_ && isClass) {
                                 error("a hosted interrupt is entered with a CODE -- a signal number, "
                                       "a console control type -- not a CPU frame, so its parameter "
                                       "cannot be the class '" + pt + "'. Declare an integer, or take "
                                       "no parameter at all.",
                                       m->params[0].loc);
+                            }
                         }
                         // A value Result/Option rides the Task's 64-bit result slot boxed (codegen copies
                         // the { tag, payload } struct to the heap on completion and unboxes it on await),
@@ -2372,21 +2645,28 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // class's fixture window, so they are the methods the fixture-ownership warning
                         // applies to.
                         inTestMethod_ = false;
-                        for (const ast::AnnotationUse& a : m->annotations)
-                            if (a.name == "Test" || a.name == "Setup" || a.name == "Teardown")
+                        for (const ast::AnnotationUse& a : m->annotations) {
+                            if (a.name == "Test" || a.name == "Setup" || a.name == "Teardown") {
                                 inTestMethod_ = true;
+                            }
+                        }
                         std::vector<const ast::Expr*> contracts;
-                        for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
+                        for (const auto& e : m->requiresClauses) {
+                            contracts.push_back(e.get());
+                        }
                         // Postconditions go separately: they are checked with `result` in scope, and
                         // preconditions must not see it.
                         std::vector<const ast::Expr*> posts;
-                        for (const auto& e : m->ensuresClauses) posts.push_back(e.get());
+                        for (const auto& e : m->ensuresClauses) {
+                            posts.push_back(e.get());
+                        }
                         currentReturnType_ = typeRefStr(m->returnType);  // for the return null check
                         currentReturnIsMove_ = m->returnType.isMove;
                         currentGenElem_ = m->genElem;  // spec 22.6: the type each `yield` must produce
                         currentThrows_.clear();
-                        for (const auto& t : m->throwsTypes)
+                        for (const auto& t : m->throwsTypes) {
                             currentThrows_.push_back(baseType(typeRefStr(t)));
+                        }
                         const std::string retT = typeRefStr(m->returnType);
                         // `naked` changes what an asm body is ALLOWED to do, so the asm checker has to
                         // know. In an ordinary method the block sits inside compiler-generated code and
@@ -2400,17 +2680,37 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // outside one does not get attributed to whichever method ran last.
                         currentMethodKey_ = cls.name + "." + m->name;
                         methodFacts_[currentMethodKey_];  // exists even when it does nothing
+                        // A BODY THAT CAME OUT OF A `freestanding` TRANSFORMER obeys the bare-metal
+                        // subset even here, in a program that is hosted. That is the whole of what
+                        // the modifier buys: without it, a transformer whose body interpolates a
+                        // string or throws compiles perfectly for its author and fails three layers
+                        // down, in somebody else's kernel, on a line its reader never wrote.
+                        //
+                        // Done by turning the REAL gate on for this body rather than by a second
+                        // hand-written list of what bare metal cannot have. Everything it already
+                        // refuses -- interpolation, exceptions, await, unimport, `Test`, `Console` --
+                        // applies unchanged, and anything added to it later applies too.
+                        const bool savedFreestanding = freestanding_;
+                        const std::string savedFsFrom = freestandingFrom_;
+                        if (!m->freestandingFrom.empty()) {
+                            freestanding_ = true;
+                            freestandingFrom_ = m->freestandingFrom;
+                        }
                         if (m->isInterrupt) {
                             interruptRoots_.emplace_back(cls.name, m->loc);
-                            if (!m->params.empty()) interruptTrapParam_ = m->params[0].name;
+                            if (!m->params.empty()) {
+                                interruptTrapParam_ = m->params[0].name;
+                            }
                         }
                         analyzeMethodBody(m->body, m->params,
                                           m->isStatic ? std::string() : cls.name, false, contracts,
                                           posts, retT == "void" ? std::string() : retT);
                         currentMethodKey_.clear();
+                        freestanding_ = savedFreestanding;
+                        freestandingFrom_ = savedFsFrom;
                         interruptTrapParam_.clear();
                         inNakedFn_ = false;
-                        // A non-void method that can reach its end without returning. LDP3-0501 was
+                        // A non-void method that can reach its end without returning. Polaron-0501 was
                         // written in the catalog and had NO producer, so `returns int { if (n > 0) {
                         // return 7; } }` compiled clean and handed the caller a 0 -- a wrong answer, in
                         // the most ordinary shape there is. `blockAlwaysExits` is the same walker the
@@ -2425,21 +2725,25 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // rewrite, so the flag alone is not enough to tell "no body" from "a body that
                         // falls through". A declaration with nothing in it never had a path to check.
                         if (!m->isAbstract && !m->isExtern && !m->isAsync && m->genElem.empty() &&
-                            !m->body.statements.empty() &&
-                            !typeRefStr(m->returnType).empty() && typeRefStr(m->returnType) != "void" &&
-                            !alwaysReturns(m->body))
+                            !m->body.statements.empty() && !typeRefStr(m->returnType).empty() &&
+                            typeRefStr(m->returnType) != "void" && !alwaysReturns(m->body)) {
                             error("method '" + m->name + "' returns '" + typeRefStr(m->returnType) +
                                       "', but a path reaches the end of its body without returning a "
                                       "value. Falling off the end leaves the caller holding whatever "
                                       "happened to be there -- add a `return` on that path, usually the "
                                       "final `else` or the code after the last `if`",
                                   m->loc);
+                        }
                         currentGenElem_.clear();
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
                         std::vector<const ast::Expr*> contracts;
-                        for (const auto& e : c->requiresClauses) contracts.push_back(e.get());
-                        for (const auto& e : c->ensuresClauses) contracts.push_back(e.get());
+                        for (const auto& e : c->requiresClauses) {
+                            contracts.push_back(e.get());
+                        }
+                        for (const auto& e : c->ensuresClauses) {
+                            contracts.push_back(e.get());
+                        }
                         currentReturnType_ = "void";
                         currentReturnIsMove_ = false;
                         currentThrows_.clear();
@@ -2464,21 +2768,33 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         const bool synthesized =
                             cls.loc.file.empty() || cls.name.find('$') != std::string::npos;
                         for (const ast::MemberPtr& fm : cls.members) {
-                            if (synthesized) break;
+                            if (synthesized) {
+                                break;
+                            }
                             const auto* fd = dynamic_cast<const ast::FieldDecl*>(fm.get());
-                            if (fd == nullptr) continue;
+                            if (fd == nullptr) {
+                                continue;
+                            }
                             // A field with a value at its declaration already has one.
-                            if (fd->init) continue;
+                            if (fd->init) {
+                                continue;
+                            }
                             // A static field is not per-object, so a constructor is not where it gets
                             // its value.
-                            if (fd->isStatic) continue;
+                            if (fd->isStatic) {
+                                continue;
+                            }
                             // `lazy` MEANS uninitialised until first read -- that is the feature, and
                             // reporting it would make the keyword unusable.
-                            if (fd->isLazy) continue;
+                            if (fd->isLazy) {
+                                continue;
+                            }
                             // A persistent field is read out of its block, which the runtime fills from
                             // the previous incarnation; assigning it in the constructor is how INITIAL
                             // values are expressed, not a requirement (spec 18.9).
-                            if (fd->isPersistent) continue;
+                            if (fd->isPersistent) {
+                                continue;
+                            }
                             // A field whose TYPE has a defined empty value is not uninitialised when it
                             // is left alone -- it is that value, and the type says so. `nullable T*`
                             // starts null and `weak T*` starts as an empty slot, both established by
@@ -2488,16 +2804,21 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                             // A plain `T*` is NOT excluded, and that is the line: a non-nullable pointer
                             // left unassigned is a dangling pointer the type system has promised is
                             // valid, which is worse than either.
-                            if (fd->isWeak) continue;
-                            if (isNullableType(typeRefStr(fd->type))) continue;
+                            if (fd->isWeak) {
+                                continue;
+                            }
+                            if (isNullableType(typeRefStr(fd->type))) {
+                                continue;
+                            }
                             // ANY pointer field. `nullable T*` is the explicit spelling, but a plain
                             // `T*` field null-defaults too, and the linked-list idiom -- a `next` the
                             // constructor deliberately leaves empty -- is written that way throughout
                             // the standard library and the tests. Demanding `this.next = null;` would be
                             // ceremony restating the declaration, and rejecting existing correct code is
                             // how a new check gets switched off rather than obeyed.
-                            if (!typeRefStr(fd->type).empty() && typeRefStr(fd->type).back() == '*')
+                            if (!typeRefStr(fd->type).empty() && typeRefStr(fd->type).back() == '*') {
                                 continue;
+                            }
                             // A field whose type is one of the class's TYPE PARAMETERS has no default
                             // the constructor could write: there is no value of `T` to be had without
                             // one being supplied. The prelude's `FilterStream<T>` is the shape --
@@ -2505,9 +2826,14 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                             // Seeing that it is guarded needs reasoning this analysis does not do, so
                             // the type parameter is where the line goes.
                             bool isTypeParam = false;
-                            for (const std::string& tp : cls.typeParams)
-                                if (typeRefStr(fd->type) == tp) isTypeParam = true;
-                            if (isTypeParam) continue;
+                            for (const std::string& tp : cls.typeParams) {
+                                if (typeRefStr(fd->type) == tp) {
+                                    isTypeParam = true;
+                                }
+                            }
+                            if (isTypeParam) {
+                                continue;
+                            }
                             // A `region` field is brought into being by `itself.allocate(...)`, which is
                             // an assignment like any other -- so regions are NOT excluded.
                             pendingCtorFields_.push_back({fd->name, fd->loc});
@@ -2527,7 +2853,9 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // came back, and it was discarded one layer above.
                         for (const auto& [fname, floc] : pendingCtorFields_) {
                             const FlowFacts::Init st = initStateOf("this." + fname);
-                            if (st == FlowFacts::Init::Init) continue;
+                            if (st == FlowFacts::Init::Init) {
+                                continue;
+                            }
                             error(st == FlowFacts::Init::Uninit
                                       ? "constructor of '" + cls.name + "' never assigns field '" +
                                             fname + "'. A new object's storage is whatever was last "
@@ -2547,19 +2875,23 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // the LLVM verifier caught it -- "Incorrect number of arguments passed to called
                         // function", a message that names nothing the programmer wrote and points at no
                         // line of theirs. Reject it here, where the omission actually is.
-                        if (!cls.superclass.empty())
+                        if (!cls.superclass.empty()) {
                             if (const ClassInfo* sup = lookupClass(cls.superclass);
                                 sup != nullptr && !sup->ctorParamTypes.empty()) {
                                 bool hasSuper = false;
-                                if (!c->body.statements.empty())
+                                if (!c->body.statements.empty()) {
                                     if (const auto* es = dynamic_cast<const ast::ExprStmt*>(
-                                            c->body.statements.front().get()))
+                                            c->body.statements.front().get())) {
                                         if (const auto* call =
-                                                dynamic_cast<const ast::CallExpr*>(es->expr.get()))
+                                                dynamic_cast<const ast::CallExpr*>(es->expr.get())) {
                                             if (dynamic_cast<const ast::SuperExpr*>(call->callee.get()) !=
-                                                nullptr)
+                                                nullptr) {
                                                 hasSuper = true;
-                                if (!hasSuper)
+                                            }
+                                        }
+                                    }
+                                }
+                                if (!hasSuper) {
                                     error("'" + cls.name + "' extends '" + cls.superclass +
                                               "', whose constructor takes " +
                                               std::to_string(sup->ctorParamTypes.size()) +
@@ -2567,7 +2899,9 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                                               "`super(...)` to supply them. Without it the base is left "
                                               "unbuilt and its fields hold whatever was there",
                                           c->loc);
+                                }
                             }
+                        }
                     } else if (const auto* d =
                                    dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                         currentReturnType_ = "void";
@@ -2584,21 +2918,34 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                 enclosingClass_ = en.name;
                 for (const ast::MemberPtr& member : en.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
-                    if (m == nullptr || m->isAbstract) continue;
-                    for (const ast::Param& p : m->params)
+                    if (m == nullptr || m->isAbstract) {
+                        continue;
+                    }
+                    for (const ast::Param& p : m->params) {
                         checkTypeAccessible(typeRefStr(p.type), p.loc);
+                    }
                     checkTypeAccessible(typeRefStr(m->returnType), m->loc);
                     std::vector<const ast::Expr*> contracts;
-                    for (const auto& e : m->requiresClauses) contracts.push_back(e.get());
-                    for (const auto& e : m->ensuresClauses) contracts.push_back(e.get());
+                    for (const auto& e : m->requiresClauses) {
+                        contracts.push_back(e.get());
+                    }
+                    for (const auto& e : m->ensuresClauses) {
+                        contracts.push_back(e.get());
+                    }
                     // Same leak as the literal suffixes below: an enum's method bodies are analyzed here
                     // rather than in the class member loop, so `currentReturnType_` still held whatever
                     // the last CLASS method left in it. A method on an enum returns a type like any other.
                     currentReturnType_ = typeRefStr(m->returnType);
                     currentReturnIsMove_ = m->returnType.isMove;
                     currentThrows_.clear();
+                    // An enum can apply a transformer, so its bodies need a row in the facts table
+                    // like everyone else's -- without a key, `facts()` returns null and the totality
+                    // check has nothing to read about a conversion written here.
+                    currentMethodKey_ = en.name + "." + m->name;
+                    methodFacts_[currentMethodKey_];
                     analyzeMethodBody(m->body, m->params,
                                       m->isStatic ? std::string() : en.name, false, contracts);
+                    currentMethodKey_.clear();
                 }
             }
         }
@@ -2613,10 +2960,13 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     // runtime; here we treat the program as freestanding if it or any bundle declares it.
     freestanding_ = program.isFreestanding;
     for (const ast::Bundle& b : program.bundles) {
-        if (b.isFreestanding) freestanding_ = true;
+        if (b.isFreestanding) {
+            freestanding_ = true;
+        }
         bundleNames_.insert(b.name);  // every declared/imported bundle: the import path's first segment
-        for (const ast::Namespace& ns : b.namespaces)
+        for (const ast::Namespace& ns : b.namespaces) {
             namespaceBundle_[ns.name] = b.name;  // namespace -> owning bundle (stdlib-cohesion check)
+        }
     }
     // Virtual builtin types (no prelude class, e.g. to avoid clashing with a user class named Math) live
     // in the System bundle (spec 34). Registering their (bundle, namespace) lets the strict full-path
@@ -2629,7 +2979,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     auto builtin = [&](const std::string& type, const std::string& ns, bool shadowable = false) {
         typeNamespace_[type] = ns;
         typeBundle_[type] = "System";
-        if (!shadowable) builtinTypes_.insert(type);
+        if (!shadowable) {
+            builtinTypes_.insert(type);
+        }
     };
     // The one list lives in ast.h, because the monomorphizer needs the same answer -- see
     // ast::builtinStaticClasses(). Two copies of it already cost a day: expansion had its own, so a
@@ -2638,8 +2990,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     // spec 17.8: the low-level memory API is a NAMESPACE of classes that each do one thing --
     // System.Memory.Allocator and System.Memory.Raw. It used to be one class `Memory` hung straight
     // off the bundle with no namespace, the only builtin shaped that way.
-    for (const ast::BuiltinStaticClass& b : ast::builtinStaticClasses())
+    for (const ast::BuiltinStaticClass& b : ast::builtinStaticClasses()) {
         builtin(b.name, b.ns, b.shadowable);
+    }
     // reflect (spec 31) is a builtin namespace, not a prelude class; register it so `import reflect;`
     // (a bare, bundle-less import) resolves. Reflection use is gated on this import at reflect.typeOf.
     typeNamespace_["reflect"] = "reflect";
@@ -2649,32 +3002,43 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
         bool atStart = true;
         for (char c : name) {
             if (atStart) {
-                if (c >= 'a' && c <= 'z') return true;  // a segment starts lowercase
+                if (c >= 'a' && c <= 'z') {
+                    return true;  // a segment starts lowercase
+                }
                 atStart = false;
             }
-            if (c == '.') atStart = true;
+            if (c == '.') {
+                atStart = true;
+            }
         }
         return false;
     };
     for (const ast::Bundle& b : program.bundles) {
-        if (b.isPrelude || b.isImported) continue;  // warn on the user's own source only
-        if (!b.name.empty() && lowerInitial(b.name))
+        if (b.isPrelude || b.isImported) {
+            continue;  // warn on the user's own source only
+        }
+        if (!b.name.empty() && lowerInitial(b.name)) {
             warn("bundle '" + b.name +
                      "' should start with a capital letter (bundle names are conventionally PascalCase)",
                  b.nameLoc);
-        for (const ast::Namespace& ns : b.namespaces)
-            if (!ns.name.empty() && lowerInitial(ns.name))
+        }
+        for (const ast::Namespace& ns : b.namespaces) {
+            if (!ns.name.empty() && lowerInitial(ns.name)) {
                 warn("namespace '" + ns.name +
                          "' should start with a capital letter (namespace names are conventionally "
                          "PascalCase)",
                      ns.nameLoc);
+            }
+        }
     }
     // Generic templates (stdlib collections and user generics alike) are erased by monomorphization,
     // which rewrites each use to an instance (ArrayList$int) in the user's namespace. The base name ->
     // namespace map captured before monomorphization pins each generic to its real home, so a stdlib
     // collection requires an import while a user generic in the current namespace does not. Enforcement
     // strips the $arg suffix and checks the base name (see checkTypeAccessible).
-    for (const auto& [base, ns] : program.genericNamespaces) typeNamespace_[base] = ns;
+    for (const auto& [base, ns] : program.genericNamespaces) {
+        typeNamespace_[base] = ns;
+    }
     genericVariance_ = program.genericVariance;  // variance of generic type params (spec 15.3)
     qualifiedTypes_.insert(program.qualifiedTypes.begin(), program.qualifiedTypes.end());
     registerClasses(program);
@@ -2691,13 +3055,17 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     validateHierarchy();
     // If the hierarchy itself is broken (cycle, missing super), stop: walking it
     // recursively below could otherwise loop forever.
-    if (!errors_.empty()) return false;
+    if (!errors_.empty()) {
+        return false;
+    }
     validateOverrides(program);
     validateCatalogs(program);
     findEntryPoint(program);
     // §8: compute the interprocedural escape summary before checking. Also run it when emitting a library
-    // (even without --region-binder) so the summary is serialized into the .ldh for downstream consumers.
-    if (regionBinder_ || libraryMode_) computeEscapeSummaries(program);
+    // (even without --region-binder) so the summary is serialized into the .polh for downstream consumers.
+    if (regionBinder_ || libraryMode_) {
+        computeEscapeSummaries(program);
+    }
     collectFixtureOwners(program);  // spec 32.11: known before the bodies that reach into them
     analyzeBodies(program);
     analyzeLiteralBodies(program);
@@ -2720,41 +3088,74 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
 // being told. `Errno -> int` is total because the constants are a finite list you own; `int ->
 // Errno` is not, and no annotation says so -- there is no list to cover and the compiler knows it.
 //
-// This is constructor definite assignment generalised: the same dataflow, over a different list.
-// The `enum` and `union` rows of the spec's table are NOT checked yet, and that is stated rather
-// than hidden -- `match` exhaustiveness already covers the natural way to write those, which is why
-// they were the cheaper half to leave.
+// This is constructor definite assignment generalised: the same dataflow, over a different list --
+// and the list is what the KIND is closed over:
+//
+//   class / record -> every FIELD          (a class is closed over its fields)
+//   enum           -> every CONSTANT       (a finite list you own; `Errno -> int` is the flagship)
+//   union          -> nothing to cover     (see below -- and this row is not an omission)
+//
+// A `union` looks like it should take the record rule and must not. Its fields SHARE one storage and
+// nothing tags which of them is live, so a conversion that read every field would be reading bytes
+// that mean something else -- the rule would demand a bug. The honest reading is that a union's
+// source is OPEN, like an `int`: there is no list to cover, so it is fallible by construction and
+// exempt for the same reason a static per-target procedure is. Before this was written down the
+// field rule ran over unions too, and demanded exactly that wrong thing.
 void SemanticAnalyzer::checkProcedureTotality(const ast::Program& program) {
     for (const ast::Bundle& b : program.bundles) {
-        if (b.isPrelude || b.isImported) continue;
+        if (b.isPrelude || b.isImported) {
+            continue;
+        }
         for (const ast::Namespace& ns : b.namespaces) {
             for (const ast::ClassDecl& cls : ns.classes) {
                 // A value aggregate or a plain class is closed over its fields. An interface has
-                // none, and an abstract class's are somebody else's problem.
-                if (cls.isInterface || cls.isAbstract) continue;
+                // none, and an abstract class's are somebody else's problem. A union is closed over
+                // nothing readable -- see above.
+                if (cls.isInterface || cls.isAbstract || cls.isUnion) {
+                    continue;
+                }
                 for (const ast::MemberPtr& m : cls.members) {
                     const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
-                    if (md == nullptr || !md->isEachFamily || md->isAbstract) continue;
+                    if (md == nullptr || !md->isEachFamily || md->isAbstract) {
+                        continue;
+                    }
+                    // A COMPOSED conversion reads no field, and demanding that it should would be
+                    // asking it to do the work again. `collective` produced it by chaining
+                    // conversions that were each checked total where they were written, so its
+                    // totality is inherited rather than unverified.
+                    if (!md->composedVia.empty()) {
+                        continue;
+                    }
                     // A STATIC per-target procedure converts *to* this type, not *from* it: its
                     // source is the parameter, which is why it exists at all -- one end of a
                     // relation is often a type you do not own, and `int` applies nothing. That
                     // source is OPEN, so the procedure is fallible by construction and there is no
                     // list to cover. `Errno -> int` is total; `int -> Errno` is not, and nothing
                     // had to be annotated to say so.
-                    if (md->isStatic) continue;
+                    if (md->isStatic) {
+                        continue;
+                    }
                     auto fit = methodFacts_.find(cls.name + "." + md->name);
-                    if (fit == methodFacts_.end()) continue;
+                    if (fit == methodFacts_.end()) {
+                        continue;
+                    }
                     std::vector<std::string> missed;
                     for (const ast::MemberPtr& fm : cls.members) {
                         const auto* fd = dynamic_cast<const ast::FieldDecl*>(fm.get());
-                        if (fd == nullptr || fd->isStatic || fd->isTransient) continue;
-                        if (fit->second.ownFieldsTouched.count(fd->name) == 0)
+                        if (fd == nullptr || fd->isStatic || fd->isTransient) {
+                            continue;
+                        }
+                        if (fit->second.ownFieldsTouched.count(fd->name) == 0) {
                             missed.push_back(fd->name);
+                        }
                     }
-                    if (missed.empty()) continue;
+                    if (missed.empty()) {
+                        continue;
+                    }
                     std::string list;
-                    for (std::size_t i = 0; i < missed.size(); ++i)
+                    for (std::size_t i = 0; i < missed.size(); ++i) {
                         list += (i != 0 ? ", " : "") + missed[i];
+                    }
                     const std::string target =
                         md->name.substr(md->name.find('$') == std::string::npos
                                             ? md->name.size()
@@ -2767,6 +3168,47 @@ void SemanticAnalyzer::checkProcedureTotality(const ast::Program& program) {
                           md->loc);
                 }
             }
+            // THE ENUM ROW. An enum is closed over its CONSTANTS, so a conversion written on one
+            // must account for every constant it could be handed. `match` exhaustiveness already
+            // covers the natural way to write this, but it was never the same guarantee: an
+            // `if`/`else` chain over constants was checked by nothing at all, and the one it forgot
+            // fell through to whatever the last branch returned.
+            for (const ast::EnumDecl& en : ns.enums) {
+                for (const ast::MemberPtr& m : en.members) {
+                    const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
+                    if (md == nullptr || !md->isEachFamily || md->isAbstract || md->isStatic ||
+                        !md->composedVia.empty()) {
+                        continue;   // static converts TO this enum: an open source, see above
+                    }
+                    auto fit = methodFacts_.find(en.name + "." + md->name);
+                    if (fit == methodFacts_.end()) {
+                        continue;
+                    }
+                    std::vector<std::string> missed;
+                    for (const std::string& k : en.constants) {
+                        if (fit->second.ownConstantsTouched.count(en.name + "." + k) == 0) {
+                            missed.push_back(k);
+                        }
+                    }
+                    if (missed.empty()) {
+                        continue;
+                    }
+                    std::string list;
+                    for (std::size_t i = 0; i < missed.size(); ++i) {
+                        list += (i != 0 ? ", " : "") + missed[i];
+                    }
+                    const std::string target =
+                        md->name.substr(md->name.find('$') == std::string::npos
+                                            ? md->name.size()
+                                            : md->name.find('$') + 1);
+                    error("`procedure " + md->name.substr(0, md->name.find('$')) + "<" + target +
+                              ">` converts FROM enum '" + en.name + "', which is closed over its "
+                              "constants, so the conversion must be total -- and it never names: " +
+                              list + ". A constant added next year has to become an error here, not "
+                              "a value that falls through to the last branch.",
+                          md->loc);
+                }
+            }
         }
     }
 }
@@ -2775,22 +3217,26 @@ void SemanticAnalyzer::checkProcedureTotality(const ast::Program& program) {
 // class invariant, a contract on a declaration). Anything recorded outside a method belongs to no
 // method, and attributing it to whichever ran last would be worse than not recording it.
 SemanticAnalyzer::MethodFacts* SemanticAnalyzer::facts() {
-    if (currentMethodKey_.empty()) return nullptr;
+    if (currentMethodKey_.empty()) {
+        return nullptr;
+    }
     auto it = methodFacts_.find(currentMethodKey_);
     return it == methodFacts_.end() ? nullptr : &it->second;
 }
 
 void SemanticAnalyzer::noteUnsafeForInterrupt(const std::string& what, SourceLocation loc) {
-    if (MethodFacts* f = facts()) f->unsafeOps.emplace_back(what, loc);
+    if (MethodFacts* f = facts()) {
+        f->unsafeOps.emplace_back(what, loc);
+    }
 }
 
 // Rule 3, recorded per access. An interrupt and the code it preempts share memory, and the question
-// "what may both of them touch?" already has an answer in LDP3: `volatile` for device memory,
+// "what may both of them touch?" already has an answer in Polaron: `volatile` for device memory,
 // `atomic<T>` for counters and flags. So the rule requires ONE OF THOSE and invents no marker of its
 // own -- the same argument `identity` settled: what makes two of these the same already has a name.
 //
 // Only MUTABLE fields qualify, and that is what makes the rule livable rather than theoretical.
-// Everything in LDP3 is immutable by default, so a handler reading `this.port` or `this.buffer` --
+// Everything in Polaron is immutable by default, so a handler reading `this.port` or `this.buffer` --
 // a base address fixed at construction -- is untouched by this. What it catches is exactly the
 // state a handler and a main loop both write: a ring buffer's head, a tick counter, a ready flag.
 // THE RECEIVER DECIDES WHETHER THE STATE IS SHARED AT ALL, and getting that wrong is what a first
@@ -2813,15 +3259,23 @@ void SemanticAnalyzer::noteFieldForInterrupt(const std::string& owner, const std
                                              SourceLocation loc) {
     MethodFacts* f = facts();
     // Totality reads this: which of the source type's own fields the body actually touched.
-    if (f != nullptr && !info.isStatic)
+    if (f != nullptr && !info.isStatic) {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(receiver);
-            id != nullptr && id->name == "this")
+            id != nullptr && id->name == "this") {
             f->ownFieldsTouched.insert(field);
-    if (f == nullptr || !info.isMutable || info.isVolatile) return;
-    if (baseType(info.type).rfind("atomic", 0) == 0) return;  // atomic<T> says it outright
+        }
+    }
+    if (f == nullptr || !info.isMutable || info.isVolatile) {
+        return;
+    }
+    if (baseType(info.type).rfind("atomic", 0) == 0) {
+        return;  // atomic<T> says it outright
+    }
     if (!info.isStatic) {
         const auto* id = dynamic_cast<const ast::IdentifierExpr*>(receiver);
-        if (id == nullptr || id->name != "this") return;
+        if (id == nullptr || id->name != "this") {
+            return;
+        }
     }
     f->unsharedState.emplace_back(owner + "." + field, loc);
 }
@@ -2842,27 +3296,34 @@ void SemanticAnalyzer::checkInterruptReach() {
         for (std::size_t i = 0; i < queue.size(); ++i) {
             const std::string here = queue[i];
             auto it = methodFacts_.find(here);
-            if (it == methodFacts_.end()) continue;  // extern, abstract, or not ours to see
+            if (it == methodFacts_.end()) {
+                continue;  // extern, abstract, or not ours to see
+            }
             const std::vector<std::string>& path = pathTo[here];
             // How the reader gets from the declaration to the line: " (reached via push, refill)".
             std::string via;
             if (!path.empty()) {
                 via = " (reached via ";
                 for (std::size_t j = 0; j < path.size(); ++j) {
-                    if (j != 0) via += ", ";
+                    if (j != 0) {
+                        via += ", ";
+                    }
                     via += path[j];
                 }
                 via += ")";
             }
-            for (const auto& [what, where] : it->second.unsafeOps)
+            for (const auto& [what, where] : it->second.unsafeOps) {
                 error("an interrupt must not " + what + via +
                           ". The code this handler interrupted may be standing inside the very "
                           "machinery this reaches -- the allocator, or the lock -- so it can be "
                           "entered while that machinery is half-way through its own work. C states "
                           "this rule in prose and checks none of it.",
                       where);
+            }
             for (const auto& [name, where] : it->second.unsharedState) {
-                if (!reportedState.insert(name).second) continue;
+                if (!reportedState.insert(name).second) {
+                    continue;
+                }
                 error("'" + name + "' is mutable state an interrupt reaches" + via +
                           ", so the handler and the code it preempts both touch it. Say so: "
                           "`volatile` when hardware is on the other end, `atomic<T>` for a counter "
@@ -2871,7 +3332,9 @@ void SemanticAnalyzer::checkInterruptReach() {
                       where);
             }
             for (const std::string& callee : it->second.callees) {
-                if (!seen.insert(callee).second) continue;
+                if (!seen.insert(callee).second) {
+                    continue;
+                }
                 std::vector<std::string> next = path;
                 next.push_back(callee.substr(callee.find('.') + 1));
                 pathTo[callee] = std::move(next);
@@ -2888,22 +3351,28 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
     auto reg = [&](const ast::LiteralDecl& lit, const std::string& owner, const std::string& nsName) {
         const std::string paramType = typeRefStr(lit.param.type);
         const std::string returnType = typeRefStr(lit.returnType);
-        if (!lit.isComptime)
+        if (!lit.isComptime) {
             error("literal suffix '" + lit.name + "' must be 'comptime literal'", lit.loc);
-        if (!isNumeric(paramType))
+        }
+        if (!isNumeric(paramType)) {
             error("literal suffix '" + lit.name +
                       "' must take a numeric parameter (int or float family)",
                   lit.loc);
+        }
         // Overloading by parameter type (spec 17.10 rule 6): seconds(int) and seconds(double)
         // may coexist; only a same-name, same-parameter-type redefinition is an error.
-        for (const LiteralInfo& ov : literals_[lit.name])
-            if (ov.paramType == paramType)
+        for (const LiteralInfo& ov : literals_[lit.name]) {
+            if (ov.paramType == paramType) {
                 error("literal suffix '" + lit.name + "(" + paramType + ")' is already defined",
                       lit.loc);
+            }
+        }
         literals_[lit.name].push_back(
             LiteralInfo{paramType, returnType, lit.isComptime, lit.loc, owner});
         typeNamespace_[lit.name] = nsName;  // for import-prefix validation
-        if (!owner.empty()) classSuffixes_[owner].push_back(lit.name);  // import owner -> suffixes
+        if (!owner.empty()) {
+            classSuffixes_[owner].push_back(lit.name);  // import owner -> suffixes
+        }
     };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
@@ -2917,10 +3386,13 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
                 reg(lit, "", ns.name);
             }
             // A literal suffix declared inside a class/struct is owned by that type (spec 17.10).
-            for (const ast::ClassDecl& cls : ns.classes)
-                for (const ast::MemberPtr& m : cls.members)
-                    if (const auto* lit = dynamic_cast<const ast::LiteralDecl*>(m.get()))
+            for (const ast::ClassDecl& cls : ns.classes) {
+                for (const ast::MemberPtr& m : cls.members) {
+                    if (const auto* lit = dynamic_cast<const ast::LiteralDecl*>(m.get())) {
                         reg(*lit, cls.name, ns.name);
+                    }
+                }
+            }
         }
     }
 }
@@ -2944,7 +3416,7 @@ void SemanticAnalyzer::registerConsts(const ast::Program& program) {
     };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
-            // A namespace-level const is a free declaration outside a class; LDP3 is OOP-mandatory,
+            // A namespace-level const is a free declaration outside a class; Polaron is OOP-mandatory,
             // so a const must be a static class/struct member (spec 28.1). Still registered so its
             // references resolve and do not cascade into spurious errors.
             for (const ast::ConstDecl& c : ns.consts) {
@@ -2953,10 +3425,13 @@ void SemanticAnalyzer::registerConsts(const ast::Program& program) {
                 reg(c, "");
             }
             // A const declared inside a class/struct is a static member, keyed Owner.NAME.
-            for (const ast::ClassDecl& cls : ns.classes)
-                for (const ast::MemberPtr& m : cls.members)
-                    if (const auto* c = dynamic_cast<const ast::ConstDecl*>(m.get()))
+            for (const ast::ClassDecl& cls : ns.classes) {
+                for (const ast::MemberPtr& m : cls.members) {
+                    if (const auto* c = dynamic_cast<const ast::ConstDecl*>(m.get())) {
                         reg(*c, cls.name);
+                    }
+                }
+            }
         }
     }
 }
@@ -2970,8 +3445,9 @@ void SemanticAnalyzer::registerComptimeMethods(const ast::Program& program) {
             for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
-                    if (m != nullptr && m->isComptime && !m->isAbstract)
+                    if (m != nullptr && m->isComptime && !m->isAbstract) {
                         comptimeMethods_.emplace(m->name, m);
+                    }
                 }
             }
         }
@@ -2981,13 +3457,18 @@ void SemanticAnalyzer::registerComptimeMethods(const ast::Program& program) {
 // Indexes persistent fields (spec 18.15). Non-eternal ones must be released
 // somewhere in the program; eternal ones are exempt.
 void SemanticAnalyzer::registerPersistentFields(const ast::Program& program) {
-    for (const ast::Bundle& bundle : program.bundles)
-        for (const ast::Namespace& ns : bundle.namespaces)
-            for (const ast::ClassDecl& cls : ns.classes)
-                for (const ast::MemberPtr& member : cls.members)
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
+                for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
-                        f != nullptr && f->isPersistent)
+                        f != nullptr && f->isPersistent) {
                         persistentFields_.push_back({cls.name, f->name, f->isEternal, f->loc});
+                    }
+                }
+            }
+        }
+    }
 }
 
 // The class in `cls`'s hierarchy that declares persistent field `field`, or "".
@@ -2995,10 +3476,15 @@ std::string SemanticAnalyzer::persistentFieldOwner(const std::string& cls,
                                                    const std::string& field) const {
     std::string cur = cls;
     for (int depth = 0; !cur.empty() && depth < 256; ++depth) {
-        for (const PersistentFieldInfo& pf : persistentFields_)
-            if (pf.cls == cur && pf.name == field) return cur;
+        for (const PersistentFieldInfo& pf : persistentFields_) {
+            if (pf.cls == cur && pf.name == field) {
+                return cur;
+            }
+        }
         auto it = classes_.find(cur);
-        if (it == classes_.end()) break;
+        if (it == classes_.end()) {
+            break;
+        }
         cur = it->second.superclass;
     }
     return "";
@@ -3007,16 +3493,26 @@ std::string SemanticAnalyzer::persistentFieldOwner(const std::string& cls,
 void SemanticAnalyzer::markCascadeReleased(const std::string& typeName,
                                            std::unordered_set<std::string>& seen) {
     const std::string base = baseType(typeName);
-    if (base.empty() || !seen.insert(base).second) return;
+    if (base.empty() || !seen.insert(base).second) {
+        return;
+    }
     for (std::string cur = base; !cur.empty();) {
         auto it = classes_.find(cur);
-        if (it == classes_.end()) break;
-        for (const PersistentFieldInfo& pf : persistentFields_)
-            if (pf.cls == cur) releasedPersistents_.insert(cur + "." + pf.name);
+        if (it == classes_.end()) {
+            break;
+        }
+        for (const PersistentFieldInfo& pf : persistentFields_) {
+            if (pf.cls == cur) {
+                releasedPersistents_.insert(cur + "." + pf.name);
+            }
+        }
         for (const auto& [fname, fi] : it->second.fields) {  // recurse into owned class fields
-            if (fi.type.find('&') != std::string::npos || isArrayType(fi.type)) continue;
-            if (classes_.find(baseType(fi.type)) != classes_.end())
+            if (fi.type.find('&') != std::string::npos || isArrayType(fi.type)) {
+                continue;
+            }
+            if (classes_.find(baseType(fi.type)) != classes_.end()) {
                 markCascadeReleased(fi.type, seen);
+            }
         }
         cur = it->second.superclass;
     }
@@ -3026,8 +3522,12 @@ void SemanticAnalyzer::markCascadeReleased(const std::string& typeName,
 // with no `release persistent` anywhere in the program is a compile error.
 void SemanticAnalyzer::checkPersistentReleases() {
     for (const PersistentFieldInfo& pf : persistentFields_) {
-        if (pf.isEternal) continue;
-        if (releasedPersistents_.count(pf.cls + "." + pf.name) > 0) continue;
+        if (pf.isEternal) {
+            continue;
+        }
+        if (releasedPersistents_.count(pf.cls + "." + pf.name) > 0) {
+            continue;
+        }
         error("persistent '" + pf.cls + "." + pf.name +
                   "' has no 'release persistent' anywhere in the program; non-eternal "
                   "persistents require explicit release (or mark the field 'eternal persistent')",
@@ -3050,6 +3550,13 @@ void SemanticAnalyzer::checkPersistentReleases() {
 // genuine non-constant, or a ring of constants defined in terms of each other, and the message says
 // both are possible because from here they look the same.
 void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
+    // CONSTANTS FOLD TO A FIXED POINT, NOT IN DECLARATION ORDER.
+    //
+    // A single sweep resolved a `fixed` only when everything it names had already been folded --
+    // which made a perfectly ordinary constant legal or illegal depending on which file the
+    // compiler happened to read first, and blamed the initializer for not being constant when it
+    // plainly was. So the declarations go on a worklist and the sweep repeats while anything moved;
+    // what is left when nothing moves is a genuine ring, and it is reported as one.
     struct Pending {
         const ast::ConstDecl* decl;
         std::string owner;
@@ -3057,11 +3564,16 @@ void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
     std::vector<Pending> waiting;
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
-            for (const ast::ConstDecl& c : ns.consts) waiting.push_back({&c, ""});
-            for (const ast::ClassDecl& cls : ns.classes)
-                for (const ast::MemberPtr& m : cls.members)
-                    if (const auto* c = dynamic_cast<const ast::ConstDecl*>(m.get()))
+            for (const ast::ConstDecl& c : ns.consts) {
+                waiting.push_back({&c, ""});
+            }
+            for (const ast::ClassDecl& cls : ns.classes) {
+                for (const ast::MemberPtr& m : cls.members) {
+                    if (const auto* c = dynamic_cast<const ast::ConstDecl*>(m.get())) {
                         waiting.push_back({c, cls.name});
+                    }
+                }
+            }
         }
     }
     // Answers whether it resolved. Silent while sweeping; the last call reports.
@@ -3117,18 +3629,27 @@ void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
 // does not match the symbol's real home is an error.
 void SemanticAnalyzer::processImports(const ast::Program& program) {
     auto validate = [&](const ast::ImportDecl& imp) {
-        if (imp.path.empty()) return;
+        if (imp.path.empty()) {
+            return;
+        }
         const std::string& symbol = imp.path.back();
         std::string full;
-        for (std::size_t i = 0; i < imp.path.size(); ++i) full += (i > 0 ? "." : "") + imp.path[i];
+        for (std::size_t i = 0; i < imp.path.size(); ++i) {
+            full += (i > 0 ? "." : "") + imp.path[i];
+        }
         // Bring the symbol's literal suffixes into scope regardless of the path check below, so a
         // path mistake reports once and does not cascade into "unknown suffix/type" noise. (Type
         // visibility itself is gated by currentImports_, populated from the path's last segment.)
         auto bringIntoScope = [&]() {
             importedSuffixes_.insert(symbol);  // harmless for non-literals
-            if (auto cs = classSuffixes_.find(symbol); cs != classSuffixes_.end())
-                for (const std::string& s : cs->second) importedSuffixes_.insert(s);
-            if (imp.isFinal) finalImports_.insert(symbol);  // spec 37.6: not unimportable
+            if (auto cs = classSuffixes_.find(symbol); cs != classSuffixes_.end()) {
+                for (const std::string& s : cs->second) {
+                    importedSuffixes_.insert(s);
+                }
+            }
+            if (imp.isFinal) {
+                finalImports_.insert(symbol);  // spec 37.6: not unimportable
+            }
         };
         // Cross-program (spec 2.7/2.8): reached over IPC, the path rooted at the program name
         // (`import from program GameEngine GameEngine.audio.mixers.Foo;`). Its types are synthesized as
@@ -3155,9 +3676,10 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
             }
         }
         if (!imp.programName.empty()) {
-            if (typeNamespace_.find(symbol) == typeNamespace_.end())
+            if (typeNamespace_.find(symbol) == typeNamespace_.end()) {
                 error("import of unknown symbol '" + full + "' from program '" + imp.programName + "'",
                       imp.loc);
+            }
             bringIntoScope();
             return;
         }
@@ -3169,13 +3691,16 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
             // unknown symbol. Retry with the disambiguated name built from this import's own
             // namespace path: if that exists, the import names a real type and is well-formed.
             std::string disambiguated;
-            for (std::size_t i = 1; i + 1 < imp.path.size(); ++i)
+            for (std::size_t i = 1; i + 1 < imp.path.size(); ++i) {
                 disambiguated += (disambiguated.empty() ? "" : "_") + imp.path[i];
+            }
             if (!disambiguated.empty()) {
                 disambiguated += "__" + symbol;
                 if (typeNamespace_.count(disambiguated) > 0) {
                     importedSuffixes_.insert(disambiguated);
-                    if (imp.isFinal) finalImports_.insert(disambiguated);
+                    if (imp.isFinal) {
+                        finalImports_.insert(disambiguated);
+                    }
                     bringIntoScope();
                     return;
                 }
@@ -3185,13 +3710,17 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
             return;
         }
         // A bare, bundle-less builtin import (`import reflect;`): a single segment, nothing to qualify.
-        if (imp.path.size() == 1) { bringIntoScope(); return; }
+        if (imp.path.size() == 1) {
+            bringIntoScope();
+            return;
+        }
         // Full path (spec 2.7): Bundle.Namespace[.Sub].Type. The first segment must name a real bundle;
         // everything between it and the type must be the type's real namespace.
         const std::string& bundleSeg = imp.path.front();
         std::string nsPath;  // path[1 .. size-2]
-        for (std::size_t i = 1; i + 1 < imp.path.size(); ++i)
+        for (std::size_t i = 1; i + 1 < imp.path.size(); ++i) {
             nsPath += (nsPath.empty() ? "" : ".") + imp.path[i];
+        }
         const std::string& realNs = nsIt->second;
         const std::string realBundle = typeBundle_.count(symbol) ? typeBundle_[symbol] : std::string();
         const std::string want =
@@ -3217,9 +3746,14 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
             bringIntoScope();
         }
     };
-    for (const ast::ImportDecl& imp : program.imports) validate(imp);  // file-level (spec 2.7)
-    for (const ast::Bundle& bundle : program.bundles)
-        for (const ast::ImportDecl& imp : bundle.imports) validate(imp);
+    for (const ast::ImportDecl& imp : program.imports) {
+        validate(imp);  // file-level (spec 2.7)
+    }
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::ImportDecl& imp : bundle.imports) {
+            validate(imp);
+        }
+    }
 }
 
 // Type-checks the body of each literal suffix, with its single parameter in
@@ -3228,10 +3762,16 @@ void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         currentBundle_ = bundle.name;  // for the stdlib-cohesion visibility check
         currentImports_.clear();
-        for (const ast::ImportDecl& imp : program.imports)
-            if (!imp.path.empty()) currentImports_.insert(imp.path.back());
-        for (const ast::ImportDecl& imp : bundle.imports)
-            if (!imp.path.empty()) currentImports_.insert(imp.path.back());
+        for (const ast::ImportDecl& imp : program.imports) {
+            if (!imp.path.empty()) {
+                currentImports_.insert(imp.path.back());
+            }
+        }
+        for (const ast::ImportDecl& imp : bundle.imports) {
+            if (!imp.path.empty()) {
+                currentImports_.insert(imp.path.back());
+            }
+        }
         for (const ast::Namespace& ns : bundle.namespaces) {
             currentNamespace_ = ns.name;
             // A LiteralDecl is its own AST node, not a MethodDecl, so the member loop above never set
@@ -3246,14 +3786,16 @@ void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
                 analyzeMethodBody(lit.body, {lit.param}, /*thisClass=*/"", /*inConstructor=*/false);
             }
             // Class/struct-owned literal suffix bodies (spec 17.10): static, so no `this`.
-            for (const ast::ClassDecl& cls : ns.classes)
-                for (const ast::MemberPtr& m : cls.members)
+            for (const ast::ClassDecl& cls : ns.classes) {
+                for (const ast::MemberPtr& m : cls.members) {
                     if (const auto* lit = dynamic_cast<const ast::LiteralDecl*>(m.get())) {
                         currentReturnType_ = typeRefStr(lit->returnType);
                         currentThrows_.clear();
                         analyzeMethodBody(lit->body, {lit->param}, /*thisClass=*/"",
                                           /*inConstructor=*/false);
                     }
+                }
+            }
             currentReturnType_.clear();
         }
     }
@@ -3262,26 +3804,63 @@ void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
 // Recursively collects `label name;` markers from a statement (into nested control-flow blocks,
 // but not into lambda bodies -- expressions are not traversed here). Used for tetrad validation.
 static void collectLabelsInStmt(const ast::Stmt* st, std::unordered_set<std::string>& out) {
-    if (st == nullptr) return;
+    if (st == nullptr) {
+        return;
+    }
     if (const auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(st)) { out.insert(lm->name); return; }
     auto blk = [&](const ast::Block& b) {
-        for (const auto& s : b.statements) collectLabelsInStmt(s.get(), out);
+        for (const auto& s : b.statements) {
+            collectLabelsInStmt(s.get(), out);
+        }
     };
-    if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) { blk(i->thenBlock); if (i->elseBlock) blk(*i->elseBlock); return; }
+    if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) {
+        blk(i->thenBlock);
+        if (i->elseBlock) {
+            blk(*i->elseBlock);
+        }
+        return;
+    }
     if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
     if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) { blk(d->body); return; }
     if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) { blk(f->body); return; }
     if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) { blk(fe->body); return; }
-    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) { for (auto& c : sw->cases) blk(c.body); if (sw->defaultBody) blk(*sw->defaultBody); return; }
-    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) { for (auto& c : ms->cases) blk(c.body); if (ms->defaultBody) blk(*ms->defaultBody); return; }
-    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) { blk(tr->body); for (auto& c : tr->catches) blk(c.body); if (tr->finallyBlock) blk(*tr->finallyBlock); return; }
+    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) {
+        for (auto& c : sw->cases) {
+            blk(c.body);
+        }
+        if (sw->defaultBody) {
+            blk(*sw->defaultBody);
+        }
+        return;
+    }
+    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) {
+        for (auto& c : ms->cases) {
+            blk(c.body);
+        }
+        if (ms->defaultBody) {
+            blk(*ms->defaultBody);
+        }
+        return;
+    }
+    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) {
+        blk(tr->body);
+        for (auto& c : tr->catches) {
+            blk(c.body);
+        }
+        if (tr->finallyBlock) {
+            blk(*tr->finallyBlock);
+        }
+        return;
+    }
     if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) { blk(df->body); return; }
     if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) { blk(us->body); return; }
     if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) { collectLabelsInStmt(lb->stmt.get(), out); return; }
 }
 
 void SemanticAnalyzer::collectMethodLabels(const ast::Block& block) {
-    for (const auto& s : block.statements) collectLabelsInStmt(s.get(), methodLabels_);
+    for (const auto& s : block.statements) {
+        collectLabelsInStmt(s.get(), methodLabels_);
+    }
 }
 
 void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
@@ -3325,9 +3904,11 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     //
     // Only in a constructor, and only for fields that have nowhere else to get a value from. See
     // `fieldNeedsInit` for what is excluded and why.
-    if (inConstructor)
-        for (const auto& [fname, floc] : pendingCtorFields_)
+    if (inConstructor) {
+        for (const auto& [fname, floc] : pendingCtorFields_) {
             init_["this." + fname] = FlowFacts::Init::Uninit;
+        }
+    }
     for (std::size_t i = 0; i < body.statements.size(); ++i) {
         // `super(...)` is only legal as the very first statement of a constructor.
         if (inConstructor && i != 0) {
@@ -3344,19 +3925,23 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     // Contract clauses (spec 29) are boolean expressions over params/this/fields.
     for (const ast::Expr* clause : contracts) {
         const std::string t = typeOf(*clause);
-        if (!t.empty() && t != "boolean")
+        if (!t.empty() && t != "boolean") {
             error("a contract clause must be boolean, got '" + t + "'", clause->loc);
+        }
     }
     // Postconditions, with `result` in scope. In their own scope so the binding cannot leak into the
     // body or into a sibling method, and AFTER the preconditions so a `requires` naming `result` is
     // still the undeclared-name error it should be -- on entry there is no result to talk about.
     if (!postconditions.empty()) {
         pushScope();
-        if (!postResultType.empty()) declareLocal("result", LocalVar{postResultType, false});
+        if (!postResultType.empty()) {
+            declareLocal("result", LocalVar{postResultType, false});
+        }
         for (const ast::Expr* clause : postconditions) {
             const std::string t = typeOf(*clause);
-            if (!t.empty() && t != "boolean")
+            if (!t.empty() && t != "boolean") {
                 error("a contract clause must be boolean, got '" + t + "'", clause->loc);
+            }
         }
         popScope();
     }
@@ -3376,18 +3961,30 @@ bool SemanticAnalyzer::isCompileTimeConstant(const ast::Expr& e) const {
     // literal, a namespace `const`, or arithmetic/casts over those. This is what stops a
     // `comptime literal` from being abused as a runtime free function -- it can only transform
     // constants, never run on a runtime argument.
-    if (dynamic_cast<const ast::IntLiteralExpr*>(&e) != nullptr) return true;
-    if (dynamic_cast<const ast::FloatLiteralExpr*>(&e) != nullptr) return true;
-    if (dynamic_cast<const ast::CharLiteralExpr*>(&e) != nullptr) return true;
-    if (dynamic_cast<const ast::BoolLiteralExpr*>(&e) != nullptr) return true;
-    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e))
+    if (dynamic_cast<const ast::IntLiteralExpr*>(&e) != nullptr) {
+        return true;
+    }
+    if (dynamic_cast<const ast::FloatLiteralExpr*>(&e) != nullptr) {
+        return true;
+    }
+    if (dynamic_cast<const ast::CharLiteralExpr*>(&e) != nullptr) {
+        return true;
+    }
+    if (dynamic_cast<const ast::BoolLiteralExpr*>(&e) != nullptr) {
+        return true;
+    }
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
         return constTypes_.count(id->name) > 0;  // a folded namespace const
-    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e))
+    }
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
         return isCompileTimeConstant(*u->operand);
-    if (const auto* c = dynamic_cast<const ast::CastExpr*>(&e))
+    }
+    if (const auto* c = dynamic_cast<const ast::CastExpr*>(&e)) {
         return isCompileTimeConstant(*c->operand);
-    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e))
+    }
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e)) {
         return isCompileTimeConstant(*b->lhs) && isCompileTimeConstant(*b->rhs);
+    }
     return false;
 }
 
@@ -3399,15 +3996,18 @@ std::string SemanticAnalyzer::analyzeYieldBlock(const ast::Block& body) {
     for (const auto& stmt : body.statements) {
         analyzeStatement(*stmt);
         if (const auto* ys = dynamic_cast<const ast::YieldStmt*>(stmt.get());
-            ys != nullptr && ys->value != nullptr)
+            ys != nullptr && ys->value != nullptr) {
             yieldType = typeOf(*ys->value);
+        }
     }
     popScope();
     return yieldType;
 }
 
 std::string SemanticAnalyzer::analyzeExpectingBlock(const ast::Block* block) {
-    if (block == nullptr) return "";
+    if (block == nullptr) {
+        return "";
+    }
     const std::string savedRet = currentReturnType_;
     currentReturnType_.clear();  // the block's return is its own value, not the method's
     pushScope();
@@ -3415,8 +4015,9 @@ std::string SemanticAnalyzer::analyzeExpectingBlock(const ast::Block* block) {
     for (const auto& stmt : block->statements) {
         analyzeStatement(*stmt);
         if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(stmt.get());
-            rs != nullptr && rs->value != nullptr)
+            rs != nullptr && rs->value != nullptr) {
             valueType = typeOf(*rs->value);
+        }
     }
     popScope();
     currentReturnType_ = savedRet;
@@ -3460,8 +4061,9 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         markInitialized(id->name);
         // Whatever was proven about the OLD value says nothing about the new one.
         killProofsFor(id->name);
-        if (!valueType.empty() && valueType != "null" && !isNullableType(valueType))
+        if (!valueType.empty() && valueType != "null" && !isNullableType(valueType)) {
             nonNull_.insert(id->name);
+        }
         if (!valueType.empty() && !isSubtype(valueType, var->type) && !fits(var->type)) {
             error("cannot assign a value of type '" + valueType + "' to variable '" + id->name +
                       "' of type '" + var->type + "'",
@@ -3494,20 +4096,26 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             }
         }
         const std::string objType = typeOf(*mem->object);
-        if (objType.empty()) return;
+        if (objType.empty()) {
+            return;
+        }
         if (vecWidth(objType) > 0 && vecLane(mem->member) >= 0) {  // SIMD lane write: v.x = f
-            if (const auto* bid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
-                if (const LocalVar* lv = lookupLocal(bid->name); lv != nullptr && !lv->isMutable)
+            if (const auto* bid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                if (const LocalVar* lv = lookupLocal(bid->name); lv != nullptr && !lv->isMutable) {
                     error("cannot modify a lane of immutable vector '" + bid->name +
                               "' (declare it 'mutable')",
                           loc);
-            if (!valueType.empty() && !isNumeric(valueType))
+                }
+            }
+            if (!valueType.empty() && !isNumeric(valueType)) {
                 error("a vector lane takes a numeric value, not '" + valueType + "'", loc);
+            }
             return;
         }
         const FieldInfo* f = findField(objType, mem->member);
-        if (f != nullptr)
+        if (f != nullptr) {
             noteFieldForInterrupt(objType, mem->member, *f, mem->object.get(), loc);  // rule 3, write
+        }
         // THE TRAP IS READ-ONLY, and this is measured rather than conservative. `x86_intrcc` takes
         // the frame as a `byval` parameter, which promises the callee a PRIVATE COPY -- so LLVM is
         // entitled to treat writes through it as writes to that copy, and it does. At -O2 a plain
@@ -3518,9 +4126,9 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         // So the language refuses it instead of letting it look like it works. Preemption -- the
         // one case that needs a writable frame -- stays out of reach of this calling convention,
         // which is what the design note predicted and this now proves.
-        if (!interruptTrapParam_.empty())
+        if (!interruptTrapParam_.empty()) {
             if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-                tid != nullptr && tid->name == interruptTrapParam_)
+                tid != nullptr && tid->name == interruptTrapParam_) {
                 error("the trap an interrupt receives is READ-ONLY. It arrives as a `byval` "
                       "parameter, which promises a private copy, so the optimizer deletes a write "
                       "to it (or lands it in scratch the epilogue throws away) and `iretq` still "
@@ -3528,14 +4136,17 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
                       "else is not expressible through this calling convention: read the frame "
                       "here, and switch on the way out.",
                       loc);
+            }
+        }
         if (f == nullptr) {
             // A computed property with a custom setter (spec 8.4): `obj.prop = v` routes to prop$set.
             if (findMethod(objType, mem->member + "$set") != nullptr) {
                 if (const MethodInfo* getter = findMethod(objType, mem->member);
-                    getter != nullptr && !valueType.empty() && !isSubtype(valueType, getter->returnType))
+                    getter != nullptr && !valueType.empty() && !isSubtype(valueType, getter->returnType)) {
                     error("cannot assign a value of type '" + valueType + "' to property '" +
                               mem->member + "'",
                           loc);
+                }
                 return;
             }
             error(diag::Code::NoSuchField,
@@ -3558,7 +4169,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             if ((valueType == "null" || isNullableType(valueType)) && !isNullableType(f->type)) {
                 error("cannot assign " + std::string(valueType == "null" ? "null" : "a nullable value") +
                           " to field '" + mem->member + "': its type '" + f->type +
-                          "' is non-nullable, and every type in LDP3 is non-null unless it says "
+                          "' is non-nullable, and every type in Polaron is non-null unless it says "
                           "otherwise. Declare the field 'nullable " + f->type +
                           "' if it can legitimately be absent",
                       loc);
@@ -3569,23 +4180,30 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             }
         }
         // Reassigning a partially-moved field reactivates it (spec 19.9).
-        if (objId != nullptr) moved_.erase(objId->name + "." + mem->member);
+        if (objId != nullptr) {
+            moved_.erase(objId->name + "." + mem->member);
+        }
         return;
     }
     if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&target)) {
         const std::string at = typeOf(*ix->array);
         typeOf(*ix->index);
         if (vecWidth(at) > 0) {  // SIMD lane write: v[i] = f
-            if (const auto* bid = dynamic_cast<const ast::IdentifierExpr*>(ix->array.get()))
-                if (const LocalVar* lv = lookupLocal(bid->name); lv != nullptr && !lv->isMutable)
+            if (const auto* bid = dynamic_cast<const ast::IdentifierExpr*>(ix->array.get())) {
+                if (const LocalVar* lv = lookupLocal(bid->name); lv != nullptr && !lv->isMutable) {
                     error("cannot modify a lane of immutable vector '" + bid->name +
                               "' (declare it 'mutable')",
                           loc);
-            if (!valueType.empty() && !isNumeric(valueType))
+                }
+            }
+            if (!valueType.empty() && !isNumeric(valueType)) {
                 error("a vector lane takes a numeric value, not '" + valueType + "'", loc);
+            }
             return;
         }
-        if (findMethod(baseType(at), "operator[]=")) return;  // operator[]= overload (spec 6.5)
+        if (findMethod(baseType(at), "operator[]=")) {
+            return;  // operator[]= overload (spec 6.5)
+        }
         if (!at.empty() && !isArrayType(at) && !isRefType(at)) {
             error("cannot index a value of non-array type '" + at + "'", loc);
             return;
@@ -3626,7 +4244,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
 // cast runs -- the cast only documents the loss. The fix is always to widen the OPERAND first
 // (`cast<address>(f) << 12`), which is one character of difference and a completely different result.
 //
-// This is the compile-time half of LDP3's no-implicit-conversion rule. Refusing implicit narrowing stops
+// This is the compile-time half of Polaron's no-implicit-conversion rule. Refusing implicit narrowing stops
 // a value being silently truncated on the way IN; this stops a value being silently truncated on the way
 // UP. Both exist because the compiler is not allowed to assume which width the author meant -- and in a
 // kernel the wrong answer is a page mapped somewhere else, discovered much later and somewhere unrelated.
@@ -3635,12 +4253,20 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
 // `|`, `>>` and comparisons cannot produce a value the narrow type could not already hold.
 void SemanticAnalyzer::checkWideningLostBits(const ast::CastExpr& cst, const std::string& src,
                                              const std::string& dst) {
-    if (!isIntName(src) || !isIntName(dst)) return;
-    if (intBits(dst) <= intBits(src)) return;                 // not a widening cast
+    if (!isIntName(src) || !isIntName(dst)) {
+        return;
+    }
+    if (intBits(dst) <= intBits(src)) {
+        return;  // not a widening cast
+    }
     const auto* bin = dynamic_cast<const ast::BinaryExpr*>(cst.operand.get());
-    if (bin == nullptr) return;
+    if (bin == nullptr) {
+        return;
+    }
     const std::string& op = bin->op;
-    if (op != "<<") return;
+    if (op != "<<") {
+        return;
+    }
     // `<<` ONLY, and that scope was measured rather than guessed. A left shift pushes bits straight out
     // of the top, so widening afterwards is essentially always the wrong order -- there is no common
     // correct code shaped like `cast<long>(x << k)`. `*`, `+` and `-` overflow only when the values are
@@ -3665,50 +4291,72 @@ void SemanticAnalyzer::checkWideningLostBits(const ast::CastExpr& cst, const std
 // The test for membership is "does this reach for the operating system", not "does this allocate".
 // Allocation has an answer bare metal: the program's own heap. A socket does not.
 std::string SemanticAnalyzer::hostedOnlyReason(const std::string& symbol) {
-    if (symbol == "Console")
+    if (symbol == "Console") {
         return "it prints through the managed runtime's stdio, which bare metal does not have. Write "
                "to your own device -- a serial port or a framebuffer -- through FFI or MMIO";
-    if (symbol == "File" || symbol == "Paths" || symbol == "Directory")
+    }
+    if (symbol == "File" || symbol == "Paths" || symbol == "Directory") {
         return "it calls the host operating system's filesystem. A freestanding program IS the system: "
                "it must reach its storage through its own block device";
-    if (symbol == "Net" || symbol == "Socket" || symbol == "TcpClient" || symbol == "TcpListener")
+    }
+    if (symbol == "Net" || symbol == "Socket" || symbol == "TcpClient" || symbol == "TcpListener") {
         return "it calls the host's socket layer. Bare metal has a network card, not a socket API";
-    if (symbol == "Process" || symbol == "Env" || symbol == "Subproc" || symbol == "Conpty")
+    }
+    if (symbol == "Process" || symbol == "Env" || symbol == "Subproc" || symbol == "Conpty") {
         return "there is no operating system underneath to spawn a process or hold an environment";
-    if (symbol == "Time")
+    }
+    if (symbol == "Time") {
         return "it asks the host for the clock. Read your own timer or real-time clock instead";
-    if (symbol == "Thread" || symbol == "Task" || symbol == "Channel" || symbol == "Mutex"
-        || symbol == "Semaphore" || symbol == "Latch")
+    }
+    if (symbol == "Thread" || symbol == "Task" || symbol == "Channel" || symbol == "Mutex" ||
+        symbol == "Semaphore" || symbol == "Latch") {
         return "it creates OS threads and OS locks, and schedules through the managed runtime. A "
                "freestanding program schedules itself";
-    if (symbol == "String" || symbol == "StringBuilder")
-        return "a managed String lowers to __ldp3_str_copy/__ldp3_str_free, which no bare-metal "
-               "runtime provides. Use a byte literal `b\"...\"` for fixed text, or `byte*`/`byte[]` and "
-               "the raw Memory API for text you build";
-    if (symbol == "Test")
+    }
+    // `String` IS AVAILABLE BARE METAL as of 2026-08-12. It lowers to __polaron_str_copy/_free/_index,
+    // and those were never libc: the hosted ones are written purely in terms of malloc, free and
+    // memcpy, so codegen now GENERATES them from the program's own `heap class` (emitStringBridge),
+    // the same way the allocator bridge is generated. Measured: a String program needs not one libc
+    // symbol.
+    //
+    // `StringBuilder` stays out -- it formats, and formatting is where `snprintf` enters, which is
+    // the one thing here that genuinely has no bare-metal answer short of writing a formatter.
+    if (symbol == "StringBuilder") {
+        return "it formats through snprintf, which no bare-metal image has. `String` itself works "
+               "here; build text by concatenation, or use `byte*`/`byte[]` and the raw Memory API";
+    }
+    if (symbol == "Test") {
         return "the test framework reports through printf and builds Strings. Test a freestanding "
                "program from outside: boot it and assert on what it emits";
+    }
     return "";
 }
 
 void SemanticAnalyzer::checkBitCounted(const std::string& typeName, SourceLocation loc) {
-    if (freestanding_) return;
+    if (freestanding_) {
+        return;
+    }
     std::string n = baseType(typeName);
-    if (isArrayType(n)) n = elementOf(n);
-    if (isBitCountedName(n))
+    if (isArrayType(n)) {
+        n = elementOf(n);
+    }
+    if (isBitCountedName(n)) {
         error("type '" + n + "' exists only in freestanding mode; use '" + normalTypeName(n) +
                   "' instead",
               loc);
+    }
 }
 
 void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLocation loc) {
     std::string n = baseType(typeName);          // see through T* / T&
-    if (isArrayType(n)) n = elementOf(n);         // and through T[]
+    if (isArrayType(n)) {
+        n = elementOf(n);  // and through T[]
+    }
     checkBitCounted(typeName, loc);                // bit-counted names are freestanding-only
     // ...and the gate in the other direction, which was missing these two. `String` and the test
     // framework's `Test` resolved fine in a freestanding program and then failed at LINK, on
-    // __ldp3_str_copy / __ldp3_str_free / printf -- symbols the generated freestanding runtime
-    // (memcpy/memset/memmove/__ldp3_panic, src/driver/build.cpp) does not provide. Compiles clean, dies
+    // __polaron_str_copy / __polaron_str_free / printf -- symbols the generated freestanding runtime
+    // (memcpy/memset/memmove/__polaron_panic, src/driver/build.cpp) does not provide. Compiles clean, dies
     // at link: exactly what this gate exists to prevent, and what guide/11 promises cannot happen
     // ("you cannot accidentally reach for the managed runtime").
     //
@@ -3717,32 +4365,46 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     // the same rule the Console gate follows.
     if (freestanding_ && std::string(loc.file) != "<prelude>") {
         const std::string mn = baseType(typeName);
-        if (mn == "String")
-            error("'String' is a managed object and is not available in freestanding mode (spec 36.3): "
-                  "it lowers to __ldp3_str_copy/__ldp3_str_free, which bare metal has no runtime to "
-                  "provide. Use a byte literal `b\"...\"` for fixed text, or `byte*`/`byte[]` and the raw "
-                  "Memory API for text you build",
-                  loc);
-        else if (mn == "Test")
+        // `String` USED TO BE REFUSED HERE, on the grounds that it lowers to
+        // __polaron_str_copy/__polaron_str_free "which bare metal has no runtime to provide". The premise
+        // was true and the conclusion was not: those are OURS, not libc, and the hosted ones are
+        // written purely in terms of malloc, free and memcpy. Codegen now generates them from the
+        // program's own `heap class` (emitStringBridge), so bare metal provides them after all.
+        if (mn == "Test") {
             error("the test framework is not available in freestanding mode (spec 36.3): `Test` reports "
                   "through printf and builds Strings, neither of which exists bare metal. Test the "
                   "freestanding program from outside -- boot it and assert on what it emits",
                   loc);
+        }
     }
     // Inside a compiler-generated monomorphized class, type references were already validated at the
     // template and the instantiation site (and may reach stdlib types like Json from ArrayList<Json>).
-    if (currentClass_.find('$') != std::string::npos) return;
+    if (currentClass_.find('$') != std::string::npos) {
+        return;
+    }
     // A monomorphized generic (ArrayList$int) is enforced on its generic base name (ArrayList): user
     // code must import the collection. The type-argument part is internal to the instantiation.
-    if (const std::size_t d = n.find('$'); d != std::string::npos) n = n.substr(0, d);
+    if (const std::size_t d = n.find('$'); d != std::string::npos) {
+        n = n.substr(0, d);
+    }
     // Ok/Err/Some/None are the value-constructor sugar of Result/Option (spec 21), not types declared
     // by name; they come with the type, so importing Result/Option is enough.
-    if (n == "Ok" || n == "Err" || n == "Some" || n == "None") return;
-    if (qualifiedTypes_.count(n) > 0) return;      // explicitly namespace-qualified -> visible
+    if (n == "Ok" || n == "Err" || n == "Some" || n == "None") {
+        return;
+    }
+    if (qualifiedTypes_.count(n) > 0) {
+        return;  // explicitly namespace-qualified -> visible
+    }
     auto it = typeNamespace_.find(n);
-    if (it == typeNamespace_.end()) return;        // primitive / unknown (other checks catch it)
-    if (it->second == currentNamespace_) return;   // same namespace -> visible
-    if (currentImports_.count(n) > 0) return;      // brought in by import (incl. stdlib)
+    if (it == typeNamespace_.end()) {
+        return;  // primitive / unknown (other checks catch it)
+    }
+    if (it->second == currentNamespace_) {
+        return;  // same namespace -> visible
+    }
+    if (currentImports_.count(n) > 0) {
+        return;  // brought in by import (incl. stdlib)
+    }
     // The stdlib is internally cohesive: a type in the System bundle may use any other System-bundle
     // type without an import (e.g. Json's Json uses Text's StringBuilder). Keyed on the bundle now that
     // stdlib namespaces are bare (IO, Text, ...) rather than carrying a System. prefix.
@@ -3751,9 +4413,13 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
         // with real classes, so the namespace->bundle map covers it; a virtual builtin (Memory, Math)
         // has no namespace block, so its typeBundle_ covers it. Either proves System-bundle membership.
         auto nb = namespaceBundle_.find(it->second);
-        if (nb != namespaceBundle_.end() && nb->second == "System") return;
+        if (nb != namespaceBundle_.end() && nb->second == "System") {
+            return;
+        }
         auto tb = typeBundle_.find(n);
-        if (tb != typeBundle_.end() && tb->second == "System") return;
+        if (tb != typeBundle_.end() && tb->second == "System") {
+            return;
+        }
     }
     {
     const std::string b = typeBundle_.count(n) ? typeBundle_[n] : std::string("<bundle>");
@@ -3775,11 +4441,15 @@ void SemanticAnalyzer::checkRegionAccepts(const std::string& region, const std::
         rc = &local->second;
     } else if (region.rfind("this.", 0) == 0 && !currentClass_.empty()) {
         auto fld = fieldRegionConstraints_.find(currentClass_ + "." + region.substr(5));
-        if (fld != fieldRegionConstraints_.end()) rc = &fld->second;
+        if (fld != fieldRegionConstraints_.end()) {
+            rc = &fld->second;
+        }
     }
     // A region that declares neither accepts nor rejects takes anything, like a plain arena -- with the
     // difference that it still knows what it took.
-    if (rc == nullptr) return;
+    if (rc == nullptr) {
+        return;
+    }
 
     for (const std::string& rej : rc->rejects) {
         if (type == rej || isSubtype(type, rej)) {
@@ -3787,9 +4457,13 @@ void SemanticAnalyzer::checkRegionAccepts(const std::string& region, const std::
             return;
         }
     }
-    if (rc->accepts.empty()) return;  // rejects-only: anything not rejected is in
+    if (rc->accepts.empty()) {
+        return;  // rejects-only: anything not rejected is in
+    }
     for (const std::string& acc : rc->accepts) {
-        if (type == acc || isSubtype(type, acc)) return;
+        if (type == acc || isSubtype(type, acc)) {
+            return;
+        }
     }
     error("region '" + region + "' does not accept type '" + type + "'", loc);
 }
@@ -3806,14 +4480,20 @@ void SemanticAnalyzer::checkRegionAccepts(const std::string& region, const std::
 // and only here.
 void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const ast::Expr& rhs,
                                             SourceLocation loc, const std::string& what) {
-    if (isRefType(targetType)) return;  // pointers/refs share; no move discipline
+    if (isRefType(targetType)) {
+        return;  // pointers/refs share; no move discipline
+    }
     const ClassInfo* ci = lookupClass(baseType(targetType));
-    if (ci == nullptr) return;  // not a class value
+    if (ci == nullptr) {
+        return;  // not a class value
+    }
     const bool rhsIsMove = dynamic_cast<const ast::MoveExpr*>(&rhs) != nullptr;
     const auto* rhsId = dynamic_cast<const ast::IdentifierExpr*>(&rhs);
     const bool rhsIsLValue =
         rhsId != nullptr || dynamic_cast<const ast::MemberExpr*>(&rhs) != nullptr;
-    if (!rhsIsLValue || rhsIsMove) return;  // a fresh `new`, a `move`, or a temporary is fine
+    if (!rhsIsLValue || rhsIsMove) {
+        return;  // a fresh `new`, a `move`, or a temporary is fine
+    }
     if (ci->isMovable) {
         // Name the source as it is WRITTEN, so the hint can be pasted. `move x` where the source was
         // `this.held` is advice that does not compile.
@@ -3821,10 +4501,11 @@ void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const
         if (rhsId != nullptr) {
             name = rhsId->name;
         } else if (const auto* rhsMem = dynamic_cast<const ast::MemberExpr*>(&rhs)) {
-            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(rhsMem->object.get()))
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(rhsMem->object.get())) {
                 name = oid->name + "." + rhsMem->member;
-            else
+            } else {
                 name = rhsMem->member;
+            }
         }
         error("'" + ci->name + "' is movable, so it is transferred and never copied: " + what +
                   " needs an explicit 'move' (move " + name + ")",
@@ -3845,25 +4526,37 @@ void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const
 
 bool SemanticAnalyzer::classHasUniqueField(const std::string& className) {
     const ClassInfo* ci = lookupClass(className);
-    if (ci == nullptr) return false;
+    if (ci == nullptr) {
+        return false;
+    }
     for (const auto& [fname, fi] : ci->fields) {
         (void)fname;
-        if (isRefType(fi.type)) continue;  // a pointer/ref field shares; the owner's copy doesn't dup it
+        if (isRefType(fi.type)) {
+            continue;  // a pointer/ref field shares; the owner's copy doesn't dup it
+        }
         const std::string ft = baseType(fi.type);
         const ClassInfo* fci = lookupClass(ft);
         // The field is marked `unique`, or its type is a `unique` class -- either way the value cannot
         // be duplicated, so the owning object cannot be value-copied.
-        if (fi.isUnique || (fci != nullptr && fci->isUnique)) return true;
-        if (fci != nullptr && ft != className && classHasUniqueField(ft)) return true;  // recurse
+        if (fi.isUnique || (fci != nullptr && fci->isUnique)) {
+            return true;
+        }
+        if (fci != nullptr && ft != className && classHasUniqueField(ft)) {
+            return true;  // recurse
+        }
     }
-    if (!ci->superclass.empty()) return classHasUniqueField(baseType(ci->superclass));
+    if (!ci->superclass.empty()) {
+        return classHasUniqueField(baseType(ci->superclass));
+    }
     return false;
 }
 
 // spec 27: "Pointer arithmetic is allowed on every type, but the compiler emits a warning, because
 // advancing a pointer to a class makes no semantic sense and can corrupt memory."
 void SemanticAnalyzer::warnClassPointerArith(const std::string& ptrType, SourceLocation loc) {
-    if (lookupClass(baseType(ptrType)) == nullptr) return;  // a pointer into an array of primitives
+    if (lookupClass(baseType(ptrType)) == nullptr) {
+        return;  // a pointer into an array of primitives
+    }
     warn("pointer arithmetic on '" + ptrType +
              "' can corrupt memory: a pointer to a class usually points at ONE object, not at an array "
              "of them (spec 27)",
@@ -3888,7 +4581,9 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, bool isIncreme
         resolved = true;
     } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&target)) {
         const std::string objType = typeOf(*mem->object);
-        if (objType.empty()) return;
+        if (objType.empty()) {
+            return;
+        }
         if (const FieldInfo* f = findField(objType, mem->member)) {
             type = f->type;
             mutableTarget = f->isMutable;
@@ -3904,16 +4599,24 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, bool isIncreme
     }
     // atomic<T> ++ / -- is a lock-free atomic update; the cell itself is the mutable container,
     // so the reference need not be `mutable` (spec 20.6).
-    if (baseType(type).rfind("atomic$", 0) == 0) return;
-    if (!mutableTarget) error("cannot modify an immutable target (declare it 'mutable')", loc);
+    if (baseType(type).rfind("atomic$", 0) == 0) {
+        return;
+    }
+    if (!mutableTarget) {
+        error("cannot modify an immutable target (declare it 'mutable')", loc);
+    }
     // A class with an operator ++/-- overload is a valid target (spec 6.5): `c++` reassigns c to the
     // operator's result.
-    if (findMethod(baseType(type), isIncrement ? "operator++" : "operator--") != nullptr) return;
+    if (findMethod(baseType(type), isIncrement ? "operator++" : "operator--") != nullptr) {
+        return;
+    }
     if (isRefType(type)) {  // spec 27: stepping a pointer is allowed -- one element forward or back
         warnClassPointerArith(type, loc);
         return;
     }
-    if (type != "int") error("'++'/'--' requires an int target", loc);
+    if (type != "int") {
+        error("'++'/'--' requires an int target", loc);
+    }
 }
 
 // Lets the evaluator answer `EnumName.count()` (spec 12.5) from the declarations this stage already
@@ -3921,10 +4624,14 @@ void SemanticAnalyzer::checkIncDecTarget(const ast::Expr& target, bool isIncreme
 // which is what a demand needs to hold one table's offsets to the size of another.
 static void setEnumCount(comptime::Context& ctx,
                          const std::unordered_map<std::string, std::vector<std::string>>* enums) {
-    if (enums == nullptr) return;
+    if (enums == nullptr) {
+        return;
+    }
     ctx.enumCount = [enums](const std::string& name, long long& out) {
         auto it = enums->find(name);
-        if (it == enums->end()) return false;
+        if (it == enums->end()) {
+            return false;
+        }
         out = static_cast<long long>(it->second.size());
         return true;
     };
@@ -3933,11 +4640,11 @@ static void setEnumCount(comptime::Context& ctx,
 // Evaluates a constant integer/boolean/char expression at compile time (spec 28),
 // delegating to the shared comptime evaluator so consts and `comptime` method calls
 // resolve uniformly. `consts`/`methods` are optional resolution tables.
-static bool evalConstInt(const ast::Expr& e, long long& out,
-                         const std::unordered_map<std::string, long long>* consts,
-                         const std::unordered_map<std::string, const ast::MethodDecl*>* methods,
-                         const std::unordered_map<std::string, double>* dconsts,
-                         const std::unordered_map<std::string, std::vector<std::string>>* enums) {
+bool evalConstInt(const ast::Expr& e, long long& out,
+                  const std::unordered_map<std::string, long long>* consts,
+                  const std::unordered_map<std::string, const ast::MethodDecl*>* methods,
+                  const std::unordered_map<std::string, double>* dconsts,
+                  const std::unordered_map<std::string, std::vector<std::string>>* enums) {
     comptime::Context ctx;
     ctx.consts = consts;
     ctx.dconsts = dconsts;  // so a double const in e.g. a comparison still resolves
@@ -3948,11 +4655,11 @@ static bool evalConstInt(const ast::Expr& e, long long& out,
 
 // Evaluates a constant floating-point expression at compile time (integers promote),
 // resolving consts and `comptime` method calls via the shared evaluator.
-static bool evalConstDouble(const ast::Expr& e, double& out,
-                            const std::unordered_map<std::string, double>* dconsts,
-                            const std::unordered_map<std::string, long long>* iconsts,
-                            const std::unordered_map<std::string, const ast::MethodDecl*>* methods,
-                            const std::unordered_map<std::string, std::vector<std::string>>* enums) {
+bool evalConstDouble(const ast::Expr& e, double& out,
+                     const std::unordered_map<std::string, double>* dconsts,
+                     const std::unordered_map<std::string, long long>* iconsts,
+                     const std::unordered_map<std::string, const ast::MethodDecl*>* methods,
+                     const std::unordered_map<std::string, std::vector<std::string>>* enums) {
     comptime::Context ctx;
     ctx.consts = iconsts;
     ctx.dconsts = dconsts;
@@ -3961,1163 +4668,8 @@ static bool evalConstDouble(const ast::Expr& e, double& out,
     return comptime::evalDouble(e, out, ctx);
 }
 
-void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
-    if (const auto* sa = dynamic_cast<const ast::DemandStmt*>(&stmt)) {
-        long long v;
-        if (!evalConstInt(*sa->condition, v, &constInts_, &comptimeMethods_, &constDoubles_,
-                          &enums_)) {
-            // A condition over `sizeof` needs the target's real layout, which only the codegen has
-            // (spec 28.2, issue #7). Deferring it there is what lets a struct carry a byte budget;
-            // folding a size from a layout guessed here would assert something the program does not
-            // actually have. Every other non-constant condition is still rejected at once.
-            if (!comptime::mentionsSizeof(*sa->condition))
-                error("a demand is settled while the program is built, so its condition has to be "
-                      "known then -- this one is not constant", sa->loc);
-        } else if (v == 0) {
-            error("demand not met: " + sa->message, sa->loc);
-        }
-        return;
-    }
-    if (dynamic_cast<const ast::BreakStmt*>(&stmt) != nullptr ||
-        dynamic_cast<const ast::ContinueStmt*>(&stmt) != nullptr) {
-        return;  // loop-context validation (break/continue only inside a loop) is a later refinement
-    }
-    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&stmt)) {
-        // A range `0..10` (spec 7.5) iterates integers; otherwise the iterable is an array.
-        if (const auto* rng = dynamic_cast<const ast::RangeExpr*>(fe->iterable.get())) {
-            const std::string st = typeOf(*rng->start);
-            typeOf(*rng->end);
-            if (rng->step) typeOf(*rng->step);
-            const std::string et = fe->isVar ? (st.empty() ? "int" : st) : typeRefStr(fe->elemType);
-            pushScope();
-            if (!fe->indexName.empty()) declareLocal(fe->indexName, LocalVar{"int", false});
-            declareLocal(fe->varName, LocalVar{et, false});
-            analyzeBlock(fe->body);
-            popScope();
-            return;
-        }
-        const std::string it = typeOf(*fe->iterable);
-        // A collection is iterable too (spec 34): a generic/monomorphized class snapshot via toArray().
-        const bool isColl =
-            !it.empty() && !isArrayType(it) &&
-            (it.find('<') != std::string::npos || it.find('$') != std::string::npos);
-        const bool isRange = baseType(it) == "Range";  // a first-class Range value (spec 7.5), over int
-        // Iterable / Iterator (spec 9.2): any class that declares hasNext()+next() (it IS an iterator) or
-        // iterator() (it HAS one) can be foreach-ed lazily, no snapshot. Interfaces qualify too.
-        const MethodInfo* hasNextM = findMethod(baseType(it), "hasNext", /*objectFallback=*/false);
-        const MethodInfo* nextM = findMethod(baseType(it), "next", /*objectFallback=*/false);
-        const MethodInfo* iterM = findMethod(baseType(it), "iterator", /*objectFallback=*/false);
-        const bool isIterable =
-            (hasNextM != nullptr && nextM != nullptr) || iterM != nullptr;
-        if (!it.empty() && !isArrayType(it) && !isColl && !isRange && !isIterable)
-            error("foreach requires an array, a collection, a range or an Iterable, got '" + it + "'",
-                  fe->loc);
-        std::string et;
-        if (!fe->isVar) {
-            et = typeRefStr(fe->elemType);
-        } else if (isRange) {
-            et = "int";
-        } else if (isIterable && !isColl) {  // var x: the element type is what next() returns
-            if (nextM != nullptr) {
-                et = nextM->returnType;
-            } else if (iterM != nullptr) {
-                const MethodInfo* n2 = findMethod(baseType(iterM->returnType), "next", false);
-                et = n2 != nullptr ? n2->returnType : "";
-            }
-        } else if (isColl) {  // var x: take the single type argument (ArrayList<int> -> int)
-            const std::size_t lt = it.find('<');
-            const std::string args = lt != std::string::npos
-                                         ? it.substr(lt + 1, it.size() - lt - 2)
-                                         : it.substr(it.find('$') + 1);
-            et = args.find(',') == std::string::npos && args.find('$') == std::string::npos ? args : "";
-        } else {
-            et = elementOf(it);
-        }
-        pushScope();
-        if (!fe->indexName.empty()) declareLocal(fe->indexName, LocalVar{"int", false});
-        declareLocal(fe->varName, LocalVar{et, false});
-        analyzeBlock(fe->body);
-        popScope();
-        return;
-    }
-    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&stmt)) {
-        typeOf(*sw->subject);
-        for (const ast::SwitchCase& c : sw->cases) {
-            typeOf(*c.value);
-            analyzeBlock(c.body);
-        }
-        if (sw->defaultBody) analyzeBlock(*sw->defaultBody);
-        else error("a 'switch' must have a 'default' case (spec 7.3)", sw->loc);
-        return;
-    }
-    if (const auto* td = dynamic_cast<const ast::TupleDeclStmt*>(&stmt)) {
-        const std::string initType = typeOf(*td->init);
-        if (!initType.empty() && !isTupleType(initType)) {
-            error("cannot destructure a non-tuple value of type '" + initType + "'", td->loc);
-        }
-        const std::vector<std::string> comps = tupleElems(initType);
-        if (!initType.empty() && comps.size() != td->bindings.size()) {
-            error("tuple destructuring expects " + std::to_string(comps.size()) +
-                      " bindings but found " + std::to_string(td->bindings.size()),
-                  td->loc);
-        }
-        for (std::size_t i = 0; i < td->bindings.size(); ++i) {
-            const std::string bt = typeRefStr(td->bindings[i].type);
-            checkTypeAccessible(bt, td->loc);
-            if (i < comps.size() && !comps[i].empty() && !isSubtype(comps[i], bt)) {
-                error("cannot bind tuple component " + std::to_string(i) + " of type '" +
-                          comps[i] + "' to '" + bt + "'",
-                      td->loc);
-            }
-            if (lookupLocal(td->bindings[i].name) != nullptr) {
-                error("redeclaration or shadowing of variable '" + td->bindings[i].name + "'",
-                      td->loc);
-            } else {
-                declareLocal(td->bindings[i].name, LocalVar{bt, false});
-            }
-        }
-        return;
-    }
-    if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
-        // A region may be declared empty (`region r;`, spec 17.2 form 3) and allocated later; its
-        // init is then null. Every other declaration carries an initializer (the parser enforces it).
-        const std::string initType = vd->init ? typeOf(*vd->init) : std::string();
-        const std::string declType = vd->isVar ? initType : typeRefStr(vd->type);
-        if (!vd->isVar) checkTypeAccessible(declType, vd->loc);
-        // spec 32.2: a snapshot is a captured state, not a variable. Checked on the WRITTEN type name,
-        // because `RegionSnapshot` canonicalizes to `address` and afterwards the two cannot be told
-        // apart -- which is the price of spelling it as an alias, paid here rather than hidden.
-        // A LOCAL THAT SHADOWS A FIELD. The assignment cases are already refused twice over -- a
-        // parameter is immutable, and the field-initialisation check then reports the field as never
-        // set -- but a shadowed READ is silent: `mutable int width = 5; return width;` answers 5 while
-        // the field says 77. It bit twice during a `this.`-removal sweep and was caught only by an
-        // accident of type; a shadow of the SAME type goes through and changes what the program
-        // computes. A warning, not an error, because shadowing is legal and sometimes meant.
-        if (!currentClass_.empty()) {
-            if (auto ci = classes_.find(currentClass_);
-                ci != classes_.end() && ci->second.fields.count(vd->name) > 0)
-                warn("local '" + vd->name + "' shadows the field of the same name. Reads of '" +
-                         vd->name + "' in this scope see the local; write `this." + vd->name +
-                         "` for the field.",
-                     vd->loc);
-        }
-        if (vd->isMutable && vd->type.name == "RegionSnapshot")
-            error("a snapshot is constant: '" + vd->name +
-                      "' cannot be 'mutable'. It names a state that was captured; re-capturing is "
-                      "`snapshot region <name> into " + vd->name + ";` (spec 32.2).",
-                  vd->loc);
-        // spec 32.2: a snapshot's home has to be a region whose slots carry a header, because that is
-        // what tells a later `snapshot ... into k` how much room k has. A plain (bump) region has no
-        // per-slot header at all -- that absence is exactly what makes its allocation cost what a
-        // hand-written arena costs -- so a snapshot placed in one used to be an access violation.
-        // The runtime traps it; the flavor is right here on the declaration, so this is the place.
-        if (const auto* sn = dynamic_cast<const ast::SnapshotExpr*>(vd->init.get())) {
-            const std::string hf =
-                regionFlavor_.count(sn->home) ? regionFlavor_[sn->home] : std::string();
-            if (hf != "pool" && hf != "fixedslot" && hf != "stack")
-                error("a snapshot cannot live in region '" + sn->home +
-                          "': a plain (bump) region has no per-slot header, and a snapshot needs one "
-                          "so that re-capturing into it can tell how much room it has. Declare the "
-                          "home as `pool`, `fixedslot` or `stack` (spec 32.2).",
-                      sn->loc);
-        }
-        // `comptime T x = ...` (spec 37.4): the value is computed during compilation and embedded, so
-        // the initializer HAS to fold. This was parsed, recorded on the declaration and then read by
-        // nobody -- `comptime int a = Main.fib(10)` emitted a real `call @Main.fib(i32 10)` and stored
-        // the result, which is the one thing the prefix promises will not happen. Checked here, where a
-        // `fixed` initializer is already checked the same way, so both answer the same question alike.
-        if (vd->isComptime && vd->init != nullptr) {
-            bool folds = false;
-            if (isFloatType(declType)) {
-                double d;
-                folds = evalConstDouble(*vd->init, d, &constDoubles_, &constInts_, &comptimeMethods_);
-            } else {
-                long long v;
-                folds = evalConstInt(*vd->init, v, &constInts_, &comptimeMethods_, &constDoubles_);
-            }
-            if (!folds)
-                error("'comptime " + declType + " " + vd->name +
-                          "' must have an initializer the compiler can evaluate -- a literal, a `fixed` "
-                          "constant, or a call to a `comptime` method. Without one there is nothing to "
-                          "embed, and the value would be computed at run time like any other (spec 37.4).",
-                      vd->loc);
-        }
-        // Region flavor / growth modifiers (spec 17, flavors expansion): a flavor word only qualifies a
-        // region (LDP3-1719), and a region has exactly one flavor (LDP3-1710). The parser space-joins two
-        // flavor words into regionFlavor so both names surface here.
-        if (!vd->regionFlavor.empty() || vd->regionGrowable) {
-            if (declType != "region") {
-                const std::string w = !vd->regionFlavor.empty()
-                                          ? vd->regionFlavor.substr(0, vd->regionFlavor.find(' '))
-                                          : std::string("growable");
-                error("'" + w + "' only qualifies a region (spec 17), not a '" + declType +
-                          "' declaration",
-                      vd->loc);
-            } else {
-                const std::size_t sp = vd->regionFlavor.find(' ');
-                if (sp != std::string::npos) {
-                    const std::string a = vd->regionFlavor.substr(0, sp);
-                    const std::string b = vd->regionFlavor.substr(sp + 1);
-                    error("a region has exactly one flavor, but region '" + vd->name +
-                              "' was given two ('" + a + "' and '" + b + "')",
-                          vd->loc);
-                } else {
-                    regionFlavor_[vd->name] = vd->regionFlavor;  // record for extract/delete checks
-                    // fixedslot/ring hold one element type, so they need `.accepts({T})` of exactly one
-                    // type (LDP3-1711): a single-size pool / a fixed-purpose circular buffer.
-                    if (vd->regionFlavor == "fixedslot" || vd->regionFlavor == "ring") {
-                        const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get());
-                        if (ri == nullptr || ri->accepts.size() != 1)
-                            error("a " + vd->regionFlavor +
-                                      " region needs its single element type: add .accepts({T}) with "
-                                      "exactly one type (spec 17)",
-                                  vd->loc);
-                    }
-                }
-            }
-            // `growable` contradictions (LDP3-1712): a ring is bounded by definition; a mapped
-            // (at-address) region cannot grow; and a stack region is deliberately not growable -- its
-            // discipline is mark/rollback within a fixed arena, so growth is expressed by sizing the
-            // arena for its depth or by using a growable pool. This is by design, not a gap.
-            if (vd->regionGrowable && declType == "region") {
-                const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get());
-                if (vd->regionFlavor == "ring")
-                    error("growable does not apply to a ring region (a ring is bounded by "
-                          "definition) (spec 17)",
-                          vd->loc);
-                else if (ri != nullptr && ri->atAddress != nullptr)
-                    error("growable does not apply to a mapped (at address) region -- foreign "
-                          "memory cannot grow (spec 17)",
-                          vd->loc);
-                else if (vd->regionFlavor == "stack")
-                    error("growable does not compose with a stack region: size the stack region for its "
-                          "depth, or use a growable pool (spec 17)",
-                          vd->loc);
-            }
-        }
-        if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType) &&
-            !intLiteralFits(*vd->init, declType)) {
-            error("cannot initialize variable '" + vd->name + "' of type '" + declType +
-                      "' with a value of type '" + initType + "'" + addressHint(initType, declType),
-                  vd->loc);
-        }
-        if (lookupLocal(vd->name) != nullptr && deleted_.count(vd->name) == 0) {
-            error("redeclaration or shadowing of variable '" + vd->name + "'", vd->loc);
-        } else {
-            deleted_.erase(vd->name);  // reborn after delete: persistents reattach (spec 18.2)
-            freed_.erase(vd->name);
-            // A class value bound to a `new ... on stack` (the default for objects) is a
-            // stack object: RAII frees it, and it is not throwable (its carrier would
-            // dangle after unwind).
-            bool stackObj = false;
-            if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get()))
-                stackObj = nw->location != "heap" && !declType.empty() &&
-                           lookupClass(baseType(declType)) != nullptr && !isRefType(declType) &&
-                           !isArrayType(declType);
-            // A declaration with no initializer enters the *uninitialized* state. `region r;` keeps its
-            // old behaviour (it is allocated by a later `r = itself.allocate(...)`, which the region
-            // rules already police), so it is not tracked here.
-            const bool deferred = vd->init == nullptr && declType != "region";
-            bool heapObj = false;
-            if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get()))
-                heapObj = nw->location == "heap";
-            declareLocal(vd->name, LocalVar{declType.empty() ? std::string("int") : declType,
-                                            vd->isMutable, stackObj, heapObj, deferred});
-            if (deferred) {
-                init_[vd->name] = FlowFacts::Init::Uninit;
-            } else {
-                init_.erase(vd->name);
-                // Redeclaring a name (a fresh scope) must not inherit the old one's proof.
-                killProofsFor(vd->name);
-                // An initializer that is itself non-null proves the variable non-null right away --
-                // this is what makes `nullable T* p = &thing;` usable without a redundant check.
-                //
-                // Uses the type computed ABOVE rather than calling typeOf again: typeOf has side effects
-                // (it records moves and reports errors), so re-typing the initializer made `Handle b =
-                // move a;` report `a` as used-after-move -- against the very move that statement was.
-                if (!initType.empty() && initType != "null" && !isNullableType(initType))
-                    nonNull_.insert(vd->name);
-            }
-        }
-        // Remember a region's accepts/rejects constraints, keyed by variable.
-        if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get())) {
-            regionConstraints_[vd->name] = RegionConstraints{ri->accepts, ri->rejects};
-        }
-        // Remember which region a `checkpoint m = mark of region R;` came from (spec 17, LDP3-1714).
-        if (const auto* mk = dynamic_cast<const ast::MarkExpr*>(vd->init.get())) {
-            checkpointRegion_[vd->name] = mk->region;
-        }
-        // Remember a local that points into a region (`T* p = new X in region R;`) so extracting the
-        // OWNER of a field holding such a value can be rejected (spec 17, LDP3-1718).
-        regionOf_.erase(vd->name);
-        if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get()); nw != nullptr && !nw->region.empty())
-            regionOf_[vd->name] = nw->region;
-        // region-binder: a `new X` that lands in this ACTIVATION's frame names an object that dies at method
-        // return. Track the local so storing a reference to it into a longer-lived location can be rejected
-        // (§3). Two exclusions, and both are about where the object actually lives, not where the pointer to
-        // it does:
-        //
-        //   `new X in region R` -- region-owned; it outlives the method and the region rules govern it.
-        //   `new X() on heap`   -- heap-owned; the POINTER dies at return, the OBJECT lives until `delete`.
-        //
-        // The second one was missing, and it is why this analysis had to stay switched off: `Node* n = new
-        // Node(v) on heap; this.top = n;` -- the first two lines of every linked structure ever written --
-        // was reported as a dangling store. Storing a heap object into a longer-lived field is not an
-        // escape, it is the ownership transfer the whole idiom is made of. A heap object that IS deleted in
-        // this method and then stored is a use-after-free, which the flow machine already catches by name.
-        //
-        // Aliasing propagates the tag (`var y = x` / `var y = move x`): an alias to (or the new owner of) an
-        // activation-owned object is itself activation-scoped, so the escape check can't be dodged through it.
-        if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(vd->init.get()))
-            lambdaLocals_[vd->name] = lam;   // `function<void> work = lambda[...]` -> track for the §14 check
-        else lambdaLocals_.erase(vd->name);
-        activationOwned_.erase(vd->name);
-        if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
-            nw != nullptr && nw->region.empty() && nw->location != "heap") {
-            activationOwned_.insert(vd->name);
-        } else if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(vd->init.get());
-                   aid != nullptr && activationOwned_.count(aid->name) > 0) {
-            activationOwned_.insert(vd->name);
-        } else if (const auto* amv = dynamic_cast<const ast::MoveExpr*>(vd->init.get())) {
-            if (const auto* mid = dynamic_cast<const ast::IdentifierExpr*>(amv->operand.get());
-                mid != nullptr && activationOwned_.count(mid->name) > 0)
-                activationOwned_.insert(vd->name);
-        }
-        if (vd->init) checkOwnershipAssign(declType, *vd->init, vd->loc, "this declaration");
-        return;
-    }
-    if (const auto* assign = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
-        // spec 17 LDP3-1718: track a local / `obj.field` (re)assigned a region-allocated object, so
-        // extracting/deleting the owner of a same-region field can be flagged. Any other assignment to
-        // the path clears it.
-        {
-            std::string path;
-            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get()))
-                path = id->name;
-            else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
-                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
-                    path = oid->name + "." + mem->member;
-            if (!path.empty()) {
-                regionOf_.erase(path);
-                if (const auto* nw = dynamic_cast<const ast::NewExpr*>(assign->value.get());
-                    nw != nullptr && !nw->region.empty())
-                    regionOf_[path] = nw->region;
-                // A region assigned to a FIELD keeps its accepts/rejects, exactly as a local does --
-                // and they are kept at CLASS scope, because that is where the region lives. The
-                // per-method map is cleared between methods, which is right for a local (it cannot
-                // outlive its declaring method) and would erase this before the first method that
-                // allocates into it ever ran. A region is typed always; one that accepted anything
-                // because of where it happened to be stored was not a region.
-                if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(assign->value.get())) {
-                    regionConstraints_[path] = RegionConstraints{ri->accepts, ri->rejects};
-                    if (path.rfind("this.", 0) == 0 && !currentClass_.empty())
-                        fieldRegionConstraints_[currentClass_ + "." + path.substr(5)] =
-                            RegionConstraints{ri->accepts, ri->rejects};
-                }
-            }
-        }
-        // atomic<T> assignment (spec 20.6): `counter = counter +/- n` (a lock-free atomicrmw,
-        // from `+=`/`-=`) or `counter = v` (atomic store). The atomic<T> <-> T mixing is allowed
-        // here rather than through the usual numeric checks (which reject atomic + int). Detect via
-        // the local's type (not typeOf, which would read-type the target and error on moved vars).
-        bool atomicTarget = false;
-        if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get()))
-            if (const LocalVar* v = lookupLocal(tid->name);
-                v != nullptr && baseType(v->type).rfind("atomic$", 0) == 0)
-                atomicTarget = true;
-        if (atomicTarget) {
-            if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(assign->value.get())) {
-                typeOf(*bin->lhs);
-                typeOf(*bin->rhs);
-            } else {
-                typeOf(*assign->value);
-            }
-            return;
-        }
-        // region-binder ESCAPE CHECK (§3): storing a plain reference to an activation-owned object (a
-        // `new`-here local, or an alias/move of one) into a field of something that OUTLIVES this method
-        // would dangle at return. The target outlives the activation when its base object is not itself
-        // activation-owned -- `this`, a parameter, a static, or an alias to an outer object. Storing into a
-        // fellow activation-owned object (same lifetime) is fine. `x = move y` (a MoveExpr, not a bare
-        // identifier) transfers ownership and is always allowed.
-        if (regionBinder_)
-            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get()))
-                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-                    oid != nullptr && activationOwned_.count(oid->name) == 0)  // target outlives the method
-                    if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(assign->value.get());
-                        rid != nullptr && activationOwned_.count(rid->name) > 0 &&
-                        // only a POINTER/REFERENCE field aliases the object; a value field deep-copies it and
-                        // cannot dangle. Gate on the field being T*/T& (isRefType).
-                        isRefType(fieldTypeOf(*mem))) {
-                        const std::string tgt = oid->name == "this" ? "this" : ("'" + oid->name + "'");
-                        error("region-binder: storing a reference to the method-local object '" + rid->name +
-                                  "' into " + tgt + "'s field '" + mem->member + "', which outlives it, "
-                                  "would dangle when '" + rid->name + "' is freed; transfer ownership with "
-                                  "'move' (= move " + rid->name + ")",
-                              assign->loc);
-                    }
-        const std::string vt = typeOf(*assign->value);
-        checkAssignTarget(*assign->target, vt, assign->loc, assign->value.get());
-        // A LITERAL THAT DOES NOT FIT A BIT FIELD IS REFUSED.
-        //
-        // AN ERROR FOR A LITERAL, AND TRUNCATION FOR EVERYTHING ELSE, which is a line drawn on
-        // purpose (2026-08-13). Truncation on store is spec 11.1 -- "a value that overflows N bits
-        // is truncated on store" -- and that stands for a value the compiler cannot read: a count, a
-        // sum, anything computed. It is what `bit_fields.ldp3` tests, through a variable.
-        //
-        // A LITERAL IS A DIFFERENT CLAIM. The compiler holds the value and the width and can see
-        // they do not fit, and there is no reading of `state = 6` into three bits under which the
-        // author wanted 6 to become -2. Nothing is lost by refusing it -- the author writes a value
-        // that fits, or widens the field, and both are things they meant. It began as a warning; the
-        // warning was right about the danger and too quiet for what it had found.
-        //
-        // What it catches, and did on the day it was written: the fauna layout budgets a beast at
-        // twenty bytes with `int species : 5` and `int state : 3`, and writes beside them that the
-        // field "holds eight values and the tick needs exactly eight". True about the count and
-        // wrong about the range -- a signed 3-bit field stops at 3, and a signed 5-bit one at 15
-        // against eighteen species. Four states and two species would have been stored as something
-        // else, in silence, in a document whose every other number had been measured.
-        //
-        // A computed value is a different question: it needs a check at the store, and refusing to
-        // answer the half that is free is not made better by the half that is not.
-        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
-            // NOT THROUGH A CLASS NAME. `Test.criterion = ""` is a static field, and asking
-            // `typeOf` for the type of `Test` reports it as an undeclared VARIABLE -- which is how
-            // the first version of this check broke the standard library's own prelude for every
-            // program that compiled. A bit field cannot be static anyway (`checkBitField` says so:
-            // a static field has storage of its own, which is the opposite of sharing a unit), so
-            // there is nothing here to check and nothing is lost by not asking.
-            const auto* base = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-            const bool throughClassName = base != nullptr && classes_.count(base->name) > 0;
-            const std::string owner = throughClassName ? std::string() : baseType(typeOf(*mem->object));
-            const FieldInfo* fi = owner.empty() ? nullptr : findField(owner, mem->member);
-            if (fi != nullptr && fi->bitWidth > 0 && fi->bitWidth < 64) {
-                long long v = 0;
-                if (readIntLiteral(*assign->value, v)) {
-                    const std::string ft = baseType(fi->type);
-                    const bool uns = !ft.empty() && ft[0] == 'u';
-                    const long long lo = uns ? 0 : -(1LL << (fi->bitWidth - 1));
-                    const long long hi = uns ? (1LL << fi->bitWidth) - 1
-                                             : (1LL << (fi->bitWidth - 1)) - 1;
-                    if (v < lo || v > hi) {
-                        const long long kept =
-                            uns ? (v & ((1LL << fi->bitWidth) - 1))
-                                : ((v & ((1LL << fi->bitWidth) - 1)) ^ (1LL << (fi->bitWidth - 1))) -
-                                      (1LL << (fi->bitWidth - 1));
-                        const std::string fix =
-                            (!uns && v > hi)
-                                ? ". A SIGNED field spends one of its " +
-                                  std::to_string(fi->bitWidth) + " bits on the sign, so it stops at " +
-                                  std::to_string(hi) + " -- if these are counts or ordinals, declare "
-                                  "it unsigned"
-                                : ". Widen the field, or store a value in range";
-                        error("the value " + std::to_string(v) + " does not fit '" + mem->member +
-                                  "', a " + std::to_string(fi->bitWidth) + "-bit '" + ft +
-                                  "' field holding " + std::to_string(lo) + " to " +
-                                  std::to_string(hi) + ". It would be truncated on store and read "
-                                  "back as " + std::to_string(kept) + fix,
-                              assign->loc);
-                    }
-                }
-            }
-        }
-        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get())) {
-            moved_.erase(id->name);  // reassignment reactivates the variable
-            activationOwned_.erase(id->name);  // reassigned: no longer the tracked activation-owned object
-            extracted_.erase(id->name);  // ... including after an `x = extract x from region R;`
-            const LocalVar* var = lookupLocal(id->name);
-            if (var != nullptr) checkOwnershipAssign(var->type, *assign->value, assign->loc, "this assignment");
-        } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
-            // A FIELD is an assignment target too. The ownership rules lived only on the two
-            // narrowest paths -- a local's declaration and a local's reassignment -- so `movable`
-            // meant "you must write move" for a variable and nothing at all for a field, which is
-            // the place ownership actually matters, since a field is what outlives the method.
-            const std::string ft = fieldTypeOf(*mem);
-            if (!ft.empty())
-                checkOwnershipAssign(ft, *assign->value, assign->loc,
-                                     "field '" + mem->member + "'");
-            // `this.f = ...` inside a constructor discharges the obligation to give `f` a value. Only
-            // through `this`: assigning some OTHER object's field of the same name says nothing about
-            // ours, and matching on the name alone would silently accept a constructor that initialises
-            // its argument instead of itself.
-            // Walk down to the ROOT of the chain: `this.cap.x = x` initialises `cap`, field by field,
-            // and is the ordinary way to fill a value-struct field. Marking only on a direct
-            // `this.<name>` would report `cap` as unset in a constructor that plainly sets it -- and a
-            // check that rejects correct code gets switched off rather than obeyed.
-            if (inConstructor_) {
-                const ast::MemberExpr* root = mem;
-                while (const auto* outer = dynamic_cast<const ast::MemberExpr*>(root->object.get()))
-                    root = outer;
-                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(root->object.get());
-                    oid != nullptr && oid->name == "this")
-                    markInitialized("this." + root->member);
-            }
-        }
-        return;
-    }
-    if (const auto* incdec = dynamic_cast<const ast::IncDecStmt*>(&stmt)) {
-        checkIncDecTarget(*incdec->target, incdec->isIncrement, incdec->loc);
-        return;
-    }
-    if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(&stmt)) {
-        const std::string ct = typeOf(*ifs->cond);
-        if (!ct.empty() && ct != "boolean") {
-            error("'if' condition must be boolean, got '" + ct + "'", ifs->loc);
-        }
-        if (ifs->isComptime) {
-            long long v;
-            if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_, &constDoubles_,
-                              &enums_))
-                error("'comptime if' requires a compile-time constant condition", ifs->loc);
-        }
-        // The branch is where the flow machine earns itself. Each arm is analyzed from the SAME entry
-        // state, and what survives afterwards is the join of the two -- so a proof made in one arm cannot
-        // leak into code the other arm reaches.
-        const FlowFacts entry = snapshotFlow();
-
-        // A condition that PROVES something holds for the arm that ran because of it. `p != null` proves
-        // it in the `then`; `p == null` proves it in the `else`, which is what makes the guard-clause
-        // shape (`if (p == null) { return; }`) work: the proof lands on the continuation.
-        std::string provenThen, provenElse;
-        proofFromCondition(*ifs->cond, provenThen, provenElse);
-
-        if (!provenThen.empty()) nonNull_.insert(provenThen);
-        analyzeBlock(ifs->thenBlock);
-        const FlowFacts afterThen = snapshotFlow();
-        const bool thenExits = blockAlwaysExits(ifs->thenBlock);
-
-        restoreFlow(entry);
-        if (!provenElse.empty()) nonNull_.insert(provenElse);
-        if (ifs->elseBlock) analyzeBlock(*ifs->elseBlock);
-        const FlowFacts afterElse = snapshotFlow();
-        const bool elseExits = ifs->elseBlock != nullptr && blockAlwaysExits(*ifs->elseBlock);
-
-        // An arm that always exits (return/throw/break/continue) never reaches the code after the `if`,
-        // so it contributes NOTHING to the join. That is both what makes a guard clause narrow the rest
-        // of the method and what removes the ownership false positive the analysis doc calls out: a
-        // branch that moved a value and then returned cannot have moved it for the code below.
-        if (thenExits && elseExits) {
-            restoreFlow(afterThen);
-        } else if (thenExits) {
-            restoreFlow(afterElse);
-        } else if (elseExits) {
-            restoreFlow(afterThen);
-        } else {
-            joinFlow(afterThen, afterElse);
-        }
-        return;
-    }
-    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(&stmt)) {
-        const std::string subjType = typeOf(*ms->subject);
-        const std::string subjBaseM = baseType(subjType);
-        const auto subjDollarM = subjBaseM.find('$');
-        // AN ENUM SUBJECT: the cases name CONSTANTS, not types.
-        //
-        // `match` began as dispatch over a sealed hierarchy, so every arm was looked up as a class
-        // and `case Caught` was reported as an unknown TYPE -- on the form the specifications write
-        // wherever the point is that every outcome is named and counted. A constant is a value and
-        // not a shape: nothing is bound out of it, and its exhaustiveness question is answered from
-        // the enum's own list rather than from a `permits` clause on a base class.
-        if (auto en = enums_.find(subjBaseM); en != enums_.end()) {
-            const std::vector<std::string>& constants = en->second;
-            for (const ast::MatchCase& c : ms->cases) {
-                if (std::find(constants.begin(), constants.end(), c.typeName) == constants.end())
-                    error("'" + c.typeName + "' is not a constant of enum '" + subjBaseM + "'",
-                          c.loc);
-                if (!c.bindings.empty())
-                    error("'case " + c.typeName + "' cannot bind anything: an enum constant is a "
-                          "value, not a shape with fields to take apart",
-                          c.loc);
-                pushScope();
-                for (const auto& st : c.body.statements) analyzeStatement(*st);
-                popScope();
-            }
-            if (ms->defaultBody) analyzeBlock(*ms->defaultBody);
-            if (sealedEnums_.count(subjBaseM) > 0) {
-                // Every constant, or say which is missing. This is the whole of what `sealed` buys
-                // on an enum: the constant added next year is reported at each match that forgot
-                // it, instead of disappearing into a `default`.
-                std::string missing;
-                for (const std::string& k : constants) {
-                    bool covered = false;
-                    for (const ast::MatchCase& c : ms->cases)
-                        if (c.typeName == k) covered = true;
-                    if (!covered) missing += (missing.empty() ? "" : ", ") + k;
-                }
-                if (!missing.empty() && !ms->defaultBody)
-                    error("match on sealed enum '" + subjBaseM + "' is not exhaustive: missing " +
-                              missing,
-                          ms->loc);
-            } else if (!ms->defaultBody) {
-                error("match on enum '" + subjBaseM + "' requires a 'default' case, or declare the "
-                      "enum `sealed` so every constant must be covered and a new one cannot be "
-                      "forgotten here",
-                      ms->loc);
-            }
-            return;
-        }
-        for (const ast::MatchCase& c : ms->cases) {
-            // A bare case name (Ok) on a monomorphized sealed subject (Result$int$int) may name the
-            // matching instantiation (Ok$int$int) -- but a non-generic concrete subclass of a generic
-            // base (class Leaf extends Base<int>) is just `Leaf`, not `Leaf$int`. Prefer the suffixed
-            // instantiation when it exists, else fall back to the bare name.
-            std::string caseType = c.typeName;
-            if (subjDollarM != std::string::npos) {
-                const std::string suffixed = c.typeName + subjBaseM.substr(subjDollarM);
-                if (lookupClass(suffixed) != nullptr) caseType = suffixed;
-            }
-            const ClassInfo* ci = lookupClass(caseType);
-            if (ci == nullptr) {
-                error("unknown type '" + c.typeName + "' in match case", c.loc);
-            } else if (!subjType.empty() && !isSubtype(caseType, subjBaseM)) {
-                error("'" + c.typeName + "' is not a subtype of '" + subjType + "'", c.loc);
-            }
-            // Bindings introduce locals (the case type's fields) in the case body.
-            pushScope();
-            for (const ast::Param& b : c.bindings)
-                declareLocal(b.name, LocalVar{typeRefStr(b.type), false});
-            for (const auto& st : c.body.statements) analyzeStatement(*st);
-            popScope();
-        }
-        if (ms->defaultBody) analyzeBlock(*ms->defaultBody);
-        // Exhaustiveness (spec 16.1): a sealed subject must cover every permit and
-        // needs no default; a non-sealed subject requires a default.
-        const ClassInfo* sc = lookupClass(baseType(subjType));
-        if (sc != nullptr && sc->isSealed) {
-            for (const std::string& p : sc->permits) {
-                bool covered = false;
-                for (const ast::MatchCase& c : ms->cases)
-                    if (c.typeName == p) covered = true;
-                if (!covered && !ms->defaultBody)
-                    error("match on sealed '" + baseType(subjType) +
-                              "' is not exhaustive: missing case '" + p + "'",
-                          ms->loc);
-            }
-        } else if (!ms->defaultBody) {
-            error("match requires a 'default' case (the subject is not sealed)", ms->loc);
-        }
-        return;
-    }
-    if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&stmt)) {
-        const std::string ct = typeOf(*ws->cond);
-        if (!ct.empty() && ct != "boolean") {
-            error("'while' condition must be boolean, got '" + ct + "'", ws->loc);
-        }
-        // The body may not run at all, and it may run again -- so a proof it establishes survives
-        // neither. What it INITIALIZES is different: a second pass cannot un-assign a variable, but a
-        // zero-pass loop means we cannot claim it was assigned either, so the entry state stands.
-        const FlowFacts entry = snapshotFlow();
-        std::string provenBody, unused;
-        proofFromCondition(*ws->cond, provenBody, unused);
-        if (!provenBody.empty()) nonNull_.insert(provenBody);
-        analyzeBlock(ws->body);
-        invalidateAcrossBackEdge(entry);
-        restoreFlow(entry);
-        return;
-    }
-    if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&stmt)) {
-        // A do-while body always runs once, so what it initializes really is initialized afterwards.
-        const FlowFacts entry = snapshotFlow();
-        analyzeBlock(dw->body);
-        invalidateAcrossBackEdge(entry);
-        const std::string ct = typeOf(*dw->cond);
-        if (!ct.empty() && ct != "boolean") {
-            error("'do-while' condition must be boolean, got '" + ct + "'", dw->loc);
-        }
-        return;
-    }
-    if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&stmt)) {
-        pushScope();
-        if (fs->init) analyzeStatement(*fs->init);
-        const std::string ct = typeOf(*fs->cond);
-        if (!ct.empty() && ct != "boolean") {
-            error("'for' condition must be boolean, got '" + ct + "'", fs->loc);
-        }
-        if (fs->update) analyzeStatement(*fs->update);
-        // Same as `while`: zero iterations is possible, so nothing the body establishes escapes it.
-        const FlowFacts entry = snapshotFlow();
-        analyzeBlock(fs->body);
-        invalidateAcrossBackEdge(entry);
-        restoreFlow(entry);
-        popScope();
-        return;
-    }
-    if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
-        // LDP3-1720: `extract` transfers ownership to its result, so a bare `extract ...;` statement leaks
-        // the object it just relocated. Its result must be bound to a variable or field.
-        if (dynamic_cast<const ast::ExtractExpr*>(es->expr.get()) != nullptr)
-            error("an extract result must be bound to a variable or field (spec 17): "
-                  "write `T* out = extract ...;`, or use `delete X from region R;` to just destroy it",
-                  es->expr->loc);
-        typeOf(*es->expr);
-        return;
-    }
-    if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
-        if (rs->value) {
-            const std::string vt = typeOf(*rs->value);
-            // Null safety (spec 3.7): a null/nullable value may not be returned where the declared
-            // return type is non-nullable.
-            if (!vt.empty() && !currentReturnType_.empty() && !isNullableType(currentReturnType_) &&
-                (vt == "null" || isNullableType(vt))) {
-                error("cannot return " + std::string(vt == "null" ? "null" : "a nullable value") +
-                          " from a method declared 'returns " + currentReturnType_ +
-                          "': that type is non-nullable" +
-                          (vt == "null"
-                               ? std::string(". Return a real value, or declare it 'returns nullable " +
-                                             currentReturnType_ + "' if the caller must handle absence")
-                               : std::string(". A direct null test on a NAME narrows it -- after "
-                                             "`if (x == null) { return ...; }` a plain `return x;` "
-                                             "compiles with no cast. This value's test was not a shape "
-                                             "the compiler reads (a field, a call result, a cleverer "
-                                             "condition), so state the check with 'cast<" +
-                                             currentReturnType_ + ">(...)', which is verified at runtime")),
-                      rs->loc);
-            } else if (!vt.empty() && !currentReturnType_.empty() && vt != "null" &&
-                       currentReturnType_ != "void" && !isSubtype(vt, currentReturnType_) &&
-                       !intLiteralFits(*rs->value, currentReturnType_)) {
-                // TYPE of the returned value (LDP3-0303). Only nullability was checked here, so
-                // `return someDog;` from a method `returns Cat` produced valid IR and reinterpreted the
-                // object -- vtable pointer included -- because every class is an opaque `ptr` at the LLVM
-                // level. A language that verifies `cast<T>` at runtime had its guard facing the wrong way.
-                //
-                // The same pair of conditions the assignment check uses, deliberately: `isSubtype` for the
-                // relation and `intLiteralFits` so an untyped literal still adapts to the declared type
-                // (`return 0;` from a method returning `byte` stays legal, exactly as `byte b = 0;` is).
-                error("cannot return a value of type '" + vt + "' from a method returning '" +
-                          currentReturnType_ + "'",
-                      rs->loc);
-            }
-            // region-binder ESCAPE BY RETURN (§8). The gap this analysis was named for and did not
-            // close: `Point* make() { Point p = new Point() on stack; return &p; }` compiled clean in
-            // every configuration, INCLUDING with the binder switched on. Chapter 5 promises the
-            // opposite in as many words, so this was the most explicit unkept promise in the language.
-            //
-            // The rule is the same one the field-store check uses, pointed at the return slot: an
-            // object that lives in this activation's frame cannot leave through a pointer or a
-            // reference, because the frame goes away the instant the caller has it. A heap object is
-            // not caught -- its pointer dies here, its storage does not -- which is exactly the
-            // factory idiom and has to keep working.
-            // A return is the fourth destination: the value lands in the caller. Same rules.
-            if (!currentReturnType_.empty() && currentReturnType_ != "void")
-                checkOwnershipAssign(currentReturnType_, *rs->value, rs->loc, "this return");
-            // spec 19.6: `returns move T` hands ownership out, and the return says so.
-            if (currentReturnIsMove_ &&
-                dynamic_cast<const ast::MoveExpr*>(rs->value.get()) == nullptr) {
-                error("this method is declared 'returns move " + currentReturnType_ +
-                          "', so it gives up ownership: write 'return move ...'",
-                      rs->loc);
-            }
-            if (regionBinder_ && isRefType(currentReturnType_)) {
-                if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get());
-                    rid != nullptr && activationOwned_.count(rid->name) > 0) {
-                    error("region-binder: returning '" + rid->name +
-                              "', which names an object living in this method's own frame; the frame "
-                              "is gone by the time the caller reads it. Allocate it with 'on heap' so "
-                              "it outlives the call, or return it by value so the caller gets a copy",
-                          rs->loc);
-                }
-            }
-        }
-        return;
-    }
-    if (const auto* ys = dynamic_cast<const ast::YieldStmt*>(&stmt)) {
-        if (ys->value == nullptr) return;
-        const std::string vt = typeOf(*ys->value);  // `yield expr;` (spec 16.2 / 22.6)
-        // In a generator (spec 22.6) the yielded value is an element of the Iterator<T> it produces.
-        if (!currentGenElem_.empty() && !vt.empty() && !isSubtype(vt, currentGenElem_))
-            error("cannot yield a '" + vt + "' from a generator producing 'Iterator<" +
-                      currentGenElem_ + ">'",
-                  ys->loc);
-        return;
-    }
-    if (const auto* asmS = dynamic_cast<const ast::AsmStmt*>(&stmt)) {
-        // Inline assembly (spec issue 1). Its operands are ordinary expressions and must resolve -- so a
-        // typo in `in (v)` is a compile error, not a mystery at assembly time. An `out (...)` operand is
-        // written by the asm, so it must be an assignable lvalue.
-        for (const ast::ExprPtr& i : asmS->inputs) typeOf(*i);
-        for (const ast::ExprPtr& o : asmS->outputs) checkAssignTarget(*o, typeOf(*o), o->loc, nullptr);
-        // And now the BODY.
-        //
-        // Until this, the body went to the assembler unread -- which made `asm` the one construct in
-        // LDP3 where arbitrary code could live, and the only place a mistake was neither caught nor
-        // catchable. The block already names its architecture and dialect; that information was being
-        // collected and then thrown away. See asmcheck.h for what is checked and, as importantly, what
-        // is deliberately not.
-        semantic::AsmDeclared decl;
-        decl.arch = asmS->arch;
-        decl.dialect = asmS->dialect;
-        decl.outputCount = static_cast<int>(asmS->outputs.size());
-        decl.inputCount = static_cast<int>(asmS->inputs.size());
-        decl.clobbers = asmS->clobbers;
-        decl.inNakedFunction = inNakedFn_;
-        const semantic::AsmReport report = semantic::checkAsm(asmS->body, decl);
-        for (const semantic::AsmFinding& f : report.findings) {
-            const std::string where = " (asm line " + std::to_string(f.line) + ")";
-            if (f.severity == semantic::AsmFinding::Severity::Error) error(f.message + where, asmS->loc);
-            else warn(f.message + where, asmS->loc);
-        }
-        return;
-    }
-    if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
-        noteUnsafeForInterrupt("free memory", del->loc);
-        auto checkTarget = [&](const ast::Expr& target) {
-            const std::string t = typeOf(target);
-            // `delete p` where p is a class, or a pointer/reference to one (see through T*/T&). Try the
-            // full type too, not only baseType: a generic instantiated with a pointer type argument mangles
-            // to a name that ends in '*' (e.g. `ArrayList$Node*` for ArrayList<Node*>), which baseType would
-            // wrongly strip -- but the class is registered under the full name, so `delete` must accept it.
-            if (!t.empty() && lookupClass(baseType(t)) == nullptr && lookupClass(t) == nullptr &&
-                !isArrayType(t)) {
-                error("'delete' expects a heap object or array; got a value of type '" + t + "'",
-                      del->loc);
-            }
-            // A deleted variable may be redeclared with the same name, reattaching its persistents
-            // (spec 18.2). Record it so the redeclaration is allowed -- and so a later READ of it is
-            // caught as a use-after-free.
-            //
-            // ... but only where the delete actually FREES something. `delete v` on a value-form type
-            // (a `Result<int,int>` held by value rather than `Result<int,int>*`) owns no heap and is a
-            // documented no-op, so the variable stays perfectly readable and flagging it would be wrong.
-            // The line is exactly whether the name denotes a reference to a heap object.
-            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&target)) {
-                deleted_.insert(id->name);   // spec 18.2: the name may be redeclared either way
-                const LocalVar* lv = lookupLocal(id->name);
-                if (isRefType(t) || isArrayType(t) || (lv != nullptr && lv->isHeapObject))
-                    freed_.insert(id->name);
-            }
-        };
-        checkTarget(*del->target);
-        for (const auto& mt : del->moreTargets) checkTarget(*mt);
-        // `delete X from region R` on a ring region is rejected -- a ring auto-evicts (LDP3-1715).
-        if (!del->fromRegion.empty() &&
-            (regionFlavor_.count(del->fromRegion) ? regionFlavor_[del->fromRegion] : std::string()) ==
-                "ring")
-            error("a ring region auto-evicts; individual delete is not allowed on '" + del->fromRegion +
-                      "' (spec 17)",
-                  del->loc);
-        return;
-    }
-    if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&stmt)) {
-        if (rel->isPersistent) {
-            // `release [persistent|eternal] obj.field;` -- record that this persistent
-            // field is released somewhere, satisfying the obligation (spec 18.15).
-            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(rel->target.get())) {
-                // `release C.field all;` names the CLASS, not an object -- there is no instance whose
-                // identity is meant, because the point is every identity. Resolve the receiver as a type
-                // name; typing it as an expression would report `C` as an undeclared variable.
-                if (rel->allKeys) {
-                    std::string cls;
-                    if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
-                        cls = rid->name;
-                    if (cls.empty() || lookupClass(cls) == nullptr) {
-                        error("'release ... all' names a class and one of its persistent fields "
-                              "(`release Session.hits all;`); '" +
-                                  (cls.empty() ? std::string("this receiver") : "'" + cls + "'") +
-                                  " is not a class in scope",
-                              rel->loc);
-                        return;
-                    }
-                    if (const std::string owner = persistentFieldOwner(cls, mem->member); !owner.empty())
-                        releasedPersistents_.insert(owner + "." + mem->member);
-                    else
-                        error("'" + mem->member + "' is not a persistent field of '" + cls + "'",
-                              rel->loc);
-                    return;
-                }
-                const std::string ot = baseType(typeOf(*mem->object));
-                if (const std::string owner = persistentFieldOwner(ot, mem->member); !owner.empty())
-                    releasedPersistents_.insert(owner + "." + mem->member);
-                else if (!ot.empty())
-                    error("'" + mem->member + "' is not a persistent field of '" + ot + "'",
-                          rel->loc);
-            } else if (rel->target != nullptr) {
-                typeOf(*rel->target);  // still type-check the operand
-                error("'release persistent' expects a persistent field access (obj.field)",
-                      rel->loc);
-            }
-            return;
-        }
-        // A `this.field` region is validated at codegen (via the field); only a plain local name is
-        // resolved here (spec 17: region as a field).
-        if (rel->region.find('.') == std::string::npos) {
-            const LocalVar* r = lookupLocal(rel->region);
-            if (r == nullptr) {
-                error("unknown region '" + rel->region + "'", rel->loc);
-            } else if (r->type != "region") {
-                error("'" + rel->region + "' is not a region", rel->loc);
-            }
-        }
-        return;
-    }
-    if (const auto* rb = dynamic_cast<const ast::RollbackStmt*>(&stmt)) {
-        // `rollback region R to m` needs a stack region (LDP3-1713) and a checkpoint captured from that
-        // same region (LDP3-1714). A `this.field` region is validated at codegen.
-        if (rb->region.find('.') == std::string::npos) {
-            const LocalVar* r = lookupLocal(rb->region);
-            if (r == nullptr)
-                error("unknown region '" + rb->region + "'", rb->loc);
-            else if (r->type != "region")
-                error("'" + rb->region + "' is not a region", rb->loc);
-            else if ((regionFlavor_.count(rb->region) ? regionFlavor_[rb->region] : std::string()) != "stack")
-                error("mark/rollback need a `stack region`, but '" + rb->region + "' is not one (spec 17)",
-                      rb->loc);
-        }
-        const std::string ct = rb->checkpoint ? typeOf(*rb->checkpoint) : std::string();
-        if (!ct.empty() && ct != "checkpoint")
-            error("`rollback ... to` expects a checkpoint (from `mark of region`), not a '" + ct + "'",
-                  rb->loc);
-        // If the checkpoint is a plain variable, it must have been marked from THIS region (LDP3-1714).
-        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(rb->checkpoint.get())) {
-            auto cr = checkpointRegion_.find(id->name);
-            if (cr != checkpointRegion_.end() && cr->second != rb->region)
-                error("this checkpoint belongs to region '" + cr->second +
-                          "', not '" + rb->region + "'; roll back the region it came from",
-                      rb->loc);
-        }
-        return;
-    }
-    if (const auto* um = dynamic_cast<const ast::UnimportStmt*>(&stmt)) {
-        if (freestanding_)
-            error("unimport/reimport is not available in freestanding mode (spec 36.3)", um->loc);
-        // Namespace / bundle granularity (spec 30.1) is accepted as-is; the codegen expands it to the
-        // contained types. An individual target must be a known class, interface or enum.
-        if (um->granularity == 0) {
-            const std::string bt = baseType(um->target);
-            if (lookupClass(bt) == nullptr && enums_.count(bt) == 0)
-                error("cannot " + std::string(um->isReimport ? "reimport" : "unimport") + " '" +
-                          um->target + "': not a known type",
-                      um->loc);
-            else if (!um->isReimport && finalImports_.count(bt) > 0)
-                error("cannot unimport '" + um->target +
-                          "': it was brought in by 'final import' (spec 37.6)",
-                      um->loc);
-        }
-        return;
-    }
-    if (const auto* rv = dynamic_cast<const ast::ReimportValidateStmt*>(&stmt)) {
-        if (freestanding_)
-            error("unimport/reimport is not available in freestanding mode (spec 36.3)", rv->loc);
-        if (lookupClass(baseType(rv->target)) == nullptr)
-            error("cannot reimport '" + rv->target + "': not a known class", rv->loc);
-        const std::string expectedType = rv->expected ? typeOf(*rv->expected) : "";
-        const std::string producedType = analyzeExpectingBlock(rv->expecting.get());
-        // The two validation values must be the same type so they can be compared bit-for-bit.
-        if (!expectedType.empty() && !producedType.empty() &&
-            baseType(expectedType) != baseType(producedType))
-            error("reimport validation type mismatch: the matching unimport produced '" +
-                      expectedType + "' but this expecting block returns '" + producedType + "'",
-                  rv->loc);
-        if (rv->onFailure) analyzeBlock(*rv->onFailure);
-        return;
-    }
-    if (const auto* cm = dynamic_cast<const ast::CascadeMoveStmt*>(&stmt)) {
-        const std::string t = typeOf(*cm->target);  // type-check the moved object
-        if (!t.empty() && lookupClass(baseType(t)) == nullptr)
-            error("'cascade move' expects a class object, got '" + t + "'", cm->loc);
-        for (const std::string& rn : {cm->fromRegion, cm->toRegion}) {
-            const LocalVar* rv = lookupLocal(rn);
-            if (rv == nullptr) error("unknown region '" + rn + "'", cm->loc);
-            else if (rv->type != "region") error("'" + rn + "' is not a region", cm->loc);
-        }
-        return;
-    }
-    if (const auto* cs = dynamic_cast<const ast::CascadeStmt*>(&stmt)) {
-        // `cascade unimport X` (spec 37.1): same rules as plain unimport, applied to X and its
-        // subtypes/monomorphizations (the expansion happens in codegen).
-        if (cs->op == ast::CascadeOpKind::Unimport) {
-            if (freestanding_)
-                error("unimport is not available in freestanding mode (spec 36.3)", cs->loc);
-            if (lookupClass(baseType(cs->typeName)) == nullptr)
-                error("cannot unimport '" + cs->typeName + "': not a known class", cs->loc);
-            else if (finalImports_.count(baseType(cs->typeName)) > 0)
-                error("cannot unimport '" + cs->typeName +
-                          "': it was brought in by 'final import' (spec 37.6)",
-                      cs->loc);
-            return;
-        }
-        // `cascade release persistent X` (spec 37.1): satisfy the release obligation for every
-        // persistent reachable from X's owned graph (spec 18.15). Runtime release is a no-op today,
-        // matching plain `release persistent`.
-        if (cs->op == ast::CascadeOpKind::Release) {
-            const std::string t = cs->target != nullptr ? baseType(typeOf(*cs->target)) : "";
-            if (!t.empty() && lookupClass(t) == nullptr)
-                error("'cascade release' expects a class object, got '" + t + "'", cs->loc);
-            else if (!t.empty()) {
-                std::unordered_set<std::string> seen;
-                markCascadeReleased(t, seen);
-            }
-            return;
-        }
-        // `cascade println(X)` / `cascade validate(X)` (spec 37.1). The operand must be a class
-        // object; an operation supports cascade only if its per-node form exists (rule 4):
-        // println needs a describe() on the type, validate uses the type's invariants.
-        if (cs->target != nullptr) {
-            const std::string t = typeOf(*cs->target);
-            const std::string cn = baseType(t);
-            if (!t.empty() && lookupClass(cn) == nullptr) {
-                error("'cascade' expects a class object, got '" + t + "'", cs->loc);
-            } else if (cs->op == ast::CascadeOpKind::Println && !cn.empty() &&
-                       findMethod(cn, "describe") == nullptr) {
-                error("'cascade println' requires a 'describe()' method on '" + cn +
-                          "' (spec 37.1 rule 4)",
-                      cs->loc);
-            }
-        }
-        if (cs->dest != nullptr) typeOf(*cs->dest);  // type-check `cascade clone X into <dest>`
-        return;
-    }
-    if (const auto* def = dynamic_cast<const ast::DeferStmt*>(&stmt)) {
-        if (def->within != nullptr) {  // spec 32.10: the cleanup's time budget
-            const std::string t = baseType(typeOf(*def->within));
-            if (t != "Duration" && !isIntName(t) && !t.empty()) {
-                error("'defer within' expects a Duration or a millisecond count, got '" + t + "'",
-                      def->within->loc);
-            }
-        }
-        analyzeBlock(def->body);
-        return;
-    }
-    if (const auto* us = dynamic_cast<const ast::UsingStmt*>(&stmt)) {
-        pushScope();
-        analyzeStatement(*us->decl);
-        analyzeBlock(us->body);
-        popScope();
-        return;
-    }
-    if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(&stmt)) {
-        // The lock this would take may be the one the interrupted code is already holding, and an
-        // interrupt cannot wait for it to be released -- the holder cannot run until the handler
-        // returns. That is a deadlock with no other party to blame.
-        noteUnsafeForInterrupt("take a lock", sy->loc);
-        const std::string mt = baseType(typeOf(*sy->mutex));  // expect a Mutex<...> instance
-        if (!mt.empty() && mt.rfind("Mutex", 0) != 0)
-            error("synchronized requires a Mutex value, got '" + mt + "'", sy->loc);
-        if (!sy->bindType.isRef)
-            error("synchronized binding must be a reference (e.g. T& name)", sy->loc);
-        // Awaiting while holding the lock would suspend the task with the mutex held -- a deadlock
-        // risk (spec 22). Reject it; release the lock before awaiting (or await outside the block).
-        if (blockHasAwait(sy->body))
-            error("cannot 'await' while holding a mutex in a 'synchronized' block (spec 22); "
-                  "await outside the locked region", sy->loc);
-        pushScope();
-        // Bind name to a mutable reference to the Mutex's protected value.
-        declareLocal(sy->bindName, LocalVar{sy->bindType.name, true});
-        analyzeBlock(sy->body);
-        popScope();
-        return;
-    }
-    if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&stmt)) {
-        if (freestanding_)
-            error("exceptions are not available in freestanding mode; use Result/Option (spec 36.3)",
-                  th->loc);
-        const std::string t = typeOf(*th->value);
-        if (!t.empty()) {
-            const std::string bt = baseType(t);
-            if (lookupClass(bt) == nullptr) {
-                error("'throw' expects an object value; got '" + t + "'", th->loc);
-            }
-            // Any polymorphic object can be thrown/caught (not only Exception subtypes). Since every
-            // class is now an Object, this is always satisfied -- the meaningful guard is "is a class".
-            // The carrier must outlive unwinding: a stack object's pointer would dangle.
-            bool stackThrow = false;
-            if (const auto* nw = dynamic_cast<const ast::NewExpr*>(th->value.get()))
-                stackThrow = nw->location != "heap";
-            else if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(th->value.get()))
-                if (const LocalVar* v = lookupLocal(id->name)) stackThrow = v->isStackObject;
-            if (stackThrow) {
-                error("a thrown object must be heap-allocated; use 'new ... on heap'", th->loc);
-            }
-            // Checked exceptions (spec 21.1): a throw that is neither caught by an enclosing try nor
-            // listed in the method's `throws` clause escapes undeclared -- warn.
-            if (lookupClass(bt) != nullptr) {
-                bool covered = false;
-                for (auto frame = catchStack_.rbegin(); !covered && frame != catchStack_.rend(); ++frame)
-                    for (const std::string& ct : *frame)
-                        if (bt == ct || isSubtype(bt, ct)) { covered = true; break; }
-                if (!covered)
-                    for (const std::string& dt : currentThrows_)
-                        if (bt == dt || isSubtype(bt, dt)) { covered = true; break; }
-                if (!covered) {
-                    std::string disp = bt;  // show the simple name, not the namespace-mangled one
-                    if (auto p = disp.rfind("__"); p != std::string::npos) disp = disp.substr(p + 2);
-                    warn("exception '" + disp + "' is neither caught nor declared in the method's "
-                         "'throws' clause", th->loc);
-                }
-            }
-        }
-        return;
-    }
-    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(&stmt)) {
-        if (freestanding_)
-            error("exceptions are not available in freestanding mode; use Result/Option (spec 36.3)",
-                  tr->loc);
-        // A throw inside the try body is covered if one of these catch types matches it (spec 21.1).
-        std::vector<std::string> caught;
-        for (const ast::CatchClause& cc : tr->catches) caught.push_back(baseType(typeRefStr(cc.type)));
-        catchStack_.push_back(std::move(caught));
-        // A catch runs BECAUSE the try failed, and it can fail anywhere -- at the first statement or the
-        // last. So a catch body must be analyzed from the state at try ENTRY, not from the state the try
-        // body left behind: the try's work may not have happened at all. Analyzing them in sequence made
-        // the stdlib's own `try { delete ch; } catch { delete ch; }` look like a use-after-free, which is
-        // correct code and was the first thing the new check reported.
-        const FlowFacts beforeTry = snapshotFlow();
-        analyzeBlock(tr->body);
-        const FlowFacts afterTry = snapshotFlow();
-        catchStack_.pop_back();
-        for (const ast::CatchClause& cc : tr->catches) {
-            restoreFlow(beforeTry);
-            const std::string ct = baseType(typeRefStr(cc.type));
-            checkTypeAccessible(typeRefStr(cc.type), cc.loc);
-            if (lookupClass(ct) == nullptr) {
-                error("catch type '" + ct + "' is not a class", cc.loc);
-            }
-            // A catch type must be a class; every class is polymorphic (an Object) so it can be
-            // matched by dynamic type.
-            pushScope();
-            declareLocal(cc.name, LocalVar{typeRefStr(cc.type), false});
-            for (const auto& st : cc.body.statements) analyzeStatement(*st);
-            popScope();
-        }
-        // After the whole statement, only what the try body established can be relied on -- a catch that
-        // fell through contributes its own state, but the conservative and correct thing for `finally`
-        // and the code below is the try's outcome, since that is the path that did not throw.
-        restoreFlow(afterTry);
-        if (tr->finallyBlock) analyzeBlock(*tr->finallyBlock);
-        return;
-    }
-    // `label`/`comefrom` (spec 7.10) are accepted but not analyzed beyond this (out of
-    // current type-checking scope); handled explicitly so they are not silently ignored.
-    // Chaos tetrad (spec 7.9-7.11), intra-method only: goto/comefrom/abstainfrom/reinstate must
-    // target a `label name;` declared in the same method, and a label may have at most one comefrom.
-    if (dynamic_cast<const ast::LabelMarkStmt*>(&stmt) != nullptr) return;  // a declaration
-    if (const auto* cf = dynamic_cast<const ast::ComefromStmt*>(&stmt)) {
-        if (methodLabels_.count(cf->name) == 0)
-            error("comefrom references unknown label '" + cf->name + "' in this method (spec 7.10)",
-                  cf->loc);
-        else if (!comefromTargets_.insert(cf->name).second)
-            error("label '" + cf->name +
-                      "' already has a comefrom; at most one comefrom per label (spec 7.10)",
-                  cf->loc);
-        return;
-    }
-    if (const auto* g = dynamic_cast<const ast::GotoStmt*>(&stmt)) {  // spec 7.9
-        if (g->address != nullptr) {
-            typeOf(*g->address);  // raw-address FFI jump (unchecked): just type-check the operand
-        } else if (methodLabels_.count(g->name) == 0 && externReturns_.count(g->name) == 0) {
-            error("goto references unknown label or extern function '" + g->name +
-                      "' in this method (spec 7.9)",
-                  g->loc);
-        }
-        return;
-    }
-    if (const auto* ab = dynamic_cast<const ast::AbstainfromStmt*>(&stmt)) {  // spec 7.11
-        if (methodLabels_.count(ab->name) == 0)
-            error(std::string(ab->isReinstate ? "reinstate" : "abstainfrom") +
-                      " references unknown label '" + ab->name + "' in this method (spec 7.11)",
-                  ab->loc);
-        return;
-    }
-}
+// `SemanticAnalyzer::analyzeStatement` was here: 1 310 lines, one branch per statement kind.
+// It now lives in analyzer_stmt.cpp.
 
 void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
                                     const std::vector<std::string>& paramTypes,
@@ -5125,7 +4677,9 @@ void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
                                     const std::vector<bool>* moveParams) {
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string at = typeOf(*args[i]);
-        if (i >= paramTypes.size()) continue;
+        if (i >= paramTypes.size()) {
+            continue;
+        }
         const std::string& pt = paramTypes[i];
         // spec 19.6: `move T` in the signature demands `move` at the call. The whole argument for
         // the verbosity is that reading the CALL tells you ownership changed hands, without going to
@@ -5142,7 +4696,9 @@ void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
                       "'. The name is finished after the call",
                   args[i]->loc);
         }
-        if (at.empty() || pt.empty()) continue;
+        if (at.empty() || pt.empty()) {
+            continue;
+        }
         if (!isNullableType(pt) && (at == "null" || isNullableType(at))) {
             // The part a reader cannot guess: a direct null test on a NAME narrows the type, but a test of a
             // field or of a call result does not -- so someone who "already checked" can still land here,
@@ -5178,12 +4734,11 @@ void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
 // A compile-time constant argument (spec 32.4): a literal, or a numeric expression the comptime
 // evaluator can fold (a const or a `comptime` method call over constants).
 bool SemanticAnalyzer::isConstArg(const ast::Expr& e) {
-    if (dynamic_cast<const ast::StringLiteralExpr*>(&e) ||
-        dynamic_cast<const ast::IntLiteralExpr*>(&e) ||
-        dynamic_cast<const ast::CharLiteralExpr*>(&e) ||
-        dynamic_cast<const ast::BoolLiteralExpr*>(&e) ||
-        dynamic_cast<const ast::FloatLiteralExpr*>(&e))
+    if (dynamic_cast<const ast::StringLiteralExpr*>(&e) || dynamic_cast<const ast::IntLiteralExpr*>(&e) ||
+        dynamic_cast<const ast::CharLiteralExpr*>(&e) || dynamic_cast<const ast::BoolLiteralExpr*>(&e) ||
+        dynamic_cast<const ast::FloatLiteralExpr*>(&e)) {
         return true;
+    }
     long long i;
     double d;
     return evalConstInt(e, i, &constInts_, &comptimeMethods_, &constDoubles_, &enums_) ||
@@ -5193,11 +4748,13 @@ bool SemanticAnalyzer::isConstArg(const ast::Expr& e) {
 void SemanticAnalyzer::checkComptimeArgs(const std::vector<ast::ExprPtr>& args,
                                          const std::vector<bool>& comptimeParams,
                                          const std::string& desc) {
-    for (std::size_t i = 0; i < args.size() && i < comptimeParams.size(); ++i)
-        if (comptimeParams[i] && !isConstArg(*args[i]))
+    for (std::size_t i = 0; i < args.size() && i < comptimeParams.size(); ++i) {
+        if (comptimeParams[i] && !isConstArg(*args[i])) {
             error("argument " + std::to_string(i + 1) + " to " + desc +
                       " must be a compile-time constant ('comptime' parameter, spec 32.4)",
                   args[i]->loc);
+        }
+    }
 }
 
 // Named arguments (spec 22.4). Rewrites `call->args` into declared parameter order, so every later stage
@@ -5209,13 +4766,21 @@ void SemanticAnalyzer::checkComptimeArgs(const std::vector<ast::ExprPtr>& args,
 // A call with no names and no `requires named` parameter is left untouched (the common path).
 void SemanticAnalyzer::bindNamedArgs(ast::CallExpr* call, const std::vector<std::string>& paramNames,
                                      const std::vector<bool>& namedOnly, const std::string& desc) {
-    if (call == nullptr || call->argsBound || paramNames.empty()) return;
+    if (call == nullptr || call->argsBound || paramNames.empty()) {
+        return;
+    }
     const bool anyNamed = std::any_of(call->argNames.begin(), call->argNames.end(),
                                       [](const std::string& n) { return !n.empty(); });
     const bool anyNamedOnly = std::any_of(namedOnly.begin(), namedOnly.end(), [](bool b) { return b; });
-    if (!anyNamed && !anyNamedOnly) return;                       // ordinary positional call: nothing to do
-    if (call->args.size() != call->argNames.size()) return;       // synthesized call: nothing to bind
-    if (call->args.size() != paramNames.size()) return;           // arity error is reported elsewhere
+    if (!anyNamed && !anyNamedOnly) {
+        return;  // ordinary positional call: nothing to do
+    }
+    if (call->args.size() != call->argNames.size()) {
+        return;  // synthesized call: nothing to bind
+    }
+    if (call->args.size() != paramNames.size()) {
+        return;  // arity error is reported elsewhere
+    }
     // The analyzer may type a call more than once (overload probing, generic instantiation), so bind exactly
     // once. Validate everything BEFORE moving anything, so a rejected call leaves the AST intact.
     call->argsBound = true;
@@ -5262,2333 +4827,32 @@ void SemanticAnalyzer::bindNamedArgs(ast::CallExpr* call, const std::vector<std:
             return;
         }
     }
-    if (!anyNamed) return;   // only the `requires named` rule applied; the order is already positional
+    if (!anyNamed) {
+        return;  // only the `requires named` rule applied; the order is already positional
+    }
     std::vector<ast::ExprPtr> bound(paramNames.size());
-    for (std::size_t i = 0; i < call->args.size(); ++i) bound[slotOf[i]] = std::move(call->args[i]);
+    for (std::size_t i = 0; i < call->args.size(); ++i) {
+        bound[slotOf[i]] = std::move(call->args[i]);
+    }
     call->args = std::move(bound);
     call->argNames.assign(call->args.size(), std::string());   // now purely positional
 }
 
-std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
-    // spec 32.2: `snapshot region W in region B` yields a handle to a block the caller placed and
-    // owns -- which is what an `address` is. `RegionSnapshot` is the spelling; see ast.h.
-    if (dynamic_cast<const ast::SnapshotExpr*>(&expr) != nullptr) return "address";
-    if (const auto* il = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
-        // A literal WRITTEN with more than 32 bits of digits is 64-bit, whatever signed value it
-        // happens to equal -- so `int m = 0xFFFFFFFFFFFFF000;` is the error it should be instead of a
-        // silent truncation. Codegen agrees (see intLiteralNeeds64).
-        return ldp3::ast::intLiteralNeeds64(il->text) ? "long" : "int";
-    }
-    if (const auto* fl = dynamic_cast<const ast::FloatLiteralExpr*>(&expr))
-        return fl->isDecimal ? "Decimal" : "double";
-    if (dynamic_cast<const ast::CharLiteralExpr*>(&expr) != nullptr) return "char";
-    if (const auto* sl = dynamic_cast<const ast::StringLiteralExpr*>(&expr))
-        return sl->isBytes ? "byte*" : "String";   // b"..." is the raw bytes
-    if (dynamic_cast<const ast::BoolLiteralExpr*>(&expr) != nullptr) return "boolean";
-    if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) return "null";
-    if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(&expr)) {
-        std::string s = "function<" + typeRefStr(lam->returnType);
-        for (const auto& p : lam->params) s += "," + typeRefStr(p.type);
-        // ...and CHECK THE BODY. It used to build this signature and return, so a lambda body was a
-        // blind spot the size of every callback in the language: Thread bodies, collection
-        // predicates, FFI trampolines. Anything at all could be written in one -- a call to a method
-        // that does not exist, a return of the wrong type, a name never declared -- and the front
-        // end would hand it to codegen, which assumes a valid AST.
-        //
-        // Analyzed HERE rather than deferred, because a lambda captures the enclosing locals and
-        // this is the only moment they are in scope. The lambda's own return type replaces the
-        // enclosing method's for the duration so `return` inside it is checked against the right
-        // thing, and every flow fact that names a local is saved and restored -- a lambda body is a
-        // separate flow of control, and letting its `delete x` mark the enclosing method's `x` as
-        // freed would be the same cross-contamination that once failed 51 tests on one variable name.
-        if (!analyzingLambda_) {
-            analyzingLambda_ = true;
-            const std::string savedReturn = currentReturnType_;
-            const bool savedReturnMove = currentReturnIsMove_;
-            auto savedMoved = moved_, savedFreed = freed_, savedDeleted = deleted_;
-            auto savedNonNull = nonNull_, savedActivation = activationOwned_;
-            auto savedInit = init_;
-            currentReturnType_ = typeRefStr(lam->returnType);
-            currentReturnIsMove_ = false;
-            // The parameter types `itself(...)` is checked against -- the lambda has no name to look
-            // its own signature up by, so the signature has to be carried here while its body runs.
-            auto savedLambdaParams = currentLambdaParams_;
-            currentLambdaParams_.clear();
-            for (const ast::Param& p : lam->params)
-                currentLambdaParams_.push_back(typeRefStr(p.type));
-            pushScope();
-            for (const ast::Param& p : lam->params)
-                declareLocal(p.name, LocalVar{typeRefStr(p.type), false});
-            for (const auto& st : lam->body.statements) analyzeStatement(*st);
-            popScope();
-            currentLambdaParams_ = std::move(savedLambdaParams);
-            currentReturnType_ = savedReturn;
-            currentReturnIsMove_ = savedReturnMove;
-            moved_ = std::move(savedMoved);
-            freed_ = std::move(savedFreed);
-            deleted_ = std::move(savedDeleted);
-            nonNull_ = std::move(savedNonNull);
-            activationOwned_ = std::move(savedActivation);
-            init_ = std::move(savedInit);
-            analyzingLambda_ = false;
-        }
-        return s + ">";
-    }
-    if (const auto* old = dynamic_cast<const ast::OldExpr*>(&expr)) {
-        // old(e) in an ensures clause (spec 29): the entry-time value of e, so it has e's type.
-        return typeOf(*old->inner);
-    }
-    if (const auto* mr = dynamic_cast<const ast::MethodRefExpr*>(&expr)) {
-        // methodref obj.method (spec 22.3): its type is the method's function<Ret, Params...>.
-        const std::string objType = typeOf(*mr->object);
-        const std::string cls = baseType(objType);
-        const MethodInfo* m = findMethod(cls, mr->method);
-        if (m == nullptr) {
-            error("no method '" + mr->method + "' on type '" + cls + "' for methodref", mr->loc);
-            return "function<void>";
-        }
-        if (m->isStatic) {
-            error("methodref cannot bind a static method; reference it by name instead", mr->loc);
-            return "function<void>";
-        }
-        std::string s = "function<" + m->returnType;
-        for (const std::string& pt : m->paramTypes) s += "," + pt;
-        return s + ">";
-    }
-
-    if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
-        // A tuple literal's type is "(c0,c1,...)" of its components' types.
-        std::string s = "(";
-        for (std::size_t i = 0; i < tup->elements.size(); ++i) {
-            const std::string et = typeOf(*tup->elements[i]);
-            if (et.empty()) return "";
-            s += (i ? "," : "") + et;
-        }
-        return s + ")";
-    }
-
-    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
-        if (id->name == "this") {
-            if (currentClass_.empty()) {
-                error("'this' is not available in a static context", id->loc);
-                return "";
-            }
-            return currentClass_;
-        }
-        const LocalVar* var = lookupLocal(id->name);
-        if (var == nullptr) {
-            // A namespace-level compile-time constant (spec 28.1).
-            if (auto cit = constTypes_.find(id->name); cit != constTypes_.end())
-                return cit->second;
-            // A bare enum constant inside one of that enum's own methods (spec 12.2/12.4):
-            // `return v8;` resolves to the enum value without the `Enum.` prefix.
-            if (auto eit = enums_.find(currentClass_);
-                eit != enums_.end() &&
-                std::find(eit->second.begin(), eit->second.end(), id->name) != eit->second.end()) {
-                return currentClass_;
-            }
-            error(diag::Code::UndeclaredVariable,
-                  "use of undeclared variable '" + id->name + "'" + didYouMean(id->name, namesInScope()),
-                  id->loc);
-            return "";
-        }
-        if (auto ex = extracted_.find(id->name); ex != extracted_.end()) {
-            error("variable '" + id->name + "' was extracted from its region (line " +
-                      std::to_string(ex->second) + ") and cannot be used again; use the value extract "
-                      "returned",
-                  id->loc);
-        } else if (moved_.count(id->name) > 0) {
-            error("use of variable '" + id->name +
-                      "' after it was moved (reassign it before using)",
-                  id->loc);
-        } else if (freed_.count(id->name) > 0) {
-            // USE AFTER FREE, caught at compile time. The machinery was already here -- `deleted_` was
-            // populated by every `delete` and read only to permit redeclaring the name -- so the trap the
-            // guide promises (05:768) was one condition away the whole time.
-            error("use of variable '" + id->name +
-                      "' after it was deleted: the object it named is gone, and reading the variable "
-                      "reads freed memory. Redeclare the name with a new object if you meant to reuse "
-                      "it (spec 18.2), or move the `delete` after this use",
-                  id->loc);
-        } else if (const FlowFacts::Init st = initStateOf(id->name); st != FlowFacts::Init::Init) {
-            // Definite assignment. The two states get different messages because they are different
-            // mistakes: never assigned at all, versus assigned on only one path through a branch.
-            error(st == FlowFacts::Init::Uninit
-                      ? "variable '" + id->name +
-                            "' is used before it is initialized. It was declared without a value, which "
-                            "leaves it in the uninitialized state -- not null, not zero, no value at "
-                            "all -- so assign to it before reading it"
-                      : "variable '" + id->name +
-                            "' may be used before it is initialized: some paths to this point assign it "
-                            "and others do not. Assign it on every path (an `else` branch, or a default "
-                            "before the branch) so it holds a value however control got here",
-                  id->loc);
-        }
-        // NARROWING. A name proven non-null here reports the non-nullable type, so every consumer --
-        // argument passing, `return`, field assignment -- sees the proof without any of them knowing the
-        // proof exists. The proof is only ever recorded where nothing can falsify it (see killProofsFor
-        // and invalidateAcrossBackEdge), so this cannot claim more than the compiler actually knows.
-        if (!suppressNarrowing_ && isNullableType(var->type) && nonNull_.count(id->name) > 0)
-            return ast::stripNullable(var->type);
-        return var->type;
-    }
-
-    if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(&expr)) {
-        if (freestanding_)
-            error("async/await is not available in freestanding mode (spec 36.3)", aw->loc);
-        // Suspending means "resume me later, on the scheduler". There is no later for a handler:
-        // the machine is inside the interrupt until it returns.
-        noteUnsafeForInterrupt("suspend", aw->loc);
-        // await ch.receive() (spec 20.7): a channel receive already blocks for the value, so `await`
-        // is a passthrough and yields the element type.
-        if (const auto* call = dynamic_cast<const ast::CallExpr*>(aw->operand.get()))
-            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get()))
-                if (mem->member == "receive" && call->args.empty() &&
-                    baseType(typeOf(*mem->object)).rfind("Channel$", 0) == 0)
-                    return typeOf(*aw->operand);
-        // await Task<T> -> T (spec 20.2).
-        const std::string t = baseType(typeOf(*aw->operand));
-        if (!t.empty() && t.rfind("Task$", 0) != 0) {
-            error("'await' expects a Task value, got '" + t + "'", aw->loc);
-            return "";
-        }
-        return t.empty() ? std::string() : t.substr(5);  // strip "Task$"
-    }
-    if (const auto* ue = dynamic_cast<const ast::UnimportExpr*>(&expr)) {
-        if (freestanding_)
-            error("unimport/reimport is not available in freestanding mode (spec 36.3)", ue->loc);
-        if (lookupClass(baseType(ue->target)) == nullptr)
-            error("cannot unimport '" + ue->target + "': not a known class", ue->loc);
-        else if (finalImports_.count(baseType(ue->target)) > 0)
-            error("cannot unimport '" + ue->target +
-                      "': it was brought in by 'final import' (spec 37.6)",
-                  ue->loc);
-        return analyzeExpectingBlock(ue->expecting.get());  // value type = expecting block's return
-    }
-    if (const auto* rng = dynamic_cast<const ast::RangeExpr*>(&expr)) {
-        typeOf(*rng->start);  // a range over int (spec 7.5)
-        typeOf(*rng->end);
-        if (rng->step) typeOf(*rng->step);
-        return "Range";  // a first-class Range value; foreach over a literal range is handled separately
-    }
-    if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
-        const std::string t = typeOf(*un->operand);
-        if (un->op == "&") {
-            // A packed bit field HAS NO ADDRESS (spec 11.1). It occupies a range of bits inside a unit
-            // it shares with its neighbours, and the smallest thing a pointer can name is a byte. The
-            // only address that could be handed back is the unit's, which would let a write through it
-            // destroy every field packed beside this one -- silently, and nowhere near the `&`.
-            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(un->operand.get())) {
-                const std::string owner = baseType(typeOf(*mem->object));
-                if (const FieldInfo* fi = findField(owner, mem->member);
-                    fi != nullptr && fi->bitWidth > 0)
-                    error("cannot take the address of '" + mem->member + "': it is a " +
-                          std::to_string(fi->bitWidth) + "-bit field packed into a storage unit it "
-                          "shares with the fields declared next to it, so it has no address of its "
-                          "own. Copy it into a local and take the address of that",
-                          un->loc);
-            }
-            return t.empty() ? std::string() : t + "*";  // address-of: T -> T*
-        }
-        if (un->op == "*") {  // pointer dereference: T* -> T (peel one '*')
-            if (!t.empty() && t.back() != '*')
-                error("cannot dereference '" + t + "': it is not a pointer", un->loc);
-            return (t.empty() || t.back() != '*') ? std::string() : t.substr(0, t.size() - 1);
-        }
-        // Unary operator overload (spec 6.5): a class operand whose class defines a no-arg
-        // operator<op> dispatches to it (paramCount 0 distinguishes it from the binary form).
-        if (const MethodInfo* opm = findMethod(baseType(t), "operator" + un->op);
-            opm != nullptr && opm->paramCount == 0)
-            return opm->returnType;
-        if (un->op == "!") {
-            if (!t.empty() && t != "boolean") error("unary '!' requires a boolean operand", un->loc);
-            return "boolean";
-        }
-        if (un->op == "~") {  // bitwise not: integers only
-            if (!t.empty() && (!isNumeric(t) || isFloatType(t)))
-                error("unary '~' requires an integer operand", un->loc);
-            return t.empty() ? std::string("int") : t;
-        }
-        // unary '-' / '+': any numeric operand, keeping its type (width and int/float).
-        if (!t.empty() && !isNumeric(t))
-            error("unary '" + un->op + "' requires a numeric operand", un->loc);
-        return t.empty() ? std::string("int") : t;
-    }
-
-    if (const auto* me = dynamic_cast<const ast::MatchExpr*>(&expr)) {
-        const std::string subjType = typeOf(*me->subject);
-        const std::string subjBase = baseType(subjType);
-        std::string resultType;
-        const auto subjDollarM = subjBase.find('$');
-        // AN ENUM SUBJECT, exactly as the statement form takes one. The cases name CONSTANTS rather
-        // than types, so the type lookup below would call every one of them an unknown type -- which
-        // it did, and which made the two forms of `match` disagree about what they can match on for
-        // no reason anybody chose. An enum whose whole point is that every case is named is the
-        // first thing you want to write a total match-EXPRESSION over: one arm per constant, each
-        // yielding a value, no `default` to hide the constant added next year.
-        if (auto en = enums_.find(subjBase); en != enums_.end()) {
-            const std::vector<std::string>& constants = en->second;
-            for (const ast::MatchCase& c : me->cases) {
-                if (std::find(constants.begin(), constants.end(), c.typeName) == constants.end())
-                    error("'" + c.typeName + "' is not a constant of enum '" + subjBase + "'",
-                          c.loc);
-                if (!c.bindings.empty())
-                    error("'case " + c.typeName + "' cannot bind anything: an enum constant is a "
-                          "value, not a shape with fields to take apart",
-                          c.loc);
-                pushScope();
-                const std::string at = c.result ? typeOf(*c.result) : analyzeYieldBlock(c.body);
-                popScope();
-                if (resultType.empty()) resultType = at;
-            }
-            if (me->defaultResult) {
-                const std::string dt = typeOf(*me->defaultResult);
-                if (resultType.empty()) resultType = dt;
-            } else if (me->defaultBody) {
-                const std::string dt = analyzeYieldBlock(*me->defaultBody);
-                if (resultType.empty()) resultType = dt;
-            }
-            const bool hasDefault = me->defaultResult != nullptr || me->defaultBody != nullptr;
-            if (sealedEnums_.count(subjBase) > 0) {
-                std::string missing;
-                for (const std::string& k : constants) {
-                    bool covered = false;
-                    for (const ast::MatchCase& c : me->cases)
-                        if (c.typeName == k) covered = true;
-                    if (!covered) missing += (missing.empty() ? "" : ", ") + k;
-                }
-                if (!missing.empty() && !hasDefault)
-                    error("match on sealed enum '" + subjBase + "' is not exhaustive: missing " +
-                              missing,
-                          me->loc);
-            } else if (!hasDefault) {
-                error("match on enum '" + subjBase + "' requires a 'default' arm, or declare the "
-                      "enum `sealed` so every constant must be covered and a new one cannot be "
-                      "forgotten here",
-                      me->loc);
-            }
-            me->resultType = resultType;
-            return resultType;
-        }
-        for (const ast::MatchCase& c : me->cases) {
-            // Map a bare case name to the subject's instantiation (Ok -> Ok$int$int) when that exists;
-            // fall back to the bare name for a non-generic concrete subclass (Leaf extends Base<int>).
-            std::string caseType = c.typeName;
-            if (subjDollarM != std::string::npos) {
-                const std::string suffixed = c.typeName + subjBase.substr(subjDollarM);
-                if (lookupClass(suffixed) != nullptr) caseType = suffixed;
-            }
-            const ClassInfo* ci = lookupClass(caseType);
-            if (ci == nullptr) {
-                error("unknown type '" + c.typeName + "' in match case", c.loc);
-            } else if (!subjType.empty() && !isSubtype(caseType, subjBase)) {
-                error("'" + c.typeName + "' is not a subtype of '" + subjType + "'", c.loc);
-            }
-            // Bindings introduce the case type's fields as locals in the arm body.
-            pushScope();
-            for (const ast::Param& b : c.bindings)
-                declareLocal(b.name, LocalVar{typeRefStr(b.type), false});
-            const std::string at = c.result ? typeOf(*c.result) : analyzeYieldBlock(c.body);
-            popScope();
-            if (resultType.empty()) resultType = at;
-        }
-        if (me->defaultResult) {
-            const std::string dt = typeOf(*me->defaultResult);
-            if (resultType.empty()) resultType = dt;
-        } else if (me->defaultBody) {
-            const std::string dt = analyzeYieldBlock(*me->defaultBody);
-            if (resultType.empty()) resultType = dt;
-        }
-        // Exhaustiveness (spec 16.1): a sealed subject must cover every permit with no
-        // default; otherwise a default arm is required so the expression always yields.
-        const ClassInfo* sc = lookupClass(subjBase);
-        if (sc != nullptr && sc->isSealed) {
-            for (const std::string& p : sc->permits) {
-                bool covered = false;
-                for (const ast::MatchCase& c : me->cases)
-                    if (c.typeName == p) covered = true;
-                if (!covered && !me->defaultResult && !me->defaultBody)
-                    error("match on sealed '" + subjBase +
-                              "' is not exhaustive: missing case '" + p + "'",
-                          me->loc);
-            }
-        } else if (!me->defaultResult && !me->defaultBody) {
-            error("match expression requires a 'default' arm (the subject is not sealed)",
-                  me->loc);
-        }
-        me->resultType = resultType;
-        return resultType;
-    }
-
-    if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(&expr)) {
-        const std::string t = typeOf(*mv->operand);
-        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mv->operand.get())) {
-            moved_.insert(id->name);  // the source variable becomes invalid
-        } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(mv->operand.get())) {
-            // Partial field move (spec 19.9): only a movable/unique field of a partitionable class.
-            const std::string oc = baseType(typeOf(*mem->object));
-            const ClassInfo* ci = lookupClass(oc);
-            const FieldInfo* fi = ci != nullptr ? findField(oc, mem->member) : nullptr;
-            if (ci != nullptr && fi != nullptr) {
-                if (!ci->isPartitionable)
-                    error("cannot move field '" + mem->member + "' of non-partitionable class '" +
-                              oc + "'; mark the class 'partitionable' (spec 19.9)",
-                          mv->loc);
-                else if (!fi->isMovable && !fi->isUnique)
-                    error("cannot move field '" + mem->member +
-                              "': only a 'movable' or 'unique' field can be moved separately (spec 19.9)",
-                          mv->loc);
-                else if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()))
-                    moved_.insert(oid->name + "." + mem->member);  // track the field as moved
-            }
-        }
-        return mv->castType.empty() ? t : mv->castType;  // `move x as T` reinterprets to T (spec 19.3)
-    }
-    if (const auto* ex = dynamic_cast<const ast::ExtractExpr*>(&expr)) {
-        // `extract X from region R` (spec 17): the region must exist; the object type is the result type
-        // (an owning pointer to the relocated object). The source variable is spent afterwards (like move).
-        const std::string t = typeOf(*ex->target);  // also checks the target's first (valid) use
-        if (ex->region.find('.') == std::string::npos) {  // a `this.field` region is validated at codegen
-            const LocalVar* r = lookupLocal(ex->region);
-            if (r == nullptr)
-                error("unknown region '" + ex->region + "' in extract", ex->loc);
-            else if (r->type != "region")
-                error("'" + ex->region + "' is not a region", ex->loc);
-        }
-        // LDP3-1717: mark the source spent so a later read is rejected with the extract-specific message.
-        // Only a plain variable can be flow-tracked; an element/field target is nulled at run time instead.
-        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(ex->target.get())) {
-            // LDP3-1718: if a field of the object being extracted was allocated in the SAME region, moving
-            // just the object leaves that field behind -- a dangling pointer after release. Reject it.
-            const std::string prefix = id->name + ".";
-            for (const auto& [path, rgn] : regionOf_)
-                if (rgn == ex->region && path.rfind(prefix, 0) == 0) {
-                    error("cannot extract '" + id->name + "': its field '" + path.substr(prefix.size()) +
-                              "' lives in the same region '" + ex->region +
-                              "' -- extract the graph (cascade move) or allocate the field elsewhere",
-                          ex->loc);
-                    break;
-                }
-            extracted_[id->name] = ex->loc.line;
-            moved_.insert(id->name);
-            regionOf_.erase(id->name);  // the object left the region; its recorded fields are stale
-        }
-        return t;
-    }
-    if (const auto* mk = dynamic_cast<const ast::MarkExpr*>(&expr)) {
-        // `mark of region R` yields a `checkpoint`; mark/rollback need a `stack region` (LDP3-1713).
-        // A `this.field` region is validated at codegen (spec 17: region as a field).
-        if (mk->region.find('.') == std::string::npos) {
-            const LocalVar* r = lookupLocal(mk->region);
-            if (r == nullptr)
-                error("unknown region '" + mk->region + "' in mark", mk->loc);
-            else if (r->type != "region")
-                error("'" + mk->region + "' is not a region", mk->loc);
-            else if ((regionFlavor_.count(mk->region) ? regionFlavor_[mk->region] : std::string()) != "stack")
-                error("mark/rollback need a `stack region`, but '" + mk->region + "' is not one (spec 17)",
-                      mk->loc);
-        }
-        return "checkpoint";
-    }
-    if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
-        // try? Result<T,E>/Option<T> yields T (the first type arg of the operand's instantiation).
-        const std::string ot = baseType(typeOf(*tx->operand));
-        // try? early-returns the Err/None to the ENCLOSING method, so that method must itself return a
-        // Result/Option (spec 21.2). Otherwise codegen would emit a type-mismatched `return`. Take the
-        // bare type name (before generic args and any pointer marker), e.g. "Result$int$int*" -> "Result".
-        const std::string rtm = baseType(currentReturnType_);
-        auto family = [](const std::string& mangled) {
-            const auto d = mangled.find('$');
-            return d == std::string::npos ? mangled : mangled.substr(0, d);
-        };
-        // The error payload of a `Result$T$E`, read off the monomorphized `Err$T$E`'s own `error` field
-        // rather than by splitting the mangled string -- `Result<Map<int,int>, E>` mangles to
-        // `Result$Map$int$int$E` and no amount of `$`-counting recovers E from that. Codegen decodes the
-        // payload the same way (through the variant class, not the string), so the two phases agree by
-        // construction. An unresolvable name yields "" and the check stands down: incomplete is safe.
-        auto errPayload = [&](const std::string& mangled) -> std::string {
-            const auto d = mangled.find('$');
-            if (d == std::string::npos) return {};
-            const ClassInfo* ec = lookupClass("Err" + mangled.substr(d));
-            if (ec == nullptr) return {};
-            const auto f = ec->fields.find("error");
-            return f == ec->fields.end() ? std::string() : f->second.type;
-        };
-        const std::string rb = family(rtm);
-        const std::string ob = family(ot);
-        if (!currentReturnType_.empty() && rb != "Result" && rb != "Option") {
-            error("'try?' can only be used inside a method that returns Result or Option, but this "
-                  "method returns '" + currentReturnType_ + "' (spec 21.2)",
-                  tx->loc);
-        } else if (!currentReturnType_.empty() && (ob == "Result" || ob == "Option") && ob != rb) {
-            // Propagation forwards the operand UNCHANGED -- codegen emits `CreateRet(val)` on the very
-            // value it tested. A None cannot stand in for an Err (it carries no payload) and an Err
-            // cannot stand in for a None (it carries one), so the two families may not be crossed.
-            error("'try?' propagates the failure of an operand of type '" + ob +
-                      "', but this method returns '" + rb +
-                      "': the failure value is forwarded unchanged, so the two must be the same family "
-                      "(spec 21.2). Match the method's return type to the operand, or convert "
-                      "explicitly -- " +
-                      std::string(ob == "Option"
-                                      ? "a None carries no error value to put in an Err"
-                                      : "an Err carries an error value that a None would discard"),
-                  tx->loc);
-        } else if (ob == "Result" && rb == "Result") {
-            // The E half. Same reason: the Err travels out byte-for-byte, and at the LLVM level every
-            // value-form Result is ONE StructType and every boxed one an opaque `ptr` -- so a mismatched
-            // error type is not caught downstream by anything. It reaches the binary and is reinterpreted.
-            const std::string oe = errPayload(ot);
-            const std::string re = errPayload(rtm);
-            if (!oe.empty() && !re.empty() && !isSubtype(oe, re))
-                error("'try?' propagates a 'Result' whose error type is '" + oe +
-                          "', but this method returns a 'Result' whose error type is '" + re +
-                          "'. The failure value is forwarded unchanged (spec 21.2), so '" + oe +
-                          "' would be reinterpreted as '" + re +
-                          "'. Convert the error before propagating -- match on the operand and return an "
-                          "`Err(...)` built with the '" + re + "' this method declares -- or declare it "
-                          "'returns Result<..., " + oe + ">' and let the error travel as it is",
-                      tx->loc);
-        }
-        const auto p = ot.find('$');
-        if (p == std::string::npos) return "";
-        const std::string rest = ot.substr(p + 1);
-        const auto q = rest.find('$');
-        return q == std::string::npos ? rest : rest.substr(0, q);
-    }
-
-    if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
-        if (ri->size) typeOf(*ri->size);
-        if (ri->atAddress) {  // itself.at(addr, size): the address must be numeric/address
-            const std::string at = typeOf(*ri->atAddress);
-            if (!at.empty() && !isNumeric(at))
-                error("region address must be a number or address, got '" + at + "'", ri->loc);
-        }
-        // Constrained types must exist (dotted family names like Animal.X are a
-        // later refinement and are skipped here).
-        for (const auto& list : {ri->accepts, ri->rejects}) {
-            for (const std::string& t : list) {
-                // A generic constraint type (Box<?>, ArrayList<int>) names a template, not a plain
-                // class; skip the plain-class existence check for those (spec 17.3, best-effort filter).
-                if (t.find('<') == std::string::npos && t.find('.') == std::string::npos &&
-                    lookupClass(t) == nullptr) {
-                    error("region accepts/rejects references unknown type '" + t + "'", ri->loc);
-                }
-            }
-        }
-        // atMultiple ranges (spec 17.4): each range address must be numeric; its accepts/rejects types
-        // must exist.
-        for (const auto& r : ri->ranges) {
-            const std::string at = typeOf(*r.address);
-            if (!at.empty() && !isNumeric(at))
-                error("region range address must be a number or address, got '" + at + "'", ri->loc);
-            for (const auto& list : {r.accepts, r.rejects})
-                for (const std::string& t : list)
-                    if (t.find('<') == std::string::npos && t.find('.') == std::string::npos &&
-                        lookupClass(t) == nullptr)
-                        error("region range accepts/rejects references unknown type '" + t + "'", ri->loc);
-        }
-        return "region";
-    }
-
-    if (const auto* cst = dynamic_cast<const ast::CastExpr*>(&expr)) {
-        const std::string srcRaw = typeOf(*cst->operand);
-        const std::string& dst = cst->targetType;
-        checkBitCounted(dst, cst->loc);  // reject cast<int64> etc. outside freestanding mode
-        checkWideningLostBits(*cst, srcRaw, dst);  // cast<address>(f << 12): the bits are already gone  // cast<address>(f << 12): the bits are already gone
-        // A `newtype` casts to/from its underlying type (spec 24): classify both by the underlying
-        // so cast<OrderId>(long) and cast<long>(orderId) are accepted while staying distinct types.
-        auto under = [&](const std::string& t) {
-            auto it = newtypes_.find(baseType(t));
-            return it != newtypes_.end() ? it->second : t;
-        };
-        const std::string src = under(srcRaw);
-        const bool dstRef = dst == "Object" || lookupClass(baseType(dst)) != nullptr;
-        const bool srcRef = src.empty() || src == "Object" || src == "Type" || src == "Method" ||
-                            lookupClass(baseType(src)) != nullptr || isRefType(src) ||
-                            src.rfind("funcptr<", 0) == 0;  // a bare C fn pointer reinterprets like a ptr
-        const bool dstFuncptr = dst.rfind("funcptr<", 0) == 0;  // a bare C function pointer (dynamic FFI)
-        const bool dstPtr = isRefType(dst) || dstRef || dstFuncptr;  // pointer/ref target (T*, T&, class)
-        // `char` is an integer for casting purposes; Decimal converts to/from the numeric family too
-        // (scaled fixed-point, spec 34).
-        auto numLike = [](const std::string& t) {
-            return isNumeric(t) || t == "char" || t == "Decimal";
-        };
-        const std::string dstU = under(dst);  // a newtype's underlying decides how the cast lowers
-        if (numLike(dstU)) {
-            // numeric <- numeric/char, a pointer/address reinterpreted as an integer (spec 17.8), or
-            // an int-style enum reinterpreted as its ordinal (spec 12.1).
-            const bool srcIntEnum = enums_.count(baseType(src)) > 0;
-            if (!src.empty() && !numLike(src) && !srcRef && !srcIntEnum)
-                error("cannot cast '" + srcRaw + "' to '" + dst + "'", cst->loc);
-        } else if (dstPtr) {
-            // Reference downcast (spec 31), or int/address -> an explicit pointer T* (spec 17.8).
-            // Casting a number to a bare class (not a pointer) stays an error.
-            const bool intToPtr = (isRefType(dst) || dstFuncptr) && isNumeric(src);
-            if (!src.empty() && !srcRef && !intToPtr)
-                error("cannot cast '" + src + "' to '" + dst + "'", cst->loc);
-        } else if (enums_.count(baseType(dst)) > 0) {
-            // NUMBER -> int-style enum, the reverse of the ordinal reinterpret just above.
-            //
-            // It was missing, and the asymmetry was the tell: `cast<int>(someEnum)` has always been
-            // allowed, so an enum could be taken apart and never put back together. That is a real
-            // hole for any program that reads an enumerated field out of something -- a device
-            // register, a wire format, a file header -- because such a field always arrives as a
-            // number.
-            //
-            // CHECKED, not a reinterpret (see codegen). An unchecked version would let a program
-            // manufacture an enum value outside the declared set, which is a hole in the type system
-            // rather than a convenience -- and this language does not convert integers silently
-            // anywhere else either.
-            if (!src.empty() && !numLike(src) && enums_.count(baseType(src)) == 0)
-                error("cannot cast '" + srcRaw + "' to enum '" + dst + "'", cst->loc);
-        } else {
-            error("cast<" + dst + "> is not supported here", cst->loc);
-        }
-        if (cst->op == 1) return "boolean";        // `x is T` -> boolean test
-        if (cst->op == 2) return ast::makeNullable(dst);   // `x as? T` -> the value or null
-        return dst;                                // cast<T> / `x as T` (checked)
-    }
-
-    if (const auto* tern = dynamic_cast<const ast::TernaryExpr*>(&expr)) {
-        const std::string ct = typeOf(*tern->cond);
-        if (!ct.empty() && ct != "boolean")
-            error("ternary condition must be boolean, got '" + ct + "'", tern->loc);
-        // The result type comes from BOTH arms. Reading it off `then` alone made the other arm truncate:
-        // `long r = c ? 7 : big;` took `int` from the literal, and codegen -- which had the same omission,
-        // so the two agreed -- emitted `trunc i64 %big to i32`. The assignment to `long` then looked like
-        // an ordinary widening and nothing reported anything.
-        const std::string tt = typeOf(*tern->thenExpr);
-        const std::string et = typeOf(*tern->elseExpr);
-        if (tt.empty() || et.empty() || tt == et) return tt.empty() ? et : tt;
-        if (tt == "null" || et == "null" || isNullableType(tt) || isNullableType(et)) {
-            const std::string bt = ast::stripNullable(tt), be = ast::stripNullable(et);
-            if (bt == "null") return ast::makeNullable(be);
-            if (be == "null") return ast::makeNullable(bt);
-            return ast::makeNullable(bt);
-        }
-        if (isIntName(tt) && isIntName(et)) {
-            // Width widens silently; SIGNEDNESS must agree, the same rule the arithmetic operators use --
-            // a literal that fits the other arm adapts, exactly as it does at an assignment or a return.
-            const bool tLit = intLiteralFits(*tern->thenExpr, et);
-            const bool eLit = intLiteralFits(*tern->elseExpr, tt);
-            if (!tLit && !eLit && ast::isUnsignedIntName(tt) != ast::isUnsignedIntName(et))
-                error("the two arms of this '?:' are '" + tt + "' and '" + et +
-                          "', which differ in signedness. Widening happens on its own, but mixing signed "
-                          "and unsigned does not: the same bits mean different numbers. Convert one arm "
-                          "explicitly -- `cast<" + tt + ">(...)` on the else-arm, or `cast<" + et +
-                          ">(...)` on the then-arm -- so the result's meaning is written down",
-                      tern->loc);
-            if (tLit) return et;
-            if (eLit) return tt;
-            return intBits(tt) >= intBits(et) ? tt : et;   // the wider arm, so neither is truncated
-        }
-        if (isNumeric(tt) && isNumeric(et)) {
-            if (tt == "double" || et == "double") return "double";
-            if (tt == "float" || et == "float") return "float";
-            return tt;
-        }
-        // Classes and everything else: one arm has to be usable as the other, or the result has no type.
-        if (isSubtype(et, tt)) return tt;
-        if (isSubtype(tt, et)) return et;
-        error("the two arms of this '?:' have unrelated types '" + tt + "' and '" + et +
-                  "', so the expression has no single type. Both arms must produce the same type, or one "
-                  "that the other can stand in for -- give them a common supertype, or convert one arm",
-              tern->loc);
-        return tt;
-    }
-    if (const auto* nc = dynamic_cast<const ast::NullCoalesceExpr*>(&expr)) {  // a ?? b (spec 3.7)
-        const std::string lt = typeOf(*nc->lhs);
-        const std::string rt = typeOf(*nc->rhs);
-        const std::string base = ast::stripNullable(lt);
-        // The fallback's base must be compatible with the left's base.
-        if (!base.empty() && !rt.empty()) {
-            const std::string rbase = ast::stripNullable(rt);
-            if (rbase != "null" && !isSubtype(rbase, base) && !isSubtype(base, rbase))
-                error("'??' fallback of type '" + rt + "' is incompatible with '" + lt + "'", nc->loc);
-        }
-        // Result is the left's non-null base, but stays nullable if the fallback can be null.
-        return isNullableType(rt) ? ast::makeNullable(base) : base;
-    }
-    if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
-        // A NULL TEST must see the operand un-narrowed. Testing a value the compiler has already proven
-        // non-null is redundant, not wrong -- and the declaration still says `nullable`, so the
-        // comparison is exactly what the author wrote. Narrowing it first turned `nullable int b = 5;
-        // ... b != null` into "operator '!=' requires operands of the same type", because the narrowed
-        // `int` is neither a pointer nor nullable and no longer looks comparable to null.
-        const bool nullTest =
-            (bin->op == "==" || bin->op == "!=") &&
-            (dynamic_cast<const ast::NullLiteralExpr*>(bin->lhs.get()) != nullptr ||
-             dynamic_cast<const ast::NullLiteralExpr*>(bin->rhs.get()) != nullptr);
-        const bool savedSuppress = suppressNarrowing_;
-        suppressNarrowing_ = suppressNarrowing_ || nullTest;
-        const std::string lt = typeOf(*bin->lhs);
-        const std::string rt = typeOf(*bin->rhs);
-        suppressNarrowing_ = savedSuppress;
-        const std::string& op = bin->op;
-        // Operator overloading: a OP b where a's class defines `operator OP` (spec 6.5).
-        if (const MethodInfo* om = findMethod(baseType(lt), "operator" + op)) {
-            // The right operand is the operator's PARAMETER and was never checked against it -- so
-            // `money + other` called `operator+(Money)` with an unrelated class and read its fields
-            // through Money's layout. Type confusion, in an expression that reads like arithmetic.
-            // A call spelled `a.plus(b)` had this check all along; the symbol form skipped it.
-            if (!om->paramTypes.empty() && !rt.empty()) {
-                const std::string& pt = om->paramTypes.front();
-                // Report the name as WRITTEN. A type declared in two namespaces is rewritten to
-                // `Ns__Type` internally, and telling someone their operand does not match `A__Money`
-                // names a class they never wrote.
-                auto asWritten = [](const std::string& s) {
-                    const auto p = s.rfind("__");
-                    return p == std::string::npos ? s : s.substr(p + 2);
-                };
-                if (!pt.empty() && !isSubtype(rt, pt) && !intLiteralFits(*bin->rhs, pt))
-                    error("the right operand of '" + op + "' is '" + asWritten(rt) + "', but '" +
-                              asWritten(baseType(lt)) + "' declares `operator" + op + "(" + asWritten(pt) +
-                              ")`. An operator is an ordinary method reached through a symbol, so its "
-                              "operand has to match its parameter -- otherwise the value is read "
-                              "through the wrong type's layout. Convert it, or declare an "
-                              "`operator" + op + "(" + asWritten(rt) + ")` if this combination is meant",
-                          bin->loc);
-            }
-            return om->returnType;
-        }
-        // SIMD vectors: element-wise + - * / ; a scalar operand broadcasts.
-        if (int vw = std::max(vecWidth(lt), vecWidth(rt)); vw > 0) {
-            if (op != "+" && op != "-" && op != "*" && op != "/")
-                error("operator '" + op + "' is not defined on vectors", bin->loc);
-            return "vec" + std::to_string(vw);
-        }
-        // Pointer arithmetic (spec 27): `p + n` / `p - n` step by whole elements and stay a pointer;
-        // `q - p` is the number of elements between them. Allowed on every pointee type, but stepping a
-        // pointer TO A CLASS is warned about: it usually points at one object, not an array of them.
-        if ((op == "+" || op == "-") && isRefType(lt) && !isRefType(rt) && !rt.empty()) {
-            if (!isIntName(rt))
-                error("a pointer can only be offset by an integer, got '" + rt + "' (spec 27)", bin->loc);
-            warnClassPointerArith(lt, bin->loc);
-            return lt;
-        }
-        if (op == "-" && isRefType(lt) && isRefType(rt)) {
-            if (baseType(lt) != baseType(rt))
-                error("cannot subtract pointers to different types ('" + lt + "' and '" + rt + "')",
-                      bin->loc);
-            warnClassPointerArith(lt, bin->loc);
-            return "long";
-        }
-        // String concatenation (spec 4): String/string + String/string -> String.
-        auto isStr = [](const std::string& t) { return t == "String" || t == "string"; };
-        if (op == "+" && isStr(lt) && isStr(rt)) return "String";
-        // Decimal fixed-point (spec 34): arithmetic yields a Decimal, comparison a boolean. A mixed
-        // Decimal/other operand needs an explicit cast.
-        if (lt == "Decimal" && rt == "Decimal") {
-            if (op == "+" || op == "-" || op == "*" || op == "/") return "Decimal";
-            if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=")
-                return "boolean";
-        }
-        // `char` is an integer (i32) for arithmetic/comparison/bitwise (e.g. c - '0', c >= '0').
-        auto numOk = [](const std::string& t) { return isNumeric(t) || t == "char"; };
-        // SIGNEDNESS must agree (spec 3.6). Width does not: a narrower integer widens silently because
-        // that conversion preserves the value. Signedness is different -- there is no common type that
-        // represents every value of a 64-bit unsigned AND every value of a signed one, so the compiler
-        // would have to pick a side and be wrong about the other. It did: `address(1) < int(-1)` answered
-        // TRUE, because -1 sign-extends and then the comparison is unsigned.
-        //
-        // Deliberately NOT a rule about type names: `address` and `ulong` are one type under two
-        // spellings, and demanding a cast between two identically-sized types would be noise. Measured
-        // across the kernel, the stdlib and every sample: 380 mixed-type sites, and this rejects none of
-        // them -- it costs nothing today and closes the one case that gives wrong answers.
-        auto signednessOk = [&](const std::string& a, const std::string& b) {
-            if (!isIntName(a) || !isIntName(b)) return true;              // not the integer path
-            if (ast::isUnsignedIntName(a) == ast::isUnsignedIntName(b)) return true;
-            // Mixed: fine when the SIGNED side is strictly wider, because it then represents every value
-            // of the unsigned one (`uint` + `long`). Equal width cannot: half of each is unrepresentable.
-            const std::string& u = ast::isUnsignedIntName(a) ? a : b;
-            const std::string& s = ast::isUnsignedIntName(a) ? b : a;
-            return intBits(s) > intBits(u);
-        };
-        auto checkSignedness = [&]() {
-            // An untyped literal expression adapts to its context, exactly as it does in an assignment
-            // (`byte b = 0;`), so it never forces a cast.
-            if (ast::isLiteralOnlyExpr(*bin->lhs) || ast::isLiteralOnlyExpr(*bin->rhs)) return;
-            if (signednessOk(lt, rt)) return;
-            error("cannot mix signed and unsigned operands ('" + lt + "' " + op + " '" + rt +
-                      "'): there is no common type that represents both, so convert one explicitly "
-                      "with cast<T>(...)",
-                  bin->loc);
-        };
-        if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
-            if ((!lt.empty() && !numOk(lt)) || (!rt.empty() && !numOk(rt))) {
-                error("operator '" + op + "' requires numeric operands", bin->loc);
-            }
-            if (op == "%" && (isFloatType(lt) || isFloatType(rt))) {
-                error("operator '%' requires int operands", bin->loc);
-            }
-            if (isFloatType(lt) || isFloatType(rt)) {  // f32 only if neither side is f64
-                const bool f64 = lt == "double" || lt == "float64" || rt == "double" || rt == "float64";
-                return f64 ? "double" : "float";
-            }
-            checkSignedness();
-            return intBits(lt) >= intBits(rt) ? lt : rt;  // wider integer wins
-        }
-        if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
-            if (isFloatType(lt) || isFloatType(rt) || (!lt.empty() && !numOk(lt)) ||
-                (!rt.empty() && !numOk(rt))) {
-                error("operator '" + op + "' requires integer operands", bin->loc);
-            }
-            // A shift's right operand is a COUNT, not a value in the same domain -- `addr >> 12` shifts
-            // by twelve, and twelve is not an address. Only `& | ^` pair two values.
-            if (op != "<<" && op != ">>") checkSignedness();
-            return intBits(lt) >= intBits(rt) ? lt : rt;
-        }
-        if (op == "<" || op == ">" || op == "<=" || op == ">=") {
-            // Java-style enums order by ordinal (spec 12.2), like Java's compareTo: allow ordering when
-            // both sides are the same such enum.
-            const bool sameJavaEnum = baseType(lt) == baseType(rt) && javaEnums_.count(baseType(lt)) > 0;
-            if (!sameJavaEnum &&
-                ((!lt.empty() && !numOk(lt)) || (!rt.empty() && !numOk(rt)))) {
-                error("operator '" + op + "' requires numeric operands", bin->loc);
-            }
-            // Ordering is where mixing signedness produced a WRONG ANSWER rather than a surprising one:
-            // `address(1) < int(-1)` was true, because -1 sign-extends and the comparison is unsigned.
-            if (!sameJavaEnum) checkSignedness();
-            return "boolean";
-        }
-        if (op == "==" || op == "!=") {
-            // Same hazard as ordering: the operands widen to one type first, so a negative signed value
-            // and a large unsigned one can come out equal.
-            checkSignedness();
-            const bool nullPtr =
-                (lt == "null" && (isRefType(rt) || isNullableType(rt))) ||
-                (rt == "null" && (isRefType(lt) || isNullableType(lt)));
-            // Numeric (and char) operands compare after widening to a common type, so differing
-            // integer/float widths are fine (e.g. a long compared with an int literal).
-            const bool bothNumeric = numOk(lt) && numOk(rt);
-            if (!lt.empty() && !rt.empty() && lt != rt && !nullPtr && !bothNumeric) {
-                error("operator '" + op + "' requires operands of the same type", bin->loc);
-            }
-            return "boolean";
-        }
-        if (op == "&&" || op == "||") {
-            if ((!lt.empty() && lt != "boolean") || (!rt.empty() && rt != "boolean")) {
-                error("operator '" + op + "' requires boolean operands", bin->loc);
-            }
-            return "boolean";
-        }
-        error("unsupported binary operator '" + op + "'", bin->loc);
-        return "";
-    }
-
-    if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
-        // `on stack` is fine -- it moves the stack pointer and nothing else. `on heap` enters the
-        // allocator, which is precisely the machinery the interrupted code may be standing inside.
-        if (nw->location == "heap") noteUnsafeForInterrupt("allocate on the heap", nw->loc);
-        // region-binder DATA-RACE (§14): a closure handed to a Thread may only capture state that is safe to
-        // share across threads -- atomic<T>/Mutex<T>/Channel<T>, a type that declares itself Shared, or a
-        // copied value. Capturing a plain mutable reference (byref, or byvalue a pointer) shares mutable
-        // state between two threads -> a data race.
-        //
-        // `Shared` is what makes this rule liveable. Without it the three names below are the only things
-        // that may cross a thread boundary, so a worker pool -- an object whose every field is an atomic --
-        // is unwritable outside the standard library, and so is every other concurrent structure a program
-        // might need. The escape is a declaration rather than a hole: a type states the promise, and the
-        // reader of that type can hold it to it.
-        if (regionBinder_ && nw->className == "Thread" && !nw->args.empty()) {
-            const ast::LambdaExpr* lam = dynamic_cast<const ast::LambdaExpr*>(nw->args[0].get());
-            if (lam == nullptr)
-                if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(nw->args[0].get())) {
-                    auto it = lambdaLocals_.find(aid->name);
-                    if (it != lambdaLocals_.end()) lam = it->second;
-                }
-            if (lam != nullptr)
-                for (const ast::Capture& cap : lam->captures) {
-                    const LocalVar* lv = lookupLocal(cap.name);
-                    if (lv == nullptr) continue;
-                    const std::string b = baseType(lv->type);
-                    const bool safe = b.rfind("atomic", 0) == 0 || b.rfind("Mutex", 0) == 0 ||
-                                      b.rfind("Channel", 0) == 0 || declaresShared(b);
-                    const bool shares = cap.byRef || isRefType(lv->type);  // shares the var / the pointee
-                    if (shares && !safe)
-                        error("region-binder: thread closure captures shared mutable '" + cap.name +
-                                  "' (type '" + lv->type + "') -- a data race; share it via atomic<T> / "
-                                  "Mutex<T> / Channel<T>, declare its type 'implements Shared' if it is "
-                                  "safe to reach from several threads at once, or capture an immutable "
-                                  "copy (byvalue a value)",
-                              nw->loc);
-                }
-        }
-        // Value Result/Option (spec 21, value form): Ok/Err/Some/None with location "value" is a value, not
-        // a heap object. Type it as the sealed base (Result$T$E / Option$T, no star) and check the payload
-        // against T (Ok/Some) or E (Err); None carries no payload. No class is allocated.
-        if (nw->location == "value") {
-            const bool isResult = nw->className == "Ok" || nw->className == "Err";
-            const bool okSide = nw->className == "Ok" || nw->className == "Some";
-            const std::string payloadType =
-                okSide ? (nw->typeArgs.empty() ? std::string() : nw->typeArgs[0])
-                       : (isResult && nw->typeArgs.size() > 1 ? nw->typeArgs[1] : std::string());
-            if (!nw->args.empty()) {
-                const std::string at = typeOf(*nw->args[0]);
-                if (!payloadType.empty() && !at.empty() && !isSubtype(at, payloadType) &&
-                    !intLiteralFits(*nw->args[0], payloadType))
-                    error("cannot build '" + nw->className + "' with a value of type '" + at +
-                              "' (expected '" + payloadType + "')",
-                          nw->loc);
-            }
-            return ast::mangleGeneric(isResult ? "Result" : "Option", nw->typeArgs);
-        }
-        const std::string cn = ast::mangleGeneric(nw->className, nw->typeArgs);  // Box<int> -> Box$int
-        checkTypeAccessible(cn, nw->loc);
-        const ClassInfo* ci = lookupClass(cn);
-        if (ci == nullptr) {
-            error("unknown class '" + cn + "'", nw->loc);
-            return "";
-        }
-        if (ci->isInterface || ci->isAbstract) {
-            error("cannot instantiate " +
-                      std::string(ci->isInterface ? "interface" : "abstract class") + " '" + cn + "'",
-                  nw->loc);
-        }
-        if (nw->location != "stack" && nw->location != "heap") {
-            error("'new' location must be 'stack' or 'heap', got '" + nw->location + "'", nw->loc);
-        }
-        if (!nw->region.empty()) {
-            const auto dot = nw->region.find('.');
-            if (dot != std::string::npos) {
-                // `new X in region this.field` (spec 17: region as a field): validate the field.
-                const std::string fieldName = nw->region.substr(dot + 1);
-                const FieldInfo* f =
-                    currentClass_.empty() ? nullptr : findField(currentClass_, fieldName);
-                if (f == nullptr)
-                    error("unknown region field '" + nw->region + "'", nw->loc);
-                else if (f->type != "region")
-                    error("'" + nw->region + "' is not a region", nw->loc);
-            } else {
-                const LocalVar* r = lookupLocal(nw->region);
-                if (r == nullptr) {
-                    error("unknown region '" + nw->region + "'", nw->loc);
-                } else if (r->type != "region") {
-                    error("'" + nw->region + "' is not a region", nw->loc);
-                } else {
-                    checkRegionAccepts(nw->region, cn, nw->loc);
-                }
-            }
-        }
-        // Full construction: arguments align 1:1 with parameters, so type-check them. Fewer
-        // arguments is a partial constructor (spec 18.9) -- omitted params come from persistent
-        // fields and the alignment is not 1:1, so only the too-many case is an error there.
-        if (nw->args.size() == ci->ctorParamTypes.size()) {
-            checkCallArgs(nw->args, ci->ctorParamTypes, "constructor '" + cn + "'");
-        } else {
-            for (const auto& arg : nw->args) typeOf(*arg);
-            if (nw->args.size() > ci->ctorParamTypes.size()) {
-                error("constructor '" + cn + "' expects at most " +
-                          std::to_string(ci->ctorParamTypes.size()) + " argument(s) but got " +
-                          std::to_string(nw->args.size()),
-                      nw->loc);
-            } else {
-                // Fewer arguments is a partial constructor (spec 18.9), valid only when the class has
-                // persistent fields to supply the omitted parameters; otherwise it is a missing
-                // argument (calling the constructor with too few would be undefined).
-                bool hasPersist = false;
-                for (std::string c = baseType(cn); !c.empty() && !hasPersist;) {
-                    for (const PersistentFieldInfo& pf : persistentFields_)
-                        if (pf.cls == c) { hasPersist = true; break; }
-                    const ClassInfo* ic = lookupClass(c);
-                    c = ic != nullptr ? ic->superclass : std::string();
-                }
-                if (!hasPersist)
-                    error("constructor '" + cn + "' expects " +
-                              std::to_string(ci->ctorParamTypes.size()) + " argument(s) but got " +
-                              std::to_string(nw->args.size()),
-                          nw->loc);
-            }
-        }
-        return cn;
-    }
-
-    if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(&expr)) {
-        const std::string st = typeOf(*na->size);
-        if (!st.empty() && st != "int") error("array size must be an int", na->loc);
-        // `new T[n]() in region R` is checked against the region's accepts/rejects exactly as an object
-        // is. A region is TYPED -- that is what separates it from a hand-rolled arena, which takes bytes
-        // and forgets what they were -- so an array entering one has to answer the same question its
-        // element type would. Checked on the ELEMENT: `accepts({byte})` admits `byte[]`, because what
-        // the region is being asked to hold is bytes.
-        if (!na->region.empty()) checkRegionAccepts(na->region, na->elementType, na->loc);
-        return na->elementType + "[]";
-    }
-    if (const auto* al = dynamic_cast<const ast::ArrayLiteralExpr*>(&expr)) {  // `[a, b, c]` (spec 25)
-        if (al->elements.empty()) {
-            error("empty array literal '[]' has no inferable element type; use 'new T[0]()'",
-                  al->loc);
-            return "";
-        }
-        const std::string elem = typeOf(*al->elements[0]);
-        for (std::size_t i = 1; i < al->elements.size(); ++i) {
-            const std::string et = typeOf(*al->elements[i]);
-            if (!et.empty() && !elem.empty() && !isSubtype(et, elem) && !isSubtype(elem, et))
-                error("array literal element " + std::to_string(i + 1) + " has type '" + et +
-                          "', incompatible with '" + elem + "'",
-                      al->elements[i]->loc);
-        }
-        return elem + "[]";
-    }
-
-    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
-        const std::string at = typeOf(*ix->array);
-        const std::string it = typeOf(*ix->index);
-        // operator[] overload (spec 6.5): `obj[i]` where obj's class defines operator[].
-        if (const MethodInfo* om = findMethod(baseType(at), "operator[]")) {
-            return om->returnType;
-        }
-        if (vecWidth(at) > 0 || at == "mat4") {  // SIMD vector/matrix: v[i] / m[i] -> float
-            if (!it.empty() && it != "int") error("vector index must be an int", ix->loc);
-            return "float";
-        }
-        if (!it.empty() && !isIntName(it)) error("index must be an integer", ix->loc);
-        if (at.empty()) return "";
-        if (isRefType(at)) return baseType(at);  // p[i] on a raw pointer T* -> T (spec 17.8)
-        if (!isArrayType(at)) {
-            error("cannot index a value of non-array type '" + at + "'", ix->loc);
-            return "";
-        }
-        return elementOf(at);
-    }
-
-    if (const auto* is = dynamic_cast<const ast::InterpStringExpr*>(&expr)) {
-        // Interpolation builds a String, so it carries the managed runtime with it -- a stored `$"..."`
-        // emitted snprintf + __ldp3_malloc + __ldp3_str_copy/free, none of which exist bare metal. The
-        // guide notes it can be lowered without an allocation "when the result is only consumed, not
-        // stored", but in freestanding every consumer of a String (Console, the collections) is already
-        // gated, so there is no consumed form left to permit.
-        if (freestanding_ && std::string(is->loc.file) != "<prelude>")
-            error("string interpolation is not available in freestanding mode (spec 36.3): `$\"...\"` "
-                  "builds a managed String, which needs snprintf and the String runtime. Format into a "
-                  "byte buffer yourself, or emit the pieces one at a time",
-                  is->loc);
-        for (const auto& e : is->exprs) {
-            const std::string t = typeOf(*e);
-            const bool printable = t.empty() || isIntName(t) || isFloatType(t) || t == "char" ||
-                                   t == "boolean" || t == "String" || t == "string" ||
-                                   t == "Decimal" || enums_.count(t) > 0 || catalogs_.count(t) > 0;
-            if (!printable) {
-                error("string interpolation can only print numeric, char, boolean, String, Decimal or "
-                      "enum values, got '" + t + "'",
-                      e->loc);
-            }
-        }
-        return "string";
-    }
-
-    if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
-        // A CONSTRUCTOR THAT DELEGATES cannot be judged by the field-initialisation check below: a
-        // `this.setUp()` or a `super(...)` assigns fields in a body this analysis does not follow, so
-        // every field would be reported as unset. That is not a stricter check, it is a wrong one, and
-        // it would reject a pattern the standard library itself uses.
-        //
-        // IT USED TO DISCHARGE EVERY PENDING FIELD, and that was too much in two ways.
-        //
-        // It was decided BY A PREFIX: only a `MemberExpr` whose object is `this` counted, so
-        // `this.setUp()` discharged and a bare `setUp()` did not. Since `this.` became optional
-        // (spec 8.2) that meant whether the check ran at all depended on how somebody typed the call.
-        //
-        // And it hid real defects -- a field read before any write, in a class whose constructor
-        // happened to call a helper. Both showed up the moment a `this.` came off an unrelated call.
-        //
-        // So: find the callee in this class and discharge only the fields it ACTUALLY assigns,
-        // following private helpers transitively with a visited set. When the callee cannot be found
-        // -- `super(...)`, an inherited or external method -- fall back to discharging everything,
-        // which is the old behaviour and the only safe answer when the body is not in reach.
-        if (inConstructor_ && !pendingCtorFields_.empty()) {
-            bool delegates = dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr;
-            std::string calleeName;
-            if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
-                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(cm->object.get());
-                    oid != nullptr && oid->name == "this") {
-                    delegates = true;
-                    calleeName = cm->member;
-                }
-            } else if (const auto* cid =
-                           dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
-                // A BARE call to a method of this class is the same delegation written without the
-                // prefix, and must be treated the same or the check depends on spelling.
-                if (methodBodyInCurrentClass(cid->name) != nullptr) {
-                    delegates = true;
-                    calleeName = cid->name;
-                }
-            }
-            if (delegates) {
-                const ast::Block* body =
-                    calleeName.empty() ? nullptr : methodBodyInCurrentClass(calleeName);
-                if (body == nullptr) {
-                    for (const auto& [fname, floc] : pendingCtorFields_)
-                        markInitialized("this." + fname);
-                } else {
-                    std::set<std::string> assigned;
-                    std::set<std::string> visited{calleeName};
-                    collectFieldsAssigned(body, assigned, visited);
-                    for (const auto& [fname, floc] : pendingCtorFields_)
-                        if (assigned.count(fname) > 0) markInitialized("this." + fname);
-                }
-            }
-        }
-        // `itself(...)` inside a lambda: the lambda calling itself. Handled before every other call
-        // shape because there `itself` resolves to no class, no local and no method -- the enclosing
-        // lambda has no name of its own to look up. Everywhere else the pronoun has already been
-        // resolved to the entity being declared, so reaching here means there was no such entity.
-        if (const auto* iid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
-            iid != nullptr && iid->name == "itself") {
-            if (!analyzingLambda_) {
-                error("'itself' names the entity being declared, and there is none to name here. "
-                      "Inside a lambda body it is the lambda, which is how an anonymous function "
-                      "recurses; in a declaration or an assignment it is what is being declared or "
-                      "assigned to. In a method, call the method by its name",
-                      call->loc);
-                return "";
-            }
-            // Arity first: checkCallArgs only type-checks the arguments that line up with a parameter,
-            // so a wrong COUNT would slip through it and reach codegen, which builds the call from the
-            // function's own arity and would silently drop or invent an argument.
-            if (call->args.size() != currentLambdaParams_.size()) {
-                error("this lambda takes " + std::to_string(currentLambdaParams_.size()) +
-                          " argument(s), but 'itself' is called here with " +
-                          std::to_string(call->args.size()),
-                      call->loc);
-                for (const auto& a : call->args) typeOf(*a);
-                return currentReturnType_;
-            }
-            checkCallArgs(call->args, currentLambdaParams_, "this lambda (called through 'itself')");
-            return currentReturnType_;   // set to the lambda's return type for the body's duration
-        }
-        // spec 32.8: `Dog.methods.replace("bark", <function value>)` -- a mutable dispatch table. The
-        // replacement takes over the class's vtable slot, so every Dog (already alive or not yet born)
-        // gets the new behaviour: genuine AOP, mocking without a framework, localized hot patching.
-        if (const auto* rp = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-            rp != nullptr && rp->member == "replace") {
-            if (const std::string cls = dispatchTableClass(*rp->object); !cls.empty())
-                return checkMethodPatch(cls, *call);
-        }
-        // mat4.identity(): the identity-matrix factory.
-        if (const auto* mc = dynamic_cast<const ast::MemberExpr*>(call->callee.get()))
-            if (const auto* mo = dynamic_cast<const ast::IdentifierExpr*>(mc->object.get());
-                mo != nullptr && mo->name == "mat4" && mc->member == "identity" && call->args.empty())
-                return "mat4";
-        // SIMD vector construction: vec4(x,y,z,w) etc. -- N numeric args -> vecN.
-        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
-            if (cid->name == "mat4") {  // mat4(m0..m15) construction
-                if (call->args.size() != 16) error("mat4 takes 16 components", call->loc);
-                for (const auto& arg : call->args) {
-                    const std::string at = typeOf(*arg);
-                    if (!at.empty() && !isNumeric(at))
-                        error("mat4 components must be numeric, got '" + at + "'", arg->loc);
-                }
-                return "mat4";
-            }
-            if (int w = vecWidth(cid->name); w > 0) {
-                if (static_cast<int>(call->args.size()) != w)
-                    error(cid->name + " takes " + std::to_string(w) + " components", call->loc);
-                for (const auto& arg : call->args) {
-                    const std::string at = typeOf(*arg);
-                    if (!at.empty() && !isNumeric(at))
-                        error(cid->name + " components must be numeric, got '" + at + "'", arg->loc);
-                }
-                return cid->name;
-            }
-        }
-        // Calling a funcptr<Ret, Params...> value (a bare C function pointer) -> Ret.
-        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
-            if (const LocalVar* fv = lookupLocal(cid->name);
-                fv != nullptr && fv->type.rfind("funcptr<", 0) == 0) {
-                for (const auto& arg : call->args) typeOf(*arg);
-                const std::string inner = ast::funcptrBody(fv->type.substr(8, fv->type.size() - 9));  // [unknown-abi]
-                for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
-                    if (inner[i] == '<') depth++;
-                    else if (inner[i] == '>') depth--;
-                    else if (inner[i] == ',' && depth == 0) return inner.substr(0, i);
-                }
-                return inner;
-            }
-        }
-        // Calling a function value: callee is a local of type function<Ret, Params...> -> Ret.
-        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
-            if (const LocalVar* fv = lookupLocal(cid->name);
-                fv != nullptr && fv->type.rfind("function<", 0) == 0) {
-                for (const auto& arg : call->args) typeOf(*arg);
-                const std::string inner = fv->type.substr(9, fv->type.size() - 10);
-                for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
-                    if (inner[i] == '<') depth++;
-                    else if (inner[i] == '>') depth--;
-                    else if (inner[i] == ',' && depth == 0) return inner.substr(0, i);  // the Ret
-                }
-                return inner;  // no params -> the whole inner is the return type
-            }
-        }
-        // super(args): explicitly call the base constructor to pass arguments.
-        if (dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr) {
-            if (!inConstructor_) {
-                error("'super(...)' is only valid inside a constructor", call->loc);
-            } else {
-                const ClassInfo* ci = lookupClass(currentClass_);
-                if (ci == nullptr || ci->superclass.empty()) {
-                    error("'super(...)' requires a superclass, but '" + currentClass_ +
-                              "' has none",
-                          call->loc);
-                }
-            }
-            for (const auto& arg : call->args) typeOf(*arg);
-            return "void";
-        }
-        const std::string name = flattenCallee(*call->callee);
-        // The test framework, reached as a static call (`Test.assertEqual(...)`), which never goes
-        // through checkTypeAccessible -- so gating the TYPE was not enough to stop it. It reports
-        // through printf and builds Strings; a freestanding program that used it compiled clean and
-        // failed at link. Same rule as Console: user code only, since the prelude names it freely.
-        if (freestanding_ && std::string(call->loc.file) != "<prelude>" &&
-            (name.rfind("Test.", 0) == 0 || name.rfind("System.Test.Test.", 0) == 0))
-            error("the test framework is not available in freestanding mode (spec 36.3): 'Test' reports "
-                  "through printf and builds Strings, neither of which exists bare metal. Test a "
-                  "freestanding program from outside -- boot it and assert on what it emits",
-                  call->loc);
-        // embed("path") (spec 36): the file's bytes, materialized into the image at compile time.
-        if (name == "embed" && call->args.size() == 1) {
-            if (dynamic_cast<const ast::StringLiteralExpr*>(call->args[0].get()) == nullptr)
-                error("embed(...) needs a literal path known at compile time", call->loc);
-            return "byte[]";
-        }
-        if (name == "checked" && call->args.size() == 1)  // checked(expr): overflow-trapping, same type
-            return typeOf(*call->args[0]);
-        // `T.sizeof()` (spec issue #7): the type answers about itself. The companion spelling,
-        // `Memory.sizeof(x)`, lives with the rest of the Memory API below and is the only one that
-        // takes an expression.
-        if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-            sm != nullptr && sm->member == "sizeof" && call->args.empty() &&
-            lookupClass(baseType(flattenCallee(*sm->object))) != nullptr)
-            return "int";
-        // Namespace-level literal suffix function called by name: kilobytes(64).
-        if (auto lit = literals_.find(name); lit != literals_.end() && !lit->second.empty()) {
-            // The bare call form `name(arg)` is gone (spec 17.10): a suffix is used as the `N name`
-            // sugar (which needs the suffix imported) or qualified by its owner as `Type.name(N)`.
-            if (!call->fromSuffix) {
-                error("call a literal suffix as 'N " + name + "' (imported) or '<Type>." + name +
-                          "(N)'; the bare '" + name + "(N)' form is not allowed",
-                      call->loc);
-            } else if (importedSuffixes_.count(name) == 0) {
-                error("literal suffix '" + name +
-                          "' is not in scope; import it to use the 'N " + name + "' form",
-                      call->loc);
-            }
-            const std::vector<LiteralInfo>& ovs = lit->second;
-            if (call->args.size() != 1) {
-                error("literal suffix '" + name + "' takes exactly one argument", call->loc);
-                return ovs[0].returnType;
-            }
-            // A literal suffix may only be applied to a compile-time constant (spec 17.10): this is
-            // what keeps `comptime literal` from becoming a runtime free function. Both `N suffix`
-            // and the explicit `name(arg)` form require a literal/const argument.
-            if (!isCompileTimeConstant(*call->args[0]))
-                error("literal suffix '" + name +
-                          "' applies only to a compile-time constant; calling it with a runtime "
-                          "value is not allowed (a literal suffix is not a free function)",
-                      call->loc);
-            // Overload resolution by the literal's type (spec 17.10 rule 6): an exact parameter-type
-            // match wins; otherwise the first overload is used and the argument is coerced.
-            const std::string at = typeOf(*call->args[0]);
-            const LiteralInfo* chosen = &ovs[0];
-            for (const LiteralInfo& ov : ovs)
-                if (ov.paramType == at) { chosen = &ov; break; }
-            return chosen->returnType;
-        }
-        // Low-level thread builtins used by the System.Concurrency.Thread prelude class.
-        if (name == "System.Concurrency.__threadStart") {
-            if (call->args.size() != 1) error("__threadStart takes one function<void>", call->loc);
-            else typeOf(*call->args.front());
-            return "long";  // the OS thread handle
-        }
-        // Low-level Mutex lock builtins (used by the System.Concurrency.Mutex prelude class).
-        if (name == "System.Concurrency.__lockCreate") {
-            if (!call->args.empty()) error("__lockCreate takes no arguments", call->loc);
-            return "long";  // an opaque lock handle
-        }
-        if (name == "System.Concurrency.__chanNew") {  // used by the Channel prelude class
-            if (call->args.size() != 1) error("__chanNew takes one capacity", call->loc);
-            else typeOf(*call->args.front());
-            return "long";  // an opaque channel handle
-        }
-        if (name == "System.Concurrency.__lockAcquire" ||
-            name == "System.Concurrency.__lockRelease") {
-            if (call->args.size() != 1) error("lock op takes one handle", call->loc);
-            else typeOf(*call->args.front());
-            return "void";
-        }
-        if (name == "System.Concurrency.__threadJoin") {
-            if (call->args.size() != 1) error("__threadJoin takes one handle", call->loc);
-            else typeOf(*call->args.front());
-            return "void";
-        }
-        // Console I/O (spec 4): System.IO.Console.{printf,println,print,readInt}. The pre-F10
-        // names (System.IO.printf/println/readInt, bare Console.*) are kept as aliases until the
-        // samples are migrated. Requires `import System.IO.Console;`.
-        {
-            const bool isRead = name == "System.IO.Console.read";
-            const bool isPrintf = name == "System.IO.Console.printf";
-            const bool isPrintln = name == "System.IO.Console.println";
-            const bool isPrint = name == "System.IO.Console.print";
-            if (isRead || isPrintf || isPrintln || isPrint) {
-                // The prelude's own library classes (e.g. Logger) may reference Console; their mere
-                // presence must not break a freestanding program that never uses them (unused prelude code
-                // is dead-stripped). Only flag Console used directly in user code.
-                if (freestanding_ && std::string(call->loc.file) != "<prelude>")
-                    error("Console (managed stdlib) is not available in freestanding mode; use FFI "
-                          "for I/O (spec 36.3)",
-                          call->loc);
-                checkTypeAccessible("Console", call->loc);  // require the import
-                if (isRead) {
-                    if (!call->args.empty()) error("Console.read takes no arguments", call->loc);
-                    return "String";  // read() returns a line; parse it (e.g. toInt) for other types
-                }
-                if (isPrintf && call->args.empty())
-                    error("printf requires a format string", call->loc);
-                // The first argument must be a string literal/interpolation (a format), or -- for
-                // println/print -- a String value. printf requires the format form specifically.
-                if (!call->args.empty()) {
-                    const ast::Expr* f = call->args.front().get();
-                    const bool fmt = dynamic_cast<const ast::StringLiteralExpr*>(f) != nullptr ||
-                                     dynamic_cast<const ast::InterpStringExpr*>(f) != nullptr;
-                    if (!fmt) {
-                        const std::string at = typeOf(*f);
-                        if (isPrintf)
-                            error("the first argument to printf must be a string literal or "
-                                  "interpolated string", f->loc);
-                        else if (!at.empty() && at != "String" && at != "string")
-                            error("println/print expects a string literal, interpolation, or "
-                                  "String value, got '" + at + "'", f->loc);
-                    }
-                }
-                for (const auto& arg : call->args) typeOf(*arg);
-                return "void";
-            }
-        }
-        // External C function (spec 26): a bare call `name(args)` to an `extern` declaration.
-        if (auto ext = externReturns_.find(name); ext != externReturns_.end()) {
-            for (const auto& arg : call->args) typeOf(*arg);
-            return ext->second;
-        }
-        // Math (spec 34.6): static functions on double, lowered to LLVM intrinsics.
-        if (name.rfind("Math.", 0) == 0) {
-            const std::string fn = name.substr(5);
-            const bool unary = fn == "sqrt" || fn == "abs" || fn == "floor" || fn == "ceil" ||
-                               fn == "round" || fn == "trunc" || fn == "sin" || fn == "cos" ||
-                               fn == "exp" || fn == "log" || fn == "tan" || fn == "asin" ||
-                               fn == "acos" || fn == "atan" || fn == "sinh" || fn == "cosh" ||
-                               fn == "tanh" || fn == "cbrt" || fn == "log2" || fn == "log10";
-            const bool binary = fn == "pow" || fn == "min" || fn == "max" || fn == "atan2" ||
-                                fn == "hypot";
-            const bool ternary = fn == "clamp" || fn == "lerp";
-            if (unary || binary || ternary) {
-                checkTypeAccessible("Math", call->loc);  // require `import System.Math.Math;`
-                for (const auto& a : call->args) typeOf(*a);
-                const std::size_t want = unary ? 1u : (binary ? 2u : 3u);
-                if (call->args.size() != want)
-                    error("Math." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
-                return "double";
-            }
-        }
-        // Memory API (spec 17.8): a NAMESPACE of stdlib classes -- System.Memory.Allocator (alloc/
-        // free/copy) and System.Memory.Raw (read/write/readString/writeString/addressOf/sizeof).
-        // Reached fully qualified (always allowed) or, after `import System.Memory.Allocator;` /
-        // `import System.Memory.Raw;`, by the short Allocator.X / Raw.X. The short form requires the
-        // import, enforced through checkTypeAccessible exactly like System.Math.Math (System.* code
-        // stays exempt, and so does freestanding, whose systems core this is).
-        std::string memName = name;
-        if (memName.rfind("System.Memory.", 0) == 0) {
-            memName = memName.substr(14);   // -> "Allocator.alloc" / "Raw.read"
-        } else if ((memName.rfind("Allocator.", 0) == 0 || memName.rfind("Raw.", 0) == 0) &&
-                   !freestanding_) {
-            checkTypeAccessible(memName.substr(0, memName.find('.')), call->loc);
-        }
-        // `Raw.sizeof(T)` (spec issue #7): the byte size of a type, or of an expression's type. A size
-        // is a question about how a value is laid out in memory, so it is asked of the class that
-        // reads and writes memory rather than by a bare word the language would have to reserve.
-        // Folded to a constant in the code generator, which is what lets a `static_assert` hold a
-        // struct to a byte budget.
-        //
-        // The argument may NAME A TYPE, which has no value to type-check -- but when it names no type
-        // it is a VALUE, and a value must be checked like one. Skipping both is how a size of a
-        // nonexistent name used to compile to a guessed 4 instead of saying the name means nothing.
-        // The test is deliberately permissive: the code generator holds the real layout and decides,
-        // so anything arguable passes here and only a bare name matching nothing is checked as a value.
-        if (memName == "Raw.sizeof") {
-            if (call->args.size() != 1) {
-                error("Raw.sizeof takes one type or expression", call->loc);
-                return "int";
-            }
-            const std::string spelled = comptime::typeNameSpelled(*call->args[0]);
-            const std::string bare = baseType(spelled);
-            const bool looksLikeAType =
-                !spelled.empty() &&
-                (spelled.find('<') != std::string::npos || spelled.find('.') != std::string::npos ||
-                 isNumeric(bare) || bare == "boolean" || bare == "char" || bare == "void" ||
-                 bare == "String" || bare == "string" || bare == "Object" || bare == "Decimal" ||
-                 bare == "vec2" || bare == "vec3" || bare == "vec4" || bare == "mat4" ||
-                 enums_.count(bare) > 0 || catalogs_.count(bare) > 0 || newtypes_.count(bare) > 0 ||
-                 classes_.count(bare) > 0 || lookupClass(bare) != nullptr);
-            if (!looksLikeAType) typeOf(*call->args[0]);
-            return "int";
-        }
-        if (memName == "Allocator.alloc") {
-            if (call->args.size() != 1) error("Allocator.alloc takes a byte count", call->loc);
-            else typeOf(*call->args.front());
-            return "address";
-        }
-        if (memName == "Allocator.free") {
-            if (call->args.size() != 1) error("Allocator.free takes an address", call->loc);
-            else typeOf(*call->args.front());
-            return "void";
-        }
-        if (memName == "Raw.getMemory") {
-            if (call->args.size() != 1) error("Raw.getMemory takes one argument", call->loc);
-            else typeOf(*call->args.front());
-            return "address";
-        }
-        if (memName == "Raw.read") {
-            if (call->typeArgs.size() != 1) error("Raw.read<T> needs a type argument", call->loc);
-            else checkBitCounted(call->typeArgs[0], call->loc);  // int8/int16/... are freestanding-only
-            for (const auto& a : call->args) typeOf(*a);
-            return call->typeArgs.empty() ? "" : call->typeArgs[0];
-        }
-        if (memName == "Raw.write") {
-            if (!call->typeArgs.empty()) checkBitCounted(call->typeArgs[0], call->loc);  // bit-counted: freestanding-only
-            for (const auto& a : call->args) typeOf(*a);
-            return "void";
-        }
-        // Raw.writeString(address, String): bulk-copy a String's bytes to a raw buffer (StringBuilder).
-        if (memName == "Raw.writeString") {
-            if (call->args.size() != 2) error("Raw.writeString takes (address, String)", call->loc);
-            for (const auto& a : call->args) typeOf(*a);
-            return "void";
-        }
-        // Allocator.copy(dst, src, n): raw memcpy of n bytes between two addresses (StringBuilder growth).
-        if (memName == "Allocator.copy") {
-            if (call->args.size() != 3) error("Allocator.copy takes (dst, src, n)", call->loc);
-            for (const auto& a : call->args) typeOf(*a);
-            return "void";
-        }
-        if (name == "Bits.doubleToLong" || name == "Bits.longToDouble") {
-            checkTypeAccessible("Bits", call->loc);
-            for (const auto& a : call->args) typeOf(*a);
-            return name == "Bits.doubleToLong" ? "long" : "double";
-        }
-        // Ipc (spec 2.8): cross-program transport builtins. The program NAME is the address.
-        if (name.rfind("Ipc.", 0) == 0) {
-            const std::string fn = name.substr(4);
-            if (fn == "listen" || fn == "accept" || fn == "connect" || fn == "send" || fn == "recv" ||
-                fn == "close") {
-                checkTypeAccessible("Ipc", call->loc);
-                for (const auto& a : call->args) typeOf(*a);
-                if (fn == "recv") return "String";   // (conn) -> one whole frame ("" when the peer left)
-                if (fn == "close") return "void";    // (handle)
-                return "long";  // listen(name)/accept(srv)/connect(name) -> handle (-1); send -> bytes
-            }
-        }
-        // Net (spec 34): TCP client builtins. Require `import System.Net.Net;` (used by Socket).
-        if (name.rfind("Net.", 0) == 0) {
-            const std::string fn = name.substr(4);
-            if (fn == "connect" || fn == "send" || fn == "recv" || fn == "close" ||
-                fn == "listen" || fn == "accept" ||
-                fn == "udpOpen" || fn == "udpSend" || fn == "udpRecv" ||
-                fn == "udpPeerHost" || fn == "udpPeerPort" || fn == "udpClose") {
-                checkTypeAccessible("Net", call->loc);
-                for (const auto& a : call->args) typeOf(*a);
-                if (fn == "connect") return "long";     // (host, port) -> socket handle (or -1)
-                if (fn == "send") return "long";        // (sock, data) -> bytes sent
-                if (fn == "recv") return "String";      // (sock, max) -> received bytes
-                if (fn == "listen") return "long";      // (port) -> listening socket (or -1)
-                if (fn == "accept") return "long";      // (server) -> connection socket (or -1)
-                if (fn == "udpOpen") return "long";     // (port) -> UDP socket (port 0 = ephemeral)
-                if (fn == "udpSend") return "long";     // (sock, host, port, data) -> bytes sent
-                if (fn == "udpRecv") return "String";   // (sock, max) -> datagram payload
-                if (fn == "udpPeerHost") return "String"; // () -> last datagram's sender IP
-                if (fn == "udpPeerPort") return "int";  // () -> last datagram's sender port
-                return "void";                          // close(sock) / udpClose(sock)
-            }
-        }
-        // Process (spec 34): Process.run(cmd) runs a shell command, returning a ProcessResult with its
-        // captured stdout and exit code. Require `import System.OS.Process;`.
-        if (name.rfind("Process.", 0) == 0) {
-            const std::string fn = name.substr(8);
-            if (fn == "run") {
-                checkTypeAccessible("Process", call->loc);
-                if (call->args.size() != 1) error("Process.run takes a command string", call->loc);
-                else typeOf(*call->args[0]);
-                return "ProcessResult";
-            }
-        }
-        // Env (spec 34): environment variables. Env.get(name) -> String (empty if unset); Env.set(name,
-        // value) -> boolean. Require `import System.OS.Env;`.
-        if (name.rfind("Env.", 0) == 0) {
-            const std::string fn = name.substr(4);
-            if (fn == "get" || fn == "set") {
-                checkTypeAccessible("Env", call->loc);
-                for (const auto& a : call->args) typeOf(*a);
-                const std::size_t want = (fn == "set") ? 2u : 1u;
-                if (call->args.size() != want)
-                    error("Env." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
-                return fn == "get" ? "String" : "boolean";
-            }
-            // executablePath() -> the running program's own full path (spec 34). Lets a program
-            // resolve files relative to its executable rather than the current directory.
-            if (fn == "executablePath") {
-                checkTypeAccessible("Env", call->loc);
-                if (!call->args.empty())
-                    error("Env.executablePath takes no arguments", call->loc);
-                return "String";
-            }
-        }
-        // Persistent subprocess (debugger/LSP): low-level builtins behind the System.OS.Subprocess class.
-        // spawn(cmd) -> handle (0 = failed); writeStr(h, data) -> bytes written; readChunk(h) -> available
-        // bytes ("" on EOF); isAlive(h)/closeStdin(h)/kill(h). Internal; the Subprocess class is the API.
-        if (name.rfind("Subproc.", 0) == 0) {
-            const std::string fn = name.substr(8);
-            for (const auto& a : call->args) typeOf(*a);
-            // spawnCombined: same, but the child's stderr shares its stdout pipe (a compiler's diagnostics).
-            // spawnVisible: the child gets its own console window instead of being windowless.
-            if (fn == "spawn" || fn == "spawnCombined" || fn == "spawnVisible") return "long";
-            if (fn == "writeStr") return "int";
-            if (fn == "readChunk") return "String";
-            if (fn == "isAlive" || fn == "canRead") return "boolean";
-            if (fn == "closeStdin" || fn == "kill") return "void";
-        }
-        // Pseudo-console (the Pty terminal): spawn(cmd,cols,rows) -> handle; writeStr(h,data) -> bytes;
-        // readChunk(h) -> output; isAlive/canRead(h) -> boolean; resize(h,cols,rows)/close(h) -> void.
-        if (name.rfind("Conpty.", 0) == 0) {
-            const std::string fn = name.substr(7);
-            for (const auto& a : call->args) typeOf(*a);
-            if (fn == "spawn") return "long";
-            if (fn == "writeStr") return "int";
-            if (fn == "readChunk") return "String";
-            if (fn == "isAlive" || fn == "canRead") return "boolean";
-            if (fn == "resize" || fn == "close") return "void";
-        }
-        // File I/O (spec 34.4): static methods lowering to runtime stdio. Require `import System.IO.File;`.
-        if (name.rfind("File.", 0) == 0) {
-            const std::string fn = name.substr(5);
-            if (fn == "readAll" || fn == "writeAll" || fn == "appendAll" || fn == "exists" ||
-                fn == "remove") {
-                checkTypeAccessible("File", call->loc);
-                for (const auto& a : call->args) typeOf(*a);
-                const std::size_t want = (fn == "writeAll" || fn == "appendAll") ? 2u : 1u;
-                if (call->args.size() != want)
-                    error("File." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
-                return fn == "readAll" ? "String" : "boolean";
-            }
-            // Directory / filesystem metadata (spec 34.4): list, mkdir, rename, size, isDir.
-            if (fn == "list" || fn == "mkdir" || fn == "rename" || fn == "size" || fn == "isDir") {
-                checkTypeAccessible("File", call->loc);
-                for (const auto& a : call->args) typeOf(*a);
-                const std::size_t want = (fn == "rename") ? 2u : 1u;
-                if (call->args.size() != want)
-                    error("File." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
-                if (fn == "list") return "String";        // newline-separated entries
-                if (fn == "size") return "long";          // byte count (-1 if missing)
-                return "boolean";                          // mkdir / rename / isDir
-            }
-        }
-        // Time (spec 34): clock + sleep builtins. Require `import System.Time.Time;`.
-        if (name.rfind("Time.", 0) == 0) {
-            const std::string fn = name.substr(5);
-            if (fn == "millis" || fn == "nanos" || fn == "unixMillis" || fn == "sleep") {
-                checkTypeAccessible("Time", call->loc);
-                for (const auto& a : call->args) typeOf(*a);
-                if (fn == "sleep") {
-                    if (call->args.size() != 1) error("Time.sleep takes a millisecond count", call->loc);
-                    return "void";
-                }
-                if (!call->args.empty()) error("Time." + fn + " takes no arguments", call->loc);
-                return "long";
-            }
-        }
-        // Memory.readString(address, len): build a String from a raw byte buffer (StringBuilder).
-        if (memName == "Raw.readString") {
-            if (call->args.size() != 2) error("Raw.readString takes (address, length)", call->loc);
-            for (const auto& a : call->args) typeOf(*a);
-            return "String";
-        }
-        // Channel.select() (spec 20.4): starts a fluent select builder over multiple channels.
-        if (name == "Channel.select") {
-            if (!call->args.empty()) error("Channel.select takes no arguments", call->loc);
-            return "Select";
-        }
-        // reflect.typeOf<T>() (spec 31): the Type token for class T. It is the only entry to
-        // reflection, so requiring its import here gates the whole reflect.* surface.
-        if (name == "reflect.typeOf") {
-            if (currentImports_.count("reflect") == 0)
-                error("reflection requires 'import reflect;'", call->loc);
-            if (freestanding_)
-                error("reflection is not available in freestanding mode (spec 36.3)", call->loc);
-            if (call->typeArgs.size() != 1) {
-                error("reflect.typeOf expects one type argument, e.g. reflect.typeOf<Dog>()",
-                      call->loc);
-                return "Type";
-            }
-            const std::string t = ast::mangleGeneric(call->typeArgs[0], {});
-            if (lookupClass(t) == nullptr)
-                error("reflect.typeOf<T>: '" + t + "' is not a class", call->loc);
-            return "Type";
-        }
-        // Fully-qualified static call to a stdlib/user class: `bundle.namespace...Class.staticMethod(...)`.
-        // Only the `Console`/`File` builtins are recognized by their full path; other classes must be
-        // called by the short name `Class.method` after importing (BUG3). Rather than the misleading
-        // "use of undeclared variable 'System'", point the user at the short form. Fires only when the
-        // receiver is a dotted path whose head is NOT a local and whose last segment is a known class
-        // with a static method by this name.
-        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-            mem != nullptr && dynamic_cast<const ast::MemberExpr*>(mem->object.get()) != nullptr) {
-            const std::string flat = flattenCallee(*mem->object);
-            const std::size_t dot = flat.rfind('.');
-            if (dot != std::string::npos && !flat.empty()) {
-                const std::string cls = flat.substr(dot + 1);
-                const std::string head = flat.substr(0, flat.find('.'));
-                if (head != "this" && lookupLocal(head) == nullptr) {
-                    if (const ClassInfo* sc = lookupClass(cls)) {
-                        if (auto mit = sc->methods.find(mem->member);
-                            mit != sc->methods.end() && mit->second.isStatic) {
-                            error("call '" + cls + "." + mem->member + "' by its short name after "
-                                  "importing it (e.g. `import " + flat + ";` then `" + cls + "." +
-                                  mem->member + "(...)`); the fully-qualified path is only resolved for "
-                                  "the Console/File builtins",
-                                  call->loc);
-                            for (const auto& arg : call->args) typeOf(*arg);
-                            return mit->second.returnType;
-                        }
-                    }
-                    // AND WHEN THE SHORT NAME IS AMBIGUOUS, the advice above is impossible to take.
-                    // Two namespaces declaring `Widget` are renamed apart (`Alpha__Widget`), so
-                    // `lookupClass("Widget")` finds nothing and the fall-through reported "use of
-                    // undeclared variable 'Alpha'" -- which says the opposite of the truth: the name
-                    // exists twice, not zero times, and no import can disambiguate it.
-                    //
-                    // What DOES work is the qualified name in a type position; only a static call
-                    // through it does not, because `Alpha.Widget` in an expression is three AST
-                    // nodes rather than one name and the qualifying substitution never matches it.
-                    // Say exactly that, rather than sending the reader to an import that cannot help.
-                    std::string qualifiedHead = flat.substr(0, dot);
-                    for (char& ch : qualifiedHead)
-                        if (ch == '.') ch = '_';
-                    if (classes_.count(qualifiedHead + "__" + cls) > 0) {
-                        error("'" + cls + "' is declared in more than one namespace, so the short "
-                              "name cannot be imported. '" + flat + "' names it in a TYPE position "
-                              "(`" + flat + " v = new " + flat + "()`), but a static call through a "
-                              "qualified path is not resolved yet -- reach '" + mem->member +
-                              "' through an instance, or give one of the two types a distinct name",
-                              call->loc);
-                        return "";
-                    }
-                }
-            }
-        }
-        // Otherwise the callee should be a method: obj.method(...) or, when the
-        // receiver names a class, a static call ClassName.method(...).
-        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
-            if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
-                if (objId->name != "this" && lookupLocal(objId->name) == nullptr) {
-                    if (const ClassInfo* sc = lookupClass(objId->name)) {
-                        // spec 32.11: [BeforeAll]/[AfterAll] bracket the tests of the class that
-                        // DECLARES them and nothing else, so a test reaching into another class's
-                        // fixture reads state that class may already have torn down. The failure is a
-                        // read of freed memory in a suite whose output showed nothing but passes.
-                        if (inTestMethod_ && objId->name != enclosingClass_ &&
-                            fixtureOwners_.count(objId->name) > 0) {
-                            const std::string key = enclosingClass_ + "." + mem->member + "|" + objId->name;
-                            if (fixtureWarned_.insert(key).second)
-                                warn("this test reads '" + objId->name +
-                                         "', which owns a [BeforeAll]/[AfterAll] fixture, from class '" +
-                                         enclosingClass_ +
-                                         "'. Those hooks bracket only their own class's tests, so '" +
-                                         objId->name +
-                                         "' may already have torn the fixture down by the time this "
-                                         "runs. Move the test into '" +
-                                         objId->name + "', or give this class its own fixture",
-                                     call->loc);
-                        }
-                        // Qualified literal suffix: Type.kib(64) (spec 17.10). A literal suffix is not
-                        // in the method table, so resolve it before the method lookup.
-                        if (auto lit = literals_.find(mem->member); lit != literals_.end()) {
-                            const LiteralInfo* chosen = nullptr;
-                            const std::string at = call->args.size() == 1 ? typeOf(*call->args[0]) : "";
-                            for (const LiteralInfo& ov : lit->second)
-                                if (ov.ownerClass == objId->name) {
-                                    if (chosen == nullptr || ov.paramType == at) chosen = &ov;
-                                    if (ov.paramType == at) break;
-                                }
-                            if (chosen != nullptr) {
-                                if (call->args.size() != 1)
-                                    error("literal suffix '" + mem->member +
-                                              "' takes exactly one argument", call->loc);
-                                else if (!isCompileTimeConstant(*call->args[0]))
-                                    error("literal suffix '" + objId->name + "." + mem->member +
-                                              "' applies only to a compile-time constant", call->loc);
-                                return chosen->returnType;
-                            }
-                        }
-                        auto mit = sc->methods.find(mem->member);
-                        if (mit == sc->methods.end()) {
-                            // A java-style enum desugars to a class of the same name; its auto-generated
-                            // built-ins (values/count/random/parse, spec 12.5) are NOT class methods, so
-                            // fall through to the enum built-in resolver below instead of erroring.
-                            if (enums_.count(objId->name) > 0) goto enumBuiltin;
-                            error("class '" + objId->name + "' has no method '" + mem->member + "'",
-                                  call->loc);
-                            return "";
-                        }
-                        if (!mit->second.isStatic) {
-                            error("method '" + mem->member + "' is not static; call it on an instance",
-                                  call->loc);
-                            return "";
-                        }
-                        // `Class.method(...)` -- the other edge into the call graph. A driver reaches
-                        // most of what it reaches this way (`Serial.puts`, `Frames.alloc`), so
-                        // leaving static calls out would let a handler allocate one hop away.
-                        if (MethodFacts* mf = facts())
-                            mf->callees.insert(objId->name + "." + mem->member);
-                        if (mit->second.isVariadic) {
-                            // A variadic extern (spec 26): the fixed params are checked, extra args are
-                            // the `...` and pass through.
-                            for (const auto& a : call->args) typeOf(*a);
-                        } else {
-                            if (mit->second.isDeprecated)
-                                warn("'" + mem->member + "' is deprecated (spec 14.2)", call->loc);
-                            bindNamedArgs(const_cast<ast::CallExpr*>(call), mit->second.paramNames,
-                                          mit->second.namedOnlyParams, "method '" + mem->member + "'");
-                            checkCallArgs(call->args, mit->second.paramTypes, "'" + mem->member + "'", &mit->second.moveParams);
-                            checkComptimeArgs(call->args, mit->second.comptimeParams,
-                                              "'" + mem->member + "'");
-                            if (call->args.size() != mit->second.paramCount) {
-                                error("method '" + mem->member + "' expects " +
-                                          std::to_string(mit->second.paramCount) + " argument(s) but got " +
-                                          std::to_string(call->args.size()),
-                                      call->loc);
-                            }
-                        }
-                        // An async static method yields a Task<returnType> (spec 20.2).
-                        if (mit->second.isAsync)
-                            return ast::mangleGeneric("Task", {mit->second.returnType});
-                        return mit->second.returnType;
-                    }
-                }
-            }
-        enumBuiltin:;
-            // Enum built-ins: EnumName.count() / EnumName.values() (spec 12.5). Reached directly, or via
-            // fall-through from the class branch for a java-style enum (desugared to a same-named class).
-            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
-                if (lookupLocal(oid->name) == nullptr && enums_.count(oid->name) > 0) {
-                    if (mem->member == "count" && call->args.empty()) return "int";
-                    if (mem->member == "values" && call->args.empty()) return oid->name + "[]";
-                    if (mem->member == "random" && call->args.empty()) return oid->name;
-                    if (mem->member == "parse" && call->args.size() == 1) {  // -> Option<Enum>
-                        typeOf(*call->args[0]);
-                        return "Option$" + oid->name;
-                    }
-                    // A STATIC method the enum declares itself. Spec 12.2 gives enums methods and
-                    // nothing restricts them to instance methods; codegen has always emitted these
-                    // correctly (a static one simply gets no `this` parameter), but resolution never
-                    // looked past the built-ins -- so declaring one compiled and CALLING it did not.
-                    // That is the worst shape a gap can have: a declaration the language accepts and
-                    // then gives you no way to reach.
-                    //
-                    // It bites hardest where an enum meets hardware. A register field arrives as an
-                    // integer and something has to turn it into a value; that is a factory, and a
-                    // factory is static by nature.
-                    if (auto emit = enumMethods_.find(oid->name); emit != enumMethods_.end()) {
-                        auto mit = emit->second.find(mem->member);
-                        if (mit != emit->second.end() && mit->second.isStatic) {
-                            for (const auto& arg : call->args) typeOf(*arg);
-                            const std::size_t want = enumMethodParams_[oid->name][mem->member];
-                            if (call->args.size() != want) {
-                                error("method '" + mem->member + "' expects " + std::to_string(want) +
-                                          " argument(s) but got " + std::to_string(call->args.size()),
-                                      call->loc);
-                            }
-                            return mit->second.returnType;
-                        }
-                        // Declared, but on an instance. Saying which beats "has no built-in", which
-                        // sends the reader hunting for a spelling mistake that is not there.
-                        if (mit != emit->second.end()) {
-                            error("method '" + mem->member + "' on enum '" + oid->name +
-                                      "' is an instance method -- call it on a value of the enum, "
-                                      "not on the type itself",
-                                  call->loc);
-                            return mit->second.returnType;
-                        }
-                    }
-                    error("enum '" + oid->name + "' has no built-in or static method '" +
-                              mem->member + "'",
-                          call->loc);
-                    return "";
-                }
-            }
-            std::string objType = typeOf(*mem->object);
-            if (objType.empty()) return "";
-            // Null safety (spec 3.7): `nullable` only constrains assignment -- a nullable value may
-            // be dereferenced directly (no flow-check required); if it is null at runtime the deref
-            // traps. So resolve the member against the underlying type.
-            if (isNullableType(objType)) objType = baseType(objType);
-            // Enum (catalog) instance method: m.pick() where m is an enum value.
-            if (auto emit = enumMethods_.find(baseType(objType)); emit != enumMethods_.end()) {
-                auto mit = emit->second.find(mem->member);
-                if (mit != emit->second.end()) {
-                    for (const auto& arg : call->args) typeOf(*arg);
-                    const std::size_t want = enumMethodParams_[baseType(objType)][mem->member];
-                    if (call->args.size() != want) {
-                        error("method '" + mem->member + "' expects " + std::to_string(want) +
-                                  " argument(s) but got " + std::to_string(call->args.size()),
-                              call->loc);
-                    }
-                    return mit->second.returnType;
-                }
-            }
-            // Enum value built-in (spec 12.5): `v.name()` -- the declared identifier as a String,
-            // on ordinal and java-style enums alike. It is the fourth of the generated quartet
-            // (values/count/random/parse read names in; name reads them back out). A `name`
-            // method the enum declares itself wins: ordinal enums returned above, java-style
-            // ones resolve through their twin class below, so only probe the builtin when no
-            // user method exists.
-            if (enums_.count(baseType(objType)) > 0 && mem->member == "name" &&
-                call->args.empty()) {
-                const bool userOwns =
-                    javaEnums_.count(baseType(objType)) > 0 &&
-                    findMethod(baseType(objType), "name") != nullptr;
-                if (!userOwns) return "String";
-            }
-            if (int vw = vecWidth(objType); vw > 0) {  // SIMD vector methods (GLSL-style)
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "dot" && call->args.size() == 1) return "float";
-                if (mem->member == "length" && call->args.empty()) return "float";  // magnitude
-                if (mem->member == "normalize" && call->args.empty()) return objType;   // vecN
-                if (mem->member == "cross" && call->args.size() == 1 && vw == 3) return "vec3";
-                error("vec" + std::to_string(vw) + " has dot/length/normalize" +
-                          (vw == 3 ? std::string("/cross") : std::string("")) + "; '" +
-                          mem->member + "' is not one",
-                      call->loc);
-                return "";
-            }
-            if (objType == "mat4") {  // SIMD matrix methods
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "multiply" && call->args.size() == 1) return "mat4";
-                if (mem->member == "transform" && call->args.size() == 1) return "vec4";
-                error("mat4 has multiply/transform; '" + mem->member + "' is not one", call->loc);
-                return "";
-            }
-            if (isArrayType(objType)) {
-                if (mem->member == "length" && call->args.empty()) return "int";  // read length
-                if (mem->member == "length" && call->args.size() == 1) {  // resize (spec 25)
-                    const std::string st = typeOf(*call->args[0]);
-                    if (!st.empty() && st != "int") error("array length must be an int", call->loc);
-                    return "void";
-                }
-                error("arrays support .length() to read and .length(n) to resize; '" + mem->member +
-                          "' is not a method",
-                      call->loc);
-                return "";
-            }
-            if (objType == "String" || objType == "string") {
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "length" && call->args.empty()) return "int";
-                if (mem->member == "isEmpty" && call->args.empty()) return "boolean";
-                if (mem->member == "charAt" && call->args.size() == 1) return "char";
-                if (mem->member == "toInt" && call->args.empty()) return "int";  // parse (spec 4)
-                if (mem->member == "toDouble" && call->args.empty()) return "double";  // parse (spec 4)
-                if (mem->member == "equals" && call->args.size() == 1) return "boolean";
-                if (mem->member == "concat" && call->args.size() == 1) return "String";
-                // append mutates the receiver, so it is only on the mutable `string` (spec 4).
-                if (mem->member == "append" && call->args.size() == 1) {
-                    if (objType != "string")
-                        error("'append' mutates the string; it is not available on the immutable "
-                              "String (use + to build a new String)",
-                              mem->loc);
-                    return "string";
-                }
-                if (mem->member == "substring" && call->args.size() == 2) return "String";
-                // Search / predicates (spec 34.5).
-                if (mem->member == "indexOf" && call->args.size() == 1) return "int";
-                if (mem->member == "contains" && call->args.size() == 1) return "boolean";
-                if (mem->member == "startsWith" && call->args.size() == 1) return "boolean";
-                if (mem->member == "endsWith" && call->args.size() == 1) return "boolean";
-                // Transforms (spec 34.5): new owned Strings.
-                if (mem->member == "toUpper" && call->args.empty()) return "String";
-                if (mem->member == "toLower" && call->args.empty()) return "String";
-                if (mem->member == "trim" && call->args.empty()) return "String";
-                if (mem->member == "repeat" && call->args.size() == 1) return "String";
-                if (mem->member == "toString" && call->args.empty()) return "String";  // identity
-                // String satisfies Hashable<String>/Comparable<String> (collections, spec 34).
-                if (mem->member == "hash" && call->args.empty()) return "long";
-                if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";
-                if (mem->member == "compareTo" && call->args.size() == 1) return "int";
-                error("String has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            if (objType == "Decimal" && mem->member == "toString" && call->args.empty()) {
-                return "String";  // formats the i128 fixed-point value (codegen emitDecimalToString)
-            }
-            // Floating-point types render themselves as text, the same way int does. Without this a
-            // `record` with a float field cannot even be declared: its synthesized toString() calls
-            // toString() on every field. (Only toString -- floats are deliberately NOT hashable or
-            // comparable keys, since float equality is not an identity anyone should key a map on.)
-            if (isFloatType(objType) && mem->member == "toString" && call->args.empty()) {
-                return "String";
-            }
-            // And a boolean, for exactly the same reason and with exactly the same limit: a `record`
-            // with a boolean field could not be DECLARED, because its synthesized toString() calls
-            // toString() on every field and there was no such method -- so the error landed on the
-            // record declaration, naming a call the author never wrote. "true"/"false", which is the
-            // answer every language that has this gives. (toString only: a bare boolean is not a
-            // useful map key, so it stays out of the Hashable/Comparable builtins.)
-            if (objType == "boolean" && mem->member == "toString" && call->args.empty()) {
-                return "String";
-            }
-            // Integer types satisfy Hashable<T>/Comparable<T> via builtins, so they can be used as
-            // map/set keys without boxing (collections, spec 34).
-            if (isIntName(objType)) {
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "hash" && call->args.empty()) return "long";
-                if (mem->member == "toString" && call->args.empty()) return "String";
-                if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";
-                if (mem->member == "compareTo" && call->args.size() == 1) return "int";
-                // Overflow-mode arithmetic (spec 3.6): wrapping/saturating/unchecked, same int type.
-                static const std::set<std::string> kOverflowMethods = {
-                    "wrappingAdd",   "wrappingSub",   "wrappingMul",   "wrappingDiv",
-                    "saturatingAdd", "saturatingSub", "saturatingMul",
-                    "uncheckedAdd",  "uncheckedSub",  "uncheckedMul",  "uncheckedDiv"};
-                if (kOverflowMethods.count(mem->member) > 0 && call->args.size() == 1) return objType;
-                error("'" + objType + "' has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            // Channel.select builder (spec 20.4): .receive(ch, lambda) / .timeout(ms, lambda) chain
-            // fluently (each returns the builder) and .run() executes it.
-            if (objType == "Select") {
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "receive" && call->args.size() == 2) return "Select";
-                if (mem->member == "timeout" && call->args.size() == 2) return "Select";
-                if (mem->member == "run" && call->args.empty()) return "void";
-                error("Select has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            // Channel<T> blocking operations (spec 20.3).
-            if (baseType(objType).rfind("Channel$", 0) == 0) {
-                const std::string elem = baseType(objType).substr(8);
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "send" && call->args.size() == 1) return "void";
-                if (mem->member == "receive" && call->args.empty()) return elem;
-                error("Channel has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            // atomic<T> lock-free operations (spec 20.6).
-            if (baseType(objType).rfind("atomic$", 0) == 0) {
-                const std::string elem = baseType(objType).substr(7);
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "get" && call->args.empty()) return elem;
-                if (mem->member == "set" && call->args.size() == 1) return "void";
-                if (mem->member == "add" && call->args.size() == 1) return elem;
-                if (mem->member == "increment" && call->args.empty()) return elem;
-                if (mem->member == "compareAndSet" && call->args.size() == 2) return "boolean";
-                error("atomic has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            if (objType == "Type") {  // reflection (spec 31)
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "name" && call->args.empty()) return "String";
-                if (mem->member == "methodCount" && call->args.empty()) return "int";
-                if (mem->member == "fieldCount" && call->args.empty()) return "int";
-                if ((mem->member == "methodName" || mem->member == "fieldName") &&
-                    call->args.size() == 1)
-                    return "String";
-                if (mem->member == "method" && call->args.size() == 1) return "Method";
-                if (mem->member == "instantiate") return "Object";  // construct an instance
-                if (mem->member == "methods" && call->args.empty()) return "ArrayList$Method";
-                if (mem->member == "fields" && call->args.empty()) return "ArrayList$Field";
-                if (mem->member == "annotations" && call->args.empty()) return "ArrayList$Annotation";
-                error("Type has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            if (objType == "Method") {  // reflection (spec 31)
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "name" && call->args.empty()) return "String";
-                if (mem->member == "firstByte" && call->args.empty()) return "int";
-                if (mem->member == "invoke") return "Object";  // invoke(receiver [, args]) -> boxed result
-                if (mem->member == "annotations" && call->args.empty())
-                    return "ArrayList$Annotation";  // the method's own applied annotations (spec 31)
-                if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";  // identity
-                if (mem->member == "hash" && call->args.empty()) return "long";
-                error("Method has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            if (objType == "Field") {  // reflection (spec 31)
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "name" && call->args.empty()) return "String";
-                if (mem->member == "get" && call->args.size() == 1) return "Object";  // boxed value
-                if (mem->member == "set" && call->args.size() == 2) return "void";  // (obj, Object)
-                if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";  // identity
-                if (mem->member == "hash" && call->args.empty()) return "long";
-                error("Field has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            if (objType == "Annotation") {  // reflection (spec 14.3, 31)
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (mem->member == "name" && call->args.empty()) return "String";
-                if (mem->member == "equalsKey" && call->args.size() == 1) return "boolean";  // identity
-                if (mem->member == "hash" && call->args.empty()) return "long";
-                error("Annotation has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            // A field of funcptr<...> type (a bare C function pointer): obj.f(args) calls it -> Ret.
-            if (const FieldInfo* fpf = findField(objType, mem->member);
-                fpf != nullptr && fpf->type.rfind("funcptr<", 0) == 0) {
-                for (const auto& arg : call->args) typeOf(*arg);
-                const std::string inner = ast::funcptrBody(fpf->type.substr(8, fpf->type.size() - 9));  // [unknown-abi]
-                for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
-                    if (inner[i] == '<') depth++;
-                    else if (inner[i] == '>') depth--;
-                    else if (inner[i] == ',' && depth == 0) return inner.substr(0, i);
-                }
-                return inner;
-            }
-            // A field of function<...> type is a function value: obj.f(args) calls it.
-            if (const FieldInfo* fld = findField(objType, mem->member);
-                fld != nullptr && fld->type.rfind("function<", 0) == 0) {
-                for (const auto& arg : call->args) typeOf(*arg);
-                const std::string inner = fld->type.substr(9, fld->type.size() - 10);
-                for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
-                    if (inner[i] == '<') depth++;
-                    else if (inner[i] == '>') depth--;
-                    else if (inner[i] == ',' && depth == 0) return inner.substr(0, i);
-                }
-                return inner;
-            }
-            // Calling a catalog method through a catalog-TYPED receiver (spec 12.4). A catalog value
-            // carries a runtime type tag (enum id + ordinal), so dispatch works for any number of
-            // implementers: every implementer must define the method and agree on its return type,
-            // which becomes the call's type.
-            if (catalogs_.count(baseType(objType)) > 0) {
-                std::vector<std::string> impls = catalogImplementers(baseType(objType));
-                for (const auto& arg : call->args) typeOf(*arg);
-                if (impls.empty()) {
-                    error("cannot call method '" + mem->member + "' through catalog '" +
-                              baseType(objType) + "': no enum implements it",
-                          call->loc);
-                    return "";
-                }
-                std::string retType;
-                bool ok = true;
-                for (const std::string& impl : impls) {
-                    // An ordinal implementer keeps its methods on the enum; a java-style one was
-                    // desugared, so its methods live on the twin class of the same name.
-                    std::string rt;
-                    auto emit = enumMethods_.find(impl);
-                    if (emit != enumMethods_.end() &&
-                        emit->second.find(mem->member) != emit->second.end()) {
-                        rt = emit->second.at(mem->member).returnType;
-                    } else if (const MethodInfo* cm = findMethod(impl, mem->member); cm != nullptr) {
-                        rt = cm->returnType;
-                    } else {
-                        error("enum '" + impl + "' implementing catalog '" + baseType(objType) +
-                                  "' has no method '" + mem->member + "'",
-                              call->loc);
-                        ok = false;
-                        break;
-                    }
-                    if (retType.empty()) retType = rt;
-                    else if (rt != retType) {
-                        error("implementers of catalog '" + baseType(objType) + "' disagree on the "
-                                  "return type of '" + mem->member + "' (" + retType + " vs " + rt +
-                                  "); they must match for catalog dispatch",
-                              call->loc);
-                        ok = false;
-                        break;
-                    }
-                }
-                return ok ? retType : std::string();
-            }
-            const MethodInfo* m = findMethod(objType, mem->member, /*objectFallback=*/true);
-            if (m == nullptr) {
-                error("class '" + objType + "' has no method '" + mem->member + "'", call->loc);
-                return "";
-            }
-            if (m->isInterrupt) {
-                error("an interrupt cannot be called -- it is ENTERED, by something outside the "
-                      "program, at a moment the program did not choose. Calling it would be "
-                      "simulating an interrupt, which is a different thing wearing the same name. "
-                      "To install it, write `" + mem->member + "` without '()': that yields the "
-                      "entry point bound to this object.",
-                      call->loc);
-                return "";
-            }
-            // One edge of the call graph the interrupt check walks, recorded where the analyzer has
-            // just done the hard part: `objType` is the RESOLVED receiver type, so a field, a
-            // local, a parameter and a static receiver all arrive here already answered.
-            if (MethodFacts* mf = facts()) mf->callees.insert(objType + "." + mem->member);
-            // Named arguments (spec 22.4): rewrite into parameter order before anything checks the args.
-            if (m->isDeprecated)
-                warn("'" + mem->member + "' is deprecated (spec 14.2)", call->loc);
-            bindNamedArgs(const_cast<ast::CallExpr*>(call), m->paramNames, m->namedOnlyParams,
-                          "method '" + mem->member + "'");
-            checkCallArgs(call->args, m->paramTypes, "'" + mem->member + "'", &m->moveParams);
-            // region-binder INTERPROCEDURAL escape check (§8): if the callee stores parameter i into its
-            // receiver (per the escape summary) and we pass an activation-owned object there, it dangles
-            // once this method returns -- unless the receiver is itself activation-local (same lifetime).
-            if (regionBinder_) {
-                // an argument aliases (rather than copies) only when its own type is a pointer/reference --
-                // this reads the CONCRETE type, so a generic `add(T)` with T = Node* is caught.
-                auto argAliases = [&](const ast::IdentifierExpr* aid) -> bool {
-                    const LocalVar* lv = lookupLocal(aid->name);
-                    return lv != nullptr && isRefType(lv->type);
-                };
-                auto sit = escapesToReceiver_.find(baseType(objType) + "." + mem->member);
-                if (sit != escapesToReceiver_.end()) {
-                    const auto* recvId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-                    const bool recvOutlives = recvId == nullptr || activationOwned_.count(recvId->name) == 0;
-                    if (recvOutlives)
-                        for (std::size_t i = 0; i < call->args.size() && i < sit->second.size(); ++i)
-                            if (sit->second[i])
-                                if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(call->args[i].get());
-                                    aid != nullptr && activationOwned_.count(aid->name) > 0 &&
-                                    argAliases(aid))   // only a pointer/reference argument actually aliases
-                                    error("region-binder: '" + mem->member + "' stores argument '" + aid->name +
-                                              "' into a receiver that outlives this method, so the method-local "
-                                              "object would dangle at return; pass ownership with 'move' (move " +
-                                              aid->name + ")",
-                                          call->args[i]->loc);
-                }
-                // escapes-into-parameter (§8): the callee stores argument i into argument j's field. If i is
-                // activation-owned and j outlives it (j is not itself activation-local), i dangles inside j.
-                auto pit = escapesToParam_.find(baseType(objType) + "." + mem->member);
-                if (pit != escapesToParam_.end())
-                    for (std::size_t i = 0; i < call->args.size() && i < pit->second.size(); ++i)
-                            if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(call->args[i].get());
-                                aid != nullptr && activationOwned_.count(aid->name) > 0 && argAliases(aid))
-                                for (int j : pit->second[i]) {
-                                    if (j < 0 || j >= static_cast<int>(call->args.size())) continue;
-                                    const auto* jid =
-                                        dynamic_cast<const ast::IdentifierExpr*>(call->args[j].get());
-                                    if (jid == nullptr || activationOwned_.count(jid->name) == 0)  // j outlives i
-                                        error("region-binder: '" + mem->member + "' stores argument '" +
-                                                  aid->name + "' into argument " + std::to_string(j + 1) +
-                                                  ", which outlives it, so the method-local object would dangle; "
-                                                  "pass ownership with 'move' (move " + aid->name + ")",
-                                              call->args[i]->loc);
-                                }
-            }
-            checkComptimeArgs(call->args, m->comptimeParams, "'" + mem->member + "'");
-            if (!m->isProperty && call->args.size() != m->paramCount) {
-                error("method '" + mem->member + "' expects " + std::to_string(m->paramCount) +
-                          " argument(s) but got " + std::to_string(call->args.size()),
-                      call->loc);
-            }
-            // An async method call yields a Task<returnType> (spec 20.2), not the bare value.
-            if (m->isAsync) return ast::mangleGeneric("Task", {m->returnType});
-            // Safe navigation obj?.method() (spec 3.7): result is nullable; requires a
-            // reference-typed return.
-            if (mem->safe) {
-                const std::string rb = baseType(m->returnType);
-                if (!isRefType(m->returnType) && !isArrayType(m->returnType) &&
-                    classes_.count(rb) == 0 && rb != "String") {
-                    error("safe navigation '?.' requires a reference-typed result; '" + mem->member +
-                              "' returns '" + m->returnType + "'",
-                          call->loc);
-                    return m->returnType;
-                }
-                return ast::makeNullable(m->returnType);
-            }
-            return m->returnType;
-        }
-        // A bare, unqualified call. LDP3 has no free functions, so this names a method of the enclosing
-        // class written without its receiver. The `this.`/`ClassName.` qualifier is optional: locals and
-        // lambdas were already resolved above, so `name` here is not a local -- resolve it as `this.name`
-        // (an instance method, in an instance context) or `EnclosingClass.name` (a static method), exactly
-        // as if the receiver had been written. Only when the method is an instance method reached from a
-        // static context -- or when no such method exists anywhere -- do we error, naming the cause and fix.
-        if (!name.empty() && name.find('.') == std::string::npos) {
-            if (!enclosingClass_.empty()) {
-                if (const MethodInfo* m = findMethod(enclosingClass_, name, /*objectFallback=*/false)) {
-                    // An instance-method call needs a receiver; `this` exists only in an instance context
-                    // (currentClass_ is cleared inside a static method).
-                    if (m->isStatic || !currentClass_.empty()) {
-                        // Inside the class that declares it, `interrupt()` reads as an ordinary
-                        // implicit-`this` call. It is the same mistake as the qualified one, and
-                        // the likelier of the two -- a handler tail-calling itself to "re-run".
-                        if (m->isInterrupt) {
-                            error("an interrupt cannot be called -- it is ENTERED, not called. Move "
-                                  "the work into a method and call that from both places.",
-                                  call->loc);
-                            return "";
-                        }
-                        if (MethodFacts* mf = facts())
-                            mf->callees.insert(enclosingClass_ + "." + name);  // implicit `this`
-                        if (m->isDeprecated) warn("'" + name + "' is deprecated (spec 14.2)", call->loc);
-                        bindNamedArgs(const_cast<ast::CallExpr*>(call), m->paramNames, m->namedOnlyParams,
-                                      "method '" + name + "'");
-                        checkCallArgs(call->args, m->paramTypes, "'" + name + "'", &m->moveParams);
-                        checkComptimeArgs(call->args, m->comptimeParams, "'" + name + "'");
-                        if (!m->isProperty && call->args.size() != m->paramCount) {
-                            error("method '" + name + "' expects " + std::to_string(m->paramCount) +
-                                      " argument(s) but got " + std::to_string(call->args.size()),
-                                  call->loc);
-                        }
-                        // An async method call yields a Task<returnType> (spec 20.2), not the bare value.
-                        if (m->isAsync) return ast::mangleGeneric("Task", {m->returnType});
-                        return m->returnType;
-                    }
-                    // Instance method reached from a static method: there is no `this` to call it on.
-                    error("unknown call '" + name + "': '" + name + "' is an instance method of '" +
-                              enclosingClass_ +
-                              "'; it needs an object -- call it on an instance, or mark it 'static' to "
-                              "call it from a static method",
-                          call->loc);
-                    return m->returnType;
-                }
-            }
-            // Not a method of the enclosing class. Name a same-named method elsewhere (there are no free
-            // functions, so a bare call can only ever be a member) to point at the likely fix.
-            auto describe = [&](const std::string& owner, const MethodInfo* m) {
-                if (m->isStatic)
-                    return "unknown call '" + name + "': LDP3 has no free functions -- '" + name +
-                           "' is a static method of '" + owner + "'; call it qualified as '" + owner +
-                           "." + name + "(...)'";
-                return "unknown call '" + name + "': LDP3 has no free functions -- '" + name +
-                       "' is an instance method of '" + owner +
-                       "'; call it on an object ('obj." + name + "(...)')";
-            };
-            for (const auto& [cn, ci] : classes_) {
-                if (cn.find('$') != std::string::npos) continue;  // skip monomorphized instances
-                if (const MethodInfo* m = findMethod(cn, name, /*objectFallback=*/false)) {
-                    error(describe(cn, m), call->loc);
-                    return "";
-                }
-            }
-        }
-        error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call->loc);
-        return "";
-    }
-
-    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
-        // SIMD vector lane: v.x / v.y / v.z / v.w -> float. Skip when the receiver is a bare
-        // type name (e.g. EnumName.a is a constant, not a vector lane), so we don't type-probe it.
-        if (int lane = vecLane(mem->member); lane >= 0) {
-            const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-            const bool typeNameRecv = oid != nullptr && oid->name != "this" &&
-                                      lookupLocal(oid->name) == nullptr;
-            if (!typeNameRecv) {
-                if (int w = vecWidth(typeOf(*mem->object)); w > 0) {
-                    if (lane >= w) error("vector has no component '" + mem->member + "'", mem->loc);
-                    return "float";
-                }
-            }
-        }
-        // Enum constant access: EnumName.CONSTANT (when the receiver names an enum,
-        // not a variable).
-        if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
-            if (objId->name != "this" && lookupLocal(objId->name) == nullptr) {
-                auto eit = enums_.find(objId->name);
-                if (eit != enums_.end()) {
-                    if (std::find(eit->second.begin(), eit->second.end(), mem->member) !=
-                        eit->second.end())
-                        return objId->name;
-                    // NOT A CONSTANT -- AND A JAVA-STYLE ENUM HAS SOMEWHERE ELSE FOR IT TO BE.
-                    // Its fields, constructor and methods were desugared onto a twin class of the
-                    // same name, and a `static fixed` declared inside the enum went with them. This
-                    // returned early and called every one of them a missing constant, so an enum
-                    // could carry a named threshold and no expression could ever read it back.
-                    if (constTypes_.count(objId->name + "." + mem->member) == 0 &&
-                        (lookupClass(objId->name) == nullptr ||
-                         findField(objId->name, mem->member) == nullptr)) {
-                        error("enum '" + objId->name + "' has no constant '" + mem->member +
-                                  "' and no static of that name",
-                              mem->loc);
-                        return objId->name;
-                    }
-                    // fall through to the static-member path below, which knows the twin class
-                }
-                // Static field access: ClassName.field (when the receiver names a class).
-                if (const ClassInfo* sc = lookupClass(objId->name)) {
-                    // A class-level const, read as Type.NAME (spec 28.1, OOP form).
-                    if (auto ct = constTypes_.find(objId->name + "." + mem->member);
-                        ct != constTypes_.end())
-                        return ct->second;
-                    const FieldInfo* f = findField(objId->name, mem->member);
-                    if (f == nullptr) {
-                        error("class '" + objId->name + "' has no static field '" + mem->member + "'",
-                              mem->loc);
-                        return "";
-                    }
-                    if (!f->isStatic) {
-                        error("field '" + mem->member +
-                                  "' is not static; access it on an instance",
-                              mem->loc);
-                        return "";
-                    }
-                    return f->type;
-                }
-            }
-        }
-        std::string objType = typeOf(*mem->object);
-        if (objType.empty()) return "";
-        // Null safety (spec 3.7): `nullable` only constrains assignment -- a field may be read
-        // through a nullable receiver directly (it traps at runtime if null). Resolve against the
-        // underlying type.
-        if (isNullableType(objType)) objType = baseType(objType);
-        std::string memType;
-        if (const FieldInfo* f = findField(objType, mem->member)) {
-            memType = f->type;
-            noteFieldForInterrupt(objType, mem->member, *f, mem->object.get(), mem->loc);  // rule 3, read
-            // Partial move (spec 19.9): a field moved out of its parent is inaccessible until reassign.
-            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-                oid != nullptr && moved_.count(oid->name + "." + mem->member) > 0)
-                error("use of field '" + mem->member +
-                          "' after it was moved out (reassign it before using) (spec 19.9)",
-                      mem->loc);
-        } else if (const MethodInfo* pm = findMethod(objType, mem->member);
-                   pm != nullptr && pm->isProperty) {
-            memType = pm->returnType;  // computed get-only property read as obj.name (no parens)
-        } else if (const MethodInfo* im = findMethod(objType, "interrupt");
-                   mem->member == "interrupt" && im != nullptr && im->isInterrupt) {
-            // `keyboard.interrupt` -- the installable handle. It BINDS this object to the handler
-            // and yields the entry point the hardware jumps to, which is an `address` and
-            // deliberately not a callable: that is what stops "an interrupt cannot be called" from
-            // leaking back out through the reference that installs it.
-            memType = "address";
-        } else {
-            error(diag::Code::NoSuchField,
-                  "class '" + objType + "' has no field '" + mem->member + "'" +
-                      didYouMean(mem->member, fieldNames(objType)),
-                  mem->loc);
-            return "";
-        }
-        if (!mem->safe) return memType;
-        // Safe navigation obj?.field (spec 3.7): yields null when obj is null, so the result is
-        // nullable; the member must be reference-typed (a primitive cannot carry null).
-        const std::string mb = baseType(memType);
-        if (!isRefType(memType) && !isArrayType(memType) && classes_.count(mb) == 0 &&
-            mb != "String") {
-            error("safe navigation '?.' requires a reference-typed member; '" + mem->member +
-                      "' is '" + memType + "'",
-                  mem->loc);
-            return memType;
-        }
-        return ast::makeNullable(memType);
-    }
-
-    if (dynamic_cast<const ast::SuperExpr*>(&expr) != nullptr) {
-        error("'super' can only be used as 'super(...)' in a constructor", expr.loc);
-        return "";
-    }
-
-    error("unsupported expression", expr.loc);
-    return "";
-}
+// `SemanticAnalyzer::typeOf` was here: 2 805 lines answering "what type is this expression", which is
+// a third of this file on its own. It now lives in analyzer_typeof.cpp.
 
 std::string SemanticAnalyzer::flattenCallee(const ast::Expr& expr) const {
-    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) return id->name;
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
+        return id->name;
+    }
     if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
         const std::string base = flattenCallee(*mem->object);
-        if (base.empty()) return "";
+        if (base.empty()) {
+            return "";
+        }
         return base + "." + mem->member;
     }
     return "";
 }
 
-}  // namespace ldp3
+}  // namespace polaron

@@ -2,7 +2,7 @@
 #include <string>
 #include <vector>
 
-namespace ldp3::driver {
+namespace polaron::driver {
 
 // Spawn `exe` with `args` and wait. Returns the child's exit code, or -1 if it could not start.
 int runProcess(const std::string& exe, const std::vector<std::string>& args);
@@ -13,4 +13,4 @@ int runProcess(const std::string& exe, const std::vector<std::string>& args);
 int runProcessCapture(const std::string& exe, const std::vector<std::string>& args, std::string& output,
                       const std::string& cwd = "", bool mergeStderr = false);
 
-}  // namespace ldp3::driver
+}  // namespace polaron::driver

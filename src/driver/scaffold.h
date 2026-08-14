@@ -2,9 +2,9 @@
 #include <filesystem>
 #include <string>
 
-namespace ldp3::driver {
+namespace polaron::driver {
 
-// Create dir/ (if needed) with ldp3.toml, src/main.ldp3 and .gitignore for a project called `name`.
+// Create dir/ (if needed) with polaron.toml, src/main.pol and .gitignore for a project called `name`.
 int scaffold(const std::filesystem::path& dir, const std::string& name);
 
-}  // namespace ldp3::driver
+}  // namespace polaron::driver

@@ -1,0 +1,17 @@
+program TwoBundleAnimals;
+
+// The other half of the TWO INDEPENDENT BUNDLES test. See twobundle_app.pol.
+//
+// It shares NOT ONE TYPE with twobundle_shapes.pol -- no common base, no interface, no import. That is
+// the point: they collide anyway, because both numbered their first virtual method 0.
+public bundle TwoBundleAnimals {
+    public namespace Animals {
+        public class Animal {
+            public method speak() returns int { return 1; }
+        }
+
+        public class Dog extends Animal {
+            public override method speak() returns int { return 7; }
+        }
+    }
+}

@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { ldp3cPath, run } from './tools';
+import { polcPath, run } from './tools';
 
-// A diagnostic line from `ldp3c --check`, e.g. `C:\...\file.ldp3:3:65: parse error: expected an expression`.
+// A diagnostic line from `polc --check`, e.g. `C:\...\file.pol:3:65: parse error: expected an expression`.
 // The non-greedy path segment stops at the first `:<line>:<col>:` (a Windows drive `C:` has no digits after
 // its colon, so it is not mistaken for a location).
 const DIAGNOSTIC = /^(.*?):(\d+):(\d+):\s*(.*)$/;
@@ -10,15 +10,15 @@ const DIAGNOSTIC = /^(.*?):(\d+):(\d+):\s*(.*)$/;
 // On save/open, run the compiler in check mode over the file and surface its errors in the Problems panel.
 // (Phase 5's language server replaces this with live, in-memory diagnostics.)
 export function registerDiagnostics(context: vscode.ExtensionContext): void {
-  const collection = vscode.languages.createDiagnosticCollection('ldp3');
+  const collection = vscode.languages.createDiagnosticCollection('polaron');
   context.subscriptions.push(collection);
 
   async function check(document: vscode.TextDocument): Promise<void> {
-    if (document.languageId !== 'ldp3' || document.uri.scheme !== 'file') {
+    if (document.languageId !== 'polaron' || document.uri.scheme !== 'file') {
       return;
     }
     const file = document.uri.fsPath;
-    const { out } = await run(ldp3cPath(), ['--check', file], path.dirname(file));
+    const { out } = await run(polcPath(), ['--check', file], path.dirname(file));
     const diagnostics: vscode.Diagnostic[] = [];
     for (const line of out.split(/\r?\n/)) {
       const m = DIAGNOSTIC.exec(line);

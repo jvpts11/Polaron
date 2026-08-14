@@ -1,0 +1,29 @@
+// Variables and types in Polaron.
+//
+// Run with:  powershell -ExecutionPolicy Bypass -File scripts\run.ps1 examples\variables.pol
+
+import System.IO.Console;
+
+program Variables;
+
+public bundle main {
+    public namespace examples {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Immutable by default.
+                int answer = 42;
+                boolean ready = true;
+
+                // `var` infers the type from the initializer.
+                var count = 10;
+
+                // `mutable` is required to reassign a variable later.
+                mutable int score = 0;
+                score = count * 5;
+
+                System.IO.Console.printf("answer=%d ready=%d count=%d score=%d\n",
+                                 answer, ready, count, score);
+            }
+        }
+    }
+}

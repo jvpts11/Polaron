@@ -1,0 +1,21 @@
+[polaron_project]
+
+[program]
+name = "i686boot"
+version = "0.1.0"
+language_version = "1.0"
+entry = "src/main.pol"
+
+[build]
+output = "build-output/"
+
+# 32-bit x86 -- the machines this port is aimed at, and a target that shares nothing with x86-64 but a
+# family name: 32-bit registers, a different ABI, and no 64-bit arithmetic in one instruction.
+#
+# Multiboot is how a 1990s PC gets a kernel loaded without writing a boot sector: QEMU's `-kernel` takes
+# a multiboot image directly, which is why the header is the first thing in the image.
+[freestanding]
+target = "i686-unknown-none-elf"
+load_address = "1M"
+boot = "boot.s"
+boot_protocol = "multiboot2"

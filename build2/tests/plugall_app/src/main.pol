@@ -1,0 +1,3 @@
+import System.IO.Console;
+program Consumer;
+public bundle main { public namespace app { public class Main { public static method main(string[] args) returns void { System.IO.Console.println("ok"); return; } } } }

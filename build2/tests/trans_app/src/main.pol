@@ -1,0 +1,14 @@
+import System.IO.Console;
+import xlib.x.XCalc;
+program Consumer;
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int r = XCalc.combine(6);
+                System.IO.Console.printf("result = %d\n", r);
+                return;
+            }
+        }
+    }
+}

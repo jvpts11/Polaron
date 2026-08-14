@@ -1,0 +1,12 @@
+program AudioLib;
+
+public bundle audio {
+    public namespace mix {
+        public class Mixer extends Object {
+            private mutable int __reserved0;
+            public constructor Mixer(int start);
+            public method gain(int delta) returns int;
+            public method level() returns int;
+        }
+    }
+}

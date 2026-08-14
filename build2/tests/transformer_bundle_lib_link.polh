@@ -1,0 +1,18 @@
+program TransformerBundleLib;
+
+public bundle ConvLib {
+    public namespace Conv {
+        public transformer TDescriber satisfies IShown {
+            // A bodied procedure: free, replaceable, and useless to a consumer unless the body
+            // itself crosses.
+            public procedure describe() returns int {
+                return itself.label() * 10;
+            }
+            // A socket the consumer must answer.
+            public procedure label() returns int;
+        }
+        public interface IShown {
+            public abstract method describe() returns int;
+        }
+    }
+}

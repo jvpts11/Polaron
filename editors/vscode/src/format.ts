@@ -2,18 +2,18 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
-import { ldp3cPath, run } from './tools';
+import { polcPath, run } from './tools';
 
-// Format an LDP3 document by running `ldp3c --fmt` on a temporary copy (so unsaved edits are honoured and the
+// Format a Polaron document by running `polc --fmt` on a temporary copy (so unsaved edits are honoured and the
 // real file is never touched), then replacing the whole document with the result.
 export function registerFormatter(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
-    vscode.languages.registerDocumentFormattingEditProvider('ldp3', {
+    vscode.languages.registerDocumentFormattingEditProvider('polaron', {
       async provideDocumentFormattingEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
-        const tmp = path.join(os.tmpdir(), `ldp3-fmt-${process.pid}-${document.version}.ldp3`);
+        const tmp = path.join(os.tmpdir(), `polaron-fmt-${process.pid}-${document.version}.pol`);
         try {
           fs.writeFileSync(tmp, document.getText(), 'utf8');
-          const { code } = await run(ldp3cPath(), ['--fmt', tmp], path.dirname(tmp));
+          const { code } = await run(polcPath(), ['--fmt', tmp], path.dirname(tmp));
           if (code !== 0) {
             return [];
           }

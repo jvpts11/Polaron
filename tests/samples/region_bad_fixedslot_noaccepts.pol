@@ -1,0 +1,14 @@
+import System.Memory.Units.kilobytes;
+program RegionBadFixedslotNoAccepts;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                fixedslot region k = itself.allocate(1 kilobytes);   // Polaron-1711: needs .accepts({T})
+                release region k;
+                return;
+            }
+        }
+    }
+}

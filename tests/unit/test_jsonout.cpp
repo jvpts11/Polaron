@@ -7,7 +7,7 @@
 
 #include "driver/jsonout.h"
 
-using namespace ldp3::driver;
+using namespace polaron::driver;
 namespace fs = std::filesystem;
 
 namespace {
@@ -25,24 +25,24 @@ void setEnv(const char* name, const char* value) {
 }  // namespace
 
 TEST_CASE("studioJson emits projects, environments and libraries") {
-    const fs::path root = fs::temp_directory_path() / "ldp3_json_test";
+    const fs::path root = fs::temp_directory_path() / "polaron_json_test";
     fs::remove_all(root);
     fs::create_directories(root / "app");
-    std::ofstream(root / "app" / "ldp3.toml")
-        << "[ldp3_project]\n[program]\nname = \"app\"\nentry = \"src/main.ldp3\"\n";
+    std::ofstream(root / "app" / "polaron.toml")
+        << "[polaron_project]\n[program]\nname = \"app\"\nentry = \"src/main.pol\"\n";
 
     // Isolate environments to an empty home so the output is deterministic.
     const fs::path home = root / "home";
     fs::create_directories(home);
-    setEnv("LDP3_HOME", home.string().c_str());
+    setEnv("POLARON_HOME", home.string().c_str());
 
     const std::string json = studioJson(root);
     CHECK(json.find("\"projects\":[") != std::string::npos);
     CHECK(json.find("\"environments\":[]") != std::string::npos);
     CHECK(json.find("\"libraries\":[]") != std::string::npos);
     CHECK(json.find("\"name\":\"app\"") != std::string::npos);
-    CHECK(json.find("\"entry\":\"src/main.ldp3\"") != std::string::npos);
+    CHECK(json.find("\"entry\":\"src/main.pol\"") != std::string::npos);
 
-    setEnv("LDP3_HOME", "");
+    setEnv("POLARON_HOME", "");
     fs::remove_all(root);
 }

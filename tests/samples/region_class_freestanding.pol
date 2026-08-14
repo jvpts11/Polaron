@@ -1,0 +1,51 @@
+// A REGION CLASS BARE METAL, which is where the narrow `A*` is worth the most and where it very
+// nearly stopped working.
+//
+// Hosted, a region class's arena reserves a gigabyte of address space and commits it as it fills.
+// There is no address space to reserve on bare metal and nobody to ask for more, so the driver emits a
+// static one instead -- and that is the right answer rather than a concession: a kernel wants a bound
+// it can see, name and raise at build time (`POLARON_FS_CLASS_ARENA`), with every byte accounted for
+// before the first instruction runs.
+//
+// Both halves of the contract the compiler depends on are kept by both arenas: ONE base for the whole
+// program run, so a 32-bit offset means one thing; and offset zero never handed out, so zero spells
+// null.
+//
+// This is checked by reading the IR, because a kernel is tested by booting it. The needle is the
+// narrowed layout -- if `next` came back as a `ptr`, the arena would be doing nothing for the one
+// structure that most wants it.
+program RegionClassFreestanding freestanding;
+
+public bundle Kernel {
+    public namespace Drv {
+
+        // A free-list of device descriptors: the shape a driver actually allocates, and a linked one
+        // so the narrow pointer has somewhere to show.
+        public region class Descriptor {
+            public mutable int port;
+            public mutable int flags;
+            public mutable nullable Descriptor* next;
+
+            public constructor Descriptor(int port) {
+                this.port = port;
+                this.flags = 0;
+                this.next = null;
+            }
+
+            public method count() returns int {
+                if (this.next == null) { return 1; }
+                return 1 + this.next.count();
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Descriptor* head = new Descriptor(0x3f8);
+                head.next = new Descriptor(0x2f8);
+                head.next.next = new Descriptor(0x3e8);
+                head.flags = head.count();
+                return;
+            }
+        }
+    }
+}

@@ -1,17 +1,21 @@
-# The LDP3 Language Reference — 1.0.18
+# The Polaron Language Reference — 1.0.18
 
-A complete, book-length reference for **LDP3** (Linguagem De Programação 3): an
+A complete, book-length reference for **Polaron** (Linguagem De Programação 3): an
 object-orientation–mandatory, manually memory-managed systems language that compiles to native
 code through LLVM. Created by João Victor Pereira Tavares.
 
 This reference is written to *teach*, not just to enumerate. Every feature is explained in terms of
-what it does, why it exists, how it fits LDP3's philosophy, and how it interacts with the rest of the
+what it does, why it exists, how it fits Polaron's philosophy, and how it interacts with the rest of the
 language — each illustrated with short, runnable examples. It is the canonical description of the
 language, cross-checked against the actual compiler and the embedded standard-library prelude, so
 these pages describe **what the compiler accepts today**.
 
 A single typeset PDF of everything below:
-**[LDP3-Language-Reference-1.0.18.pdf](LDP3-Language-Reference-1.0.18.pdf)**.
+**[Polaron-Language-Reference-1.0.16.pdf](Polaron-Language-Reference-1.0.16.pdf)**.
+Regenerate it with `python make-pdf.py`, then print `_reference.html` to PDF with a headless browser
+(the exact command is in that script's header). The version stamp lives in `make-pdf.py`, and it is
+**behind the compiler** — the pages describe what the compiler accepts today, but the stamp says
+1.0.16 while `polc` reports 1.0.37.
 
 ---
 
@@ -19,7 +23,7 @@ A single typeset PDF of everything below:
 
 | # | Chapter | What it covers |
 |---|---------|----------------|
-| 1 | [Introduction & Philosophy](guide/01-introduction.md) | What LDP3 is, its design pillars (OOP-mandatory, no GC, value semantics, no exploitable UB), and a first taste. |
+| 1 | [Introduction & Philosophy](guide/01-introduction.md) | What Polaron is, its design pillars (OOP-mandatory, no GC, value semantics, no exploitable UB), and a first taste. |
 | 2 | [Program Structure & Modules](guide/02-program-structure.md) | `program`/`bundle`/`namespace`, the entry point, visibility, imports, multi-file programs. |
 | 3 | [Expressions, Statements & Method Calls](guide/03-expressions-statements.md) | The everyday mechanics: variables and assignment, the operator set, expressions, statement kinds, and calling methods (instance, `this`, static, chained). |
 | 4 | [Values & the Type System](guide/04-type-system.md) | Primitives and their names, literals, `String`/`string`, `nullable`, arrays, generics + variance, `record`/`struct`/`union`/`enum`/`catalog`, casting. |
@@ -35,7 +39,7 @@ A single typeset PDF of everything below:
 
 ## Part II — The Standard Library
 
-The standard library is written in LDP3 itself (an embedded prelude) on top of a small set of native
+The standard library is written in Polaron itself (an embedded prelude) on top of a small set of native
 compiler builtins. Every type requires an explicit `import`. These pages document the full library as
 verbatim member signatures with explanatory prose.
 
@@ -50,15 +54,15 @@ verbatim member signatures with explanatory prose.
 
 | # | Chapter | What it covers |
 |---|---------|----------------|
-| 13 | [Diagnostics](guide/13-diagnostics.md) | The `LDP3-NNNN` code system, the rich why/fix/prevent format, `ldp3 explain`, the code ranges, and editor integration. |
-| 15 | [The Toolchain & Projects](guide/15-toolchain.md) | The `ldp3` driver and its commands, project layout, the `ldp3.toml` manifest, dependencies, and environments. |
+| 13 | [Diagnostics](guide/13-diagnostics.md) | The `Polaron-NNNN` code system, the rich why/fix/prevent format, `polaron explain`, the code ranges, and editor integration. |
+| 15 | [The Toolchain & Projects](guide/15-toolchain.md) | The `polaron` driver and its commands, project layout, the `polaron.toml` manifest, dependencies, and environments. |
 | 16 | [Testing](guide/16-testing.md) | `[Test]`, the assertion set, `[Setup]`/`[BeforeAll]` fixtures, `[Ignore]`, `assertNoLeaks`, testing the whole program, and running the suite. |
 
 ---
 
-## Hello, LDP3
+## Hello, Polaron
 
-```ldp3
+```polaron
 import System.IO.Console;
 
 program Hello;
@@ -67,7 +71,7 @@ public bundle main {
     public namespace app {
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.Console.println("Hello, LDP3");
+                System.IO.Console.println("Hello, Polaron");
             }
         }
     }
@@ -75,6 +79,6 @@ public bundle main {
 ```
 
 ```
-ldp3 build          # inside a project (ldp3.toml), or, by hand:
-ldp3c hello.ldp3 -o hello.ll && clang hello.ll ldp3_rt.lib -o hello.exe
+polaron build          # inside a project (polaron.toml), or, by hand:
+polc hello.pol -o hello.ll && clang hello.ll polaron_rt.lib -o hello.exe
 ```

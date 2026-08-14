@@ -1,0 +1,24 @@
+import System.Memory.Units.kilobytes;
+program RegionBadBareExtract;
+
+public bundle main {
+    public namespace app {
+
+        public class Dog {
+            public mutable int age;
+            public constructor Dog(int a) {
+                this.age = a;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                pool region k = itself.allocate(1 kilobytes);
+                Dog* d = new Dog(1) in region k;
+                extract d from region k;   // Polaron-1720: an extract result must be bound
+                release region k;
+                return;
+            }
+        }
+    }
+}

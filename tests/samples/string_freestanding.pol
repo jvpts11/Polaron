@@ -1,0 +1,37 @@
+// `String` AND `string` BARE METAL. The gate said they lower to `__polaron_str_copy`/`__polaron_str_free`,
+// "which bare metal has no runtime to provide". The premise was true and the conclusion was not:
+// those are OURS, not libc, and the hosted ones are written purely in terms of malloc, free and
+// memcpy. So codegen generates them from the program's own `heap class`, exactly as it generates the
+// allocator bridge -- and a String program needs not one libc symbol.
+//
+// It also closes a real bug found by measuring: lowercase `string` was NEVER gated, so
+// `string s = "hello";` compiled in a kernel and then failed at link on these very symbols. A
+// missing gate, in the middle of a hunt for gates that were too many.
+program StringFreestanding freestanding;
+
+public bundle Kernel {
+    public namespace Boot {
+        // The program's own heap: bare metal there is no allocator until one is declared, and the
+        // String helpers are written on top of it.
+        public heap class Heap {
+            private static mutable address next;
+            private static mutable boolean armed;
+            public static method allocate(address size) returns address {
+                if (!Heap.armed) { Heap.next = 1048576; Heap.armed = true; }
+                address at = Heap.next;
+                Heap.next = Heap.next + size + 15;
+                return at;
+            }
+            public static method release(address p) returns void { return; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                String greeting = "hello";
+                mutable string scratch = "world";
+                scratch = "bare metal";
+                return greeting.length() + scratch.length();
+            }
+        }
+    }
+}

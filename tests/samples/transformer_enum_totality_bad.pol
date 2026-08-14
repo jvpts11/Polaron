@@ -1,0 +1,33 @@
+program TransformerEnumTotalityBad;
+
+// THE ENUM ROW OF THE TOTALITY TABLE. A class is closed over its fields; an enum is closed over its
+// CONSTANTS, so a conversion written on one must account for every constant it can be handed.
+//
+// `match` exhaustiveness already covered the natural way to write this, but it was never the same
+// guarantee: this if/else chain is checked by nothing at all, and `EACCES` falls through to whatever
+// the last line returns. A constant added next year has to become an error here.
+public bundle Main {
+    public namespace App {
+        public transformer TCoder {
+            public procedure into<each Other>() returns Other;
+        }
+
+        public class Code {
+            public mutable int n;
+            public constructor Code(int v) { this.n = v; }
+        }
+
+        public enum Errno applies TCoder {
+            EPERM, ENOENT, EACCES;
+            public procedure into<Code>() returns Code {
+                if (this == Errno.EPERM) { return new Code(1); }
+                if (this == Errno.ENOENT) { return new Code(2); }
+                return new Code(0);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

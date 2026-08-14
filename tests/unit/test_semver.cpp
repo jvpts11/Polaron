@@ -1,7 +1,17 @@
 #include <doctest/doctest.h>
-#include "driver/semver.h"
+// A module does not hand its importer the standard library. `import polaron.driver.semver` brings the
+// DECLARATIONS, and comparing the std::string it returns needs <string> here -- that is the leak the
+// header model had and this one does not.
+//
+// `<vector>` for the same reason, and it took the first Linux build to notice: MSVC had it transitively
+// through <doctest.h>, libstdc++ does not, and "it compiled on my compiler" is exactly the gap a second
+// toolchain exists to close.
+#include <string>
+#include <vector>
 
-using namespace ldp3::driver;
+import polaron.driver.semver;
+
+using namespace polaron::driver;
 
 namespace {
 SemVer sv(const char* s) { return *parseSemVer(s); }

@@ -1,5 +1,5 @@
-# Removes a per-user LDP3 toolchain install: deletes the program directory and takes it off the PATH.
-param([string]$Prefix = (Join-Path $env:LOCALAPPDATA "Programs\ldp3"))
+# Removes a per-user Polaron toolchain install: deletes the program directory and takes it off the PATH.
+param([string]$Prefix = (Join-Path $env:LOCALAPPDATA "Programs\polaron"))
 $ErrorActionPreference = "Stop"
 
 if (Test-Path $Prefix) {

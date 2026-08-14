@@ -1,0 +1,33 @@
+import System.IO.Console;
+import System.Text.StringBuilder;
+import System.Math.CountMinSketch;
+import System.Math.HyperLogLog;
+program Probabilistic;
+
+// Probabilistic data structures (spec 34.1) in pure Polaron: Count-Min sketch and HyperLogLog. Prints:
+//   cms_a=5 cms_b=3 cms_c=1 cms_z=0
+//   hll_est=1034 within10pct=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable CountMinSketch cms = new CountMinSketch(1000, 4) on heap;
+                cms.add("a", 5); cms.add("b", 3); cms.add("c", 1);
+                System.IO.Console.printf("cms_a=%d cms_b=%d cms_c=%d cms_z=%d\n",
+                    cms.estimate("a"), cms.estimate("b"), cms.estimate("c"), cms.estimate("z"));
+
+                mutable HyperLogLog hll = new HyperLogLog(10) on heap;
+                for (mutable int i = 0; i < 1000; i++) {
+                    mutable StringBuilder sb = new StringBuilder() on heap;
+                    sb.append("item").appendInt(i);
+                    hll.add(sb.toString());
+                }
+                int est = hll.estimate();
+                mutable int err = est - 1000;
+                if (err < 0) { err = 0 - err; }
+                System.IO.Console.printf("hll_est=%d within10pct=%d\n", est, err <= 100);
+                return;
+            }
+        }
+    }
+}

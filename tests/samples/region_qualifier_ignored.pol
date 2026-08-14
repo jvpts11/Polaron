@@ -1,0 +1,46 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionQualifierIgnored;
+
+// THE QUALIFIER BEFORE THE DOT IS READ, WHICH IT WAS NOT.
+//
+// `new X in region <a>.<b>` used to take `<b>` and look it up on the CURRENT receiver, throwing `<a>`
+// away. So `Other.arena` resolved silently to `this.arena` whenever the caller happened to have a
+// field of that name -- allocating from your own arena while the source says someone else's. Codegen
+// did the same thing one level down, emitting a GEP into `this` at that field's index.
+//
+// Naming another class's INSTANCE field cannot work: there is no object here to read it from. Now it
+// says so, and says which of the two things the author probably meant.
+//
+// Must fail with: is an instance field of 'Other', so there is no object here
+public bundle Main {
+    public namespace App {
+        public class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+        }
+
+        public class Other {
+            public region arena;
+            public constructor Other() { this.arena = itself.allocate(1 kilobytes); }
+            public destructor ~Other() returns void { release region this.arena; }
+        }
+
+        public class Mine {
+            // The same field name as Other's, which is what made the old behaviour silent.
+            public region arena;
+            public constructor Mine() { this.arena = itself.allocate(1 kilobytes); }
+            public destructor ~Mine() returns void { release region this.arena; }
+
+            public method make() returns void {
+                Node* n = new Node(1) in region Other.arena;
+                System.IO.Console.printf("%d\n", n.v);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

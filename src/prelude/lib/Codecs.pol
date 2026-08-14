@@ -1,0 +1,703 @@
+    // ENCODING AND DECODING: turning bytes into a representation and back, without interpreting them.
+    //
+    // Split out of System.Text on 2026-08-13. Base64 was never text -- it is a byte encoding whose
+    // output happens to be printable, which is exactly the kind of "made of" reasoning the placement
+    // rule exists to refuse. Compression (Huffman, Lz77, Rle) and integrity (Crc, Adler32, Fletcher)
+    // sit here for the same reason: they are all transformations OF a byte stream, not of prose.
+    //
+    // Character encoding (Utf8) deliberately stayed in System.Text: a charset is how text becomes
+    // bytes, and it belongs beside the strings it serves -- the same call C# makes with
+    // System.Text.Encoding.
+    public namespace Codecs {
+        // Hexadecimal encoding (spec 4): each byte of a string becomes two lowercase hex digits, and back.
+        public class Hex {
+            private static method hexVal(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - cast<int>('0'); }
+                if (c >= 'a' && c <= 'f') { return cast<int>(c) - cast<int>('a') + 10; }
+                if (c >= 'A' && c <= 'F') { return cast<int>(c) - cast<int>('A') + 10; }
+                return 0;
+            }
+            public static method encode(String data) returns String {
+                String digits = "0123456789abcdef";
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < data.length(); i++) {
+                    int b = cast<int>(data.charAt(i));
+                    sb.appendChar(digits.charAt(b / 16));
+                    sb.appendChar(digits.charAt(b % 16));
+                }
+                return sb.toString();
+            }
+            public static method decode(String hex) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i + 1 < hex.length(); i = i + 2) {
+                    int hi = Hex.hexVal(hex.charAt(i));
+                    int lo = Hex.hexVal(hex.charAt(i + 1));
+                    sb.appendChar(cast<char>(hi * 16 + lo));
+                }
+                return sb.toString();
+            }
+        }
+        // Arbitrary-base integer conversion (spec 4), bases 2..36 using 0-9 then a-z. toBase renders a long
+        // (with a leading '-' for negatives); fromBase parses such a string back (case-insensitive).
+        public class Radix {
+            private static method digitChar(int d) returns char {
+                if (d < 10) { return cast<char>(cast<int>('0') + d); }
+                return cast<char>(cast<int>('a') + d - 10);
+            }
+            private static method digitValue(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - cast<int>('0'); }
+                if (c >= 'a' && c <= 'z') { return cast<int>(c) - cast<int>('a') + 10; }
+                if (c >= 'A' && c <= 'Z') { return cast<int>(c) - cast<int>('A') + 10; }
+                return 0;
+            }
+            public static method toBase(long n, int base) returns String {
+                if (n == 0) { return "0"; }
+                mutable long v = n;
+                mutable boolean neg = false;
+                if (v < 0) { neg = true; v = 0 - v; }
+                mutable StringBuilder rev = new StringBuilder() on heap;
+                while (v > 0) {
+                    rev.appendChar(Radix.digitChar(cast<int>(v % cast<long>(base))));
+                    v = v / cast<long>(base);
+                }
+                mutable StringBuilder out = new StringBuilder() on heap;
+                if (neg) { out.appendChar('-'); }
+                String r = rev.toString();
+                for (mutable int i = r.length() - 1; i >= 0; i = i - 1) { out.appendChar(r.charAt(i)); }
+                return out.toString();
+            }
+            public static method fromBase(String s, int base) returns long {
+                mutable int i = 0;
+                mutable boolean neg = false;
+                if (s.length() > 0 && s.charAt(0) == '-') { neg = true; i = 1; }
+                mutable long v = 0;
+                while (i < s.length()) {
+                    v = v * cast<long>(base) + cast<long>(Radix.digitValue(s.charAt(i)));
+                    i = i + 1;
+                }
+                if (neg) { return 0 - v; }
+                return v;
+            }
+        }
+        // Base64 encoding (spec 4): three bytes become four characters of the standard alphabet, with =
+        // padding on the final group; decode reverses it. Bytes are read from and written to String storage.
+        public class Base64 {
+            private static method val(char c) returns int {
+                if (c >= 'A' && c <= 'Z') { return cast<int>(c) - cast<int>('A'); }
+                if (c >= 'a' && c <= 'z') { return cast<int>(c) - cast<int>('a') + 26; }
+                if (c >= '0' && c <= '9') { return cast<int>(c) - cast<int>('0') + 52; }
+                if (c == '+') { return 62; }
+                if (c == '/') { return 63; }
+                return 0;
+            }
+            public static method encode(String data) returns String {
+                String alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                int n = data.length();
+                while (i < n) {
+                    int b0 = cast<int>(data.charAt(i));
+                    mutable int b1 = 0;
+                    boolean has1 = i + 1 < n;
+                    if (has1) { b1 = cast<int>(data.charAt(i + 1)); }
+                    mutable int b2 = 0;
+                    boolean has2 = i + 2 < n;
+                    if (has2) { b2 = cast<int>(data.charAt(i + 2)); }
+                    int triple = b0 * 65536 + b1 * 256 + b2;
+                    sb.appendChar(alpha.charAt((triple / 262144) % 64));
+                    sb.appendChar(alpha.charAt((triple / 4096) % 64));
+                    if (has1) { sb.appendChar(alpha.charAt((triple / 64) % 64)); } else { sb.appendChar('='); }
+                    if (has2) { sb.appendChar(alpha.charAt(triple % 64)); } else { sb.appendChar('='); }
+                    i = i + 3;
+                }
+                return sb.toString();
+            }
+            public static method decode(String data) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                int n = data.length();
+                while (i + 3 < n) {
+                    int triple = Base64.val(data.charAt(i)) * 262144 + Base64.val(data.charAt(i + 1)) * 4096
+                               + Base64.val(data.charAt(i + 2)) * 64 + Base64.val(data.charAt(i + 3));
+                    sb.appendChar(cast<char>((triple / 65536) % 256));
+                    if (data.charAt(i + 2) != '=') { sb.appendChar(cast<char>((triple / 256) % 256)); }
+                    if (data.charAt(i + 3) != '=') { sb.appendChar(cast<char>(triple % 256)); }
+                    i = i + 4;
+                }
+                return sb.toString();
+            }
+        }
+        // Base32 (RFC 4648) over a string's bytes: 5 bytes encode to 8 chars of the alphabet
+        // ABCDEFGHIJKLMNOPQRSTUVWXYZ234567, '=' padded. encode/decode round-trip. Uses a 40-bit long buffer.
+        public class Base32 {
+            private static method val(char c) returns int {
+                if (c >= 'A' && c <= 'Z') { return cast<int>(c) - cast<int>('A'); }
+                if (c >= '2' && c <= '7') { return cast<int>(c) - cast<int>('2') + 26; }
+                return 0;
+            }
+            public static method encode(String data) returns String {
+                String AL = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                int n = data.length();
+                mutable int i = 0;
+                while (i < n) {
+                    mutable long buf = 0;
+                    mutable int cnt = 0;
+                    for (mutable int j = 0; j < 5; j++) {
+                        buf = buf << 8;
+                        if (i + j < n) {
+                            buf = buf | cast<long>(cast<int>(data.charAt(i + j)) & 255);
+                            cnt = cnt + 1;
+                        }
+                    }
+                    mutable int outc = 8;
+                    if (cnt == 1) { outc = 2; }
+                    if (cnt == 2) { outc = 4; }
+                    if (cnt == 3) { outc = 5; }
+                    if (cnt == 4) { outc = 7; }
+                    for (mutable int k = 0; k < 8; k++) {
+                        int shift = 35 - k * 5;
+                        int idx = cast<int>((buf >> shift) & cast<long>(31));
+                        if (k < outc) { sb.appendChar(AL.charAt(idx)); } else { sb.appendChar('='); }
+                    }
+                    i = i + 5;
+                }
+                return sb.toString();
+            }
+            public static method decode(String s) returns String {
+                mutable StringBuilder out = new StringBuilder() on heap;
+                mutable long buf = 0;
+                mutable int bits = 0;
+                int n = s.length();
+                for (mutable int i = 0; i < n; i++) {
+                    char c = s.charAt(i);
+                    if (c == '=') { return out.toString(); }
+                    buf = (buf << 5) | cast<long>(Base32.val(c));
+                    bits = bits + 5;
+                    if (bits >= 8) {
+                        bits = bits - 8;
+                        out.appendChar(cast<char>(cast<int>((buf >> bits) & cast<long>(255))));
+                    }
+                }
+                return out.toString();
+            }
+        }
+        // Base58 (the Bitcoin alphabet, spec 4): big-endian base-256 to base-58 with no 0/O/I/l, leading zero
+        // bytes preserved as leading '1's. encode takes the first n bytes of an int[]; decode returns the bytes.
+        public class Base58 {
+            private static method al() returns String { return "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"; }
+            private static method val(char c) returns int {
+                String a = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+                for (mutable int i = 0; i < a.length(); i++) { if (a.charAt(i) == c) { return i; } }
+                return 0;
+            }
+            public static method encode(int[] bytes, int n) returns String {
+                String a = Base58.al();
+                mutable int zeros = 0;
+                while (zeros < n && bytes[zeros] == 0) { zeros = zeros + 1; }
+                mutable int[] buf = new int[n + 1]();
+                for (mutable int i = 0; i < n; i++) { buf[i] = bytes[i] & 255; }
+                mutable StringBuilder rev = new StringBuilder() on heap;
+                mutable int start = zeros;
+                while (start < n) {
+                    mutable int rem = 0;
+                    for (mutable int i = start; i < n; i++) {
+                        int acc = rem * 256 + buf[i];
+                        buf[i] = acc / 58;
+                        rem = acc % 58;
+                    }
+                    rev.appendChar(a.charAt(rem));
+                    if (buf[start] == 0) { start = start + 1; }
+                }
+                mutable StringBuilder out = new StringBuilder() on heap;
+                for (mutable int i = 0; i < zeros; i++) { out.appendChar('1'); }
+                String r = rev.toString();
+                for (mutable int i = r.length() - 1; i >= 0; i = i - 1) { out.appendChar(r.charAt(i)); }
+                return out.toString();
+            }
+            public static method decode(String s) returns int[] {
+                mutable int zeros = 0;
+                while (zeros < s.length() && s.charAt(zeros) == '1') { zeros = zeros + 1; }
+                mutable int[] tmp = new int[s.length() + 1]();
+                mutable int blen = 0;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    mutable int carry = Base58.val(s.charAt(i));
+                    for (mutable int j = 0; j < blen; j++) {
+                        int acc = tmp[j] * 58 + carry;
+                        tmp[j] = acc & 255;
+                        carry = acc >> 8;
+                    }
+                    while (carry > 0) { tmp[blen] = carry & 255; blen = blen + 1; carry = carry >> 8; }
+                }
+                mutable int[] out = new int[zeros + blen]();
+                for (mutable int i = 0; i < blen; i++) { out[zeros + i] = tmp[blen - 1 - i]; }
+                return out;
+            }
+        }
+        // Ascii85 / Base85 (spec 4, Adobe variant without delimiters): four bytes become five printable chars
+        // (base 85 starting at '!'), a final partial group emitting one fewer char than its bytes+1. encode
+        // takes the first n bytes; decode returns the bytes (padding a short final group with 'u').
+        public class Ascii85 {
+            public static method encode(int[] bytes, int n) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < n) {
+                    mutable long val = 0;
+                    mutable int cnt = 0;
+                    for (mutable int k = 0; k < 4; k++) {
+                        val = val * 256;
+                        if (i + k < n) { val = val + cast<long>(bytes[i + k] & 255); cnt = cnt + 1; }
+                    }
+                    mutable int[] dig = new int[5]();
+                    mutable long v = val;
+                    for (mutable int k = 4; k >= 0; k = k - 1) { dig[k] = cast<int>(v % 85); v = v / 85; }
+                    for (mutable int k = 0; k < cnt + 1; k++) { sb.appendChar(cast<char>(33 + dig[k])); }
+                    i = i + 4;
+                }
+                return sb.toString();
+            }
+            public static method decode(String s) returns int[] {
+                int n = s.length();
+                mutable int total = 0;
+                mutable int gi = 0;
+                while (gi < n) { mutable int c = n - gi; if (c > 5) { c = 5; } total = total + (c - 1); gi = gi + 5; }
+                mutable int[] out = new int[total]();
+                mutable int pos = 0;
+                mutable int i = 0;
+                while (i < n) {
+                    mutable int c = n - i; if (c > 5) { c = 5; }
+                    mutable long val = 0;
+                    for (mutable int k = 0; k < 5; k++) {
+                        mutable int d = 84;
+                        if (k < c) { d = cast<int>(s.charAt(i + k)) - 33; }
+                        val = val * 85 + cast<long>(d);
+                    }
+                    for (mutable int k = 0; k < c - 1; k++) {
+                        int shift = (3 - k) * 8;
+                        out[pos] = cast<int>((val >> shift) & cast<long>(255));
+                        pos = pos + 1;
+                    }
+                    i = i + 5;
+                }
+                return out;
+            }
+        }
+        // Fletcher-16 checksum (spec 4) over a string's bytes: two running mod-255 sums combined as a 16-bit
+        // value. Cheaper than CRC with good error detection.
+        public class Fletcher {
+            public static method fletcher16(String data) returns int {
+                mutable int s1 = 0;
+                mutable int s2 = 0;
+                for (mutable int i = 0; i < data.length(); i++) {
+                    s1 = (s1 + (cast<int>(data.charAt(i)) & 255)) % 255;
+                    s2 = (s2 + s1) % 255;
+                }
+                return (s2 << 8) | s1;
+            }
+        }
+        // CRC-16/XMODEM (spec 4): a 16-bit checksum over a string's bytes with polynomial 0x1021 and zero
+        // initial value, returned as an int. Bitwise, table-free.
+        public class Crc {
+            public static method crc16(String data) returns int {
+                mutable int crc = 0;
+                int n = data.length();
+                for (mutable int i = 0; i < n; i++) {
+                    crc = crc ^ ((cast<int>(data.charAt(i)) & 255) << 8);
+                    for (mutable int b = 0; b < 8; b++) {
+                        if ((crc & 32768) != 0) { crc = ((crc << 1) ^ 4129) & 65535; }
+                        else { crc = (crc << 1) & 65535; }
+                    }
+                }
+                return crc;
+            }
+        }
+        // Adler-32 checksum (RFC 1950 / zlib): two running sums modulo 65521 combined as (b << 16) | a, with
+        // a starting at 1. Faster than CRC but weaker; returned in a long so the high bit stays positive.
+        public class Adler32 {
+            public static method checksum(String data) returns long {
+                mutable long a = 1;
+                mutable long b = 0;
+                long mod = 65521;
+                for (mutable int i = 0; i < data.length(); i++) {
+                    a = (a + cast<long>(cast<int>(data.charAt(i)) & 255)) % mod;
+                    b = (b + a) % mod;
+                }
+                return (b << 16) | a;
+            }
+        }
+        // Huffman coding (spec 34.1): builds an optimal prefix code from a string's byte frequencies and
+        // packs it into a tree stored in flat arena arrays (no self-referential pointers). encode turns the
+        // text into a '0'/'1' bit string; decode walks the tree to recover it. Construct once over the source
+        // text, then encode/decode against that codebook. Two smallest nodes are merged each step (ties by
+        // lowest id) for a deterministic tree, so a round-trip always reproduces the input exactly.
+        public class Huffman {
+            private mutable int[] freq;
+            private mutable int[] left;
+            private mutable int[] right;
+            private mutable int[] parent;
+            private mutable int[] bit;
+            private mutable int[] sym;
+            private mutable int count;
+            private mutable int root;
+            private mutable String[] codes;
+
+            public constructor Huffman(String data) {
+                this.freq = new int[512]();
+                this.left = new int[512]();
+                this.right = new int[512]();
+                this.parent = new int[512]();
+                this.bit = new int[512]();
+                this.sym = new int[512]();
+                this.codes = new String[256]();
+                mutable boolean[] alive = new boolean[512]();
+                mutable int[] cnt = new int[256]();
+                int n = data.length();
+                for (mutable int i = 0; i < n; i++) {
+                    int ch = cast<int>(data.charAt(i)) & 255;
+                    cnt[ch] = cnt[ch] + 1;
+                }
+                this.count = 0;
+                for (mutable int b = 0; b < 256; b++) {
+                    if (cnt[b] > 0) {
+                        int id = this.count;
+                        this.freq[id] = cnt[b];
+                        this.sym[id] = b;
+                        this.left[id] = -1;
+                        this.right[id] = -1;
+                        this.parent[id] = -1;
+                        alive[id] = true;
+                        this.count = id + 1;
+                    }
+                }
+                mutable int live = this.count;
+                this.root = 0;
+                while (live > 1) {
+                    mutable int a = -1;
+                    mutable int b2 = -1;
+                    for (mutable int i = 0; i < this.count; i++) {
+                        if (alive[i]) {
+                            if (a == -1) { a = i; }
+                            else {
+                                if (this.freq[i] < this.freq[a]) { b2 = a; a = i; }
+                                else {
+                                    if (b2 == -1) { b2 = i; }
+                                    else { if (this.freq[i] < this.freq[b2]) { b2 = i; } }
+                                }
+                            }
+                        }
+                    }
+                    int id = this.count;
+                    this.freq[id] = this.freq[a] + this.freq[b2];
+                    this.left[id] = a;
+                    this.right[id] = b2;
+                    this.sym[id] = -1;
+                    this.parent[id] = -1;
+                    this.parent[a] = id;
+                    this.bit[a] = 0;
+                    this.parent[b2] = id;
+                    this.bit[b2] = 1;
+                    alive[a] = false;
+                    alive[b2] = false;
+                    alive[id] = true;
+                    this.count = id + 1;
+                    this.root = id;
+                    live = live - 1;
+                }
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (this.left[i] == -1) {
+                        mutable int[] tmp = new int[64]();
+                        mutable int d = 0;
+                        mutable int node = i;
+                        while (this.parent[node] != -1) {
+                            tmp[d] = this.bit[node];
+                            d = d + 1;
+                            node = this.parent[node];
+                        }
+                        mutable StringBuilder sb = new StringBuilder() on heap;
+                        if (d == 0) { sb.appendChar('0'); }
+                        for (mutable int j = d - 1; j >= 0; j = j - 1) {
+                            if (tmp[j] == 0) { sb.appendChar('0'); } else { sb.appendChar('1'); }
+                        }
+                        this.codes[this.sym[i]] = sb.toString();
+                    }
+                }
+                return;
+            }
+            // The '0'/'1' code assigned to a byte value (empty string for bytes not in the source).
+            public method codeOf(int byteValue) returns String { return this.codes[byteValue & 255]; }
+            public method encode(String data) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                int n = data.length();
+                for (mutable int i = 0; i < n; i++) {
+                    sb.append(this.codes[cast<int>(data.charAt(i)) & 255]);
+                }
+                return sb.toString();
+            }
+            public method decode(String bits) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                int n = bits.length();
+                if (this.left[this.root] == -1) {
+                    for (mutable int i = 0; i < n; i++) { sb.appendChar(cast<char>(this.sym[this.root])); }
+                    return sb.toString();
+                }
+                mutable int node = this.root;
+                for (mutable int i = 0; i < n; i++) {
+                    if (bits.charAt(i) == '0') { node = this.left[node]; } else { node = this.right[node]; }
+                    if (this.left[node] == -1) {
+                        sb.appendChar(cast<char>(this.sym[node]));
+                        node = this.root;
+                    }
+                }
+                return sb.toString();
+            }
+        }
+        // LZ77 sliding-window compression (spec 34.1): encode produces flattened (offset, length, nextChar)
+        // triples over a bounded search window (nextChar is -1 only at the very end); decode replays them,
+        // copying back-references (which may overlap, like run-length) to reconstruct the input exactly.
+        public class Lz77 {
+            private mutable int window;
+            public constructor Lz77(int windowSize) { this.window = windowSize; }
+            public method encode(String data) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                int n = data.length();
+                mutable int i = 0;
+                while (i < n) {
+                    mutable int bestLen = 0;
+                    mutable int bestOff = 0;
+                    mutable int start = i - this.window;
+                    if (start < 0) { start = 0; }
+                    for (mutable int j = start; j < i; j++) {
+                        mutable int len = 0;
+                        while (i + len < n && len < 255 && data.charAt(j + len) == data.charAt(i + len)) {
+                            len = len + 1;
+                        }
+                        if (len > bestLen) { bestLen = len; bestOff = i - j; }
+                    }
+                    int nextPos = i + bestLen;
+                    out.add(bestOff);
+                    out.add(bestLen);
+                    if (nextPos < n) {
+                        out.add(cast<int>(data.charAt(nextPos)) & 255);
+                        i = nextPos + 1;
+                    } else {
+                        out.add(-1);
+                        i = nextPos;
+                    }
+                }
+                return out;
+            }
+            public method decode(ArrayList<int> tokens) returns String {
+                mutable int total = 0;
+                mutable int t = 0;
+                while (t < tokens.size()) {
+                    total = total + tokens.get(t + 1);
+                    if (tokens.get(t + 2) >= 0) { total = total + 1; }
+                    t = t + 3;
+                }
+                mutable int[] buf = new int[total + 1]();
+                mutable int pos = 0;
+                t = 0;
+                while (t < tokens.size()) {
+                    int off = tokens.get(t);
+                    int len = tokens.get(t + 1);
+                    int ch = tokens.get(t + 2);
+                    int base = pos - off;
+                    for (mutable int k = 0; k < len; k++) { buf[pos] = buf[base + k]; pos = pos + 1; }
+                    if (ch >= 0) { buf[pos] = ch; pos = pos + 1; }
+                    t = t + 3;
+                }
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < pos; i++) { sb.appendChar(cast<char>(buf[i])); }
+                return sb.toString();
+            }
+        }
+        // Run-length encoding of a string (spec 34): each run of a repeated character becomes that character
+        // followed by its decimal count, e.g. "aaabbbbc" -> "a3b4c1". decode reverses it, reading a
+        // character and the digits that follow as a repeat count.
+        public class Rle {
+            public static method encode(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    char c = s.charAt(i);
+                    mutable int run = 1;
+                    while (i + run < s.length() && s.charAt(i + run) == c) { run = run + 1; }
+                    sb.appendChar(c);
+                    sb.appendInt(run);
+                    i = i + run;
+                }
+                return sb.toString();
+            }
+            public static method decode(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    char c = s.charAt(i);
+                    i = i + 1;
+                    mutable int count = 0;
+                    while (i < s.length() && s.charAt(i) >= '0' && s.charAt(i) <= '9') {
+                        count = count * 10 + (cast<int>(s.charAt(i)) - cast<int>('0'));
+                        i = i + 1;
+                    }
+                    for (mutable int k = 0; k < count; k++) { sb.appendChar(c); }
+                }
+                return sb.toString();
+            }
+        }
+        // Percent-encoding for URLs (spec 4): unreserved characters (letters, digits, - _ . ~) pass through,
+        // everything else becomes %XX of its byte. decode reverses %XX escapes.
+        public class UrlCodec {
+            private static method isUnreserved(char c) returns boolean {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                    || c == '-' || c == '_' || c == '.' || c == '~';
+            }
+            private static method hexDigit(int v) returns char {
+                if (v < 10) { return cast<char>(cast<int>('0') + v); }
+                return cast<char>(cast<int>('A') + (v - 10));
+            }
+            private static method hexVal(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - cast<int>('0'); }
+                if (c >= 'A' && c <= 'F') { return cast<int>(c) - cast<int>('A') + 10; }
+                return cast<int>(c) - cast<int>('a') + 10;
+            }
+            public static method encode(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (UrlCodec.isUnreserved(c)) {
+                        sb.appendChar(c);
+                    } else {
+                        int v = cast<int>(c);
+                        sb.appendChar('%');
+                        sb.appendChar(UrlCodec.hexDigit(v / 16));
+                        sb.appendChar(UrlCodec.hexDigit(v % 16));
+                    }
+                }
+                return sb.toString();
+            }
+            public static method decode(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    char c = s.charAt(i);
+                    if (c == '%' && i + 2 < s.length()) {
+                        int v = UrlCodec.hexVal(s.charAt(i + 1)) * 16 + UrlCodec.hexVal(s.charAt(i + 2));
+                        sb.appendChar(cast<char>(v));
+                        i = i + 3;
+                    } else {
+                        sb.appendChar(c);
+                        i = i + 1;
+                    }
+                }
+                return sb.toString();
+            }
+        }
+        // URL query-string parsing (spec 34): splits "k=v&k=v" on & into a map, with each key/value
+        // percent-decoded via UrlCodec. A key with no '=' maps to the empty string.
+        public class QueryString {
+            public static method parse(String qs) returns HashMap<String, String> {
+                mutable HashMap<String, String> m = new HashMap<String, String>() on heap;
+                mutable ArrayList<String> parts = Strings.split(qs, "&");
+                for (mutable int i = 0; i < parts.size(); i++) {
+                    String p = parts.get(i);
+                    if (p.length() == 0) { continue; }
+                    int eq = p.indexOf("=");
+                    if (eq < 0) { m.put(UrlCodec.decode(p), ""); }
+                    else {
+                        String k = UrlCodec.decode(p.substring(0, eq));
+                        String v = UrlCodec.decode(p.substring(eq + 1, p.length()));
+                        m.put(k, v);
+                    }
+                }
+                return m;
+            }
+        }
+        // LEB128 variable-length integers (spec 4): seven bits per byte, high bit set while more bytes follow,
+        // so small values take one byte. encode returns the bytes; decode reads them back.
+        public class VarInt {
+            public static method encode(long value) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                mutable long v = value;
+                mutable boolean more = true;
+                while (more) {
+                    mutable int b = cast<int>(v & cast<long>(127));
+                    v = v >> 7;
+                    if (v == 0) { more = false; } else { b = b | 128; }
+                    out.add(b);
+                }
+                return out;
+            }
+            public static method decode(ArrayList<int> bytes) returns long {
+                mutable long result = 0;
+                mutable int shift = 0;
+                mutable int i = 0;
+                mutable boolean more = true;
+                while (more && i < bytes.size()) {
+                    int b = bytes.get(i);
+                    result = result | (cast<long>(b & 127) << shift);
+                    if ((b & 128) == 0) { more = false; }
+                    shift = shift + 7;
+                    i = i + 1;
+                }
+                return result;
+            }
+        }
+        // A most-significant-bit-first bit writer (spec 4): pack individual bits or fixed-width fields into a
+        // byte buffer, then read them back with BitReader. Useful for entropy coders such as Huffman.
+        public class BitWriter {
+            private mutable int[] buf;
+            private mutable int nbits;
+            public constructor BitWriter() {
+                this.buf = new int[64]();
+                this.nbits = 0;
+            }
+            private method ensure(int idx) returns void {
+                if (idx < this.buf.length()) { return; }
+                mutable int[] bigger = new int[this.buf.length() * 2]();
+                for (mutable int i = 0; i < this.buf.length(); i++) { bigger[i] = this.buf[i]; }
+                this.buf = bigger;
+                return;
+            }
+            public method writeBit(int bit) returns void {
+                int idx = this.nbits / 8;
+                this.ensure(idx);
+                int off = 7 - (this.nbits % 8);
+                if ((bit & 1) == 1) { this.buf[idx] = this.buf[idx] | (1 << off); }
+                this.nbits = this.nbits + 1;
+                return;
+            }
+            public method writeBits(int value, int count) returns void {
+                for (mutable int i = count - 1; i >= 0; i = i - 1) {
+                    this.writeBit((value >> i) & 1);
+                }
+                return;
+            }
+            public method bitCount() returns int { return this.nbits; }
+            public method toBytes() returns int[] {
+                int n = (this.nbits + 7) / 8;
+                mutable int[] out = new int[n]();
+                for (mutable int i = 0; i < n; i++) { out[i] = this.buf[i]; }
+                return out;
+            }
+        }
+        // Reads bits most-significant-first out of a byte array, matching BitWriter (spec 4).
+        public class BitReader {
+            private mutable int[] buf;
+            private mutable int pos;
+            public constructor BitReader(int[] bytes) {
+                this.buf = bytes;
+                this.pos = 0;
+            }
+            public method readBit() returns int {
+                int idx = this.pos / 8;
+                int off = 7 - (this.pos % 8);
+                this.pos = this.pos + 1;
+                return (this.buf[idx] >> off) & 1;
+            }
+            public method readBits(int count) returns int {
+                mutable int v = 0;
+                for (mutable int i = 0; i < count; i++) { v = (v << 1) | this.readBit(); }
+                return v;
+            }
+        }
+    }

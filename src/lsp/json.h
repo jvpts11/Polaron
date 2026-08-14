@@ -4,9 +4,9 @@
 #include <utility>
 #include <vector>
 
-// A small, dependency-free JSON value used by the LDP3 language server for LSP (JSON-RPC) messages. Objects
+// A small, dependency-free JSON value used by the Polaron language server for LSP (JSON-RPC) messages. Objects
 // keep insertion order; numbers are stored as doubles (LSP integers fit exactly).
-namespace ldp3::lsp {
+namespace polaron::lsp {
 
 struct Json {
     enum class Type : std::uint8_t { Null, Bool, Number, String, Array, Object };
@@ -64,4 +64,4 @@ struct Json {
     static bool parse(const std::string& text, Json& out);
 };
 
-}  // namespace ldp3::lsp
+}  // namespace polaron::lsp

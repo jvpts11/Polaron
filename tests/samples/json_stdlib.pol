@@ -1,0 +1,34 @@
+import System.IO.Console;
+import System.Json.Json;
+program JsonStdlib;
+
+// JSON (spec 34): build a value tree, serialize it, parse it back, and confirm a round-trip.
+// Json + JsonParser are pure Polaron over System.Collections + System.Text.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Json obj = Json.object();
+                obj.put("name", Json.ofStr("Polaron"));
+                obj.put("version", Json.ofNum(cast<long>(1)));
+                obj.put("cool", Json.ofBool(true));
+                Json arr = Json.array();
+                arr.add(Json.ofNum(cast<long>(10)));
+                arr.add(Json.ofNum(cast<long>(20)));
+                obj.put("nums", arr);
+
+                String s = obj.toString();
+                Json p = Json.parse(s);   // round-trip
+                System.IO.Console.printf("name=%d ver=%d cool=%d n0=%d n1=%d roundtrip=%d\n",
+                    p.field("name").asStr().equals("Polaron"),
+                    cast<int>(p.field("version").asNum()),
+                    p.field("cool").asBool(),
+                    cast<int>(p.field("nums").at(0).asNum()),
+                    cast<int>(p.field("nums").at(1).asNum()),
+                    s.equals(p.toString()));
+                return;
+            }
+        }
+    }
+}

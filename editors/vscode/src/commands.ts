@@ -1,35 +1,35 @@
 import * as vscode from 'vscode';
-import { ldp3Path, projectCwd, run } from './tools';
+import { polaronPath, projectCwd, run } from './tools';
 
 let channel: vscode.OutputChannel | undefined;
 
 function output(): vscode.OutputChannel {
   if (!channel) {
-    channel = vscode.window.createOutputChannel('LDP3');
+    channel = vscode.window.createOutputChannel('Polaron');
   }
   return channel;
 }
 
-// Run a non-interactive verb (build/test/doc/fmt/new) in `cwd`, streaming its output to the LDP3 channel.
+// Run a non-interactive verb (build/test/doc/fmt/new) in `cwd`, streaming its output to the Polaron channel.
 export async function runVerbIn(verb: string, cwd: string, extra: string[] = []): Promise<void> {
   const ch = output();
   ch.show(true);
-  ch.appendLine(`$ ldp3 ${verb} ${extra.join(' ')}`.trimEnd());
-  const { code, out } = await run(ldp3Path(), [verb, ...extra], cwd);
+  ch.appendLine(`$ polaron ${verb} ${extra.join(' ')}`.trimEnd());
+  const { code, out } = await run(polaronPath(), [verb, ...extra], cwd);
   ch.append(out.endsWith('\n') ? out : out + '\n');
-  ch.appendLine(code === 0 ? `✔ ldp3 ${verb} succeeded` : `✖ ldp3 ${verb} failed (exit ${code})`);
+  ch.appendLine(code === 0 ? `✔ polaron ${verb} succeeded` : `✖ polaron ${verb} failed (exit ${code})`);
 }
 
-// Run the program interactively in `cwd`: a terminal whose shell *is* `ldp3 run`, so it can read input.
+// Run the program interactively in `cwd`: a terminal whose shell *is* `polaron run`, so it can read input.
 export function runInteractiveIn(cwd: string): void {
-  const term = vscode.window.createTerminal({ name: 'ldp3 run', cwd, shellPath: ldp3Path(), shellArgs: ['run'] });
+  const term = vscode.window.createTerminal({ name: 'polaron run', cwd, shellPath: polaronPath(), shellArgs: ['run'] });
   term.show();
 }
 
 function requireCwd(): string | undefined {
   const cwd = projectCwd();
   if (!cwd) {
-    void vscode.window.showErrorMessage('LDP3: open a file or folder inside an LDP3 project first.');
+    void vscode.window.showErrorMessage('Polaron: open a file or folder inside a Polaron project first.');
   }
   return cwd;
 }
@@ -38,27 +38,27 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   const push = (id: string, fn: () => void | Promise<void>) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
-  push('ldp3.run', () => {
+  push('polaron.run', () => {
     const cwd = requireCwd();
     if (cwd) {
       runInteractiveIn(cwd);
     }
   });
   for (const verb of ['build', 'test', 'doc', 'fmt']) {
-    push(`ldp3.${verb}`, () => {
+    push(`polaron.${verb}`, () => {
       const cwd = requireCwd();
       if (cwd) {
         return runVerbIn(verb, cwd);
       }
     });
   }
-  push('ldp3.new', async () => {
+  push('polaron.new', async () => {
     const cwd = requireCwd();
     if (!cwd) {
       return;
     }
     const name = await vscode.window.showInputBox({
-      prompt: 'New LDP3 project name',
+      prompt: 'New Polaron project name',
       validateInput: (v) => (/^[A-Za-z0-9_-]+$/.test(v) ? undefined : 'Use letters, digits, _ or -.'),
     });
     if (name) {

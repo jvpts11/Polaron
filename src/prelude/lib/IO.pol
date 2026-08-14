@@ -1,0 +1,137 @@
+    public namespace IO {
+        // Console I/O (spec 2.9 / 4). The methods are recognized by the compiler and lower to
+        // libc printf/scanf; this class exists so `import System.IO.Console;` resolves and the
+        // usual namespace-visibility rules require importing it before use.
+        public class Console {
+        }
+        // Line-oriented file helpers (spec 34.4): the File builtin reads and writes whole contents, and
+        // Files layers lines on top of it through Strings, so a program reads a file into a list of lines
+        // and writes a list back without handling the newline joins itself.
+        public class Files {
+            // Each line is terminated with a newline, and a trailing empty piece from the final newline is
+            // dropped on read, so writeLines then readLines round-trips and appendLine adds a clean line.
+            public static method readLines(String path) returns ArrayList<String> {
+                mutable ArrayList<String> lines = Strings.split(File.readAll(path), "\n");
+                if (lines.size() > 0 && lines.get(lines.size() - 1).length() == 0) {
+                    lines.removeAt(lines.size() - 1);
+                }
+                return lines;
+            }
+            public static method writeLines(String path, ArrayList<String> lines) returns void {
+                StringBuilder sb = new StringBuilder() on heap;  // concat in a loop was O(total^2)
+                for (mutable int i = 0; i < lines.size(); i++) {
+                    sb.append(lines.get(i));
+                    sb.appendChar(cast<char>(10));  // '\n'
+                }
+                File.writeAll(path, sb.toString());
+                return;
+            }
+            public static method appendLine(String path, String line) returns void {
+                File.appendAll(path, line.concat("\n"));
+                return;
+            }
+            // The entries of a directory (spec 34.4), one per element. Empty if the path is not a
+            // directory. Wraps the newline-separated File.list.
+            public static method listDir(String path) returns ArrayList<String> {
+                mutable ArrayList<String> entries = Strings.split(File.list(path), "\n");
+                if (entries.size() > 0 && entries.get(entries.size() - 1).length() == 0) {
+                    entries.removeAt(entries.size() - 1);
+                }
+                return entries;
+            }
+        }
+        // Path-string manipulation (spec 34.4): join segments, and pull apart a path into its directory,
+        // final component, and extension. Pure string work over "/" -- it does not touch the filesystem.
+        public class Paths {
+            public static method join(String base, String name) returns String {
+                if (base.length() == 0) { return name; }
+                if (base.endsWith("/")) { return base.concat(name); }
+                return base.concat("/").concat(name);
+            }
+            public static method basename(String path) returns String {
+                int cut = Paths.lastSep(path);
+                return cut < 0 ? path : path.substring(cut + 1, path.length());
+            }
+            public static method dirname(String path) returns String {
+                int cut = Paths.lastSep(path);
+                return cut < 0 ? "" : path.substring(0, cut);
+            }
+            // Index of the last path separator -- '/' or, on Windows, '\\'. -1 if there is none. Handling
+            // both keeps dirname/basename correct on native Windows paths (e.g. an executable's own path).
+            private static method lastSep(String path) returns int {
+                mutable int last = 0 - 1; mutable int i = 0;
+                while (i < path.length()) {
+                    char c = path.charAt(i);
+                    if (c == '/' || c == '\\') { last = i; }
+                    i = i + 1;
+                }
+                return last;
+            }
+            public static method extension(String path) returns String {
+                String base = Paths.basename(path);
+                mutable ArrayList<String> parts = Strings.split(base, ".");
+                if (parts.size() < 2) { return ""; }
+                return parts.get(parts.size() - 1);
+            }
+        }
+        // Leveled logging to the console (spec 34): each message carries a level (debug/info/warn/error)
+        // and is printed with the logger's name only when its level is at or above the configured minimum,
+        // which starts at info. A quick way to get structured, filterable output without a framework.
+        public class Logger {
+            private mutable String name;
+            private mutable int minLevel;
+            public constructor Logger(String name) {
+                this.name = name;
+                this.minLevel = 1;
+            }
+            public method setLevel(int level) returns void {
+                this.minLevel = level;
+                return;
+            }
+            private method emit(String level, String message) returns void {
+                System.IO.Console.printf("[%s] %s: %s\n", level, this.name, message);
+                return;
+            }
+            public method debug(String message) returns void {
+                if (this.minLevel <= 0) { this.emit("DEBUG", message); }
+                return;
+            }
+            public method info(String message) returns void {
+                if (this.minLevel <= 1) { this.emit("INFO", message); }
+                return;
+            }
+            public method warn(String message) returns void {
+                if (this.minLevel <= 2) { this.emit("WARN", message); }
+                return;
+            }
+            public method error(String message) returns void {
+                if (this.minLevel <= 3) { this.emit("ERROR", message); }
+                return;
+            }
+        }
+        // Reads a program's command-line arguments (spec 34): has tests for a flag, value returns the token
+        // after a flag (empty if absent), and get/count index the raw arguments. Wraps the String[] handed
+        // to main, so a program parses its options without scanning the array by hand.
+        public class Args {
+            private mutable String[] argv;
+            public constructor Args(String[] argv) {
+                this.argv = argv;
+            }
+            public method has(String flag) returns boolean {
+                for (mutable int i = 0; i < this.argv.length(); i++) {
+                    if (this.argv[i].equals(flag)) { return true; }
+                }
+                return false;
+            }
+            public method value(String flag) returns String {
+                for (mutable int i = 0; i < this.argv.length(); i++) {
+                    if (this.argv[i].equals(flag) && i + 1 < this.argv.length()) {
+                        return this.argv[i + 1];
+                    }
+                }
+                return "";
+            }
+            public method count() returns int { return this.argv.length(); }
+            public method get(int i) returns String { return this.argv[i]; }
+        }
+    }

@@ -1,0 +1,19 @@
+import System.IO.Console;
+import System.Codecs.Adler32;
+program Adler32Demo;
+
+// Adler-32 checksum (RFC 1950 / zlib) in pure Polaron, verified against reference vectors. Prints:
+//   abc=38600999 wiki=300286872 empty=1
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("abc=%d wiki=%d empty=%d\n",
+                    cast<int>(Adler32.checksum("abc")),
+                    cast<int>(Adler32.checksum("Wikipedia")),
+                    cast<int>(Adler32.checksum("")));
+                return;
+            }
+        }
+    }
+}

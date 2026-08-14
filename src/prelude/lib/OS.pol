@@ -1,0 +1,213 @@
+    // `OS`, not `Os`: two-letter acronyms are upper-cased, three or more are PascalCase. The rest of
+    // the library already follows that rule -- `IO` and `OS` upper, `Ipc`/`Ecs`/`Json` Pascal -- and
+    // this namespace was the single violation, which is how the library came to have BOTH `System.Os`
+    // (holding Signals) and `System.OS` (holding ProcessResult, Subprocess, Pty). Same-named
+    // namespace blocks merge, so naming it correctly is all the merge takes.
+    public namespace OS {
+        // THE SIGNALS AN OPERATING SYSTEM CAN SEND A RUNNING PROGRAM, and the way to answer one.
+        //
+        // This exists so that installing a handler does not begin with an `extern cdecl` in
+        // somebody's own code. The `extern` has not disappeared -- it is right here, and reaching a
+        // C symbol that way is the design -- it has disappeared from EVERYBODY'S program, which is
+        // what a standard library is for.
+        //
+        // The numbers are the reason it earns its place. `2` is not a readable SIGINT, and the two
+        // families disagree about which signals exist at all: SIGBREAK is Windows and has no POSIX
+        // counterpart, SIGHUP is POSIX and does not exist on Windows. Only the two named below are
+        // the same number in both, so only those are offered -- a constant that is portable in name
+        // and not in behaviour is worse than no constant.
+        //
+        // What it is FOR: `interrupt` (spec 36 / docs/design/interrupt.md) is a method entered by
+        // something outside the program at a moment the program did not choose, and on a hosted
+        // system that is a signal. The handler must do almost nothing -- it may not allocate or
+        // block, because the code it interrupted may be standing inside the allocator -- so the
+        // shape that works is a flag stored into an `atomic<T>` or a `volatile` field, read by the
+        // main loop at a point of its own choosing.
+        //
+        //     public interrupt(int sig) returns void { itself.asked.store(true); }
+        //     Signals.answer(Signals.INTERRUPT, box.interrupt);
+        // WHAT THE MACHINE UNDER THE PROGRAM IS (spec 20).
+        //
+        // The async pool has always asked how many threads it will run at once. A program written
+        // in the language could not -- which left every worker pool anybody writes holding a number
+        // somebody guessed, right on the desk it was written at: three quarters of a big machine
+        // idle, and a small one oversubscribed into being slower than a single thread.
+        public class Machine {
+            // Never less than one. A program is going to divide by it.
+            public static method threads() returns int {
+                return System.OS.__machineThreads();
+            }
+        }
+
+        // A PROGRAM CAN FAIL ON PURPOSE.
+        //
+        // `main` returns `void`, so until this existed every Polaron program exited 0 -- one that
+        // printed "I do not know that command" and one that did exactly what it was asked were the
+        // same run to a script, a build, or a gate. This is the program's half of the conversation
+        // the operating system starts with a signal.
+        //
+        // `exit` and not `_exit`: what was printed is flushed first, so the last thing a program
+        // says actually reaches whoever is reading it.
+        public class Exit {
+            private extern cdecl static method exit(int code) returns void;
+
+            // Stop now, and hand this number back. Zero means it went well, by the convention every
+            // shell on earth already holds.
+            public static method now(int code) returns void {
+                Exit.exit(code);
+                return;
+            }
+
+            // The two that have names, so a caller reads a verdict rather than a number.
+            public static method ok() returns void {
+                Exit.exit(0);
+                return;
+            }
+
+            public static method failed() returns void {
+                Exit.exit(1);
+                return;
+            }
+        }
+
+        public class Signals {
+            // Ctrl-C, and the closest thing to "the user asked you to stop" that exists on both.
+            public static fixed int INTERRUPT = 2;
+            // A polite request to end, from `kill` or from a service manager.
+            public static fixed int TERMINATE = 15;
+
+            private extern cdecl static method signal(int sig, address handler) returns address;
+            private extern cdecl static method raise(int sig) returns int;
+
+            // Send a signal to THIS program. A real part of the interface -- a process asking
+            // itself to stop is how a supervisor's request gets turned into the same shutdown path
+            // an operator's Ctrl-C takes -- and the only way to exercise a handler without another
+            // process, which is what makes the path testable at all.
+            public static method sendToSelf(int sig) returns boolean {
+                return Signals.raise(sig) == 0;
+            }
+
+            // Install `handler` for `sig`, and answer whether it took. The address comes from
+            // binding an interrupt to an object -- `box.interrupt`, with no parentheses -- which is
+            // one act because a vector holds an address and nothing else.
+            //
+            // False means the C runtime refused, which it does for a signal it does not know. The
+            // caller is told rather than left with a handler that will never fire.
+            public static method answer(int sig, address handler) returns boolean {
+                address was = Signals.signal(sig, handler);
+                // SIG_ERR is -1 cast to a pointer, and it is the one answer that means refused.
+                return cast<long>(was) != (0 - 1);
+            }
+
+            // Put a signal back to what the runtime does by default -- for INTERRUPT, ending the
+            // process. A program that has finished its own shutdown wants this before it stops
+            // reading the flag, so a second Ctrl-C is not ignored by a handler nobody is watching.
+            public static method giveBack(int sig) returns boolean {
+                address was = Signals.signal(sig, cast<address>(0));
+                return cast<long>(was) != (0 - 1);
+            }
+        }
+    }
+    public namespace OS {
+        // The result of running a subprocess (spec 34): its captured stdout and exit code. Built by
+        // the `Process.run(cmd)` builtin, which runs the command through the shell.
+        public class ProcessResult {
+            public String output;
+            public int exitCode;
+            public constructor ProcessResult(String output, int exitCode) {
+                this.output = output;
+                this.exitCode = exitCode;
+            }
+            public method success() returns boolean { return this.exitCode == 0; }
+        }
+        // A persistent child process (debugger/LSP support): spawn a command, then exchange bytes over its
+        // stdin/stdout for its whole lifetime. Unlike Process.run (one-shot, captures stdout to EOF), this
+        // stays open for request/response protocols like DAP. Require `import System.OS.Subprocess;`.
+        public class Subprocess {
+            private mutable long handle;
+            private constructor Subprocess(long h) {
+                this.handle = h;
+            }
+            // Spawn `command` (run through the system shell). Check isValid() before use.
+            public static method start(String command) returns Subprocess {
+                return new Subprocess(Subproc.spawn(command)) on heap;
+            }
+            // Same, but the child's stderr is merged into its stdout: one stream carries everything it
+            // prints. That is what you want from a tool that reports on stderr (a compiler), and exactly
+            // what you must NOT do to a child speaking a framed protocol -- a stray log line would be read
+            // as part of a message. Hence two spawns, and a caller that says which one it means.
+            public static method startCombined(String command) returns Subprocess {
+                return new Subprocess(Subproc.spawnCombined(command)) on heap;
+            }
+            // Same as start(), but the child gets its OWN console window (Windows). start()/startCombined()
+            // are windowless -- a background tool piped to us. startVisible() is for launching an interactive
+            // console tool the user is meant to see and drive; its stdio is still piped, so you can read it too.
+            public static method startVisible(String command) returns Subprocess {
+                return new Subprocess(Subproc.spawnVisible(command)) on heap;
+            }
+            public method isValid() returns boolean {
+                return this.handle != cast<long>(0);
+            }
+            // Write bytes to the child's stdin; returns the number written (-1 on error).
+            public method write(String data) returns int {
+                return Subproc.writeStr(this.handle, data);
+            }
+            // Read the next available chunk from the child's stdout (blocks until data or EOF). Empty on EOF.
+            public method read() returns String {
+                return Subproc.readChunk(this.handle);
+            }
+            public method isAlive() returns boolean {
+                return Subproc.isAlive(this.handle);
+            }
+            // True when read() would return immediately (data ready or EOF): pump without blocking a UI loop.
+            public method canRead() returns boolean {
+                return Subproc.canRead(this.handle);
+            }
+            // Send EOF to the child's stdin without killing it, so a well-behaved child can finish and exit.
+            public method closeInput() returns void {
+                Subproc.closeStdin(this.handle);
+            }
+            // Close pipes and terminate the child if still running.
+            public method close() returns void {
+                Subproc.kill(this.handle);
+            }
+        }
+        // A child attached to a pseudo-console (ConPTY on Windows): unlike Subprocess (a plain line pipe),
+        // the child believes it is on a real terminal, so it emits ANSI colour/cursor sequences -- what an
+        // integrated terminal needs to run interactive/full-screen tools. Give the initial size in cells.
+        // Require `import System.OS.Pty;`.
+        public class Pty {
+            private mutable long handle;
+            private constructor Pty(long h) {
+                this.handle = h;
+            }
+            public static method start(String command, int cols, int rows) returns Pty {
+                return new Pty(Conpty.spawn(command, cols, rows)) on heap;
+            }
+            public method isValid() returns boolean {
+                return this.handle != cast<long>(0);
+            }
+            public method write(String data) returns int {
+                return Conpty.writeStr(this.handle, data);
+            }
+            // The next available chunk of the child's output (raw, ANSI included). Empty when nothing is ready.
+            public method read() returns String {
+                return Conpty.readChunk(this.handle);
+            }
+            public method canRead() returns boolean {
+                return Conpty.canRead(this.handle);
+            }
+            public method isAlive() returns boolean {
+                return Conpty.isAlive(this.handle);
+            }
+            // Tell the pseudo-console the viewport changed size (cells), so the child re-wraps its output.
+            public method resize(int cols, int rows) returns void {
+                Conpty.resize(this.handle, cols, rows);
+                return;
+            }
+            public method close() returns void {
+                Conpty.close(this.handle);
+                return;
+            }
+        }
+    }

@@ -1,0 +1,57 @@
+import System.IO.Console;
+program RegionClassRelease;
+
+// `release region <family root>` -- the phase arena, freed when the phase ends.
+//
+// This is what explicit release exists for. A region class's arena is owned by the TYPE, so its
+// lifetime would otherwise be the program's -- and "released at program exit" does not solve the case
+// that motivated the family: an AST built for one compilation phase, thrown away whole when the phase
+// is over, without walking it to free node by node.
+//
+// The release is GATED BY THE SAME LIVE-INSTANCE PROOF `unimport` performs, reusing the same counter.
+// With nothing alive there is no object whose fields or destructor can outlive the block; with
+// something alive, freeing it would hand every live reference a dangling pointer. That check is at RUN
+// TIME for the reason it always was: how many instances exist is not a question the compiler answers.
+//
+// Prints: 7 11 | after release: 5
+public bundle Main {
+    public namespace App {
+        // The family root owns the arena; the leaves are what actually gets allocated.
+        public abstract region class Node {
+            public mutable int value;
+            public constructor Node(int v) { this.value = v; }
+            public method get() returns int { return this.value; }
+        }
+        public region class Leaf extends Node {
+            public constructor Leaf(int v) { super(v); }
+        }
+        public region class Branch extends Node {
+            public mutable int weight;
+            public constructor Branch(int v, int w) { super(v); this.weight = w; }
+            public method total() returns int { return this.value + this.weight; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Phase one: build in the arena, read, then let every node die. `delete` on a region
+                // object runs the destructor and does NOT free into the bump allocator -- which is
+                // exactly what makes the count come down without giving the memory back one slot at
+                // a time.
+                Leaf a = new Leaf(7);
+                Branch b = new Branch(4, 7);
+                System.IO.Console.printf("%d %d | ", a.get(), b.total());
+                delete a;
+                delete b;
+
+                // The phase is over: the whole arena goes in one call, and the next `new` rebuilds it
+                // lazily -- the same path bare metal needs, since it runs no static constructors.
+                release region Node;
+
+                Leaf c = new Leaf(5);
+                System.IO.Console.printf("after release: %d\n", c.get());
+                delete c;
+                return;
+            }
+        }
+    }
+}

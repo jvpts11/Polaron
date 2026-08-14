@@ -1,0 +1,18 @@
+import System.Memory.Units.kilobytes;
+program RegionBadRollbackWrongRegion;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                stack region a = itself.allocate(1 kilobytes);
+                stack region b = itself.allocate(1 kilobytes);
+                checkpoint m = mark of region a;
+                rollback region b to m;   // Polaron-1714: m belongs to region a
+                release region a;
+                release region b;
+                return;
+            }
+        }
+    }
+}

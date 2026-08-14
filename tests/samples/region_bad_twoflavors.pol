@@ -1,0 +1,14 @@
+import System.Memory.Units.kilobytes;
+program RegionBadTwoFlavors;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                pool stack region k = itself.allocate(1 kilobytes);   // Polaron-1710: two flavors
+                release region k;
+                return;
+            }
+        }
+    }
+}

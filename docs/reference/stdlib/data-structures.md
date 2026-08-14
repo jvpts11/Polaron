@@ -1,11 +1,11 @@
 # Standard Library Reference — Advanced Data Structures
 
-This slice of the LDP3 standard library provides algorithmic and data-oriented types: prefix
+This slice of the Polaron standard library provides algorithmic and data-oriented types: prefix
 trees, graphs, heaps, disjoint sets, balanced/unbalanced trees, order-statistic sets, dynamic
 programming helpers, geometry/interval utilities, a small entity-component-system (ECS), and an
 observer/event system.
 
-All of these types live in the embedded LDP3 prelude (the `kPreludeSource` raw string in
+All of these types live in the embedded Polaron prelude (the `kPreludeSource` raw string in
 `src/cli/main.cpp`). Every stdlib type must be imported explicitly before use. The three
 namespaces covered here are:
 
@@ -18,11 +18,11 @@ Import a type with its fully qualified name, e.g. `import System.Collections.Int
 Reach for these when the everyday containers on the `System.Collections` collections page stop
 being enough: when you need shortest paths instead of plain adjacency, prefix lookups instead of
 whole-key equality, disjoint-set merges, range queries answered in logarithmic time, or eviction
-once a cache is full. None of them are runtime magic — each is ordinary LDP3 whose cost is exactly
+once a cache is full. None of them are runtime magic — each is ordinary Polaron whose cost is exactly
 what its backing arrays and loops imply, and the short paragraph above each type names that cost so
 you can pick the right tool for the input size. Many trade pointer chasing for flat arena arrays
 (a `next[node * 26 + c]` link instead of a node object), which keeps allocation predictable and
-plays to LDP3's manual-memory model.
+plays to Polaron's manual-memory model.
 
 Notes that apply throughout: an `int[]` is a heap-backed dynamic array; `T[]` is a generic array;
 `function<R, A...>` is a closure/lambda type with return type `R` and argument types `A...`;
@@ -72,7 +72,7 @@ Insert and lookup each cost O(length of the word), independent of how many words
 the reason to prefer it over a `HashSet` when you also need prefix queries. Words are restricted to
 lowercase `a`–`z`.
 
-```ldp3
+```polaron
 import System.Collections.Trie;
 
 Trie t = new Trie() on heap;
@@ -101,7 +101,7 @@ Members:
 from the same source, run one BFS yourself and read the distance array. Use this when edges are
 unweighted and you want the fewest hops (for weighted shortest paths, see `WeightedGraph`).
 
-```ldp3
+```polaron
 import System.Collections.Graph;
 
 Graph g = new Graph(5) on heap;   // vertices 0..4
@@ -150,7 +150,7 @@ Members:
 
 ## UnionFind
 
-**Namespace:** `System.Collections` — `import System.Collections.UnionFind;`
+**Namespace:** `System.Collections` — `import System.Algorithms.UnionFind;`
 
 Disjoint-set / union-find over a fixed range `0..n-1`, using union by rank with path halving.
 
@@ -165,8 +165,8 @@ With union by rank and path halving, every operation runs in near-constant amort
 inverse-Ackermann bound). It is the workhorse for connectivity questions: grouping equivalences,
 detecting cycles as you add edges, or building Kruskal's minimum spanning tree.
 
-```ldp3
-import System.Collections.UnionFind;
+```polaron
+import System.Algorithms.UnionFind;
 
 UnionFind uf = new UnionFind(6);   // 6 singletons: {0} {1} {2} {3} {4} {5}
 uf.merge(0, 1);
@@ -269,7 +269,7 @@ Members:
 
 **Namespace:** `System.Collections` — `import System.Collections.EnumMap;`
 
-A dense map keyed by enum ordinal (LDP3 enums are int ordinals): values live in a flat array sized
+A dense map keyed by enum ordinal (Polaron enums are int ordinals): values live in a flat array sized
 to the enum, with a parallel presence flag. O(1) put/get/containsKey.
 
 Members:
@@ -299,7 +299,7 @@ Members:
 
 ## Fenwick
 
-**Namespace:** `System.Collections` — `import System.Collections.Fenwick;`
+**Namespace:** `System.Collections` — `import System.Algorithms.Fenwick;`
 
 A Fenwick tree / binary indexed tree: O(log n) point updates and prefix/range sums over int
 values. Public API is 0-based.
@@ -314,7 +314,7 @@ Members:
 
 ## SegmentTree
 
-**Namespace:** `System.Collections` — `import System.Collections.SegmentTree;`
+**Namespace:** `System.Collections` — `import System.Algorithms.SegmentTree;`
 
 An iterative segment tree for range sums with O(log n) point updates, built from an `int[]`. Works
 for any length `n`.
@@ -328,8 +328,8 @@ Reach for a segment tree when values change *and* you keep asking for range sums
 `query` are O(log n). If the data never changes, a `Fenwick` tree is lighter; if you only need range
 *minimums* over fixed data, `SparseTable` answers in O(1).
 
-```ldp3
-import System.Collections.SegmentTree;
+```polaron
+import System.Algorithms.SegmentTree;
 
 int[] data = new int[5]();
 data[0] = 1; data[1] = 3; data[2] = 5; data[3] = 7; data[4] = 9;
@@ -343,7 +343,7 @@ st.query(1, 3);    // -> 10   (3 + 0 + 7)
 
 ## SparseTable
 
-**Namespace:** `System.Collections` — `import System.Collections.SparseTable;`
+**Namespace:** `System.Collections` — `import System.Algorithms.SparseTable;`
 
 A sparse table for O(1) range-minimum queries over a fixed `int[]`, after O(n log n) build.
 
@@ -387,7 +387,7 @@ arrays tracks recency, so the tail is always the entry to evict. `get` and `put`
 move the entry to the front; `contains` deliberately does not, so you can probe without disturbing
 the order.
 
-```ldp3
+```polaron
 import System.Collections.LruCache;
 
 LruCache cache = new LruCache(2) on heap;   // capacity 2
@@ -403,7 +403,7 @@ cache.get(3);      // -> 300
 
 ## Knapsack
 
-**Namespace:** `System.Collections` — `import System.Collections.Knapsack;`
+**Namespace:** `System.Collections` — `import System.Algorithms.Knapsack;`
 
 0/1 knapsack via the classic one-dimensional DP (swept high capacity to low so each item is used at
 most once). Static-only utility.
@@ -415,7 +415,7 @@ Members:
 
 ## Lcs
 
-**Namespace:** `System.Collections` — `import System.Collections.Lcs;`
+**Namespace:** `System.Collections` — `import System.Algorithms.Lcs;`
 
 Longest common subsequence length of two strings via a flat DP table. Static-only utility.
 
@@ -426,7 +426,7 @@ Members:
 
 ## QuickSelect
 
-**Namespace:** `System.Collections` — `import System.Collections.QuickSelect;`
+**Namespace:** `System.Collections` — `import System.Algorithms.QuickSelect;`
 
 Quickselect for the k-th smallest element in expected linear time (Lomuto partition, last-element
 pivot). Partitions the array in place.
@@ -468,7 +468,7 @@ Members:
 
 ## SlidingWindowMax
 
-**Namespace:** `System.Collections` — `import System.Collections.SlidingWindowMax;`
+**Namespace:** `System.Collections` — `import System.Algorithms.SlidingWindowMax;`
 
 Sliding-window maximum in linear time via a monotonic deque of indices. Static-only utility.
 
@@ -479,7 +479,7 @@ Members:
 
 ## Kadane
 
-**Namespace:** `System.Collections` — `import System.Collections.Kadane;`
+**Namespace:** `System.Collections` — `import System.Algorithms.Kadane;`
 
 Maximum-subarray sum by Kadane's algorithm. Static-only utility.
 
@@ -490,7 +490,7 @@ Members:
 
 ## IntervalMerge
 
-**Namespace:** `System.Collections` — `import System.Collections.IntervalMerge;`
+**Namespace:** `System.Collections` — `import System.Algorithms.IntervalMerge;`
 
 Interval merging: sorts intervals by start and coalesces overlaps in place. Static-only utility.
 
@@ -502,7 +502,7 @@ Members:
 
 ## IntervalScheduler
 
-**Namespace:** `System.Collections` — `import System.Collections.IntervalScheduler;`
+**Namespace:** `System.Collections` — `import System.Algorithms.IntervalScheduler;`
 
 Activity selection: the maximum number of mutually non-overlapping intervals, by the greedy
 earliest-finishing-time rule. Static-only utility.
@@ -545,7 +545,7 @@ Members:
 
 ## Fenwick2D
 
-**Namespace:** `System.Collections` — `import System.Collections.Fenwick2D;`
+**Namespace:** `System.Collections` — `import System.Algorithms.Fenwick2D;`
 
 A 2D Fenwick tree / binary indexed tree: O(log r · log c) point updates and rectangle sums over an
 int grid. Coordinates are 0-based.

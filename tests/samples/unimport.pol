@@ -1,0 +1,50 @@
+import System.Runtime.UnimportedTypeException;
+import System.IO.Console;
+import reflect;
+program Unimport;
+
+// Unimport (spec 30, "unloading agressivo"): `unimport Dog` both marks the class dead
+// (alive flag) AND physically overwrites its machine code in RAM with int3 traps -- the
+// instructions are ripped from memory. Using the type afterwards (new, or a method call
+// on a surviving instance) throws UnimportedTypeException via the alive guard, so we never
+// branch into the destroyed code. Method.firstByte() shows the code is gone (0xCC = 204).
+//
+// (Reimport can bring the code back -- it reloads the original bytes from the .exe on disk;
+// see reimport.pol.)
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public constructor Dog() {}
+            public method bark() returns void { System.IO.Console.println("Woof!"); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog a = new Dog() on heap;
+                a.bark();                                        // Woof!
+                Type t = reflect.typeOf<Dog>();
+                Method m = t.method("bark");
+                // A LIVE INSTANCE REFUSES THE RIP. This sample used to unimport with `a` still alive
+                // and then call `a.bark()` to watch it fail -- a scenario the language no longer
+                // lets arise, because it is the one that cannot be made safe: the object outlives
+                // the code its vtable, its fields and its destructor all depend on.
+                try {
+                    unimport Dog;
+                    System.IO.Console.println("should not reach");
+                } catch (UnimportedTypeException e) {
+                    System.IO.Console.println("live refused");
+                }
+                delete a;                                        // nothing alive now
+                unimport Dog;
+                System.IO.Console.printf("byte=%d\n", m.firstByte());    // 204 -- code physically overwritten
+                try {
+                    Dog b = new Dog() on heap;
+                    System.IO.Console.println("should not reach");
+                } catch (UnimportedTypeException e) {
+                    System.IO.Console.println("new caught");
+                }
+                return;
+            }
+        }
+    }
+}

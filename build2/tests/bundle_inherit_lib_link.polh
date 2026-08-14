@@ -1,0 +1,13 @@
+program InheritLib;
+
+public bundle InheritLib {
+    public namespace Ui {
+        public class Widget extends Object {
+            protected mutable int tag;
+            public constructor Widget(int tag);
+            public method weight() returns int;
+            public method label() returns int;
+            public method total() returns int;
+        }
+    }
+}

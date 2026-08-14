@@ -17,7 +17,7 @@
 #include <io.h>
 #endif
 
-namespace ldp3::lsp {
+namespace polaron::lsp {
 namespace {
 
 Json position(int line, int character) {
@@ -45,7 +45,7 @@ Json diagnostic(const SourceLocation& loc, const std::string& message) {
     Json d = Json::makeObject();
     d.set("range", pointRange(loc, 1));
     d.set("severity", Json::of(1));  // Error
-    d.set("source", Json::of(std::string("ldp3")));
+    d.set("source", Json::of(std::string("polaron")));
     d.set("message", Json::of(message));
     return d;
 }
@@ -65,7 +65,9 @@ Json symbol(const std::string& name, int kind, const SourceLocation& loc, Json c
     Json r = pointRange(loc, static_cast<int>(name.size()) + 1);
     s.set("range", r);
     s.set("selectionRange", r);
-    if (children.type == Json::Type::Array && !children.arr.empty()) s.set("children", std::move(children));
+    if (children.type == Json::Type::Array && !children.arr.empty()) {
+        s.set("children", std::move(children));
+    }
     return s;
 }
 
@@ -87,8 +89,12 @@ Json documentSymbols(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             Json children = Json::makeArray();
-            for (const ast::ClassDecl& c : ns.classes) children.push(classSymbol(c));
-            for (const ast::EnumDecl& e : ns.enums) children.push(symbol(e.name, kEnum, e.loc, Json::makeArray()));
+            for (const ast::ClassDecl& c : ns.classes) {
+                children.push(classSymbol(c));
+            }
+            for (const ast::EnumDecl& e : ns.enums) {
+                children.push(symbol(e.name, kEnum, e.loc, Json::makeArray()));
+            }
             out.push(symbol(ns.name, kNamespace, ns.loc, std::move(children)));
         }
     }
@@ -113,42 +119,72 @@ std::string wordAt(const std::string& text, int line, int character) {
     std::size_t pos = 0;
     for (int l = 0; l < line; ++l) {
         const std::size_t nl = text.find('\n', pos);
-        if (nl == std::string::npos) return "";
+        if (nl == std::string::npos) {
+            return "";
+        }
         pos = nl + 1;
     }
     const std::size_t lineEnd = text.find('\n', pos);
     const std::string row = text.substr(pos, lineEnd == std::string::npos ? std::string::npos
                                                                           : lineEnd - pos);
-    if (character < 0 || static_cast<std::size_t>(character) > row.size()) return "";
+    if (character < 0 || static_cast<std::size_t>(character) > row.size()) {
+        return "";
+    }
     std::size_t start = static_cast<std::size_t>(character);
     // A cursor just past the end of a word should still find it, which is where a click usually lands.
-    if (start > 0 && (start == row.size() || !isIdentChar(row[start]))) --start;
-    if (start >= row.size() || !isIdentChar(row[start])) return "";
+    if (start > 0 && (start == row.size() || !isIdentChar(row[start]))) {
+        --start;
+    }
+    if (start >= row.size() || !isIdentChar(row[start])) {
+        return "";
+    }
     std::size_t end = start;
-    while (start > 0 && isIdentChar(row[start - 1])) --start;
-    while (end + 1 < row.size() && isIdentChar(row[end + 1])) ++end;
+    while (start > 0 && isIdentChar(row[start - 1])) {
+        --start;
+    }
+    while (end + 1 < row.size() && isIdentChar(row[end + 1])) {
+        ++end;
+    }
     return row.substr(start, end - start + 1);
 }
 
 std::string typeText(const ast::TypeRef& t) {
     std::string s = t.name;
-    if (t.arrayElemPointer) s += "*";
-    for (int i = 0; i < t.arrayDims; ++i) s += "[]";
-    for (int i = 0; i < t.pointerDepth; ++i) s += "*";
-    if (t.isRef) s += "&";
-    if (t.isNullable) s = "nullable " + s;
+    if (t.arrayElemPointer) {
+        s += "*";
+    }
+    for (int i = 0; i < t.arrayDims; ++i) {
+        s += "[]";
+    }
+    for (int i = 0; i < t.pointerDepth; ++i) {
+        s += "*";
+    }
+    if (t.isRef) {
+        s += "&";
+    }
+    if (t.isNullable) {
+        s = "nullable " + s;
+    }
     return s;
 }
 
 // The declaration line, as it would be written -- what hover shows.
 std::string methodSignature(const ast::ClassDecl& c, const ast::MethodDecl& m) {
     std::string s;
-    if (!m.visibility.empty()) s += m.visibility + " ";
-    if (m.isStatic) s += "static ";
-    if (m.isAbstract) s += "abstract ";
+    if (!m.visibility.empty()) {
+        s += m.visibility + " ";
+    }
+    if (m.isStatic) {
+        s += "static ";
+    }
+    if (m.isAbstract) {
+        s += "abstract ";
+    }
     s += "method " + c.name + "." + m.name + "(";
     for (std::size_t i = 0; i < m.params.size(); ++i) {
-        if (i > 0) s += ", ";
+        if (i > 0) {
+            s += ", ";
+        }
         s += typeText(m.params[i].type) + " " + m.params[i].name;
     }
     s += ") returns " + typeText(m.returnType);
@@ -157,9 +193,15 @@ std::string methodSignature(const ast::ClassDecl& c, const ast::MethodDecl& m) {
 
 std::string fieldSignature(const ast::ClassDecl& c, const ast::FieldDecl& f) {
     std::string s;
-    if (!f.visibility.empty()) s += f.visibility + " ";
-    if (f.isStatic) s += "static ";
-    if (f.isMutable) s += "mutable ";
+    if (!f.visibility.empty()) {
+        s += f.visibility + " ";
+    }
+    if (f.isStatic) {
+        s += "static ";
+    }
+    if (f.isMutable) {
+        s += "mutable ";
+    }
     s += typeText(f.type) + " " + c.name + "." + f.name;
     return s;
 }
@@ -177,23 +219,31 @@ struct Found {
 // where its name is. Highlighting that span would underline the wrong word, so the column is nudged
 // to the name itself when it can be found on that line.
 void aimAtName(const std::string& text, const std::string& name, Found& hit) {
-    if (!hit.found || name.empty()) return;
+    if (!hit.found || name.empty()) {
+        return;
+    }
     std::size_t pos = 0;
     for (int l = 1; l < hit.loc.line; ++l) {
         const std::size_t nl = text.find('\n', pos);
-        if (nl == std::string::npos) return;
+        if (nl == std::string::npos) {
+            return;
+        }
         pos = nl + 1;
     }
     const std::size_t lineEnd = text.find('\n', pos);
     const std::string row = text.substr(pos, lineEnd == std::string::npos ? std::string::npos
                                                                           : lineEnd - pos);
     const std::size_t at = row.find(name);
-    if (at != std::string::npos) hit.loc.col = static_cast<int>(at) + 1;   // locations are 1-based
+    if (at != std::string::npos) {
+        hit.loc.col = static_cast<int>(at) + 1;  // locations are 1-based
+    }
 }
 
 Found findDeclaration(const ast::Program& program, const std::string& name) {
     Found out;
-    if (name.empty()) return out;
+    if (name.empty()) {
+        return out;
+    }
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ClassDecl& c : ns.classes) {
@@ -265,13 +315,17 @@ struct ExtractPlan {
 
 // Does `name` appear as a whole identifier anywhere in `text`?
 bool mentions(const std::string& text, const std::string& name) {
-    if (name.empty()) return false;
+    if (name.empty()) {
+        return false;
+    }
     std::size_t at = text.find(name);
     while (at != std::string::npos) {
         const bool leftOk = at == 0 || !isIdentChar(text[at - 1]);
         const std::size_t end = at + name.size();
         const bool rightOk = end >= text.size() || !isIdentChar(text[end]);
-        if (leftOk && rightOk) return true;
+        if (leftOk && rightOk) {
+            return true;
+        }
         at = text.find(name, at + 1);
     }
     return false;
@@ -286,8 +340,12 @@ std::string linesOf(const std::string& text, int first, int last) {
         const std::size_t nl = text.find('\n', pos);
         const std::string row = text.substr(pos, nl == std::string::npos ? std::string::npos
                                                                          : nl - pos);
-        if (line >= first) out += row + "\n";
-        if (nl == std::string::npos) break;
+        if (line >= first) {
+            out += row + "\n";
+        }
+        if (nl == std::string::npos) {
+            break;
+        }
         pos = nl + 1;
         ++line;
     }
@@ -307,11 +365,15 @@ ExtractPlan planExtraction(const ast::Program& program, const std::string& text,
             for (const ast::ClassDecl& c : ns.classes) {
                 for (const ast::MemberPtr& mp : c.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(mp.get());
-                    if (m == nullptr || m->body.statements.empty()) continue;
+                    if (m == nullptr || m->body.statements.empty()) {
+                        continue;
+                    }
                     const int first = m->loc.line;
                     int last = first;
                     for (const ast::StmtPtr& s : m->body.statements) {
-                        if (s && s->loc.line > last) last = s->loc.line;
+                        if (s && s->loc.line > last) {
+                            last = s->loc.line;
+                        }
                     }
                     if (startLine >= first && endLine <= last + 1) {
                         owner = m;
@@ -333,13 +395,21 @@ ExtractPlan planExtraction(const ast::Program& program, const std::string& text,
     // Anything in scope before the selection and used inside it becomes a parameter: the method's
     // own parameters first, then locals declared above the selection.
     for (const ast::Param& p : owner->params) {
-        if (mentions(selected, p.name)) plan.params.push_back({p.name, typeText(p.type)});
+        if (mentions(selected, p.name)) {
+            plan.params.push_back({p.name, typeText(p.type)});
+        }
     }
     for (const ast::StmtPtr& s : owner->body.statements) {
         const auto* v = dynamic_cast<const ast::VarDeclStmt*>(s.get());
-        if (v == nullptr) continue;
-        if (v->loc.line >= startLine) continue;                 // declared after: not in scope yet
-        if (!mentions(selected, v->name)) continue;
+        if (v == nullptr) {
+            continue;
+        }
+        if (v->loc.line >= startLine) {
+            continue;  // declared after: not in scope yet
+        }
+        if (!mentions(selected, v->name)) {
+            continue;
+        }
         if (v->isVar) {
             // `var` records no type, and a parameter cannot be `var`. Refusing beats emitting a
             // signature that does not compile.
@@ -354,9 +424,15 @@ ExtractPlan planExtraction(const ast::Program& program, const std::string& text,
     std::vector<ExtractParam> escaping;
     for (const ast::StmtPtr& s : owner->body.statements) {
         const auto* v = dynamic_cast<const ast::VarDeclStmt*>(s.get());
-        if (v == nullptr) continue;
-        if (v->loc.line < startLine || v->loc.line > endLine) continue;
-        if (!mentions(after, v->name)) continue;
+        if (v == nullptr) {
+            continue;
+        }
+        if (v->loc.line < startLine || v->loc.line > endLine) {
+            continue;
+        }
+        if (!mentions(after, v->name)) {
+            continue;
+        }
         if (v->isVar) {
             plan.reason = "cannot extract: '" + v->name +
                           "' is declared with var and is used after the selection";
@@ -410,14 +486,18 @@ std::string uriToPath(const std::string& uri) {
 std::string pathToUri(const std::string& path) {
     std::string s = path;
     for (char& c : s) {
-        if (c == '\\') c = '/';
+        if (c == '\\') {
+            c = '/';
+        }
     }
     return "file:///" + s;
 }
 
 std::string readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
-    if (!in) return "";
+    if (!in) {
+        return "";
+    }
     std::ostringstream ss;
     ss << in.rdbuf();
     return ss.str();
@@ -428,7 +508,9 @@ std::string readFile(const std::string& path) {
 // string literals are NOT skipped here, since the caller decides whether those matter.
 std::vector<std::pair<int, int>> occurrences(const std::string& text, const std::string& name) {
     std::vector<std::pair<int, int>> out;
-    if (name.empty()) return out;
+    if (name.empty()) {
+        return out;
+    }
     int line = 0;
     std::size_t pos = 0;
     while (pos <= text.size()) {
@@ -446,7 +528,9 @@ std::vector<std::pair<int, int>> occurrences(const std::string& text, const std:
             }
             at = row.find(name, at + 1);
         }
-        if (nl == std::string::npos) break;
+        if (nl == std::string::npos) {
+            break;
+        }
         pos = nl + 1;
         ++line;
     }
@@ -510,7 +594,9 @@ void Server::notify(const std::string& method, Json params) {
 // from the stale copy is how a language server tells you about code you already changed.
 std::string Server::textFor(const std::string& uri) const {
     const auto it = documents_.find(uri);
-    if (it != documents_.end()) return it->second;
+    if (it != documents_.end()) {
+        return it->second;
+    }
     return readFile(uriToPath(uri));
 }
 
@@ -520,14 +606,20 @@ std::string Server::textFor(const std::string& uri) const {
 void Server::buildIndex() {
     index_.clear();
     projectFiles_.clear();
-    if (rootPath_.empty()) return;
+    if (rootPath_.empty()) {
+        return;
+    }
     std::error_code ec;
     const std::filesystem::path root(rootPath_);
-    if (!std::filesystem::is_directory(root, ec)) return;
+    if (!std::filesystem::is_directory(root, ec)) {
+        return;
+    }
     for (auto it = std::filesystem::recursive_directory_iterator(
              root, std::filesystem::directory_options::skip_permission_denied, ec);
          it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-        if (ec) break;
+        if (ec) {
+            break;
+        }
         const std::filesystem::path& p = it->path();
         // Skip build output and version control: their contents are generated or irrelevant, and a
         // staged copy of the whole project would double every result.
@@ -538,12 +630,16 @@ void Server::buildIndex() {
             it.disable_recursion_pending();
             continue;
         }
-        if (!it->is_regular_file(ec) || p.extension() != ".ldp3") continue;
+        if (!it->is_regular_file(ec) || p.extension() != ".pol") {
+            continue;
+        }
         const std::string path = p.string();
         const std::string uri = pathToUri(path);
         projectFiles_.push_back(uri);
         const std::string text = textFor(uri);
-        if (text.empty()) continue;
+        if (text.empty()) {
+            continue;
+        }
         Lexer lexer(text, uri);
         Parser parser(lexer.tokenize(), uri);
         const ast::Program program = parser.parse();
@@ -595,10 +691,14 @@ void Server::publishDiagnostics(const std::string& uri) {
 
     Lexer lexer(text, uri);
     std::vector<Token> tokens = lexer.tokenize();
-    for (const LexError& e : lexer.errors()) diags.push(diagnostic(e.loc, e.message));
+    for (const LexError& e : lexer.errors()) {
+        diags.push(diagnostic(e.loc, e.message));
+    }
     Parser parser(std::move(tokens), uri);
     parser.parse();
-    for (const ParseError& e : parser.errors()) diags.push(diagnostic(e.loc, e.message));
+    for (const ParseError& e : parser.errors()) {
+        diags.push(diagnostic(e.loc, e.message));
+    }
 
     Json params = Json::makeObject();
     params.set("uri", Json::of(uri));
@@ -631,15 +731,21 @@ void Server::handle(const Json& message) {
             rootPath_ = uriToPath(rootUri);
         } else {
             const std::string rootPath = params.getString("rootPath");
-            if (!rootPath.empty()) rootPath_ = rootPath;
+            if (!rootPath.empty()) {
+                rootPath_ = rootPath;
+            }
         }
-        if (idPtr) reply(*idPtr, std::move(result));
+        if (idPtr) {
+            reply(*idPtr, std::move(result));
+        }
         initialized_ = true;
         buildIndex();
         return;
     }
     if (method == "shutdown") {
-        if (idPtr) reply(*idPtr, Json{});
+        if (idPtr) {
+            reply(*idPtr, Json{});
+        }
         return;
     }
     if (method == "textDocument/didOpen") {
@@ -678,18 +784,24 @@ void Server::handle(const Json& message) {
         Lexer lexer(documents_[uri], uri);
         Parser parser(lexer.tokenize(), uri);
         const ast::Program program = parser.parse();
-        if (idPtr) reply(*idPtr, documentSymbols(program));
+        if (idPtr) {
+            reply(*idPtr, documentSymbols(program));
+        }
         return;
     }
     if (method == "textDocument/completion") {
-        if (idPtr) reply(*idPtr, keywordCompletion());
+        if (idPtr) {
+            reply(*idPtr, keywordCompletion());
+        }
         return;
     }
     // A Forge extension, not standard LSP: given a line range, say what the extracted method's
     // signature has to be. The editor cannot work this out, because it does not know the types.
-    if (method == "ldp3/extractMethod") {
+    if (method == "polaron/extractMethod") {
         const std::string uri = uriOf(params);
-        if (!idPtr) return;
+        if (!idPtr) {
+            return;
+        }
         if (documents_.find(uri) == documents_.end()) {
             reply(*idPtr, Json{});
             return;
@@ -735,7 +847,9 @@ void Server::handle(const Json& message) {
     if (method == "textDocument/references" || method == "textDocument/rename") {
         const std::string uri = uriOf(params);
         const Json* posPtr = params.get("position");
-        if (!idPtr) return;
+        if (!idPtr) {
+            return;
+        }
         if (!posPtr) {
             reply(*idPtr, Json{});
             return;
@@ -750,9 +864,13 @@ void Server::handle(const Json& message) {
         std::vector<std::string> files = projectFiles_;
         bool haveCurrent = false;
         for (const std::string& f : files) {
-            if (f == uri) haveCurrent = true;
+            if (f == uri) {
+                haveCurrent = true;
+            }
         }
-        if (!haveCurrent) files.push_back(uri);
+        if (!haveCurrent) {
+            files.push_back(uri);
+        }
 
         if (method == "textDocument/references") {
             Json out = Json::makeArray();
@@ -780,7 +898,9 @@ void Server::handle(const Json& message) {
         for (const std::string& f : files) {
             const std::string body = textFor(f);
             const auto hits = occurrences(body, name);
-            if (hits.empty()) continue;
+            if (hits.empty()) {
+                continue;
+            }
             Json edits = Json::makeArray();
             for (const auto& [line, col] : hits) {
                 Json e = Json::makeObject();
@@ -798,7 +918,9 @@ void Server::handle(const Json& message) {
     if (method == "textDocument/definition" || method == "textDocument/hover") {
         const std::string uri = uriOf(params);
         const Json* posPtr = params.get("position");
-        if (!idPtr) return;
+        if (!idPtr) {
+            return;
+        }
         if (!posPtr || documents_.find(uri) == documents_.end()) {
             reply(*idPtr, Json{});
             return;
@@ -846,7 +968,7 @@ void Server::handle(const Json& message) {
         // than from this file, in which case hit is empty and hovering would show a blank box.
         Json contents = Json::makeObject();
         contents.set("kind", Json::of(std::string("markdown")));
-        contents.set("value", Json::of("```ldp3\n" + detail + "\n```"));
+        contents.set("value", Json::of("```polaron\n" + detail + "\n```"));
         Json result = Json::makeObject();
         result.set("contents", std::move(contents));
         result.set("range", range(targetLine, targetCol, targetCol + static_cast<int>(width)));
@@ -854,7 +976,9 @@ void Server::handle(const Json& message) {
         return;
     }
     // Unknown request: reply null so the client is not left waiting.
-    if (idPtr) reply(*idPtr, Json{});
+    if (idPtr) {
+        reply(*idPtr, Json{});
+    }
 }
 
 int Server::run() {
@@ -867,8 +991,12 @@ int Server::run() {
         std::string line;
         bool sawHeader = false;
         while (std::getline(std::cin, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.empty()) break;  // blank line ends the headers
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            if (line.empty()) {
+                break;  // blank line ends the headers
+            }
             sawHeader = true;
             const std::string prefix = "Content-Length:";
             if (line.compare(0, prefix.size(), prefix) == 0) {
@@ -879,20 +1007,30 @@ int Server::run() {
                 }
             }
         }
-        if (!std::cin.good() && !sawHeader) break;  // EOF
-        if (contentLength == 0) continue;
+        if (!std::cin.good() && !sawHeader) {
+            break;  // EOF
+        }
+        if (contentLength == 0) {
+            continue;
+        }
 
         std::string body(contentLength, '\0');
         std::cin.read(body.data(), static_cast<std::streamsize>(contentLength));
-        if (static_cast<std::size_t>(std::cin.gcount()) != contentLength) break;
+        if (static_cast<std::size_t>(std::cin.gcount()) != contentLength) {
+            break;
+        }
 
         Json message;
-        if (!Json::parse(body, message)) continue;
+        if (!Json::parse(body, message)) {
+            continue;
+        }
         const std::string method = message.getString("method");
-        if (method == "exit") break;
+        if (method == "exit") {
+            break;
+        }
         handle(message);
     }
     return 0;
 }
 
-}  // namespace ldp3::lsp
+}  // namespace polaron::lsp

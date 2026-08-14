@@ -1,0 +1,41 @@
+import System.IO.Console;
+program InterruptHosted;
+
+// `interrupt` outside freestanding. The MEANING is what makes the keyword portable -- a method
+// ENTERED by something outside the program, at a moment the program did not choose -- and a POSIX
+// signal is exactly that. Only the lowering differs: bare metal gets `x86_intrcc` and an `iretq`,
+// hosted gets `void(int)`, which is what `signal()` takes on POSIX and through the Windows CRT.
+//
+// This one installs itself with the REAL `signal()` and raises the signal for real, so it proves the
+// entry point is genuinely callable by a C runtime that knows nothing about Polaron.
+
+public bundle Main {
+    public namespace App {
+        public class Posix {
+            public extern cdecl static method signal(int sig, address handler) returns address;
+            public extern cdecl static method raise(int sig) returns int;
+        }
+
+        public class Interruptible {
+            // `volatile` because the handler and the code it interrupts share this field. Not a
+            // formality: without it the compiler is entitled to keep `caught` in a register across
+            // the `raise`, and the print would show the value from before the signal.
+            private volatile mutable int caught;
+            public constructor Interruptible() { this.caught = 0; }
+            public interrupt(int signal) returns void { this.caught = signal; }
+            public method caughtSignal() returns int { return this.caught; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Interruptible box = new Interruptible();
+                // Binding and the entry point are one act, hosted exactly as bare metal: there is
+                // nowhere to put the receiver except a slot the entry reads on arrival.
+                Posix.signal(2, box.interrupt);   // 2 = SIGINT
+                Posix.raise(2);
+                System.IO.Console.printf("caught=%d\n", box.caughtSignal());
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,40 @@
+# The style this codebase already had, written down rather than invented.
+#
+# Measured over the 52 142 lines of src/ and runtime/ before any reformatting: the median line is 53
+# columns, the 99th percentile is 109, and only 381 lines exceed 110. So the limit is 110 -- it is what
+# the code was already written to, not a preference imposed on it.
+#
+# This file exists because clang-tidy's --fix leaves a correct but unformatted `}` at column 0, and
+# repairing that by hand across 5 000 sites is not work a person should do.
+Language: Cpp
+BasedOnStyle: LLVM
+
+ColumnLimit: 110
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AccessModifierOffset: -4
+NamespaceIndentation: None
+PointerAlignment: Left
+ReferenceAlignment: Left
+BreakBeforeBraces: Attach
+Cpp11BracedListStyle: true
+AlwaysBreakTemplateDeclarations: Yes
+
+# A guard clause on one line reads better than three, and the codebase uses it throughout --
+# but never an `if` WITHOUT braces, which is the whole point of the pass that produced this file.
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: true
+
+# Includes are left exactly where their author put them. Reordering them is a separate decision from
+# formatting, and doing it silently inside a formatting pass is how a build breaks for a reason nobody
+# can see in the diff.
+SortIncludes: Never
+
+# Keep the long explanatory comments this codebase is built on: reflow them to the limit, do not
+# collapse or re-indent them into something else.
+ReflowComments: true
+SpacesBeforeTrailingComments: 2

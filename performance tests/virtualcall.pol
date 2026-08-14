@@ -1,0 +1,42 @@
+import System.IO.Console;
+program VirtualCall;
+
+// Virtual dispatch through an interface, in a loop the compiler cannot devirtualize because the
+// concrete type varies. This is what an OOP language must not be slow at; C++ virtual is the bar.
+
+public bundle main {
+    public namespace app {
+        public interface Shape {
+            public method area() returns int;
+        }
+        public class Square implements Shape {
+            private mutable int s;
+            public constructor Square(int s) { this.s = s; }
+            public override method area() returns int { return this.s * this.s; }
+        }
+        public class Rect implements Shape {
+            private mutable int w;
+            private mutable int h;
+            public constructor Rect(int w, int h) { this.w = w; this.h = h; }
+            public override method area() returns int { return this.w * this.h; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                int n = 2000;
+                Shape*[] shapes = new Shape*[n]();
+                for (mutable int i = 0; i < n; i++) {
+                    if (i % 2 == 0) { shapes[i] = new Square(i % 50) on heap; }
+                    else { shapes[i] = new Rect(i % 30, i % 40) on heap; }
+                }
+                mutable int acc = 0;
+                for (mutable int r = 0; r < 20000; r++) {
+                    for (mutable int i = 0; i < n; i++) {
+                        acc = (acc + shapes[i].area()) % 1000000007;
+                    }
+                }
+                System.IO.Console.printf("acc=%d\n", acc);
+                return;
+            }
+        }
+    }
+}

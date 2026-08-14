@@ -1,0 +1,28 @@
+import System.IO.Console;
+import fieldlib.store.Box;
+program FieldApp;
+
+// Writes an imported class's public field from outside the bundle, then asks the bundle what it sees.
+// Both sides must agree, and the private field must be untouched.
+//
+// Before the header reserved private fields, this printed `visible=7 get=42 hidden=7`: the consumer
+// wrote into the bundle's private `hidden`, the bundle never saw the write, and each side was
+// perfectly consistent with itself.
+//
+// `packed` is read back as well, so the bit-field branch of the reservation is exercised rather than
+// assumed: lose a bit field's width in the header and every field after it moves.
+// Prints: visible = 7, get = 7, hidden = 11, packed = 18
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box b = new Box() on heap;
+                b.visible = 7;
+                System.IO.Console.printf("visible = %d, get = %d, hidden = %d, packed = %d\n",
+                                         b.visible, b.get(), cast<int>(b.peekHidden()),
+                                         b.peekPacked());
+                return;
+            }
+        }
+    }
+}
