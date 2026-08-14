@@ -258,8 +258,19 @@
         // returns the 64-character lowercase hex of the hash. The method is named digest, not hash, since hash
         // is the Hashable interface method.
         public class Sha256 {
-            private static method rotr(uint x, int n) returns uint { return (x >> n) | (x << (32 - n)); }
-            private static method putWord(int[] out, int off, uint w) returns void {
+            // `internal` rather than `private`, and this is a correction rather than a loosening: Sha1
+            // and Sha224 have always called these two, and the comments on those classes say so out
+            // loud ("Reuses Sha256.rotr/putWord/toHex"). It compiled because member visibility was
+            // enforced nowhere -- the word was written, carried into the header and printed in the
+            // documentation, and never checked. The first program compiled after the check landed said
+            // so 22 times, all of it here.
+            //
+            // `internal` is the accurate word (spec 2.6: the same program, any bundle): these are the
+            // SHA family's shared bit plumbing, not part of Sha256's surface. Making them public would
+            // put them in the documentation as though a caller were meant to use them; leaving them
+            // private and reaching in anyway is what the compiler now refuses.
+            internal static method rotr(uint x, int n) returns uint { return (x >> n) | (x << (32 - n)); }
+            internal static method putWord(int[] out, int off, uint w) returns void {
                 out[off]   = cast<int>((w >> 24) & cast<uint>(255));
                 out[off+1] = cast<int>((w >> 16) & cast<uint>(255));
                 out[off+2] = cast<int>((w >> 8) & cast<uint>(255));

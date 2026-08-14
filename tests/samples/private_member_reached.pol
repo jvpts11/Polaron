@@ -1,0 +1,42 @@
+import System.IO.Console;
+program PrivateMemberReached;
+
+// `private` DENIES SOMEBODY, which it did not until 2026-08-14.
+//
+// The word was parsed, carried in the AST, written into the `.polh` and printed in the generated
+// documentation -- and never reached the analyzer's symbol table at all: `FieldInfo` and `MethodInfo`
+// had no visibility to consult, so the check was not merely absent, there was nothing to check
+// against. `Polaron-0201` existed in the diagnostic catalog, with its `why` and `prevent` text
+// written, for a rule nothing enforced.
+//
+// It stayed hidden because TYPE visibility *is* checked (`checkTypeAccessible`), so the word works at
+// one level and reads as meaningful at the other.
+//
+// Must fail with: 'secret' is private to 'Dog'
+public bundle Main {
+    public namespace App {
+
+        public class Dog {
+            private int hidden;
+            public constructor Dog() { this.hidden = 3; }
+            private method secret() returns int { return this.hidden; }
+            // Its own private member, through `this`: allowed, and the point of the word.
+            public method tell() returns int { return this.secret(); }
+        }
+
+        public class Other {
+            public method probe() returns int {
+                Dog d = new Dog();
+                return d.secret();
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Other o = new Other();
+                System.IO.Console.printf("%d\n", o.probe());
+                return;
+            }
+        }
+    }
+}

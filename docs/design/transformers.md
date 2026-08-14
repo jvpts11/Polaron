@@ -561,11 +561,16 @@ The note's finding that "derivation needed no implementation, it is a property o
 remains true about **when** to derive. It says nothing about the machinery to actually do it, and
 there is none.
 
-### 3. Operators from a transformer
+### 3. ~~Operators from a transformer~~ — **it already worked. Tested 2026-08-14.**
 
 One `compare` socket yielding `<`, `>`, `<=`, `>=` is the canonical case — it is Rust's `PartialOrd`.
-Operators are already `MethodDecl`s named `operator+`, **so this may already work and simply be
-untested**; verify before designing. If it works it is the flagship example this note lacks.
+Operators are already `MethodDecl`s named `operator+`, so the guess written here was that it might
+already work and simply be untested. **It does.** `tests/samples/transformer_operators.pol` declares
+exactly that transformer, applies it to a `Coin` that says only how two coins compare, and all four
+operators answer (`codegen_transformer_operators_runs`).
+
+Nothing was built for this; what was missing was the test, which is the difference between a feature
+and an accident that has not been broken yet. It is now the flagship example this note said it lacked.
 
 ### 4. The LAW of the relation
 

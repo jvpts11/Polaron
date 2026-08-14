@@ -1093,6 +1093,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
             }
         }
+        // A `private constructor` is how a type says "not by `new`" -- the singleton, the factory, the
+        // type reachable only through its own static maker. Checked here because `new` is the only
+        // place a constructor is named by a caller; the class's own static maker passes, since it is
+        // inside the owner.
+        checkMemberAccessible("constructor", cn, ci->ctorVisibility, cn, nw->loc);
         // Full construction: arguments align 1:1 with parameters, so type-check them. Fewer
         // arguments is a partial constructor (spec 18.9) -- omitted params come from persistent
         // fields and the alignment is not 1:1, so only the too-many case is an error there.
@@ -2084,6 +2089,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                                   call->loc);
                             return "";
                         }
+                        checkMemberAccessible("static method", mem->member, mit->second.visibility,
+                                              mit->second.owner, call->loc);
                         if (!mit->second.isStatic) {
                             error("method '" + mem->member + "' is not static; call it on an instance",
                                   call->loc);
@@ -2644,6 +2651,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 error("class '" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";
             }
+            checkMemberAccessible("method", mem->member, m->visibility, m->owner, call->loc);
             if (m->isInterrupt) {
                 error("an interrupt cannot be called -- it is ENTERED, by something outside the "
                       "program, at a moment the program did not choose. Calling it would be "
@@ -2888,6 +2896,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                               mem->loc);
                         return "";
                     }
+                    checkMemberAccessible("static field", mem->member, f->visibility, f->owner,
+                                          mem->loc);
                     if (!f->isStatic) {
                         error("field '" + mem->member +
                                   "' is not static; access it on an instance",
@@ -2911,6 +2921,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         std::string memType;
         if (const FieldInfo* f = findField(objType, mem->member)) {
             memType = f->type;
+            checkMemberAccessible("field", mem->member, f->visibility, f->owner, mem->loc);
             noteFieldForInterrupt(objType, mem->member, *f, mem->object.get(), mem->loc);  // rule 3, read
             // Partial move (spec 19.9): a field moved out of its parent is inaccessible until reassign.
             if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());

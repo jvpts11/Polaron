@@ -490,6 +490,22 @@ add_test(NAME codegen_region_class_move_in_errors
 set_tests_properties(codegen_region_class_move_in_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "would move it out of the only region its instances may be in")
 
+# `private` DENIES SOMEBODY. It was parsed, carried in the AST, written into the `.polh` and printed in
+# the generated documentation -- and never reached the analyzer's symbol table, so there was nothing to
+# check against. `Polaron-0201` sat in the diagnostic catalog with its explanation written, for a rule
+# nothing enforced. TYPE visibility was checked all along, which is what made the hole easy to miss.
+add_test(NAME sema_private_member_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/private_member_reached.pol")
+set_tests_properties(sema_private_member_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "'secret' is private to 'Dog'")
+
+# The word a type uses to say "not by `new`": a singleton, a factory, a type built only through its own
+# static maker. Same cause -- `ClassInfo` never received the constructor's visibility.
+add_test(NAME sema_private_constructor_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/private_constructor_reached.pol")
+set_tests_properties(sema_private_constructor_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "'Made' is private to 'Made'")
+
 # Everything beneath a region class must be one. A plain class inheriting from an abstract region class
 # would put its instances outside the family's region, and totality is the whole feature.
 add_test(NAME sema_region_class_escapee_errors
@@ -2615,6 +2631,31 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_satisfies.pol"
             "-DEXPECTED=70 100"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # THE OTHER HALF OF THE RULE. A visibility check that only refuses is half-measured, and every
+        # way to get this wrong is an over-refusal: own private through `this`, `protected` in a
+        # subclass, a private constructor reached from the type's own static maker, and `internal`,
+        # which is the same program and therefore denies nobody inside one compilation.
+        add_test(NAME codegen_visibility_allowed_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/visibility_allowed.pol"
+            "-DEXPECTED=legs=4 own=1 made=7 shared=9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ONE SOCKET, FOUR OPERATORS. The design note listed this as an improvement to build, with the
+        # guess that it might already work because operators are ordinary `MethodDecl`s -- and it does.
+        # What was missing was the test, which is the difference between a feature and an accident that
+        # has not been broken yet. It is also the flagship example that note said it lacked: `Coin` says
+        # how two coins compare and gains an ordering, expanded at compile time with no vtable.
+        add_test(NAME codegen_transformer_operators_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_operators.pol"
+            "-DEXPECTED=less=1 more=0 le=1 ge=0 eqle=1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

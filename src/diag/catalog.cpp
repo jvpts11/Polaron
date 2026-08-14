@@ -83,9 +83,12 @@ constexpr Row kCatalog[] = {
 
     {Code::NotAccessible, {
         "Polaron-0201", "not accessible from here",
+        // `internal` said "the same bundle" here and the spec (2.6) says "the same program, any
+        // bundle" -- two documents disagreeing about a word, in the one place a reader meets it. The
+        // spec is the source of truth, so this text moved rather than the rule.
         "A member's visibility limits where it can be used: `private` is its own class only, `protected` "
-        "adds subclasses, `internal` is the same bundle, `public` is everywhere. This access is outside "
-        "the member's allowed scope.",
+        "adds subclasses, `internal` is the same program (any bundle in it), `public` is everywhere. "
+        "This access is outside the member's allowed scope.",
         "Access it from an allowed scope, widen the member's visibility if that is intended (e.g. make it "
         "`public`), or add a public method that exposes what you need instead of the member directly.",
         "Decide a type's public surface up front and keep internals `private`; reach them through methods. "
