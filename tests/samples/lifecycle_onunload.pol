@@ -1,0 +1,26 @@
+import System.IO.Console;
+program LifecycleOnUnload;
+
+// onClassUnload (spec 32.5): runs when the class is unimported (spec 30). Now that unimport
+// exists, the hook fires -- right before the class is marked dead and its code is ripped
+// from RAM.
+
+public bundle main {
+    public namespace app {
+        public class Cache {
+            onClassUnload { System.IO.Console.println("cache unloaded"); }
+            public constructor Cache() {}
+            public method use() returns void { System.IO.Console.println("using cache"); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Cache c = new Cache() on heap;
+                c.use();                 // using cache
+                delete c;                // the rip is refused while an instance is alive
+                unimport Cache;          // fires onClassUnload -> cache unloaded
+                System.IO.Console.println("done");
+                return;
+            }
+        }
+    }
+}

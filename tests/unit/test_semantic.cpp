@@ -7,7 +7,7 @@
 #include "parser/parser.h"
 #include "semantic/analyzer.h"
 
-using namespace ldp3;
+using namespace polaron;
 
 namespace {
 // Runs lex -> parse -> monomorphize -> sema on `src`; true if the program is valid.
@@ -1612,17 +1612,46 @@ TEST_CASE("parser accepts move on parameter and return types (spec 19.6)") {
     CHECK_FALSE(parser.hasErrors());
 }
 
-TEST_CASE("parser accepts a variadic extern and a library block (spec 26)") {
+TEST_CASE("parser accepts a variadic extern in a class named with its library (spec 26)") {
+    // The variadic extern and the library name both survived the FFI restructuring; where they live
+    // did not. A foreign method is a class member, and `library` names the library ON THE CLASS --
+    // an identifier, so the per-platform file name is forced into the manifest.
     Lexer lexer(
         "program P; public bundle b { public namespace n {"
-        " extern cdecl method printf(string format, ...) returns int;"
-        " extern cdecl library libc { method puts(string s) returns int;"
-        "   method abs(int x) returns int; }"
+        " public class LibC library C {"
+        "   private extern cdecl static method printf(string format, ...) returns int;"
+        "   private extern cdecl static method puts(string s) returns int;"
+        "   private extern cdecl static method magnitude(int x) returns int symbol(\"abs\"); }"
         " public class Main { public static method main(string[] args) returns void { } } } }",
         "test");
     Parser parser(lexer.tokenize(), "test");
     parser.parse();
     CHECK_FALSE(parser.hasErrors());
+}
+
+TEST_CASE("parser refuses a foreign method declared loose in a namespace (spec 26)") {
+    // The namespace-level forms declared a loose function -- which the language permits nowhere else
+    // -- and had no owner to be `private` to, so a binding could not be kept to the one class that
+    // uses it.
+    Lexer lexer(
+        "program P; public bundle b { public namespace n {"
+        " extern cdecl method printf(string format, ...) returns int;"
+        " public class Main { public static method main(string[] args) returns void { } } } }",
+        "test");
+    Parser parser(lexer.tokenize(), "test");
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
+TEST_CASE("parser refuses the namespace-level extern library block (spec 26)") {
+    Lexer lexer(
+        "program P; public bundle b { public namespace n {"
+        " extern cdecl library libc { method puts(string s) returns int; }"
+        " public class Main { public static method main(string[] args) returns void { } } } }",
+        "test");
+    Parser parser(lexer.tokenize(), "test");
+    parser.parse();
+    CHECK(parser.hasErrors());
 }
 
 TEST_CASE("parser accepts a generic bound that ends in '>>' (spec 15.2)") {

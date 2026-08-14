@@ -1,0 +1,35 @@
+// `unimport` AND `reimport` bare metal -- the use the whole feature was measured against: ripping a
+// driver's code out of a running kernel without rebooting it.
+//
+// Neither half is barred, and the reasoning that briefly barred `reimport` was wrong: it concluded
+// from the HOSTED mechanism (which reads the original bytes back out of the executable on disk, and
+// a kernel IS the image) instead of from the contract. The contract is two symbols the program
+// provides -- `__polaron_unload_fn` and `__polaron_reload_fn` -- exactly as it provides `__polaron_panic`.
+//
+// What they mean is the kernel's to decide, and a kernel has better options than the hosted one:
+// clear the present bit instead of overwriting, and the bytes are still in the frame, so putting
+// them back is setting the bit again. No disk, no copy, and the `.text` is never written.
+//
+// An IR test, because a kernel is tested by booting it. What it pins is that a freestanding image
+// needs NOTHING but those helpers -- no libc, no C++ unwinder, no prelude dragged in behind them.
+program UnimportFreestanding freestanding;
+
+public bundle Kernel {
+    public namespace Drv {
+        public class Nic {
+            public mutable int irq;
+            public constructor Nic() { this.irq = 11; }
+            public method poll() returns int { return this.irq; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Nic n = new Nic();
+                int seen = n.poll();
+                unimport Nic;
+                reimport Nic;
+                return seen;
+            }
+        }
+    }
+}

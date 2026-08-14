@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- The .ldp3 file icon: a document sheet with Flamo. Legible at 16px. Dark-theme variant
+  <!-- The .pol file icon: a document sheet with Flamo. Legible at 16px. Dark-theme variant
        (light sheet outline); see file-icon-light.svg for light themes. -->
   <path d="M7 3 h13 l5 5 v21 h-18 z" fill="none" stroke="#86a09b" stroke-width="2" stroke-linejoin="round"/>
   <path d="M20 3 v5 h5" fill="none" stroke="#86a09b" stroke-width="2" stroke-linejoin="round"/>

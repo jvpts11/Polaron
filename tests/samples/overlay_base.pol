@@ -1,0 +1,17 @@
+import System.IO.Console;
+program Overlay;
+
+// The file on disk. It is clean, so `polc --check overlay_base.pol` succeeds. An editor checking an
+// UNSAVED edit of it passes `--overlay overlay_base.pol=<scratch>`: the compiler reads the scratch bytes
+// (see overlay_broken.pol) but still reports every diagnostic against THIS path, so the error lands on the
+// file the user is looking at. That is what lets a check run on a buffer that was never written to disk.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"ok = {1}");
+                return;
+            }
+        }
+    }
+}

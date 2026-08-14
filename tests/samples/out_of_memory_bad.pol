@@ -1,0 +1,26 @@
+// No-UB regression: an allocation the machine cannot serve must stop the program with a message,
+// not hand back a null pointer.
+//
+// __polaron_malloc used to `return NULL` on exhaustion, and nothing downstream ever looks at what it
+// returns -- codegen zero-fills a fresh array and stores into a field straight away. So running out
+// of memory surfaced as an access violation at address zero, inside whatever code happened to touch
+// the block first, with no hint of the real cause. That is the C answer to this problem and it is
+// the undefined behaviour this language refuses.
+//
+// Asked for in one impossible request rather than by exhausting the machine: a hundred and twenty
+// eight gigabytes is beyond any commit limit this compiler runs under, malloc refuses it before a
+// single page is touched, and the test costs a millisecond instead of thrashing the box it runs on.
+
+program OutOfMemory;
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns int {
+                String seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+                String huge = seed.repeat(2000000000);    // 64 B x 2e9 = 128 GB
+                return huge.length();
+            }
+        }
+    }
+}

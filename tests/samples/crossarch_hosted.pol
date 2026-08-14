@@ -1,0 +1,53 @@
+import System.IO.Console;
+program CrossArchHosted;
+
+// THE HOSTED RUNTIME, ON A MACHINE THAT IS NOT THIS ONE.
+//
+// The suite already boots bare-metal images for AArch64 and i686, and those prove the compiler and the
+// freestanding shims. They prove nothing about the hosted runtime, because a kernel links none of it:
+// no allocator, no String helpers, nothing that talks to a libc. That half sat recorded as blocked on
+// "no sysroot and no qemu-user on this machine", which turned out to be one `apt-get install` away.
+//
+// So this program is deliberately not arithmetic. It allocates on the heap, keeps state across calls,
+// concatenates a String and asks its length -- `__polaron_malloc`, `__polaron_str_copy` and the
+// prelude, which is what a cross-compiled runtime has to get right.
+//
+// It is also what caught the third `memcpy` width bug: on i686 the length is 32 bits, and a call site
+// that had escaped the helper failed to verify at all. aarch64 and riscv64 were both green at the
+// time, because both are 64-bit and the wrong width happened to be the right one.
+//
+// Prints: polaron: 42, len 7
+public bundle Main {
+    public namespace App {
+
+        public class Node {
+            public mutable int v;
+            public mutable int seen;
+
+            invariant this.seen >= 0;
+
+            public constructor Node(int v) {
+                this.v = v;
+                this.seen = 0;
+            }
+
+            public method bump() returns int {
+                this.seen = this.seen + 1;
+                return this.v * this.seen;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* n = new Node(21) on heap;
+                n.bump();
+                int r = n.bump();       // 21 * 2
+                String s = "pola";
+                String t = s + "ron";
+                System.IO.Console.printf("%s: %d, len %d\n", t, r, t.length());
+                delete n;
+                return;
+            }
+        }
+    }
+}

@@ -1,17 +1,17 @@
 # 13. Diagnostics
 
-Every error and warning the LDP3 compiler emits carries a stable code — `LDP3-NNNN` — and,
+Every error and warning the Polaron compiler emits carries a stable code — `Polaron-NNNN` — and,
 by default, a short explanation of *what* went wrong, *why*, *how to fix it*, and *how to
 avoid it next time*. The goal is that a diagnostic teaches rather than just scolds: you
-should rarely have to search the web to understand an LDP3 error.
+should rarely have to search the web to understand a Polaron error.
 
 ## 13.1 Anatomy of a diagnostic
 
 A rich diagnostic (the default) looks like this:
 
 ```
-error[LDP3-0101]: use of undeclared variable 'coutn'
-  --> game/Board.ldp3:42:17
+error[Polaron-0101]: use of undeclared variable 'coutn'
+  --> game/Board.pol:42:17
       |
    42 |         return coutn;
       |                ^^^^^ not declared in this scope
@@ -28,13 +28,13 @@ error[LDP3-0101]: use of undeclared variable 'coutn'
 The parts:
 
 - **`error` / `warning`** — the severity. Warnings do not stop the build.
-- **`[LDP3-NNNN]`** — the stable diagnostic **code**. It never changes for a given kind of
-  problem, so it is safe to search for, suppress-by-policy, or look up with `ldp3 explain`.
+- **`[Polaron-NNNN]`** — the stable diagnostic **code**. It never changes for a given kind of
+  problem, so it is safe to search for, suppress-by-policy, or look up with `polaron explain`.
 - **the title** — the specific problem, naming the actual identifiers/types involved.
 - **the source span** — file, line, column, and a caret (`^^^`) under the exact tokens.
 - **why / fix / prevent** — the canonical explanation for that code. This wording is written
   once, in the compiler's diagnostic catalog, so it is identical wherever the code appears:
-  the terminal, `ldp3 explain`, and Forge's hover.
+  the terminal, `polaron explain`, and Forge's hover.
 
 ### Concise mode
 
@@ -42,19 +42,19 @@ Rich output is the default. For dense build logs or CI, pass `-q` (quiet) to get
 one-line form and drop the why/fix/prevent block:
 
 ```
-game/Board.ldp3:42:17: error[LDP3-0101]: use of undeclared variable 'coutn'
+game/Board.pol:42:17: error[Polaron-0101]: use of undeclared variable 'coutn'
 ```
 
-## 13.2 `ldp3 explain`
+## 13.2 `polaron explain`
 
 To read the full why / fix / prevent for a code without triggering it, ask the driver:
 
 ```
-ldp3 explain LDP3-0101      # the canonical explanation for one code (use the full LDP3- code)
-ldp3c --explain             # list every code the compiler knows
+polaron explain Polaron-0101      # the canonical explanation for one code (use the full Polaron- code)
+polc --explain             # list every code the compiler knows
 ```
 
-`ldp3 explain` forwards to the compiler, which owns the catalog, so the text is always in
+`polaron explain` forwards to the compiler, which owns the catalog, so the text is always in
 sync with the version you have installed.
 
 ## 13.3 Code ranges
@@ -76,11 +76,11 @@ codes are added over time.
 | `09xx`  | Freestanding mode                | `0901` not available in freestanding mode |
 | `17xx`  | Regions (flavors & operations)   | `1710` a region has one flavor · `1711` fixedslot/ring needs its element type · `1712` growable does not apply · `1713` mark/rollback need a stack region · `1714` checkpoint belongs to another region · `1715` a ring auto-evicts · `1717` use after extract · `1718` cannot extract an object whose field lives in the same region · `1719` a flavor only qualifies a region · `1720` an extract result must be bound · `1721` this hands out a pointer to storage about to disappear |
 
-Run `ldp3 explain` with no argument for the authoritative, complete list.
+Run `polaron explain` with no argument for the authoritative, complete list.
 
 ## 13.4 In the editor
 
 Forge surfaces the same codes end to end. Its live checker runs the compiler on the unsaved
 buffer, so diagnostics appear as you type; hovering a squiggle shows the code's why/fix/prevent
 (the same catalog text), **Alt+Enter** applies a suggested quick-fix where one exists, and
-**Ctrl+F1** runs `ldp3 explain` on the diagnostic under the caret.
+**Ctrl+F1** runs `polaron explain` on the diagnostic under the caret.

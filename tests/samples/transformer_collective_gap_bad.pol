@@ -1,0 +1,37 @@
+program TransformerCollectiveGapBad;
+
+// `collective` promises that every type applying it can become every other. `C` converts to nothing,
+// so nothing leads from `A` or `B` to `C`... the other way round: nothing leads OUT of `C` at all,
+// so the relation is not a relation. The error names the pair, and it names the cheap fix -- any
+// conversion that reaches the missing type, because the compiler composes the rest.
+public bundle Main {
+    public namespace App {
+        public collective transformer TScaler {
+            public procedure into<each Other>() returns Other;
+        }
+        public class A applies TScaler {
+            public mutable int v;
+            public constructor A(int d) { this.v = d; }
+            public procedure into<B>() returns B { return new B(itself.v); }
+        }
+        public class B applies TScaler {
+            public mutable int v;
+            public constructor B(int d) { this.v = d; }
+            public procedure into<C>() returns C { return new C(itself.v); }
+        }
+        public class C applies TScaler {
+            public mutable int v;
+            public constructor C(int d) { this.v = d; }
+            public procedure into<A>() returns A { return new A(itself.v); }
+        }
+        // D applies it and reaches nobody: the set is no longer one relation.
+        public class D applies TScaler {
+            public mutable int v;
+            public constructor D(int d) { this.v = d; }
+            public procedure into<A>() returns A { return new A(itself.v); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

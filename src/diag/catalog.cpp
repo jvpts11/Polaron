@@ -1,12 +1,12 @@
 #include "diag/diagnostic.h"
 
 // The diagnostic catalog: for each code, the canonical why / how-to-fix / how-to-prevent. Written once
-// here, per rule, so the wording stays consistent everywhere it appears -- the terminal, `ldp3 explain`,
+// here, per rule, so the wording stays consistent everywhere it appears -- the terminal, `polaron explain`,
 // and the Forge hover. The call-site supplies only the specific title (the names and types involved).
 //
 // classify() infers a code from a message so the hundreds of existing call-sites become rich without
 // being edited; the mapping is the one reviewable table at the bottom of this file.
-namespace ldp3::diag {
+namespace polaron::diag {
 
 namespace {
 struct Row {
@@ -17,17 +17,17 @@ struct Row {
 // clang-format off
 constexpr Row kCatalog[] = {
     {Code::SyntaxError, {
-        "LDP3-0001", "unexpected syntax here",
-        "The parser reached something it did not expect for this construct: LDP3 has a fixed grammar, so "
+        "Polaron-0001", "unexpected syntax here",
+        "The parser reached something it did not expect for this construct: Polaron has a fixed grammar, so "
         "every statement, declaration, and expression has a required shape. The token here does not fit it.",
         "Compare the line with a working example of the same construct. The usual causes are a missing `;` "
         "or `}`, a keyword left out (every block needs `{ }`; every method a `returns` type), or `{}` used "
-        "inline where LDP3 wants each statement on its own line.",
+        "inline where Polaron wants each statement on its own line.",
         "Let the editor close brackets and indent for you, and build often so a syntax slip is caught one "
         "line after you make it. The subset reference (F1) shows each construct's exact shape." }},
 
     {Code::LexError, {
-        "LDP3-0002", "cannot read this text",
+        "Polaron-0002", "cannot read this text",
         "The lexer -- the first pass, which turns characters into tokens -- hit something it cannot form a "
         "token from: an unterminated string or char literal, a stray character, or a malformed number.",
         "Close the string/char literal, remove the stray character, or fix the number. The caret points at "
@@ -36,7 +36,7 @@ constexpr Row kCatalog[] = {
         "theme makes an unterminated string obvious -- the colour runs to the end of the line." }},
 
     {Code::UndeclaredVariable, {
-        "LDP3-0101", "not declared in this scope",
+        "Polaron-0101", "not declared in this scope",
         "A name must be declared before it is read -- as a local (var/mutable), a parameter, a field (via "
         "this.), or a namespace constant. This name matches nothing visible here, which is almost always a "
         "typo or a missing declaration.",
@@ -46,7 +46,7 @@ constexpr Row kCatalog[] = {
         "name as you type, and Alt+Enter applies the suggested fix." }},
 
     {Code::NoSuchField, {
-        "LDP3-0102", "no such field on this type",
+        "Polaron-0102", "no such field on this type",
         "A field must be declared in the class (or a superclass) before it can be read or assigned. The "
         "type here declares no field by this name, so the access cannot resolve.",
         "Use the correct field name (see the suggestion, if any), or add the field to the class: "
@@ -55,7 +55,7 @@ constexpr Row kCatalog[] = {
         "makes its fields easy to remember; the structure panel (Ctrl+F12) shows them at a glance." }},
 
     {Code::NoSuchMethod, {
-        "LDP3-0103", "no such method on this type",
+        "Polaron-0103", "no such method on this type",
         "A method must be declared on the type (or a superclass/interface it has) before it can be called. "
         "The receiver's type exposes no method by this name.",
         "Call an existing method (member autocomplete lists them), or declare the method on the class. "
@@ -64,7 +64,7 @@ constexpr Row kCatalog[] = {
         "Interfaces make the available methods explicit at the call site's declared type." }},
 
     {Code::UnknownType, {
-        "LDP3-0104", "unknown type",
+        "Polaron-0104", "unknown type",
         "Every type name must resolve to a declared class, interface, enum, record, struct, or a built-in "
         "primitive. This name resolves to none of them -- it is misspelled, not imported, or not declared.",
         "Spell the type as declared, add the missing `import <bundle>.<namespace>.<Type>;`, or declare the "
@@ -73,7 +73,7 @@ constexpr Row kCatalog[] = {
         "every built-in type; the structure panel lists the project's own." }},
 
     {Code::UnknownName, {
-        "LDP3-0105", "no such name",
+        "Polaron-0105", "no such name",
         "This name (a class, region, label, imported symbol, or annotation) refers to something that is "
         "not declared or not in scope here, so the compiler cannot resolve what you mean.",
         "Declare or import the thing before you name it, or correct the spelling. For a label, define it "
@@ -82,18 +82,18 @@ constexpr Row kCatalog[] = {
         "(Ctrl+T) find a name across the whole project." }},
 
     {Code::NotAccessible, {
-        "LDP3-0201", "not accessible from here",
+        "Polaron-0201", "not accessible from here",
         "A member's visibility limits where it can be used: `private` is its own class only, `protected` "
         "adds subclasses, `internal` is the same bundle, `public` is everywhere. This access is outside "
         "the member's allowed scope.",
         "Access it from an allowed scope, widen the member's visibility if that is intended (e.g. make it "
         "`public`), or add a public method that exposes what you need instead of the member directly.",
         "Decide a type's public surface up front and keep internals `private`; reach them through methods. "
-        "Explicit visibility on every member (LDP3 requires it) keeps the boundary in view." }},
+        "Explicit visibility on every member (Polaron requires it) keeps the boundary in view." }},
 
     {Code::NullSafety, {
-        "LDP3-0300", "null where a value is required",
-        "Every type in LDP3 is non-null by default: `Tree*` is a pointer that always points at something. "
+        "Polaron-0300", "null where a value is required",
+        "Every type in Polaron is non-null by default: `Tree*` is a pointer that always points at something. "
         "`nullable T` is the opt-in that says \"this one may be absent\", and the compiler keeps the two "
         "apart so an absent value is a case you WROTE, never one you met at runtime.",
         "Three fixes, and which is right depends on what you meant. (1) If absence is a real state for this "
@@ -109,8 +109,8 @@ constexpr Row kCatalog[] = {
         "missing turns every other line into a place null cannot reach." }},
 
     {Code::TypeMismatch, {
-        "LDP3-0301", "wrong type here",
-        "LDP3 is statically typed: a value's type must match where it is used. Assignment, arguments, and "
+        "Polaron-0301", "wrong type here",
+        "Polaron is statically typed: a value's type must match where it is used. Assignment, arguments, and "
         "returns do not convert types implicitly, because a silent conversion is where bugs hide.",
         "Produce a value of the expected type, or convert explicitly with `cast<T>(value)` when the "
         "conversion is intended and safe. Check you are using the variable you think you are.",
@@ -118,8 +118,8 @@ constexpr Row kCatalog[] = {
         "shows a value's type, so a mismatch is visible before you build." }},
 
     {Code::ArgCount, {
-        "LDP3-0302", "wrong number of arguments",
-        "A method is called with exactly its declared parameters -- LDP3 has no overloading, so one name "
+        "Polaron-0302", "wrong number of arguments",
+        "A method is called with exactly its declared parameters -- Polaron has no overloading, so one name "
         "means one signature. Too few or too many arguments cannot match it.",
         "Pass exactly the declared parameters, in order. Signature help (in Forge, inside the `(`) shows "
         "them; check the method's declaration if unsure.",
@@ -127,16 +127,16 @@ constexpr Row kCatalog[] = {
         "signature (no overloading) means there is never a wrong overload to guess at." }},
 
     {Code::ReturnTypeMismatch, {
-        "LDP3-0303", "return type does not match",
+        "Polaron-0303", "return type does not match",
         "A `return` must produce a value of the method's declared return type (or nothing, for `void`). "
         "The returned value's type does not match what the method promises.",
         "Return a value of the declared type, convert it with `cast<T>(...)` if intended, or change the "
         "method's declared return type to match what it actually returns.",
-        "State return types explicitly (LDP3 requires them on methods) so the promise is visible. Forge's "
+        "State return types explicitly (Polaron requires them on methods) so the promise is visible. Forge's "
         "hover shows the expression's type next to the declared one." }},
 
     {Code::ArgType, {
-        "LDP3-0304", "argument type does not match the parameter",
+        "Polaron-0304", "argument type does not match the parameter",
         "Each argument's type must match (or be a subtype of) the parameter it is passed to; there is no "
         "implicit conversion. The value here is a different type than the parameter accepts.",
         "Pass a value of the parameter's type, or convert with `cast<T>(...)`. If you passed arguments in "
@@ -145,7 +145,7 @@ constexpr Row kCatalog[] = {
         "they hold makes an out-of-order or wrong-type argument obvious at the call site." }},
 
     {Code::BadCast, {
-        "LDP3-0305", "this cast is not allowed",
+        "Polaron-0305", "this cast is not allowed",
         "`cast<T>(value)` converts between types the language knows how to convert -- numbers, a base and "
         "its subclass, an int and a pointer in freestanding. This pair is not one of them.",
         "Cast only between convertible types. To treat an object as a related type, cast up or down its own "
@@ -154,7 +154,7 @@ constexpr Row kCatalog[] = {
         "genuinely needed, a comment on why keeps the intent (and its safety) clear." }},
 
     {Code::BadIndex, {
-        "LDP3-0306", "cannot index this",
+        "Polaron-0306", "cannot index this",
         "Indexing with `[i]` needs an array (or a pointer, in freestanding) and an integer index. Either "
         "the value indexed is not an array, or the index is not an integer.",
         "Index an array value, and use an integer index. If the value is a collection like ArrayList, use "
@@ -163,7 +163,7 @@ constexpr Row kCatalog[] = {
         "non-array is caught before you build; `.length()` bounds a loop safely." }},
 
     {Code::BadOperand, {
-        "LDP3-0307", "operator applied to the wrong type",
+        "Polaron-0307", "operator applied to the wrong type",
         "Each operator requires operands of a particular type: arithmetic and bitwise want integers, `!` "
         "wants a boolean, `~` wants an integer, and so on. An operand here is a type the operator rejects.",
         "Convert the operand to the type the operator expects, or use the right operator for the types you "
@@ -172,8 +172,8 @@ constexpr Row kCatalog[] = {
         "boolean where a number was meant, or the bitwise operator where the logical one was meant." }},
 
     {Code::AssignImmutable, {
-        "LDP3-0401", "this is not mutable",
-        "Values are immutable by default in LDP3; only a `mutable` variable or field can be reassigned. "
+        "Polaron-0401", "this is not mutable",
+        "Values are immutable by default in Polaron; only a `mutable` variable or field can be reassigned. "
         "Assigning to an immutable binding would break the guarantee that it never changes after init.",
         "Mark the declaration `mutable` if it is meant to change (`mutable int n = 0;`), or avoid the "
         "reassignment -- often a new local expresses the intent more clearly than mutating one.",
@@ -181,7 +181,7 @@ constexpr Row kCatalog[] = {
         "documents exactly what is expected to move. Fewer mutable bindings, fewer surprises." }},
 
     {Code::UseAfterMove, {
-        "LDP3-0402", "used after it was moved",
+        "Polaron-0402", "used after it was moved",
         "A `move` transfers ownership: the source is emptied so there is exactly one owner and no double "
         "free. Reading the moved-from value afterwards would read something that no longer owns its data.",
         "Use the destination of the move instead, or reassign the moved-from variable before using it "
@@ -190,7 +190,7 @@ constexpr Row kCatalog[] = {
         "soon after. Prefer references for sharing and copies for independent values." }},
 
     {Code::MoveMisuse, {
-        "LDP3-0403", "this cannot be moved",
+        "Polaron-0403", "this cannot be moved",
         "Ownership can only be transferred from something that owns a whole value. Moving out of a field of "
         "a live object, or moving an immutable binding, would leave a half-owned or unchangeable value.",
         "Move a whole owning variable, not a field of one still in use (make the field `partitionable` if "
@@ -199,16 +199,16 @@ constexpr Row kCatalog[] = {
         "`unique`/`movable` on a type document exactly how its instances may travel." }},
 
     {Code::InvalidAssignTarget, {
-        "LDP3-0404", "cannot assign to this",
+        "Polaron-0404", "cannot assign to this",
         "The left of `=` (or the target of `++`/`--`) must be an assignable place: a variable, a field, or "
         "an array element. This target is a value or expression, which has nowhere to store into.",
         "Assign to a variable, `this.field`, or `array[i]`. If you meant to compare, use `==`; assignment "
-        "is not an expression in LDP3, so `if (x = 5)` is always a mistake.",
+        "is not an expression in Polaron, so `if (x = 5)` is always a mistake.",
         "Assignment being a statement, not an expression, means a stray `=` in a condition is caught for "
         "you. Increment only real lvalues; compute new values into a named local otherwise." }},
 
     {Code::MissingReturn, {
-        "LDP3-0501", "not all paths return a value",
+        "Polaron-0501", "not all paths return a value",
         "A method that declares a non-void return type must return a value on every path that reaches its "
         "end. A path that falls off the end would leave the caller with no value.",
         "Add a `return <value>;` on the path that falls through -- often the final `else` or the code "
@@ -217,7 +217,7 @@ constexpr Row kCatalog[] = {
         "returns. A final unconditional `return` makes the fall-through impossible." }},
 
     {Code::MatchNotExhaustive, {
-        "LDP3-0502", "match does not cover every case",
+        "Polaron-0502", "match does not cover every case",
         "A `match`/`switch` must handle every possible value: a `sealed` type must cover all its permitted "
         "cases, and any other subject needs a `default`. An uncovered value would have no arm to run.",
         "Add the missing case, or a `default` arm. For a `sealed` type, cover each type in its `permits` "
@@ -226,7 +226,7 @@ constexpr Row kCatalog[] = {
         "so adding a new case turns every unhandled match into a compile error, not a silent gap." }},
 
     {Code::Redeclaration, {
-        "LDP3-0601", "already declared",
+        "Polaron-0601", "already declared",
         "A name can be declared once in a given scope. A second declaration -- of a type, a variable, or a "
         "name that shadows an enclosing one -- is ambiguous: later uses cannot tell which you mean.",
         "Rename one of them, or remove the duplicate if they were meant to be the same thing. Shadowing an "
@@ -235,7 +235,7 @@ constexpr Row kCatalog[] = {
         "show what names already exist before you add another." }},
 
     {Code::DuplicateField, {
-        "LDP3-0602", "duplicate field",
+        "Polaron-0602", "duplicate field",
         "Each field in a class must have a unique name; two fields with the same name would give one "
         "storage slot two meanings. This name is declared more than once in the class.",
         "Rename one field, or remove the duplicate if it was pasted by mistake. If a subclass field is "
@@ -244,7 +244,7 @@ constexpr Row kCatalog[] = {
         "per class keeps the field set short and collision-free." }},
 
     {Code::DuplicateMember, {
-        "LDP3-0603", "duplicate member",
+        "Polaron-0603", "duplicate member",
         "The members of a set must be distinct: an enum's constants, a catalog's values, and a call's named "
         "arguments each name a thing once. A repeat makes two entries indistinguishable.",
         "Remove or rename the duplicate. For a named argument passed twice, pass it once; for an enum or "
@@ -253,7 +253,7 @@ constexpr Row kCatalog[] = {
         "Short, meaningful names make an accidental duplicate stand out." }},
 
     {Code::InheritanceCycle, {
-        "LDP3-0604", "inheritance cycle",
+        "Polaron-0604", "inheritance cycle",
         "A class cannot (even transitively) extend itself, and a catalog cannot extend itself: the "
         "hierarchy has to bottom out, or laying out and initializing an instance would never terminate.",
         "Break the cycle -- one of the `extends`/`implements` links is wrong. Point the type at a real "
@@ -262,7 +262,7 @@ constexpr Row kCatalog[] = {
         "shallow hierarchies and interfaces over deep chains that are easy to tangle." }},
 
     {Code::LiteralSuffix, {
-        "LDP3-0701", "bad literal suffix",
+        "Polaron-0701", "bad literal suffix",
         "A literal's suffix picks its type (e.g. `10i8`, `3.0f`, `5m`) or its unit (a comptime size). This "
         "suffix is not one the compiler knows, or does not fit the literal it is on.",
         "Use a defined suffix for the type you want, or drop the suffix and let the literal take its "
@@ -271,7 +271,7 @@ constexpr Row kCatalog[] = {
         "The stdlib browser (F1) documents the numeric types and their suffixes." }},
 
     {Code::StringInterp, {
-        "LDP3-0702", "cannot interpolate this value",
+        "Polaron-0702", "cannot interpolate this value",
         "String interpolation `$\"... {x} ...\"` prints simple values -- numbers, char, boolean -- by "
         "lowering each hole to a printf conversion. A value with no such conversion cannot be interpolated.",
         "Interpolate a numeric/char/boolean value, or convert the value to one first (e.g. call a method "
@@ -280,7 +280,7 @@ constexpr Row kCatalog[] = {
         "Forge's hover shows a hole's type, so an unprintable one is visible before you build." }},
 
     {Code::PrintfFormat, {
-        "LDP3-0703", "printf needs a literal format string",
+        "Polaron-0703", "printf needs a literal format string",
         "The format argument of System.IO printf/println/print must be a string literal (or an "
         "interpolation), so the compiler can check and lower it at compile time -- there is no runtime "
         "String type yet to hold a computed format.",
@@ -290,7 +290,7 @@ constexpr Row kCatalog[] = {
         "(`%d`, `%c`) next to the values they format, where a mismatch is easy to spot." }},
 
     {Code::OperatorOverload, {
-        "LDP3-0801", "malformed operator overload",
+        "Polaron-0801", "malformed operator overload",
         "An `operator` declaration defines what a symbol means for a type; it has a fixed shape -- the "
         "operator, its operands, and a return type. This declaration does not match that shape.",
         "Declare the operator as the spec shows (`operator + (Other rhs) returns T { ... }`), with the "
@@ -299,7 +299,7 @@ constexpr Row kCatalog[] = {
         "say). A named method is clearer than an operator whose meaning is not obvious." }},
 
     {Code::ReflectionMisuse, {
-        "LDP3-0802", "reflection used incorrectly",
+        "Polaron-0802", "reflection used incorrectly",
         "Reflection (`reflect.typeOf<T>`, field/annotation access) needs `import reflect;` and a correct "
         "shape -- one type argument, a reflectable subject. This use is missing the import or malformed.",
         "Add `import reflect;`, and call the reflection API as documented (e.g. `reflect.typeOf<T>()` with "
@@ -308,7 +308,7 @@ constexpr Row kCatalog[] = {
         "keep the reflective code in one place so its import and shape are easy to keep correct." }},
 
     {Code::RegionMisuse, {
-        "LDP3-0803", "region used incorrectly",
+        "Polaron-0803", "region used incorrectly",
         "A region (spec 17) is a typed arena: its declaration, its address/range, and `new ... in region` "
         "have fixed shapes and type rules. This use breaks one of them -- a bad address, range, or type.",
         "Give the region a numeric or address bound where one is required, allocate types the region "
@@ -317,7 +317,7 @@ constexpr Row kCatalog[] = {
         "the compiler enforce it. Keep allocation and release of a region visibly paired." }},
 
     {Code::RegionTwoFlavors, {
-        "LDP3-1710", "a region has exactly one flavor",
+        "Polaron-1710", "a region has exactly one flavor",
         "A region's flavor is its reclaim strategy -- bump, pool, stack, fixedslot or ring (spec 17) -- and "
         "a region has exactly one. Two flavor words on one declaration (like `pool stack region`) name two "
         "contradictory strategies, so the compiler cannot pick how the region reclaims memory.",
@@ -328,7 +328,7 @@ constexpr Row kCatalog[] = {
         "together (bump), individually (pool/fixedslot), newest-first (stack), or oldest-out (ring)." }},
 
     {Code::RegionFlavorOnNonRegion, {
-        "LDP3-1719", "a flavor modifier only qualifies a region",
+        "Polaron-1719", "a flavor modifier only qualifies a region",
         "Words like `pool`, `stack`, `fixedslot`, `ring` and `growable` are region flavor/growth modifiers "
         "(spec 17): they only make sense in front of the `region` keyword, where they choose how the arena "
         "reclaims memory. Here one qualifies an ordinary declaration, which has no arena to reclaim.",
@@ -337,7 +337,7 @@ constexpr Row kCatalog[] = {
         "Reserve the flavor words for region declarations; everywhere else they are ordinary identifiers." }},
 
     {Code::RegionUseAfterExtract, {
-        "LDP3-1717", "use of a variable after it was extracted from its region",
+        "Polaron-1717", "use of a variable after it was extracted from its region",
         "`extract X from region R` relocates the object out of the region and transfers ownership to the "
         "result. Like `move`, it leaves the source variable empty: the region no longer owns that object, "
         "so reading the old handle would alias memory the region may already have reused.",
@@ -347,7 +347,7 @@ constexpr Row kCatalog[] = {
         "variable you will keep using." }},
 
     {Code::RegionExtractInnerField, {
-        "LDP3-1718", "cannot extract an object whose field lives in the same region",
+        "Polaron-1718", "cannot extract an object whose field lives in the same region",
         "`extract`/`delete from region` relocates or frees one object's own storage. This object owns a "
         "field allocated in the SAME region, so moving just the object would leave that field behind in the "
         "region -- a dangling pointer after the region is released, or a leak (spec 17).",
@@ -357,7 +357,7 @@ constexpr Row kCatalog[] = {
         "together on release) or all relocatable together." }},
 
     {Code::RegionExtractNotBound, {
-        "LDP3-1720", "an `extract` result must be bound",
+        "Polaron-1720", "an `extract` result must be bound",
         "`extract X from region R` transfers ownership of the relocated object to its result -- the caller "
         "must then delete it or hand it to something that will. A bare `extract ...;` statement drops that "
         "owner on the floor, leaking the object it just relocated to the heap (spec 17).",
@@ -367,7 +367,7 @@ constexpr Row kCatalog[] = {
         "never as a statement on its own." }},
 
     {Code::RegionMarkNonStack, {
-        "LDP3-1713", "mark/rollback need a stack region",
+        "Polaron-1713", "mark/rollback need a stack region",
         "`mark of region R` and `rollback region R to m` are the LIFO checkpoint operations of a `stack "
         "region` (spec 17): they record and rewind a single allocation cursor. A bump/pool/fixedslot/ring "
         "region has no LIFO cursor to mark, so these operations do not apply to it.",
@@ -377,7 +377,7 @@ constexpr Row kCatalog[] = {
         "rollback), pool for free-list reuse of individual objects." }},
 
     {Code::RegionCheckpointWrongRegion, {
-        "LDP3-1714", "this checkpoint belongs to another region",
+        "Polaron-1714", "this checkpoint belongs to another region",
         "A `checkpoint` records a cursor position in the specific `stack region` it was marked from. Rolling "
         "a different region back to it would rewind that region to an offset that means nothing there -- "
         "reviving or dropping the wrong objects (spec 17).",
@@ -386,7 +386,7 @@ constexpr Row kCatalog[] = {
         "Name checkpoints after their region, and mark/rollback the same region in a matched pair." }},
 
     {Code::RegionFixedslotAcceptsRequired, {
-        "LDP3-1711", "a fixedslot/ring region needs its single element type",
+        "Polaron-1711", "a fixedslot/ring region needs its single element type",
         "A `fixedslot` region is a single-size pool and a `ring` region is a fixed-purpose circular buffer "
         "(spec 17): both hold exactly one element type, which sets the slot size. Without it the compiler "
         "cannot size the slots or know what to allocate.",
@@ -395,7 +395,7 @@ constexpr Row kCatalog[] = {
         "Pick fixedslot/ring when the region holds many of ONE type; name that type in `.accepts({T})`." }},
 
     {Code::RegionRingNoDelete, {
-        "LDP3-1715", "a ring region auto-evicts; individual delete is not allowed",
+        "Polaron-1715", "a ring region auto-evicts; individual delete is not allowed",
         "A `ring` region is a bounded circular buffer: a new allocation past its capacity overwrites the "
         "oldest entry (running its destructor first). Deleting an individual entry would leave a hole in "
         "the ring and break that oldest-out discipline (spec 17).",
@@ -404,7 +404,7 @@ constexpr Row kCatalog[] = {
         "Reach for a ring only for bounded history/streaming where losing the oldest is the intent." }},
 
     {Code::RegionGrowableContradiction, {
-        "LDP3-1712", "growable does not apply here",
+        "Polaron-1712", "growable does not apply here",
         "`growable` lets a region chain another block when it fills (spec 17). It cannot combine with a "
         "region that is bounded or fixed by nature: a `ring` is intentionally bounded, a mapped "
         "(`at address`) region backs fixed foreign memory, and a `stack` region's mark/rollback cursor is "
@@ -416,7 +416,7 @@ constexpr Row kCatalog[] = {
         "(growable pool/bump); the two are mutually exclusive." }},
 
     {Code::VectorMisuse, {
-        "LDP3-0804", "vector/matrix operation is malformed",
+        "Polaron-0804", "vector/matrix operation is malformed",
         "The SIMD vector and matrix types have fixed shapes: a vecN has N numeric lanes, a mat4 has 16 "
         "numeric components and its own operations. This use has the wrong shape, component, or lane type.",
         "Give a vec/mat the right number of numeric components, index a lane that exists (x/y/z/w), and use "
@@ -425,7 +425,7 @@ constexpr Row kCatalog[] = {
         "stdlib browser (F1) documents each vector/matrix type and its operations." }},
 
     {Code::UnimportMisuse, {
-        "LDP3-0805", "unimport/reimport used incorrectly",
+        "Polaron-0805", "unimport/reimport used incorrectly",
         "unimport/reimport (spec 32) swap a program's code at runtime under strict rules: what you unimport "
         "must be importable back, and the reimport must match. This use violates one of those rules.",
         "unimport a name that can be reimported, and make the reimport's `expecting` signature match the "
@@ -434,7 +434,7 @@ constexpr Row kCatalog[] = {
         "code-swapping as a deliberate, well-tested seam, not a casual edit." }},
 
     {Code::Demand, {
-        "LDP3-0806", "demand",
+        "Polaron-0806", "demand",
         "`demand <cond> otherwise \"why\";` settles a condition while the program is being built. The "
         "condition must be known then, and it must hold. Either it did not fold to a constant, or it "
         "folded to false.",
@@ -444,7 +444,7 @@ constexpr Row kCatalog[] = {
         "cache line\" says why 20. A demand costs nothing at runtime -- it is gone by then." }},
 
     {Code::TryContext, {
-        "LDP3-0503", "`try?` needs a Result/Option method",
+        "Polaron-0503", "`try?` needs a Result/Option method",
         "`try?` unwraps a Result/Option and, on the error case, returns that error from the current method. "
         "That only type-checks where the method itself returns a Result/Option to carry the error out.",
         "Use `try?` only inside a method whose return type is Result or Option. Otherwise handle the value "
@@ -453,7 +453,7 @@ constexpr Row kCatalog[] = {
         "cleanly through it. Mixing `try?` into a plain method is the mismatch this catches." }},
 
     {Code::TryErrorType, {
-        "LDP3-0504", "`try?` propagates a failure this method cannot carry",
+        "Polaron-0504", "`try?` propagates a failure this method cannot carry",
         "On the failure path `try?` does not build a new value -- it returns the operand's failure "
         "UNCHANGED, byte for byte. So the operand's failure has to be one the enclosing method's return "
         "type already carries: the same family (a None is not an Err, and an Err's payload is not a "
@@ -469,7 +469,7 @@ constexpr Row kCatalog[] = {
         "composes freely inside a layer, and every conversion is somewhere you can read." }},
 
     {Code::IllegalExtend, {
-        "LDP3-0605", "cannot extend this type",
+        "Polaron-0605", "cannot extend this type",
         "A `final` class forbids any subclass, and a `sealed` type's variants are closed -- only its "
         "declared `permits` list may extend it. Extending outside those rules would break a guarantee the "
         "author made about the type's shape.",
@@ -479,7 +479,7 @@ constexpr Row kCatalog[] = {
         "its cases. Prefer composition over extending types that were sealed shut on purpose." }},
 
     {Code::IllegalOverride, {
-        "LDP3-0606", "cannot override a final method",
+        "Polaron-0606", "cannot override a final method",
         "A `final` method cannot be overridden: the base class declared that its behaviour is fixed, so "
         "subclasses rely on it. An override would silently change what callers of the base expect.",
         "Remove the override, or -- if the base method is meant to be customizable -- remove `final` from "
@@ -488,7 +488,7 @@ constexpr Row kCatalog[] = {
         "The keyword documents the contract; respecting it keeps subclasses substitutable." }},
 
     {Code::ConstraintNotMet, {
-        "LDP3-0307b", "type argument does not satisfy the bound",
+        "Polaron-0307b", "type argument does not satisfy the bound",
         "A generic parameter can carry a bound (`T extends Comparable<T>`), and every type argument must "
         "meet it, so the generic body can rely on the bounded capability. This argument does not.",
         "Pass a type that satisfies the bound (implements the required interface / extends the required "
@@ -497,7 +497,7 @@ constexpr Row kCatalog[] = {
         "the interface) before using it as the argument; the error names exactly which promise is missing." }},
 
     {Code::ContradictoryModifiers, {
-        "LDP3-0607", "these modifiers contradict each other",
+        "Polaron-0607", "these modifiers contradict each other",
         "Some modifiers make opposite promises and cannot combine -- e.g. `unique` guarantees a single live "
         "reference while `partitionable` hands out field-wise pieces. Together they would promise both.",
         "Keep the one modifier that matches your intent and drop the other. Decide whether the type is "
@@ -506,7 +506,7 @@ constexpr Row kCatalog[] = {
         "conflicting ones is the contradiction this catches before it can confuse callers." }},
 
     {Code::StaticInitNotConst, {
-        "LDP3-0608", "this static field's initializer has no value before the program starts",
+        "Polaron-0608", "this static field's initializer has no value before the program starts",
         "A static field is one storage location per class, laid down in the binary before `main` runs, so "
         "whatever it starts as has to be computable by the compiler. It may be written in terms of literals, "
         "consts, `comptime` methods, and OTHER static fields in any order -- the only thing that cannot work "
@@ -526,7 +526,7 @@ constexpr Row kCatalog[] = {
         "compiler can know goes in the declaration, what needs the machine goes in code." }},
 
     {Code::MoveRequired, {
-        "LDP3-0405", "a movable value is transferred, never copied -- say so",
+        "Polaron-0405", "a movable value is transferred, never copied -- say so",
         "`movable` on a class means its instances have exactly one owner at a time and travel by handing "
         "that ownership over. A plain binding would read as a copy, and for a type whose whole point is a "
         "single owner there is no such thing as a copy -- so the transfer is written down: `move x`. The "
@@ -543,7 +543,7 @@ constexpr Row kCatalog[] = {
         "as what it is." }},
 
     {Code::EscapesFrame, {
-        "LDP3-1721", "this hands out a pointer to storage that is about to disappear",
+        "Polaron-1721", "this hands out a pointer to storage that is about to disappear",
         "An object allocated in a method's own frame -- `new X()`, or `new X() on stack` -- lives exactly as "
         "long as the call. A pointer or reference to it that leaves the call (returned, or stored into "
         "something that outlives the call) is dangling the instant it arrives: the caller holds an address "
@@ -559,7 +559,7 @@ constexpr Row kCatalog[] = {
         "because a line that looks ordinary is exactly how this mistake survives review." }},
 
     {Code::ComptimeConstant, {
-        "LDP3-0807", "this must be a compile-time constant",
+        "Polaron-0807", "this must be a compile-time constant",
         "Some positions are evaluated by the compiler, not at run time -- a `comptime` argument, a `fixed` "
         "field initializer, an array size. They require a constant expression built from literals and other "
         "compile-time values.",
@@ -569,7 +569,7 @@ constexpr Row kCatalog[] = {
         "into other constant positions. A run-time value in a constant slot is the mismatch this flags." }},
 
     {Code::PersistentLifecycle, {
-        "LDP3-0808", "a persistent is never released",
+        "Polaron-0808", "a persistent is never released",
         "A `persistent` outlives normal scope and must be explicitly torn down: the program needs a "
         "`release persistent` for it somewhere, or the resource it holds lives forever.",
         "Add a `release persistent <name>;` on the path that ends its life. Pair every persistent's "
@@ -578,8 +578,8 @@ constexpr Row kCatalog[] = {
         "Keeping the create/release pair in view prevents the leak this catches." }},
 
     {Code::NotSupportedYet, {
-        "LDP3-0A01", "not implemented yet",
-        "This construct is valid LDP3 but the current compiler does not implement it yet. It is a gap in "
+        "Polaron-0A01", "not implemented yet",
+        "This construct is valid Polaron but the current compiler does not implement it yet. It is a gap in "
         "the toolchain, not a mistake in your code.",
         "Rework the code to avoid the unimplemented corner for now (the message says which one), or track "
         "the feature and revisit when the compiler grows it. Nearby language features usually cover the case.",
@@ -587,7 +587,7 @@ constexpr Row kCatalog[] = {
         "feature later is a one-line change. Report it so it gets prioritized." }},
 
     {Code::FreestandingRestriction, {
-        "LDP3-0901", "not available in freestanding mode",
+        "Polaron-0901", "not available in freestanding mode",
         "Freestanding mode (spec 36) targets bare metal with no runtime: features that need one -- "
         "async/await, exceptions, unimport, reflection, the Console -- are unavailable there by design.",
         "Remove the feature from freestanding code, or drop `freestanding` if this program actually runs on "
@@ -747,14 +747,20 @@ constexpr Rule kRules[] = {
 }  // namespace
 
 const Entry& entry(Code code) {
-    for (const Row& r : kCatalog)
-        if (r.code == code) return r.entry;
+    for (const Row& r : kCatalog) {
+        if (r.code == code) {
+            return r.entry;
+        }
+    }
     return kEmpty;
 }
 
 const Entry* entryByCodeString(std::string_view codeStr) {
-    for (const Row& r : kCatalog)
-        if (r.entry.codeStr == codeStr) return &r.entry;
+    for (const Row& r : kCatalog) {
+        if (r.entry.codeStr == codeStr) {
+            return &r.entry;
+        }
+    }
     return nullptr;
 }
 
@@ -774,8 +780,11 @@ std::string allCodesListing() {
 }
 
 Code classify(std::string_view message) {
-    for (const Rule& r : kRules)
-        if (message.find(r.needle) != std::string_view::npos) return r.code;
+    for (const Rule& r : kRules) {
+        if (message.find(r.needle) != std::string_view::npos) {
+            return r.code;
+        }
+    }
     return Code::None;
 }
 
@@ -785,4 +794,4 @@ bool g_conciseMode = false;
 void setConcise(bool concise) { g_conciseMode = concise; }
 bool conciseMode() { return g_conciseMode; }
 
-}  // namespace ldp3::diag
+}  // namespace polaron::diag

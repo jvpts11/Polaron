@@ -1,0 +1,24 @@
+import System.IO.Console;
+import ConvLib.Conv.TDescriber;
+import ConvLib.Conv.IShown;
+program TransformerBundleApp;
+
+// The consumer applies a transformer declared in ANOTHER bundle, answers its socket, and receives
+// the body -- and the interface the transformer promised on its behalf works too, so `IShown` is
+// satisfied by a member nobody in this file wrote.
+public bundle Main {
+    public namespace App {
+        public class Dog applies TDescriber {
+            public procedure label() returns int { return 7; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog d = new Dog();
+                IShown s = d;
+                System.IO.Console.printf("%d\n", s.describe());
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,50 @@
+import System.IO.Console;
+program RegionClassFamily;
+
+// `abstract region class` declares a region shared by EVERYTHING BENEATH IT.
+//
+// A pure region class holds one type, which cannot express a phase arena -- a compiler's AST nodes, a
+// frame's scratch objects -- where many types share one lifetime. The family is that case: `Ident` and
+// `Call` are different sizes and different types, and they live in one arena with one lifetime.
+//
+// The flavor falls out rather than being chosen: one type means one slot size (fixedslot, index
+// arithmetic); mixed sizes mean size classes and free lists (pool). Nothing arbitrary to teach.
+//
+// Prints: ident=7 call=42 total=49
+public bundle main {
+    public namespace app {
+
+        // The root declares the region. Not sealed -- being inherited from is what it is for.
+        public abstract region class Node {
+            public mutable int tag;
+            public constructor Node(int t) { this.tag = t; }
+            public method describe() returns int { return this.tag; }
+        }
+
+        public region class Ident extends Node {
+            public constructor Ident(int t) { super(t); }
+        }
+
+        // Deliberately a different size from Ident: a family's members are not uniform, which is
+        // exactly why the family's region is a pool and not a fixedslot.
+        public region class Call extends Node {
+            public mutable int argc;
+            public mutable int line;
+            public constructor Call(int t, int argc, int line) {
+                super(t);
+                this.argc = argc;
+                this.line = line;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Ident* i = new Ident(7);
+                Call* c = new Call(42, 2, 100);
+                System.IO.Console.printf("ident=%d call=%d total=%d\n",
+                                         i.describe(), c.describe(), i.describe() + c.describe());
+                return;
+            }
+        }
+    }
+}

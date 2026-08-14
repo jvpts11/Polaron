@@ -2,7 +2,7 @@
 
 #include "parser/ast.h"
 
-namespace ldp3 {
+namespace polaron {
 
 // AST-level loop optimization: interchange a reduction loop nest so the innermost loop becomes
 // unit-stride, which the backend vectorizer can then vectorize (matmul-style). Turns
@@ -21,4 +21,4 @@ namespace ldp3 {
 // interchange is a speedup). Otherwise a no-op. Run only at optimization levels >= 1.
 void interchangeReductionLoops(ast::Program& program);
 
-}  // namespace ldp3
+}  // namespace polaron

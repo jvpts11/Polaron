@@ -1,0 +1,24 @@
+import System.IO.Console;
+import System.Math.Crt;
+import System.Math.Factorize;
+program CrtFactorize;
+
+// Chinese remainder theorem and integer factorization (spec 34.6) in pure Polaron. Prints:
+//   crt=23
+//   lpf360=5 cnt360=6 lpf13=13
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] a = new int[3]();
+                mutable int[] n = new int[3]();
+                a[0]=2; n[0]=3; a[1]=3; n[1]=5; a[2]=2; n[2]=7;
+                System.IO.Console.printf("crt=%d\n", cast<int>(Crt.solve(a, n, 3)));
+                System.IO.Console.printf("lpf360=%d cnt360=%d lpf13=%d\n",
+                    Factorize.largestPrimeFactor(360), Factorize.factorCount(360),
+                    Factorize.largestPrimeFactor(13));
+                return;
+            }
+        }
+    }
+}

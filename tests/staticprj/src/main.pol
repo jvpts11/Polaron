@@ -1,0 +1,47 @@
+import System.IO.Console;
+program DistroProof;
+
+// A BINARY THAT RUNS ON DISTRIBUTIONS OLDER THAN THE ONE THAT BUILT IT.
+//
+// "Does Polaron work on most distros" turns out to be a question about symbol versions and nothing
+// else. Built on Ubuntu 26.04 this program records references up to `GLIBC_2.34` -- glibc 2.34 is
+// 2021, so every long-term distribution older than that refuses to start it, and says so in terms of
+// the dynamic loader rather than of the program. Measured, not assumed: `objdump -T` lists the
+// versions, and 2.34 is the ceiling because pthread moved into libc there.
+//
+// `polaron build --static` links the C library in instead. The result has no PT_INTERP and no
+// versioned symbol to satisfy, so the kernel is the only compatibility question left. It costs size
+// (93 KB -> 1.4 MB here) and it gives up `dlopen`, which is how a dynamically loaded `.polb` resolves
+// -- so a static link and `--use-dynamic` are mutually exclusive, and that is stated rather than
+// discovered.
+//
+// The program allocates and concatenates on purpose: a static link that quietly dropped the runtime
+// would still link and still print something.
+//
+// Prints: distro-proof 42 len 12
+public bundle Main {
+    public namespace App {
+
+        public class Bag {
+            public mutable int n;
+            public constructor Bag() { this.n = 0; }
+            public method add(int k) returns int {
+                this.n = this.n + k;
+                return this.n;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Bag* b = new Bag() on heap;
+                b.add(40);
+                b.add(2);
+                String s = "distro";
+                String t = s + "-proof";
+                System.IO.Console.printf("%s %d len %d\n", t, b.n, t.length());
+                delete b;
+                return;
+            }
+        }
+    }
+}

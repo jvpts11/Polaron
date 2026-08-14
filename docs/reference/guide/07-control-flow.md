@@ -1,7 +1,7 @@
 # 7. Control Flow
 
 Control flow is where a program stops being a list of declarations and starts making
-decisions. LDP3 gives you the full imperative toolkit you would expect — conditionals,
+decisions. Polaron gives you the full imperative toolkit you would expect — conditionals,
 loops, multi-way branching, and pattern matching — plus a small, deliberately unusual
 set of low-level jump constructs (the "chaos tetrad") for the rare occasions when
 ordinary structured flow gets in your way. This chapter walks through all of it, from
@@ -11,13 +11,13 @@ short program you can actually compile and run.
 Two rules cut across everything in this chapter, so it is worth stating them once and
 loudly before we begin.
 
-**Every block is braced.** There is no such thing as a one-line `if` in LDP3. A
+**Every block is braced.** There is no such thing as a one-line `if` in Polaron. A
 conditional, a loop, a `switch` case, a `match` arm — every one of them delimits its body
 with `{ }`. This is not stylistic pedantry: the classic "dangling else" and the
-"goto fail" family of bugs both come from bodies whose extent is implicit. LDP3 removes
+"goto fail" family of bugs both come from bodies whose extent is implicit. Polaron removes
 the ambiguity at the grammar level.
 
-```ldp3
+```polaron
 if (x == null) { return; }    // OK
 if (x == null) return;        // compile error: block requires braces
 ```
@@ -39,7 +39,7 @@ the alternative, and chaining `else if` gives you a ladder of mutually exclusive
 Because braces are mandatory, the shape of the code always matches its meaning — there is
 never a hidden statement dangling off the end of a branch.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Grade;
 
@@ -69,7 +69,7 @@ reference is also usable directly: an object reference is "truthy" when it is no
 `if (dog)` reads as `if (dog != null)`. This lets a null check double as a presence check
 without extra ceremony.
 
-```ldp3
+```polaron
 if (dog) {          // equivalent to: if (dog != null)
     dog.bark();
 }
@@ -91,7 +91,7 @@ iteration, which means the body always runs at least once. Reach for `do`-`while
 work must happen before you can even decide whether to repeat it — reading a value, then
 looping while that value is unsatisfactory, is the canonical shape.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program DoWhile;
 
@@ -120,7 +120,7 @@ public bundle main {
 }
 ```
 
-Note the `mutable` on every variable the loop reassigns. LDP3 is immutable-by-default:
+Note the `mutable` on every variable the loop reassigns. Polaron is immutable-by-default:
 a plain `int n = 0;` is a constant binding, and attempting to reassign it is a compile
 error. Any counter, accumulator, or flag that a loop updates must be declared `mutable`.
 
@@ -132,7 +132,7 @@ The three-clause `for` loop packages initialization, a per-iteration condition, 
 step into one header. It is the right tool when the loop is fundamentally driven by an
 index or a hand-managed cursor.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program ForClassic;
 
@@ -172,7 +172,7 @@ and excludes `b` — which is the convention that makes lengths and offsets line
 `a..=b` is *closed*: it includes both endpoints. Adding `step k` changes the stride from
 the default of 1.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program ForRange;
 
@@ -208,7 +208,7 @@ A range is not just loop sugar; it is a first-class `Range<T>` value you can nam
 and pass around, then iterate later. Naming the type requires importing it, like any
 standard-library type:
 
-```ldp3
+```polaron
 import System.Collections.Range;
 
 Range<int> r = 0..100 step 5;
@@ -220,7 +220,7 @@ for (int i in r) { /* ... */ }
 The same `for (... in ...)` iterates arrays and any `Iterable<T>`. Here the element type
 is inferred with `var`:
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Foreach;
 
@@ -252,7 +252,7 @@ When you need the position alongside each element, add an `index` binding. The f
 every pass, over both arrays and ranges. It is cleaner than a separate hand-maintained
 counter and it cannot drift out of sync with the iteration.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program ForeachIndex;
 
@@ -282,7 +282,7 @@ and whose body contains `yield` is a **generator**: instead of building a whole 
 and returning it, its body runs *lazily* — one element per `yield`, suspending right there
 and resuming on the consumer's next request.
 
-```ldp3
+```polaron
 import System.Collections.Iterator;
 
 public static method evens(int limit) returns Iterator<int> {
@@ -296,7 +296,7 @@ public static method evens(int limit) returns Iterator<int> {
 
 You consume a generator like any iterable — with `foreach`:
 
-```ldp3
+```polaron
 mutable int sum = 0;
 for (int e in Sequences.evens(8)) {
     sum = sum + e;        // 0 + 2 + 4 + 6 + 8
@@ -306,7 +306,7 @@ for (int e in Sequences.evens(8)) {
 Because generation is lazy, a generator can be **infinite** — the consumer decides when to
 stop, and `break` simply leaves the body suspended forever:
 
-```ldp3
+```polaron
 public static method primes() returns Iterator<int> {
     mutable int n = 2;
     while (true) {                  // never ends on its own
@@ -328,7 +328,7 @@ for (int p in Sequences.primes()) {
 An **instance** generator captures `this`, so its body can read the object's fields, and an
 early `return;` ends the sequence:
 
-```ldp3
+```polaron
 public method ticks() returns Iterator<int> {
     mutable int t = this.from;
     while (t > 0) {
@@ -345,7 +345,7 @@ lowering `async`/`await` uses) wrapped in a synthesized class that implements `I
 So a generator *is* an ordinary iterator: you can hold it in an `Iterator<T>` variable,
 drive it by hand with `hasNext()`/`next()`, and `delete` it when done.
 
-```ldp3
+```polaron
 Iterator<int> it = Sequences.evens(4);
 if (it.hasNext()) {
     int first = it.next();
@@ -366,12 +366,12 @@ Inside any loop, `break` abandons the loop entirely and `continue` skips to the 
 iteration. In their bare form they act on the innermost enclosing loop.
 
 Nested loops raise a familiar problem: from inside the inner loop, how do you break out of
-the *outer* one? LDP3 answers with **loop labels**. Prefix a loop with `name:` and then
+the *outer* one? Polaron answers with **loop labels**. Prefix a loop with `name:` and then
 `break name;` or `continue name;` targets that specific loop rather than the nearest one.
 This removes the usual workaround of a `found` flag threaded through both loops, and it
 keeps the intent explicit at the jump site.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Labeled;
 
@@ -416,7 +416,7 @@ statements used by the jump constructs in section 7.8 — do not confuse the two
 
 ## 7.6 `switch`: multi-way branching with fall-through
 
-`switch` dispatches on a value against a list of `case` constants. LDP3's `switch` has two
+`switch` dispatches on a value against a list of `case` constants. Polaron's `switch` has two
 firm rules that set it apart from the C tradition it otherwise resembles.
 
 First, **every case body is braced** — `case 1 { ... }`, not `case 1:`. There are no
@@ -434,7 +434,7 @@ next one; a case that ends with `break` does not. Because the boundary of each c
 brace rather than the next `case` label, the fall-through is a deliberate choice you make
 by omitting `break`, not an accident of forgetting a colon.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Switch;
 
@@ -473,7 +473,7 @@ public bundle main {
 notable extension — it matches `String` values *by content*, not by pointer identity. Two
 strings built separately at runtime that hold the same characters take the same case.
 
-```ldp3
+```polaron
 switch (dir) {
     case Dir.NORTH { code = 0; break; }
     case Dir.EAST  { code = 1; break; }
@@ -508,7 +508,7 @@ matched to that type's fields in declaration order. When an object matches a cas
 fields are pulled out into those named locals, ready to use in the arm's body. No manual
 downcast, no field-by-field access — the dispatch and the extraction happen together.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program MatchDispatch;
 
@@ -555,7 +555,7 @@ A `match` can also *be* a value. In expression form, each arm uses `->` to suppl
 result, and the whole `match` evaluates to the result of the selected arm. This turns a
 five-line assign-in-each-branch statement into a single expression.
 
-```ldp3
+```polaron
 double area = match (shape) {
     case Circle(double r)          -> PI * r * r;
     case Square(double s)          -> s * s;
@@ -566,7 +566,7 @@ double area = match (shape) {
 When an arm needs more than a single expression, write it as a block and hand back the
 value with `yield`:
 
-```ldp3
+```polaron
 int a = match (s) {
     case Circle(int r) -> {
         int p = r * r;       // multi-statement block arm
@@ -592,7 +592,7 @@ add a new subtype to the `permits` list later, every non-exhaustive `match` in t
 becomes a compile error until you handle it. That is the feature working for you: the type
 system turns "did I update all the matches?" from a manual audit into a guaranteed one.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Sealed;
 
@@ -633,7 +633,7 @@ symmetric and easy to remember: *sealed and complete needs no default; anything 
 a default.* You can, of course, use a `default` on a sealed type too, when you deliberately
 want to collapse several permitted subtypes into one fallback:
 
-```ldp3
+```polaron
 int d = match (u) {
     case Circle(int r) -> r;
     default            -> 7;      // Square (and any other) falls here
@@ -644,7 +644,7 @@ int d = match (u) {
 
 ## 7.8 The chaos tetrad: `goto`, `comefrom`, `abstainfrom`, `reinstate`
 
-Beyond structured control flow, LDP3 exposes four low-level jump and toggle constructs,
+Beyond structured control flow, Polaron exposes four low-level jump and toggle constructs,
 collectively the "chaos tetrad" (specification §7.9–§7.11). They are powerful, they are
 niche, and they are honest about being both. You will not use them in ordinary
 application code — structured loops and `match` cover that ground better. Their home is
@@ -658,7 +658,7 @@ same method*. There is no jumping into another method, and no jumping across a c
 boundary — `goto otherMethod.label` is a compile error, and so is the equivalent for the
 other three. Cross-method jumping was considered and deliberately removed: action-at-a-
 distance between methods is precisely the kind of chaos that makes these constructs
-infamous elsewhere. By confining them to a single method body, LDP3 keeps the unit of
+infamous elsewhere. By confining them to a single method body, Polaron keeps the unit of
 flow-control reasoning small and local. (The old "jump to file line *N*" forms —
 `goto line N`, `comefrom line N` — were removed for the same reason and because they are
 fragile under edits; use a named `label`.)
@@ -685,7 +685,7 @@ valid targets; labels the compiler, runtime, or standard library generate are of
 `goto name;` transfers control directly to `label name;` in the same method. The most
 common use is a forward jump that skips a stretch of code:
 
-```ldp3
+```polaron
 import System.IO.Console;
 program GotoForward;
 
@@ -732,7 +732,7 @@ method, it serves as both a forward skip and a backward retry. On a backward jum
 variables keep their values — there is no implicit reset — which is exactly what a retry
 loop wants.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Comefrom;
 
@@ -764,7 +764,7 @@ label (two would make the order ambiguous), it fires *after* the labelled statem
 and the compiler emits a warning when static analysis spots an obvious infinite cycle.
 It does not, and cannot, undo I/O or external effects — a `comefrom` that jumps back over
 a heap allocation leaves that memory to you (wrap the risky region in a `region` or use
-`defer` for automatic cleanup). LDP3 is upfront about the limits.
+`defer` for automatic cleanup). Polaron is upfront about the limits.
 
 ### 7.8.3 `abstainfrom` and `reinstate`: toggling code at runtime
 
@@ -779,7 +779,7 @@ would land inside the very block they are trying to toggle and could never re-en
 The canonical shape is to read some state at the top of the method and toggle accordingly,
 then let the guarded block follow:
 
-```ldp3
+```polaron
 import System.IO.Console;
 program GotoAbstainfrom;
 
@@ -827,7 +827,7 @@ You cannot use it to switch off the language's own correctness and safety mechan
 Here is the same pattern in a `freestanding` bundle, emitting through a bare `extern`
 function — proof that the tetrad needs nothing from the managed runtime:
 
-```ldp3
+```polaron
 program FreestandingTetrad freestanding;
 
 public bundle main freestanding {

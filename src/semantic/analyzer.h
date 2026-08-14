@@ -11,7 +11,7 @@
 #include "lexer/token.h"
 #include "parser/ast.h"
 
-namespace ldp3 {
+namespace polaron {
 
 // A semantic diagnostic with location.
 struct SemaError {
@@ -116,6 +116,10 @@ struct ClassInfo {
     bool isInterface = false;
     bool isStruct = false;   // value type, no inheritance
     bool isSealed = false;   // only `permits` types may extend it
+    // `region class` (docs/design/region-classes.md): every instance comes from one region owned by
+    // the type. Carried here because INHERITANCE has to be checked against it -- a plain class beneath
+    // a region class would put its instances outside the region, and totality is the whole feature.
+    bool isRegionClass = false;
     bool isMovable = false;  // move discipline
     bool isUnique = false;   // single-live-reference discipline
     bool isPartitionable = false;  // fields movable separately (spec 19.9)
@@ -167,7 +171,7 @@ struct AnnotationInfo {
 // resolving locals, `this`, fields, methods and `new`.
 class SemanticAnalyzer {
 public:
-    // Analyzes a program. In library mode (compiling a bundle to a .ldb) a missing `main` is allowed:
+    // Analyzes a program. In library mode (compiling a bundle to a .polb) a missing `main` is allowed:
     // a library has no entry point.
     bool analyze(const ast::Program& program, bool libraryMode = false, bool testMode = false);
 
@@ -200,7 +204,7 @@ private:
     void registerAnnotations(const ast::Program& program);
     void validateAnnotations(const ast::Program& program);
     // spec 32.11: the test declarations are well formed. Here rather than in the --test codegen so a
-    // malformed test is caught by `ldp3 build` and by the editor's `ldp3 check`, not only on the day
+    // malformed test is caught by `polaron build` and by the editor's `polaron check`, not only on the day
     // someone runs the suite -- a test that silently does not run is the one failure mode a test
     // framework must never have.
     void validateTestDeclarations(const ast::Program& program);
@@ -403,8 +407,8 @@ private:
     std::string currentBundle_;     // bundle being analyzed (stdlib-cohesion visibility)
     bool freestanding_ = false;     // spec 36: no managed-runtime features in this program
     bool regionBinder_ = false;     // --region-binder: static escape checks (Rust-level temporal safety)
-    bool libraryMode_ = false;      // compiling a bundle to a .ldb: a missing `main` is allowed
-    bool testMode_ = false;         // `ldp3c --test`: a missing `main` is allowed (runner is synthetic)
+    bool libraryMode_ = false;      // compiling a bundle to a .polb: a missing `main` is allowed
+    bool testMode_ = false;         // `polc --test`: a missing `main` is allowed (runner is synthetic)
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
     // spec 32.11: the classes that declare a [BeforeAll]/[AfterAll] fixture, and whether the method
     // being analyzed is a [Test] (or one of the per-test hooks around it). A test that reaches into
@@ -435,6 +439,11 @@ private:
         // thing to cover is every field. Recorded during the ordinary walk for the same reason the
         // call graph is -- a second traversal to rediscover it would go silently out of date.
         std::set<std::string> ownFieldsTouched;
+        // The same question for an ENUM source: which of its own constants the body named. A class
+        // is closed over its fields and an enum over its constants, so this is the second row of the
+        // totality table and it is the same measurement, over a different list. Recorded where the
+        // analyzer already resolves `E.CONSTANT`, so anything it can typecheck, this can follow.
+        std::set<std::string> ownConstantsTouched;
         // Rule 2: what the body does that a preempted program cannot survive. `.first` is the
         // phrase for the message ("allocates on the heap"), `.second` points at the act.
         std::vector<std::pair<std::string, SourceLocation>> unsafeOps;
@@ -447,6 +456,10 @@ private:
     // The trap parameter's name while an interrupt body is being analyzed ("" otherwise). Writing
     // through it must be refused -- see the assignment check for the measurement that decided it.
     std::string interruptTrapParam_;
+    // The `freestanding` transformer whose body is being analyzed ("" outside one). Set only around
+    // a copied procedure's body, so the diagnostic can say why a hosted program is being held to the
+    // bare-metal subset.
+    std::string freestandingFrom_;
     // Every `interrupt` declared in the program: its class and where to point the diagnostic.
     std::vector<std::pair<std::string, SourceLocation>> interruptRoots_;
     MethodFacts* facts();               // the current method's row, or null outside a method body
@@ -530,7 +543,7 @@ private:
     std::string fieldTypeOf(const ast::MemberExpr& mem);  // the declared type of `recv.field`, or ""
     std::unordered_map<std::string, int> extracted_;  // extracted vars -> line (spec 17: use-after-extract)
     std::unordered_map<std::string, std::string> checkpointRegion_;  // checkpoint var -> region it marked
-    // spec 17 LDP3-1718: paths (a local `p`, or a field `obj.f`) known to hold an object allocated
+    // spec 17 Polaron-1718: paths (a local `p`, or a field `obj.f`) known to hold an object allocated
     // `new ... in region R`, so extracting/deleting the OWNER of such a field alone can be rejected.
     std::unordered_map<std::string, std::string> regionOf_;  // path -> region it was allocated in
     std::unordered_map<std::string, RegionConstraints> regionConstraints_;  // region var -> accepts/rejects
@@ -553,4 +566,4 @@ private:
     std::vector<std::unordered_map<std::string, LocalVar>> scopes_;
 };
 
-}  // namespace ldp3
+}  // namespace polaron

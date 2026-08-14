@@ -1,0 +1,35 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <ProjectOutputs>
+    <ProjectOutput>
+      <FullPath>C:\Users\jvpts\Documents\GitHub\LDP3\build2\x64\Release\ZERO_CHECK</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>C:\Users\jvpts\Documents\GitHub\LDP3\build2\bin\Release\polaron.exe</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>C:\Users\jvpts\Documents\GitHub\LDP3\build2\bin\Release\polaron-lsp.exe</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>C:\Users\jvpts\Documents\GitHub\LDP3\build2\bin\Release\polaron-studio.exe</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>C:\Users\jvpts\Documents\GitHub\LDP3\build2\tests\x64\Release\polaron_rt_for_tests</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>C:\Users\jvpts\Documents\GitHub\LDP3\build2\bin\Release\polaron_unit_tests.exe</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>C:\Users\jvpts\Documents\GitHub\LDP3\build2\x64\Release\polaron_prelude</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>C:\Users\jvpts\Documents\GitHub\LDP3\build2\bin\Release\polc.exe</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>C:\Users\jvpts\Documents\GitHub\LDP3\build2\x64\Release\ALL_BUILD</FullPath>
+    </ProjectOutput>
+  </ProjectOutputs>
+  <ContentFiles />
+  <SatelliteDlls />
+  <NonRecipeFileRefs />
+</Project>

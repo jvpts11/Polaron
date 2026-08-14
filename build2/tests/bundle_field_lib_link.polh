@@ -1,0 +1,25 @@
+program FieldLib;
+
+public bundle fieldlib {
+    public namespace store {
+        public class Cell extends Object {
+            public mutable int tag;
+            public constructor Cell(int tag);
+        }
+        public class Box extends Object {
+            private mutable long __reserved0;
+            private mutable address __reserved1a;
+            private mutable address __reserved1b;
+            private mutable boolean __reserved2;
+            private mutable address __reserved3;
+            private mutable int __reserved4 : 3;
+            private mutable int __reserved5 : 5;
+            public weak nullable Cell* observer;
+            public mutable int visible;
+            public constructor Box();
+            public method get() returns int;
+            public method peekHidden() returns long;
+            public method peekPacked() returns int;
+        }
+    }
+}

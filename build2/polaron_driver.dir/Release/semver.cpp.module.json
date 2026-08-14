@@ -1,0 +1,17 @@
+{
+    "version": 1,
+    "revision": 0,
+    "rules": [
+        {
+            "primary-output": "polaron_driver.dir\\Release\\src/driver/semver.cpp.obj",
+            "outputs": [
+                "polaron_driver.dir\\Release\\"
+            ],
+            "requires": [
+                {
+                    "logical-name": "polaron.driver.semver"
+                }
+            ]
+        }
+    ]
+}

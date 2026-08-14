@@ -1,0 +1,17 @@
+program TwoBundleShapes;
+
+// One half of the TWO INDEPENDENT BUNDLES test. See twobundle_app.pol for what it proves.
+//
+// Compiled on its own, so `area` is the only virtual method it has ever heard of and it takes global
+// slot 0. Its sibling bundle does exactly the same with a different name.
+public bundle TwoBundleShapes {
+    public namespace Shapes {
+        public class Shape {
+            public method area() returns int { return 0; }
+        }
+
+        public class Square extends Shape {
+            public override method area() returns int { return 4; }
+        }
+    }
+}

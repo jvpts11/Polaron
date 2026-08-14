@@ -5,7 +5,7 @@
 #include <map>
 #include <set>
 
-namespace ldp3::semantic {
+namespace polaron::semantic {
 namespace {
 
 // ---------------------------------------------------------------------------------------------------
@@ -19,7 +19,9 @@ const std::map<std::string, std::string>& registerFamily() {
     static const std::map<std::string, std::string> m = [] {
         std::map<std::string, std::string> t;
         auto add = [&t](const char* fam, std::initializer_list<const char*> names) {
-            for (const char* n : names) t[n] = fam;
+            for (const char* n : names) {
+                t[n] = fam;
+            }
         };
         add("rax", {"rax", "eax", "ax", "al", "ah"});
         add("rbx", {"rbx", "ebx", "bx", "bl", "bh"});
@@ -36,9 +38,15 @@ const std::map<std::string, std::string>& registerFamily() {
             t[r + "w"] = r;
             t[r + "b"] = r;
         }
-        for (int i = 0; i <= 15; i++) t["xmm" + std::to_string(i)] = "xmm" + std::to_string(i);
-        for (const char* s : {"cs", "ds", "es", "fs", "gs", "ss"}) t[s] = s;
-        for (const char* c : {"cr0", "cr2", "cr3", "cr4", "cr8"}) t[c] = c;
+        for (int i = 0; i <= 15; i++) {
+            t["xmm" + std::to_string(i)] = "xmm" + std::to_string(i);
+        }
+        for (const char* s : {"cs", "ds", "es", "fs", "gs", "ss"}) {
+            t[s] = s;
+        }
+        for (const char* c : {"cr0", "cr2", "cr3", "cr4", "cr8"}) {
+            t[c] = c;
+        }
         return t;
     }();
     return m;
@@ -87,7 +95,9 @@ const std::set<std::string>& knownMnemonics() {
 }
 
 std::string lower(std::string s) {
-    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (char& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
     return s;
 }
 
@@ -107,21 +117,27 @@ struct Line {
     std::string raw;
 };
 
-// Strip comments: `/* ... */` (which LDP3 bodies use), `#` and `;` to end of line.
+// Strip comments: `/* ... */` (which Polaron bodies use), `#` and `;` to end of line.
 std::string stripComments(const std::string& body) {
     std::string out;
     out.reserve(body.size());
     bool inBlock = false;
     for (std::size_t i = 0; i < body.size(); i++) {
         if (inBlock) {
-            if (i + 1 < body.size() && body[i] == '*' && body[i + 1] == '/') { inBlock = false; i++; }
-            else if (body[i] == '\n') out += '\n';   // keep line numbering honest
+            if (i + 1 < body.size() && body[i] == '*' && body[i + 1] == '/') { inBlock = false; i++;
+            } else if (body[i] == '\n') {
+                out += '\n';  // keep line numbering honest
+            }
             continue;
         }
         if (i + 1 < body.size() && body[i] == '/' && body[i + 1] == '*') { inBlock = true; i++; continue; }
         if (body[i] == '#' || body[i] == ';') {
-            while (i < body.size() && body[i] != '\n') i++;
-            if (i < body.size()) out += '\n';
+            while (i < body.size() && body[i] != '\n') {
+                i++;
+            }
+            if (i < body.size()) {
+                out += '\n';
+            }
             continue;
         }
         out += body[i];
@@ -139,10 +155,16 @@ std::vector<Line> splitLines(const std::string& body) {
         ln.number = num;
         ln.raw = s;
         std::size_t p = s.find_first_not_of(" \t\r");
-        if (p == std::string::npos) return;
+        if (p == std::string::npos) {
+            return;
+        }
         std::string t = s.substr(p);
-        while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\r')) t.pop_back();
-        if (t.empty()) return;
+        while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\r')) {
+            t.pop_back();
+        }
+        if (t.empty()) {
+            return;
+        }
         // A LABEL, which may be followed on the same line by the thing it labels:
         // `stack_bottom: .skip 65536` is one label and one directive, and `isr_\n: push 0` is one label
         // and one instruction. Treating the whole line as a mnemonic reports `stack_bottom:` as an
@@ -152,10 +174,12 @@ std::vector<Line> splitLines(const std::string& body) {
         if (colon != std::string::npos) {
             const std::string head = t.substr(0, colon);
             bool nameLike = !head.empty();
-            for (char c : head)
+            for (char c : head) {
                 if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.' || c == '\\' ||
-                      c == '$'))
+                      c == '$')) {
                     nameLike = false;
+                }
+            }
             if (nameLike) {
                 ln.isLabel = true;
                 std::size_t after = t.find_first_not_of(" \t", colon + 1);
@@ -177,12 +201,18 @@ std::vector<Line> splitLines(const std::string& body) {
             std::string field;
             int depth = 0;
             for (char c : rest) {
-                if (c == '[' || c == '(') depth++;
-                if (c == ']' || c == ')') depth--;
+                if (c == '[' || c == '(') {
+                    depth++;
+                }
+                if (c == ']' || c == ')') {
+                    depth--;
+                }
                 if (c == ',' && depth == 0) { ln.operands.push_back(field); field.clear(); continue; }
                 field += c;
             }
-            if (!field.empty()) ln.operands.push_back(field);
+            if (!field.empty()) {
+                ln.operands.push_back(field);
+            }
             for (std::string& o : ln.operands) {
                 std::size_t a = o.find_first_not_of(" \t");
                 if (a == std::string::npos) { o.clear(); continue; }
@@ -205,14 +235,24 @@ std::vector<Line> splitLines(const std::string& body) {
 // writes memory and leaves rax alone -- so brackets disqualify it, and that distinction is the
 // difference between a useful check and a noisy one.
 std::string operandRegister(const std::string& op) {
-    if (op.empty()) return {};
-    if (op.find('[') != std::string::npos) return {};
+    if (op.empty()) {
+        return {};
+    }
+    if (op.find('[') != std::string::npos) {
+        return {};
+    }
     std::string t = op;
-    if (!t.empty() && t[0] == '%') t = t.substr(1);       // AT&T sigil
-    if (!t.empty() && t[0] == '*') t = t.substr(1);       // indirect call/jmp
+    if (!t.empty() && t[0] == '%') {
+        t = t.substr(1);  // AT&T sigil
+    }
+    if (!t.empty() && t[0] == '*') {
+        t = t.substr(1);  // indirect call/jmp
+    }
     // A bare name only; anything with arithmetic or a suffix is not a plain register operand.
     for (char c : t) {
-        if (!std::isalnum(static_cast<unsigned char>(c))) return {};
+        if (!std::isalnum(static_cast<unsigned char>(c))) {
+            return {};
+        }
     }
     return isRegName(t) ? familyOf(t) : std::string();
 }
@@ -233,7 +273,9 @@ AsmReport checkAsm(const std::string& body, const AsmDeclared& declared) {
     AsmReport rep;
     // An architecture this checker has not learned is reported on by nobody rather than reported on
     // wrongly. Adding one means adding its tables, not weakening these checks.
-    if (declared.arch != "x86_64") return rep;
+    if (declared.arch != "x86_64") {
+        return rep;
+    }
 
     const bool att = declared.dialect == "att";
     const std::vector<Line> lines = splitLines(body);
@@ -245,19 +287,24 @@ AsmReport checkAsm(const std::string& body, const AsmDeclared& declared) {
     bool macroed = false;
     std::set<std::string> localMacros;
     for (const Line& ln : lines) {
-        if (!ln.isDirective) continue;
+        if (!ln.isDirective) {
+            continue;
+        }
         // `raw` keeps the line's indentation, so the directive name has to be found after trimming --
         // measuring from column zero finds the leading whitespace and every comparison below silently
         // fails, which is how `.macro isr_stub` went unlearned and its own invocations were reported as
         // unknown instructions.
         std::size_t begin = ln.raw.find_first_not_of(" \t\r");
-        if (begin == std::string::npos) continue;
+        if (begin == std::string::npos) {
+            continue;
+        }
         const std::string trimmed = ln.raw.substr(begin);
         const std::size_t sp = trimmed.find_first_of(" \t");
         const std::string d = lower(trimmed.substr(0, sp));
-        if (d == ".macro" || d == ".rept" || d == ".irp" || d == ".irpc" || d == ".if" ||
-            d == ".altmacro" || d == ".endm" || d == ".endr" || d == ".endif" || d == ".else")
+        if (d == ".macro" || d == ".rept" || d == ".irp" || d == ".irpc" || d == ".if" || d == ".altmacro" ||
+            d == ".endm" || d == ".endr" || d == ".endif" || d == ".else") {
             macroed = true;
+        }
         if (d == ".macro" && sp != std::string::npos) {
             std::string rest = trimmed.substr(sp);
             const std::size_t a = rest.find_first_not_of(" \t");
@@ -274,7 +321,9 @@ AsmReport checkAsm(const std::string& body, const AsmDeclared& declared) {
     std::set<std::string> declaredWrites;
     for (const std::string& c : declared.clobbers) {
         const std::string f = familyOf(c);
-        if (!f.empty()) declaredWrites.insert(f);
+        if (!f.empty()) {
+            declaredWrites.insert(f);
+        }
     }
 
     const int operandCount = declared.outputCount + declared.inputCount;
@@ -283,22 +332,27 @@ AsmReport checkAsm(const std::string& body, const AsmDeclared& declared) {
     bool stackModelValid = true;          // false once control leaves or rsp is assigned wholesale
 
     for (const Line& ln : lines) {
-        if (ln.isLabel || ln.isDirective || ln.mnemonic.empty()) continue;
+        if (ln.isLabel || ln.isDirective || ln.mnemonic.empty()) {
+            continue;
+        }
         rep.instructions++;
 
         // `$0`, `$1`, ... must name an operand that exists. In AT&T `$` also introduces an immediate,
         // so only a `$` followed by digits AND nothing else is an operand reference.
         for (const std::string& op : ln.operands) {
             for (std::size_t i = 0; i + 1 < op.size(); i++) {
-                if (op[i] != '$' || !std::isdigit(static_cast<unsigned char>(op[i + 1]))) continue;
+                if (op[i] != '$' || !std::isdigit(static_cast<unsigned char>(op[i + 1]))) {
+                    continue;
+                }
                 std::size_t j = i + 1;
                 int idx = 0;
                 while (j < op.size() && std::isdigit(static_cast<unsigned char>(op[j]))) {
                     idx = idx * 10 + (op[j] - '0');
                     j++;
                 }
-                if (j < op.size() && (std::isalnum(static_cast<unsigned char>(op[j])) || op[j] == '_'))
+                if (j < op.size() && (std::isalnum(static_cast<unsigned char>(op[j])) || op[j] == '_')) {
                     continue;   // part of a longer token, not an operand reference
+                }
                 if (idx >= operandCount) {
                     rep.findings.push_back(
                         {AsmFinding::Severity::Error,
@@ -377,12 +431,16 @@ AsmReport checkAsm(const std::string& body, const AsmDeclared& declared) {
                 "ret", "retq", "lret", "lretq", "iret", "iretq", "sysret", "sysretq",
                 "jmp", "ljmp", "leave", "hlt",
             };
-            if (leaves.count(ln.mnemonic) != 0) stackModelValid = false;
+            if (leaves.count(ln.mnemonic) != 0) {
+                stackModelValid = false;
+            }
             const bool assignsRsp =
                 !ln.operands.empty() && writesFirstOperand(ln.mnemonic) &&
                 operandRegister(att ? ln.operands.back() : ln.operands.front()) == "rsp" &&
                 ln.mnemonic != "add" && ln.mnemonic != "sub";
-            if (assignsRsp) stackModelValid = false;
+            if (assignsRsp) {
+                stackModelValid = false;
+            }
         }
 
         // The stack discipline. Only meaningful when the text IS the instruction stream.
@@ -401,8 +459,11 @@ AsmReport checkAsm(const std::string& body, const AsmDeclared& declared) {
                 operandRegister(att ? ln.operands.back() : ln.operands.front()) == "rsp") {
                 const std::string amt = att ? ln.operands.front() : ln.operands.back();
                 std::string digits;
-                for (char c : amt)
-                    if (std::isdigit(static_cast<unsigned char>(c))) digits += c;
+                for (char c : amt) {
+                    if (std::isdigit(static_cast<unsigned char>(c))) {
+                        digits += c;
+                    }
+                }
                 if (digits.empty() || digits.size() > 9) {
                     // A stack adjustment this checker cannot evaluate. Everything after it is guesswork,
                     // so it stops guessing and says so rather than reporting on a model it knows is
@@ -413,14 +474,19 @@ AsmReport checkAsm(const std::string& body, const AsmDeclared& declared) {
                     const std::size_t slots = static_cast<std::size_t>(std::stoul(digits)) / 8;
                     const bool grows = (ln.mnemonic == "sub");
                     for (std::size_t k = 0; k < slots; k++) {
-                        if (grows) pushed.push_back(std::string());
-                        else if (!pushed.empty()) pushed.pop_back();
+                        if (grows) {
+                            pushed.push_back(std::string());
+                        } else if (!pushed.empty()) {
+                            pushed.pop_back();
+                        }
                     }
                 }
                 continue;
             }
             if (ln.mnemonic == "push" || ln.mnemonic == "pushq") {
-                if (!ln.operands.empty()) pushed.push_back(operandRegister(ln.operands.front()));
+                if (!ln.operands.empty()) {
+                    pushed.push_back(operandRegister(ln.operands.front()));
+                }
             } else if (ln.mnemonic == "pop" || ln.mnemonic == "popq") {
                 if (pushed.empty()) {
                     rep.findings.push_back(
@@ -460,4 +526,4 @@ AsmReport checkAsm(const std::string& body, const AsmDeclared& declared) {
     return rep;
 }
 
-}  // namespace ldp3::semantic
+}  // namespace polaron::semantic

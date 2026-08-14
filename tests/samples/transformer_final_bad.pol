@@ -1,0 +1,23 @@
+program TransformerFinalBad;
+
+// `final procedure` seals a body. Calls between procedures inside a transformer dispatch to the
+// APPLIED version, which is what makes the feature useful and is also what makes this word
+// necessary: without a way to say "not this one", a type can replace the step the algorithm depends
+// on, and the transformer still gets the blame for the answer.
+public bundle Main {
+    public namespace App {
+        public transformer TSorter {
+            public final procedure ordering() returns int { return 1; }
+            public procedure compare() returns int;
+        }
+
+        public class Box applies TSorter {
+            public procedure compare() returns int { return 0; }
+            public procedure ordering() returns int { return 9; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

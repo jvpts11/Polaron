@@ -1,0 +1,25 @@
+import System.IO.Console;
+import System.OS.Machine;
+program MachineThreads;
+
+// System.OS.Machine.threads() (spec 20): how many threads this machine will run at once.
+//
+// The count itself is the machine's, so what can be checked is what every machine must satisfy: it
+// is at least one, and it is not an absurd number. A program that divides work by this must be able
+// to divide by it.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int hands = Machine.threads();
+                if (hands >= 1 && hands <= 4096) {
+                    System.IO.Console.println("threads: plausible");
+                } else {
+                    System.IO.Console.println("threads: nonsense");
+                }
+                return;
+            }
+        }
+    }
+}

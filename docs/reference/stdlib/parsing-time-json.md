@@ -1,17 +1,17 @@
 # Stdlib Reference — Parsing, Text Utilities, Time & JSON
 
-This reference documents three neighbouring slices of the LDP3 standard library: the text
+This reference documents three neighbouring slices of the Polaron standard library: the text
 and parsing utilities under `System.Text`, the clocks and calendars under `System.Time`,
 and the JSON document model under `System.Json`. Together they cover the everyday "read a
 string, make sense of it, and stamp it with a time" work that most programs need before
 they get to their real logic.
 
-Everything here lives in the LDP3 prelude embedded in the compiler (`src/cli/main.cpp`,
-the `kPreludeSource` raw string) and is written in **pure LDP3** on top of the
+Everything here lives in the Polaron prelude embedded in the compiler (`src/cli/main.cpp`,
+the `kPreludeSource` raw string) and is written in **pure Polaron** on top of the
 `System.Collections` and `System.Text` builtins. There is no hidden native magic: a
-`Csv` parser is an ordinary LDP3 class walking a `String`, a `Json` tree is a chain of
+`Csv` parser is an ordinary Polaron class walking a `String`, a `Json` tree is a chain of
 heap objects, and `Instant.now()` bottoms out in a single clock builtin. That means these
-classes are also worked examples of idiomatic LDP3 — every one obeys the same rules your
+classes are also worked examples of idiomatic Polaron — every one obeys the same rules your
 own code does (mandatory `this.`, explicit visibility, braces on every block).
 
 A few themes run through the group:
@@ -36,7 +36,7 @@ A few themes run through the group:
 Every stdlib type requires an **explicit import** of its fully-qualified name, one class
 per line:
 
-```ldp3
+```polaron
 import System.Text.CaseConvert;
 import System.Time.Instant;
 import System.Json.Json;
@@ -97,7 +97,7 @@ Public members:
   when you are reading a single CSV record; pair it with `CsvWriter`/`CsvReader` when you
   need the stricter RFC 4180 escaping (doubled quotes).
 
-```ldp3
+```polaron
 import System.Text.Csv;
 import System.Collections.ArrayList;
 
@@ -158,7 +158,7 @@ Public members:
 
 ## UrlCodec
 
-- Namespace: `System.Text` · Import: `import System.Text.UrlCodec;`
+- Namespace: `System.Text` · Import: `import System.Codecs.UrlCodec;`
 - Percent-encoding for URLs: unreserved characters (letters, digits, `- _ . ~`) pass
   through, everything else becomes `%XX` of its byte. `decode` reverses `%XX` escapes.
 
@@ -169,7 +169,7 @@ Public members:
 
 ## QueryString
 
-- Namespace: `System.Text` · Import: `import System.Text.QueryString;`
+- Namespace: `System.Text` · Import: `import System.Codecs.QueryString;`
 - URL query-string parsing: splits `"k=v&k=v"` on `&` into a map, with each key/value
   percent-decoded via `UrlCodec`. A key with no `=` maps to the empty string.
 
@@ -253,7 +253,7 @@ Public members:
   shape. Use `v4` with bytes from `System.Security.SecureRandom` when you need real
   unpredictability; `v4Seeded` is for reproducible ids in tests and fixtures.
 
-```ldp3
+```polaron
 import System.Text.Uuid;
 
 String id = Uuid.v4Seeded(12345);   // same seed → same UUID every run
@@ -311,7 +311,7 @@ Public members:
 
 ## VarInt
 
-- Namespace: `System.Text` · Import: `import System.Text.VarInt;`
+- Namespace: `System.Text` · Import: `import System.Codecs.VarInt;`
 - LEB128 variable-length integers: seven bits per byte, high bit set while more bytes
   follow, so small values take one byte. `encode` returns the bytes; `decode` reads them
   back.
@@ -323,7 +323,7 @@ Public members:
 
 ## BitWriter
 
-- Namespace: `System.Text` · Import: `import System.Text.BitWriter;`
+- Namespace: `System.Text` · Import: `import System.Codecs.BitWriter;`
 - A most-significant-bit-first bit writer: pack individual bits or fixed-width fields into a
   byte buffer, then read them back with `BitReader`. Useful for entropy coders such as
   Huffman.
@@ -338,7 +338,7 @@ Public members:
 
 ## BitReader
 
-- Namespace: `System.Text` · Import: `import System.Text.BitReader;`
+- Namespace: `System.Text` · Import: `import System.Codecs.BitReader;`
 - Reads bits most-significant-first out of a byte array, matching `BitWriter`.
 
 Public members:
@@ -368,7 +368,7 @@ Public members:
 
 ## Caesar
 
-- Namespace: `System.Text` · Import: `import System.Text.Caesar;`
+- Namespace: `System.Text` · Import: `import System.Security.Caesar;`
 - Caesar shift cipher: rotate each letter by `n`, wrapping within its case; non-letters pass
   through. `decrypt` is the inverse shift; `rot13` is the classic shift of 13.
 
@@ -380,7 +380,7 @@ Public members:
 
 ## Vigenere
 
-- Namespace: `System.Text` · Import: `import System.Text.Vigenere;`
+- Namespace: `System.Text` · Import: `import System.Security.Vigenere;`
 - Vigenère cipher: a repeating-key poly-alphabetic shift over letters (case preserved,
   non-letters skipped and not consuming key). `encrypt` and `decrypt` are inverses.
 
@@ -502,7 +502,7 @@ Public members:
 
 # Namespace `System.Time`
 
-Time in LDP3 is built up in small, composable pieces rather than one do-everything
+Time in Polaron is built up in small, composable pieces rather than one do-everything
 date-time class. A `Duration` is a length of time; an `Instant` is a point in time (epoch
 milliseconds); a `ZoneOffset` shifts an instant into local wall-clock fields via
 `ZonedDateTime`. For pure calendar math with no clock involved, `Date` and `Calendar` give
@@ -536,7 +536,7 @@ Public members:
   `Instant` is a bare epoch value it carries no time zone; wrap it in a `ZonedDateTime`
   when you need local calendar fields.
 
-```ldp3
+```polaron
 import System.Time.Instant;
 import System.Time.Duration;
 
@@ -665,16 +665,16 @@ which keeps it usable in freestanding builds.
 
 - Namespace: `System.Json` · Import: `import System.Json.Json;`
 - A JSON value. The `kind` code is 0=null, 1=bool, 2=number(long), 3=string, 4=array,
-  5=object. Built and read with pure-LDP3 code over `System.Collections` + `System.Text`;
+  5=object. Built and read with pure-Polaron code over `System.Collections` + `System.Text`;
   arrays and object members are held as a sibling chain of child nodes. Numbers are `long`,
   so wrap integer literals in `cast<long>(...)` when building. `field` on a missing key
   returns a JSON null node (never a null pointer), so lookups chain safely.
 
-```ldp3
+```polaron
 import System.Json.Json;
 
 Json obj = Json.object();
-obj.put("name", Json.ofStr("LDP3"));
+obj.put("name", Json.ofStr("Polaron"));
 obj.put("version", Json.ofNum(cast<long>(1)));
 
 Json nums = Json.array();
@@ -682,9 +682,9 @@ nums.add(Json.ofNum(cast<long>(10)));
 nums.add(Json.ofNum(cast<long>(20)));
 obj.put("nums", nums);
 
-String text = obj.toString();                 // {"name":"LDP3","version":1,"nums":[10,20]}
+String text = obj.toString();                 // {"name":"Polaron","version":1,"nums":[10,20]}
 Json parsed = Json.parse(text);               // round-trip back into a tree
-System.IO.Console.println(parsed.field("name").asStr());          // LDP3
+System.IO.Console.println(parsed.field("name").asStr());          // Polaron
 System.IO.Console.println(parsed.field("nums").at(0).asNum());    // 10
 ```
 

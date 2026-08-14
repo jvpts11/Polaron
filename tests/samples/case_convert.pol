@@ -1,0 +1,20 @@
+import System.IO.Console;
+import System.Text.CaseConvert;
+program CaseConvertDemo;
+
+// Identifier case conversion (spec 34) in pure Polaron. Prints:
+//   snake=hello_world kebab=hello-world camel=helloWorld camel2=fooBarBaz
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("snake=%s kebab=%s camel=%s camel2=%s\n",
+                    CaseConvert.toSnake("helloWorld"),
+                    CaseConvert.toKebab("helloWorld"),
+                    CaseConvert.toCamel("hello_world"),
+                    CaseConvert.toCamel("foo-bar-baz"));
+                return;
+            }
+        }
+    }
+}

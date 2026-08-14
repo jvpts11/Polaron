@@ -1,4 +1,4 @@
-# LDP3 Standard Library — Math / Numerics / Net / Misc
+# Polaron Standard Library — Math / Numerics / Net / Misc
 
 This is the "everything numeric plus the outside world" half of the standard library: the
 mathematics and numerics of `System.Math`, the cryptography of `System.Security`, the
@@ -7,7 +7,7 @@ sockets and HTTP client of `System.Net`, and a set of application-level building
 (`System.Test`).
 
 Every type here is defined in the embedded prelude (the `kPreludeSource` raw string in
-`src/cli/main.cpp`, lines ~6340–8360) and is written in **pure LDP3** over the compiler
+`src/cli/main.cpp`, lines ~6340–8360) and is written in **pure Polaron** over the compiler
 builtins. The only exceptions are members marked `extern`, which link to a small runtime
 helper for things the language can't do on its own — reading the OS CSPRNG
 (`SecureRandom`), or talking to the network stack (`Socket`, `UdpSocket`, `Http`). Because
@@ -19,7 +19,7 @@ A note on numeric style you'll see throughout: much of `System.Math` is delibera
 results are exact and reproducible, with parallel `double` types (`MatrixD`, `Vector2/3/4`,
 `Numerics`, `Regression`) provided where floating point is the point. Immutable value types
 (`BigInteger`, `Rational`, `Complex`, `Quaternion`, `Money`) return **new** objects from
-each operation rather than mutating in place, matching LDP3's copy-by-value model.
+each operation rather than mutating in place, matching Polaron's copy-by-value model.
 
 All stdlib types require an **explicit import**. The import names the fully-qualified type,
 e.g. `import System.Math.BigInteger;` or `import System.Net.Http;`. Each type below lists its
@@ -66,7 +66,7 @@ as needed. It is an immutable value type: each operation returns a fresh `BigInt
 the operands are never modified. Note that construction is from `long`, so wrap literals in
 `cast<long>(...)`.
 
-```ldp3
+```polaron
 import System.Math.BigInteger;
 
 BigInteger a = new BigInteger(cast<long>(123456789)) on heap;
@@ -129,7 +129,7 @@ A complex number with `double` real and imaginary parts (spec 34.6). Immutable: 
 `sub`, `mul`, and `conjugate` each return a new `Complex`. Useful anywhere a computation
 needs the imaginary axis — signal processing, root-finding, or feeding the `Fft`.
 
-```ldp3
+```polaron
 import System.Math.Complex;
 
 Complex p = new Complex(1.0, 2.0) on heap;
@@ -155,7 +155,7 @@ reproducible; when you need fractional means or variances, accumulate `double`s 
 `RunningStats` (Welford) instead. Order statistics (`median`, `percentile`) sort a copy, so
 the input array is left untouched.
 
-```ldp3
+```polaron
 import System.Math.Stats;
 
 mutable int[] xs = new int[5]();
@@ -203,7 +203,7 @@ matrices, and `determinant` uses fraction-free Bareiss elimination so the result
 exact integer. For floating-point linear algebra (LU-style determinants, non-integer data)
 use `MatrixD` instead.
 
-```ldp3
+```polaron
 import System.Math.Matrix;
 
 mutable Matrix a = new Matrix(2, 2) on heap;
@@ -379,7 +379,7 @@ log2 of the register count (e.g. 10 → 1024 registers, ~3% error).
 
 **Namespace:** `System.Math` · **Import:** `import System.Math.Numerics;`
 
-Self-contained transcendental functions in pure LDP3 (spec 34.6), so scientific classes never
+Self-contained transcendental functions in pure Polaron (spec 34.6), so scientific classes never
 depend on the `Math` builtin. sqrt is Newton's method; ln uses an atanh series; exp/sin/cos use
 range-reduction plus Taylor series; pow is exp(e·ln(b)) for positive b.
 
@@ -604,7 +604,7 @@ a runtime helper via `extern`.
 
 **Namespace:** `System.Security` · **Import:** `import System.Security.Aes;`
 
-AES block cipher (spec 34; FIPS-197), pure LDP3. Supports 128- and 256-bit keys (16 or 32 bytes);
+AES block cipher (spec 34; FIPS-197), pure Polaron. Supports 128- and 256-bit keys (16 or 32 bytes);
 S-boxes are generated from the GF(2^8) inverse plus the affine transform. `encryptBlock`/
 `decryptBlock` are the raw 16-byte ECB primitive; `ctr()` is the recommended stream mode
 (encryption and decryption are the same call). Bytes are carried as ints in 0..255.
@@ -698,7 +698,7 @@ A minimal HTTP/1.1 client over Socket (spec 34). Request building and response p
 for the status code, body, and individual headers. It is intentionally small — one verb, no
 TLS, no redirects — for talking to plain-HTTP services and health-check endpoints.
 
-```ldp3
+```polaron
 import System.Net.Http;
 import System.Net.HttpResponse;
 
@@ -789,7 +789,7 @@ Fixed-point money as integer cents (spec 34), avoiding floating-point rounding.
 # System.Test
 
 Tests live next to the code they test, as annotated static methods. There are no `test` or `assert`
-keywords — it is all annotations, static methods and classes. `ldp3 test` (or `ldp3c --test`) finds
+keywords — it is all annotations, static methods and classes. `polaron test` (or `polc --test`) finds
 them, runs them, and exits non-zero if any failed.
 
 Every annotation below may also be written `@Name`; the two spellings are identical (§10.3).
@@ -816,7 +816,7 @@ annotation — not static, wrong return type, `[Ignore]` on something that is no
 benchmark that is also a test, a parameter with no `[Cases]`, a `[Cases]` source of the wrong type —
 is a **compile error**, not a silent no-op.
 
-```ldp3
+```polaron
 import System.Test.Test;
 
 public class Census {
@@ -935,18 +935,18 @@ a custom harness can reuse the same state, but a test does not need them.
 
 | Command | What it does |
 |---|---|
-| `ldp3 test` | Build and run the project's tests. |
-| `ldp3 test -- --filter <text>` | Run only the tests whose `Class.method` name contains `<text>`. |
-| `ldp3 test -- --tag <name>` / `--exclude-tag <name>` | Select or skip by `[Tag]`. |
-| `ldp3 test -- --list` | Print the test names without running anything. |
-| `ldp3 test -- --timing` | Add per-test and total durations to the report. |
-| `ldp3 test -- --fail-fast` | Stop at the first failure (`[AfterAll]` still runs). |
-| `ldp3 test -- --format=json` | One machine-readable document, each test's own output captured into its record. |
-| `ldp3 test -- --bench` | Also run the `[Benchmark]` methods. |
-| `ldp3 test -- --update-golden` | Rewrite golden files instead of comparing. |
+| `polaron test` | Build and run the project's tests. |
+| `polaron test -- --filter <text>` | Run only the tests whose `Class.method` name contains `<text>`. |
+| `polaron test -- --tag <name>` / `--exclude-tag <name>` | Select or skip by `[Tag]`. |
+| `polaron test -- --list` | Print the test names without running anything. |
+| `polaron test -- --timing` | Add per-test and total durations to the report. |
+| `polaron test -- --fail-fast` | Stop at the first failure (`[AfterAll]` still runs). |
+| `polaron test -- --format=json` | One machine-readable document, each test's own output captured into its record. |
+| `polaron test -- --bench` | Also run the `[Benchmark]` methods. |
+| `polaron test -- --update-golden` | Rewrite golden files instead of comparing. |
 
-A `[library]` project is tested the same way: `ldp3 test` builds its sources as an executable (the
-runner supplies the entry point) instead of the usual `.ldb` bundle.
+A `[library]` project is tested the same way: `polaron test` builds its sources as an executable (the
+runner supplies the entry point) instead of the usual `.polb` bundle.
 
 The report is **deterministic by default** — durations are opt-in behind `--timing` — so it can be
 diffed, pasted into a review, or compared against a golden file:
@@ -976,7 +976,7 @@ Boolean assertion helpers (spec 34): each returns whether the check holds, to be
 
 **Namespace:** `System.Test` · **Import:** `import System.Test.TestRunner;`
 
-A minimal unit-test runner (spec 34): tally pass/fail, print each result and a summary. Lets LDP3
+A minimal unit-test runner (spec 34): tally pass/fail, print each result and a summary. Lets Polaron
 code (and this stdlib) self-test.
 
 - `public constructor TestRunner()` — start with no results.

@@ -1,6 +1,6 @@
 #include "lexer/token.h"
 
-namespace ldp3 {
+namespace polaron {
 
 std::string_view tokenKindName(TokenKind kind) {
     switch (kind) {
@@ -200,4 +200,4 @@ std::string_view tokenKindName(TokenKind kind) {
     return "?";
 }
 
-}  // namespace ldp3
+}  // namespace polaron

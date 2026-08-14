@@ -1,0 +1,20 @@
+import System.IO.Console;
+import System.Text.Properties;
+program PropertiesConfig;
+
+// Java-style .properties parsing (spec 34) in pure Polaron. Prints:
+//   name=Polaron port=8080 debug=1 missing=42 has=1 nokey=0
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String cfg = "# comment\nname = Polaron\nport = 8080\ndebug = true\n";
+                mutable Properties p = new Properties(cfg) on heap;
+                System.IO.Console.printf("name=%s port=%d debug=%d missing=%d has=%d nokey=%d\n",
+                    p.getString("name", "?"), p.getInt("port", 0), p.getBool("debug", false),
+                    p.getInt("missing", 42), p.has("name"), p.has("x"));
+                return;
+            }
+        }
+    }
+}

@@ -1,17 +1,17 @@
 # Standard Library Reference — Text / Encoding / Crypto
 
-Every type in this slice lives in the **`System.Text`** namespace. As with the rest of the LDP3
+Every type in this slice lives in the **`System.Text`** namespace. As with the rest of the Polaron
 stdlib, each type must be imported explicitly by its fully-qualified name before use (importing the
 namespace does not pull in its members). The import line for each type is shown under its heading.
 
-This is where LDP3 does its text work: building strings efficiently (`StringBuilder`), splitting and
+This is where Polaron does its text work: building strings efficiently (`StringBuilder`), splitting and
 formatting them (`Strings`), matching and searching (`Regex`, `Kmp`, `Manacher`), walking UTF-8
 (`Utf8`), turning bytes into transportable text (`Hex`, `Base64`, `Base32`, `Base58`, `Ascii85`),
 fingerprinting data (`Sha256`, `Sha1`, `Md5`, the CRC/Adler checksums, `Fletcher`), authenticating it
 (`Hmac`), and a handful of compression and classic-algorithm utilities (`Huffman`, `Lz77`, `Rle`,
 `Soundex`, `Calculator`).
 
-The slice is pure LDP3 built on top of the built-in `String`/`string` primitives and the raw-memory
+The slice is pure Polaron built on top of the built-in `String`/`string` primitives and the raw-memory
 `System.Memory` builtins — there is no new runtime dependency, and nothing here calls out to a system
 crypto library, so the hashes are readable reference implementations rather than hardware-accelerated
 ones. Because `String.charAt`/`String.length` work at the byte level, the encoding, checksum and hash
@@ -30,7 +30,7 @@ is kept for. In the examples below, a `// ->` comment shows the value a call ret
 
 ## StringBuilder
 
-```ldp3
+```polaron
 import System.Text.StringBuilder;
 ```
 
@@ -48,7 +48,7 @@ Use it instead of `a.concat(b).concat(c)...` in a loop: repeated `concat` re-cop
 prefix each time (O(n²) total), whereas the builder appends in place and copies once at
 `toString()`. The `append*` methods all return `this`, so calls chain.
 
-```ldp3
+```polaron
 import System.Text.StringBuilder;
 
 StringBuilder sb = new StringBuilder() on heap;
@@ -61,7 +61,7 @@ sb.toString();   // -> "count = 42!"
 
 ## Strings
 
-```ldp3
+```polaron
 import System.Text.Strings;
 ```
 
@@ -87,12 +87,12 @@ allocates fresh owned `String`s and never mutates its input.
 
 ## Regex
 
-```ldp3
+```polaron
 import System.Text.Regex;
 ```
 
 A small backtracking regular-expression matcher (spec 4): literals, `.` (any), character classes
-`[abc]`/`[a-z]`/`[^...]`, the quantifiers `* + ?`, and the anchors `^` and `$`. Pure LDP3 over the
+`[abc]`/`[a-z]`/`[^...]`, the quantifiers `* + ?`, and the anchors `^` and `$`. Pure Polaron over the
 `String` primitives.
 
 - `public static method search(String pat, String text) returns boolean` — whether `pat` occurs anywhere in `text`; wrap the pattern in `^` and `$` to require a full match.
@@ -102,7 +102,7 @@ grouping) but a greedy quantifier over a long run can still be quadratic; keep p
 are no capture groups — `search` answers only yes/no. For plain substring search prefer `Kmp`, which
 is linear.
 
-```ldp3
+```polaron
 import System.Text.Regex;
 
 Regex.search("a+b", "aaab");       // -> true
@@ -115,7 +115,7 @@ Regex.search("^[0-9]+$", "20x6");  // -> false
 
 ## Utf8
 
-```ldp3
+```polaron
 import System.Text.Utf8;
 ```
 
@@ -132,7 +132,7 @@ bytes. To iterate characters, read `codepointAt(s, i)` and advance `i` by `width
 by 1. The decoder trusts its input: it assumes well-formed UTF-8 and does not validate continuation
 bytes.
 
-```ldp3
+```polaron
 import System.Text.Utf8;
 
 String s = "héllo";        // 'é' takes 2 UTF-8 bytes
@@ -146,7 +146,7 @@ Utf8.widthAt(s, 1);     // -> 2   (advance past the 2-byte character)
 
 ## Scanner
 
-```ldp3
+```polaron
 import System.Text.Scanner;
 ```
 
@@ -164,8 +164,8 @@ A cursor over text that hands out tokens (spec 4): reads words, ints and lines f
 
 ## Hex
 
-```ldp3
-import System.Text.Hex;
+```polaron
+import System.Codecs.Hex;
 ```
 
 Hexadecimal encoding (spec 4): each byte of a string becomes two lowercase hex digits, and back.
@@ -177,8 +177,8 @@ Hexadecimal encoding (spec 4): each byte of a string becomes two lowercase hex d
 
 ## Radix
 
-```ldp3
-import System.Text.Radix;
+```polaron
+import System.Codecs.Radix;
 ```
 
 Arbitrary-base integer conversion (spec 4), bases 2..36 using `0-9` then `a-z`.
@@ -190,8 +190,8 @@ Arbitrary-base integer conversion (spec 4), bases 2..36 using `0-9` then `a-z`.
 
 ## Base64
 
-```ldp3
-import System.Text.Base64;
+```polaron
+import System.Codecs.Base64;
 ```
 
 Base64 encoding (spec 4): three bytes become four characters of the standard alphabet, with `=`
@@ -204,8 +204,8 @@ The standard (not URL-safe) alphabet, so output may contain `+` and `/`; `encode
 round-trips exactly. Encoded text is about 4/3 the size of the input. For URL- or filename-safe
 output without padding characters, use `Base32`, or `Hex` when readability matters more than size.
 
-```ldp3
-import System.Text.Base64;
+```polaron
+import System.Codecs.Base64;
 
 Base64.encode("Man");   // -> "TWFu"
 Base64.encode("Ma");    // -> "TWE="   (one '=' pad for the short final group)
@@ -216,8 +216,8 @@ Base64.decode("TWFu");  // -> "Man"
 
 ## Base32
 
-```ldp3
-import System.Text.Base32;
+```polaron
+import System.Codecs.Base32;
 ```
 
 Base32 (RFC 4648) over a string's bytes: 5 bytes encode to 8 chars of the alphabet
@@ -230,8 +230,8 @@ Base32 (RFC 4648) over a string's bytes: 5 bytes encode to 8 chars of the alphab
 
 ## Base58
 
-```ldp3
-import System.Text.Base58;
+```polaron
+import System.Codecs.Base58;
 ```
 
 Base58 (the Bitcoin alphabet, spec 4): big-endian base-256 to base-58 with no `0`/`O`/`I`/`l`; leading
@@ -244,8 +244,8 @@ zero bytes are preserved as leading `1`s. Works over an `int[]` of bytes rather 
 
 ## Ascii85
 
-```ldp3
-import System.Text.Ascii85;
+```polaron
+import System.Codecs.Ascii85;
 ```
 
 Ascii85 / Base85 (spec 4, Adobe variant without delimiters): four bytes become five printable chars
@@ -258,8 +258,8 @@ Ascii85 / Base85 (spec 4, Adobe variant without delimiters): four bytes become f
 
 ## Fletcher
 
-```ldp3
-import System.Text.Fletcher;
+```polaron
+import System.Codecs.Fletcher;
 ```
 
 Fletcher-16 checksum (spec 4) over a string's bytes: two running mod-255 sums combined as a 16-bit
@@ -271,8 +271,8 @@ value. Cheaper than CRC with good error detection.
 
 ## Digest
 
-```ldp3
-import System.Text.Digest;
+```polaron
+import System.Security.Digest;
 ```
 
 Non-cryptographic checksums and hashes over a string's bytes (spec 4), using unsigned 32-bit
@@ -287,11 +287,11 @@ reinterpreted).
 
 ## Sha256
 
-```ldp3
-import System.Text.Sha256;
+```polaron
+import System.Security.Sha256;
 ```
 
-SHA-256 cryptographic hash (FIPS 180-4), pure LDP3 over 32-bit unsigned arithmetic (spec 4). The
+SHA-256 cryptographic hash (FIPS 180-4), pure Polaron over 32-bit unsigned arithmetic (spec 4). The
 method is named `digest`, not `hash`, since `hash` is the `Hashable` interface method. Also provides
 the shared byte/hex plumbing (`toHex`, `putWord`) reused by the other hash types.
 
@@ -305,8 +305,8 @@ matches the FIPS 180-4 test vectors, so it interoperates with other SHA-256 tool
 authentication (proving a message came from someone holding a shared secret) use `Hmac.sha256`
 rather than hashing the key and message concatenated.
 
-```ldp3
-import System.Text.Sha256;
+```polaron
+import System.Security.Sha256;
 
 Sha256.digest("");     // -> "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 Sha256.digest("abc");  // -> "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -316,11 +316,11 @@ Sha256.digest("abc");  // -> "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb4
 
 ## Hmac
 
-```ldp3
-import System.Text.Hmac;
+```polaron
+import System.Security.Hmac;
 ```
 
-HMAC-SHA256 keyed message authentication (RFC 2104), pure LDP3 on top of `Sha256`. Keys longer than
+HMAC-SHA256 keyed message authentication (RFC 2104), pure Polaron on top of `Sha256`. Keys longer than
 the 64-byte block are hashed down first.
 
 - `public static method sha256(String key, String msg) returns String` — the lowercase hex of HMAC-SHA256(`key`, `msg`).
@@ -329,11 +329,11 @@ the 64-byte block are hashed down first.
 
 ## Sha1
 
-```ldp3
-import System.Text.Sha1;
+```polaron
+import System.Security.Sha1;
 ```
 
-SHA-1 cryptographic hash (FIPS 180-1), pure LDP3 over 32-bit unsigned arithmetic. SHA-1 is broken for
+SHA-1 cryptographic hash (FIPS 180-1), pure Polaron over 32-bit unsigned arithmetic. SHA-1 is broken for
 collision resistance; provided for legacy interop such as Git object ids. Reuses `Sha256.putWord`/`toHex`.
 
 - `public static method digestRaw(int[] data, int len) returns int[]` — hashes the first `len` bytes of `data`, returning the 20 raw output bytes.
@@ -343,8 +343,8 @@ collision resistance; provided for legacy interop such as Git object ids. Reuses
 
 ## Sha224
 
-```ldp3
-import System.Text.Sha224;
+```polaron
+import System.Security.Sha224;
 ```
 
 SHA-224 (FIPS 180-4): the SHA-256 compression with different initial hash values and a 28-byte
@@ -356,11 +356,11 @@ SHA-224 (FIPS 180-4): the SHA-256 compression with different initial hash values
 
 ## Md5
 
-```ldp3
-import System.Text.Md5;
+```polaron
+import System.Security.Md5;
 ```
 
-MD5 message digest (RFC 1321), pure LDP3 over 32-bit unsigned arithmetic (little-endian, unlike the
+MD5 message digest (RFC 1321), pure Polaron over 32-bit unsigned arithmetic (little-endian, unlike the
 SHA family). MD5 is broken for collision resistance; provided for legacy interop/checksums only.
 Reuses `Sha256.toHex` for the final hex.
 
@@ -370,8 +370,8 @@ Reuses `Sha256.toHex` for the final hex.
 
 ## Crc
 
-```ldp3
-import System.Text.Crc;
+```polaron
+import System.Codecs.Crc;
 ```
 
 CRC-16/XMODEM (spec 4): a 16-bit checksum over a string's bytes with polynomial `0x1021` and zero
@@ -383,8 +383,8 @@ initial value. Bitwise, table-free.
 
 ## Adler32
 
-```ldp3
-import System.Text.Adler32;
+```polaron
+import System.Codecs.Adler32;
 ```
 
 Adler-32 checksum (RFC 1950 / zlib): two running sums modulo 65521 combined as `(b << 16) | a`, with
@@ -396,8 +396,8 @@ Adler-32 checksum (RFC 1950 / zlib): two running sums modulo 65521 combined as `
 
 ## BloomFilter
 
-```ldp3
-import System.Text.BloomFilter;
+```polaron
+import System.Collections.BloomFilter;
 ```
 
 A probabilistic set that never misses a member but may report a false positive (spec 34.1). Two
@@ -412,8 +412,8 @@ independent hashes (`Digest.fnv1a` and `Digest.crc32`) set and test bits in a fi
 
 ## Huffman
 
-```ldp3
-import System.Text.Huffman;
+```polaron
+import System.Codecs.Huffman;
 ```
 
 Huffman coding (spec 34.1): builds an optimal prefix code from a string's byte frequencies, stored in
@@ -430,8 +430,8 @@ input exactly.
 
 ## Lz77
 
-```ldp3
-import System.Text.Lz77;
+```polaron
+import System.Codecs.Lz77;
 ```
 
 LZ77 sliding-window compression (spec 34.1): `encode` produces flattened `(offset, length, nextChar)`
@@ -446,7 +446,7 @@ copying back-references (which may overlap, like run-length) to reconstruct the 
 
 ## Soundex
 
-```ldp3
+```polaron
 import System.Text.Soundex;
 ```
 
@@ -460,7 +460,7 @@ detection; `h` and `w` are transparent between equal-coded consonants.
 
 ## Kmp
 
-```ldp3
+```polaron
 import System.Text.Kmp;
 ```
 
@@ -474,7 +474,7 @@ suffix) lets the scan never re-read text.
 
 ## Manacher
 
-```ldp3
+```polaron
 import System.Text.Manacher;
 ```
 
@@ -487,8 +487,8 @@ a transformed array with sentinels so odd and even palindromes are handled unifo
 
 ## Rle
 
-```ldp3
-import System.Text.Rle;
+```polaron
+import System.Codecs.Rle;
 ```
 
 Run-length encoding of a string (spec 34): each run of a repeated character becomes that character
@@ -501,7 +501,7 @@ followed by its decimal count, e.g. `"aaabbbbc"` -> `"a3b4c1"`.
 
 ## Calculator
 
-```ldp3
+```polaron
 import System.Text.Calculator;
 ```
 

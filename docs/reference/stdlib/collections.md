@@ -1,18 +1,18 @@
 # System.Collections — Standard Library Reference
 
-This is LDP3's general-purpose container library: the growable list, the hash and tree maps and
+This is Polaron's general-purpose container library: the growable list, the hash and tree maps and
 sets, the stack/queue/deque family, priority queue, ring buffer, bitset, and the lazy `Stream`
 pipeline — plus the `Iterator`/`Iterable`/`Hashable`/`Comparable` interfaces they are built on.
 If you have reached for `ArrayList`, `HashMap`, or `TreeMap` in another language, the equivalents
 live here.
 
-All types below live in the `System.Collections` namespace and ship as part of the LDP3 prelude
-(embedded in `src/cli/main.cpp` as `kPreludeSource`). They are ordinary LDP3 classes and interfaces
+All types below live in the `System.Collections` namespace and ship as part of the Polaron prelude
+(embedded in `src/cli/main.cpp` as `kPreludeSource`). They are ordinary Polaron classes and interfaces
 with no runtime magic — generic containers backed by dynamic arrays, ring buffers, linked and tree
 nodes, and hash tables — compiled from that prelude just like your own code, so the signatures
 shown are the verbatim declarations from the source.
 
-How they fit LDP3:
+How they fit Polaron:
 
 - **Explicit imports.** Namespace visibility is enforced, so import each type by its fully
   qualified name before use, e.g. `import System.Collections.ArrayList;`. The import line is given
@@ -23,7 +23,7 @@ How they fit LDP3:
   `new ArrayList<int>() on heap` and `delete` it when done. The containers manage their own backing
   storage internally (for example, the doubling array `delete`s the old block when it grows).
 - **Value semantics for elements.** Storing an element (`add`, `put`, `set`) is an assignment, and
-  assignment in LDP3 is a copy. For a value type `T` the element is copied *into* the collection and
+  assignment in Polaron is a copy. For a value type `T` the element is copied *into* the collection and
   `get` copies one back *out* — the collection owns those copies. To store shared instances instead
   of copies, use a pointer element type (`ArrayList<Node*>`): then the collection holds the pointers
   and does **not** own or `delete` the pointed-to objects — that stays your responsibility.
@@ -96,7 +96,7 @@ A growable list backed by a dynamic array that doubles on overflow; the general-
 | `public method max(function<int, T, T> compare) returns Option<T>` | Largest element by `compare` as `Some`, or `None` when empty. |
 | `public override method iterator() returns Iterator<T>` | Returns an `ArrayListIterator<T>` over this list. |
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Collections.ArrayList;
 
@@ -336,7 +336,7 @@ Hash map with open addressing (linear probing); capacity is a power of two, load
 | `public method size() returns int` | Number of entries. |
 | `public method isEmpty() returns boolean` | True when the map has no entries. |
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Collections.HashMap;
 

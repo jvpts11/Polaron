@@ -1,0 +1,25 @@
+program NullToNonNullableBad;
+
+// Null safety gets its OWN diagnostic code (Polaron-0300), separate from the general type mismatch.
+//
+// The reason is the remedy, not the taxonomy. Folded into Polaron-0301 ("wrong type here"), this error
+// inherited that code's advice -- "convert explicitly with cast<T>(value)" -- which cannot work: casting
+// does not turn null into a non-nullable value. The reader was told to do something impossible.
+//
+// The message must also carry the CAUSE, not just the mismatch: `left` is rejected because its declared
+// type is non-nullable, and the fix is to write `nullable Tree*` if absence is a real state for it. This
+// test pins the code rather than the prose, so the wording can improve without breaking the test.
+
+public bundle main {
+    public namespace app {
+        public class Tree {
+            public mutable Tree* left;
+            public constructor Tree() {
+                this.left = null;          // <-- Polaron-0300, not Polaron-0301
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

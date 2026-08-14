@@ -1,0 +1,327 @@
+    // ALGORITHMS, and the index structures that exist only to serve one.
+    //
+    // Split out of System.Collections on 2026-08-13. Kadane and Knapsack are not collections; they
+    // are procedures that happen to read arrays, which is the "made of" reasoning the placement rule
+    // refuses. Fenwick, SegmentTree, SparseTable and UnionFind come too: they ARE data structures,
+    // but nobody reaches for one to STORE something -- they are reached for to answer a class of
+    // query, and that is what puts them here rather than beside ArrayList and HashMap.
+    //
+    // The dividing line, for whatever lands here next: Collections is what you keep things in,
+    // Algorithms is what you do to them.
+    public namespace Algorithms {
+        // Disjoint-set / union-find over a fixed range 0..n-1 (spec 34.1): merge joins two elements' sets,
+        // connected tests membership, groups counts the distinct sets. Union by rank with path halving.
+        public class UnionFind {
+            private mutable int[] parent;
+            private mutable int[] rnk;
+            private mutable int count;
+            public constructor UnionFind(int n) {
+                this.parent = new int[n]();
+                this.rnk = new int[n]();
+                this.count = n;
+                for (mutable int i = 0; i < n; i++) { this.parent[i] = i; }
+            }
+            public method find(int x) returns int {
+                mutable int r = x;
+                while (this.parent[r] != r) {
+                    this.parent[r] = this.parent[this.parent[r]];
+                    r = this.parent[r];
+                }
+                return r;
+            }
+            public method merge(int a, int b) returns void {
+                int ra = this.find(a);
+                int rb = this.find(b);
+                if (ra == rb) { return; }
+                if (this.rnk[ra] < this.rnk[rb]) {
+                    this.parent[ra] = rb;
+                } else {
+                    if (this.rnk[ra] > this.rnk[rb]) {
+                        this.parent[rb] = ra;
+                    } else {
+                        this.parent[rb] = ra;
+                        this.rnk[ra] = this.rnk[ra] + 1;
+                    }
+                }
+                this.count = this.count - 1;
+                return;
+            }
+            public method connected(int a, int b) returns boolean { return this.find(a) == this.find(b); }
+            public method groups() returns int { return this.count; }
+        }
+        // A Fenwick tree / binary indexed tree (spec 34.1): O(log n) point updates and prefix/range sums over
+        // int values. Indices are 0-based at the public API; the lowest-set-bit trick (x & -x) walks the tree.
+        public class Fenwick {
+            private mutable int[] tree;
+            private mutable int n;
+            public constructor Fenwick(int size) {
+                this.n = size;
+                this.tree = new int[size + 1]();
+            }
+            public method add(int i, int delta) returns void {
+                mutable int x = i + 1;
+                while (x <= this.n) { this.tree[x] = this.tree[x] + delta; x = x + (x & (0 - x)); }
+                return;
+            }
+            public method prefixSum(int i) returns int {
+                mutable int x = i + 1;
+                mutable int s = 0;
+                while (x > 0) { s = s + this.tree[x]; x = x - (x & (0 - x)); }
+                return s;
+            }
+            public method rangeSum(int lo, int hi) returns int {
+                if (lo == 0) { return this.prefixSum(hi); }
+                return this.prefixSum(hi) - this.prefixSum(lo - 1);
+            }
+        }
+        // An iterative segment tree (spec 34.1) for range sums with O(log n) point updates. Built from an int[];
+        // query(lo, hi) is the inclusive sum, update(i, value) sets one position. Works for any length n.
+        public class SegmentTree {
+            private mutable int[] t;
+            private mutable int n;
+            public constructor SegmentTree(int[] data) {
+                this.n = data.length();
+                this.t = new int[2 * this.n]();
+                for (mutable int i = 0; i < this.n; i++) { this.t[this.n + i] = data[i]; }
+                for (mutable int i = this.n - 1; i >= 1; i = i - 1) { this.t[i] = this.t[2*i] + this.t[2*i+1]; }
+            }
+            public method update(int i, int value) returns void {
+                mutable int p = i + this.n;
+                this.t[p] = value;
+                p = p / 2;
+                while (p >= 1) { this.t[p] = this.t[2*p] + this.t[2*p+1]; p = p / 2; }
+                return;
+            }
+            public method query(int lo, int hi) returns int {
+                mutable int res = 0;
+                mutable int l = lo + this.n;
+                mutable int r = hi + this.n + 1;
+                while (l < r) {
+                    if ((l & 1) == 1) { res = res + this.t[l]; l = l + 1; }
+                    if ((r & 1) == 1) { r = r - 1; res = res + this.t[r]; }
+                    l = l / 2; r = r / 2;
+                }
+                return res;
+            }
+        }
+        // A sparse table (spec 34.1) for O(1) range-minimum queries over a fixed int[], after O(n log n) build.
+        // Rows are stored flat (row j at offset j*n); queryMin(lo, hi) is the inclusive minimum.
+        public class SparseTable {
+            private mutable int[] table;
+            private mutable int n;
+            private mutable int k;
+            public constructor SparseTable(int[] data) {
+                this.n = data.length();
+                mutable int K = 1;
+                while ((1 << K) <= this.n) { K = K + 1; }
+                this.k = K;
+                this.table = new int[K * this.n]();
+                for (mutable int i = 0; i < this.n; i++) { this.table[i] = data[i]; }
+                for (mutable int j = 1; j < K; j++) {
+                    mutable int i = 0;
+                    while (i + (1 << j) <= this.n) {
+                        int a = this.table[(j-1)*this.n + i];
+                        int b = this.table[(j-1)*this.n + i + (1 << (j-1))];
+                        if (a < b) { this.table[j*this.n + i] = a; } else { this.table[j*this.n + i] = b; }
+                        i = i + 1;
+                    }
+                }
+            }
+            public method queryMin(int lo, int hi) returns int {
+                int len = hi - lo + 1;
+                mutable int j = 0;
+                while ((1 << (j + 1)) <= len) { j = j + 1; }
+                int a = this.table[j*this.n + lo];
+                int b = this.table[j*this.n + (hi - (1 << j) + 1)];
+                if (a < b) { return a; }
+                return b;
+            }
+        }
+        // 0/1 knapsack (spec 34.1): maximum total value of items fitting in a capacity, via the classic
+        // one-dimensional DP swept from high capacity to low so each item is used at most once.
+        public class Knapsack {
+            public static method maxValue(int[] weights, int[] values, int n, int capacity) returns int {
+                mutable int[] dp = new int[capacity + 1]();
+                for (mutable int i = 0; i < n; i++) {
+                    for (mutable int c = capacity; c >= weights[i]; c = c - 1) {
+                        int cand = dp[c - weights[i]] + values[i];
+                        if (cand > dp[c]) { dp[c] = cand; }
+                    }
+                }
+                return dp[capacity];
+            }
+        }
+        // Longest common subsequence length (spec 34.1) of two strings via a flat DP table.
+        public class Lcs {
+            public static method length(String a, String b) returns int {
+                int m = a.length();
+                int n = b.length();
+                mutable int[] dp = new int[(m + 1) * (n + 1)]();
+                int w = n + 1;
+                for (mutable int i = 1; i <= m; i++) {
+                    for (mutable int j = 1; j <= n; j++) {
+                        if (a.charAt(i - 1) == b.charAt(j - 1)) {
+                            dp[i*w + j] = dp[(i-1)*w + (j-1)] + 1;
+                        } else {
+                            int up = dp[(i-1)*w + j];
+                            int left = dp[i*w + (j-1)];
+                            if (up > left) { dp[i*w + j] = up; } else { dp[i*w + j] = left; }
+                        }
+                    }
+                }
+                return dp[m*w + n];
+            }
+        }
+        // Quickselect (spec 34.1): the k-th smallest element (0-indexed) in expected linear time, using
+        // Lomuto partitioning with a last-element pivot. Partitions the array in place.
+        public class QuickSelect {
+            private static method partition(int[] a, int lo, int hi) returns int {
+                int pivot = a[hi];
+                mutable int i = lo;
+                for (mutable int j = lo; j < hi; j++) {
+                    if (a[j] < pivot) {
+                        int t = a[i]; a[i] = a[j]; a[j] = t;
+                        i = i + 1;
+                    }
+                }
+                int t2 = a[i]; a[i] = a[hi]; a[hi] = t2;
+                return i;
+            }
+            public static method select(int[] a, int n, int k) returns int {
+                mutable int lo = 0;
+                mutable int hi = n - 1;
+                while (lo < hi) {
+                    int p = QuickSelect.partition(a, lo, hi);
+                    if (p == k) { return a[p]; }
+                    if (p < k) { lo = p + 1; } else { hi = p - 1; }
+                }
+                return a[lo];
+            }
+        }
+        // Sliding-window maximum (spec 34.1): the maximum of every length-k window, in linear time via a
+        // monotonic deque of indices. Returns the n-k+1 maxima.
+        public class SlidingWindowMax {
+            public static method maxOfEach(int[] a, int n, int k) returns int[] {
+                mutable int[] out = new int[n - k + 1]();
+                mutable int[] dq = new int[n]();
+                mutable int head = 0;
+                mutable int tail = 0;
+                mutable int oi = 0;
+                for (mutable int i = 0; i < n; i++) {
+                    while (head < tail && dq[head] <= i - k) { head = head + 1; }
+                    while (head < tail && a[dq[tail - 1]] <= a[i]) { tail = tail - 1; }
+                    dq[tail] = i; tail = tail + 1;
+                    if (i >= k - 1) { out[oi] = a[dq[head]]; oi = oi + 1; }
+                }
+                return out;
+            }
+        }
+        // Maximum-subarray sum (spec 34.1) by Kadane's algorithm: the largest sum of any contiguous run.
+        public class Kadane {
+            public static method maxSubarray(int[] a, int n) returns int {
+                if (n == 0) { return 0; }
+                mutable int best = a[0];
+                mutable int cur = a[0];
+                for (mutable int i = 1; i < n; i++) {
+                    int ext = cur + a[i];
+                    if (a[i] > ext) { cur = a[i]; } else { cur = ext; }
+                    if (cur > best) { best = cur; }
+                }
+                return best;
+            }
+        }
+        // Interval merging (spec 34.1): sorts intervals by start and coalesces overlaps in place, writing the
+        // merged starts/ends back into the first `count` slots and returning that count; coveredLength totals
+        // the merged spans.
+        public class IntervalMerge {
+            public static method merge(int[] starts, int[] ends, int n) returns int {
+                for (mutable int i = 1; i < n; i++) {
+                    int ks = starts[i]; int ke = ends[i];
+                    mutable int j = i - 1;
+                    while (j >= 0 && starts[j] > ks) { starts[j+1] = starts[j]; ends[j+1] = ends[j]; j = j - 1; }
+                    starts[j+1] = ks; ends[j+1] = ke;
+                }
+                if (n == 0) { return 0; }
+                mutable int count = 1;
+                for (mutable int i = 1; i < n; i++) {
+                    if (starts[i] <= ends[count-1]) {
+                        if (ends[i] > ends[count-1]) { ends[count-1] = ends[i]; }
+                    } else {
+                        starts[count] = starts[i]; ends[count] = ends[i]; count = count + 1;
+                    }
+                }
+                return count;
+            }
+            public static method coveredLength(int[] starts, int[] ends, int mergedCount) returns int {
+                mutable int total = 0;
+                for (mutable int i = 0; i < mergedCount; i++) { total = total + (ends[i] - starts[i]); }
+                return total;
+            }
+        }
+        // Activity selection (spec 34.1): the maximum number of mutually non-overlapping intervals, by the
+        // greedy earliest-finishing-time rule (intervals are sorted by end time first). starts[i]/ends[i]
+        // describe interval i.
+        public class IntervalScheduler {
+            public static method maxNonOverlapping(int[] starts, int[] ends, int n) returns int {
+                mutable int[] s = new int[n]();
+                mutable int[] e = new int[n]();
+                for (mutable int i = 0; i < n; i++) { s[i] = starts[i]; e[i] = ends[i]; }
+                for (mutable int i = 1; i < n; i++) {
+                    int ke = e[i]; int ks = s[i];
+                    mutable int j = i - 1;
+                    while (j >= 0 && e[j] > ke) { e[j+1] = e[j]; s[j+1] = s[j]; j = j - 1; }
+                    e[j+1] = ke; s[j+1] = ks;
+                }
+                mutable int count = 0;
+                mutable int lastEnd = -2147483647;
+                for (mutable int i = 0; i < n; i++) {
+                    if (s[i] >= lastEnd) { count = count + 1; lastEnd = e[i]; }
+                }
+                return count;
+            }
+        }
+        // A 2D Fenwick tree / binary indexed tree (spec 34.1): O(log r * log c) point updates and O(1)-indexed
+        // rectangle sums over an int grid. update/prefix/rangeSum take 0-based coordinates.
+        public class Fenwick2D {
+            private mutable int[] tree;
+            private mutable int rows;
+            private mutable int cols;
+            public constructor Fenwick2D(int rows, int cols) {
+                this.rows = rows;
+                this.cols = cols;
+                this.tree = new int[(rows + 1) * (cols + 1)]();
+            }
+            public method update(int r, int c, int delta) returns void {
+                mutable int i = r + 1;
+                while (i <= this.rows) {
+                    mutable int j = c + 1;
+                    while (j <= this.cols) {
+                        this.tree[i * (this.cols + 1) + j] = this.tree[i * (this.cols + 1) + j] + delta;
+                        j = j + (j & (0 - j));
+                    }
+                    i = i + (i & (0 - i));
+                }
+                return;
+            }
+            public method prefix(int r, int c) returns int {
+                mutable int s = 0;
+                mutable int i = r + 1;
+                while (i > 0) {
+                    mutable int j = c + 1;
+                    while (j > 0) {
+                        s = s + this.tree[i * (this.cols + 1) + j];
+                        j = j - (j & (0 - j));
+                    }
+                    i = i - (i & (0 - i));
+                }
+                return s;
+            }
+            public method rangeSum(int r1, int c1, int r2, int c2) returns int {
+                mutable int s = this.prefix(r2, c2);
+                if (r1 > 0) { s = s - this.prefix(r1 - 1, c2); }
+                if (c1 > 0) { s = s - this.prefix(r2, c1 - 1); }
+                if (r1 > 0 && c1 > 0) { s = s + this.prefix(r1 - 1, c1 - 1); }
+                return s;
+            }
+        }
+    }

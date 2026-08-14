@@ -1,11 +1,11 @@
-# Build the LDP3 .msi end to end: stage the self-contained bundle, then compile the WiX package.
-# Prereqs: a Release build of the LDP3 binaries (cmake --build build --config Release), LLVM on PATH or
+﻿# Build the Polaron .msi end to end: stage the self-contained bundle, then compile the WiX package.
+# Prereqs: a Release build of the Polaron binaries (cmake --build build --config Release), LLVM on PATH or
 # in C:\Program Files\LLVM, and the WiX tool (dotnet tool install --global wix; adds ~\.dotnet\tools to PATH).
 #
-#   ./build-msi.ps1                       # -> installer/dist/LDP3-1.0.4.msi
+#   ./build-msi.ps1                       # -> installer/dist/Polaron-1.0.4.msi
 param(
     [string]$Config = "Release",
-    [string]$Version = "1.0.45"
+    [string]$Version = "1.0.46"
 )
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
@@ -24,8 +24,8 @@ if (-not (Test-Path $wix)) { throw "wix not found; run: dotnet tool install --gl
 # The WixUI extension provides the feature-selection wizard.
 & $wix extension add -g WixToolset.UI.wixext 2>&1 | Out-Null
 
-$out = Join-Path $here "dist\LDP3-$Version.msi"
+$out = Join-Path $here "dist\Polaron-$Version.msi"
 Write-Host "== building $out =="
-& $wix build "$here\ldp3.wxs" -ext WixToolset.UI.wixext -arch x64 -o $out
+& $wix build "$here\polaron.wxs" -ext WixToolset.UI.wixext -arch x64 -o $out
 if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
 Write-Host "OK -> $out"

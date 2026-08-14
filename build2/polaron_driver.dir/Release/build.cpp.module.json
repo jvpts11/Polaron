@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "revision": 0,
+    "rules": [
+        {
+            "primary-output": "polaron_driver.dir\\Release\\build.obj",
+            "outputs": [
+                "polaron_driver.dir\\Release\\"
+            ],
+            "requires": []
+        }
+    ]
+}

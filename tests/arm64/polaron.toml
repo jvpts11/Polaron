@@ -1,0 +1,27 @@
+[polaron_project]
+
+[program]
+name = "arm64boot"
+version = "0.1.0"
+language_version = "1.0"
+entry = "src/main.pol"
+
+[build]
+output = "build-output/"
+
+# The first Polaron image for a machine that is not an x86. Everything below this line was already
+# supported by the compiler -- the AArch64 data layout, the triple, the asm architecture check -- and
+# the parts that were not were in the DRIVER: `-mno-red-zone` is an x86 flag that AArch64 clang refuses
+# outright, and the bare-metal link passed `-m elf_x86_64` unconditionally.
+#
+# QEMU's `virt` machine: RAM starts at 0x40000000, and `-kernel <elf>` enters at the ELF's own entry
+# point with the CPU in EL1 and NOTHING set up -- no stack, no zeroed .bss. That is what boot.s is for.
+[freestanding]
+target = "aarch64-unknown-none-elf"
+load_address = "0x40080000"
+boot = "boot.s"
+
+# Where a guard that fires says so. x86 can assume COM1; AArch64 cannot assume anything, because a
+# UART's address is a fact about the board -- this one is the PL011 `virt` maps at 0x09000000, which is
+# also what the program below writes to.
+panic_uart = "0x09000000"

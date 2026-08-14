@@ -1,0 +1,25 @@
+program FfiMangledCdecl;
+
+// `cdecl` means C, and a MANGLED symbol is evidence that the other side is not.
+//
+// The compiler cannot in general know what a symbol was written in -- but it can know when the
+// evidence is in the name: `_ZN3Foo3barEv` is Itanium, `?bar@Foo@@QEAAXXZ` is MSVC, and no C compiler
+// produces either. A `cdecl` over one is a declaration that disagrees with the thing it names, and the
+// way that goes wrong (an argument in the wrong place, a receiver that is not there) is not a link
+// error but a crash somewhere else entirely.
+//
+// A WARNING and not an error, deliberately: pasting a mangled symbol by hand is exactly how a C++
+// binding works without a mangler of our own, so this may be only the wrong word on a declaration that
+// otherwise does the right thing.
+//
+// Warns: is an Itanium MANGLED name
+public bundle main {
+    public namespace app {
+        public class Cxx {
+            private extern cdecl static method bar() returns int symbol("_ZN3Foo3barEv");
+        }
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

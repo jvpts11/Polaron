@@ -1,0 +1,18 @@
+program FfiStringArg;
+
+// A String argument to an extern C function is passed as a NUL-terminated char* (spec 26), so the C
+// side reads the text, not the {len,data} object. Calls libc puts. Prints:
+//   hello from polaron
+public bundle main {
+    public namespace app {
+        public class LibC {
+            public extern cdecl static method puts(String s) returns int;
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                LibC.puts("hello from polaron");
+                return;
+            }
+        }
+    }
+}

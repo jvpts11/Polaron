@@ -10,7 +10,7 @@
 #include "diag/diagnostic.h"
 #include "diag/render.h"
 
-namespace ldp3 {
+namespace polaron {
 
 namespace {
 // Emit a monomorphization diagnostic richly: infer its code from the message and render the why / fix /
@@ -87,9 +87,13 @@ std::string substArg(const std::string& arg, const Subst& s) {
         const std::size_t d = a.find('$', start);
         std::string seg = a.substr(start, d == std::string::npos ? std::string::npos : d - start);
         seg = resolveAliasName(seg);
-        if (auto si = s.find(seg); si != s.end()) seg = si->second;
+        if (auto si = s.find(seg); si != s.end()) {
+            seg = si->second;
+        }
         rebuilt += seg;
-        if (d == std::string::npos) break;
+        if (d == std::string::npos) {
+            break;
+        }
         rebuilt += "$";
         start = d + 1;
     }
@@ -122,10 +126,14 @@ ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
             const std::size_t b = comp.find_first_not_of(" \t");
             const std::size_t e = comp.find_last_not_of(" \t");
             comp = (b == std::string::npos) ? std::string() : comp.substr(b, e - b + 1);
-            if (auto ci = s.find(comp); ci != s.end()) comp = ci->second;
+            if (auto ci = s.find(comp); ci != s.end()) {
+                comp = ci->second;
+            }
             rebuilt += (first ? "" : ",") + comp;
             first = false;
-            if (comma == std::string::npos) break;
+            if (comma == std::string::npos) {
+                break;
+            }
             start = comma + 1;
         }
         r.name = rebuilt + ")";
@@ -141,8 +149,11 @@ ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
         std::size_t start = 0;
         bool first = true;
         for (std::size_t i = 0; i <= inner.size(); ++i) {
-            if (i < inner.size() && inner[i] == '<') ++depth;
-            else if (i < inner.size() && inner[i] == '>') --depth;
+            if (i < inner.size() && inner[i] == '<') {
+                ++depth;
+            } else if (i < inner.size() && inner[i] == '>') {
+                --depth;
+            }
             if (i == inner.size() || (inner[i] == ',' && depth == 0)) {
                 std::string comp = inner.substr(start, i - start);
                 const std::size_t b = comp.find_first_not_of(" \t");
@@ -159,8 +170,12 @@ ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
         return r;
     }
     auto it = s.find(r.name);
-    if (it != s.end()) r.name = it->second;
-    for (std::string& a : r.typeArgs) a = substArg(a, s);  // handles nested mangled args (Handler$T)
+    if (it != s.end()) {
+        r.name = it->second;
+    }
+    for (std::string& a : r.typeArgs) {
+        a = substArg(a, s);  // handles nested mangled args (Handler$T)
+    }
     return r;
 }
 
@@ -171,12 +186,16 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s);
 ast::Block cloneBlock(const ast::Block& b, const Subst& s) {
     ast::Block r;
     r.loc = b.loc;
-    for (const auto& st : b.statements) r.statements.push_back(cloneStmt(st.get(), s));
+    for (const auto& st : b.statements) {
+        r.statements.push_back(cloneStmt(st.get(), s));
+    }
     return r;
 }
 
 ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
-    if (e == nullptr) return nullptr;
+    if (e == nullptr) {
+        return nullptr;
+    }
     if (const auto* x = dynamic_cast<const ast::IdentifierExpr*>(e)) {
         auto n = std::make_unique<ast::IdentifierExpr>();
         n->loc = x->loc;
@@ -276,7 +295,9 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->loc = x->loc;
         n->fromSuffix = x->fromSuffix;
         n->callee = cloneExpr(x->callee.get(), s);
-        for (const auto& a : x->args) n->args.push_back(cloneExpr(a.get(), s));
+        for (const auto& a : x->args) {
+            n->args.push_back(cloneExpr(a.get(), s));
+        }
         for (const std::string& a : x->typeArgs) {  // generic call args may be type params
             auto ai = s.find(a);
             n->typeArgs.push_back(ai != s.end() ? ai->second : a);
@@ -316,20 +337,38 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
                                ai->second.typeArgs.end());
         }
         auto it = s.find(n->className);
-        if (it != s.end()) n->className = it->second;
-        for (const std::string& a : x->typeArgs) n->typeArgs.push_back(substArg(a, s));
-        for (const auto& a : x->args) n->args.push_back(cloneExpr(a.get(), s));
+        if (it != s.end()) {
+            n->className = it->second;
+        }
+        for (const std::string& a : x->typeArgs) {
+            n->typeArgs.push_back(substArg(a, s));
+        }
+        for (const auto& a : x->args) {
+            n->args.push_back(cloneExpr(a.get(), s));
+        }
         n->location = x->location;
+        // ...and WHERE, when the where is a region. Copying `location` but not `region` made
+        // `new T(...) in region R` allocate from the ordinary heap inside every generic type, while
+        // the matching `delete ... from region R` (once IT was also preserved -- see cloneStmt for
+        // DeleteStmt) correctly went to the region, which then refused a pointer it had never handed
+        // out: `region free of a pointer that this region did not allocate`.
+        //
+        // The two omissions hid each other. With only the delete fixed the allocation was still on
+        // the heap; with neither fixed both sides agreed on the wrong answer and the region simply
+        // went unused. Together they are why no generic container could put its nodes in a region.
+        n->region = x->region;
         // A value Result/Option (spec 21) whose payload substitutes to a pointer/ref (a generic Option<T>
         // instantiated at T=Node*) mangles into a name that collides with the boxed form, so keep it boxed
         // for now -- decided here, once the concrete type args are known. Matches codegen's isValueVariant.
-        if (n->location == "value")
-            for (const std::string& a : n->typeArgs)
+        if (n->location == "value") {
+            for (const std::string& a : n->typeArgs) {
                 if (a.find('*') != std::string::npos || a.find('&') != std::string::npos ||
                     a.find("Decimal") != std::string::npos || a.find('(') != std::string::npos) {
                     n->location = "heap";
                     break;
                 }
+            }
+        }
         n->region = x->region;
         return n;
     }
@@ -338,7 +377,9 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->loc = x->loc;
         n->elementType = resolveAliasName(x->elementType);
         auto it = s.find(n->elementType);
-        if (it != s.end()) n->elementType = it->second;
+        if (it != s.end()) {
+            n->elementType = it->second;
+        }
         n->size = cloneExpr(x->size.get(), s);
         n->location = x->location;
         return n;
@@ -380,7 +421,9 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->loc = x->loc;
         n->targetType = resolveAliasName(x->targetType);
         auto it = s.find(n->targetType);
-        if (it != s.end()) n->targetType = it->second;
+        if (it != s.end()) {
+            n->targetType = it->second;
+        }
         n->operand = cloneExpr(x->operand.get(), s);
         return n;
     }
@@ -395,6 +438,19 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->size = cloneExpr(x->size.get(), s);
         n->accepts = x->accepts;
         n->rejects = x->rejects;
+        // WHERE the region lives, which this dropped. `itself.at(addr, size)` is a region over FIXED
+        // memory and `itself.atMultiple({...})` is several of them -- losing either turns a region
+        // pinned to a hardware address into an ordinary heap allocation, inside any generic type.
+        // Nothing reports it; the region simply stops being where it was put. Same family as the two
+        // omissions in NewExpr and DeleteStmt above.
+        n->atAddress = cloneExpr(x->atAddress.get(), s);
+        for (const auto& r : x->ranges) {
+            ast::RegionInitExpr::Range nr;
+            nr.address = cloneExpr(r.address.get(), s);
+            nr.accepts = r.accepts;
+            nr.rejects = r.rejects;
+            n->ranges.push_back(std::move(nr));
+        }
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::InterpStringExpr*>(e)) {
@@ -402,13 +458,17 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->loc = x->loc;
         n->literals = x->literals;
         n->formats = x->formats;   // spec 4.1 format specifiers travel with the clone
-        for (const auto& ex : x->exprs) n->exprs.push_back(cloneExpr(ex.get(), s));
+        for (const auto& ex : x->exprs) {
+            n->exprs.push_back(cloneExpr(ex.get(), s));
+        }
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::TupleExpr*>(e)) {
         auto n = std::make_unique<ast::TupleExpr>();
         n->loc = x->loc;
-        for (const auto& ex : x->elements) n->elements.push_back(cloneExpr(ex.get(), s));
+        for (const auto& ex : x->elements) {
+            n->elements.push_back(cloneExpr(ex.get(), s));
+        }
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::MatchExpr*>(e)) {
@@ -420,7 +480,9 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
             nc.loc = c.loc;
             nc.typeName = c.typeName;
             auto it = s.find(nc.typeName);
-            if (it != s.end()) nc.typeName = it->second;  // a case type may be a type param
+            if (it != s.end()) {
+                nc.typeName = it->second;  // a case type may be a type param
+            }
             for (const auto& b : c.bindings) {
                 ast::Param p;
                 p.loc = b.loc;
@@ -466,7 +528,9 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
 }
 
 ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
-    if (st == nullptr) return nullptr;
+    if (st == nullptr) {
+        return nullptr;
+    }
     if (const auto* x = dynamic_cast<const ast::ExprStmt*>(st)) {
         auto n = std::make_unique<ast::ExprStmt>();
         n->loc = x->loc;
@@ -529,8 +593,9 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
             nc.body = cloneBlock(c.body, s);
             n->catches.push_back(std::move(nc));
         }
-        if (x->finallyBlock)
+        if (x->finallyBlock) {
             n->finallyBlock = std::make_unique<ast::Block>(cloneBlock(*x->finallyBlock, s));
+        }
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) {
@@ -554,7 +619,9 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
             nc.body = cloneBlock(c.body, s);
             n->cases.push_back(std::move(nc));
         }
-        if (x->defaultBody) n->defaultBody = std::make_unique<ast::Block>(cloneBlock(*x->defaultBody, s));
+        if (x->defaultBody) {
+            n->defaultBody = std::make_unique<ast::Block>(cloneBlock(*x->defaultBody, s));
+        }
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) {  // was missing -> null deref crash
@@ -574,10 +641,14 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
                 nc.bindings.push_back(std::move(p));
             }
             nc.body = cloneBlock(c.body, s);
-            if (c.result) nc.result = cloneExpr(c.result.get(), s);
+            if (c.result) {
+                nc.result = cloneExpr(c.result.get(), s);
+            }
             n->cases.push_back(std::move(nc));
         }
-        if (x->defaultBody) n->defaultBody = std::make_unique<ast::Block>(cloneBlock(*x->defaultBody, s));
+        if (x->defaultBody) {
+            n->defaultBody = std::make_unique<ast::Block>(cloneBlock(*x->defaultBody, s));
+        }
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) {
@@ -590,6 +661,21 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         auto n = std::make_unique<ast::DeleteStmt>();
         n->loc = x->loc;
         n->target = cloneExpr(x->target.get(), s);
+        // EVERYTHING ELSE THE STATEMENT SAID, which this used to drop on the floor.
+        //
+        // Cloning only the target turned `delete node from region this.nodes` into a plain
+        // `delete node` inside every GENERIC type -- silently, because an empty `fromRegion` is not
+        // an error anywhere; it simply means "ordinary heap delete". The program then handed a region
+        // slot to the allocator and the runtime trapped with `delete of a region object: use
+        // delete X from region R`, naming the exact form the source already used.
+        //
+        // That is why no container in the standard library could hold its nodes in a region: every
+        // container is generic. `delete a, b, c` lost its extra targets here as well, which leaks.
+        n->fromRegion = x->fromRegion;
+        n->fromHeap = x->fromHeap;
+        for (const auto& t : x->moreTargets) {
+            n->moreTargets.push_back(cloneExpr(t.get(), s));
+        }
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::ReleaseStmt*>(st)) {
@@ -665,7 +751,9 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->loc = x->loc;
         n->cond = cloneExpr(x->cond.get(), s);
         n->thenBlock = cloneBlock(x->thenBlock, s);
-        if (x->elseBlock) n->elseBlock = std::make_unique<ast::Block>(cloneBlock(*x->elseBlock, s));
+        if (x->elseBlock) {
+            n->elseBlock = std::make_unique<ast::Block>(cloneBlock(*x->elseBlock, s));
+        }
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::WhileStmt*>(st)) {
@@ -708,8 +796,9 @@ std::vector<ast::AnnotationUse> cloneAnnotations(const std::vector<ast::Annotati
         ast::AnnotationUse u;
         u.loc = a.loc;
         u.name = a.name;
-        for (const ast::AnnotationArg& arg : a.args)
+        for (const ast::AnnotationArg& arg : a.args) {
             u.args.push_back({arg.name, cloneExpr(arg.value.get(), s), arg.loc});
+        }
         out.push_back(std::move(u));
     }
     return out;
@@ -728,13 +817,47 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         n->isComptime = x->isComptime;
         n->isAsync = x->isAsync;
         n->isVolatile = x->isVolatile;
+        // EVERYTHING ELSE THE DECLARATION SAID. This clone used to copy eleven flags and stop, so a
+        // generic class with an `extern` method lost its externness on instantiation -- the copy came
+        // out as an ordinary method with no body. That is the fourth time this file has silently
+        // dropped part of a declaration (DeleteStmt's region, NewExpr's region, RegionInitExpr's
+        // address); the shape of the bug is always the same, and it is always invisible, because a
+        // clone that forgets a field produces something that still compiles.
+        n->isDeprecated = x->isDeprecated;
+        n->isExtern = x->isExtern;
+        n->isVariadic = x->isVariadic;
+        n->isNaked = x->isNaked;
+        n->isInterrupt = x->isInterrupt;
+        n->isEachFamily = x->isEachFamily;
+        // `isProcedure` is deliberately NOT copied, and finding out why cost a red suite.
+        //
+        // This clone is also the copier the transformer machinery uses to inject a `procedure` into the
+        // type that applies it -- and in that copy the procedure stops being a socket and becomes an
+        // ordinary method of the type. Carrying the flag over made the analyser look for the
+        // transformer that declared it, on a type that now simply has the method:
+        //     'compareTo' is written as a `procedure`, but no transformer this type applies declares it
+        // The omission is the mechanism, not an oversight.
+        n->isGeneratorBody = x->isGeneratorBody;
+        n->genElem = x->genElem;
+        n->genSym = x->genSym;
+        n->externConvention = x->externConvention;
+        n->externSymbol = x->externSymbol;
+        n->propertySetter = x->propertySetter;
         n->name = x->name;
         n->typeParams = x->typeParams;
-        for (const auto& p : x->params) n->params.push_back({substType(p.type, s), p.name, p.loc});
+        for (const auto& p : x->params) {
+            n->params.push_back({substType(p.type, s), p.name, p.loc});
+        }
         n->returnType = substType(x->returnType, s);
-        for (const auto& t : x->throwsTypes) n->throwsTypes.push_back(substType(t, s));
-        for (const auto& c : x->requiresClauses) n->requiresClauses.push_back(cloneExpr(c.get(), s));
-        for (const auto& c : x->ensuresClauses) n->ensuresClauses.push_back(cloneExpr(c.get(), s));
+        for (const auto& t : x->throwsTypes) {
+            n->throwsTypes.push_back(substType(t, s));
+        }
+        for (const auto& c : x->requiresClauses) {
+            n->requiresClauses.push_back(cloneExpr(c.get(), s));
+        }
+        for (const auto& c : x->ensuresClauses) {
+            n->ensuresClauses.push_back(cloneExpr(c.get(), s));
+        }
         n->body = cloneBlock(x->body, s);
         n->annotations = cloneAnnotations(x->annotations, s);
         return n;
@@ -788,7 +911,9 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         auto n = std::make_unique<ast::ConstructorDecl>();
         n->loc = x->loc;
         n->visibility = x->visibility;
-        for (const auto& p : x->params) n->params.push_back({substType(p.type, s), p.name, p.loc});
+        for (const auto& p : x->params) {
+            n->params.push_back({substType(p.type, s), p.name, p.loc});
+        }
         n->body = cloneBlock(x->body, s);
         return n;
     }
@@ -878,6 +1003,21 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
         }
         c.members.push_back(std::move(cm));
     }
+    // THE CLASS INVARIANTS, which this dropped entirely until 2026-08-14.
+    //
+    // A generic class lost its contracts the moment it was instantiated: `HashMap<K,V>` declares five
+    // invariants, and `HashMap$int$int` -- the class every program actually uses -- had none. Nothing
+    // checked them at any exit, so a `count` that went negative or an array that stopped matching
+    // `cap` went unreported in exactly the code the clauses were written to protect.
+    //
+    // Found while looking for why the optimiser was not being told about them; the missing enforcement
+    // is the more serious half. It is the same failure as `cloneMember` dropping `isExtern` and nine
+    // other fields: a clone that copies eighteen things and forgets the nineteenth, silently.
+    //
+    // Substituted like everything else here, since an invariant may name the type parameter.
+    for (const auto& inv : d.invariants) {
+        c.invariants.push_back(cloneExpr(inv.get(), s));
+    }
     c.annotations = cloneAnnotations(d.annotations, s);
     return c;
 }
@@ -906,38 +1046,54 @@ void collectTypeArgString(const std::string& a0, const std::set<std::string>& ge
         }
     }
     const std::size_t d = a.find('$');
-    if (d == std::string::npos) return;  // a plain type, nothing nested to instantiate
+    if (d == std::string::npos) {
+        return;  // a plain type, nothing nested to instantiate
+    }
     const std::string base = a.substr(0, d);
-    if (generics.count(base) == 0) return;
+    if (generics.count(base) == 0) {
+        return;
+    }
     std::vector<std::string> args;
     std::size_t start = d + 1;
     while (true) {
         const std::size_t e = a.find('$', start);
         args.push_back(a.substr(start, e == std::string::npos ? std::string::npos : e - start));
-        if (e == std::string::npos) break;
+        if (e == std::string::npos) {
+            break;
+        }
         start = e + 1;
     }
     out[a] = {base, args};
-    for (const std::string& arg : args) collectTypeArgString(arg, generics, out);
+    for (const std::string& arg : args) {
+        collectTypeArgString(arg, generics, out);
+    }
 }
 void collectType(const ast::TypeRef& t, const std::set<std::string>& generics, InstMap& out) {
     if (!t.typeArgs.empty() && generics.count(t.name) > 0) {
         out[ast::mangleGeneric(t.name, t.typeArgs)] = {t.name, t.typeArgs};
     }
-    for (const std::string& a : t.typeArgs) collectTypeArgString(a, generics, out);
+    for (const std::string& a : t.typeArgs) {
+        collectTypeArgString(a, generics, out);
+    }
 }
 void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& out);
 void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& out);
 void collectBlock(const ast::Block& b, const std::set<std::string>& g, InstMap& out) {
-    for (const auto& st : b.statements) collectStmt(st.get(), g, out);
+    for (const auto& st : b.statements) {
+        collectStmt(st.get(), g, out);
+    }
 }
 void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& out) {
-    if (e == nullptr) return;
+    if (e == nullptr) {
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::NewExpr*>(e)) {
         if (!x->typeArgs.empty() && g.count(x->className) > 0) {
             out[ast::mangleGeneric(x->className, x->typeArgs)] = {x->className, x->typeArgs};
         }
-        for (const auto& a : x->args) collectExpr(a.get(), g, out);
+        for (const auto& a : x->args) {
+            collectExpr(a.get(), g, out);
+        }
         return;
     }
     if (const auto* x = dynamic_cast<const ast::MemberExpr*>(e)) { collectExpr(x->object.get(), g, out); return; }
@@ -946,22 +1102,28 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
         // monomorphization here since the user never names the type (spec 31).
         if (const auto* m = dynamic_cast<const ast::MemberExpr*>(x->callee.get()); m != nullptr &&
             g.count("ArrayList") > 0) {
-            if (m->member == "methods") out["ArrayList$Method"] = {"ArrayList", {"Method"}};
-            else if (m->member == "fields") out["ArrayList$Field"] = {"ArrayList", {"Field"}};
-            else if (m->member == "annotations")
+            if (m->member == "methods") {
+                out["ArrayList$Method"] = {"ArrayList", {"Method"}};
+            } else if (m->member == "fields") {
+                out["ArrayList$Field"] = {"ArrayList", {"Field"}};
+            } else if (m->member == "annotations") {
                 out["ArrayList$Annotation"] = {"ArrayList", {"Annotation"}};
+            }
         }
         // EnumName.parse(s) returns Option<Enum> (spec 12.5); force Some/None/Option for the enum.
         if (const auto* m = dynamic_cast<const ast::MemberExpr*>(x->callee.get());
-            m != nullptr && m->member == "parse" && g.count("Option") > 0)
+            m != nullptr && m->member == "parse" && g.count("Option") > 0) {
             if (const auto* eid = dynamic_cast<const ast::IdentifierExpr*>(m->object.get());
                 eid != nullptr && g_enumNames.count(eid->name) > 0) {
                 out["Option$" + eid->name] = {"Option", {eid->name}};
                 out["Some$" + eid->name] = {"Some", {eid->name}};
                 out["None$" + eid->name] = {"None", {eid->name}};
             }
+        }
         collectExpr(x->callee.get(), g, out);
-        for (const auto& a : x->args) collectExpr(a.get(), g, out);
+        for (const auto& a : x->args) {
+            collectExpr(a.get(), g, out);
+        }
         return;
     }
     if (const auto* x = dynamic_cast<const ast::BinaryExpr*>(e)) { collectExpr(x->lhs.get(), g, out); collectExpr(x->rhs.get(), g, out); return; }
@@ -970,39 +1132,97 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
     if (const auto* x = dynamic_cast<const ast::IndexExpr*>(e)) { collectExpr(x->array.get(), g, out); collectExpr(x->index.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::MoveExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ExtractExpr*>(e)) { collectExpr(x->target.get(), g, out); return; }
-    if (dynamic_cast<const ast::MarkExpr*>(e) != nullptr) return;  // no sub-expressions
+    if (dynamic_cast<const ast::MarkExpr*>(e) != nullptr) {
+        return;  // no sub-expressions
+    }
     if (const auto* x = dynamic_cast<const ast::TryExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::CastExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
-    if (const auto* x = dynamic_cast<const ast::InterpStringExpr*>(e)) { for (const auto& ex : x->exprs) collectExpr(ex.get(), g, out); return; }
-    if (const auto* x = dynamic_cast<const ast::TupleExpr*>(e)) { for (const auto& ex : x->elements) collectExpr(ex.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::InterpStringExpr*>(e)) {
+        for (const auto& ex : x->exprs) {
+            collectExpr(ex.get(), g, out);
+        }
+        return;
+    }
+    if (const auto* x = dynamic_cast<const ast::TupleExpr*>(e)) {
+        for (const auto& ex : x->elements) {
+            collectExpr(ex.get(), g, out);
+        }
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::NewArrayExpr*>(e)) { collectExpr(x->size.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::RegionInitExpr*>(e)) { collectExpr(x->size.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::MatchExpr*>(e)) {
         collectExpr(x->subject.get(), g, out);
-        for (const auto& c : x->cases) collectExpr(c.result.get(), g, out);
+        for (const auto& c : x->cases) {
+            collectExpr(c.result.get(), g, out);
+        }
         collectExpr(x->defaultResult.get(), g, out);
         return;
     }
 }
 void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& out) {
-    if (st == nullptr) return;
+    if (st == nullptr) {
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::ExprStmt*>(st)) { collectExpr(x->expr.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::DemandStmt*>(st)) { collectExpr(x->condition.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) { collectStmt(x->stmt.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) { collectType(x->elemType, g, out); collectExpr(x->iterable.get(), g, out); collectBlock(x->body, g, out); return; }
-    if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) { collectExpr(x->subject.get(), g, out); for (const auto& c : x->cases) { collectExpr(c.value.get(), g, out); collectBlock(c.body, g, out); } if (x->defaultBody) collectBlock(*x->defaultBody, g, out); return; }
-    if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) { collectExpr(x->subject.get(), g, out); for (const auto& c : x->cases) collectBlock(c.body, g, out); if (x->defaultBody) collectBlock(*x->defaultBody, g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) {
+        collectExpr(x->subject.get(), g, out);
+        for (const auto& c : x->cases) {
+            collectExpr(c.value.get(), g, out);
+            collectBlock(c.body, g, out);
+        }
+        if (x->defaultBody) {
+            collectBlock(*x->defaultBody, g, out);
+        }
+        return;
+    }
+    if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) {
+        collectExpr(x->subject.get(), g, out);
+        for (const auto& c : x->cases) {
+            collectBlock(c.body, g, out);
+        }
+        if (x->defaultBody) {
+            collectBlock(*x->defaultBody, g, out);
+        }
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::ThrowStmt*>(st)) { collectExpr(x->value.get(), g, out); return; }
-    if (const auto* x = dynamic_cast<const ast::TryStmt*>(st)) { collectBlock(x->body, g, out); for (const auto& c : x->catches) { collectType(c.type, g, out); collectBlock(c.body, g, out); } if (x->finallyBlock) collectBlock(*x->finallyBlock, g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::TryStmt*>(st)) {
+        collectBlock(x->body, g, out);
+        for (const auto& c : x->catches) {
+            collectType(c.type, g, out);
+            collectBlock(c.body, g, out);
+        }
+        if (x->finallyBlock) {
+            collectBlock(*x->finallyBlock, g, out);
+        }
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) { collectExpr(x->value.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::DeleteStmt*>(st)) { collectExpr(x->target.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::VarDeclStmt*>(st)) { collectType(x->type, g, out); collectExpr(x->init.get(), g, out); return; }
-    if (const auto* x = dynamic_cast<const ast::TupleDeclStmt*>(st)) { for (const auto& b : x->bindings) collectType(b.type, g, out); collectExpr(x->init.get(), g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::TupleDeclStmt*>(st)) {
+        for (const auto& b : x->bindings) {
+            collectType(b.type, g, out);
+        }
+        collectExpr(x->init.get(), g, out);
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::AssignStmt*>(st)) { collectExpr(x->target.get(), g, out); collectExpr(x->value.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::IncDecStmt*>(st)) { collectExpr(x->target.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::DeferStmt*>(st)) { collectExpr(x->within.get(), g, out); collectBlock(x->body, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::UsingStmt*>(st)) { collectStmt(x->decl.get(), g, out); collectBlock(x->body, g, out); return; }
-    if (const auto* x = dynamic_cast<const ast::IfStmt*>(st)) { collectExpr(x->cond.get(), g, out); collectBlock(x->thenBlock, g, out); if (x->elseBlock) collectBlock(*x->elseBlock, g, out); return; }
+    if (const auto* x = dynamic_cast<const ast::IfStmt*>(st)) {
+        collectExpr(x->cond.get(), g, out);
+        collectBlock(x->thenBlock, g, out);
+        if (x->elseBlock) {
+            collectBlock(*x->elseBlock, g, out);
+        }
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::WhileStmt*>(st)) { collectExpr(x->cond.get(), g, out); collectBlock(x->body, g, out); return; }
     if (const auto* x = dynamic_cast<const ast::DoWhileStmt*>(st)) { collectBlock(x->body, g, out); collectExpr(x->cond.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ForStmt*>(st)) { collectStmt(x->init.get(), g, out); collectExpr(x->cond.get(), g, out); collectStmt(x->update.get(), g, out); collectBlock(x->body, g, out); return; }
@@ -1010,14 +1230,18 @@ void collectStmt(const ast::Stmt* st, const std::set<std::string>& g, InstMap& o
 void collectClass(const ast::ClassDecl& c, const std::set<std::string>& g, InstMap& out) {
     for (const auto& m : c.members) {
         if (const auto* x = dynamic_cast<const ast::MethodDecl*>(m.get())) {
-            for (const auto& p : x->params) collectType(p.type, g, out);
+            for (const auto& p : x->params) {
+                collectType(p.type, g, out);
+            }
             collectType(x->returnType, g, out);
             collectBlock(x->body, g, out);
         } else if (const auto* x = dynamic_cast<const ast::FieldDecl*>(m.get())) {
             collectType(x->type, g, out);
             collectExpr(x->init.get(), g, out);
         } else if (const auto* x = dynamic_cast<const ast::ConstructorDecl*>(m.get())) {
-            for (const auto& p : x->params) collectType(p.type, g, out);
+            for (const auto& p : x->params) {
+                collectType(p.type, g, out);
+            }
             collectBlock(x->body, g, out);
         } else if (const auto* x = dynamic_cast<const ast::DestructorDecl*>(m.get())) {
             collectBlock(x->body, g, out);
@@ -1026,13 +1250,15 @@ void collectClass(const ast::ClassDecl& c, const std::set<std::string>& g, InstM
     // A generic interface used in `implements Iface<Args>` is an instantiation too.
     for (std::size_t k = 0; k < c.interfaceTypeArgs.size() && k < c.interfaces.size(); ++k) {
         const auto& args = c.interfaceTypeArgs[k];
-        if (!args.empty() && g.count(c.interfaces[k]) > 0)
+        if (!args.empty() && g.count(c.interfaces[k]) > 0) {
             out[ast::mangleGeneric(c.interfaces[k], args)] = {c.interfaces[k], args};
+        }
     }
     // A generic superclass in `extends Base<Args>` is an instantiation too (`class X extends Seq<int>`
     // needs Seq$int generated, else the codegen mangles the base to Seq$int and finds it missing).
-    if (!c.superclassTypeArgs.empty() && g.count(c.superclass) > 0)
+    if (!c.superclassTypeArgs.empty() && g.count(c.superclass) > 0) {
         out[ast::mangleGeneric(c.superclass, c.superclassTypeArgs)] = {c.superclass, c.superclassTypeArgs};
+    }
 }
 
 // ---- Generic methods (spec 15) ----
@@ -1051,16 +1277,24 @@ using MethInsts = std::set<MethInst>;
 void collectMethExpr(const ast::Expr* e, MethInsts& out);
 void collectMethStmt(const ast::Stmt* st, MethInsts& out);
 void collectMethBlock(const ast::Block& b, MethInsts& out) {
-    for (const auto& st : b.statements) collectMethStmt(st.get(), out);
+    for (const auto& st : b.statements) {
+        collectMethStmt(st.get(), out);
+    }
 }
 void collectMethExpr(const ast::Expr* e, MethInsts& out) {
-    if (e == nullptr) return;
+    if (e == nullptr) {
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::CallExpr*>(e)) {
-        if (!x->typeArgs.empty())
-            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(x->callee.get()))
+        if (!x->typeArgs.empty()) {
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(x->callee.get())) {
                 out.insert({mem->member, x->typeArgs});
+            }
+        }
         collectMethExpr(x->callee.get(), out);
-        for (const auto& a : x->args) collectMethExpr(a.get(), out);
+        for (const auto& a : x->args) {
+            collectMethExpr(a.get(), out);
+        }
         return;
     }
     if (const auto* x = dynamic_cast<const ast::MemberExpr*>(e)) { collectMethExpr(x->object.get(), out); return; }
@@ -1070,31 +1304,75 @@ void collectMethExpr(const ast::Expr* e, MethInsts& out) {
     if (const auto* x = dynamic_cast<const ast::IndexExpr*>(e)) { collectMethExpr(x->array.get(), out); collectMethExpr(x->index.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::MoveExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::ExtractExpr*>(e)) { collectMethExpr(x->target.get(), out); return; }
-    if (dynamic_cast<const ast::MarkExpr*>(e) != nullptr) return;  // no sub-expressions
+    if (dynamic_cast<const ast::MarkExpr*>(e) != nullptr) {
+        return;  // no sub-expressions
+    }
     if (const auto* x = dynamic_cast<const ast::TryExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::CastExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
-    if (const auto* x = dynamic_cast<const ast::NewExpr*>(e)) { for (const auto& a : x->args) collectMethExpr(a.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::NewExpr*>(e)) {
+        for (const auto& a : x->args) {
+            collectMethExpr(a.get(), out);
+        }
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::NewArrayExpr*>(e)) { collectMethExpr(x->size.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::RegionInitExpr*>(e)) { collectMethExpr(x->size.get(), out); return; }
-    if (const auto* x = dynamic_cast<const ast::InterpStringExpr*>(e)) { for (const auto& ex : x->exprs) collectMethExpr(ex.get(), out); return; }
+    if (const auto* x = dynamic_cast<const ast::InterpStringExpr*>(e)) {
+        for (const auto& ex : x->exprs) {
+            collectMethExpr(ex.get(), out);
+        }
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::MatchExpr*>(e)) {
         collectMethExpr(x->subject.get(), out);
-        for (const auto& c : x->cases) collectMethExpr(c.result.get(), out);
+        for (const auto& c : x->cases) {
+            collectMethExpr(c.result.get(), out);
+        }
         collectMethExpr(x->defaultResult.get(), out);
         return;
     }
     if (const auto* x = dynamic_cast<const ast::LambdaExpr*>(e)) { collectMethBlock(x->body, out); return; }
 }
 void collectMethStmt(const ast::Stmt* st, MethInsts& out) {
-    if (st == nullptr) return;
+    if (st == nullptr) {
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::ExprStmt*>(st)) { collectMethExpr(x->expr.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::DemandStmt*>(st)) { collectMethExpr(x->condition.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) { collectMethStmt(x->stmt.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) { collectMethExpr(x->iterable.get(), out); collectMethBlock(x->body, out); return; }
-    if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) { collectMethExpr(x->subject.get(), out); for (const auto& c : x->cases) { collectMethExpr(c.value.get(), out); collectMethBlock(c.body, out); } if (x->defaultBody) collectMethBlock(*x->defaultBody, out); return; }
-    if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) { collectMethExpr(x->subject.get(), out); for (const auto& c : x->cases) collectMethBlock(c.body, out); if (x->defaultBody) collectMethBlock(*x->defaultBody, out); return; }
+    if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) {
+        collectMethExpr(x->subject.get(), out);
+        for (const auto& c : x->cases) {
+            collectMethExpr(c.value.get(), out);
+            collectMethBlock(c.body, out);
+        }
+        if (x->defaultBody) {
+            collectMethBlock(*x->defaultBody, out);
+        }
+        return;
+    }
+    if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) {
+        collectMethExpr(x->subject.get(), out);
+        for (const auto& c : x->cases) {
+            collectMethBlock(c.body, out);
+        }
+        if (x->defaultBody) {
+            collectMethBlock(*x->defaultBody, out);
+        }
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::ThrowStmt*>(st)) { collectMethExpr(x->value.get(), out); return; }
-    if (const auto* x = dynamic_cast<const ast::TryStmt*>(st)) { collectMethBlock(x->body, out); for (const auto& c : x->catches) collectMethBlock(c.body, out); if (x->finallyBlock) collectMethBlock(*x->finallyBlock, out); return; }
+    if (const auto* x = dynamic_cast<const ast::TryStmt*>(st)) {
+        collectMethBlock(x->body, out);
+        for (const auto& c : x->catches) {
+            collectMethBlock(c.body, out);
+        }
+        if (x->finallyBlock) {
+            collectMethBlock(*x->finallyBlock, out);
+        }
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::ReturnStmt*>(st)) { collectMethExpr(x->value.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::DeleteStmt*>(st)) { collectMethExpr(x->target.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::VarDeclStmt*>(st)) { collectMethExpr(x->init.get(), out); return; }
@@ -1103,7 +1381,14 @@ void collectMethStmt(const ast::Stmt* st, MethInsts& out) {
     if (const auto* x = dynamic_cast<const ast::IncDecStmt*>(st)) { collectMethExpr(x->target.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::DeferStmt*>(st)) { collectMethExpr(x->within.get(), out); collectMethBlock(x->body, out); return; }
     if (const auto* x = dynamic_cast<const ast::UsingStmt*>(st)) { collectMethStmt(x->decl.get(), out); collectMethBlock(x->body, out); return; }
-    if (const auto* x = dynamic_cast<const ast::IfStmt*>(st)) { collectMethExpr(x->cond.get(), out); collectMethBlock(x->thenBlock, out); if (x->elseBlock) collectMethBlock(*x->elseBlock, out); return; }
+    if (const auto* x = dynamic_cast<const ast::IfStmt*>(st)) {
+        collectMethExpr(x->cond.get(), out);
+        collectMethBlock(x->thenBlock, out);
+        if (x->elseBlock) {
+            collectMethBlock(*x->elseBlock, out);
+        }
+        return;
+    }
     if (const auto* x = dynamic_cast<const ast::WhileStmt*>(st)) { collectMethExpr(x->cond.get(), out); collectMethBlock(x->body, out); return; }
     if (const auto* x = dynamic_cast<const ast::DoWhileStmt*>(st)) { collectMethBlock(x->body, out); collectMethExpr(x->cond.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::ForStmt*>(st)) { collectMethStmt(x->init.get(), out); collectMethExpr(x->cond.get(), out); collectMethStmt(x->update.get(), out); collectMethBlock(x->body, out); return; }
@@ -1114,7 +1399,9 @@ void collectMethStmt(const ast::Stmt* st, MethInsts& out) {
 void rewriteMethExpr(ast::Expr* e);
 void rewriteMethStmt(ast::Stmt* st);
 void rewriteMethBlock(ast::Block& b) {
-    for (auto& st : b.statements) rewriteMethStmt(st.get());
+    for (auto& st : b.statements) {
+        rewriteMethStmt(st.get());
+    }
 }
 // Names of generic methods actually declared in the program; only calls to these get mangled.
 // Without this, a builtin like `Memory.read<int8>(...)` (type args, but not a user generic method)
@@ -1124,8 +1411,12 @@ static const std::set<std::string>* g_genericMethodNames = nullptr;
 // The last segment of a dotted receiver: `Raw` for both `Raw.read<int>` and
 // `System.Memory.Raw.read<int>`. Empty when the receiver is not a plain name chain.
 std::string receiverClassName(const ast::Expr* obj) {
-    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(obj)) return id->name;
-    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(obj)) return mem->member;
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(obj)) {
+        return id->name;
+    }
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(obj)) {
+        return mem->member;
+    }
     return {};
 }
 
@@ -1146,18 +1437,24 @@ bool isBuiltinStaticReceiver(const ast::Expr* obj) {
 }
 
 void rewriteMethExpr(ast::Expr* e) {
-    if (e == nullptr) return;
+    if (e == nullptr) {
+        return;
+    }
     if (auto* x = dynamic_cast<ast::CallExpr*>(e)) {
-        if (!x->typeArgs.empty())
-            if (auto* mem = dynamic_cast<ast::MemberExpr*>(x->callee.get()))
+        if (!x->typeArgs.empty()) {
+            if (auto* mem = dynamic_cast<ast::MemberExpr*>(x->callee.get())) {
                 if (!isBuiltinStaticReceiver(mem->object.get()) &&
                     (g_genericMethodNames == nullptr ||
                      g_genericMethodNames->count(mem->member) > 0)) {
                     mem->member = ast::mangleGeneric(mem->member, x->typeArgs);
                     x->typeArgs.clear();
                 }
+            }
+        }
         rewriteMethExpr(x->callee.get());
-        for (auto& a : x->args) rewriteMethExpr(a.get());
+        for (auto& a : x->args) {
+            rewriteMethExpr(a.get());
+        }
         return;
     }
     if (auto* x = dynamic_cast<ast::MemberExpr*>(e)) { rewriteMethExpr(x->object.get()); return; }
@@ -1167,31 +1464,75 @@ void rewriteMethExpr(ast::Expr* e) {
     if (auto* x = dynamic_cast<ast::IndexExpr*>(e)) { rewriteMethExpr(x->array.get()); rewriteMethExpr(x->index.get()); return; }
     if (auto* x = dynamic_cast<ast::MoveExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
     if (auto* x = dynamic_cast<ast::ExtractExpr*>(e)) { rewriteMethExpr(x->target.get()); return; }
-    if (dynamic_cast<ast::MarkExpr*>(e) != nullptr) return;  // no sub-expressions
+    if (dynamic_cast<ast::MarkExpr*>(e) != nullptr) {
+        return;  // no sub-expressions
+    }
     if (auto* x = dynamic_cast<ast::TryExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
     if (auto* x = dynamic_cast<ast::CastExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
-    if (auto* x = dynamic_cast<ast::NewExpr*>(e)) { for (auto& a : x->args) rewriteMethExpr(a.get()); return; }
+    if (auto* x = dynamic_cast<ast::NewExpr*>(e)) {
+        for (auto& a : x->args) {
+            rewriteMethExpr(a.get());
+        }
+        return;
+    }
     if (auto* x = dynamic_cast<ast::NewArrayExpr*>(e)) { rewriteMethExpr(x->size.get()); return; }
     if (auto* x = dynamic_cast<ast::RegionInitExpr*>(e)) { rewriteMethExpr(x->size.get()); return; }
-    if (auto* x = dynamic_cast<ast::InterpStringExpr*>(e)) { for (auto& ex : x->exprs) rewriteMethExpr(ex.get()); return; }
+    if (auto* x = dynamic_cast<ast::InterpStringExpr*>(e)) {
+        for (auto& ex : x->exprs) {
+            rewriteMethExpr(ex.get());
+        }
+        return;
+    }
     if (auto* x = dynamic_cast<ast::MatchExpr*>(e)) {
         rewriteMethExpr(x->subject.get());
-        for (auto& c : x->cases) rewriteMethExpr(c.result.get());
+        for (auto& c : x->cases) {
+            rewriteMethExpr(c.result.get());
+        }
         rewriteMethExpr(x->defaultResult.get());
         return;
     }
     if (auto* x = dynamic_cast<ast::LambdaExpr*>(e)) { rewriteMethBlock(x->body); return; }
 }
 void rewriteMethStmt(ast::Stmt* st) {
-    if (st == nullptr) return;
+    if (st == nullptr) {
+        return;
+    }
     if (auto* x = dynamic_cast<ast::ExprStmt*>(st)) { rewriteMethExpr(x->expr.get()); return; }
     if (auto* x = dynamic_cast<ast::DemandStmt*>(st)) { rewriteMethExpr(x->condition.get()); return; }
     if (auto* x = dynamic_cast<ast::LabeledStmt*>(st)) { rewriteMethStmt(x->stmt.get()); return; }
     if (auto* x = dynamic_cast<ast::ForeachStmt*>(st)) { rewriteMethExpr(x->iterable.get()); rewriteMethBlock(x->body); return; }
-    if (auto* x = dynamic_cast<ast::SwitchStmt*>(st)) { rewriteMethExpr(x->subject.get()); for (auto& c : x->cases) { rewriteMethExpr(c.value.get()); rewriteMethBlock(c.body); } if (x->defaultBody) rewriteMethBlock(*x->defaultBody); return; }
-    if (auto* x = dynamic_cast<ast::MatchStmt*>(st)) { rewriteMethExpr(x->subject.get()); for (auto& c : x->cases) rewriteMethBlock(c.body); if (x->defaultBody) rewriteMethBlock(*x->defaultBody); return; }
+    if (auto* x = dynamic_cast<ast::SwitchStmt*>(st)) {
+        rewriteMethExpr(x->subject.get());
+        for (auto& c : x->cases) {
+            rewriteMethExpr(c.value.get());
+            rewriteMethBlock(c.body);
+        }
+        if (x->defaultBody) {
+            rewriteMethBlock(*x->defaultBody);
+        }
+        return;
+    }
+    if (auto* x = dynamic_cast<ast::MatchStmt*>(st)) {
+        rewriteMethExpr(x->subject.get());
+        for (auto& c : x->cases) {
+            rewriteMethBlock(c.body);
+        }
+        if (x->defaultBody) {
+            rewriteMethBlock(*x->defaultBody);
+        }
+        return;
+    }
     if (auto* x = dynamic_cast<ast::ThrowStmt*>(st)) { rewriteMethExpr(x->value.get()); return; }
-    if (auto* x = dynamic_cast<ast::TryStmt*>(st)) { rewriteMethBlock(x->body); for (auto& c : x->catches) rewriteMethBlock(c.body); if (x->finallyBlock) rewriteMethBlock(*x->finallyBlock); return; }
+    if (auto* x = dynamic_cast<ast::TryStmt*>(st)) {
+        rewriteMethBlock(x->body);
+        for (auto& c : x->catches) {
+            rewriteMethBlock(c.body);
+        }
+        if (x->finallyBlock) {
+            rewriteMethBlock(*x->finallyBlock);
+        }
+        return;
+    }
     if (auto* x = dynamic_cast<ast::ReturnStmt*>(st)) { rewriteMethExpr(x->value.get()); return; }
     if (auto* x = dynamic_cast<ast::DeleteStmt*>(st)) { rewriteMethExpr(x->target.get()); return; }
     if (auto* x = dynamic_cast<ast::VarDeclStmt*>(st)) { rewriteMethExpr(x->init.get()); return; }
@@ -1200,7 +1541,14 @@ void rewriteMethStmt(ast::Stmt* st) {
     if (auto* x = dynamic_cast<ast::IncDecStmt*>(st)) { rewriteMethExpr(x->target.get()); return; }
     if (auto* x = dynamic_cast<ast::DeferStmt*>(st)) { rewriteMethExpr(x->within.get()); rewriteMethBlock(x->body); return; }
     if (auto* x = dynamic_cast<ast::UsingStmt*>(st)) { rewriteMethStmt(x->decl.get()); rewriteMethBlock(x->body); return; }
-    if (auto* x = dynamic_cast<ast::IfStmt*>(st)) { rewriteMethExpr(x->cond.get()); rewriteMethBlock(x->thenBlock); if (x->elseBlock) rewriteMethBlock(*x->elseBlock); return; }
+    if (auto* x = dynamic_cast<ast::IfStmt*>(st)) {
+        rewriteMethExpr(x->cond.get());
+        rewriteMethBlock(x->thenBlock);
+        if (x->elseBlock) {
+            rewriteMethBlock(*x->elseBlock);
+        }
+        return;
+    }
     if (auto* x = dynamic_cast<ast::WhileStmt*>(st)) { rewriteMethExpr(x->cond.get()); rewriteMethBlock(x->body); return; }
     if (auto* x = dynamic_cast<ast::DoWhileStmt*>(st)) { rewriteMethBlock(x->body); rewriteMethExpr(x->cond.get()); return; }
     if (auto* x = dynamic_cast<ast::ForStmt*>(st)) { rewriteMethStmt(x->init.get()); rewriteMethExpr(x->cond.get()); rewriteMethStmt(x->update.get()); rewriteMethBlock(x->body); return; }
@@ -1224,27 +1572,45 @@ bool expandGenericMethods(ast::Program& program) {
     bool ok = true;
     // The class hierarchy, for checking generic-method constraints (spec 15.2).
     std::map<std::string, const ast::ClassDecl*> classIndex;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes) classIndex[c.name] = &c;
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                classIndex[c.name] = &c;
+            }
+        }
+    }
     // Any generic method templates at all? If not, there is nothing to do.
     bool anyTemplate = false;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes)
-                for (auto& m : c.members)
-                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
-                        if (!meth->typeParams.empty()) anyTemplate = true;
-    if (!anyTemplate) return ok;
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                for (auto& m : c.members) {
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get())) {
+                        if (!meth->typeParams.empty()) {
+                            anyTemplate = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (!anyTemplate) {
+        return ok;
+    }
 
     // 1. Collect (name, args) from every existing method body (templates included).
     MethInsts insts;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes)
-                for (auto& m : c.members)
-                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                for (auto& m : c.members) {
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get())) {
                         collectMethBlock(meth->body, insts);
+                    }
+                }
+            }
+        }
+    }
 
     // 2. Generate concrete methods on each class, to a fixpoint (a generated body
     //    may itself contain a newly-discovered generic call).
@@ -1252,29 +1618,36 @@ bool expandGenericMethods(ast::Program& program) {
     bool changed = true;
     while (changed) {
         changed = false;
-        for (auto& b : program.bundles)
-            for (auto& ns : b.namespaces)
+        for (auto& b : program.bundles) {
+            for (auto& ns : b.namespaces) {
                 for (auto& c : ns.classes) {
                     std::vector<ast::MemberPtr> generated;
                     for (auto& m : c.members) {
                         auto* meth = dynamic_cast<ast::MethodDecl*>(m.get());
-                        if (meth == nullptr || meth->typeParams.empty()) continue;  // template
+                        if (meth == nullptr || meth->typeParams.empty()) {
+                            continue;  // template
+                        }
                         for (const MethInst& inst : insts) {
-                            if (inst.first != meth->name ||
-                                inst.second.size() != meth->typeParams.size())
+                            if (inst.first != meth->name || inst.second.size() != meth->typeParams.size()) {
                                 continue;
+                            }
                             const std::string mangled =
                                 ast::mangleGeneric(meth->name, inst.second);
                             const std::string key = c.name + "::" + mangled;
-                            if (done.count(key) > 0) continue;
+                            if (done.count(key) > 0) {
+                                continue;
+                            }
                             done.insert(key);
                             // Constraints on a generic METHOD (spec 15.2): every type argument must
                             // satisfy its bound, exactly as for a generic class.
                             for (const auto& pb : meth->typeParamBounds) {
                                 std::size_t pi = 0;
-                                while (pi < meth->typeParams.size() && meth->typeParams[pi] != pb.first)
+                                while (pi < meth->typeParams.size() && meth->typeParams[pi] != pb.first) {
                                     ++pi;
-                                if (pi >= inst.second.size()) continue;
+                                }
+                                if (pi >= inst.second.size()) {
+                                    continue;
+                                }
                                 const std::string bound =
                                     substBound(pb.second, meth->typeParams, inst.second);
                                 if (!satisfiesBound(inst.second[pi], bound, classIndex)) {
@@ -1286,8 +1659,9 @@ bool expandGenericMethods(ast::Program& program) {
                                 }
                             }
                             Subst s;
-                            for (std::size_t i = 0; i < inst.second.size(); ++i)
+                            for (std::size_t i = 0; i < inst.second.size(); ++i) {
                                 s[meth->typeParams[i]] = inst.second[i];
+                            }
                             ast::MemberPtr cm = cloneMember(meth, s);
                             auto* cmeth = static_cast<ast::MethodDecl*>(cm.get());
                             cmeth->name = mangled;
@@ -1297,47 +1671,71 @@ bool expandGenericMethods(ast::Program& program) {
                             changed = true;
                         }
                     }
-                    for (auto& g : generated) c.members.push_back(std::move(g));
+                    for (auto& g : generated) {
+                        c.members.push_back(std::move(g));
+                    }
                 }
+            }
+        }
     }
 
     // 3. Drop the templates and rewrite all generic calls to the mangled member. Collect the
     //    declared generic method names first (templates still present) so the rewrite only mangles
     //    those -- not builtins that merely carry type args (e.g. Memory.read<int8>).
     std::set<std::string> genNames;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes)
-                for (auto& m : c.members)
-                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
-                        if (!meth->typeParams.empty()) genNames.insert(meth->name);
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                for (auto& m : c.members) {
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get())) {
+                        if (!meth->typeParams.empty()) {
+                            genNames.insert(meth->name);
+                        }
+                    }
+                }
+            }
+        }
+    }
     // A transformer's generic socket -- `procedure into<Other>() returns Other` -- names a FAMILY of
     // procedures indexed by the target type, and the applying type supplies one member per target it
     // can reach (`procedure into<Fahrenheit>`, parsed as `into$Fahrenheit`). The call site is an
     // ordinary generic call, `c.into<Fahrenheit>()`, so it needs the family name registered here or
     // the rewrite below leaves it as `into` and nothing resolves. Transformers are not in
     // `ns.classes`, which is exactly why this second loop is needed and not a duplicate.
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& t : ns.transformers)
-                for (auto& m : t.members)
-                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
-                        if (!meth->typeParams.empty()) genNames.insert(meth->name);
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& t : ns.transformers) {
+                for (auto& m : t.members) {
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get())) {
+                        if (!meth->typeParams.empty()) {
+                            genNames.insert(meth->name);
+                        }
+                    }
+                }
+            }
+        }
+    }
     g_genericMethodNames = &genNames;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) {
                 std::vector<ast::MemberPtr> kept;
                 for (auto& m : c.members) {
                     auto* meth = dynamic_cast<ast::MethodDecl*>(m.get());
-                    if (meth != nullptr && !meth->typeParams.empty()) continue;  // template
+                    if (meth != nullptr && !meth->typeParams.empty()) {
+                        continue;  // template
+                    }
                     kept.push_back(std::move(m));
                 }
                 c.members = std::move(kept);
-                for (auto& m : c.members)
-                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
+                for (auto& m : c.members) {
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get())) {
                         rewriteMethBlock(meth->body);
+                    }
+                }
             }
+        }
+    }
     g_genericMethodNames = nullptr;
     return ok;
 }
@@ -1345,13 +1743,21 @@ bool expandGenericMethods(ast::Program& program) {
 // Subtype check over the class hierarchy (AST-level), for constraint validation.
 bool isSubtypeOf(const std::string& sub, const std::string& base,
                  const std::map<std::string, const ast::ClassDecl*>& idx) {
-    if (sub == base) return true;
-    auto it = idx.find(sub);
-    if (it == idx.end()) return false;
-    if (!it->second->superclass.empty() && isSubtypeOf(it->second->superclass, base, idx))
+    if (sub == base) {
         return true;
-    for (const auto& i : it->second->interfaces)
-        if (isSubtypeOf(i, base, idx)) return true;
+    }
+    auto it = idx.find(sub);
+    if (it == idx.end()) {
+        return false;
+    }
+    if (!it->second->superclass.empty() && isSubtypeOf(it->second->superclass, base, idx)) {
+        return true;
+    }
+    for (const auto& i : it->second->interfaces) {
+        if (isSubtypeOf(i, base, idx)) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -1362,29 +1768,45 @@ bool isSubtypeOf(const std::string& sub, const std::string& base,
 bool satisfiesBound(const std::string& sub, const std::string& bound,
                     const std::map<std::string, const ast::ClassDecl*>& idx, int depth) {
     const std::size_t sep = bound.find('$');
-    if (sep == std::string::npos) return isSubtypeOf(sub, bound, idx);
-    if (depth > 16) return false;  // a malformed (cyclic) type graph must not overflow
+    if (sep == std::string::npos) {
+        return isSubtypeOf(sub, bound, idx);
+    }
+    if (depth > 16) {
+        return false;  // a malformed (cyclic) type graph must not overflow
+    }
     const std::string bbase = bound.substr(0, sep);
     std::vector<std::string> bargs;
     for (std::size_t start = sep + 1; start <= bound.size();) {
         const std::size_t next = bound.find('$', start);
         bargs.push_back(
             bound.substr(start, next == std::string::npos ? std::string::npos : next - start));
-        if (next == std::string::npos) break;
+        if (next == std::string::npos) {
+            break;
+        }
         start = next + 1;
     }
     auto it = idx.find(sub);
-    if (it == idx.end()) return false;
+    if (it == idx.end()) {
+        return false;
+    }
     const ast::ClassDecl& c = *it->second;
     for (std::size_t k = 0; k < c.interfaces.size(); ++k) {
         const std::vector<std::string> iargs =
             k < c.interfaceTypeArgs.size() ? c.interfaceTypeArgs[k] : std::vector<std::string>{};
-        if (c.interfaces[k] == bbase && iargs == bargs) return true;
-        if (satisfiesBound(c.interfaces[k], bound, idx, depth + 1)) return true;
+        if (c.interfaces[k] == bbase && iargs == bargs) {
+            return true;
+        }
+        if (satisfiesBound(c.interfaces[k], bound, idx, depth + 1)) {
+            return true;
+        }
     }
     if (!c.superclass.empty()) {
-        if (c.superclass == bbase && c.superclassTypeArgs == bargs) return true;
-        if (satisfiesBound(c.superclass, bound, idx, depth + 1)) return true;
+        if (c.superclass == bbase && c.superclassTypeArgs == bargs) {
+            return true;
+        }
+        if (satisfiesBound(c.superclass, bound, idx, depth + 1)) {
+            return true;
+        }
     }
     return false;
 }
@@ -1394,32 +1816,46 @@ bool satisfiesBound(const std::string& sub, const std::string& bound,
 std::string substBound(const std::string& bound, const std::vector<std::string>& typeParams,
                        const std::vector<std::string>& args) {
     const std::size_t sep = bound.find('$');
-    if (sep == std::string::npos) return bound;
+    if (sep == std::string::npos) {
+        return bound;
+    }
     const std::string base = bound.substr(0, sep);
     std::vector<std::string> parts;
     for (std::size_t start = sep + 1; start <= bound.size();) {
         const std::size_t next = bound.find('$', start);
         parts.push_back(
             bound.substr(start, next == std::string::npos ? std::string::npos : next - start));
-        if (next == std::string::npos) break;
+        if (next == std::string::npos) {
+            break;
+        }
         start = next + 1;
     }
-    for (std::string& part : parts)
-        for (std::size_t i = 0; i < typeParams.size() && i < args.size(); ++i)
-            if (part == typeParams[i]) part = args[i];
+    for (std::string& part : parts) {
+        for (std::size_t i = 0; i < typeParams.size() && i < args.size(); ++i) {
+            if (part == typeParams[i]) {
+                part = args[i];
+            }
+        }
+    }
     return ast::mangleGeneric(base, parts);
 }
 
 // A mangled bound spelled back for a diagnostic: "Comparable$Dog" -> "Comparable<Dog>".
 std::string spellBound(const std::string& bound) {
     const std::size_t sep = bound.find('$');
-    if (sep == std::string::npos) return bound;
+    if (sep == std::string::npos) {
+        return bound;
+    }
     std::string out = bound.substr(0, sep) + "<";
     for (std::size_t start = sep + 1, n = 0; start <= bound.size(); ++n) {
         const std::size_t next = bound.find('$', start);
-        if (n) out += ", ";
+        if (n) {
+            out += ", ";
+        }
         out += bound.substr(start, next == std::string::npos ? std::string::npos : next - start);
-        if (next == std::string::npos) break;
+        if (next == std::string::npos) {
+            break;
+        }
         start = next + 1;
     }
     return out + ">";
@@ -1437,11 +1873,18 @@ ast::StmtPtr cloneStmtDeep(const ast::Stmt* s) { return cloneStmt(s, Subst{}); }
 // monomorphize so the substituted targets are qualified and instantiated like any other type.
 void resolveTypeAliases(ast::Program& program) {
     g_aliases.clear();
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& a : ns.typeAliases)
-                if (!a.isNewtype) g_aliases[a.name] = a.target;
-    if (g_aliases.empty()) return;
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& a : ns.typeAliases) {
+                if (!a.isNewtype) {
+                    g_aliases[a.name] = a.target;
+                }
+            }
+        }
+    }
+    if (g_aliases.empty()) {
+        return;
+    }
 
     // Resolve alias chains (typealias A = B; typealias B = int) and aliases nested in type args,
     // up to a bounded number of passes (a cycle just stops changing).
@@ -1466,35 +1909,49 @@ void resolveTypeAliases(ast::Program& program) {
                 if (r != arg) { arg = r; changed = true; }
             }
         }
-        if (!changed) break;
+        if (!changed) {
+            break;
+        }
     }
 
     // Re-clone every class with an empty substitution: cloneClass runs substType over every
     // TypeRef it touches (fields, signatures, bodies), so aliases resolve everywhere for free.
     const Subst empty;
-    for (auto& b : program.bundles)
+    for (auto& b : program.bundles) {
         for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) {
                 ast::ClassDecl rewritten = cloneClass(c, empty, c.name);
                 rewritten.typeParams = c.typeParams;  // cloneClass drops these; keep generics generic
                 rewritten.typeParamVariance = c.typeParamVariance;
                 rewritten.superclass = resolveAliasName(c.superclass);
-                for (auto& iface : rewritten.interfaces) iface = resolveAliasName(iface);
-                for (auto& a : rewritten.superclassTypeArgs) a = resolveAliasName(a);
-                for (auto& argList : rewritten.interfaceTypeArgs)
-                    for (auto& a : argList) a = resolveAliasName(a);
+                for (auto& iface : rewritten.interfaces) {
+                    iface = resolveAliasName(iface);
+                }
+                for (auto& a : rewritten.superclassTypeArgs) {
+                    a = resolveAliasName(a);
+                }
+                for (auto& argList : rewritten.interfaceTypeArgs) {
+                    for (auto& a : argList) {
+                        a = resolveAliasName(a);
+                    }
+                }
                 c = std::move(rewritten);
             }
-            for (auto& cst : ns.consts) cst.type = substType(cst.type, empty);
+            for (auto& cst : ns.consts) {
+                cst.type = substType(cst.type, empty);
+            }
             for (auto& lit : ns.literals) {
                 lit.param.type = substType(lit.param.type, empty);
                 lit.returnType = substType(lit.returnType, empty);
             }
             for (auto& ex : ns.externs) {
                 ex.returnType = substType(ex.returnType, empty);
-                for (auto& p : ex.params) p.type = substType(p.type, empty);
+                for (auto& p : ex.params) {
+                    p.type = substType(p.type, empty);
+                }
             }
         }
+    }
     g_aliases.clear();  // done: later passes must not see alias rewrites
 }
 
@@ -1517,17 +1974,26 @@ void qualifyNamespaces(ast::Program& program) {
     // as it walks, so by the time it reaches the second namespace of a bundle the first one's class
     // is already called `World__Paths` and looking for `Paths` there finds nothing.
     std::map<std::string, std::map<std::string, std::set<std::string>>> bundleDecl;
-    for (auto& b : program.bundles)
+    for (auto& b : program.bundles) {
         for (auto& ns : b.namespaces) {
             auto note = [&](const std::string& n) {
                 bundleDecl[b.name][n].insert(ns.name);
                 declNs[n].insert(ns.name);
-                if (b.isPrelude) preludeOwner[n] = ns.name;
+                if (b.isPrelude) {
+                    preludeOwner[n] = ns.name;
+                }
             };
-            for (auto& c : ns.classes) note(c.name);
-            for (auto& e : ns.enums) note(e.name);
-            for (auto& cat : ns.catalogs) note(cat.name);
+            for (auto& c : ns.classes) {
+                note(c.name);
+            }
+            for (auto& e : ns.enums) {
+                note(e.name);
+            }
+            for (auto& cat : ns.catalogs) {
+                note(cat.name);
+            }
         }
+    }
     // SAY SO WHEN YOU HAVE SHADOWED THE STANDARD LIBRARY.
     //
     // Not an error: your type wins, and that is the intended rule. But it is something you have to be
@@ -1539,51 +2005,79 @@ void qualifyNamespaces(ast::Program& program) {
     // 'KernelStackPages'`) and not one of them named `Utf8`. The cascade had a second cause, since
     // fixed, but even with that gone the shadowing itself deserves one line at the place it happened.
     for (auto& b : program.bundles) {
-        if (b.isPrelude || b.isImported) continue;
+        if (b.isPrelude || b.isImported) {
+            continue;
+        }
         for (auto& ns : b.namespaces) {
             auto shadows = [&](const std::string& n, const SourceLocation& where) {
                 auto po = preludeOwner.find(n);
-                if (po == preludeOwner.end()) return;
+                if (po == preludeOwner.end()) {
+                    return;
+                }
                 monoWarn(where, "'" + n + "' is also declared by the standard library, in '" +
                                     po->second + "'. Yours wins: from here an unqualified '" + n +
                                     "' means this one throughout the bundle, and the standard "
                                     "library's is reachable only by its full path. Rename yours if "
                                     "that was not the intention");
             };
-            for (auto& c : ns.classes) shadows(c.name, c.nameLoc);
-            for (auto& e : ns.enums) shadows(e.name, e.loc);
-            for (auto& cat : ns.catalogs) shadows(cat.name, cat.loc);
+            for (auto& c : ns.classes) {
+                shadows(c.name, c.nameLoc);
+            }
+            for (auto& e : ns.enums) {
+                shadows(e.name, e.loc);
+            }
+            for (auto& cat : ns.catalogs) {
+                shadows(cat.name, cat.loc);
+            }
         }
     }
 
     std::set<std::string> ambiguous;
-    for (auto& [name, nss] : declNs)
-        if (nss.size() > 1) ambiguous.insert(name);
+    for (auto& [name, nss] : declNs) {
+        if (nss.size() > 1) {
+            ambiguous.insert(name);
+        }
+    }
     // Nothing collides and no explicit `ns.Type` reference was written: leave every
     // name as-is (the common single-namespace case stays a no-op).
-    if (ambiguous.empty() && !program.hasQualifiedTypeRef) return;
+    if (ambiguous.empty() && !program.hasQualifiedTypeRef) {
+        return;
+    }
 
     auto qualified = [](const std::string& ns, const std::string& simple) {
         std::string s = ns;
-        for (char& c : s) if (c == '.') c = '_';
+        for (char& c : s) {
+            if (c == '.') {
+                c = '_';
+            }
+        }
         return s + "__" + simple;
     };
 
     // Explicit `ns.Type` references resolve to that namespace's concrete type name
     // (its qualified form if the simple name collides, else the simple name itself).
     Subst dotted;
-    for (auto& b : program.bundles)
+    for (auto& b : program.bundles) {
         for (auto& ns : b.namespaces) {
             auto add = [&](const std::string& name) {
                 const std::string concrete = ambiguous.count(name) ? qualified(ns.name, name) : name;
-                if (ambiguous.count(name)) program.qualifiedTypes.insert(concrete);  // scoped: import-exempt
+                if (ambiguous.count(name)) {
+                    program.qualifiedTypes.insert(concrete);  // scoped: import-exempt
+                }
                 dotted[ns.name + "." + name] = concrete;                        // namespace.Type
                 dotted[b.name + "." + ns.name + "." + name] = concrete;         // Bundle.namespace.Type (spec 2.7 full path)
             };
-            for (auto& c : ns.classes) add(c.name);
-            for (auto& e : ns.enums) add(e.name);
-            for (auto& cat : ns.catalogs) add(cat.name);
+            for (auto& c : ns.classes) {
+                add(c.name);
+            }
+            for (auto& e : ns.enums) {
+                add(e.name);
+            }
+            for (auto& cat : ns.catalogs) {
+                add(cat.name);
+            }
         }
+    }
 
     for (auto& b : program.bundles) {
         // Imported symbols of this bundle: type name -> the namespace(s) it might come from. An import
@@ -1592,23 +2086,33 @@ void qualifyNamespaces(ast::Program& program) {
         // declares the type.
         std::map<std::string, std::vector<std::string>> importNs;
         for (auto& imp : b.imports) {
-            if (imp.path.size() < 2) continue;
+            if (imp.path.size() < 2) {
+                continue;
+            }
             std::string nsPrefix;
-            for (std::size_t i = 0; i + 1 < imp.path.size(); ++i)
+            for (std::size_t i = 0; i + 1 < imp.path.size(); ++i) {
                 nsPrefix += (i ? "." : "") + imp.path[i];
+            }
             importNs[imp.path.back()].push_back(nsPrefix);
             if (imp.path.size() >= 3) {
                 std::string afterBundle;
-                for (std::size_t i = 1; i + 1 < imp.path.size(); ++i)
+                for (std::size_t i = 1; i + 1 < imp.path.size(); ++i) {
                     afterBundle += (afterBundle.empty() ? "" : ".") + imp.path[i];
+                }
                 importNs[imp.path.back()].push_back(afterBundle);
             }
         }
         for (auto& ns : b.namespaces) {
             std::set<std::string> ownNames;
-            for (auto& c : ns.classes) ownNames.insert(c.name);
-            for (auto& e : ns.enums) ownNames.insert(e.name);
-            for (auto& cat : ns.catalogs) ownNames.insert(cat.name);
+            for (auto& c : ns.classes) {
+                ownNames.insert(c.name);
+            }
+            for (auto& e : ns.enums) {
+                ownNames.insert(e.name);
+            }
+            for (auto& cat : ns.catalogs) {
+                ownNames.insert(cat.name);
+            }
             // For each ambiguous name visible here, map it to its owning namespace's
             // unique name. Own declarations win; otherwise an import decides.
             Subst subst;
@@ -1617,8 +2121,9 @@ void qualifyNamespaces(ast::Program& program) {
                 if (ownNames.count(amb) > 0) {
                     owner = ns.name;
                 } else if (auto it = importNs.find(amb); it != importNs.end()) {
-                    for (const std::string& cand : it->second)
+                    for (const std::string& cand : it->second) {
                         if (declNs[amb].count(cand) > 0) { owner = cand; break; }
+                    }
                 }
                 // A standard-library namespace means the standard library's type. The stdlib is one
                 // body of code that never imports itself, so when a user class made a stdlib name
@@ -1634,9 +2139,11 @@ void qualifyNamespaces(ast::Program& program) {
                 // STANDARD LIBRARY'S, and the failure surfaced as an error about a mangled class
                 // nobody had written. Any of IO, Math, Runtime, Errors, Collections, Concurrency or
                 // Ecs would have done the same.
-                if (owner.empty() && b.isPrelude)
-                    if (auto po = preludeOwner.find(amb); po != preludeOwner.end())
+                if (owner.empty() && b.isPrelude) {
+                    if (auto po = preludeOwner.find(amb); po != preludeOwner.end()) {
                         owner = po->second;
+                    }
+                }
                 // And the mirror of it, which was missing: OUTSIDE the prelude, a bare name means
                 // this program's own type before it means the standard library's. Without this, a
                 // class named `Paths` in one namespace was invisible from the next namespace along
@@ -1653,8 +2160,9 @@ void qualifyNamespaces(ast::Program& program) {
                     auto bd = bundleDecl.find(b.name);
                     if (bd != bundleDecl.end()) {
                         auto where = bd->second.find(amb);
-                        if (where != bd->second.end() && where->second.size() == 1)
+                        if (where != bd->second.end() && where->second.size() == 1) {
                             owner = *where->second.begin();
+                        }
                     }
                 }
                 if (!owner.empty()) {
@@ -1662,31 +2170,52 @@ void qualifyNamespaces(ast::Program& program) {
                     program.qualifiedTypes.insert(qualified(owner, amb));
                 }
             }
-            for (const auto& [k, v] : dotted) subst[k] = v;  // explicit ns.Type -> concrete name
-            if (subst.empty()) continue;
+            for (const auto& [k, v] : dotted) {
+                subst[k] = v;  // explicit ns.Type -> concrete name
+            }
+            if (subst.empty()) {
+                continue;
+            }
             for (auto& c : ns.classes) {
                 const std::string newName = subst.count(c.name) ? subst[c.name] : c.name;
                 ast::ClassDecl rewritten = cloneClass(c, subst, newName);
                 rewritten.typeParams = c.typeParams;  // cloneClass drops these; keep generics generic
                 rewritten.typeParamVariance = c.typeParamVariance;
                 // cloneClass does not run these name fields through the subst:
-                if (auto it = subst.find(rewritten.superclass); it != subst.end())
+                if (auto it = subst.find(rewritten.superclass); it != subst.end()) {
                     rewritten.superclass = it->second;
-                for (auto& iface : rewritten.interfaces)
-                    if (auto it = subst.find(iface); it != subst.end()) iface = it->second;
-                for (auto& p : rewritten.permits)
-                    if (auto it = subst.find(p); it != subst.end()) p = it->second;
+                }
+                for (auto& iface : rewritten.interfaces) {
+                    if (auto it = subst.find(iface); it != subst.end()) {
+                        iface = it->second;
+                    }
+                }
+                for (auto& p : rewritten.permits) {
+                    if (auto it = subst.find(p); it != subst.end()) {
+                        p = it->second;
+                    }
+                }
                 c = std::move(rewritten);
             }
             for (auto& e : ns.enums) {
-                if (subst.count(e.name) > 0) e.name = subst[e.name];
-                for (auto& cat : e.extendsCatalogs)
-                    if (auto it = subst.find(cat); it != subst.end()) cat = it->second;
+                if (subst.count(e.name) > 0) {
+                    e.name = subst[e.name];
+                }
+                for (auto& cat : e.extendsCatalogs) {
+                    if (auto it = subst.find(cat); it != subst.end()) {
+                        cat = it->second;
+                    }
+                }
             }
             for (auto& cat : ns.catalogs) {
-                if (subst.count(cat.name) > 0) cat.name = subst[cat.name];
-                for (auto& parent : cat.extendsCatalogs)
-                    if (auto it = subst.find(parent); it != subst.end()) parent = it->second;
+                if (subst.count(cat.name) > 0) {
+                    cat.name = subst[cat.name];
+                }
+                for (auto& parent : cat.extendsCatalogs) {
+                    if (auto it = subst.find(parent); it != subst.end()) {
+                        parent = it->second;
+                    }
+                }
             }
         }
     }
@@ -1708,12 +2237,22 @@ void mergePartialClasses(ast::Program& program) {
                     firstOf[c.name] = i;
                     continue;
                 }
-                if (!c.isPartial) continue;              // a genuine duplicate: sema reports it
+                if (!c.isPartial) {
+                    continue;  // a genuine duplicate: sema reports it
+                }
                 ast::ClassDecl& head = ns.classes[it->second];
-                if (!head.isPartial) continue;
-                for (auto& m : c.members) head.members.push_back(std::move(m));
-                if (head.superclass.empty()) head.superclass = c.superclass;
-                for (const auto& i2 : c.interfaces) head.interfaces.push_back(i2);
+                if (!head.isPartial) {
+                    continue;
+                }
+                for (auto& m : c.members) {
+                    head.members.push_back(std::move(m));
+                }
+                if (head.superclass.empty()) {
+                    head.superclass = c.superclass;
+                }
+                for (const auto& i2 : c.interfaces) {
+                    head.interfaces.push_back(i2);
+                }
                 head.isAbstract = head.isAbstract || c.isAbstract;
                 head.isSealed = head.isSealed || c.isSealed;
                 head.isFinal = head.isFinal || c.isFinal;
@@ -1721,8 +2260,11 @@ void mergePartialClasses(ast::Program& program) {
             }
             std::vector<ast::ClassDecl> kept;
             kept.reserve(ns.classes.size());
-            for (std::size_t i = 0; i < ns.classes.size(); ++i)
-                if (!drop[i]) kept.push_back(std::move(ns.classes[i]));
+            for (std::size_t i = 0; i < ns.classes.size(); ++i) {
+                if (!drop[i]) {
+                    kept.push_back(std::move(ns.classes[i]));
+                }
+            }
             ns.classes = std::move(kept);
         }
     }
@@ -1732,7 +2274,7 @@ void mergePartialClasses(ast::Program& program) {
 //
 // A method whose body `yield`s is a generator: calling it produces an Iterator<T> that runs the body
 // lazily, one element per next(). It is lowered here, before generics and semantics, so everything
-// downstream (type checking, the lazy `foreach`, vtables) sees ordinary LDP3:
+// downstream (type checking, the lazy `foreach`, vtables) sees ordinary Polaron:
 //
 //   1. the original method keeps its signature but its body becomes a factory:
 //          return new <Cls>$<m>$Gen(<Cls>$<m>$start(this?, args...)) on heap;
@@ -1750,38 +2292,71 @@ void mergePartialClasses(ast::Program& program) {
 // match-EXPRESSION arm (spec 16.2, a different construct with the same keyword) never counts.
 bool blockYields(const ast::Block& b);
 bool stmtYields(const ast::Stmt* st) {
-    if (st == nullptr) return false;
-    if (dynamic_cast<const ast::YieldStmt*>(st) != nullptr) return true;
-    if (const auto* x = dynamic_cast<const ast::IfStmt*>(st))
+    if (st == nullptr) {
+        return false;
+    }
+    if (dynamic_cast<const ast::YieldStmt*>(st) != nullptr) {
+        return true;
+    }
+    if (const auto* x = dynamic_cast<const ast::IfStmt*>(st)) {
         return blockYields(x->thenBlock) || (x->elseBlock && blockYields(*x->elseBlock));
-    if (const auto* x = dynamic_cast<const ast::WhileStmt*>(st)) return blockYields(x->body);
-    if (const auto* x = dynamic_cast<const ast::DoWhileStmt*>(st)) return blockYields(x->body);
-    if (const auto* x = dynamic_cast<const ast::ForStmt*>(st)) return blockYields(x->body);
-    if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) return blockYields(x->body);
-    if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) return stmtYields(x->stmt.get());
-    if (const auto* x = dynamic_cast<const ast::UsingStmt*>(st)) return blockYields(x->body);
-    if (const auto* x = dynamic_cast<const ast::SynchronizedStmt*>(st)) return blockYields(x->body);
+    }
+    if (const auto* x = dynamic_cast<const ast::WhileStmt*>(st)) {
+        return blockYields(x->body);
+    }
+    if (const auto* x = dynamic_cast<const ast::DoWhileStmt*>(st)) {
+        return blockYields(x->body);
+    }
+    if (const auto* x = dynamic_cast<const ast::ForStmt*>(st)) {
+        return blockYields(x->body);
+    }
+    if (const auto* x = dynamic_cast<const ast::ForeachStmt*>(st)) {
+        return blockYields(x->body);
+    }
+    if (const auto* x = dynamic_cast<const ast::LabeledStmt*>(st)) {
+        return stmtYields(x->stmt.get());
+    }
+    if (const auto* x = dynamic_cast<const ast::UsingStmt*>(st)) {
+        return blockYields(x->body);
+    }
+    if (const auto* x = dynamic_cast<const ast::SynchronizedStmt*>(st)) {
+        return blockYields(x->body);
+    }
     if (const auto* x = dynamic_cast<const ast::SwitchStmt*>(st)) {
-        for (const auto& c : x->cases)
-            if (blockYields(c.body)) return true;
+        for (const auto& c : x->cases) {
+            if (blockYields(c.body)) {
+                return true;
+            }
+        }
         return x->defaultBody && blockYields(*x->defaultBody);
     }
     if (const auto* x = dynamic_cast<const ast::MatchStmt*>(st)) {
-        for (const auto& c : x->cases)
-            if (blockYields(c.body)) return true;
+        for (const auto& c : x->cases) {
+            if (blockYields(c.body)) {
+                return true;
+            }
+        }
         return x->defaultBody && blockYields(*x->defaultBody);
     }
     if (const auto* x = dynamic_cast<const ast::TryStmt*>(st)) {
-        if (blockYields(x->body)) return true;
-        for (const auto& c : x->catches)
-            if (blockYields(c.body)) return true;
+        if (blockYields(x->body)) {
+            return true;
+        }
+        for (const auto& c : x->catches) {
+            if (blockYields(c.body)) {
+                return true;
+            }
+        }
         return x->finallyBlock && blockYields(*x->finallyBlock);
     }
     return false;
 }
 bool blockYields(const ast::Block& b) {
-    for (const auto& s : b.statements)
-        if (stmtYields(s.get())) return true;
+    for (const auto& s : b.statements) {
+        if (stmtYields(s.get())) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -1833,7 +2408,7 @@ ast::StmtPtr returnStmt(ast::ExprPtr v) {
 }
 
 // An `extern cdecl static` declaration of one of the generator's four raw functions. Codegen defines
-// them in this same module; declaring them as extern is what lets synthesized LDP3 call them.
+// them in this same module; declaring them as extern is what lets synthesized Polaron call them.
 ast::MemberPtr externDecl(const std::string& name, std::vector<ast::Param> params,
                           const ast::TypeRef& ret, SourceLocation loc) {
     auto m = std::make_unique<ast::MethodDecl>();
@@ -1857,8 +2432,12 @@ bool synthesizeGenerators(ast::Program& program) {
                 std::vector<ast::MemberPtr> extraMembers;
                 for (auto& mem : cls.members) {
                     auto* m = dynamic_cast<ast::MethodDecl*>(mem.get());
-                    if (m == nullptr || m->isExtern || m->isAbstract) continue;
-                    if (!blockYields(m->body)) continue;
+                    if (m == nullptr || m->isExtern || m->isAbstract) {
+                        continue;
+                    }
+                    if (!blockYields(m->body)) {
+                        continue;
+                    }
 
                     if (m->returnType.name != "Iterator" || m->returnType.typeArgs.size() != 1) {
                         monoError(m->loc, "a method that yields is a generator and must return "
@@ -1869,10 +2448,16 @@ bool synthesizeGenerators(ast::Program& program) {
                     }
                     const std::string elem = m->returnType.typeArgs[0];
                     bool elemIsParam = false;
-                    for (const auto& tp : cls.typeParams)
-                        if (tp == elem) elemIsParam = true;
-                    for (const auto& tp : m->typeParams)
-                        if (tp == elem) elemIsParam = true;
+                    for (const auto& tp : cls.typeParams) {
+                        if (tp == elem) {
+                            elemIsParam = true;
+                        }
+                    }
+                    for (const auto& tp : m->typeParams) {
+                        if (tp == elem) {
+                            elemIsParam = true;
+                        }
+                    }
                     if (elemIsParam) {
                         monoError(m->loc, "generator '" + m->name + "' yields its type parameter '" +
                                               elem + "'; generators in a generic class or method are not "
@@ -1898,18 +2483,26 @@ bool synthesizeGenerators(ast::Program& program) {
                     twin->genSym = sym;
                     twin->name = m->name + "$body";
                     twin->returnType = voidT;
-                    for (const auto& p : m->params) twin->params.push_back({p.type, p.name, p.loc});
+                    for (const auto& p : m->params) {
+                        twin->params.push_back({p.type, p.name, p.loc});
+                    }
                     twin->body = std::move(m->body);
 
                     // --- $start(this?, args...) -> long: allocate the state, seed it with the arguments
                     std::vector<ast::Param> startParams;
-                    if (!m->isStatic) startParams.push_back({simpleType(cls.name), "self", m->loc});
-                    for (const auto& p : m->params) startParams.push_back({p.type, p.name, p.loc});
+                    if (!m->isStatic) {
+                        startParams.push_back({simpleType(cls.name), "self", m->loc});
+                    }
+                    for (const auto& p : m->params) {
+                        startParams.push_back({p.type, p.name, p.loc});
+                    }
                     extraMembers.push_back(externDecl(sym + "$start", startParams, longT, m->loc));
 
                     // --- the factory body the original method now has
                     std::vector<ast::ExprPtr> startArgs;
-                    if (!m->isStatic) startArgs.push_back(thisExpr());
+                    if (!m->isStatic) {
+                        startArgs.push_back(thisExpr());
+                    }
                     for (const auto& p : m->params) {
                         auto id = std::make_unique<ast::IdentifierExpr>();
                         id->name = p.name;
@@ -2029,9 +2622,13 @@ bool synthesizeGenerators(ast::Program& program) {
 
                     newClasses.push_back(std::move(g));
                 }
-                for (auto& em : extraMembers) cls.members.push_back(std::move(em));
+                for (auto& em : extraMembers) {
+                    cls.members.push_back(std::move(em));
+                }
             }
-            for (auto& g : newClasses) ns.classes.push_back(std::move(g));
+            for (auto& g : newClasses) {
+                ns.classes.push_back(std::move(g));
+            }
         }
     }
     return ok;
@@ -2039,18 +2636,24 @@ bool synthesizeGenerators(ast::Program& program) {
 
 bool monomorphize(ast::Program& program) {
     mergePartialClasses(program);   // spec 8.3: fold the parts of a `partial` class into one
-    if (!synthesizeGenerators(program)) return false;  // spec 22.6: `yield` -> a lazy Iterator class
+    if (!synthesizeGenerators(program)) {
+        return false;  // spec 22.6: `yield` -> a lazy Iterator class
+    }
     // Record enum names so EnumName.parse() can force-monomorphize its Option<Enum> result.
     g_enumNames.clear();
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& en : ns.enums) g_enumNames.insert(en.name);
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& en : ns.enums) {
+                g_enumNames.insert(en.name);
+            }
+        }
+    }
     // Index generic templates by name.
     std::map<std::string, const ast::ClassDecl*> templates;
     std::set<std::string> generics;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes)
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
                 if (!c.typeParams.empty()) {
                     templates[c.name] = &c;
                     generics.insert(c.name);
@@ -2060,25 +2663,39 @@ bool monomorphize(ast::Program& program) {
                     program.genericNamespaces[c.name] = ns.name;
                     // Record variance (spec 15.3) before the template is dropped, so the
                     // analyzer can apply variance subtyping to the concrete instantiations.
-                    if (!c.typeParamVariance.empty())
+                    if (!c.typeParamVariance.empty()) {
                         program.genericVariance[c.name] = c.typeParamVariance;
+                    }
                 }
+            }
+        }
+    }
     // Every generic type-parameter name (T, K, V, ...). An "instantiation" whose argument is one
     // of these is bogus: it comes from a template referring to itself with its own parameter (e.g.
     // `Node<T>* next` inside `Node<T>`, or `new Node<T>()` in its own body). Such pseudo-instances
     // must never be generated -- doing so produced a class with an undefined type and crashed.
     std::set<std::string> typeParamNames;
-    for (const auto& [tname, tpl] : templates)
-        for (const auto& tp : tpl->typeParams) typeParamNames.insert(tp);
+    for (const auto& [tname, tpl] : templates) {
+        for (const auto& tp : tpl->typeParams) {
+            typeParamNames.insert(tp);
+        }
+    }
     // Method type parameters too (e.g. R in `map<R>`): a `new Generic<R>` in a generic method's body
     // refers to the method's own parameter, not a concrete instantiation, until the method is
     // instantiated with a real R. Without this, collecting `ArrayList$R` produced a bogus class.
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes)
-                for (const auto& mem : c.members)
-                    if (const auto* md = dynamic_cast<const ast::MethodDecl*>(mem.get()))
-                        for (const auto& tp : md->typeParams) typeParamNames.insert(tp);
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                for (const auto& mem : c.members) {
+                    if (const auto* md = dynamic_cast<const ast::MethodDecl*>(mem.get())) {
+                        for (const auto& tp : md->typeParams) {
+                            typeParamNames.insert(tp);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // No generic classes: still expand any generic methods, then done.
     if (templates.empty()) {
@@ -2087,16 +2704,24 @@ bool monomorphize(ast::Program& program) {
 
     // Index every class by name for constraint subtype checks.
     std::map<std::string, const ast::ClassDecl*> classIndex;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes) classIndex[c.name] = &c;
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                classIndex[c.name] = &c;
+            }
+        }
+    }
     bool ok = true;
 
     // Collect instantiations used across the whole program.
     InstMap insts;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes) collectClass(c, generics, insts);
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                collectClass(c, generics, insts);
+            }
+        }
+    }
 
     // Generic-method call instantiations (name, type-args) gathered from every call site. A generic
     // method body can instantiate another generic using its OWN type parameter -- `make<R>()` doing
@@ -2104,22 +2729,31 @@ bool monomorphize(ast::Program& program) {
     // class generation). We use these to pre-seed those class instantiations in the worklist below, so
     // the classes exist before the expanded method bodies reference them.
     MethInsts methInsts;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes)
-                for (auto& m : c.members)
-                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get()))
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                for (auto& m : c.members) {
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get())) {
                         collectMethBlock(meth->body, methInsts);
+                    }
+                }
+            }
+        }
+    }
 
     // Generate a concrete class per instantiation (worklist for transitive ones).
     std::vector<ast::ClassDecl> generated;
     std::set<std::string> done;
     std::vector<std::string> work;
-    for (const auto& [m, _] : insts) work.push_back(m);
+    for (const auto& [m, _] : insts) {
+        work.push_back(m);
+    }
     while (!work.empty()) {
         const std::string m = work.back();
         work.pop_back();
-        if (done.count(m) > 0) continue;
+        if (done.count(m) > 0) {
+            continue;
+        }
         done.insert(m);
         const auto& [base, args] = insts[m];
         // Skip a template's self-reference with its own type parameter (e.g. Node$T from a
@@ -2133,20 +2767,31 @@ bool monomorphize(ast::Program& program) {
                 const std::size_t d = a.find('$', start);
                 const std::string seg =
                     a.substr(start, d == std::string::npos ? std::string::npos : d - start);
-                if (typeParamNames.count(seg) > 0) selfParam = true;
-                if (d == std::string::npos) break;
+                if (typeParamNames.count(seg) > 0) {
+                    selfParam = true;
+                }
+                if (d == std::string::npos) {
+                    break;
+                }
                 start = d + 1;
             }
         }
-        if (selfParam) continue;
+        if (selfParam) {
+            continue;
+        }
         auto tit = templates.find(base);
-        if (tit == templates.end() || tit->second->typeParams.size() != args.size()) continue;
+        if (tit == templates.end() || tit->second->typeParams.size() != args.size()) {
+            continue;
+        }
         // Constraints (spec 15.2): each type argument must satisfy its bound.
         for (const auto& pb : tit->second->typeParamBounds) {
             std::size_t pi = 0;
-            while (pi < tit->second->typeParams.size() && tit->second->typeParams[pi] != pb.first)
+            while (pi < tit->second->typeParams.size() && tit->second->typeParams[pi] != pb.first) {
                 ++pi;
-            if (pi >= args.size()) continue;
+            }
+            if (pi >= args.size()) {
+                continue;
+            }
             const std::string bound = substBound(pb.second, tit->second->typeParams, args);
             if (!satisfiesBound(args[pi], bound, classIndex)) {
                 monoError(tit->second->loc, "type argument '" + args[pi] + "' does not satisfy constraint '" +
@@ -2156,7 +2801,9 @@ bool monomorphize(ast::Program& program) {
             }
         }
         Subst s;
-        for (std::size_t i = 0; i < args.size(); ++i) s[tit->second->typeParams[i]] = args[i];
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            s[tit->second->typeParams[i]] = args[i];
+        }
         // NOT `s[name] = m`: that map is applied to types too, and `ArrayList` inside
         // `ArrayList<T>` would become `ArrayList$long$long`. The self-reference is rewritten only
         // where it is an expression -- see `g_selfTemplate`.
@@ -2169,17 +2816,26 @@ bool monomorphize(ast::Program& program) {
         if (!concrete.superclassTypeArgs.empty() && generics.count(concrete.superclass) > 0) {
             const std::string sm =
                 ast::mangleGeneric(concrete.superclass, concrete.superclassTypeArgs);
-            if (insts.find(sm) == insts.end())
+            if (insts.find(sm) == insts.end()) {
                 insts[sm] = {concrete.superclass, concrete.superclassTypeArgs};
-            if (done.count(sm) == 0) work.push_back(sm);
+            }
+            if (done.count(sm) == 0) {
+                work.push_back(sm);
+            }
         }
         // A generic sealed base seeds its permitted subclasses with the same args, so the variants
         // (e.g. Ok$int$int / Err$int$int for Result$int$int) exist for match and construction.
         for (const std::string& p : tit->second->permits) {
-            if (generics.count(p) == 0) continue;
+            if (generics.count(p) == 0) {
+                continue;
+            }
             const std::string pm = ast::mangleGeneric(p, args);
-            if (insts.find(pm) == insts.end()) insts[pm] = {p, args};
-            if (done.count(pm) == 0) work.push_back(pm);
+            if (insts.find(pm) == insts.end()) {
+                insts[pm] = {p, args};
+            }
+            if (done.count(pm) == 0) {
+                work.push_back(pm);
+            }
         }
         InstMap more;
         collectClass(concrete, generics, more);
@@ -2188,58 +2844,83 @@ bool monomorphize(ast::Program& program) {
         // instantiations and collect the resulting concrete class instantiations too.
         for (const auto& mem : concrete.members) {
             const auto* gm = dynamic_cast<const ast::MethodDecl*>(mem.get());
-            if (gm == nullptr || gm->typeParams.empty()) continue;
+            if (gm == nullptr || gm->typeParams.empty()) {
+                continue;
+            }
             for (const MethInst& mi : methInsts) {
-                if (mi.first != gm->name || mi.second.size() != gm->typeParams.size()) continue;
+                if (mi.first != gm->name || mi.second.size() != gm->typeParams.size()) {
+                    continue;
+                }
                 Subst ms;
-                for (std::size_t i = 0; i < mi.second.size(); ++i) ms[gm->typeParams[i]] = mi.second[i];
+                for (std::size_t i = 0; i < mi.second.size(); ++i) {
+                    ms[gm->typeParams[i]] = mi.second[i];
+                }
                 ast::MemberPtr cm = cloneMember(gm, ms);
                 collectBlock(static_cast<const ast::MethodDecl*>(cm.get())->body, generics, more);
             }
         }
         for (const auto& [mm, pp] : more) {
-            if (insts.find(mm) == insts.end()) insts[mm] = pp;
-            if (done.count(mm) == 0) work.push_back(mm);
+            if (insts.find(mm) == insts.end()) {
+                insts[mm] = pp;
+            }
+            if (done.count(mm) == 0) {
+                work.push_back(mm);
+            }
         }
         generated.push_back(std::move(concrete));
     }
 
     // Drop the templates; the generated concrete classes take their place.
     ast::Namespace* sink = nullptr;
-    for (auto& b : program.bundles)
+    for (auto& b : program.bundles) {
         for (auto& ns : b.namespaces) {
             std::vector<ast::ClassDecl> kept;
-            for (auto& c : ns.classes)
-                if (c.typeParams.empty()) kept.push_back(std::move(c));
+            for (auto& c : ns.classes) {
+                if (c.typeParams.empty()) {
+                    kept.push_back(std::move(c));
+                }
+            }
             ns.classes = std::move(kept);
-            if (sink == nullptr) sink = &ns;
+            if (sink == nullptr) {
+                sink = &ns;
+            }
         }
-    if (sink != nullptr)
-        for (auto& c : generated) sink->classes.push_back(std::move(c));
+    }
+    if (sink != nullptr) {
+        for (auto& c : generated) {
+            sink->classes.push_back(std::move(c));
+        }
+    }
     // Mangle generic superclasses now that every concrete class exists (Derived$int
     // extends Base$int). Applies to generated and plain classes alike.
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) {
-                if (!c.superclassTypeArgs.empty())
+                if (!c.superclassTypeArgs.empty()) {
                     c.superclass = ast::mangleGeneric(c.superclass, c.superclassTypeArgs);
+                }
                 // `implements Iface<Args>` now refers to the concrete instantiation.
-                for (std::size_t k = 0;
-                     k < c.interfaceTypeArgs.size() && k < c.interfaces.size(); ++k)
-                    if (!c.interfaceTypeArgs[k].empty())
+                for (std::size_t k = 0; k < c.interfaceTypeArgs.size() && k < c.interfaces.size(); ++k) {
+                    if (!c.interfaceTypeArgs[k].empty()) {
                         c.interfaces[k] =
                             ast::mangleGeneric(c.interfaces[k], c.interfaceTypeArgs[k]);
+                    }
+                }
             }
+        }
+    }
     // Generic methods live on both plain and monomorphized classes; expand them
     // now that every concrete class (and its cloned bodies) exists.
-    if (!expandGenericMethods(program)) ok = false;
+    if (!expandGenericMethods(program)) {
+        ok = false;
+    }
     return ok;
 }
 
 // -------------------------------------------------------------------------------------------------
 // `delegate`: satisfy an interface by FORWARDING to a field.
 //
-// The word does not mean "function pointer" here -- that is C#'s idiosyncrasy, and LDP3 already spells
+// The word does not mean "function pointer" here -- that is C#'s idiosyncrasy, and Polaron already spells
 // callables four ways (`function<>`, `typealias`, `methodref`, `unknown <world> funcptr<>`). It means
 // what it means in OOP: this object receives a message and passes it to the component that actually
 // knows how to answer it.
@@ -2283,35 +2964,63 @@ void collectObligations(const std::string& typeName,
                         const std::map<std::string, ast::ClassDecl*>& index,
                         std::vector<const ast::MethodDecl*>& owed, std::set<std::string>& answered,
                         std::set<std::string>& seenTypes) {
-    if (!seenTypes.insert(typeName).second) return;
+    if (!seenTypes.insert(typeName).second) {
+        return;
+    }
     auto it = index.find(typeName);
-    if (it == index.end()) return;
+    if (it == index.end()) {
+        return;
+    }
     const ast::ClassDecl& c = *it->second;
     for (const ast::MemberPtr& m : c.members) {
         const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
-        if (md == nullptr || md->isStatic) continue;
-        if (md->name == c.name || (!md->name.empty() && md->name[0] == '~')) continue;
-        if (md->isAbstract) owed.push_back(md);
-        else answered.insert(md->name);
+        if (md == nullptr || md->isStatic) {
+            continue;
+        }
+        if (md->name == c.name || (!md->name.empty() && md->name[0] == '~')) {
+            continue;
+        }
+        if (md->isAbstract) {
+            owed.push_back(md);
+        } else {
+            answered.insert(md->name);
+        }
     }
-    if (!c.superclass.empty()) collectObligations(c.superclass, index, owed, answered, seenTypes);
-    for (const std::string& i : c.interfaces) collectObligations(i, index, owed, answered, seenTypes);
+    if (!c.superclass.empty()) {
+        collectObligations(c.superclass, index, owed, answered, seenTypes);
+    }
+    for (const std::string& i : c.interfaces) {
+        collectObligations(i, index, owed, answered, seenTypes);
+    }
 }
 
 // Can `typeName` answer a message called `name`? An ABSTRACT declaration counts: a delegate typed as an
 // interface is the ordinary case, and the object behind it is the one that will answer.
 bool typeAnswers(const std::string& typeName, const std::string& name,
                  const std::map<std::string, ast::ClassDecl*>& index, std::set<std::string>& seen) {
-    if (!seen.insert(typeName).second) return false;
+    if (!seen.insert(typeName).second) {
+        return false;
+    }
     auto it = index.find(typeName);
-    if (it == index.end()) return false;
+    if (it == index.end()) {
+        return false;
+    }
     const ast::ClassDecl& c = *it->second;
-    for (const ast::MemberPtr& m : c.members)
-        if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()))
-            if (md->name == name && !md->isStatic) return true;
-    if (!c.superclass.empty() && typeAnswers(c.superclass, name, index, seen)) return true;
-    for (const std::string& i : c.interfaces)
-        if (typeAnswers(i, name, index, seen)) return true;
+    for (const ast::MemberPtr& m : c.members) {
+        if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get())) {
+            if (md->name == name && !md->isStatic) {
+                return true;
+            }
+        }
+    }
+    if (!c.superclass.empty() && typeAnswers(c.superclass, name, index, seen)) {
+        return true;
+    }
+    for (const std::string& i : c.interfaces) {
+        if (typeAnswers(i, name, index, seen)) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -2374,12 +3083,16 @@ ast::MemberPtr makeForwarder(const ast::FieldDecl& f, const ast::MethodDecl& owe
 bool expandDelegates(ast::Program& program) {
     bool ok = true;
     std::map<std::string, ast::ClassDecl*> index;
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
-            for (auto& c : ns.classes) index[c.name] = &c;
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                index[c.name] = &c;
+            }
+        }
+    }
 
-    for (auto& b : program.bundles)
-        for (auto& ns : b.namespaces)
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) {
                 std::vector<const ast::FieldDecl*> delegates;
                 bool classHasPersistent = false;
@@ -2390,54 +3103,71 @@ bool expandDelegates(ast::Program& program) {
                         continue;
                     }
                     const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get());
-                    if (f == nullptr) continue;
-                    if (f->isPersistent) classHasPersistent = true;
-                    if (f->isDelegate) delegates.push_back(f);
+                    if (f == nullptr) {
+                        continue;
+                    }
+                    if (f->isPersistent) {
+                        classHasPersistent = true;
+                    }
+                    if (f->isDelegate) {
+                        delegates.push_back(f);
+                    }
                 }
-                if (delegates.empty()) continue;
+                if (delegates.empty()) {
+                    continue;
+                }
 
                 for (const ast::FieldDecl* f : delegates) {
                     const size_t before = delegateErrorCount;
-                    if (f->isStatic)
+                    if (f->isStatic) {
                         delegateError(f->loc, "a `delegate` field cannot be static: forwarding a message "
                                               "needs a receiver, and a static field has no object to be "
                                               "the receiver of");
+                    }
                     // A delegate that may be absent makes EVERY forwarded method conditionally broken,
                     // and the failure surfaces at the call, far from the field that caused it. Both
                     // spellings of "may be absent" are rejected for the same reason.
-                    if (f->type.isNullable)
+                    if (f->type.isNullable) {
                         delegateError(f->loc, "a `delegate` field cannot be `nullable`: every method "
                                               "forwarded to it would break when it is null, and the "
                                               "failure would surface at the call rather than here");
-                    if (f->isWeak)
+                    }
+                    if (f->isWeak) {
                         delegateError(f->loc, "a `delegate` field cannot be `weak`: it is auto-nulled "
                                               "when its target dies, which silently empties every method "
                                               "this class implements through it");
+                    }
                     // Persistence, decided with Joao: a persistent object that forwards into something
                     // that does not come back is reattached with its whole interface dead inside, and
                     // nothing at the failure says why. So the delegate travels with it, or it is not a
                     // delegate.
-                    if (f->isTransient)
+                    if (f->isTransient) {
                         delegateError(f->loc, "a `delegate` field cannot be `transient`: it would be "
                                               "absent after the object is reattached, leaving every "
                                               "method it implements with nothing to forward to");
+                    }
                     // `eternal` alone does not discharge this: it means "as long as the program", and a
                     // persistent object is reattached in a LATER one. Only `persistent` crosses runs --
                     // and `eternal persistent` sets both, so the no-release-needed form still passes.
-                    if (classHasPersistent && !f->isPersistent)
+                    if (classHasPersistent && !f->isPersistent) {
                         delegateError(f->loc, "class '" + c.name + "' has a `persistent` field, so its "
                                               "`delegate` must be `persistent` too: the object survives "
                                               "the run and would come back forwarding into something "
                                               "that did not");
-                    if (delegateErrorCount != before) ok = false;
+                    }
+                    if (delegateErrorCount != before) {
+                        ok = false;
+                    }
                 }
                 std::vector<const ast::MethodDecl*> owed;
                 std::set<std::string> answered;
                 std::set<std::string> seenTypes;
-                if (!c.superclass.empty())
+                if (!c.superclass.empty()) {
                     collectObligations(c.superclass, index, owed, answered, seenTypes);
-                for (const std::string& iface : c.interfaces)
+                }
+                for (const std::string& iface : c.interfaces) {
                     collectObligations(iface, index, owed, answered, seenTypes);
+                }
                 if (owed.empty()) {
                     delegateError(delegates.front()->loc,
                                   "class '" + c.name + "' declares a `delegate` but owes no method: "
@@ -2452,15 +3182,24 @@ bool expandDelegates(ast::Program& program) {
                 for (const ast::MethodDecl* md : owed) {
                     // A method the class WRITES wins. That is the whole rule: the presence of a body is
                     // the statement of intent, so there is no list of exceptions to keep in sync.
-                    if (defined.count(md->name) != 0 || answered.count(md->name) != 0) continue;
-                    if (!done.insert(md->name).second) continue;
+                    if (defined.count(md->name) != 0 || answered.count(md->name) != 0) {
+                        continue;
+                    }
+                    if (!done.insert(md->name).second) {
+                        continue;
+                    }
                     const ast::FieldDecl* provider = nullptr;
                     bool ambiguous = false;
                     for (const ast::FieldDecl* f : delegates) {
                         std::set<std::string> seen;
-                        if (!typeAnswers(f->type.name, md->name, index, seen)) continue;
-                        if (provider != nullptr) ambiguous = true;
-                        else provider = f;
+                        if (!typeAnswers(f->type.name, md->name, index, seen)) {
+                            continue;
+                        }
+                        if (provider != nullptr) {
+                            ambiguous = true;
+                        } else {
+                            provider = f;
+                        }
                     }
                     if (ambiguous) {
                         delegateError(c.loc, "method '" + md->name + "' is answered by more than one "
@@ -2478,9 +3217,13 @@ bool expandDelegates(ast::Program& program) {
                     }
                     synthesized.push_back(makeForwarder(*provider, *md));
                 }
-                for (ast::MemberPtr& m : synthesized) c.members.push_back(std::move(m));
+                for (ast::MemberPtr& m : synthesized) {
+                    c.members.push_back(std::move(m));
+                }
             }
+        }
+    }
     return ok;
 }
 
-}  // namespace ldp3
+}  // namespace polaron

@@ -4,15 +4,32 @@
 `procedure`. This note is the decision record, written so that the reasons survive as well as the
 rules. **The core is now built — see "What is built" at the end for exactly how much.***
 
+## What a transformer IS
+
+> A **transformer** is a construct that establishes a **transformation relation between two classes**.
+
+`class` says what a thing **is**. `interface` says what it **must be able to do**. `layout` says how
+it **arranges itself**. **`transformer` says what a type gains — and how it relates to the other
+types that gain the same.**
+
+Inside one live **variables** and **transformable methods**. A transformable method is an abstract
+method that may nevertheless carry a default implementation inside the transformer itself, and that
+implementation can still be swapped for one belonging to a class. Nothing among ordinary methods does
+that, which is why the word is different: these are **procedures**.
+
+A transformer is **not implemented and not extended. It is applied** — and it has exactly two
+operations, **application** and **call**, both below. It is never instantiated, and it is resolved
+entirely at compile time, so it **creates no vtables**.
+
 ## The hole it fills
 
-Look at what LDP3 can declare today: `class`, `record`, `interface`, `catalog`, `enum`, `union`,
+Look at what Polaron can declare today: `class`, `record`, `interface`, `catalog`, `enum`, `union`,
 `layout`. **Every one of them has a single type as its subject.** They say what a thing is, what values
 it has, what shape it takes in memory, what it must be able to do. Not one of them says what a type
 **gains**.
 
 Other languages fill that gap with a lambda — a body of behaviour you can name, hold and pass around
-without a class. LDP3 refuses first-class functions, deliberately and permanently: **behaviour lives in
+without a class. Polaron refuses first-class functions, deliberately and permanently: **behaviour lives in
 methods, and methods live in types.** That decision is right, and it left nothing in its place at
 declaration level.
 
@@ -76,7 +93,7 @@ demanding one, because a diagnostic that says "wrong" and stops has handed the r
 
 ## The declaration
 
-```ldp3
+```polaron
 public mutual transformer Convertible {
     error Failed;
 
@@ -96,7 +113,7 @@ It may not contain mutable state of its own. See [State](#state), below.
 
 ## Applying it
 
-```ldp3
+```polaron
 public class Celsius extends Temperature implements IHeat applies Convertible { }
 ```
 
@@ -111,7 +128,7 @@ outside world. `applies` is many, purely additive, and nobody outside needs to k
 
 A type that supplies its own body for an applied procedure writes it with `procedure`, not `method`:
 
-```ldp3
+```polaron
 public class Celsius extends Temperature implements IHeat applies Convertible {
     private mutable int degrees;
 
@@ -144,7 +161,7 @@ free and may replace.
 **Calls between procedures inside a transformer dispatch to the applied version.** This is what makes the
 feature useful — the transformer writes the algorithm, the type supplies the parts:
 
-```ldp3
+```polaron
 public transformer Sortable {
     public procedure sorted() returns itself {
         // ... compare(a, b) ...
@@ -159,13 +176,20 @@ stays for demanding things that exist independently and that other declarations 
 
 `final procedure` seals a body: the applying type may not replace it.
 
-### Visibility: application and reach are different operations
+### Visibility is what the member ENTERS THE CLASS with
 
-> **Application is about existing. Reach is about calling.** Visibility in the transformer governs the
-> second, not the first.
+> The visibility written on a procedure is **not** about who may reach it inside the transformer.
+> Nothing can reach into a transformer at all — the only way to get at a procedure is to apply the
+> transformer that holds it. It is the visibility the member **enters the applying class with**.
 
-A `private procedure` is still applied — it lands in the type as a private member and the type's own
-methods use it. What `private` denies is `call`, which is a different operation (see below).
+So procedures are **private by default**. Applying a transformer is equipment, not a promise made to
+the outside world, and a procedure that belongs on the type's public surface says so.
+
+**Corrected 2026-08-14, and the default is what settled it.** This was first built the other way
+round — "application is about existing, reach is about calling", with `private` denying `call`. That
+reading cannot survive the default: it would disable the second of the feature's two operations in
+the ordinary case. `call` is restricted by its subject (only inside a declaration that applies the
+transformer) and by nothing else.
 
 ### Static procedures
 
@@ -173,7 +197,7 @@ A static procedure exists because one end of a relation is often a type you do n
 `int applies Convertible`, so the way back from `int` must live on the type that does apply it, and there
 is no instance to hang it on — you are holding a raw `int`:
 
-```ldp3
+```polaron
 Errno e = Errno.from(-14);
 ```
 
@@ -181,7 +205,7 @@ The subject is `Errno`. The verb always has a noun in front of it.
 
 ### `call`
 
-```ldp3
+```polaron
 call RegionOwner.releaseStore();
 int a = call SomeTransformer.someProcedure();
 ```
@@ -191,14 +215,11 @@ int a = call SomeTransformer.someProcedure();
 Three rules follow:
 
 1. It is legal only inside a declaration that applies the transformer. Outside, it would be an action
-   with no subject.
+   with no subject — and this is the only restriction on it.
 2. It reaches the **transformer's** body, not the applying type's override. If you wanted the type's, you
    would write `itself.p()`. `call` means *"my type replaced this, and I want the original anyway."*
 3. Inside the transformer, no `call` is needed — you are already there, so `dosomething()` resolves
    normally. This is not an exception to the rule; it is the rule (there is a receiver).
-
-`call` reaches only what visibility permits, which is how a transformer keeps procedures the applying
-type may not invoke.
 
 ## Derivation
 
@@ -244,6 +265,7 @@ is required to say so — there is no list to cover, and the compiler knows it. 
 
 ## Pairs, and `mutual`
 
+
 Nothing declares "A converts to B". Two types apply the same transformer and implement its procedures,
 and **the transformation emerges from the pair**. Direction emerges too: one side implemented means one
 way, both sides means both.
@@ -253,7 +275,7 @@ coupling. Two types, two windings.
 
 What does not emerge is the *obligation* to write the second side. `mutual` declares it:
 
-```ldp3
+```polaron
 public mutual transformer Convertible { }
 ```
 
@@ -264,9 +286,89 @@ public mutual transformer Convertible { }
 applies nothing. The compiler says so up front instead of letting you find out later that you have half a
 relation. The way back still exists — as the partial static procedure above.
 
+## Sets, and `collective`
+
+*Added 2026-08-14.*
+
+`mutual` is a relation over a **pair**. There is a shape it cannot say, and it is the one that comes up
+whenever several types are different encodings of one value: that **all of them convert among
+themselves**.
+
+```polaron
+public collective transformer TScaler {
+    public procedure into<each Other>() returns Other;
+}
+```
+
+> `mutual` says a pair is symmetric. **`collective` says the appliers form one transformation set**, so
+> each of them can become any of the others.
+
+This shape has always been written by hand, and the patterns it is written with are the evidence that
+the language could not say it: a canonical pivot type everything converts through, a registry of
+converters, double dispatch, a visitor. None of them is about the problem; all of them are about the
+missing declaration.
+
+### Composition is what makes it affordable
+
+Taken literally, a complete relation over N types is N(N−1) procedures, and nobody would write it. So
+the conversions you write are **edges**, and the compiler completes the graph along them:
+
+```polaron
+public class Celsius    applies TScaler { procedure into<Fahrenheit>() { ... } }
+public class Fahrenheit applies TScaler { procedure into<Kelvin>()     { ... } }
+public class Kelvin     applies TScaler { procedure into<Celsius>()    { ... } }
+```
+
+Three procedures, **six conversions**. `Celsius → Kelvin` is composed through Fahrenheit;
+`Kelvin → Fahrenheit` through Celsius. The requirement is that the digraph be strongly connected, and a
+cycle is the cheapest way to satisfy it: N types, N edges.
+
+**The pivot pattern is not made easier. It stops being necessary** — because a pivot *is* a path through
+this graph, so it stops being something anybody writes down.
+
+### Two rules keep it honest, and they are already the feature's rules
+
+> There is never an implicit winner, and never an order.
+
+- **No path** → an error naming the pair, and naming the cheap fix: any conversion that reaches it,
+  because the rest is composed.
+- **Two shortest paths tied** → an error naming where they fork. A composed conversion may not pick one.
+  You break the tie by writing that conversion, exactly as a member-name collision between two
+  transformers is broken by the type.
+
+The second is the important one. Silently taking either route would make a conversion's *answer* depend
+on a graph nobody drew — and in `Celsius → Kelvin` the two routes differ by rounding, which is a wrong
+answer arriving quietly.
+
+**And composition here is not the compiler writing code nobody asked for**, which the destructor section
+below rejects for good reason. The word on the transformer is the request. Without `collective` nothing
+is composed at all.
+
+### What is in the relation and what is not
+
+- **Instance per-target families only.** A `static` per-target procedure converts *to* this type from an
+  open source; it is the escape hatch for types you do not own, and a relation cannot range over `int`.
+- **Composable means the shape is a conversion**: no parameters, returning the target. A family of any
+  other shape — `render<each Other>(Other into)` — must still be complete, because that is what the word
+  promises, but there is nothing to compose along, and saying so beats generating a body that means
+  something else.
+- **Private edges are not paths.** A `private procedure` is the type's own business; a composed body may
+  not reach through it.
+- **A composed conversion is exempt from the totality check.** It reads no field, and demanding that it
+  should would be asking it to redo the work: its totality is inherited from each hop, checked where
+  that hop was written.
+- **`collective` implies `mutual`.** A complete relation contains the way back from every pair, so
+  writing both is accepted with a warning that says which one is doing nothing.
+
+### Seeing what was derived
+
+Composed conversions are listed in the generated documentation, with the route they take. A derived
+conversion nobody can see is a conversion nobody can audit — and it answers the question that follows
+immediately, which is where the rounding went.
+
 ## Transformers applying transformers
 
-```ldp3
+```polaron
 public transformer Sortable applies Comparable { }
 ```
 
@@ -299,7 +401,7 @@ type to write both and keeps the grep working; `applies` hides it in exchange fo
 
 ## State
 
-```ldp3
+```polaron
 public transformer RegionOwner {
     protected mutable region store;      // APPLIED FIELD: every applying object has its own
     private fixed int Slack = 512;       // CONSTANT: the transformer's, and goes nowhere
@@ -343,7 +445,7 @@ destruction in an order determined by a chain you did not write.
 
 With definite release in place, no weaving is needed:
 
-```ldp3
+```polaron
 public explicit freestanding transformer RegionOwner {
     protected mutable region store;
 
@@ -351,7 +453,7 @@ public explicit freestanding transformer RegionOwner {
 }
 ```
 
-```ldp3
+```polaron
 public class DeviceRegistry applies RegionOwner {
     public destructor ~DeviceRegistry() returns void {
         call RegionOwner.releaseStore();
@@ -424,6 +526,106 @@ machinery, running over another list. No vtable unless it satisfies an interface
 indirection. What you pay is exactly the code you would have written by hand, which is what makes it usable
 in a kernel without thinking twice.
 
+## What would improve it next — 2026-08-14
+
+*Nothing below is built. Ordered by what I would build first, and judged by this note's own rule for a
+modifier: it earns its place if it changes what the compiler checks at the declaration.*
+
+### 1. `applies` as a CONSTRAINT, not only a clause
+
+`method f<T implements IShape>()` exists. `method f<T applies TComparer>()` does not, and neither does
+`demand T applies TComparer;`.
+
+> Until this exists, **a transformer is a second-class citizen beside an interface**: it can give
+> equipment and it cannot be demanded.
+
+This is what forces the parallel interface in almost every case. `satisfies` closed half of it — the
+run-time, polymorphic half. The compile-time half is still open, and it is the half generic code
+lives in. **No new keyword: the word is already `applies`.**
+
+### 2. Structural procedures — one body over the applying type's FIELDS
+
+A transformer can supply a fixed body or a socket. What it cannot supply is a body **derived from the
+shape** of the type that applies it: clone every field, compare every field, serialise every field.
+
+That is exactly what `record` already does for `equals`/`hashCode`/`clone` — **hard-coded in the
+compiler instead of expressible in the language**. So `TSerializer`, `TEquator`, `TCloner` are not
+merely unwritten; they are unwritable, and every structural transformer is written per type or not at
+all.
+
+This is the capability that changes what the feature *is*: from a mixin facility into a
+metaprogramming one. It needs to iterate `itself`'s fields at `comptime`, which is the only piece
+missing — `comptime` itself already exists.
+
+The note's finding that "derivation needed no implementation, it is a property of the question"
+remains true about **when** to derive. It says nothing about the machinery to actually do it, and
+there is none.
+
+### 3. Operators from a transformer
+
+One `compare` socket yielding `<`, `>`, `<=`, `>=` is the canonical case — it is Rust's `PartialOrd`.
+Operators are already `MethodDecl`s named `operator+`, **so this may already work and simply be
+untested**; verify before designing. If it works it is the flagship example this note lacks.
+
+### 4. The LAW of the relation
+
+This note rejected the bidirectional-codec transformer on the grounds that *"the only thing it adds
+over a class with two static methods is the round-trip check, and that is a contract, not a new kind
+of declaration."* The argument was sound **and has expired**: the declaration now exists, so the
+contract has somewhere to live.
+
+```polaron
+public mutual transformer TConverter {
+    procedure into<each Other>() returns Other;
+    invariant itself.into<Other>().into<itself>() == itself;   // the law of the RELATION
+}
+```
+
+No new keyword — `invariant` already means "a property that must hold", and this is the first time it
+has had a subject that is a relation rather than an object. It would be checked as a generated
+property test, not at run time. A round-trip law is the only thing separating a conversion that is
+right from a conversion that compiles.
+
+### 5. Conditional procedures — the one new word
+
+```polaron
+procedure sorted() returns itself when Other applies TComparer;
+```
+
+Rust's `where`. Today `applies` is all-or-nothing: a transformer cannot give more to a type that has
+more. Real value, smaller than the four above, and **the only item here that needs a new keyword**.
+
+### 6. An initializer on an applied field
+
+A transformer that brings a field forces every applier's constructor to assign something its class
+never declared. An `=` on the field solves it with no weaving — and the argument against weaving the
+destructor (an implicit order, invisible on the class line) **does not apply to an initial value**,
+which has no order at all.
+
+### Keywords: reuse, don't add
+
+| capability | word | new? |
+|---|---|---|
+| generic constraint | `applies` | no |
+| compile-time predicate | `demand ... applies ...` | no |
+| law of the relation | `invariant` | no |
+| structural body | `comptime` over `itself`'s fields | no (needs a way to name the fields) |
+| conditional procedure | `when` | **yes, and it is the only one** |
+
+**Deliberately not added**, each for a reason already in this note: `total`/`partial` (partiality is
+deduced; annotating it would undo the finding), `abstract transformer` (already part-abstract by
+construction), `sealed transformer ... permits` (`explicit` buys the readability, `private` buys the
+access), and a word for the N→1 shape — *everything becomes `Json`* is an ordinary socket and needs
+nothing.
+
+### An asymmetry worth fixing before there is code to break
+
+`mutual` and `collective` sit **on the transformer**, but the author's own description puts the
+relation on the procedure: *"I have a procedure, applied to several classes."* Today a transformer
+with two families imposes the same relation on both. `collective procedure into<each Other>()` would
+be more precise and would allow one collective family beside one ordinary one. Not urgent — and
+exactly the kind of change that gets expensive once programs exist.
+
 ## Ideas that were rejected along the way
 
 Kept because the reasons are the useful part.
@@ -439,7 +641,7 @@ keyword — a compiler plugin can do it — and it is how a language stops being
 
 **A transformer as a law about change** (legal state transitions; a policy for crossing a region boundary).
 Both survived the "an interface cannot express this" test, and both died on a better one: **they are verbs.**
-LDP3 does not have free-floating verbs and is not going to.
+Polaron does not have free-floating verbs and is not going to.
 
 **Weaving into the destructor.** See above.
 
@@ -480,7 +682,7 @@ no codegen, no dispatch. `[<cat>]` is the test: the brackets are Cat's replaceme
 brackets the original it asked for anyway, and without `call` that original is unreachable because
 `this.describe()` from inside `describe()` is the override calling itself.
 
-`call` is a HARD keyword, decided by the author after being shown the cost: `decomp/src/lift.ldp3`
+`call` is a HARD keyword, decided by the author after being shown the cost: `decomp/src/lift.pol`
 declares `mutable String call` and uses it dozens of times, so that file needs a rename. Recorded
 here so the breakage is a known debt rather than a discovery.
 
@@ -508,7 +710,7 @@ lost the declaration they read. Four sections of this note, gone.
 
 Both forms now exist, told apart by a marker on the SOCKET:
 
-```ldp3
+```polaron
 procedure tag<T>(T value) returns String { }   // ordinary generics: one body for every T
 procedure into<each Other>() returns Other;    // per-target family: one body per target
 ```
@@ -553,14 +755,91 @@ namespace, and that is checked rather than discovered as a silently shared class
 at the transformer, not per applying type: two types that fail the same conversion must raise the
 same thing or a caller cannot write one `catch`.
 
-## Open
+## Everything that was open — closed 2026-08-14
 
-- **The `enum` and `union` rows of the totality table** — cover every constant, every alternative —
-  are not checked. `match` exhaustiveness already covers the natural way to write those, which is
-  why they were the cheaper half to leave, but it is not the same guarantee: an `if`/`else` chain
-  over constants is not checked by anything.
-- **The error type.** A transformer declares its own (`error Failed`), so a failure names the conversion
-  that failed. The shape and how it is referenced (`Convertible.Failed`?) are undecided.
-- **A static procedure with no source.** `static procedure empty() returns itself` mentions `itself`, so it
-  passes the subject rule, and it gives you derived construction — valuable in a kernel. Whether the line
-  between it and a static constructor is more than convention is undecided.
+Suite **765/765**, pico **132/132**. Each of these was either a promise this note made that the
+compiler did not keep, or a question it left for later.
+
+**`freestanding transformer` did not parse at all.** The declaration scanned past `mutual` and
+`explicit` and nothing else, so this note's own `RegionOwner` example was unwritable. It parses now, and
+the gate is the REAL one: a body copied out of such a transformer is analyzed with the bare-metal
+subset turned on, even in a hosted program, so everything that gate already refuses — interpolation,
+exceptions, `await`, `unimport`, `Test`, `Console` — applies unchanged, and anything added to it later
+applies too. A second hand-written list of what bare metal cannot have would have drifted. The
+diagnostic says why a hosted program is being held to it, naming the transformer.
+
+**`final procedure` sealed nothing.** It parsed, it was stored, and the expansion skipped the member
+whenever the type declared the same name without ever consulting the flag — so a sealed body was
+replaced in silence. Refused at the `applies` line, and it has to be refused there: after expansion
+there are not two members to compare, only the type's own, and nothing downstream can tell it ever
+stood in for something.
+
+**The `enum` row of the totality table** is checked — and the reason it mattered is narrower than
+"`match` covers it". `match` exhaustiveness covers the natural spelling; an `if`/`else` chain over
+constants was checked by nothing at all, and the constant it forgot fell through to whatever the last
+line returned. It is measured the same way the field rule is, by recording which of the source's own
+constants the body named, at the point the analyzer already resolves `E.CONSTANT`.
+
+**An enum could not apply a transformer at all**, which is why that row had never bitten: this note's
+flagship conversion is `Errno → int`, and `Errno` is an enum. The clause is accepted there now. Its
+constants stay ordinals; what it gains is members, which an ordinal enum has always been able to hold. A
+transformer that brings a FIELD is refused on one — a constant is a value, not an object — and so is a
+`satisfies` clause, because an enum implements catalogs rather than interfaces.
+
+**The `union` row was not an omission, and writing it down was the fix.** A union looks like it should
+take the record rule and must not: its fields share one storage and nothing tags which is live, so a
+conversion reading every field would be reading bytes that mean something else. The rule would have
+demanded a bug — and until now it did, because the field rule ran over unions. A union's source is
+**open**, like an `int`.
+
+**The subject rule was stated here and checked by nothing.** `static procedure max(int a, int b) returns
+int` compiled. It is refused now, in the terms this note already used: an action belongs to a subject,
+and a static procedure that mentions no `itself` is `static_assert` in a new suit.
+
+**A static procedure with no source is legal, and the line is more than convention.** `static procedure
+empty() returns itself` passes the subject rule and gives derived construction. A static constructor
+belongs to one type and is written on it; this is written once and every applying type has it. That is
+the difference between a member and a mould, which is the difference the whole declaration is for.
+
+**The error type's shape** was decided when it was built (an ordinary class in the transformer's
+namespace, referenced unqualified, synthesized once). What was added since: it is **not** synthesized
+again for an imported bundle, where it already crossed the header as an ordinary class.
+
+**A transformer could not cross a bundle boundary**, and nothing said so — `polh.cpp` wrote classes and
+enums, and the word `transformer` appeared nowhere in `src/bundle` at all. So the standard library could
+not publish a `TComparer`, and neither could anyone else. It crosses now as **its own source**, and that
+is the point rather than a shortcut: a header carries signatures because a caller of a compiled method
+needs nothing more, but a transformer is expanded and what the applying type receives is the BODY. A
+header with only its shape would ship half the feature — sockets still demanded, every free
+implementation silently gone. It has no runtime existence at all, so its text is its interface, exactly
+as a header-only template's is. Captured at parse time rather than printed back from the AST, because
+there is no AST-to-source printer here and a second one written for this would drift from what the
+parser accepts.
+
+The name is **importable** though it is never a type. `applies` resolves by simple name in a pass that
+runs long before imports are looked at, so it would have worked with no import at all — which is exactly
+why it had to be registered: a declaration that quietly opted out of "a name from another bundle is
+written down where it enters" would be the only one in the language that did.
+
+**Nothing linked a transformer to the interface it implements**, so the common case was written twice on
+every applying type with nothing saying the second half answered the first. `satisfies` is that link.
+The interface is pushed onto the applying type's own `implements` list, so every existing check runs
+unchanged — the analyzer verifies it, the vtable is built the usual way, `X is I` answers yes.
+
+Two details it turned up. A copied procedure that answers an interface **is** an override and has to
+say so, and nobody can write the word on a member the compiler put there, so the compiler marks it —
+identified by position, because `isProcedure` is deliberately not carried by the cloner. And a
+procedure the TYPE writes to replace one is marked too: `override` exists so that answering something
+inherited is visible, and `procedure` already says that, checked in both directions. A `method` the
+type wrote itself still owes the word.
+
+**Transformers were invisible in generated documentation** — `htmldoc` walked `ns.classes` only, so a
+program's equipment was documented as though it did not exist. They appear now with their relation
+words, their sockets marked as sockets, and the `applies` clause on the types that use them. The
+documentation pass runs the expansion first, so what is documented is what the types really have.
+
+**Found on the way, unrelated to any of it:** a `call T.p()` written in a **record** body was never
+drained from the parser's pending list, so it was attributed to whichever declaration was parsed next —
+the three rules `call` carries were checked against the wrong type's `applies` clause, in both
+directions. A record takes `applies`, so it can hold a `call`, so it has to hand its sites over like
+everyone else.

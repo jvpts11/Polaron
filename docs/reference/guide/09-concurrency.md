@@ -1,6 +1,6 @@
 # 9. Concurrency
 
-Most of what a program does with more than one thing at a time, LDP3 expresses through ordinary
+Most of what a program does with more than one thing at a time, Polaron expresses through ordinary
 library types rather than dedicated syntax. `Thread`, `Mutex<T>`, `atomic<T>`, and `Channel<T>`
 are all classes in the standard library, imported and used like any other class. Only `async` and
 `await` remain keywords, and they earn that status for a concrete reason: they change how the
@@ -44,7 +44,7 @@ no arguments and returns nothing — which you hand to its constructor. Calling 
 thread and begins running the closure; calling `join()` blocks the calling thread until that thread has
 finished.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Concurrency.Thread;
 program ThreadSpawn;
@@ -87,7 +87,7 @@ very differently at the call site. Instead of running to completion and returnin
 immediately with a `Task<T>` — a handle to a computation that will eventually produce a `T`. The body
 is scheduled to run on the worker pool. You get the value out later by writing `await` on the task.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Concurrency.Task;
 program AsyncBasic;
@@ -162,7 +162,7 @@ point, and execution continues as if it had never stopped.
 If the task **is** already done, `await` takes a fast path: there is nothing to wait for, so it does not
 suspend at all and simply reads the result and continues in place.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Concurrency.Task;
 program AsyncChain;
@@ -198,7 +198,7 @@ anywhere in the method body, including inside loops and `if` blocks. The control
 control flow you get; the compiler splits each `await`'s block into a suspend/resume pair and wires the
 entry switch so that resuming jumps back into the loop at the right place.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Concurrency.Task;
 program AsyncLoop;
@@ -235,7 +235,7 @@ computed before one `await` must still be alive after the next one. The compiler
 in the resume block, so an expression like `await f() + await g() + await h()` evaluates correctly even
 though each `await` splits the expression in two.
 
-```ldp3
+```polaron
 public static async method combine() returns int {
     // the result of the first await survives the second and third awaits:
     int s = await Main.val(10) + await Main.val(20) + await Main.val(30);   // 60
@@ -254,7 +254,7 @@ awaiter's `await` yields it. If the body throws an exception that escapes it, th
 re-thrown there. In other words, `await` propagates a failure into the awaiting context exactly as if
 the awaited work had run inline.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Concurrency.Task;
 program AsyncTry;
@@ -312,7 +312,7 @@ the top level.
 `await` adds no suspension of its own, it just reads the value the blocking receive produced. This lets
 async-flavored code interoperate with channels without special ceremony.
 
-```ldp3
+```polaron
 // producer thread fills the channel; the consumer awaits each receive
 mutable int sum = 0;
 for (mutable int i = 0; i < 5; i++) {
@@ -322,14 +322,14 @@ for (mutable int i = 0; i < 5; i++) {
 
 ## 9.4 `Mutex<T>` and `synchronized`
 
-When two threads need to touch the same data, unsynchronized access is a bug. LDP3's answer is
+When two threads need to touch the same data, unsynchronized access is a bug. Polaron's answer is
 `Mutex<T>` (from `System.Concurrency.Mutex`), a lock that *owns* the value it protects rather than
 sitting beside it. You cannot reach the guarded value except through the lock, which makes it
 structurally impossible to read or write it without holding the mutex.
 
 The only way in is the `synchronized` statement:
 
-```ldp3
+```polaron
 synchronized (m) using T& c {
     // c is a reference to the protected value; the lock is held for this whole block
 }
@@ -342,7 +342,7 @@ normal exit and exception unwinding — if the body throws, the lock is still re
 unwinds, so a failure inside a critical section cannot leave the mutex locked forever and deadlock the
 next thread that wants it.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Concurrency.Thread;
 import System.Concurrency.Mutex;
@@ -398,7 +398,7 @@ For a single integer counter or flag, a full mutex is heavier than necessary. `a
 atomic instructions — no lock is taken, no thread ever blocks, and there are no lost updates. It is the
 lock-free counterpart to the mutex example above.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Concurrency.Thread;
 import System.Concurrency.atomic;
@@ -440,7 +440,7 @@ The atomic cell offers both a method form and an operator form. The methods are:
 
 The operators read more naturally for simple counters and lower to the same atomic instructions:
 
-```ldp3
+```polaron
 atomic<int> c = new atomic<int>(5) on heap;
 c++;          // 6   (atomic add of 1)
 c += 4;       // 10  (atomic add)
@@ -455,14 +455,14 @@ ordering, so you never have to think about instruction reordering when using the
 
 ## 9.6 `Channel<T>`
 
-Channels are the message-passing side of LDP3 concurrency: instead of sharing memory and guarding it
+Channels are the message-passing side of Polaron concurrency: instead of sharing memory and guarding it
 with a lock, threads communicate by handing values to each other. `Channel<T>`
 (`System.Concurrency.Channel`) is a **bounded blocking queue**. You give it a capacity at construction.
 `send(v)` blocks while the channel is full, and `receive()` blocks while it is empty. This back-pressure
 is the point: a fast producer cannot outrun a slow consumer without limit, because it stalls once the
 buffer fills.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Concurrency.Thread;
 import System.Concurrency.Channel;
@@ -507,7 +507,7 @@ fluent builder, `Channel.select()`, which reuses ordinary static methods and lam
 syntax. You chain a `.receive(channel, handler)` arm for each channel you want to watch, optionally a
 `.timeout(milliseconds, handler)` arm, and finish with `.run()`.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Concurrency.Thread;
 import System.Concurrency.Channel;
@@ -548,7 +548,7 @@ Channel `b` holds `42` and `a` is empty, so the `b` arm fires and prints `b=42`.
 A `.timeout` arm bounds the wait. When no channel becomes ready within the given number of
 milliseconds, the timeout handler runs instead, so `select` never hangs forever:
 
-```ldp3
+```polaron
 Channel<int> a = new Channel<int>(4) on heap;   // stays empty
 Channel.select()
     .receive(a, lambda(int x) returns void {
@@ -564,10 +564,10 @@ Channel.select()
 
 A data race — two threads touching the same location at the same time, at least one of them writing,
 with no synchronization between them — is undefined behavior in most systems languages and a source of
-some of the hardest bugs there are. LDP3 does not make races impossible, but its concurrency toolkit is
+some of the hardest bugs there are. Polaron does not make races impossible, but its concurrency toolkit is
 designed so that the *straightforward* way to share state is also the *safe* way.
 
-Three ideas do the work. First, value semantics: assignment in LDP3 is a deep copy, and closures capture
+Three ideas do the work. First, value semantics: assignment in Polaron is a deep copy, and closures capture
 by value by default, so handing data to another thread tends to hand it a private copy rather than a
 shared, aliased one. Two threads that each own their own copy cannot race over it. Second, when threads
 genuinely must share mutable state, `Mutex<T>` makes the shared value *unreachable* except while the lock
@@ -582,7 +582,7 @@ closing off the most common way async code deadlocks itself.
 
 ## 9.9 Concurrency is not available in freestanding mode
 
-Freestanding programs (§36 of the specification) run without an operating system and without the LDP3
+Freestanding programs (§36 of the specification) run without an operating system and without the Polaron
 runtime, so none of this chapter applies there. The compiler enforces the boundary directly: declaring
 an `async` method or writing an `await` in freestanding mode is a compile-time error. The thread,
 channel, mutex, and atomic-cell types likewise depend on OS threading primitives and the runtime's

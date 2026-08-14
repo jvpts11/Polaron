@@ -1,0 +1,39 @@
+import System.IO.Console;
+program TransientCopy;
+
+// A `transient` field is derived/scratch state, not part of the object's canonical value. On a value
+// copy (assignment, which is a deep copy in Polaron) it is NOT carried over -- it resets to its default,
+// so the copy starts clean and rebuilds it on demand. The source keeps its own.
+
+public bundle main {
+    public namespace app {
+        public class Counter {
+            private mutable int value;
+            private transient mutable int cachedDouble;   // derived from value; not canonical
+
+            public constructor Counter(int v) {
+                this.value = v;
+                this.cachedDouble = v * 2;
+            }
+
+            public method value() returns int {
+                return this.value;
+            }
+
+            public method cached() returns int {
+                return this.cachedDouble;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter a = new Counter(21);
+                Counter b = a;                 // deep copy: value copied, transient cachedDouble reset
+                // a keeps 21/42; b copies the value (21) but its transient resets to 0
+                System.IO.Console.printf("%d %d %d %d\n",
+                    a.value(), a.cached(), b.value(), b.cached());
+                return;
+            }
+        }
+    }
+}

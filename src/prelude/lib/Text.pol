@@ -1,0 +1,1610 @@
+    public namespace Text {
+        // Growable text buffer (spec 34.5). Bytes live in a raw heap buffer (System.Memory) that
+        // doubles on demand, so append is amortized O(1); toString() copies into an owned String.
+        public class StringBuilder {
+            // NO INVARIANT HERE, and the reason is measured rather than assumed.
+            //
+            // `invariant this.count >= 0; invariant this.count <= this.cap;` is the whole truth of a
+            // builder and was written here first. It cost **22%** on the `strings` benchmark
+            // (18.4 ms -> 22.4 ms), because unlike the containers -- where the same two clauses are
+            // free -- `count` and `cap` are advanced in different methods and the optimizer cannot
+            // prove the relation, so the check survives into every append.
+            //
+            // The rule this library follows: declare contracts generously, then measure. Where they
+            // are provable they cost nothing and stay; where they are not, the cost is real and the
+            // decision is a judgement about that path. This one is on the hottest string path in the
+            // language, in a class every program uses, and 22% is too much to pay for it.
+            private mutable address buf;
+            private mutable int count;
+            private mutable int cap;
+            public constructor StringBuilder() {
+                this.cap = 16;
+                this.buf = Allocator.alloc(16);
+                this.count = 0;
+            }
+            private method ensure(int extra) returns void {
+                if (this.count + extra <= this.cap) { return; }
+                mutable int n = this.cap * 2;
+                while (n < this.count + extra) { n = n * 2; }
+                address nb = Allocator.alloc(n);
+                Allocator.copy(nb, this.buf, this.count);  // bulk memcpy, not byte-by-byte
+                Allocator.free(this.buf);
+                this.buf = nb;
+                this.cap = n;
+            }
+            public method append(String s) returns StringBuilder {
+                int n = s.length();
+                this.ensure(n);
+                Raw.writeString(this.buf + cast<address>(this.count), s);  // bulk memcpy, not byte-by-byte
+                this.count = this.count + n;
+                return this;
+            }
+            public method appendChar(char c) returns StringBuilder {
+                this.ensure(1);
+                Raw.write<byte>(this.buf + cast<address>(this.count), cast<byte>(c));  // one byte, not int-wide
+                this.count = this.count + 1;
+                return this;
+            }
+            public method appendInt(int value) returns StringBuilder {
+                // Format straight into the buffer. The obvious spelling -- `append(value.toString())`
+                // -- allocates a String, copies its bytes in, and frees it again: an allocation and
+                // two copies per number, for at most eleven digits that could have been written
+                // where they belong. A StringBuilder exists precisely so that appending costs no
+                // allocation, and this was the one method that broke that promise.
+                //
+                // The arithmetic runs in NEGATIVES on purpose: the most negative int has no positive
+                // counterpart, so negating first would overflow on exactly one input.
+                this.ensure(12);                       // "-2147483648" is 11 characters
+                if (value == 0) { return this.appendChar('0'); }
+                mutable int v = value;
+                if (v > 0) { v = 0 - v; } else { this.appendChar('-'); }
+                int start = this.count;                // digits begin after any sign
+                while (v != 0) {
+                    int d = 0 - (v % 10);              // 0..9, since v is negative
+                    this.appendChar(cast<char>(48 + d));
+                    v = v / 10;
+                }
+                mutable int a = start;                 // written least-significant first: reverse
+                mutable int b = this.count - 1;
+                while (a < b) {
+                    byte t = Raw.read<byte>(this.buf + cast<address>(a));
+                    Raw.write<byte>(this.buf + cast<address>(a),
+                                    Raw.read<byte>(this.buf + cast<address>(b)));
+                    Raw.write<byte>(this.buf + cast<address>(b), t);
+                    a = a + 1;
+                    b = b - 1;
+                }
+                return this;
+            }
+            public method length() returns int { return this.count; }
+            public method toString() returns String {
+                return Raw.readString(this.buf, this.count);
+            }
+            // EMPTIED WITHOUT BEING THROWN AWAY, which is the whole point of a builder that lives
+            // in a loop. Without it the only way back to empty was a new builder, so a program that
+            // assembles a line per frame allocated and freed a buffer per frame -- and the growth
+            // it had already paid for went with it every time. The capacity stays; only the length
+            // goes to nought, which is why this is one store and not an allocation.
+            public method clear() returns StringBuilder {
+                this.count = 0;
+                return this;
+            }
+            // The buffer is raw memory, so nothing else can reclaim it: without this every builder
+            // leaked at least its initial 16 bytes plus whatever it grew to. Guarded and nulled so a
+            // second release (an explicit `delete` followed by scope exit) is harmless.
+            public destructor ~StringBuilder() returns void {
+                if (this.buf != cast<address>(0)) {
+                    Allocator.free(this.buf);
+                    this.buf = cast<address>(0);
+                }
+            }
+        }
+        // String utilities that the built-in String type does not carry as methods (spec 4): splitting,
+        // joining, replacing, and padding. Each is a static helper built from the String primitives
+        // (indexOf/substring/concat/repeat), so they allocate fresh owned Strings and never mutate input.
+        public class Strings {
+            public static method split(String text, String separator) returns ArrayList<String> {
+                // Cursor scan over the original text (the old rest = rest.substring(...) resliced the
+                // whole remainder every step -> O(n^2)). Only the emitted pieces allocate -> O(n).
+                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                int n = text.length();
+                int m = separator.length();
+                if (m == 0) { out.add(text); return out; }  // empty separator: no split (avoids a stall)
+                mutable int start = 0;
+                mutable int i = 0;
+                while (i + m <= n) {
+                    mutable boolean hit = true;
+                    for (mutable int j = 0; j < m; j++) {
+                        if (text.charAt(i + j) != separator.charAt(j)) { hit = false; }
+                    }
+                    if (hit) {
+                        out.add(text.substring(start, i));
+                        i = i + m;
+                        start = i;
+                    } else {
+                        i = i + 1;
+                    }
+                }
+                out.add(text.substring(start, n));
+                return out;
+            }
+            public static method join(ArrayList<String> parts, String separator) returns String {
+                StringBuilder sb = new StringBuilder() on heap;  // O(n); repeated concat was O(n^2)
+                for (mutable int i = 0; i < parts.size(); i++) {
+                    if (i > 0) { sb.append(separator); }
+                    sb.append(parts.get(i));
+                }
+                return sb.toString();
+            }
+            public static method replace(String text, String target, String replacement) returns String {
+                int tlen = target.length();
+                if (tlen == 0) { return text; }
+                int n = text.length();
+                StringBuilder sb = new StringBuilder() on heap;  // O(n*m); the old concat+substring was O(n^2)
+                mutable int i = 0;
+                while (i < n) {
+                    mutable boolean hit = i + tlen <= n;
+                    mutable int j = 0;
+                    while (hit && j < tlen) {
+                        if (text.charAt(i + j) != target.charAt(j)) { hit = false; }
+                        j = j + 1;
+                    }
+                    if (hit) {
+                        sb.append(replacement);
+                        i = i + tlen;
+                    } else {
+                        sb.appendChar(text.charAt(i));
+                        i = i + 1;
+                    }
+                }
+                return sb.toString();
+            }
+            public static method padLeft(String text, int width, String pad) returns String {
+                if (text.length() >= width) { return text; }
+                return pad.repeat(width - text.length()).concat(text);
+            }
+            public static method padRight(String text, int width, String pad) returns String {
+                if (text.length() >= width) { return text; }
+                return text.concat(pad.repeat(width - text.length()));
+            }
+            // Fills each {} placeholder in the template with the next argument, in order (spec 4). Extra
+            // arguments are ignored; a {} with no argument left is dropped. Arguments are already strings,
+            // so callers stringify with toString() first.
+            public static method format(String template, ArrayList<String> args) returns String {
+                int n = template.length();
+                StringBuilder sb = new StringBuilder() on heap;  // O(n); the old concat+substring was O(n^2)
+                mutable int i = 0;
+                mutable int next = 0;
+                while (i < n) {
+                    if (i + 1 < n && template.charAt(i) == 123 && template.charAt(i + 1) == 125) {
+                        if (next < args.size()) {
+                            sb.append(args.get(next));
+                            next = next + 1;
+                        }
+                        i = i + 2;
+                    } else {
+                        sb.appendChar(template.charAt(i));
+                        i = i + 1;
+                    }
+                }
+                return sb.toString();
+            }
+            // Counts the non-overlapping occurrences of a substring (spec 4).
+            public static method count(String text, String sub) returns int {
+                int m = sub.length();
+                if (m == 0) { return 0; }
+                // Cursor scan (the old rest = rest.substring(...) resliced the remainder each hit -> O(n^2)).
+                mutable int hits = 0;
+                int n = text.length();
+                mutable int i = 0;
+                while (i + m <= n) {
+                    mutable boolean hit = true;
+                    for (mutable int j = 0; j < m; j++) {
+                        if (text.charAt(i + j) != sub.charAt(j)) { hit = false; }
+                    }
+                    if (hit) { hits = hits + 1; i = i + m; } else { i = i + 1; }
+                }
+                return hits;
+            }
+            // Reverses the characters of a string (spec 4); substring(i, i+1) yields each one-char piece.
+            public static method reverse(String text) returns String {
+                // StringBuilder, not result = result.concat(...) which recopied the whole string each
+                // step (O(n^2)).
+                StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = text.length() - 1; i >= 0; i--) {
+                    sb.appendChar(text.charAt(i));
+                }
+                return sb.toString();
+            }
+            // Upper-cases the first character and leaves the rest unchanged (spec 4).
+            public static method capitalize(String text) returns String {
+                if (text.length() == 0) { return text; }
+                return text.substring(0, 1).toUpper().concat(text.substring(1, text.length()));
+            }
+            private static method isSpaceChar(char c) returns boolean {
+                return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+            }
+            // Trims whitespace from one end only (spec 4); the built-in String.trim does both ends.
+            public static method trimStart(String text) returns String {
+                mutable int i = 0;
+                while (i < text.length() && Strings.isSpaceChar(text.charAt(i))) { i = i + 1; }
+                return text.substring(i, text.length());
+            }
+            public static method trimEnd(String text) returns String {
+                mutable int e = text.length();
+                while (e > 0 && Strings.isSpaceChar(text.charAt(e - 1))) { e = e - 1; }
+                return text.substring(0, e);
+            }
+            // Whether a string is empty or only whitespace (spec 4).
+            public static method isBlank(String text) returns boolean {
+                for (mutable int i = 0; i < text.length(); i++) {
+                    if (!Strings.isSpaceChar(text.charAt(i))) { return false; }
+                }
+                return true;
+            }
+            // Case-insensitive equality, comparing the lower-cased forms (spec 4).
+            public static method equalsIgnoreCase(String a, String b) returns boolean {
+                return a.toLower().equals(b.toLower());
+            }
+        }
+// Split here only to stay under the MSVC per-string-literal size limit; the two raw chunks concatenate
+// into one continuous System.Text namespace.
+        // A small backtracking regular-expression matcher (spec 4): literals, . (any), character classes
+        // [abc]/[a-z]/[^...], the quantifiers * + ?, and the anchors ^ and $. search reports whether the
+        // pattern occurs in the text; wrap a pattern in ^ and $ to require a full match. Pure Polaron over
+        // the String primitives -- the helpers recurse to handle backtracking.
+        public class Regex {
+            // The index just past the atom starting at pi: one char, or the whole [...] class.
+            private static method atomEnd(String pat, int pi) returns int {
+                if (pat.charAt(pi) == '[') {
+                    mutable int j = pi + 1;
+                    if (j < pat.length() && pat.charAt(j) == '^') { j = j + 1; }
+                    if (j < pat.length() && pat.charAt(j) == ']') { j = j + 1; }
+                    while (j < pat.length() && pat.charAt(j) != ']') { j = j + 1; }
+                    return j + 1;
+                }
+                return pi + 1;
+            }
+            // Whether ch is in the class spelled between [ and ] (indices [start, end)); ^ first negates.
+            private static method matchClass(String pat, int start, int end, char ch) returns boolean {
+                mutable int i = start;
+                mutable boolean negate = false;
+                if (i < end && pat.charAt(i) == '^') { negate = true; i = i + 1; }
+                mutable boolean found = false;
+                while (i < end) {
+                    if (i + 2 < end && pat.charAt(i + 1) == '-') {
+                        if (ch >= pat.charAt(i) && ch <= pat.charAt(i + 2)) { found = true; }
+                        i = i + 3;
+                    } else {
+                        if (pat.charAt(i) == ch) { found = true; }
+                        i = i + 1;
+                    }
+                }
+                if (negate) { return !found; }
+                return found;
+            }
+            // Whether the single atom at [pi, atomEnd) matches one character ch.
+            private static method matchAtom(String pat, int pi, int atomEnd, char ch) returns boolean {
+                char p = pat.charAt(pi);
+                if (p == '.') { return true; }
+                if (p == '[') { return Regex.matchClass(pat, pi + 1, atomEnd - 1, ch); }
+                return p == ch;
+            }
+            // Matches at least min repetitions of the atom, then the rest; backtracks from the longest run.
+            private static method matchStar(int min, String pat, int pi, int atomEnd, String text, int ti)
+                    returns boolean {
+                mutable int count = 0;
+                while (ti + count < text.length() &&
+                       Regex.matchAtom(pat, pi, atomEnd, text.charAt(ti + count))) {
+                    count = count + 1;
+                }
+                mutable int k = count;
+                while (k >= min) {
+                    if (Regex.matchHere(pat, atomEnd + 1, text, ti + k)) { return true; }
+                    k = k - 1;
+                }
+                return false;
+            }
+            // Whether pat[pi:] matches text[ti:].
+            private static method matchHere(String pat, int pi, String text, int ti) returns boolean {
+                if (pi >= pat.length()) { return true; }
+                if (pat.charAt(pi) == '$' && pi + 1 == pat.length()) { return ti == text.length(); }
+                int ae = Regex.atomEnd(pat, pi);
+                mutable char quant = ' ';
+                if (ae < pat.length()) {
+                    char q = pat.charAt(ae);
+                    if (q == '*' || q == '+' || q == '?') { quant = q; }
+                }
+                if (quant == '*') { return Regex.matchStar(0, pat, pi, ae, text, ti); }
+                if (quant == '+') { return Regex.matchStar(1, pat, pi, ae, text, ti); }
+                if (quant == '?') {
+                    if (ti < text.length() && Regex.matchAtom(pat, pi, ae, text.charAt(ti))) {
+                        if (Regex.matchHere(pat, ae + 1, text, ti + 1)) { return true; }
+                    }
+                    return Regex.matchHere(pat, ae + 1, text, ti);
+                }
+                if (ti < text.length() && Regex.matchAtom(pat, pi, ae, text.charAt(ti))) {
+                    return Regex.matchHere(pat, ae, text, ti + 1);
+                }
+                return false;
+            }
+            public static method search(String pat, String text) returns boolean {
+                if (pat.length() > 0 && pat.charAt(0) == '^') { return Regex.matchHere(pat, 1, text, 0); }
+                for (mutable int start = 0; start <= text.length(); start++) {
+                    if (Regex.matchHere(pat, 0, text, start)) { return true; }
+                }
+                return false;
+            }
+        }
+        // UTF-8 decoding (spec 4): String.charAt and String.length are byte-level, so Utf8 reads whole
+        // Unicode codepoints out of the byte sequence -- length counts characters, codepointAt decodes the
+        // one at a byte offset, and codepoints returns them all. A lead byte's high bits give the width.
+        public class Utf8 {
+            private static method seqLen(int lead) returns int {
+                if (lead < 128) { return 1; }     // 0xxxxxxx (ASCII)
+                if (lead >= 240) { return 4; }    // 11110xxx
+                if (lead >= 224) { return 3; }    // 1110xxxx
+                if (lead >= 192) { return 2; }    // 110xxxxx
+                return 1;                          // a stray continuation byte: step over it
+            }
+            // The number of bytes occupied by the character at byte offset i (advance by this).
+            public static method widthAt(String s, int i) returns int {
+                return Utf8.seqLen(cast<int>(s.charAt(i)));
+            }
+            // The Unicode codepoint of the character at byte offset i.
+            public static method codepointAt(String s, int i) returns int {
+                mutable int lead = cast<int>(s.charAt(i));
+                int n = Utf8.seqLen(lead);
+                if (n == 1) { return lead; }
+                mutable int cp = 0;
+                if (n == 2) { cp = lead - 192; }
+                if (n == 3) { cp = lead - 224; }
+                if (n == 4) { cp = lead - 240; }
+                for (mutable int k = 1; k < n; k++) {
+                    cp = cp * 64 + (cast<int>(s.charAt(i + k)) - 128);
+                }
+                return cp;
+            }
+            // The number of Unicode characters (codepoints), not bytes.
+            public static method length(String s) returns int {
+                mutable int count = 0;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    i = i + Utf8.seqLen(cast<int>(s.charAt(i)));
+                    count = count + 1;
+                }
+                return count;
+            }
+            // Every codepoint in order.
+            public static method codepoints(String s) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                mutable int i = 0;
+                while (i < s.length()) {
+                    out.add(Utf8.codepointAt(s, i));
+                    i = i + Utf8.seqLen(cast<int>(s.charAt(i)));
+                }
+                return out;
+            }
+        }
+        // A cursor over text that hands out tokens (spec 4): nextWord reads up to the next whitespace,
+        // nextInt parses that token, and nextLine reads to the newline. hasNext/hasNextLine report whether
+        // more remains. It walks a String, so it parses file contents or any in-memory text.
+        public class Scanner {
+            private mutable String src;
+            private mutable int pos;
+            public constructor Scanner(String text) {
+                this.src = text;
+                this.pos = 0;
+            }
+            private static method isSpace(char c) returns boolean {
+                return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+            }
+            private method skipSpaces() returns void {
+                while (this.pos < this.src.length() && Scanner.isSpace(this.src.charAt(this.pos))) {
+                    this.pos = this.pos + 1;
+                }
+                return;
+            }
+            public method hasNext() returns boolean {
+                this.skipSpaces();
+                return this.pos < this.src.length();
+            }
+            public method nextWord() returns String {
+                this.skipSpaces();
+                mutable int start = this.pos;
+                while (this.pos < this.src.length() && !Scanner.isSpace(this.src.charAt(this.pos))) {
+                    this.pos = this.pos + 1;
+                }
+                return this.src.substring(start, this.pos);
+            }
+            public method nextInt() returns int {
+                return this.nextWord().toInt();
+            }
+            public method hasNextLine() returns boolean {
+                return this.pos < this.src.length();
+            }
+            public method nextLine() returns String {
+                mutable int start = this.pos;
+                while (this.pos < this.src.length() && this.src.charAt(this.pos) != '\n') {
+                    this.pos = this.pos + 1;
+                }
+                mutable String line = this.src.substring(start, this.pos);
+                if (this.pos < this.src.length()) { this.pos = this.pos + 1; }
+                return line;
+            }
+        }
+        // Soundex phonetic encoding (spec 34): maps a name to a letter followed by three digits so that
+        // similar-sounding names share a code (e.g. Robert and Rupert both give R163). Vowels reset run
+        // detection; h and w are transparent between equal-coded consonants.
+        public class Soundex {
+            private static method digit(char c) returns int {
+                if (c == 'b' || c == 'f' || c == 'p' || c == 'v') { return 1; }
+                if (c == 'c' || c == 'g' || c == 'j' || c == 'k' || c == 'q' || c == 's' || c == 'x' || c == 'z') { return 2; }
+                if (c == 'd' || c == 't') { return 3; }
+                if (c == 'l') { return 4; }
+                if (c == 'm' || c == 'n') { return 5; }
+                if (c == 'r') { return 6; }
+                return 0;
+            }
+            private static method lower(char c) returns char {
+                if (c >= 'A' && c <= 'Z') { return cast<char>(cast<int>(c) + 32); }
+                return c;
+            }
+            private static method upper(char c) returns char {
+                if (c >= 'a' && c <= 'z') { return cast<char>(cast<int>(c) - 32); }
+                return c;
+            }
+            public static method encode(String name) returns String {
+                if (name.length() == 0) { return ""; }
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendChar(Soundex.upper(name.charAt(0)));
+                mutable int prev = Soundex.digit(Soundex.lower(name.charAt(0)));
+                mutable int count = 1;
+                mutable int i = 1;
+                while (i < name.length() && count < 4) {
+                    char c = Soundex.lower(name.charAt(i));
+                    if (c == 'h' || c == 'w') {
+                        i = i + 1;
+                    } else {
+                        int d = Soundex.digit(c);
+                        if (d != 0 && d != prev) { sb.appendInt(d); count = count + 1; }
+                        prev = d;
+                        i = i + 1;
+                    }
+                }
+                while (count < 4) { sb.appendChar('0'); count = count + 1; }
+                return sb.toString();
+            }
+        }
+        // Knuth-Morris-Pratt substring search (spec 34.1): a failure table (longest proper prefix that is also
+        // a suffix) lets the scan never re-read text. indexOf returns the first match or -1; count reports
+        // occurrences, counting overlaps.
+        public class Kmp {
+            private static method buildLps(String p) returns int[] {
+                int m = p.length();
+                mutable int[] lps = new int[m + 1]();
+                mutable int len = 0;
+                mutable int i = 1;
+                while (i < m) {
+                    if (p.charAt(i) == p.charAt(len)) {
+                        len = len + 1; lps[i] = len; i = i + 1;
+                    } else {
+                        if (len != 0) { len = lps[len - 1]; }
+                        else { lps[i] = 0; i = i + 1; }
+                    }
+                }
+                return lps;
+            }
+            public static method indexOf(String text, String pattern) returns int {
+                int n = text.length();
+                int m = pattern.length();
+                if (m == 0) { return 0; }
+                int[] lps = Kmp.buildLps(pattern);
+                mutable int i = 0;
+                mutable int j = 0;
+                while (i < n) {
+                    if (text.charAt(i) == pattern.charAt(j)) {
+                        i = i + 1; j = j + 1;
+                        if (j == m) { return i - m; }
+                    } else {
+                        if (j != 0) { j = lps[j - 1]; }
+                        else { i = i + 1; }
+                    }
+                }
+                return -1;
+            }
+            public static method count(String text, String pattern) returns int {
+                int n = text.length();
+                int m = pattern.length();
+                if (m == 0) { return 0; }
+                int[] lps = Kmp.buildLps(pattern);
+                mutable int i = 0;
+                mutable int j = 0;
+                mutable int total = 0;
+                while (i < n) {
+                    if (text.charAt(i) == pattern.charAt(j)) {
+                        i = i + 1; j = j + 1;
+                        if (j == m) { total = total + 1; j = lps[j - 1]; }
+                    } else {
+                        if (j != 0) { j = lps[j - 1]; }
+                        else { i = i + 1; }
+                    }
+                }
+                return total;
+            }
+        }
+        // Manacher's algorithm (spec 34.1): the length of the longest palindromic substring in linear time,
+        // over a transformed array with sentinels so odd and even palindromes are handled uniformly.
+        public class Manacher {
+            public static method longestPalindrome(String s) returns int {
+                int n = s.length();
+                if (n == 0) { return 0; }
+                int t = 2 * n + 3;
+                mutable int[] c = new int[t]();
+                c[0] = 1;
+                c[t - 1] = 2;
+                for (mutable int i = 0; i < n; i++) {
+                    c[2 + 2*i] = cast<int>(s.charAt(i)) & 255;
+                    c[1 + 2*i] = 3;
+                }
+                c[t - 2] = 3;
+                mutable int[] p = new int[t]();
+                mutable int center = 0;
+                mutable int right = 0;
+                mutable int best = 0;
+                for (mutable int i = 1; i < t - 1; i++) {
+                    if (i < right) {
+                        int mirror = 2 * center - i;
+                        int span = right - i;
+                        if (p[mirror] < span) { p[i] = p[mirror]; } else { p[i] = span; }
+                    }
+                    while (c[i + p[i] + 1] == c[i - p[i] - 1]) { p[i] = p[i] + 1; }
+                    if (i + p[i] > right) { center = i; right = i + p[i]; }
+                    if (p[i] > best) { best = p[i]; }
+                }
+                return best;
+            }
+        }
+        // Evaluates an integer arithmetic expression (spec 34): + - * / with the usual precedence and
+        // parentheses, by recursive descent. Spaces are ignored; division truncates toward zero.
+        public class Calculator {
+            private mutable String s;
+            private mutable int pos;
+            public constructor Calculator(String expr) {
+                this.s = expr;
+                this.pos = 0;
+            }
+            private method peek() returns char {
+                if (this.pos < this.s.length()) { return this.s.charAt(this.pos); }
+                return cast<char>(0);
+            }
+            private method skip() returns void {
+                while (this.pos < this.s.length() && this.s.charAt(this.pos) == ' ') { this.pos = this.pos + 1; }
+                return;
+            }
+            private method factor() returns int {
+                this.skip();
+                if (this.peek() == '(') {
+                    this.pos = this.pos + 1;
+                    int v = this.expr();
+                    this.skip();
+                    this.pos = this.pos + 1;
+                    return v;
+                }
+                mutable int n = 0;
+                while (this.peek() >= '0' && this.peek() <= '9') {
+                    n = n * 10 + (cast<int>(this.peek()) - cast<int>('0'));
+                    this.pos = this.pos + 1;
+                }
+                return n;
+            }
+            private method term() returns int {
+                mutable int v = this.factor();
+                this.skip();
+                while (this.peek() == '*' || this.peek() == '/') {
+                    char op = this.peek();
+                    this.pos = this.pos + 1;
+                    int r = this.factor();
+                    this.skip();
+                    if (op == '*') { v = v * r; } else { v = v / r; }
+                }
+                return v;
+            }
+            private method expr() returns int {
+                mutable int v = this.term();
+                this.skip();
+                while (this.peek() == '+' || this.peek() == '-') {
+                    char op = this.peek();
+                    this.pos = this.pos + 1;
+                    int r = this.term();
+                    this.skip();
+                    if (op == '+') { v = v + r; } else { v = v - r; }
+                }
+                return v;
+            }
+            public method evaluate() returns int {
+                this.pos = 0;
+                return this.expr();
+            }
+        }
+        // Reverse Polish (postfix) evaluator (spec 34): tokens are space-separated integers and the operators
+        // + - * / %, evaluated with an operand stack. Complements the infix Calculator.
+        public class Rpn {
+            private static method parseTok(String t) returns int {
+                mutable int i = 0;
+                mutable boolean neg = false;
+                if (t.charAt(0) == '-') { neg = true; i = 1; }
+                mutable int v = 0;
+                while (i < t.length()) { v = v * 10 + (cast<int>(t.charAt(i)) - cast<int>('0')); i = i + 1; }
+                if (neg) { return 0 - v; }
+                return v;
+            }
+            private static method isNumber(String t) returns boolean {
+                char c = t.charAt(0);
+                if (c >= '0' && c <= '9') { return true; }
+                return c == '-' && t.length() > 1;
+            }
+            public static method eval(String expr) returns int {
+                ArrayList<String> toks = Strings.split(expr, " ");
+                mutable int[] st = new int[toks.size() + 1]();
+                mutable int sp = 0;
+                for (mutable int i = 0; i < toks.size(); i++) {
+                    String t = toks.get(i);
+                    if (t.length() == 0) { continue; }
+                    if (Rpn.isNumber(t)) { st[sp] = Rpn.parseTok(t); sp = sp + 1; }
+                    else {
+                        int b = st[sp - 1]; int a = st[sp - 2]; sp = sp - 2;
+                        char op = t.charAt(0);
+                        mutable int r = 0;
+                        if (op == '+') { r = a + b; }
+                        if (op == '-') { r = a - b; }
+                        if (op == '*') { r = a * b; }
+                        if (op == '/') { r = a / b; }
+                        if (op == '%') { r = a % b; }
+                        st[sp] = r; sp = sp + 1;
+                    }
+                }
+                return st[sp - 1];
+            }
+        }
+        // Shunting-yard (spec 34): converts a space-separated infix expression (integers, + - * / %, and
+        // parentheses) to Reverse Polish, ready for Rpn.eval. Higher-precedence operators pop first.
+        public class ShuntingYard {
+            private static method prec(char op) returns int {
+                if (op == '+' || op == '-') { return 1; }
+                if (op == '*' || op == '/' || op == '%') { return 2; }
+                return 0;
+            }
+            public static method toRpn(String infix) returns String {
+                ArrayList<String> toks = Strings.split(infix, " ");
+                mutable StringBuilder out = new StringBuilder() on heap;
+                mutable char[] ops = new char[128]();
+                mutable int sp = 0;
+                for (mutable int i = 0; i < toks.size(); i++) {
+                    String t = toks.get(i);
+                    if (t.length() == 0) { continue; }
+                    char c = t.charAt(0);
+                    if ((c >= '0' && c <= '9') || (c == '-' && t.length() > 1)) {
+                        if (out.length() > 0) { out.appendChar(' '); }
+                        out.append(t);
+                    } else {
+                        if (c == '(') { ops[sp] = c; sp = sp + 1; }
+                        else {
+                            if (c == ')') {
+                                while (sp > 0 && ops[sp - 1] != '(') {
+                                    if (out.length() > 0) { out.appendChar(' '); }
+                                    out.appendChar(ops[sp - 1]); sp = sp - 1;
+                                }
+                                sp = sp - 1;
+                            } else {
+                                while (sp > 0 && ShuntingYard.prec(ops[sp - 1]) >= ShuntingYard.prec(c)) {
+                                    if (out.length() > 0) { out.appendChar(' '); }
+                                    out.appendChar(ops[sp - 1]); sp = sp - 1;
+                                }
+                                ops[sp] = c; sp = sp + 1;
+                            }
+                        }
+                    }
+                }
+                while (sp > 0) {
+                    if (out.length() > 0) { out.appendChar(' '); }
+                    out.appendChar(ops[sp - 1]); sp = sp - 1;
+                }
+                return out.toString();
+            }
+        }
+        // Fills {name} placeholders in a template from a map (spec 34): an unknown key is left as-is, so the
+        // braces survive when there is no matching value.
+        public class Template {
+            public static method render(String tpl, HashMap<String, String> vars) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < tpl.length()) {
+                    char c = tpl.charAt(i);
+                    if (c == '{') {
+                        mutable int j = i + 1;
+                        mutable StringBuilder key = new StringBuilder() on heap;
+                        while (j < tpl.length() && tpl.charAt(j) != '}') {
+                            key.appendChar(tpl.charAt(j));
+                            j = j + 1;
+                        }
+                        String k = key.toString();
+                        if (vars.containsKey(k)) {
+                            sb.append(vars.get(k));
+                        } else {
+                            sb.appendChar('{');
+                            sb.append(k);
+                            sb.appendChar('}');
+                        }
+                        i = j + 1;
+                    } else {
+                        sb.appendChar(c);
+                        i = i + 1;
+                    }
+                }
+                return sb.toString();
+            }
+        }
+        // Parses one line of comma-separated values into fields (spec 34), honoring double-quoted fields so a
+        // comma inside quotes does not split. Quote characters are consumed, not kept.
+        public class Csv {
+            public static method parse(String line) returns ArrayList<String> {
+                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                mutable StringBuilder cur = new StringBuilder() on heap;
+                mutable boolean inQuotes = false;
+                mutable int i = 0;
+                while (i < line.length()) {
+                    char c = line.charAt(i);
+                    if (c == '"') {
+                        inQuotes = !inQuotes;
+                    } else {
+                        if (c == ',' && !inQuotes) {
+                            out.add(cur.toString());
+                            cur = new StringBuilder() on heap;
+                        } else {
+                            cur.appendChar(c);
+                        }
+                    }
+                    i = i + 1;
+                }
+                out.add(cur.toString());
+                return out;
+            }
+        }
+        // CSV row writer (RFC 4180, spec 34): joins cells with commas, quoting any cell that contains a comma,
+        // quote or newline and doubling embedded quotes. Complements the Csv parser.
+        public class CsvWriter {
+            public static method buildRow(String[] cells, int n) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < n; i++) {
+                    if (i > 0) { sb.appendChar(','); }
+                    String c = cells[i];
+                    boolean needQuote = c.contains(",") || c.contains("\"") || c.contains("\n");
+                    if (needQuote) {
+                        sb.appendChar('"');
+                        for (mutable int j = 0; j < c.length(); j++) {
+                            char ch = c.charAt(j);
+                            if (ch == '"') { sb.appendChar('"'); sb.appendChar('"'); }
+                            else { sb.appendChar(ch); }
+                        }
+                        sb.appendChar('"');
+                    } else {
+                        sb.append(c);
+                    }
+                }
+                return sb.toString();
+            }
+        }
+        // Parse one RFC 4180 CSV record (spec 34), the inverse of CsvWriter: quoted fields may contain commas
+        // and escaped quotes (a doubled "" becomes a single "). Returns the fields in order.
+        public class CsvReader {
+            public static method parseLine(String line) returns ArrayList<String> {
+                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                mutable StringBuilder cur = new StringBuilder() on heap;
+                mutable boolean inQuotes = false;
+                mutable int i = 0;
+                while (i < line.length()) {
+                    char c = line.charAt(i);
+                    if (inQuotes) {
+                        if (c == '"') {
+                            if (i + 1 < line.length() && line.charAt(i + 1) == '"') { cur.appendChar('"'); i = i + 1; }
+                            else { inQuotes = false; }
+                        } else { cur.appendChar(c); }
+                    } else {
+                        if (c == '"') { inQuotes = true; }
+                        else {
+                            if (c == ',') { out.add(cur.toString()); cur = new StringBuilder() on heap; }
+                            else { cur.appendChar(c); }
+                        }
+                    }
+                    i = i + 1;
+                }
+                out.add(cur.toString());
+                return out;
+            }
+        }
+        // Identifier case conversion (spec 34): between camelCase and snake_case/kebab-case. toSnake/toKebab
+        // insert a separator before each interior uppercase letter and lowercase it; toCamel uppercases the
+        // letter after each separator.
+        public class CaseConvert {
+            private static method lower(char c) returns char {
+                if (c >= 'A' && c <= 'Z') { return cast<char>(cast<int>(c) + 32); }
+                return c;
+            }
+            private static method upper(char c) returns char {
+                if (c >= 'a' && c <= 'z') { return cast<char>(cast<int>(c) - 32); }
+                return c;
+            }
+            private static method delimit(String s, char sep) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c >= 'A' && c <= 'Z') {
+                        if (i > 0) { sb.appendChar(sep); }
+                        sb.appendChar(CaseConvert.lower(c));
+                    } else {
+                        sb.appendChar(c);
+                    }
+                }
+                return sb.toString();
+            }
+            public static method toSnake(String s) returns String { return CaseConvert.delimit(s, '_'); }
+            public static method toKebab(String s) returns String { return CaseConvert.delimit(s, '-'); }
+            public static method toCamel(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable boolean up = false;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c == '_' || c == '-') { up = true; }
+                    else {
+                        if (up) { sb.appendChar(CaseConvert.upper(c)); up = false; }
+                        else { sb.appendChar(c); }
+                    }
+                }
+                return sb.toString();
+            }
+        }
+        // String similarity (spec 4): the Levenshtein edit distance is the fewest single-character inserts,
+        // deletes, or substitutions to turn one string into another. Computed with two rolling DP rows.
+        public class TextDistance {
+            public static method levenshtein(String a, String b) returns int {
+                int n = a.length();
+                int m = b.length();
+                mutable int[] prev = new int[m + 1]();
+                mutable int[] cur = new int[m + 1]();
+                for (mutable int j = 0; j <= m; j++) { prev[j] = j; }
+                for (mutable int i = 1; i <= n; i++) {
+                    cur[0] = i;
+                    for (mutable int j = 1; j <= m; j++) {
+                        mutable int cost = 1;
+                        if (a.charAt(i - 1) == b.charAt(j - 1)) { cost = 0; }
+                        mutable int best = prev[j] + 1;
+                        if (cur[j - 1] + 1 < best) { best = cur[j - 1] + 1; }
+                        if (prev[j - 1] + cost < best) { best = prev[j - 1] + cost; }
+                        cur[j] = best;
+                    }
+                    mutable int[] t = prev;
+                    prev = cur;
+                    cur = t;
+                }
+                return prev[m];
+            }
+        }
+        // Greedy word wrapping (spec 4): splits text on spaces and packs words into lines no longer than the
+        // given width, returning the lines. A single word longer than the width gets its own line.
+        public class WordWrap {
+            public static method wrap(String text, int width) returns ArrayList<String> {
+                mutable ArrayList<String> lines = new ArrayList<String>() on heap;
+                mutable StringBuilder line = new StringBuilder() on heap;
+                mutable StringBuilder word = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i <= text.length()) {
+                    boolean atEnd = i == text.length();
+                    mutable char c = ' ';
+                    if (!atEnd) { c = text.charAt(i); }
+                    if (atEnd || c == ' ') {
+                        if (word.length() > 0) {
+                            if (line.length() == 0) {
+                                line.append(word.toString());
+                            } else {
+                                if (line.length() + 1 + word.length() <= width) {
+                                    line.appendChar(' ');
+                                    line.append(word.toString());
+                                } else {
+                                    lines.add(line.toString());
+                                    line = new StringBuilder() on heap;
+                                    line.append(word.toString());
+                                }
+                            }
+                            word = new StringBuilder() on heap;
+                        }
+                    } else {
+                        word.appendChar(c);
+                    }
+                    i = i + 1;
+                }
+                if (line.length() > 0) { lines.add(line.toString()); }
+                return lines;
+            }
+        }
+        // Character classification and case conversion (spec 4): the usual is-digit/letter/whitespace tests,
+        // ASCII upper/lower conversion, and digitValue (-1 if not a digit).
+        public class Chars {
+            public static method isDigit(char c) returns boolean { return c >= '0' && c <= '9'; }
+            public static method isLetter(char c) returns boolean {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+            }
+            public static method isWhitespace(char c) returns boolean {
+                return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+            }
+            public static method isUpper(char c) returns boolean { return c >= 'A' && c <= 'Z'; }
+            public static method isLower(char c) returns boolean { return c >= 'a' && c <= 'z'; }
+            public static method toUpper(char c) returns char {
+                if (c >= 'a' && c <= 'z') { return cast<char>(cast<int>(c) - 32); }
+                return c;
+            }
+            public static method toLower(char c) returns char {
+                if (c >= 'A' && c <= 'Z') { return cast<char>(cast<int>(c) + 32); }
+                return c;
+            }
+            public static method digitValue(char c) returns int {
+                if (Chars.isDigit(c)) { return cast<int>(c) - cast<int>('0'); }
+                return 0 - 1;
+            }
+        }
+        // Roman numerals (spec 4): toRoman writes a positive integer greedily from the largest symbol down;
+        // fromRoman reads one back, subtracting a symbol whose value is less than the one after it.
+        public class Roman {
+            public static method toRoman(int n) returns String {
+                mutable int[] vals = new int[13]();
+                vals[0] = 1000; vals[1] = 900; vals[2] = 500; vals[3] = 400; vals[4] = 100; vals[5] = 90;
+                vals[6] = 50; vals[7] = 40; vals[8] = 10; vals[9] = 9; vals[10] = 5; vals[11] = 4; vals[12] = 1;
+                mutable String[] syms = new String[13]();
+                syms[0] = "M"; syms[1] = "CM"; syms[2] = "D"; syms[3] = "CD"; syms[4] = "C"; syms[5] = "XC";
+                syms[6] = "L"; syms[7] = "XL"; syms[8] = "X"; syms[9] = "IX"; syms[10] = "V"; syms[11] = "IV"; syms[12] = "I";
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int x = n;
+                for (mutable int i = 0; i < 13; i++) {
+                    while (x >= vals[i]) {
+                        sb.append(syms[i]);
+                        x = x - vals[i];
+                    }
+                }
+                return sb.toString();
+            }
+            private static method val(char c) returns int {
+                if (c == 'M') { return 1000; }
+                if (c == 'D') { return 500; }
+                if (c == 'C') { return 100; }
+                if (c == 'L') { return 50; }
+                if (c == 'X') { return 10; }
+                if (c == 'V') { return 5; }
+                return 1;
+            }
+            public static method fromRoman(String s) returns int {
+                mutable int total = 0;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    int v = Roman.val(s.charAt(i));
+                    if (i + 1 < s.length() && v < Roman.val(s.charAt(i + 1))) {
+                        total = total - v;
+                    } else {
+                        total = total + v;
+                    }
+                }
+                return total;
+            }
+        }
+        // A minimal INI / config parser (spec 34): reads [section] headers and key=value lines (';' and '#'
+        // start comments; surrounding whitespace is trimmed) into a flat "section.key" -> value map. get
+        // returns the value or "" when absent; has reports presence.
+        public class Ini {
+            private mutable HashMap<String, String> map;
+            public constructor Ini(String text) {
+                this.map = new HashMap<String, String>() on heap;
+                mutable String section = "";
+                ArrayList<String> lines = Strings.split(text, "\n");
+                for (mutable int li = 0; li < lines.size(); li++) {
+                    String line = lines.get(li).trim();
+                    if (line.length() == 0) { continue; }
+                    char first = line.charAt(0);
+                    if (first == ';' || first == '#') { continue; }
+                    if (first == '[') {
+                        int close = line.indexOf("]");
+                        if (close > 0) { section = line.substring(1, close); }
+                    } else {
+                        int eq = line.indexOf("=");
+                        if (eq >= 0) {
+                            String key = line.substring(0, eq).trim();
+                            String val = line.substring(eq + 1, line.length()).trim();
+                            this.map.put(section.concat(".").concat(key), val);
+                        }
+                    }
+                }
+                return;
+            }
+            public method get(String section, String key) returns String {
+                String full = section.concat(".").concat(key);
+                if (this.map.containsKey(full)) { return this.map.get(full); }
+                return "";
+            }
+            public method has(String section, String key) returns boolean {
+                return this.map.containsKey(section.concat(".").concat(key));
+            }
+        }
+        // Java-style .properties parsing (spec 34): flat key=value lines (space around '=' trimmed), with #
+        // and ! comment lines skipped. Typed getters (getString/getInt/getBool) fall back to a default when a
+        // key is missing or malformed.
+        public class Properties {
+            private mutable HashMap<String, String> map;
+            private static method trim(String s) returns String {
+                mutable int a = 0;
+                mutable int b = s.length();
+                while (a < b && s.charAt(a) == ' ') { a = a + 1; }
+                while (b > a && s.charAt(b - 1) == ' ') { b = b - 1; }
+                return s.substring(a, b);
+            }
+            public constructor Properties(String text) {
+                this.map = new HashMap<String, String>() on heap;
+                mutable ArrayList<String> lines = Strings.split(text, "\n");
+                for (mutable int i = 0; i < lines.size(); i++) {
+                    String raw = Properties.trim(lines.get(i));
+                    if (raw.length() == 0) { continue; }
+                    char c0 = raw.charAt(0);
+                    if (c0 == '#' || c0 == '!') { continue; }
+                    int eq = raw.indexOf("=");
+                    if (eq < 0) { continue; }
+                    String k = Properties.trim(raw.substring(0, eq));
+                    String v = Properties.trim(raw.substring(eq + 1, raw.length()));
+                    this.map.put(k, v);
+                }
+            }
+            public method has(String key) returns boolean { return this.map.containsKey(key); }
+            public method getString(String key, String def) returns String {
+                if (this.map.containsKey(key)) { return this.map.get(key); }
+                return def;
+            }
+            public method getInt(String key, int def) returns int {
+                if (!this.map.containsKey(key)) { return def; }
+                String v = this.map.get(key);
+                mutable int i = 0;
+                mutable boolean neg = false;
+                if (v.length() > 0 && v.charAt(0) == '-') { neg = true; i = 1; }
+                mutable int n = 0;
+                while (i < v.length()) {
+                    char c = v.charAt(i);
+                    if (c < '0' || c > '9') { return def; }
+                    n = n * 10 + (cast<int>(c) - cast<int>('0'));
+                    i = i + 1;
+                }
+                if (neg) { return 0 - n; }
+                return n;
+            }
+            public method getBool(String key, boolean def) returns boolean {
+                if (!this.map.containsKey(key)) { return def; }
+                return this.map.get(key).equals("true");
+            }
+        }
+        // RFC 4122 UUIDs (spec 34): format 16 bytes as the canonical 8-4-4-4-12 hex string, build a version-4
+        // UUID from 16 random bytes (setting the version and variant bits), or generate one deterministically
+        // from an int seed via an inline xorshift. isValid checks the canonical shape.
+        public class Uuid {
+            private static method hx(int v) returns char {
+                String d = "0123456789abcdef";
+                return d.charAt(v & 15);
+            }
+            public static method format(int[] bytes) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < 16; i++) {
+                    if (i == 4 || i == 6 || i == 8 || i == 10) { sb.appendChar('-'); }
+                    int b = bytes[i] & 255;
+                    sb.appendChar(Uuid.hx(b >> 4));
+                    sb.appendChar(Uuid.hx(b));
+                }
+                return sb.toString();
+            }
+            public static method v4(int[] randomBytes) returns String {
+                mutable int[] b = new int[16]();
+                for (mutable int i = 0; i < 16; i++) { b[i] = randomBytes[i] & 255; }
+                b[6] = (b[6] & 15) | 64;
+                b[8] = (b[8] & 63) | 128;
+                return Uuid.format(b);
+            }
+            public static method v4Seeded(int seed) returns String {
+                mutable ulong x = cast<ulong>(seed);
+                if (x == cast<ulong>(0)) { x = cast<ulong>(1); }
+                mutable int[] b = new int[16]();
+                for (mutable int i = 0; i < 16; i++) {
+                    x = x ^ (x << 13);
+                    x = x ^ (x >> 7);
+                    x = x ^ (x << 17);
+                    b[i] = cast<int>((x >> 24) & cast<ulong>(255));
+                }
+                return Uuid.v4(b);
+            }
+            public static method isValid(String s) returns boolean {
+                if (s.length() != 36) { return false; }
+                for (mutable int i = 0; i < 36; i++) {
+                    char c = s.charAt(i);
+                    if (i == 8 || i == 13 || i == 18 || i == 23) {
+                        if (c != '-') { return false; }
+                    } else {
+                        boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                        if (!hex) { return false; }
+                    }
+                }
+                return true;
+            }
+        }
+        // Semantic versioning (semver.org): parse "major.minor.patch" (an optional leading 'v' and any
+        // -prerelease/+build suffix are ignored) and compare two versions field by field. compareTo returns
+        // -1, 0 or 1.
+        public class Semver {
+            private mutable int major;
+            private mutable int minor;
+            private mutable int patch;
+            public constructor Semver(String v) {
+                mutable int i = 0;
+                if (v.length() > 0 && v.charAt(0) == 'v') { i = 1; }
+                mutable int[] parts = new int[3]();
+                mutable int pi = 0;
+                mutable int cur = 0;
+                int n = v.length();
+                while (i < n && pi < 3) {
+                    char c = v.charAt(i);
+                    if (c >= '0' && c <= '9') { cur = cur * 10 + (cast<int>(c) - cast<int>('0')); }
+                    else {
+                        if (c == '.') { parts[pi] = cur; pi = pi + 1; cur = 0; }
+                        else { i = n; }
+                    }
+                    i = i + 1;
+                }
+                if (pi < 3) { parts[pi] = cur; }
+                this.major = parts[0];
+                this.minor = parts[1];
+                this.patch = parts[2];
+            }
+            public method getMajor() returns int { return this.major; }
+            public method getMinor() returns int { return this.minor; }
+            public method getPatch() returns int { return this.patch; }
+            public method compareTo(Semver o) returns int {
+                if (this.major != o.getMajor()) { if (this.major < o.getMajor()) { return -1; } return 1; }
+                if (this.minor != o.getMinor()) { if (this.minor < o.getMinor()) { return -1; } return 1; }
+                if (this.patch != o.getPatch()) { if (this.patch < o.getPatch()) { return -1; } return 1; }
+                return 0;
+            }
+            public method toString() returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendInt(this.major).append(".").appendInt(this.minor).append(".").appendInt(this.patch);
+                return sb.toString();
+            }
+        }
+        // A simple deterministic finite state machine (spec 34): register (from, event) -> to transitions and
+        // drive them with fire(event), which advances the current state and returns whether a transition
+        // existed. Transitions live in a "state|event" -> next map.
+        public class StateMachine {
+            private mutable HashMap<String, String> transitions;
+            private mutable String current;
+            public constructor StateMachine(String initial) {
+                this.transitions = new HashMap<String, String>() on heap;
+                this.current = initial;
+            }
+            public method addTransition(String from, String event, String to) returns void {
+                this.transitions.put(from.concat("|").concat(event), to);
+                return;
+            }
+            public method fire(String event) returns boolean {
+                String key = this.current.concat("|").concat(event);
+                if (this.transitions.containsKey(key)) { this.current = this.transitions.get(key); return true; }
+                return false;
+            }
+            public method state() returns String { return this.current; }
+        }
+        // Glob / wildcard matching (spec 34): '*' matches any run of characters (including none) and '?' matches
+        // exactly one. Iterative with backtracking on the last '*', so it runs in linear space.
+        public class Glob {
+            public static method matches(String pattern, String text) returns boolean {
+                int pn = pattern.length();
+                int tn = text.length();
+                mutable int p = 0;
+                mutable int t = 0;
+                mutable int star = -1;
+                mutable int mark = 0;
+                while (t < tn) {
+                    if (p < pn && (pattern.charAt(p) == '?' || pattern.charAt(p) == text.charAt(t))) {
+                        p = p + 1; t = t + 1;
+                    } else {
+                        if (p < pn && pattern.charAt(p) == '*') {
+                            star = p; mark = t; p = p + 1;
+                        } else {
+                            if (star != -1) { p = star + 1; mark = mark + 1; t = mark; }
+                            else { return false; }
+                        }
+                    }
+                }
+                while (p < pn && pattern.charAt(p) == '*') { p = p + 1; }
+                return p == pn;
+            }
+        }
+        // 24-bit RGB color utilities (spec 34): pack/unpack channels into a 0xRRGGBB int, hex parse/format,
+        // linear interpolation between two colors (t is a 0..100 percent), Rec.601 luminance and grayscale.
+        public class Colors {
+            public static method pack(int r, int g, int b) returns int {
+                return ((r & 255) << 16) | ((g & 255) << 8) | (b & 255);
+            }
+            public static method red(int c) returns int { return (c >> 16) & 255; }
+            public static method green(int c) returns int { return (c >> 8) & 255; }
+            public static method blue(int c) returns int { return c & 255; }
+            private static method hx(int v) returns char {
+                String d = "0123456789abcdef";
+                return d.charAt(v & 15);
+            }
+            public static method toHex(int c) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendChar('#');
+                int r = Colors.red(c);
+                int g = Colors.green(c);
+                int b = Colors.blue(c);
+                sb.appendChar(Colors.hx(r >> 4)); sb.appendChar(Colors.hx(r));
+                sb.appendChar(Colors.hx(g >> 4)); sb.appendChar(Colors.hx(g));
+                sb.appendChar(Colors.hx(b >> 4)); sb.appendChar(Colors.hx(b));
+                return sb.toString();
+            }
+            private static method hv(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - cast<int>('0'); }
+                if (c >= 'a' && c <= 'f') { return cast<int>(c) - cast<int>('a') + 10; }
+                if (c >= 'A' && c <= 'F') { return cast<int>(c) - cast<int>('A') + 10; }
+                return 0;
+            }
+            public static method fromHex(String s) returns int {
+                mutable int i = 0;
+                if (s.length() > 0 && s.charAt(0) == '#') { i = 1; }
+                mutable int v = 0;
+                while (i < s.length()) { v = (v << 4) | Colors.hv(s.charAt(i)); i = i + 1; }
+                return v & 16777215;
+            }
+            public static method lerp(int c1, int c2, int t) returns int {
+                int r = (Colors.red(c1) * (100 - t) + Colors.red(c2) * t) / 100;
+                int g = (Colors.green(c1) * (100 - t) + Colors.green(c2) * t) / 100;
+                int b = (Colors.blue(c1) * (100 - t) + Colors.blue(c2) * t) / 100;
+                return Colors.pack(r, g, b);
+            }
+            public static method luminance(int c) returns int {
+                return (299 * Colors.red(c) + 587 * Colors.green(c) + 114 * Colors.blue(c)) / 1000;
+            }
+            public static method grayscale(int c) returns int {
+                int y = Colors.luminance(c);
+                return Colors.pack(y, y, y);
+            }
+        }
+        // URL/filename slugs (spec 34): lowercase, collapse every run of non-alphanumeric characters to a
+        // single dash, and trim leading/trailing dashes.
+        public class Slugify {
+            public static method make(String s) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable boolean pendingDash = false;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    mutable boolean alnum = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z');
+                    mutable char lc = c;
+                    if (c >= 'A' && c <= 'Z') { lc = cast<char>(cast<int>(c) + 32); alnum = true; }
+                    if (alnum) {
+                        if (pendingDash && sb.length() > 0) { sb.appendChar('-'); }
+                        pendingDash = false;
+                        sb.appendChar(lc);
+                    } else {
+                        pendingDash = true;
+                    }
+                }
+                return sb.toString();
+            }
+        }
+        // English pluralization (spec 34), simple rules: -s/-x/-z/-ch/-sh take "es", a consonant+y becomes
+        // "ies", otherwise append "s".
+        public class Inflector {
+            private static method endsWith(String s, String suf) returns boolean {
+                int n = s.length();
+                int m = suf.length();
+                if (m > n) { return false; }
+                for (mutable int i = 0; i < m; i++) {
+                    if (s.charAt(n - m + i) != suf.charAt(i)) { return false; }
+                }
+                return true;
+            }
+            public static method pluralize(String w) returns String {
+                int n = w.length();
+                if (n == 0) { return w; }
+                char last = w.charAt(n - 1);
+                if (Inflector.endsWith(w, "s") || Inflector.endsWith(w, "x") || Inflector.endsWith(w, "z")
+                    || Inflector.endsWith(w, "ch") || Inflector.endsWith(w, "sh")) {
+                    return w.concat("es");
+                }
+                if (last == 'y') {
+                    mutable boolean vowelBefore = false;
+                    if (n >= 2) {
+                        char b = w.charAt(n - 2);
+                        if (b == 'a' || b == 'e' || b == 'i' || b == 'o' || b == 'u') { vowelBefore = true; }
+                    }
+                    if (!vowelBefore) { return w.substring(0, n - 1).concat("ies"); }
+                }
+                return w.concat("s");
+            }
+        }
+        // Levenshtein edit distance (spec 34): the minimum single-character insertions, deletions, and
+        // substitutions to turn one string into another, via two-row dynamic programming. Good for fuzzy
+        // matching and spell-checking.
+        public class Levenshtein {
+            public static method distance(String a, String b) returns int {
+                int n = a.length();
+                int m = b.length();
+                if (n == 0) { return m; }
+                if (m == 0) { return n; }
+                mutable int[] prev = new int[m + 1]();
+                mutable int[] cur = new int[m + 1]();
+                for (mutable int j = 0; j <= m; j++) { prev[j] = j; }
+                for (mutable int i = 1; i <= n; i++) {
+                    cur[0] = i;
+                    for (mutable int j = 1; j <= m; j++) {
+                        mutable int cost = 1;
+                        if (a.charAt(i - 1) == b.charAt(j - 1)) { cost = 0; }
+                        mutable int mn = prev[j] + 1;
+                        int ins = cur[j - 1] + 1;
+                        int sub = prev[j - 1] + cost;
+                        if (ins < mn) { mn = ins; }
+                        if (sub < mn) { mn = sub; }
+                        cur[j] = mn;
+                    }
+                    for (mutable int j = 0; j <= m; j++) { prev[j] = cur[j]; }
+                }
+                return prev[m];
+            }
+        }
+        // Jaro-Winkler string similarity (spec 34) in [0,1]: the Jaro score adjusted upward for a common
+        // prefix (up to 4 chars, factor 0.1). Good for fuzzy matching short strings like names.
+        public class JaroWinkler {
+            public static method jaro(String s1, String s2) returns double {
+                int n1 = s1.length();
+                int n2 = s2.length();
+                if (n1 == 0 && n2 == 0) { return 1.0; }
+                if (n1 == 0 || n2 == 0) { return 0.0; }
+                mutable int window = n1;
+                if (n2 > window) { window = n2; }
+                window = window / 2 - 1;
+                if (window < 0) { window = 0; }
+                mutable boolean[] m1 = new boolean[n1]();
+                mutable boolean[] m2 = new boolean[n2]();
+                mutable int matches = 0;
+                for (mutable int i = 0; i < n1; i++) {
+                    mutable int lo = i - window;
+                    if (lo < 0) { lo = 0; }
+                    mutable int hi = i + window;
+                    if (hi > n2 - 1) { hi = n2 - 1; }
+                    mutable int j = lo;
+                    mutable boolean done = false;
+                    while (j <= hi && !done) {
+                        if (!m2[j] && s1.charAt(i) == s2.charAt(j)) {
+                            m1[i] = true; m2[j] = true; matches = matches + 1; done = true;
+                        }
+                        j = j + 1;
+                    }
+                }
+                if (matches == 0) { return 0.0; }
+                mutable int k = 0;
+                mutable int trans = 0;
+                for (mutable int i = 0; i < n1; i++) {
+                    if (m1[i]) {
+                        while (!m2[k]) { k = k + 1; }
+                        if (s1.charAt(i) != s2.charAt(k)) { trans = trans + 1; }
+                        k = k + 1;
+                    }
+                }
+                double mt = cast<double>(matches);
+                double t = cast<double>(trans) / 2.0;
+                return (mt / cast<double>(n1) + mt / cast<double>(n2) + (mt - t) / mt) / 3.0;
+            }
+            public static method similarity(String s1, String s2) returns double {
+                double j = JaroWinkler.jaro(s1, s2);
+                mutable int prefix = 0;
+                mutable int i = 0;
+                while (i < s1.length() && i < s2.length() && i < 4 && s1.charAt(i) == s2.charAt(i)) {
+                    prefix = prefix + 1; i = i + 1;
+                }
+                return j + cast<double>(prefix) * 0.1 * (1.0 - j);
+            }
+        }
+        // Luhn (mod-10) checksum (spec 34), as used by credit-card numbers: doubles every second digit from
+        // the right (subtracting 9 when over 9); valid when the total is a multiple of 10. Non-digits skipped.
+        public class Luhn {
+            public static method isValid(String s) returns boolean {
+                mutable int sum = 0;
+                mutable boolean dbl = false;
+                for (mutable int i = s.length() - 1; i >= 0; i = i - 1) {
+                    char c = s.charAt(i);
+                    if (c < '0' || c > '9') { continue; }
+                    mutable int d = cast<int>(c) - cast<int>('0');
+                    if (dbl) { d = d * 2; if (d > 9) { d = d - 9; } }
+                    sum = sum + d;
+                    dbl = !dbl;
+                }
+                return sum % 10 == 0;
+            }
+        }
+        // ISBN-13 check digit (spec 34): the 13 digits weighted 1,3,1,3,... must sum to a multiple of 10.
+        public class Isbn {
+            public static method isValid13(String s) returns boolean {
+                mutable int sum = 0;
+                mutable int count = 0;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c < '0' || c > '9') { continue; }
+                    int d = cast<int>(c) - cast<int>('0');
+                    if (count % 2 == 0) { sum = sum + d; } else { sum = sum + 3 * d; }
+                    count = count + 1;
+                }
+                if (count != 13) { return false; }
+                return sum % 10 == 0;
+            }
+        }
+// Text diff and validators in their own literal; still System.Text.
+        // Line-level text diff (spec 34) via the longest common subsequence: common counts shared lines in
+        // order; removed and added are the lines only in the first or second version. Uses two-row LCS DP.
+        public class TextDiff {
+            private static method lcsLen(String[] a, int na, String[] b, int nb) returns int {
+                mutable int[] prev = new int[nb + 1]();
+                mutable int[] cur = new int[nb + 1]();
+                for (mutable int i = 1; i <= na; i++) {
+                    for (mutable int j = 1; j <= nb; j++) {
+                        if (a[i - 1].equals(b[j - 1])) { cur[j] = prev[j - 1] + 1; }
+                        else {
+                            mutable int m = prev[j];
+                            if (cur[j - 1] > m) { m = cur[j - 1]; }
+                            cur[j] = m;
+                        }
+                    }
+                    for (mutable int j = 0; j <= nb; j++) { prev[j] = cur[j]; }
+                }
+                return prev[nb];
+            }
+            public static method common(String[] a, int na, String[] b, int nb) returns int { return TextDiff.lcsLen(a, na, b, nb); }
+            public static method removed(String[] a, int na, String[] b, int nb) returns int { return na - TextDiff.lcsLen(a, na, b, nb); }
+            public static method added(String[] a, int na, String[] b, int nb) returns int { return nb - TextDiff.lcsLen(a, na, b, nb); }
+        }
+        // Lightweight format validators (spec 34): a heuristic email check (single @, dot in the domain, no
+        // spaces), an http/https URL check with a non-empty host, and IBAN via the ISO 7064 mod-97 test.
+        public class Validators {
+            public static method isEmail(String s) returns boolean {
+                mutable int at = 0 - 1;
+                mutable int atCount = 0;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c == ' ') { return false; }
+                    if (c == '@') { at = i; atCount = atCount + 1; }
+                }
+                if (atCount != 1 || at == 0 || at == s.length() - 1) { return false; }
+                mutable boolean dot = false;
+                for (mutable int i = at + 1; i < s.length(); i++) { if (s.charAt(i) == '.') { dot = true; } }
+                return dot;
+            }
+            public static method isUrl(String s) returns boolean {
+                mutable boolean https = s.startsWith("https://");
+                mutable boolean http = s.startsWith("http://");
+                if (!http && !https) { return false; }
+                mutable int start = 7;
+                if (https) { start = 8; }
+                return s.length() > start;
+            }
+            public static method isIban(String s) returns boolean {
+                mutable int len = 0;
+                mutable char[] buf = new char[64]();
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c != ' ') { buf[len] = c; len = len + 1; }
+                }
+                if (len < 5) { return false; }
+                mutable long running = 0;
+                for (mutable int k = 0; k < len; k++) {
+                    mutable int idx = k + 4;
+                    if (idx >= len) { idx = idx - len; }
+                    char c = buf[idx];
+                    if (c >= '0' && c <= '9') { running = (running * 10 + cast<long>(cast<int>(c) - cast<int>('0'))) % 97; }
+                    else {
+                        if (c >= 'A' && c <= 'Z') { running = (running * 100 + cast<long>(cast<int>(c) - cast<int>('A') + 10)) % 97; }
+                        else { return false; }
+                    }
+                }
+                return running == 1;
+            }
+        }
+        // Spell an integer in English words (spec 34), space-separated and lowercase, up to the billions
+        // (covers the full int range). Negative numbers are prefixed with "minus".
+        public class NumberWords {
+            private static method ones(int n) returns String {
+                mutable String[] w = new String[10]();
+                w[0]=""; w[1]="one"; w[2]="two"; w[3]="three"; w[4]="four";
+                w[5]="five"; w[6]="six"; w[7]="seven"; w[8]="eight"; w[9]="nine";
+                return w[n];
+            }
+            private static method teens(int n) returns String {
+                mutable String[] w = new String[10]();
+                w[0]="ten"; w[1]="eleven"; w[2]="twelve"; w[3]="thirteen"; w[4]="fourteen";
+                w[5]="fifteen"; w[6]="sixteen"; w[7]="seventeen"; w[8]="eighteen"; w[9]="nineteen";
+                return w[n - 10];
+            }
+            private static method tens(int n) returns String {
+                mutable String[] w = new String[10]();
+                w[2]="twenty"; w[3]="thirty"; w[4]="forty"; w[5]="fifty";
+                w[6]="sixty"; w[7]="seventy"; w[8]="eighty"; w[9]="ninety";
+                return w[n];
+            }
+            private static method under100(int n) returns String {
+                if (n < 10) { return NumberWords.ones(n); }
+                if (n < 20) { return NumberWords.teens(n); }
+                int t = n / 10;
+                int o = n % 10;
+                if (o == 0) { return NumberWords.tens(t); }
+                return NumberWords.tens(t).concat(" ").concat(NumberWords.ones(o));
+            }
+            private static method under1000(int n) returns String {
+                if (n < 100) { return NumberWords.under100(n); }
+                int h = n / 100;
+                int r = n % 100;
+                mutable String s = NumberWords.ones(h).concat(" hundred");
+                if (r > 0) { s = s.concat(" ").concat(NumberWords.under100(r)); }
+                return s;
+            }
+            public static method toWords(int num) returns String {
+                if (num == 0) { return "zero"; }
+                mutable int n = num;
+                mutable String sign = "";
+                if (n < 0) { sign = "minus "; n = 0 - n; }
+                mutable String[] scale = new String[4]();
+                scale[0]=""; scale[1]=" thousand"; scale[2]=" million"; scale[3]=" billion";
+                mutable int[] grp = new int[4]();
+                mutable int g = 0;
+                mutable int m = n;
+                while (m > 0) { grp[g] = m % 1000; m = m / 1000; g = g + 1; }
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = g - 1; i >= 0; i = i - 1) {
+                    if (grp[i] > 0) {
+                        if (sb.length() > 0) { sb.appendChar(' '); }
+                        sb.append(NumberWords.under1000(grp[i]));
+                        sb.append(scale[i]);
+                    }
+                }
+                return sign.concat(sb.toString());
+            }
+        }
+        // Human-friendly formatting (spec 34): binary byte sizes (1024-based, one decimal above bytes) and
+        // English ordinals (1st, 2nd, 3rd, 11th, 21st), handling the 11-13 "th" exception.
+        public class Humanize {
+            public static method bytes(long n) returns String {
+                mutable String[] units = new String[5]();
+                units[0]="B"; units[1]="KB"; units[2]="MB"; units[3]="GB"; units[4]="TB";
+                mutable double d = cast<double>(n);
+                mutable int u = 0;
+                while (d >= 1024.0 && u < 4) { d = d / 1024.0; u = u + 1; }
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                if (u == 0) {
+                    sb.appendInt(cast<int>(n)); sb.appendChar(' '); sb.append(units[0]);
+                } else {
+                    int whole = cast<int>(d * 10.0 + 0.5);
+                    sb.appendInt(whole / 10); sb.appendChar('.'); sb.appendInt(whole % 10);
+                    sb.appendChar(' '); sb.append(units[u]);
+                }
+                return sb.toString();
+            }
+            public static method ordinal(int n) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendInt(n);
+                int m100 = n % 100;
+                mutable String suf = "th";
+                if (m100 < 11 || m100 > 13) {
+                    int m10 = n % 10;
+                    if (m10 == 1) { suf = "st"; }
+                    if (m10 == 2) { suf = "nd"; }
+                    if (m10 == 3) { suf = "rd"; }
+                }
+                sb.append(suf);
+                return sb.toString();
+            }
+        }
+    }

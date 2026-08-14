@@ -2,7 +2,7 @@
 
 #include "parser/ast.h"
 
-namespace ldp3 {
+namespace polaron {
 
 // Bounds-check hoisting by loop versioning (a "no-UB, zero-overhead-when-valid" optimization).
 //
@@ -30,4 +30,4 @@ namespace ldp3 {
 // generated guard and both loop copies).
 void hoistBoundsChecks(ast::Program& program);
 
-}  // namespace ldp3
+}  // namespace polaron

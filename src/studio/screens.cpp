@@ -8,7 +8,7 @@
 
 using namespace ftxui;
 
-namespace ldp3::studio {
+namespace polaron::studio {
 namespace {
 
 // A small colored label (environment badge / status). No background -- the TUI blends with the terminal.
@@ -16,8 +16,8 @@ Element chip(const std::string& s, Color fg) {
     return text(" " + s) | color(fg);
 }
 
-Element projectRow(const ldp3::driver::DiscoveredProject& p, bool sel) {
-    const ldp3::driver::Manifest& m = p.manifest;
+Element projectRow(const polaron::driver::DiscoveredProject& p, bool sel) {
+    const polaron::driver::Manifest& m = p.manifest;
     const bool hasEnv = !m.environment.empty();
     Element name = text((sel ? " ▸ " : "   ") + m.name);
     name = sel ? (name | color(theme::amber) | bold) : (name | color(theme::ink));
@@ -34,8 +34,8 @@ Element kv(const std::string& k, Element v) {
     return hbox({text(" " + k) | color(theme::faint) | size(WIDTH, EQUAL, 15), std::move(v)});
 }
 
-Element detailFacts(const ldp3::driver::DiscoveredProject& p) {
-    const ldp3::driver::Manifest& m = p.manifest;
+Element detailFacts(const polaron::driver::DiscoveredProject& p) {
+    const polaron::driver::Manifest& m = p.manifest;
     const std::string lang = m.languageVersion.empty() ? "—" : m.languageVersion;
     return vbox({
         text(" " + m.name) | color(theme::amber) | bold,
@@ -54,11 +54,12 @@ Element detailFacts(const ldp3::driver::DiscoveredProject& p) {
 Element renderProjects(const AppState& s) {
     Elements rows;
     if (s.projects.empty()) {
-        rows.push_back(text("  No LDP3 projects in this folder.") | color(theme::muted));
+        rows.push_back(text("  No Polaron projects in this folder.") | color(theme::muted));
         rows.push_back(text("  Press s to scan the computer.") | color(theme::faint));
     }
-    for (int i = 0; i < static_cast<int>(s.projects.size()); ++i)
+    for (int i = 0; i < static_cast<int>(s.projects.size()); ++i) {
         rows.push_back(projectRow(s.projects[static_cast<std::size_t>(i)], i == s.selectedProject));
+    }
 
     Element headerRight = s.scanning
                               ? text("⟳ scanning… " + std::to_string(s.scanFound) + " ") | color(theme::teal)
@@ -83,20 +84,30 @@ Element renderProjects(const AppState& s) {
 
 // Colour a console line by what it reports.
 Element consoleLine(const std::string& l) {
-    if (l.rfind(" PASS", 0) == 0) return text(l) | color(theme::green);
-    if (l.rfind(" FAIL", 0) == 0) return text(l) | color(theme::red);
-    if (l.find("passed,") != std::string::npos) return text(l) | color(theme::amber);
-    if (l.find("error") != std::string::npos || l.find("failed") != std::string::npos)
+    if (l.rfind(" PASS", 0) == 0) {
+        return text(l) | color(theme::green);
+    }
+    if (l.rfind(" FAIL", 0) == 0) {
         return text(l) | color(theme::red);
-    if (l.find("wrote ") != std::string::npos || l.find("built ") != std::string::npos)
+    }
+    if (l.find("passed,") != std::string::npos) {
+        return text(l) | color(theme::amber);
+    }
+    if (l.find("error") != std::string::npos || l.find("failed") != std::string::npos) {
+        return text(l) | color(theme::red);
+    }
+    if (l.find("wrote ") != std::string::npos || l.find("built ") != std::string::npos) {
         return text(l) | color(theme::teal);
+    }
     return text(l) | color(theme::muted);
 }
 
 Element renderProjectDetail(const AppState& s) {
-    const ldp3::driver::DiscoveredProject* p = s.selected();
-    if (p == nullptr) return text("  No project selected.") | color(theme::muted);
-    const ldp3::driver::Manifest& m = p->manifest;
+    const polaron::driver::DiscoveredProject* p = s.selected();
+    if (p == nullptr) {
+        return text("  No project selected.") | color(theme::muted);
+    }
+    const polaron::driver::Manifest& m = p->manifest;
 
     // Actions + dependencies + facts, left column.
     Elements acts;
@@ -111,9 +122,10 @@ Element renderProjectDetail(const AppState& s) {
     if (m.dependencies.empty()) {
         deps.push_back(text("  none") | color(theme::faint));
     } else {
-        for (const ldp3::driver::Dependency& d : m.dependencies)
+        for (const polaron::driver::Dependency& d : m.dependencies) {
             deps.push_back(hbox({text("  " + d.name) | color(theme::ink), filler(),
                                  text(d.version + " ") | color(theme::muted)}));
+        }
     }
     Element left = vbox({
                        hbox({text(" ACTIONS") | color(theme::faint), filler()}),
@@ -142,7 +154,9 @@ Element renderProjectDetail(const AppState& s) {
             statusColor = theme::teal;
             break;
         case Console::Status::Done:
-            for (const std::string& l : s.console.lines) clines.push_back(consoleLine(" " + l));
+            for (const std::string& l : s.console.lines) {
+                clines.push_back(consoleLine(" " + l));
+            }
             status = s.console.exitCode == 0 ? "● ok" : "● failed";
             statusColor = s.console.exitCode == 0 ? theme::green : theme::red;
             break;
@@ -161,7 +175,9 @@ Element renderProjectDetail(const AppState& s) {
 
 Element renderEnvironments(const AppState& s) {
     Elements rows;
-    if (s.environments.empty()) rows.push_back(text("  No environments yet.") | color(theme::muted));
+    if (s.environments.empty()) {
+        rows.push_back(text("  No environments yet.") | color(theme::muted));
+    }
     for (int i = 0; i < static_cast<int>(s.environments.size()); ++i) {
         const Environment& e = s.environments[static_cast<std::size_t>(i)];
         const bool sel = i == s.selectedEnv;
@@ -188,14 +204,21 @@ Element renderEnvironments(const AppState& s) {
         right.push_back(separator() | color(theme::line));
         right.push_back(hbox({text(" LIBRARIES") | color(theme::faint), filler(),
                               text(std::to_string(e.libs.size()) + " ") | color(theme::faint)}));
-        if (e.libs.empty()) right.push_back(text("  none") | color(theme::faint));
-        for (const ldp3::driver::Dependency& d : e.libs)
+        if (e.libs.empty()) {
+            right.push_back(text("  none") | color(theme::faint));
+        }
+        for (const polaron::driver::Dependency& d : e.libs) {
             right.push_back(hbox({text("  " + d.name) | color(theme::ink), filler(),
                                   text(d.version + " ") | color(theme::muted)}));
+        }
         right.push_back(text(""));
         right.push_back(hbox({text(" USED BY") | color(theme::faint), filler()}));
-        if (e.usedBy.empty()) right.push_back(text("  no projects") | color(theme::faint));
-        for (const std::string& u : e.usedBy) right.push_back(text("  ◈ " + u) | color(theme::ink));
+        if (e.usedBy.empty()) {
+            right.push_back(text("  no projects") | color(theme::faint));
+        }
+        for (const std::string& u : e.usedBy) {
+            right.push_back(text("  ◈ " + u) | color(theme::ink));
+        }
     }
     right.push_back(filler());
     Element detail = vbox(std::move(right)) | borderStyled(ROUNDED, theme::line) | size(WIDTH, EQUAL, 44);
@@ -233,7 +256,9 @@ Element renderLibraries(const AppState& s) {
         const Library& l = s.libraries[static_cast<std::size_t>(s.selectedLib)];
         std::string versions;
         for (std::size_t i = 0; i < l.versions.size(); ++i) {
-            if (i != 0) versions += ", ";
+            if (i != 0) {
+                versions += ", ";
+            }
             versions += l.versions[i];
         }
         right.push_back(text(" " + l.name) | color(theme::amber) | bold);
@@ -241,12 +266,20 @@ Element renderLibraries(const AppState& s) {
         right.push_back(kv("versions", text(versions.empty() ? "—" : versions) | color(theme::ink)));
         right.push_back(text(""));
         right.push_back(hbox({text(" USED BY PROJECTS") | color(theme::faint), filler()}));
-        if (l.usedByProjects.empty()) right.push_back(text("  none") | color(theme::faint));
-        for (const std::string& u : l.usedByProjects) right.push_back(text("  ◈ " + u) | color(theme::ink));
+        if (l.usedByProjects.empty()) {
+            right.push_back(text("  none") | color(theme::faint));
+        }
+        for (const std::string& u : l.usedByProjects) {
+            right.push_back(text("  ◈ " + u) | color(theme::ink));
+        }
         right.push_back(text(""));
         right.push_back(hbox({text(" USED BY ENVIRONMENTS") | color(theme::faint), filler()}));
-        if (l.usedByEnvs.empty()) right.push_back(text("  none") | color(theme::faint));
-        for (const std::string& u : l.usedByEnvs) right.push_back(text("  ❏ " + u) | color(theme::violet));
+        if (l.usedByEnvs.empty()) {
+            right.push_back(text("  none") | color(theme::faint));
+        }
+        for (const std::string& u : l.usedByEnvs) {
+            right.push_back(text("  ❏ " + u) | color(theme::violet));
+        }
     }
     right.push_back(filler());
     Element detailPane = vbox(std::move(right)) | borderStyled(ROUNDED, theme::line) | size(WIDTH, EQUAL, 46);
@@ -264,7 +297,7 @@ Element renderToolchain(const AppState& s) {
                separator() | color(theme::line),
                text(""),
                text(" COMPILER") | color(theme::faint),
-               row("ldp3c", t.ldp3c, theme::ink),
+               row("polc", t.polc, theme::ink),
                row("clang", t.clang, theme::ink),
                row("runtime", t.runtime, theme::muted),
                text(""),
@@ -298,7 +331,7 @@ Element renderNewProjectModal(const AppState& s) {
                            text(" ›") | color(theme::faint)});
 
     Elements body = {
-        text(" ＋ New LDP3 project") | color(theme::amber) | bold,
+        text(" ＋ New Polaron project") | color(theme::amber) | bold,
         separator() | color(theme::line),
         modalField("NAME", std::move(nameVal), np.field == 0),
         text(""),
@@ -368,4 +401,4 @@ Element renderContent(const AppState& state) {
     }
 }
 
-}  // namespace ldp3::studio
+}  // namespace polaron::studio

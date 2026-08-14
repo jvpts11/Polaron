@@ -1,5 +1,5 @@
 @echo off
-rem Install the LDP3 VS Code extension for the current user. The reliable path is `code --install-extension`
+rem Install the Polaron VS Code extension for the current user. The reliable path is `code --install-extension`
 rem on the packaged .vsix -- a hand-copied extension folder is NOT detected by modern VS Code (1.9x+). Falls
 rem back to a folder copy only when the `code` CLI cannot be found. Safe to run by hand:
 rem   install-vscode.cmd [path-to-vscode-folder]
@@ -21,7 +21,7 @@ if not defined CODE if exist "%ProgramFiles%\Microsoft VS Code\bin\code.cmd" set
 if defined CODE if defined VSIX (
   call "%CODE%" --install-extension "%VSIX%" --force
   if not errorlevel 1 (
-    echo LDP3 VS Code extension installed. Reload VS Code to activate it.
+    echo Polaron VS Code extension installed. Reload VS Code to activate it.
     exit /b 0
   )
   echo "code --install-extension" failed; falling back to a folder copy.
@@ -35,12 +35,12 @@ if not exist "%EXTROOT%" (
   if defined VSIX echo To install later: code --install-extension "%VSIX%"
   exit /b 0
 )
-set "DEST=%EXTROOT%\ldp3.ldp3-0.1.0"
+set "DEST=%EXTROOT%\polaron.pol-0.1.0"
 xcopy /E /I /Y "%SRC%" "%DEST%" >nul 2>&1
 if errorlevel 1 (
   echo Could not install the extension; skipping.
 ) else (
-  echo LDP3 VS Code extension copied to "%DEST%".
+  echo Polaron VS Code extension copied to "%DEST%".
   if defined VSIX echo If VS Code does not detect it, run: code --install-extension "%VSIX%"
 )
 exit /b 0

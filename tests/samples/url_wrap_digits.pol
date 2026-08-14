@@ -1,0 +1,23 @@
+import System.IO.Console;
+import System.Codecs.UrlCodec;
+import System.Text.WordWrap;
+import System.Math.IntMath;
+import System.Collections.ArrayList;
+program UrlWrapDigits;
+
+// URL percent-encoding, word wrapping, and digit utilities (spec 4 / 34.6): encode/decode round-trip,
+// "the quick brown fox" wraps to two lines at width 10, and digit sum/reverse/palindrome on 123/121.
+// Prints: enc=a%20b%21 dec=a b! nl=2 l0=the quick ds=6 rd=321 pal=1.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<String> w = WordWrap.wrap("the quick brown fox", 10);
+                System.IO.Console.printf("enc=%s dec=%s nl=%d l0=%s ds=%d rd=%d pal=%d\n",
+                    UrlCodec.encode("a b!"), UrlCodec.decode("a%20b%21"), w.size(), w.get(0),
+                    IntMath.digitSum(123), IntMath.reverseDigits(123), IntMath.isPalindrome(121));
+                return;
+            }
+        }
+    }
+}

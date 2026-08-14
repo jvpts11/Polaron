@@ -1,0 +1,25 @@
+program TransformerFreestandingBad;
+
+// A HOSTED program. The transformer is marked `freestanding`, which is a promise that its bodies
+// obey the bare-metal subset -- so the body is held to it HERE, where its author can read the error.
+//
+// That is the whole of what the modifier buys. Without it this compiles perfectly, and fails three
+// layers down in somebody else's kernel, on a line its reader never wrote.
+public bundle Main {
+    public namespace App {
+        public freestanding transformer TNamer {
+            public procedure describe() returns string {
+                return $"a {this.tag()}";
+            }
+            public procedure tag() returns string;
+        }
+
+        public class Dog applies TNamer {
+            public procedure tag() returns string { return "dog"; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

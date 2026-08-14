@@ -1,0 +1,69 @@
+    public namespace Runtime {
+        // The root of the class hierarchy (spec 3.4): every class implicitly extends Object. equals
+        // defaults to identity and hashCode to the object's address; both are virtual so subclasses
+        // (e.g. records) override them. toString() returns String and is added with the String type.
+        public class Object {
+            public method equals(Object other) returns boolean { return this == other; }
+            public method hashCode() returns int { return 0; }
+            // Identity-based key equality: every object is usable as a collection element/key, with
+            // reference identity by default. A class overrides this (and hashCode) for value equality.
+            public method equalsKey(Object other) returns boolean { return this == other; }
+        }
+        // Base for runtime exceptions (polymorphic, so it can be caught). UnimportedType
+        // Exception is thrown when an unimported type is used (spec 30).
+        public abstract class Exception {
+            public abstract method message() returns String;
+        }
+        public class UnimportedTypeException extends Exception {
+            public constructor UnimportedTypeException() {}
+            public override method message() returns String { return "type was unimported"; }
+        }
+        // Thrown on first use of a dynamically-loaded bundle (--use-dynamic) that is absent at runtime
+        // (spec 2.4): wrap the use in try/catch to run without it.
+        public class BundleNotLoadedException extends Exception {
+            public constructor BundleNotLoadedException() {}
+            public override method message() returns String { return "bundle not loaded"; }
+        }
+        // Thrown when a loaded bundle's ABI fingerprint does not match what the program compiled
+        // against (spec 2.5).
+        public class BundleAbiMismatchException extends Exception {
+            public constructor BundleAbiMismatchException() {}
+            public override method message() returns String { return "bundle ABI mismatch"; }
+        }
+        // Thrown by an invalid class downcast: `cast<Dog>(animal)` / `animal as Dog` when the object is
+        // not a Dog (spec 6.3). Catch it, or use `animal as? Dog` (yields null) / `animal is Dog`.
+        public class ClassCastException extends Exception {
+            public constructor ClassCastException() {}
+            public override method message() returns String { return "invalid cast"; }
+        }
+        // Thrown when `cast<T>(x)` is used to assert that a `nullable T` holds a value and it does not.
+        // The cast is how a program says "I checked this" -- so when it has not, the honest outcome is a
+        // reported failure, not a dereference of address zero somewhere later with no trace of who
+        // promised what. Catch it, or check the value with `if (x != null)` and let the compiler narrow
+        // the type for you, which needs no cast at all.
+        public class NullReferenceException extends Exception {
+            public constructor NullReferenceException() {}
+            public override method message() returns String { return "null where a value was asserted"; }
+        }
+        // Arithmetic that has no correct answer. In a HOSTED program these are exceptions, so a caller
+        // can decide what a bad divisor or an overflowing sum means for it; in FREESTANDING there is no
+        // exception machinery (spec 36.3), so the same faults terminate through `__polaron_panic`. The
+        // failure is identical either way -- only the reporting differs, exactly as for a bad downcast.
+        // Catch `ArithmeticException` for both, or the specific one.
+        public class ArithmeticException extends Exception {
+            public constructor ArithmeticException() {}
+            public override method message() returns String { return "arithmetic error"; }
+        }
+        // The divisor was zero, or the division was INT_MIN / -1 -- whose true quotient has no
+        // representation in the type, so wrapping it would be a wrong answer rather than a defined one.
+        public class DivideByZeroException extends ArithmeticException {
+            public constructor DivideByZeroException() {}
+            public override method message() returns String { return "division by zero"; }
+        }
+        // A `checked(...)` expression whose result does not fit its type. Plain arithmetic wraps by
+        // design (modular, zero-overhead); this is only raised where the program asked to be told.
+        public class OverflowException extends ArithmeticException {
+            public constructor OverflowException() {}
+            public override method message() returns String { return "integer overflow"; }
+        }
+    }

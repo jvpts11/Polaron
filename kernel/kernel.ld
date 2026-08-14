@@ -1,4 +1,4 @@
-/* Link the LDP3 kernel at the conventional 1 MiB load address, with the Multiboot2 header first (the
+/* Link the Polaron kernel at the conventional 1 MiB load address, with the Multiboot2 header first (the
    spec requires it within the first 32 KiB of the image so the bootloader can find it). */
 ENTRY(_start)
 

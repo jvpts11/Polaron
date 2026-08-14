@@ -55,7 +55,7 @@ anything** — the three lifetime words were split apart, with `static` and `mut
 binding → lifetime → access → mutability → compilation → ownership → concurrency → placement*. Every
 group boundary was measured (`mutable weak` ×18, `static async` ×14, `static comptime` ×15,
 `extern cdecl static` ×13, `unknown sysv naked static` ×15). Total cost of adoption across all existing
-LDP3: **four declarations**.
+Polaron: **four declarations**.
 
 The order also revealed a second bug while being decided: the local parser only accepted `volatile`
 before `mutable`, which is why `volatile` sits before `mutable` in the final order — the grammar had
@@ -78,7 +78,7 @@ prefix's one promise is *"zero overhead em runtime — valor calculado embutido 
 |---|---|
 | **CORRIGIDO** | Locals: the analyzer now requires the initializer to fold (beside where a `fixed` initializer is already checked) and codegen embeds the constant. Regression test `codegen_comptime_local_folds` is an **IR test on purpose** — a behaviour test cannot see this bug. |
 | **CORRIGIDO** | Fields: `FieldDecl` had no `isComptime` at all. Added, with the same guarantee. Not redundant with `fixed`: `fixed` is a class constant with no storage and no `mutable`; `comptime` qualifies the *initializer* of an ordinary field. |
-| **CORRIGIDO** | Two folders disagreed: `constFold` (codegen) cannot call a `comptime` method and `foldConstInt` can, so **LDP3-0608 rejected an initializer the analyzer had evaluated one pass earlier**. |
+| **CORRIGIDO** | Two folders disagreed: `constFold` (codegen) cannot call a `comptime` method and `foldConstInt` can, so **Polaron-0608 rejected an initializer the analyzer had evaluated one pass earlier**. |
 | **ABERTO** | `comptime` as an **operation** prefix (§37.9 promises `[cascade] [lazy] [comptime] <operação>`). `comptime if` works; a bare `comptime <call>` does not. |
 | **ABERTO** | `lazy` as an operation prefix — same line of §37.9, not implemented. |
 
@@ -102,13 +102,13 @@ I probed `cascade` once with an arbitrary method call, saw it refused, and wrote
 
 | | |
 |---|---|
-| **CORRIGIDO (runtime)** | `__ldp3_region_snapshot_size` / `__ldp3_region_snapshot` / `__ldp3_region_restore` in `runtime/ldp3_region_core.hpp`, verified compiling hosted (MSVC) and bare metal (clang) with the right unmangled symbols. Restore runs destructors first; refuses a `growable` region; refuses to restore over an object deleted by hand since the capture; refuses to write past the destination. |
+| **CORRIGIDO (runtime)** | `__polaron_region_snapshot_size` / `__polaron_region_snapshot` / `__polaron_region_restore` in `runtime/polaron_region_core.hpp`, verified compiling hosted (MSVC) and bare metal (clang) with the right unmangled symbols. Restore runs destructors first; refuses a `growable` region; refuses to restore over an object deleted by hand since the capture; refuses to write past the destination. |
 | **CORRIGIDO (design)** | §32.2 rewritten with João's decision: `snapshot`/`restore` are **soft** keywords, a snapshot is a **copy** (so it works with any flavor), its address is **mandatory** in a named region, it is **constant**, and it is **not** released automatically. |
 | **CORRIGIDO (surface)** | All three forms work end to end — `RegionSnapshot k = snapshot region W in region B;`, `snapshot region W into k;`, `restore k into [region] W;`. Test `codegen_region_snapshot_runs`. |
 | **NOTE** | `RegionSnapshot` cannot be a prelude `typealias` inside `namespace Memory`: adding one there breaks `System.Memory.Units.kilobytes` resolution (measured — 4 tests fail). It is mapped to `address` in `ast::canonicalType`, the one place the analyzer and codegen both ask what a type is called. |
 | **ABERTO** | The home region must be `pool`, `fixedslot` or `stack`. A plain (bump) region has no per-slot header — that absence is what makes its allocation cost what a hand-written arena costs — so placing a snapshot in one used to be an access violation. It is now a named panic **at run time**; it should be a compile-time error, since the flavor is on the declaration. |
 | **ABERTO** | The two semantic rules João specified are not enforced yet: a snapshot is **constant** (`mutable RegionSnapshot` should be an error — it has a home in `checkMemberModifiers`) and its release is **mandatory** (definite release, the same analysis a `region` field needs). |
-| **TRAP** | `snapshot`/`restore` must be **soft** keywords: pico already has a `restore()` method (`hardware.ldp3`, `font.ldp3`) that puts the video mode back. A hard keyword breaks the kernel. |
+| **TRAP** | `snapshot`/`restore` must be **soft** keywords: pico already has a `restore()` method (`hardware.pol`, `font.pol`) that puts the video mode back. A hard keyword breaks the kernel. |
 
 ## 8. Fixed before today, listed so the record is one place
 
@@ -117,7 +117,52 @@ I probed `cascade` once with an arbitrary method call, saw it refused, and wrote
 | `itself` | Documented as a general self-reference pronoun; only worked before `.allocate`/`.at`/`.atMultiple`. Fixed 2026-08-03 — and it made recursive anonymous methods possible, which no spelling allowed before. |
 | freestanding + stdlib | The docs said the stdlib cannot be used freestanding. The real restriction is **five language features** (async/await, unimport/reimport, exceptions, string interpolation, reflection) — the library was never the problem. §36.3 rewritten. |
 | persistents freestanding | `guide/01:330` said they do not work. The named form always emitted a private global with zero external symbols; only the **indexed** form needed a runtime, which now exists bare metal. |
-| contract values | Guards and contracts printed their clause but not their numbers bare metal. One `__ldp3_fail` for both targets now. |
+| contract values | Guards and contracts printed their clause but not their numbers bare metal. One `__polaron_fail` for both targets now. |
+
+---
+
+## 9. Found 2026-08-14, closing the transformer gaps
+
+### 9.1 The two that are still ABERTO
+
+**`private` IS NOT ENFORCED ANYWHERE.** Member visibility is written, carried, published in the
+`.polh` and shown in the generated docs — and never checked. This compiles and links today:
+
+```polaron
+public class Dog   { private method secret() returns int { return 5; } }
+public class Other { public method probe() returns int { return new Dog().secret(); } }
+```
+
+Probed directly, both classes in the same namespace. It is not specific to transformers; it is every
+member of every kind. **TYPE** visibility *is* checked (`checkTypeAccessible`, the stdlib-cohesion
+rule), which is what makes the hole easy to miss — the word works at one level and not the other.
+
+The consequence for transformers is worth stating precisely, because a rule was just written on top
+of it: a procedure now enters the applying class **private by default** (spec 32.12). That is right on
+the declaration, it is what the header and the documentation show, and it is what will be enforced the
+day member visibility is — but today it denies nobody. Enforcing it reaches the prelude, pico and
+decomp at once, so it is a decision, not a patch.
+
+**`polaron build` CANNOT DO A HOSTED CROSS BUILD FOR ANY TARGET.** The driver hands the linker the
+HOST's `libpolaron_rt.a`, and the runtime source is not embedded (only the region and alloc cores
+are), so it cannot rebuild it for the target. aarch64 fails identically to m68k. The suite's cross
+rows pass because they cross-compile the runtime themselves. Fixing it means either embedding
+`polaron_rt.cpp` in the driver the way the two cores already are, or looking for a per-target
+`libpolaron_rt-<triple>.a` beside the host one and saying clearly what to build when it is absent.
+
+Also worth knowing while you are in there: the manifest's cross target lives in **`[build] target`**,
+not `[program]`, and `--target=` on the command line is forwarded to polc only — so passing it there
+gives you target IR and a host link.
+
+### 9.2 CORRIGIDO, with the reason each one survived
+
+| | |
+|---|---|
+| **the union row of the totality table** | It was not an omission — the FIELD rule ran over unions and demanded that a conversion read every one. A union's fields share one storage and nothing tags which is live, so the rule demanded a bug. A union's source is **open**, like an `int`. |
+| **a freestanding `heap class` stopped linking** | The driver decided whether to supply a bare-metal allocator by looking for the NAME `__polaron_malloc` in the IR — and saw the definition codegen emits from the program's own `heap class`, supplying a second. `duplicate symbol`, on the one kind of program the shim exists to leave alone. **The suite was 100% green**: the freestanding tests either inspect the IR or boot under QEMU, and a duplicate symbol is not a property of one module. New test `port_freestanding_heap_class_links` asserts only that it LINKS, which is where the class of defect lives — and therefore needs no emulator. |
+| **`call T.p()` in a `record` leaked** | Never drained from the parser's pending list, so every site was attributed to whichever declaration was parsed NEXT — the three rules `call` carries, checked against the wrong type's `applies` clause, in both directions. |
+| **a procedure's visibility was backwards** | Built as "visibility governs `call`". It is the visibility the member **enters the applying class with**, and procedures are private by default — a reading under which the old rule would disable `call` in the ordinary case. See `docs/design/transformers.md`. |
+| **five promises the note made and the compiler did not keep** | `freestanding transformer` did not parse at all; `final procedure` sealed nothing; the subject rule for a static procedure was checked by nothing; an `enum` could not apply a transformer (so the flagship `Errno → int` was unwritable, and the enum row of the totality table had never bitten); a transformer could not cross a bundle. |
 
 ---
 

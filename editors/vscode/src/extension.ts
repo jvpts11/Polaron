@@ -19,23 +19,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const trees = new LdpTrees();
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('ldp3Projects', trees.projects),
-    vscode.window.registerTreeDataProvider('ldp3Environments', trees.environments),
-    vscode.window.registerTreeDataProvider('ldp3Libraries', trees.libraries),
-    vscode.commands.registerCommand('ldp3.refresh', () => trees.refresh()),
-    vscode.commands.registerCommand('ldp3.tree.build', (n: unknown) => {
+    vscode.window.registerTreeDataProvider('polaronProjects', trees.projects),
+    vscode.window.registerTreeDataProvider('polaronEnvironments', trees.environments),
+    vscode.window.registerTreeDataProvider('polaronLibraries', trees.libraries),
+    vscode.commands.registerCommand('polaron.refresh', () => trees.refresh()),
+    vscode.commands.registerCommand('polaron.tree.build', (n: unknown) => {
       const p = nodeProject(n);
       if (p) {
         void runVerbIn('build', p.dir);
       }
     }),
-    vscode.commands.registerCommand('ldp3.tree.run', (n: unknown) => {
+    vscode.commands.registerCommand('polaron.tree.run', (n: unknown) => {
       const p = nodeProject(n);
       if (p) {
         runInteractiveIn(p.dir);
       }
     }),
-    vscode.commands.registerCommand('ldp3.tree.test', (n: unknown) => {
+    vscode.commands.registerCommand('polaron.tree.test', (n: unknown) => {
       const p = nodeProject(n);
       if (p) {
         void runVerbIn('test', p.dir);
@@ -44,7 +44,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // Keep the trees in sync with the manifests on disk.
-  const watcher = vscode.workspace.createFileSystemWatcher('**/ldp3.toml');
+  const watcher = vscode.workspace.createFileSystemWatcher('**/polaron.toml');
   const reload = () => void trees.refresh();
   watcher.onDidChange(reload);
   watcher.onDidCreate(reload);

@@ -1,0 +1,38 @@
+import System.Runtime.UnimportedTypeException;
+import System.IO.Console;
+program UnimportClearsStatics;
+
+// `unimport` takes the class's OWN STORAGE too, not only its code.
+//
+// A static field is memory that belonged to the TYPE rather than to any object. With the
+// live-instance refusal in place there is nobody left who can read it, so leaving it holding its
+// last value is leaving state behind for a type that no longer exists -- and a later `reimport`
+// would bring the class back mid-history instead of at its start.
+//
+// Instances are not touched and cannot be: the refusal already guarantees there are none.
+//
+// Prints: counted=3 / back=0
+public bundle Main {
+    public namespace App {
+        public class Meter {
+            public static mutable int ticks;
+            public constructor Meter() { }
+            public method bump() returns void { Meter.ticks = Meter.ticks + 1; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Meter m = new Meter() on heap;
+                m.bump();
+                m.bump();
+                m.bump();
+                System.IO.Console.printf("counted=%d\n", Meter.ticks);
+                delete m;
+                unimport Meter;
+                reimport Meter;
+                System.IO.Console.printf("back=%d\n", Meter.ticks);
+                return;
+            }
+        }
+    }
+}

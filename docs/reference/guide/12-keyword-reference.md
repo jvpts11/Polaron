@@ -1,6 +1,6 @@
 # 12. Keyword Reference
 
-This chapter catalogs every reserved word LDP3 recognizes. Each entry gives what the keyword does,
+This chapter catalogs every reserved word Polaron recognizes. Each entry gives what the keyword does,
 its **status**, and — where it clarifies — a short example. Use it as a lookup companion to the
 preceding chapters, which explain each feature in depth.
 
@@ -64,38 +64,38 @@ chapter documents what the compiler accepts today and flags the difference.
 
 #### `program`
 **hard.** The outermost organizational unit; names the program. One declaration per root file.
-```ldp3
+```polaron
 program HelloWorld;
 ```
 
 #### `bundle`
 **hard.** An independent compilation unit within a program; contains namespaces. May be declared `freestanding`.
-```ldp3
+```polaron
 public bundle main { /* namespaces... */ }
 public bundle kernel freestanding { /* ... */ }
 ```
 
 #### `namespace`
 **hard.** Logical organization inside a bundle; contains classes, interfaces, enums, and so on. Governs cross-namespace visibility (access requires `import`).
-```ldp3
+```polaron
 public namespace game.entities { public class Player { } }
 ```
 
 #### `class`
-**hard.** Declares a class — the fundamental unit of OOP in LDP3.
-```ldp3
+**hard.** Declares a class — the fundamental unit of OOP in Polaron.
+```polaron
 public class Dog { private string name; }
 ```
 
 #### `interface`
 **hard.** Declares an interface (a contract). May carry default methods.
-```ldp3
+```polaron
 public interface Drawable { method draw() returns void; }
 ```
 
 #### `struct`
 **hard.** A value-type composite; supports bit fields (`field : N`).
-```ldp3
+```polaron
 public struct PacketHeader {
     public mutable ubyte version : 4;
     public mutable ubyte kind : 4;
@@ -104,7 +104,7 @@ public struct PacketHeader {
 
 #### `record`
 **hard.** An immutable DTO-style type; generates a constructor and equality from its positional parameters.
-```ldp3
+```polaron
 public record Point(int x, int y);
 ```
 
@@ -219,7 +219,7 @@ public record Point(int x, int y);
 
 #### `cast`
 **hard.** An explicit cast with the type in `< >`, including numeric conversions (saturating, no UB).
-```ldp3
+```polaron
 uint crc = cast<uint>(4294967295);
 ```
 
@@ -250,7 +250,7 @@ uint crc = cast<uint>(4294967295);
 
 #### `region`
 **hard.** A native type: a named arena of memory with type-acceptance rules. Allocated via `itself.allocate(...)`.
-```ldp3
+```polaron
 region pen = itself.allocate(64 kilobytes);
 Dog* a = new Dog(5) in region pen;   // freed by RAII at scope end
 ```
@@ -293,7 +293,7 @@ Dog* a = new Dog(5) in region pen;   // freed by RAII at scope end
 
 #### `defer`
 **hard.** Defers a block to the end of the current scope (LIFO order); also runs during exception unwind.
-```ldp3
+```polaron
 defer { file.close(); }
 ```
 
@@ -447,7 +447,7 @@ compiler order the type's fields. See §6.14.
 
 #### `synchronized`
 **hard.** A critical section with an implicit mutex; the locked value is bound via `using`.
-```ldp3
+```polaron
 synchronized (counter) using int& c { c = c + 1; }
 ```
 
@@ -512,7 +512,7 @@ Persistents, unimport, lifecycle hooks, and the chaos tetrad.
 
 #### `lambda`
 **hard.** An anonymous function with explicit capture.
-```ldp3
+```polaron
 function<int> f = lambda[captures: byvalue n]() returns int { return n + 1; };
 ```
 
@@ -539,7 +539,7 @@ The core primitive type names (also keywords). Normal mode uses these:
 | `string` | a mutable string |
 | `String` | an immutable string (a class) |
 
-```ldp3
+```polaron
 int n = 42;
 double d = 3.14;
 char c = 'X';
@@ -557,7 +557,7 @@ mutable string buf = "hi";
 `int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`, `float32`, `float64`. In
 normal mode, using them is an error (the compiler suggests `byte`/`short`/`int`/`long`/`ubyte`/…/
 `float`/`double`).
-```ldp3
+```polaron
 // only inside a freestanding bundle:
 uint8 version = 4;
 float32 x = 1.0;

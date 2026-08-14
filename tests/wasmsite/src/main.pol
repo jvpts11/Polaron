@@ -1,0 +1,131 @@
+// A WEBSITE'S LOGIC, IN POLARON, RUNNING IN A BROWSER.
+//
+// A WebAssembly module cannot touch the DOM: it has no DOM, no `document`, no strings a browser can
+// read. What it has is a shared linear memory and two directions of call -- methods it EXPORTS, which
+// JavaScript invokes, and methods it IMPORTS, which JavaScript supplies. That is the whole interface,
+// and it is enough: the page's behaviour lives here and the page's *rendering* is JavaScript reading
+// bytes out of this module's memory.
+//
+// So the honest division is: Polaron owns the state and the decisions, JavaScript owns the four lines
+// that put a string on the screen. Neither can be written in the other's place today, and pretending
+// otherwise would be the thing to complain about rather than the thing to ship.
+//
+// Everything below runs on the shared runtime core: `on heap` allocates from the static pool the
+// driver emits, and the `String` is copied and freed by the same two helpers a hosted program uses.
+// None of it existed for this target a day ago.
+program WasmSite freestanding;
+
+public bundle Site {
+    public namespace App {
+
+        // The page's state, held across calls the way any object is. A wasm module's memory persists
+        // between invocations, so this is a perfectly ordinary object that happens to outlive the
+        // call that made it.
+        public class Counter {
+            public mutable int value;
+            public mutable int clicks;
+
+            invariant this.clicks >= 0;
+
+            public constructor Counter() {
+                this.value = 0;
+                this.clicks = 0;
+            }
+
+            public method bump(int by) returns int {
+                this.value = this.value + by;
+                this.clicks = this.clicks + 1;
+                return this.value;
+            }
+        }
+
+        // Where the answer is written for JavaScript to read: a fixed buffer in linear memory, whose
+        // ADDRESS the page asks for once. This is what a narrow address is actually for -- an offset
+        // into a memory that is not this machine's address space at all.
+        public class Screen {
+            public static mutable byte[] buffer;
+            public static mutable int used;
+            // A flag rather than a null check: an array is non-null in Polaron like everything else,
+            // so `buffer == null` is not a question the type system will let you ask.
+            public static mutable boolean ready;
+
+            public static method reset() returns void {
+                if (!Screen.ready) {
+                    Screen.buffer = new byte[256]();
+                    Screen.ready = true;
+                }
+                Screen.used = 0;
+                return;
+            }
+
+            public static method put(int ch) returns void {
+                if (Screen.used < 255) {
+                    Screen.buffer[Screen.used] = cast<byte>(ch);
+                    Screen.used = Screen.used + 1;
+                }
+                return;
+            }
+
+            public static method write(byte* text) returns void {
+                mutable int i = 0;
+                mutable int c = cast<int>(text[0]) & 255;
+                while (c != 0) {
+                    Screen.put(c);
+                    i = i + 1;
+                    c = cast<int>(text[i]) & 255;
+                }
+                return;
+            }
+
+            // Decimal, without a formatter: freestanding has no printf and this is four lines.
+            public static method writeInt(int v) returns void {
+                if (v == 0) { Screen.put(48); return; }
+                mutable int n = v;
+                if (n < 0) { Screen.put(45); n = 0 - n; }
+                mutable int div = 1;
+                while (n / div >= 10) { div = div * 10; }
+                while (div > 0) {
+                    Screen.put(48 + (n / div) % 10);
+                    div = div / 10;
+                }
+                return;
+            }
+        }
+
+        public class Main {
+            public static mutable nullable Counter* state;
+
+            // `unknown sysv` is what EXPORTS a method: it gives it a bare linker symbol and keeps it
+            // through dead-code elimination, because a foreign world calls it and nothing here does.
+            // Without it these three were stripped from the module -- correctly, since inside the
+            // program they have no caller at all. A browser is exactly the "unknown world" the
+            // keyword names.
+            public unknown sysv static method click(int by) returns int {
+                if (Main.state == null) { Main.state = new Counter() on heap; }
+                int now = Main.state.bump(by);
+
+                Screen.reset();
+                Screen.write(b"Polaron says ");
+                Screen.writeInt(now);
+                Screen.write(b" after ");
+                Screen.writeInt(Main.state.clicks);
+                Screen.write(b" click");
+                if (Main.state.clicks != 1) { Screen.write(b"s"); }
+                return now;
+            }
+
+            // Exported: where to read the text, and how much of it. JavaScript needs both because a
+            // wasm module hands back numbers and nothing else -- a string crosses as an offset and a
+            // length into the memory the two sides share.
+            public unknown sysv static method textPtr() returns int {
+                return cast<int>(&Screen.buffer[0]);
+            }
+            public unknown sysv static method textLen() returns int { return Screen.used; }
+
+            public static method main(string[] args) returns void {
+                Screen.reset();
+                return;
+            }
+        }
+    }
+}

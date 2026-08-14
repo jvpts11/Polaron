@@ -1,0 +1,25 @@
+import System.IO.Console;
+program FfiLibraryClause;
+
+// `class LibC library C { ... }` -- the foreign library this class's externs come from, named ON THE
+// CLASS because the class is already the unit that groups them.
+//
+// An IDENTIFIER and not a string, deliberately: `SDL2` cannot spell `libSDL2-2.0.so.0`, and that
+// limitation is the point. It forces the per-platform mapping out of the source and into the manifest,
+// which is where something that differs per platform belongs. The library name is OURS (a logical name
+// we choose); a symbol is THEIRS, which is why the symbol is a string and this is not.
+//
+// Prints: magnitude = 5
+public bundle main {
+    public namespace app {
+        public class LibC library C {
+            private extern cdecl static method magnitude(int x) returns int symbol("abs");
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("magnitude = %d\n", LibC.magnitude(0 - 5));
+                return;
+            }
+        }
+    }
+}

@@ -24,7 +24,7 @@
 //
 // Implementing one authorizes the compiler to ORDER THE FIELDS. That is the whole point: a check
 // that merely refuses is a guard against a problem that could have been solved, and here it can be
-// solved -- the compiler knows every size and alignment, and LDP3 exposes no offsets, so the order
+// solved -- the compiler knows every size and alignment, and Polaron exposes no offsets, so the order
 // of fields is its to choose.
 #pragma once
 
@@ -32,7 +32,7 @@
 
 #include "parser/ast.h"
 
-namespace ldp3 {
+namespace polaron {
 
 // What a layout asks of the type implementing it, read off its `onArrange` block.
 struct Arrangement {
@@ -51,4 +51,4 @@ bool resolveLayouts(ast::Program& program);
 // there is no program yet to run it in.
 bool readArrangement(const ast::ClassDecl& layout, Arrangement& out);
 
-}  // namespace ldp3
+}  // namespace polaron

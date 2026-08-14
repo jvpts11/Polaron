@@ -1,0 +1,10 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/jvpts/Documents/GitHub/LDP3/build2/cmake_install.cmake",
+		"C:/Users/jvpts/Documents/GitHub/LDP3/build2/third_party/ftxui/cmake_install.cmake",
+		"C:/Users/jvpts/Documents/GitHub/LDP3/build2/tests/cmake_install.cmake",
+		"C:/Users/jvpts/Documents/GitHub/LDP3/build2/_deps/doctest-build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

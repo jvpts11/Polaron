@@ -1,0 +1,27 @@
+import System.IO.Console;
+program FfiExtern;
+
+// FFI (spec 26): `extern <language> [static] method name(params) returns T [symbol("...")];` declares
+// a foreign function (no body) as a class member. The keyword names the LANGUAGE on the other side --
+// cdecl (C), cppdecl (C++), rustdecl, zigdecl -- not a calling convention: see
+// docs/design/ffi-model.md for why the old `stdcall`/`fastcall` were retired. Here
+// two libc functions are declared and called through their class -- the basis for talking to the OS
+// / hardware libraries (and, in freestanding, to functions the kernel provides). On x64 the calling
+// conventions converge on the C ABI.
+
+public bundle main {
+    public namespace app {
+        public class LibC {
+            public extern cdecl static method abs(int x) returns int;
+            public extern cdecl static method labs(long x) returns long;
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                int a = LibC.abs(-42);
+                long b = LibC.labs(cast<long>(-1000000));
+                System.IO.Console.printf("abs=%d labs=%d\n", a, cast<int>(b));  // 42 1000000
+                return;
+            }
+        }
+    }
+}

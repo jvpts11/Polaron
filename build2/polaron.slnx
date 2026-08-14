@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+	<Configurations>
+		<BuildType Name="Debug"/>
+		<BuildType Name="Release"/>
+		<BuildType Name="MinSizeRel"/>
+		<BuildType Name="RelWithDebInfo"/>
+		<Platform Name="x64"/>
+	</Configurations>
+	<Project Path="ALL_BUILD.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="a54f15b1-4f51-3f06-9355-ea7cbe00dade" DefaultStartup="true">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="third_party/ftxui/component.vcxproj"/>
+		<BuildDependency Project="third_party/ftxui/dom.vcxproj"/>
+		<BuildDependency Project="polaron.vcxproj"/>
+		<BuildDependency Project="polaron-lsp.vcxproj"/>
+		<BuildDependency Project="polaron-studio.vcxproj"/>
+		<BuildDependency Project="polaron_core.vcxproj"/>
+		<BuildDependency Project="polaron_driver.vcxproj"/>
+		<BuildDependency Project="polaron_rt.vcxproj"/>
+		<BuildDependency Project="tests/polaron_rt_for_tests.vcxproj"/>
+		<BuildDependency Project="tests/polaron_unit_tests.vcxproj"/>
+		<BuildDependency Project="polc.vcxproj"/>
+		<BuildDependency Project="third_party/ftxui/screen.vcxproj"/>
+	</Project>
+	<Project Path="INSTALL.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="76872748-4b53-3c50-8d71-4b209c76744e">
+		<BuildDependency Project="ALL_BUILD.vcxproj"/>
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="RISCVTargetParserTableGen.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="03390c6b-ed98-3487-9cd6-e9f7714bc532">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="RUN_TESTS.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="f768a2cf-43bf-31b7-87b8-b63cc163fc51">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="ZERO_CHECK.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="4c2f9273-76d3-3497-81fd-f6df82fac51d"/>
+	<Project Path="acc_gen.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="c2746868-7e32-373b-b6e0-e3983751973b">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="third_party/ftxui/component.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="e13f67f7-0a76-3177-bba2-8f56931863bb">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="third_party/ftxui/dom.vcxproj"/>
+		<BuildDependency Project="third_party/ftxui/screen.vcxproj"/>
+	</Project>
+	<Project Path="_deps/doctest-build/doctest_with_main.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="863b7746-b667-3915-9f78-0349f1b0bc12">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="third_party/ftxui/dom.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="f04a0bfb-62f7-30f2-9e94-f8bbee9d3c19">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="third_party/ftxui/screen.vcxproj"/>
+	</Project>
+	<Project Path="intrinsics_gen.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="ba3eafaf-bda9-31fc-8286-99aba6bdb088">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="omp_gen.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="223a83bf-e7fb-3bf7-8e28-3502140b9133">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="polaron.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="8398b66c-07bc-3f51-ba3c-9419163a49f0">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="polaron_driver.vcxproj"/>
+	</Project>
+	<Project Path="polaron-lsp.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="a27f8080-824e-3e8e-9055-3178e8201596">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="polaron-studio.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="d303bd7b-1cef-313a-8bc8-0605c60ee067">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="third_party/ftxui/component.vcxproj"/>
+		<BuildDependency Project="third_party/ftxui/dom.vcxproj"/>
+		<BuildDependency Project="polaron_driver.vcxproj"/>
+		<BuildDependency Project="third_party/ftxui/screen.vcxproj"/>
+	</Project>
+	<Project Path="polaron_core.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="7e6b8989-40ac-30fc-87cf-1dc0d385f4dc">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="polaron_driver.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="5eda9326-1944-38c4-a4a8-c53be5b34f53">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="polaron_prelude.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="a08c8261-482e-343a-8452-97cf147dd28f">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="polaron_rt.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="97b38ac2-7d94-3af5-a4ca-3a13ae204e60">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="tests/polaron_rt_for_tests.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="0d521377-fb9c-362d-a8de-97b239ace11f">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="tests/polaron_unit_tests.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="d74133b1-71a4-393a-a0b1-015ca31d26c6">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="polaron_core.vcxproj"/>
+		<BuildDependency Project="polaron_driver.vcxproj"/>
+	</Project>
+	<Project Path="polc.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="703cdf14-04ed-373f-b214-ee442e7c9f16">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="polaron_core.vcxproj"/>
+		<BuildDependency Project="polaron_prelude.vcxproj"/>
+	</Project>
+	<Project Path="third_party/ftxui/screen.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="e03ae278-5c45-3f03-bc2a-f70b155389aa">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+</Solution>

@@ -1,0 +1,19 @@
+import System.IO.Console;
+import System.Collections.HashMap;
+program CollMap;
+// Só o HashMap, para separar o custo do mapa do custo da lista.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                HashMap<int, int>* map = new HashMap<int, int>() on heap;
+                for (mutable int i = 0; i < 4000000; i++) { map.put(i, i * 7); }
+                mutable int acc = 0;
+                for (mutable int i = 0; i < 4000000; i++) { acc = (acc + map.get(i)) % 1000000007; }
+                System.IO.Console.printf("acc=%d\n", acc);
+                delete map;
+                return;
+            }
+        }
+    }
+}

@@ -9,7 +9,7 @@
 #include "lexer/lexer.h"
 #include "parser/parser.h"
 
-namespace ldp3 {
+namespace polaron {
 namespace {
 
 using namespace ast;
@@ -19,16 +19,25 @@ using namespace ast;
 enum class Wire { Scalar, Text, Handle, Token, Unsupported };
 
 Wire wireOf(const TypeRef& t) {
-    if (t.arrayDims > 0) return Wire::Unsupported;
+    if (t.arrayDims > 0) {
+        return Wire::Unsupported;
+    }
     // A capability token (spec 32.7) travels as the nonce its issuer minted, and is validated on
     // arrival -- that check is the whole point of the type, so it is checked before the pointer rule.
-    if (t.name == "BundleAccessToken") return Wire::Token;
-    if (t.isPointer || t.isRef) return Wire::Handle;
+    if (t.name == "BundleAccessToken") {
+        return Wire::Token;
+    }
+    if (t.isPointer || t.isRef) {
+        return Wire::Handle;
+    }
     const std::string& n = t.name;
     if (n == "int" || n == "long" || n == "short" || n == "byte" || n == "boolean" || n == "char" ||
-        n == "double" || n == "float" || n == "void" || n == "uint" || n == "ulong")
+        n == "double" || n == "float" || n == "void" || n == "uint" || n == "ulong") {
         return Wire::Scalar;
-    if (n == "String" || n == "string") return Wire::Text;
+    }
+    if (n == "String" || n == "string") {
+        return Wire::Text;
+    }
     return Wire::Unsupported;
 }
 
@@ -42,14 +51,23 @@ std::string putCall(const TypeRef& t, const std::string& expr, const std::string
             // A pointer to a REMOTE class is already a proxy: send the id it stands for. A pointer to
             // one of OUR classes is an object we are lending out: register it and send its id, so the
             // peer can call back into it.
-            if (remoteClasses.count(t.name) > 0)
+            if (remoteClasses.count(t.name) > 0) {
                 return "w.putLong(" + expr + ".__ipcId());";
+            }
             return "w.putLong(" + dispatcher + ".lend(cast<address>(" + expr + ")));";
         case Wire::Scalar:
-            if (t.name == "boolean") return "w.putBoolean(" + expr + ");";
-            if (t.name == "char") return "w.putChar(" + expr + ");";
-            if (t.name == "double" || t.name == "float") return "w.putDouble(cast<double>(" + expr + "));";
-            if (t.name == "long" || t.name == "ulong") return "w.putLong(" + expr + ");";
+            if (t.name == "boolean") {
+                return "w.putBoolean(" + expr + ");";
+            }
+            if (t.name == "char") {
+                return "w.putChar(" + expr + ");";
+            }
+            if (t.name == "double" || t.name == "float") {
+                return "w.putDouble(cast<double>(" + expr + "));";
+            }
+            if (t.name == "long" || t.name == "ulong") {
+                return "w.putLong(" + expr + ");";
+            }
             return "w.putInt(cast<int>(" + expr + "));";
         default:
             return "";
@@ -64,10 +82,18 @@ std::string getCall(const TypeRef& t) {
         case Wire::Handle:
             return "r.getLong()";
         case Wire::Scalar:
-            if (t.name == "boolean") return "r.getBoolean()";
-            if (t.name == "char") return "r.getChar()";
-            if (t.name == "double" || t.name == "float") return "r.getDouble()";
-            if (t.name == "long" || t.name == "ulong") return "r.getLong()";
+            if (t.name == "boolean") {
+                return "r.getBoolean()";
+            }
+            if (t.name == "char") {
+                return "r.getChar()";
+            }
+            if (t.name == "double" || t.name == "float") {
+                return "r.getDouble()";
+            }
+            if (t.name == "long" || t.name == "ulong") {
+                return "r.getLong()";
+            }
             return "r.getInt()";
         default:
             return "";
@@ -76,8 +102,12 @@ std::string getCall(const TypeRef& t) {
 
 std::string spell(const TypeRef& t) {
     std::string s = t.name;
-    if (t.isPointer) s += "*";
-    if (t.isRef) s += "&";
+    if (t.isPointer) {
+        s += "*";
+    }
+    if (t.isRef) {
+        s += "&";
+    }
     return s;
 }
 
@@ -98,7 +128,7 @@ void fail(const SourceLocation& loc, const std::string& msg) {
 
 namespace {
 
-// The synthesized code is ordinary LDP3, so it needs the ordinary imports -- the stdlib is import-gated
+// The synthesized code is ordinary Polaron, so it needs the ordinary imports -- the stdlib is import-gated
 // on purpose, and generated code does not get an exemption.
 void addIpcImports(Bundle& b) {
     static const char* kNeeded[][3] = {
@@ -110,9 +140,14 @@ void addIpcImports(Bundle& b) {
     };
     for (const auto& n : kNeeded) {
         bool have = false;
-        for (const ImportDecl& i : b.imports)
-            if (i.path.size() == 3 && i.path[2] == n[2]) have = true;
-        if (have) continue;
+        for (const ImportDecl& i : b.imports) {
+            if (i.path.size() == 3 && i.path[2] == n[2]) {
+                have = true;
+            }
+        }
+        if (have) {
+            continue;
+        }
         ImportDecl imp;
         imp.path = {n[0], n[1], n[2]};
         imp.loc = b.loc;
@@ -125,29 +160,50 @@ void addIpcImports(Bundle& b) {
 bool synthesizeIpc(ast::Program& program) {
     // --- what is remote (its code lives in another process), and what do we export?
     std::set<std::string> remoteClasses;
-    for (const Bundle& b : program.bundles)
-        if (b.isRemote)
-            for (const Namespace& ns : b.namespaces)
+    for (const Bundle& b : program.bundles) {
+        if (b.isRemote) {
+            for (const Namespace& ns : b.namespaces) {
                 for (const ClassDecl& c : ns.classes) {
                     bool isEntry = false;
-                    for (const MemberPtr& m : c.members)
-                        if (const auto* meth = dynamic_cast<const MethodDecl*>(m.get()))
-                            if (meth->isStatic && meth->name == "main") isEntry = true;
-                    if (!isEntry) remoteClasses.insert(c.name);
+                    for (const MemberPtr& m : c.members) {
+                        if (const auto* meth = dynamic_cast<const MethodDecl*>(m.get())) {
+                            if (meth->isStatic && meth->name == "main") {
+                                isEntry = true;
+                            }
+                        }
+                    }
+                    if (!isEntry) {
+                        remoteClasses.insert(c.name);
+                    }
                 }
+            }
+        }
+    }
 
     bool servesIpc = false;  // does this program call Program.serve? (a cheap textual signal is enough:
                              // the pass only needs to know whether to emit a dispatcher, and a program
                              // that imports from another one needs one anyway, for its lent-out objects)
     for (const Bundle& b : program.bundles) {
-        if (b.isPrelude || b.isImported || b.isRemote) continue;
-        for (const ImportDecl& i : b.imports)
-            if (!i.programName.empty()) servesIpc = true;
+        if (b.isPrelude || b.isImported || b.isRemote) {
+            continue;
+        }
+        for (const ImportDecl& i : b.imports) {
+            if (!i.programName.empty()) {
+                servesIpc = true;
+            }
+        }
     }
-    for (const ImportDecl& i : program.imports)
-        if (!i.programName.empty()) servesIpc = true;
-    if (program.usesIpcServe) servesIpc = true;
-    if (remoteClasses.empty() && !servesIpc) return true;  // this program has nothing to do with IPC
+    for (const ImportDecl& i : program.imports) {
+        if (!i.programName.empty()) {
+            servesIpc = true;
+        }
+    }
+    if (program.usesIpcServe) {
+        servesIpc = true;
+    }
+    if (remoteClasses.empty() && !servesIpc) {
+        return true;  // this program has nothing to do with IPC
+    }
 
     // --- the classes THIS program can be asked about: its own public ones.
     struct Exported {
@@ -157,21 +213,34 @@ bool synthesizeIpc(ast::Program& program) {
     std::vector<Exported> exports;
     std::string hostNs;  // where the dispatcher goes: the namespace of the first exported class
     for (const Bundle& b : program.bundles) {
-        if (b.isPrelude || b.isImported || b.isRemote) continue;
-        for (const Namespace& ns : b.namespaces)
+        if (b.isPrelude || b.isImported || b.isRemote) {
+            continue;
+        }
+        for (const Namespace& ns : b.namespaces) {
             for (const ClassDecl& c : ns.classes) {
-                if (c.visibility != "public" || c.isInterface || c.isAbstract) continue;
-                if (c.name.rfind("IpcDispatch", 0) == 0) continue;
+                if (c.visibility != "public" || c.isInterface || c.isAbstract) {
+                    continue;
+                }
+                if (c.name.rfind("IpcDispatch", 0) == 0) {
+                    continue;
+                }
                 exports.push_back({&c, ns.name});
-                if (hostNs.empty()) hostNs = ns.name;
+                if (hostNs.empty()) {
+                    hostNs = ns.name;
+                }
             }
+        }
     }
-    if (hostNs.empty()) return true;  // nothing to dispatch to
+    if (hostNs.empty()) {
+        return true;  // nothing to dispatch to
+    }
     const std::string disp = "IpcDispatch";
 
     // --- 1. the proxies: every remote class becomes a { connection, id } pair whose methods are RPCs.
     for (Bundle& b : program.bundles) {
-        if (!b.isRemote) continue;
+        if (!b.isRemote) {
+            continue;
+        }
         b.isImported = false;  // its bodies are ours now (synthesized), so it compiles like any bundle
         addIpcImports(b);
         for (Namespace& ns : b.namespaces) {
@@ -180,10 +249,16 @@ bool synthesizeIpc(ast::Program& program) {
                 // The other program's ENTRY class is in its header like any public class, but it is not
                 // something to call remotely -- and a proxy for it would collide with our own Main.
                 bool isEntry = false;
-                for (const MemberPtr& m : c.members)
-                    if (const auto* meth = dynamic_cast<const MethodDecl*>(m.get()))
-                        if (meth->isStatic && meth->name == "main") isEntry = true;
-                if (isEntry) continue;
+                for (const MemberPtr& m : c.members) {
+                    if (const auto* meth = dynamic_cast<const MethodDecl*>(m.get())) {
+                        if (meth->isStatic && meth->name == "main") {
+                            isEntry = true;
+                        }
+                    }
+                }
+                if (isEntry) {
+                    continue;
+                }
                 std::string src;
                 src += "public class " + c.name + " {\n";
                 src += "    private mutable long __conn;\n";
@@ -195,7 +270,7 @@ bool synthesizeIpc(ast::Program& program) {
                        "> {\n";
                 src += "        return new RemoteType<" + c.name + ">(conn) on heap;\n";
                 src += "    }\n";
-                // ONE constructor, because LDP3 has no overloading: id 0 means "create the object in the
+                // ONE constructor, because Polaron has no overloading: id 0 means "create the object in the
                 // other program"; any other id binds this proxy to an object that program already owns
                 // (one it handed back as a T*).
                 src += "    public constructor " + c.name + "(long conn, long id) {\n";
@@ -236,7 +311,9 @@ bool synthesizeIpc(ast::Program& program) {
                 src += "    }\n";
                 for (const MemberPtr& m : c.members) {
                     const auto* meth = dynamic_cast<const MethodDecl*>(m.get());
-                    if (meth == nullptr || !exported(*meth)) continue;
+                    if (meth == nullptr || !exported(*meth)) {
+                        continue;
+                    }
                     if (wireOf(meth->returnType) == Wire::Unsupported) {
                         fail(meth->loc, "'" + c.name + "." + meth->name + "' cannot cross a program " +
                                             "boundary: its return type '" + spell(meth->returnType) +
@@ -252,7 +329,9 @@ bool synthesizeIpc(ast::Program& program) {
                                                 "(spec 2.8)");
                             return false;
                         }
-                        if (i > 0) sig += ", ";
+                        if (i > 0) {
+                            sig += ", ";
+                        }
                         sig += spell(meth->params[i].type) + " " + meth->params[i].name;
                     }
                     sig += ") throws(IpcError) returns " + spell(meth->returnType) + " {\n";
@@ -263,10 +342,11 @@ bool synthesizeIpc(ast::Program& program) {
                     src += "        w.putString(\"" + c.name + "\");\n";
                     src += "        w.putString(\"" + meth->name + "\");\n";
                     for (const Param& p : meth->params) {
-                        if (isToken(p.type))
+                        if (isToken(p.type)) {
                             src += "        w.putLong(" + p.name + ".nonce());\n";
-                        else
+                        } else {
                             src += "        " + putCall(p.type, p.name, disp, remoteClasses) + "\n";
+                        }
                     }
                     src += "        IpcChannel ch = new IpcChannel(this.__conn) on heap;\n";
                     src += "        IpcReader r = ch.request(w.toFrame());\n";
@@ -311,7 +391,7 @@ bool synthesizeIpc(ast::Program& program) {
     // --- 2. the dispatcher: this program answering for its own objects.
     std::string d;
     // `internal`: the dispatcher is this program's own plumbing. Public would put it in the program's
-    // .ldh, and a client compiling against that header would synthesize a proxy named IpcDispatch --
+    // .polh, and a client compiling against that header would synthesize a proxy named IpcDispatch --
     // colliding with its own dispatcher.
     d += "internal class " + disp + " {\n";
     d += "    private static mutable HashSet<long> live;\n";
@@ -354,13 +434,20 @@ bool synthesizeIpc(ast::Program& program) {
     for (const Exported& e : exports) {
         bool hasNoArgCtor = false;
         bool anyCtor = false;
-        for (const MemberPtr& m : e.cls->members)
+        for (const MemberPtr& m : e.cls->members) {
             if (const auto* ct = dynamic_cast<const ConstructorDecl*>(m.get())) {
                 anyCtor = true;
-                if (ct->params.empty()) hasNoArgCtor = true;
+                if (ct->params.empty()) {
+                    hasNoArgCtor = true;
+                }
             }
-        if (!anyCtor) hasNoArgCtor = true;  // the synthesized default constructor
-        if (!hasNoArgCtor) continue;        // instantiate() takes no arguments (spec 2.8)
+        }
+        if (!anyCtor) {
+            hasNoArgCtor = true;  // the synthesized default constructor
+        }
+        if (!hasNoArgCtor) {
+            continue;  // instantiate() takes no arguments (spec 2.8)
+        }
         d += "            if (type.equals(\"" + e.cls->name + "\")) {\n";
         d += "                " + e.cls->name + "* o = new " + e.cls->name + "() on heap;\n";
         d += "                IpcWriter w = new IpcWriter() on heap;\n";
@@ -398,16 +485,24 @@ bool synthesizeIpc(ast::Program& program) {
         std::string body;
         for (const MemberPtr& m : e.cls->members) {
             const auto* meth = dynamic_cast<const MethodDecl*>(m.get());
-            if (meth == nullptr || !exported(*meth)) continue;
+            if (meth == nullptr || !exported(*meth)) {
+                continue;
+            }
             bool ok = wireOf(meth->returnType) != Wire::Unsupported;
             for (const Param& p : meth->params) {
-                if (wireOf(p.type) == Wire::Unsupported) ok = false;
+                if (wireOf(p.type) == Wire::Unsupported) {
+                    ok = false;
+                }
                 // A parameter that is a pointer to a REMOTE class would ask this program to hold a proxy
                 // into a third one; that is a later slice, so the method is simply not exposed rather
                 // than half-worked.
-                if (wireOf(p.type) == Wire::Handle && remoteClasses.count(p.type.name) > 0) ok = false;
+                if (wireOf(p.type) == Wire::Handle && remoteClasses.count(p.type.name) > 0) {
+                    ok = false;
+                }
             }
-            if (!ok) continue;  // not callable across a boundary; simply not exposed
+            if (!ok) {
+                continue;  // not callable across a boundary; simply not exposed
+            }
             any = true;
             body += "                if (meth.equals(\"" + meth->name + "\")) {\n";
             // decode the arguments in declared order, then run the method
@@ -443,7 +538,9 @@ bool synthesizeIpc(ast::Program& program) {
             const std::string args = [&] {
                 std::string a;
                 for (std::size_t i = 0; i < meth->params.size(); ++i) {
-                    if (i > 0) a += ", ";
+                    if (i > 0) {
+                        a += ", ";
+                    }
                     a += meth->params[i].name;
                 }
                 return a;
@@ -468,7 +565,9 @@ bool synthesizeIpc(ast::Program& program) {
             body += "                    return f;\n";
             body += "                }\n";
         }
-        if (!any) continue;
+        if (!any) {
+            continue;
+        }
         d += "            if (type.equals(\"" + cn + "\")) {\n";
         d += body;
         d += "            }\n";
@@ -490,10 +589,14 @@ bool synthesizeIpc(ast::Program& program) {
     }
 
     for (Bundle& b : program.bundles) {
-        if (b.isPrelude || b.isImported || b.isRemote) continue;
+        if (b.isPrelude || b.isImported || b.isRemote) {
+            continue;
+        }
         bool placed = false;
         for (Namespace& ns : b.namespaces) {
-            if (ns.name != hostNs) continue;
+            if (ns.name != hostNs) {
+                continue;
+            }
             dcls.loc = ns.loc;
             ns.classes.push_back(std::move(dcls));
             placed = true;
@@ -518,21 +621,31 @@ bool synthesizeIpc(ast::Program& program) {
         return n == "Ipc" || n == "System.Ipc" || (n.size() > 4 && n.compare(n.size() - 4, 4, ".Ipc") == 0);
     };
     for (Bundle& b : program.bundles) {
-        if (!b.isPrelude) continue;
+        if (!b.isPrelude) {
+            continue;
+        }
         for (Namespace& ns : b.namespaces) {
-            if (!isIpcNamespace(ns.name)) continue;
+            if (!isIpcNamespace(ns.name)) {
+                continue;
+            }
             for (ClassDecl& c : ns.classes) {
-                if (c.name != "IpcRuntime") continue;
+                if (c.name != "IpcRuntime") {
+                    continue;
+                }
                 for (MemberPtr& m : c.members) {
                     auto* meth = dynamic_cast<MethodDecl*>(m.get());
-                    if (meth == nullptr || meth->name != "handle") continue;
+                    if (meth == nullptr || meth->name != "handle") {
+                        continue;
+                    }
                     const std::string body = "public class Seam {\n    public static method handle(String frame) "
                                              "returns String {\n        return " +
                                              disp + ".handle(frame);\n    }\n}\n";
                     Lexer slex(body, "<ipc-seam>");
                     Parser sparser(slex.tokenize(), "<ipc-seam>");
                     ClassDecl seam = sparser.parseClassForSynthesis();
-                    if (sparser.hasErrors()) return false;
+                    if (sparser.hasErrors()) {
+                        return false;
+                    }
                     for (MemberPtr& sm : seam.members) {
                         auto* smeth = dynamic_cast<MethodDecl*>(sm.get());
                         if (smeth != nullptr && smeth->name == "handle") {
@@ -556,4 +669,4 @@ bool synthesizeIpc(ast::Program& program) {
     return true;
 }
 
-}  // namespace ldp3
+}  // namespace polaron

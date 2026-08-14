@@ -1,11 +1,11 @@
-# LDP3 Performance Tests
+# Polaron Performance Tests
 
-Micro-benchmarks comparing LDP3 against its targets, C and C++, on workloads C/C++ are
+Micro-benchmarks comparing Polaron against its targets, C and C++, on workloads C/C++ are
 known to be fast at. Each benchmark is implemented identically (same algorithm, same
 parameters, same checksum) in all three languages so the comparison is fair and the
 checksums confirm correctness.
 
-- **LDP3 sources:** this folder (`*.ldp3`).
+- **Polaron sources:** this folder (`*.pol`).
 - **C / C++ sources:** a sibling Visual Studio solution,
   `C and C++ perf tests/ConsoleApplication1`, one project per benchmark, prefixed `C_` (C)
   and `Cpp_` (C++).
@@ -24,28 +24,79 @@ checksums confirm correctness.
 | `collatz`     | Longest Collatz chain below 1M — integer + heavy branching (int64) |
 | `regions`     | Arena allocation: bump-allocate 40M objects via `region` vs malloc/free |
 
-## Building & running (LDP3)
+## Building & running (Polaron)
+
+**Pass `-O2` to `polc`.** This is not a detail — it is the single most important line on this page.
+`polc` defaults to `-O0` for **its own middle end**, so without the flag the loop interchange and
+the bounds-check hoisting never run and the backend cannot recover what they would have produced.
+`polaron build` always passes it; a hand-written command line does not. Every number published here
+before 2026-08-12 was measured without it, and understated `matrixmul` by **12×** (349 ms → 29 ms).
 
 ```
-build\bin\Debug\ldp3c.exe "performance tests\matrixmul.ldp3" -o "performance tests\matrixmul.ll"
-clang -O2 -ffp-contract=off "performance tests\matrixmul.ll" runtime\ldp3_rt.c -o "performance tests\matrixmul.exe" -llegacy_stdio_definitions
+build-local\bin\Release\polc.exe -O2 "performance tests\matrixmul.pol" -o "performance tests\matrixmul.ll"
+clang -O2 -ffp-contract=off "performance tests\matrixmul.ll" runtime\polaron_rt.cpp -o "performance tests\matrixmul.exe" -llegacy_stdio_definitions -Wno-override-module
 "performance tests\matrixmul.exe"
 ```
 
-C/C++: build the VS solution in `Release|x64`, or `clang -O2 -ffp-contract=off` the sources.
+Everything here is scripted: **`bench-all.ps1`** builds and times Polaron against the C references in
+`c-reference\` with the same alignment and the same `-ffp-contract=off`, and refuses to compare arms
+whose checksums disagree. Run it **inside vcvars64** — without it clang links nothing, and a missing
+executable times as ~1 ms, which reads as an impossibly fast benchmark rather than as the error it is.
 
-## Results (2026-06-25, best of 3 runs, ms)
+C/C++/Fortran references: `c-reference\*.c`, built with GCC (see below).
 
-LDP3 is compiled with clang `-O2`; the comparison below shows both the targets as normally
+## Results (2026-08-12, AMD Ryzen 7 7800X3D, best of 3, ms)
+
+Polaron: `polc -O2` + `clang -O2`. C: **GCC 16.1.0** (MinGW-w64 UCRT), which is the bar — it produces
+the fastest C/C++/Fortran code available, so measuring against clang proves nothing about whether the
+language is fast. All checksums matched across every arm.
+
+| Benchmark   | Polaron | gcc -O2 | gcc -O3 | vs best GCC |
+|-------------|------:|--------:|--------:|------------:|
+| Regions     | **105.5** | 1150.5 | 1155.0 | **10.9× faster** |
+| Fibonacci   |  **14.2** |  109.5 |   98.1 |  **6.9× faster** |
+| MatrixMul   |  **29.0** |  186.0 |  198.2 |  **6.4× faster** |
+| BinaryTrees | **140.8** |  580.6 |  580.2 |  **4.1× faster** |
+| MonteCarlo  |  **67.3** |   90.9 |   93.2 |  **1.35× faster** |
+| Collatz     |  **88.3** |  102.6 |  102.0 |  **1.16× faster** |
+| QuickSort   |   224.7 |  **215.7** |  221.7 |  4% slower (within alignment noise) |
+| Mandelbrot  |   721.6 |  **657.8** |  658.3 |  **9.7% slower** |
+| Primes      |    54.2 |   **45.5** |   46.0 |  **19% slower** |
+
+**Where the wins come from.** `MatrixMul` and `Fibonacci` are not backend luck: `polc`'s own middle
+end does two transforms LLVM will not. Loop interchange turns the strided `ijk` inner loop into a
+unit-stride one that the vectorizer then handles (GCC gets there by outer-loop vectorization, which
+LLVM lacks) — measured 349 ms → 29 ms. Recursive inlining flattens self-recursion enough that CSE can
+share subtrees; GCC does this too, we do it deeper. `Regions` and `BinaryTrees` are the allocator: a
+region is a bump pointer released whole, against malloc/free per object.
+
+**The two that break the rule** — Polaron must be faster than, or equal to, perfect hand-written C:
+
+- **Primes (19%)**: the sieve's *inner* loop is versioned and runs unchecked, but the **outer** loop
+  keeps a per-iteration bounds check over 20 M iterations. Compare + branch × 20 M ≈ 9 ms, and the
+  whole deficit is 8.7 ms. The access is `sieve[i]` inside an `if` **condition**, which is the shape
+  `hoistBoundsChecks` appears not to collect.
+- **Mandelbrot (9.7%)**: not yet diagnosed.
+
+## Superseded results (2026-06-25) — measured without `polc -O2`
+
+The table that used to be here reported Polaron at 266 ms on MatrixMul and 243 ms on Fibonacci and
+concluded GCC was "~2× ahead" on both. That conclusion was an artifact of invoking `polc` with no
+`-O` flag, so the middle end was off. With it, both are 6× the other way. Kept only as a warning:
+a benchmark harness that does not build the way the product builds measures a compiler nobody ships.
+
+## Old results (2026-06-25, best of 3 runs, ms)
+
+Polaron is compiled with clang `-O2`; the comparison below shows both the targets as normally
 built (MSVC `/O2` from Visual Studio) and built with the same backend (clang `-O2`) to
 isolate language overhead from compiler differences. All checksums matched across the three
 languages.
 
-All times in ms, best of 3, same machine. LDP3 is built with clang `-O2`. C/C++ are shown
+All times in ms, best of 3, same machine. Polaron is built with clang `-O2`. C/C++ are shown
 against the two community-reference compilers, GCC 16.1 and clang, both `-O2 -ffp-contract=off`.
-All checksums matched across LDP3, C and C++, every compiler.
+All checksums matched across Polaron, C and C++, every compiler.
 
-| Benchmark   |  LDP3 | C (gcc) | C++ (gcc) | C (clang) | C++ (clang) |
+| Benchmark   |  Polaron | C (gcc) | C++ (gcc) | C (clang) | C++ (clang) |
 |-------------|------:|--------:|----------:|----------:|------------:|
 | MatrixMul   | 266.0 | **133.0** | **149.6** | 288.6 | 294.6 |
 | Mandelbrot  | 703.5 | 723.7 | 721.4 | 710.6 | 703.9 |
@@ -62,17 +113,17 @@ clang are the reference compilers for the community, so they are shown here.)
 
 ## Takeaway
 
-- **Same backend (clang): LDP3 == C == C++** within run-to-run noise. LDP3 shares the LLVM
+- **Same backend (clang): Polaron == C == C++** within run-to-run noise. Polaron shares the LLVM
   optimizer and emits IR clean enough to optimize like hand-written C/C++ — no inherent
   language overhead on raw compute.
-- **vs GCC, LDP3 is competitive on most kernels** (Mandelbrot, BinaryTrees, QuickSort, Primes,
+- **vs GCC, Polaron is competitive on most kernels** (Mandelbrot, BinaryTrees, QuickSort, Primes,
   Collatz) and **wins MonteCarlo**. GCC pulls clearly ahead on **MatrixMul** and **Fibonacci**
-  (~2×) — its auto-vectorizer and recursion optimization at `-O2` beat what LDP3 gets through
+  (~2×) — its auto-vectorizer and recursion optimization at `-O2` beat what Polaron gets through
   clang `-O2`. Those are recoverable later (better IR / `-O3` / vectorization), not a language
   limitation.
-- **`regions` is a ~6× win** for LDP3: its built-in region (bump allocator) crushes naive
+- **`regions` is a ~6× win** for Polaron: its built-in region (bump allocator) crushes naive
   malloc/free-per-object across all compilers. A hand-rolled C arena would match it — the
-  point is LDP3 gives you that arena for free, safely, with no ceremony.
+  point is Polaron gives you that arena for free, safely, with no ceremony.
 - The value-semantics model costs nothing here (arrays are pointers; no class-by-value copies
   in the hot loops). A workload that copies classes by value would be the place to measure it.
 

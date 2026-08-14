@@ -3,7 +3,7 @@
 #include <optional>
 #include <string>
 
-namespace ldp3::driver {
+namespace polaron::driver {
 
 // Turn a `plug` argument into something `git clone` accepts:
 //   - a full URL with a scheme (https://..., git@...) is returned as-is;
@@ -13,4 +13,4 @@ namespace ldp3::driver {
 // Returns nullopt for a bare name with no mapping.
 std::optional<std::string> resolveSource(const std::string& spec, const std::filesystem::path& sourcesToml);
 
-}  // namespace ldp3::driver
+}  // namespace polaron::driver

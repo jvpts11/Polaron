@@ -1,0 +1,32 @@
+import System.IO.Console;
+program BitFieldLiteralBad;
+
+// A LITERAL THAT DOES NOT FIT A BIT FIELD IS REFUSED (2026-08-13). The line the compiler draws:
+// truncation on store is spec 11.1 and stands for values it cannot read -- a count, a sum, anything
+// computed, which is what `bit_fields.pol` tests. A literal is a different claim, because the
+// compiler holds the value and the width and can see they do not fit, and there is no reading of
+// `state = 6` into three bits under which the author wanted 6 to become -2.
+//
+// It began as a warning and was raised, because of what the warning found: the fauna layout of a
+// real game budgeted a beast at twenty bytes with `int species : 5` and `int state : 3`, and wrote
+// beside them that the field "holds eight values and the tick needs exactly eight" -- true about the
+// count and wrong about the range. Four states and two species would have been stored as something
+// else, in silence, in a document whose every other number had been measured.
+public bundle main {
+    public namespace app {
+        public struct Beast {
+            public mutable int state : 3;    // signed: -4..3, and that is the trap
+            public constructor Beast() {
+                this.state = 0;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Beast b = new Beast();
+                b.state = 6;    // refused: a signed 3-bit field stops at 3 and would read back -2
+                System.IO.Console.printf("state=%d\n", b.state);
+                return;
+            }
+        }
+    }
+}
