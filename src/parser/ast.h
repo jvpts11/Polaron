@@ -397,6 +397,11 @@ struct NewExpr : Expr {
     std::vector<std::string> typeArgs;  // generic arguments: new Box<int>(...)
     std::vector<ExprPtr> args;
     std::string location;  // "stack" or "heap"
+    // Whether `on <location>` was WRITTEN. The default is "stack", so `on heap` is self-evidently the
+    // author's word while `on stack` is indistinguishable from silence -- and a region class needs to
+    // tell them apart, because it must refuse a placement it was given and quietly take the one it was
+    // not. Refusing what the author wrote and overriding it without a word are not the same act.
+    bool locationWritten = false;
     std::string region;    // "in region R" target; empty when none
     void dump(std::string& out, int indent) const override;
 };

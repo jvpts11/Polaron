@@ -1727,7 +1727,30 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                     builder.getInt64Ty(), builder.CreateStructGEP(typeTokenType(), t, 6), "size");
                 llvm::Value* ctorFn = builder.CreateLoad(
                     builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 7), "ctor");
-                llvm::Value* obj = builder.CreateCall(mallocFn(), {size}, "inst");
+                // A REGION CLASS IS BUILT WHERE IT BELONGS, EVEN HERE. Every other allocation of an
+                // A knows it is building an A and reaches A's arena; this one holds a token and used
+                // to reach for `malloc`, which put an instance of a region class outside the only
+                // region it is allowed to be in. The token now carries the arena's own `new`, so the
+                // choice is the class's rather than this code's.
+                llvm::Value* arenaNew = builder.CreateLoad(
+                    builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 15), "arenanew");
+                llvm::Value* hasArena =
+                    builder.CreateICmpNE(arenaNew, llvm::ConstantPointerNull::get(builder.getPtrTy()));
+                auto* arenaBB = llvm::BasicBlock::Create(context, "inst.arena", currentFn);
+                auto* heapBB = llvm::BasicBlock::Create(context, "inst.heap", currentFn);
+                auto* gotBB = llvm::BasicBlock::Create(context, "inst.got", currentFn);
+                builder.CreateCondBr(hasArena, arenaBB, heapBB);
+                builder.SetInsertPoint(arenaBB);
+                llvm::Value* fromArena = builder.CreateCall(
+                    llvm::FunctionType::get(builder.getPtrTy(), {}, false), arenaNew, {}, "inst.rgn");
+                builder.CreateBr(gotBB);
+                builder.SetInsertPoint(heapBB);
+                llvm::Value* fromHeap = builder.CreateCall(mallocFn(), {size}, "inst.malloc");
+                builder.CreateBr(gotBB);
+                builder.SetInsertPoint(gotBB);
+                llvm::PHINode* obj = builder.CreatePHI(builder.getPtrTy(), 2, "inst");
+                obj->addIncoming(fromArena, arenaBB);
+                obj->addIncoming(fromHeap, heapBB);
                 // Forward the call's arguments to the constructor (spec 31), building the
                 // function type from the argument values so a ctor with parameters runs.
                 std::vector<llvm::Type*> pts = {builder.getPtrTy()};

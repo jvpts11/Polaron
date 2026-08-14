@@ -610,6 +610,33 @@ llvm::Value* CodeGenerator::Impl::classArenaBase(const std::string& cls) {
     return builder.CreateCall(arenaBaseFn(), {classRegionBlock(cls)}, regionFamilyRoot(cls) + ".base");
 }
 
+llvm::Function* CodeGenerator::Impl::classArenaNewFn(const std::string& cls) {
+    auto cit = classes.find(cls);
+    if (cit == classes.end() || cit->second.decl == nullptr || !cit->second.decl->isRegionClass) {
+        return nullptr;
+    }
+    if (auto it = arenaNewFns_.find(cls); it != arenaNewFns_.end()) {
+        return it->second;
+    }
+    // Everything that allocates an A resolves A's arena at COMPILE time -- `emitNew`, a value copy, a
+    // cascade clone -- because it knows which class it is building. Reflection does not: `instantiate`
+    // holds a type token and a size, and reaching for `malloc` there was the last door left open in
+    // the totality this feature is built on. A thunk closes it without teaching the reflection path
+    // what a region is: the token carries "how to make one of me", and for a region class that is the
+    // arena.
+    llvm::Function* savedFn = currentFn;
+    llvm::IRBuilderBase::InsertPointGuard savedIP(builder);
+    llvm::Function* fn = llvm::Function::Create(
+        llvm::FunctionType::get(builder.getPtrTy(), {}, false), llvm::Function::InternalLinkage,
+        "__rgncls.new." + cls, module);
+    arenaNewFns_[cls] = fn;
+    currentFn = fn;
+    builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", fn));
+    builder.CreateRet(classArenaAlloc(cls, sizeOf(cit->second.type)));
+    currentFn = savedFn;
+    return fn;
+}
+
 llvm::GlobalVariable* CodeGenerator::Impl::enumSingletonGlobal(const std::string& enumName, const std::string& constName) {
     const std::string gname = enumName + "." + constName + ".__inst";
     if (staticGlobals.count(gname) == 0) {

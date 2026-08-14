@@ -1061,8 +1061,15 @@ void CodeGenerator::Impl::emitFunctions() {
                     llvm::Function* nf = functions[cls.name + ".__new"];
                     currentFn = nf;
                     builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", nf));
-                    llvm::Value* obj = builder.CreateCall(
-                        mallocFn(), {sizeOf(classes[cls.name].type)}, cls.name + ".obj");
+                    // A region class exported from a library is still total: the consumer cannot lay
+                    // the object out, and it may not place it either. `__new` reaches the same arena
+                    // `new A()` does, so a bundle boundary is not a way out of "there is nowhere
+                    // else" -- which is the property the narrow `A*` in its fields is computed from.
+                    llvm::Value* obj =
+                        cls.isRegionClass
+                            ? classArenaAlloc(cls.name, sizeOf(classes[cls.name].type))
+                            : builder.CreateCall(mallocFn(), {sizeOf(classes[cls.name].type)},
+                                                 cls.name + ".obj");
                     std::vector<llvm::Value*> cargs{obj};
                     for (auto& a : nf->args()) {
                         cargs.push_back(&a);

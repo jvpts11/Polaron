@@ -1,0 +1,32 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionClassMoveIn;
+
+// `move x into region R` IS `in region R`, SPELLED AS A MOVE -- so it gets the same refusal.
+//
+// `new A() in region other` is a compile error for a region class: an A somewhere else is the one
+// thing every consequence of the feature rests on not existing (unimport's O(1) liveness, the linear
+// walk over every instance, the 32-bit `A*`). Relocating an existing A into another region reaches
+// the identical state by a different sentence, and a rule that holds only for the spelling it was
+// written against is not a rule.
+//
+// Must fail with: `Node` is a `region class`, so `into region kennel` would move it out of the only
+// region its instances may be in
+public bundle Main {
+    public namespace App {
+        public region class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                pool region kennel = itself.allocate(2 kilobytes);
+                Node* n = new Node(1);
+                Node* moved = move n into region kennel;
+                System.IO.Console.printf("%d\n", moved.v);
+                release region kennel;
+                return;
+            }
+        }
+    }
+}

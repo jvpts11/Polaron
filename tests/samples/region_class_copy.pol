@@ -1,0 +1,46 @@
+import System.IO.Console;
+program RegionClassCopy;
+
+// A VALUE COPY OF A REGION CLASS IS STILL IN THE REGION.
+//
+// `emitNew` refuses `on heap` and `in region other` because totality is the whole feature -- but the
+// author is not the only one who allocates an A. Assignment is a deep copy in Polaron, and the copy
+// the COMPILER makes was going to `alloca` (a local) or `malloc` (a field), so it landed outside the
+// arena with nothing said.
+//
+// That is not a tidiness question, because a narrow `A*` field stores `(i32)(p - arenaBase)`. Given a
+// stack copy that subtraction is an arbitrary number truncated to 32 bits, so `root.left` pointed at
+// neither the copy nor anything else in the reservation. Before the fix this program died with an
+// access violation and no diagnostic.
+//
+// What it pins down:
+//   - a copy can be stored in a narrow field and read back as itself, through the arena's base
+//   - the copy is still an INDEPENDENT object: mutating it does not touch the original
+//
+// Prints: original=4 copy=77 through-field=77
+public bundle Main {
+    public namespace App {
+
+        public region class Node {
+            public mutable int key;
+            public mutable nullable Node* left;
+
+            public constructor Node(int key) {
+                this.key = key;
+                this.left = null;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* root = new Node(4);
+                Node copy = root;        // value copy -> a second Node, and it must be in the arena
+                copy.key = 77;
+                root.left = copy;        // narrow store: only meaningful if `copy` is in the arena
+                System.IO.Console.printf("original=%d copy=%d through-field=%d\n",
+                                         root.key, copy.key, root.left.key);
+                return;
+            }
+        }
+    }
+}

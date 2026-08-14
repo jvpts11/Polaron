@@ -1,0 +1,30 @@
+import System.IO.Console;
+program RegionClassExtract;
+
+// `extract` IS THE ESCAPE A REGION CLASS FORBIDS, so naming one says why.
+//
+// Extraction (spec 17) relocates an object out of a region to a fresh heap block. That is the right
+// answer for an OWNED region: the region dies at its owner's scope exit and this one object should
+// outlive it. A region class has no such moment -- its arena is the only place its instances may be,
+// which is exactly what `on heap` is refused for. So there is nowhere to extract to.
+//
+// Naming the class here is the reasonable guess, because `release region Node` names one, so it gets
+// the reason rather than "unknown region 'Node'".
+//
+// Must fail with: 'Node' is a `region class`: its arena is the only place its instances may be
+public bundle Main {
+    public namespace App {
+        public region class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* n = new Node(1);
+                Node* out = extract n from region Node;
+                System.IO.Console.printf("%d\n", out.v);
+                return;
+            }
+        }
+    }
+}

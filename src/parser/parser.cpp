@@ -5263,6 +5263,7 @@ ast::ExprPtr Parser::parseNew() {
     // no `delete`). Write `on stack` / `on heap` only to force a placement.
     if (match(TokenKind::KwOn)) {
         e->location = expect(TokenKind::Identifier, "'stack' or 'heap'").lexeme;
+        e->locationWritten = true;
     } else {
         e->location = "stack";
     }

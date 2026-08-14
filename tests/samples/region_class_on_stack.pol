@@ -1,0 +1,31 @@
+import System.IO.Console;
+program RegionClassOnStack;
+
+// `on stack` IS REFUSED TOO, and it had to be asked for separately.
+//
+// The default placement for `new T()` is the stack, so `on stack` and silence arrive at codegen
+// looking identical -- which is why `on heap` was refused here from the first day and this was not.
+// The parser now records whether the placement was WRITTEN, and a written one is refused whatever it
+// says. Refusing what the author wrote and overriding it without a word are not the same act, and the
+// second is the one this whole family of errors exists to prevent.
+//
+// It is also the placement that would do the most damage. A narrow `A*` field stores
+// `(i32)(p - arenaBase)`, so a stack `A` is not a misplaced object -- it is a field pointing at
+// neither the object nor anything else in the reservation.
+//
+// Must fail with: `Node` is a `region class`, so `on stack` has nowhere to put this
+public bundle Main {
+    public namespace App {
+        public region class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* n = new Node(1) on stack;
+                System.IO.Console.printf("%d\n", n.v);
+                return;
+            }
+        }
+    }
+}

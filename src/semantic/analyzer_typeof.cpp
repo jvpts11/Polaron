@@ -461,7 +461,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string t = typeOf(*ex->target);  // also checks the target's first (valid) use
         if (ex->region.find('.') == std::string::npos) {  // a `this.field` region is validated at codegen
             const LocalVar* r = lookupLocal(ex->region);
-            if (r == nullptr) {
+            if (const ClassInfo* rc = lookupClass(ex->region);
+                r == nullptr && rc != nullptr && rc->isRegionClass) {
+                // Naming a region class here is the reasonable guess -- `release region Node` names
+                // one -- so it gets the real reason rather than "unknown region". Extraction relocates
+                // an object out of a region it would otherwise die with; a region class's arena is the
+                // only place its instances may be, so there is nowhere to relocate TO. This is the
+                // same refusal as `on heap`, and for the same reason.
+                error("'" + ex->region +
+                          "' is a `region class`: its arena is the only place its instances may be, "
+                          "so there is nowhere to extract one to. Extraction is for an owned region, "
+                          "which dies while the object outlives it",
+                      ex->loc);
+            } else if (r == nullptr) {
                 error("unknown region '" + ex->region + "' in extract", ex->loc);
             } else if (r->type != "region") {
                 error("'" + ex->region + "' is not a region", ex->loc);
