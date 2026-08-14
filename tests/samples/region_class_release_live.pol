@@ -1,0 +1,36 @@
+import System.IO.Console;
+program RegionClassReleaseLive;
+
+// The guard on `release region`, firing.
+//
+// A node is still alive when the release runs. Freeing the arena would hand `a` a dangling pointer --
+// the exact failure the language exists to make impossible -- so the release is refused at run time
+// with a message that names the family. This is the same live-instance proof `unimport` performs,
+// reusing the same counter rather than adding safety machinery of its own.
+//
+// The check is at RUN TIME because that is the only place the answer exists: how many instances are
+// alive is not a question a compiler can answer.
+//
+// Must fail with: cannot release the region of 'Node': instances of it are still alive
+public bundle Main {
+    public namespace App {
+        public abstract region class Node {
+            public mutable int value;
+            public constructor Node(int v) { this.value = v; }
+            public method get() returns int { return this.value; }
+        }
+        public region class Leaf extends Node {
+            public constructor Leaf(int v) { super(v); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Leaf a = new Leaf(7);
+                System.IO.Console.printf("built %d\n", a.get());
+                release region Node;          // `a` is still alive: refused
+                System.IO.Console.printf("unreachable %d\n", a.get());
+                return;
+            }
+        }
+    }
+}

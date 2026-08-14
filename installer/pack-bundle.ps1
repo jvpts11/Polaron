@@ -1,13 +1,13 @@
-# Stage a self-contained LDP3 toolchain bundle for the .msi. The goal (golden rule) is that the installed
-# toolchain compiles .ldp3 -> .exe on a bare Windows 10/11 x64 machine with no Visual Studio / Windows SDK:
-# ship the LDP3 binaries, a slim clang + lld-link, the CRT/Windows import libs and the runtime lib. Because
+# Stage a self-contained Polaron toolchain bundle for the .msi. The goal (golden rule) is that the installed
+# toolchain compiles .pol -> .exe on a bare Windows 10/11 x64 machine with no Visual Studio / Windows SDK:
+# ship the Polaron binaries, a slim clang + lld-link, the CRT/Windows import libs and the runtime lib. Because
 # the produced exes link the static CRT, they depend only on kernel32 + ws2_32, present on every Windows.
 #
 #   ./pack-bundle.ps1                 # stages dist/stage from a Release build
 #
-# Layout produced (matches how the driver finds its toolchain -- siblings of ldp3.exe, plus lib/):
-#   dist/stage/core/   ldp3.exe ldp3c.exe ldp3-lsp.exe clang.exe lld-link.exe *.dll ldp3_rt.lib  + lib/*.lib
-#   dist/stage/tui/    ldp3-studio.exe            (the optional TUI feature)
+# Layout produced (matches how the driver finds its toolchain -- siblings of polaron.exe, plus lib/):
+#   dist/stage/core/   polaron.exe polc.exe polaron-lsp.exe clang.exe lld-link.exe *.dll polaron_rt.lib  + lib/*.lib
+#   dist/stage/tui/    polaron-studio.exe            (the optional TUI feature)
 #   dist/stage/vscode/ <the VS Code extension>   (installed on demand)
 param(
     [string]$Config = "Release",
@@ -32,15 +32,15 @@ $core = Join-Path $stage "core"; $tui = Join-Path $stage "tui"; $vscode = Join-P
 Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 foreach ($d in @($core, (Join-Path $core "lib"), $tui, $vscode)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
 
-# 1) LDP3 binaries + their sibling DLLs (zstd etc.), then the compiler split from the TUI.
-foreach ($e in "ldp3.exe","ldp3c.exe","ldp3-lsp.exe") { Copy-Item (Need "$bin\$e" "binary") $core }
-Copy-Item (Need "$bin\ldp3-studio.exe" "TUI binary") $tui
+# 1) Polaron binaries + their sibling DLLs (zstd etc.), then the compiler split from the TUI.
+foreach ($e in "polaron.exe","polc.exe","polaron-lsp.exe") { Copy-Item (Need "$bin\$e" "binary") $core }
+Copy-Item (Need "$bin\polaron-studio.exe" "TUI binary") $tui
 Get-ChildItem "$bin\*.dll" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName $core }
 
 # 2) The runtime, compiled with the STATIC CRT so it matches the bundled libcmt (the CMake build uses the
 #    dynamic CRT, which would drag in MSVCRT.lib -- not shipped). Built here with the bundled clang.
 & "$LlvmBin\clang.exe" --target=x86_64-pc-windows-msvc -O2 -fms-runtime-lib=static `
-    -c (Join-Path $RepoRoot "runtime\ldp3_rt.cpp") -o (Join-Path $core "ldp3_rt.lib")
+    -c (Join-Path $RepoRoot "runtime\polaron_rt.cpp") -o (Join-Path $core "polaron_rt.lib")
 if ($LASTEXITCODE -ne 0) { throw "compiling the runtime failed" }
 
 # 3) The LLVM tools clang + lld-link (slim, standalone).
@@ -112,7 +112,7 @@ try {
     # (install-vscode.cmd installs by *.vsix glob, so the exact name is not load-bearing.)
     $extVer = (Get-Content (Join-Path $extSrc "package.json") -Raw | ConvertFrom-Json).version
     # Quote the scoped package: a bare @vscode/vsce would be mangled by PowerShell's @ splat operator.
-    & npx.cmd --yes '@vscode/vsce' package --no-dependencies -o (Join-Path $vscode "ldp3-$extVer.vsix")
+    & npx.cmd --yes '@vscode/vsce' package --no-dependencies -o (Join-Path $vscode "polaron-$extVer.vsix")
     $rc = $LASTEXITCODE
     $ErrorActionPreference = $eap
     if ($rc -ne 0) { throw "vsce package failed (is Node/npm installed?)" }

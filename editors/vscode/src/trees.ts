@@ -43,7 +43,7 @@ class SimpleProvider implements vscode.TreeDataProvider<Node> {
   }
 }
 
-// The three LDP3 tree views, sharing one workspace model loaded via `ldp3 json`.
+// The three Polaron tree views, sharing one workspace model loaded via `polaron json`.
 export class LdpTrees {
   private data: Workspace = { projects: [], environments: [], libraries: [] };
   readonly projects = new SimpleProvider(() => this.projectNodes());
@@ -59,10 +59,10 @@ export class LdpTrees {
 
   private projectNodes(): Node[] {
     if (this.data.projects.length === 0) {
-      return [leaf('No LDP3 projects here.', undefined, 'info')];
+      return [leaf('No Polaron projects here.', undefined, 'info')];
     }
     return this.data.projects.map((p) => {
-      const n = branch(p.name, 'package', 'ldp3Project');
+      const n = branch(p.name, 'package', 'polaronProject');
       n.description = `v${p.version}${p.environment ? ' · ' + p.environment : ''}`;
       n.project = p;
       n.command = {

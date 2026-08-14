@@ -2,7 +2,7 @@
 
 Every real program has to reckon with the moment things go wrong: a file that isn't
 there, a number the user typed that can't be parsed, a division whose denominator
-turned out to be zero. LDP3 does not pretend those moments away, and it does not
+turned out to be zero. Polaron does not pretend those moments away, and it does not
 leave them to chance either. The language gives you three complementary tools for
 dealing with failure, and a fourth guarantee that sits underneath all of them.
 
@@ -33,7 +33,7 @@ block runs no matter how the guarded region is left.
 Here is the whole shape in one runnable program. `run(true)` throws and is caught;
 `run(false)` completes normally. In both cases the `finally` block runs.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program ExceptionsIntro;
 
@@ -85,7 +85,7 @@ enforces both:
 The object must also live on the heap, because it has to outlive the stack frame
 that raised it:
 
-```ldp3
+```polaron
 throw new MyError() on heap;   // ok
 
 MyError e = new MyError() on stack;
@@ -100,12 +100,12 @@ that the thrown type is polymorphic.
 ### Type-matched catch
 
 Catch clauses are tried top to bottom, and a clause matches when the thrown
-object's runtime type **is** the caught type *or a subtype of it*. LDP3 does the
+object's runtime type **is** the caught type *or a subtype of it*. Polaron does the
 matching itself — it compares the thrown object's vtable pointer against the set of
 vtables for the caught class and all its subclasses — rather than relying on C++
 RTTI. So an ancestor clause catches a descendant, exactly as you'd expect:
 
-```ldp3
+```polaron
 public class AppError implements Throwable { public constructor AppError() { } }
 public class ParseError extends AppError { public constructor ParseError() { } }
 
@@ -124,7 +124,7 @@ Put the most specific clauses first; a broad `catch (AppError e)` placed before 
 A method may declare the exception types it is expected to raise with a `throws`
 clause. `throws` is a real keyword, not an annotation:
 
-```ldp3
+```polaron
 public method readFile(String path) throws(IOException, NetworkException) returns string {
     if (!this.exists(path)) {
         throw new IOException() on heap;
@@ -133,7 +133,7 @@ public method readFile(String path) throws(IOException, NetworkException) return
 }
 ```
 
-LDP3's exceptions are *unchecked*: the `throws` clause documents intent and drives a
+Polaron's exceptions are *unchecked*: the `throws` clause documents intent and drives a
 compiler **warning**, it does not force callers to handle anything. If a `throw`
 reaches a point where it is neither caught by an enclosing `try` nor covered by the
 method's own `throws` clause, the compiler warns that the exception "is neither
@@ -154,7 +154,7 @@ The uncaught case is the subtle one. Here an inner `try` has only a `finally`; t
 throw is caught by the *outer* `try`, but the inner `finally` still runs on the way
 out:
 
-```ldp3
+```polaron
 try {
     try {
         System.IO.Console.println("throwing");
@@ -171,7 +171,7 @@ try {
 And the early-exit case — a `return` out of a `try`, or a `break` that leaves a
 `try` nested in a loop — runs `finally` before control actually departs:
 
-```ldp3
+```polaron
 public static method withReturn() returns int {
     try {
         return 1;
@@ -183,11 +183,11 @@ public static method withReturn() returns int {
 
 ### The unwinding model, and why cleanup is reliable
 
-LDP3 lowers exceptions to the platform's **native landing-pad unwinding**, not to
+Polaron lowers exceptions to the platform's **native landing-pad unwinding**, not to
 `setjmp`/`longjmp`. On Windows the compiler emits Microsoft's structured-exception
 tables and routes through `__CxxFrameHandler3`; on Linux and other ELF targets it
 emits the Itanium/DWARF model, throwing through `__cxa_throw` with the
-`__gxx_personality_v0` personality. In both cases every LDP3 exception travels as a
+`__gxx_personality_v0` personality. In both cases every Polaron exception travels as a
 single canonical carrier — the object pointer — and the handler does the real
 type-matching in ordinary code.
 
@@ -196,7 +196,7 @@ The practical payoff is a **zero-cost happy path**: when nothing is thrown, the
 overhead. You pay only when an exception is actually raised and the runtime walks
 the stack to find a handler.
 
-That stack walk is where reliability matters, and this is a point LDP3 takes
+That stack walk is where reliability matters, and this is a point Polaron takes
 seriously. As the stack unwinds through each frame, *all* scope cleanup runs, in
 the correct order:
 
@@ -210,7 +210,7 @@ None of these are skipped just because the exit path is an exception rather than
 normal return. A resource acquired before a throw is released as the throw passes
 back through its scope:
 
-```ldp3
+```polaron
 public method process(String path) returns void {
     File f = new File(path) on heap;
     defer { delete f; }          // runs even if f.read() throws
@@ -228,7 +228,7 @@ and unwinding are bolted on separately.
 Exceptions are the right tool when a failure is genuinely exceptional and you want
 it to punch through several call frames at once. But a great many "failures" are
 ordinary, expected outcomes: parsing might not succeed, a lookup might find
-nothing. For those, LDP3 gives you two sum types in the prelude that make the
+nothing. For those, Polaron gives you two sum types in the prelude that make the
 failure part of the value itself, so the type system forces you to deal with it.
 
 `Result<T, E>` holds either a success value of type `T` (an `Ok`) or an error value
@@ -236,7 +236,7 @@ of type `E` (an `Err`). `Option<T>` holds either a present value (a `Some`) or
 nothing (a `None`). Both are sealed types — the set of cases is fixed — which is
 what lets `match` check exhaustiveness. They live under `System.Errors`:
 
-```ldp3
+```polaron
 import System.Errors.Result;
 import System.Errors.Option;
 ```
@@ -245,7 +245,7 @@ import System.Errors.Option;
 
 The explicit form is an ordinary heap allocation:
 
-```ldp3
+```polaron
 Result<int, int>* ok  = new Ok<int, int>(7) on heap;
 Result<int, int>* err = new Err<int, int>(404) on heap;
 Option<int>* some = new Some<int>(9) on heap;
@@ -257,7 +257,7 @@ More commonly you use the construction *sugar* — `Ok(x)`, `Err(x)`, `Some(x)`,
 which is either the method's declared return type or the type of the variable you
 are assigning to:
 
-```ldp3
+```polaron
 public static method parse(int n) returns Result<int, int>* {
     if (n < 0) { return Err(404); }   // E inferred as int from the return type
     return Ok(n);                      // T inferred as int
@@ -274,7 +274,7 @@ Because `Result` and `Option` are sealed, a `match` over one must cover every ca
 — and, having covered them, needs no `default` arm. Each `case` binds the payload
 positionally:
 
-```ldp3
+```polaron
 public static method grade(Result<int, int>* r) returns int {
     match (r) {
         case Ok(int v)  { return v; }
@@ -286,7 +286,7 @@ public static method grade(Result<int, int>* r) returns int {
 
 The same reads naturally for `Option`:
 
-```ldp3
+```polaron
 match (o) {
     case Some(int v) { System.IO.Console.printf("some %d\n", v); }
     case None()      { System.IO.Console.printf("none\n"); }
@@ -305,7 +305,7 @@ wrong. The `try?` operator does exactly that in one token. Applied to a `Result`
 `Option`, it evaluates to the inner value when the operand is `Ok`/`Some`, and
 otherwise **immediately returns** the `Err`/`None` from the enclosing method:
 
-```ldp3
+```polaron
 public static method parse(int n) returns Result<int, int>* {
     if (n < 0) { return Err(0 - n); }
     return Ok(n);
@@ -362,7 +362,7 @@ enforcing — and they read as part of the method's signature, before the body.
 
 Here is an `Account` that spells out all three:
 
-```ldp3
+```polaron
 public class Account {
     private mutable int balance;
 
@@ -416,7 +416,7 @@ on stderr rather than in the middle of the program's own output:
 
 ```
 contract violated: requires
-  --> src/gfx/GlWorld3D.ldp3:345:32  in GlWorld3D.upload
+  --> src/gfx/GlWorld3D.pol:345:32  in GlWorld3D.upload
    |  requires wrote == counted
    |  left = 17561340, right = 23966928
 ```
@@ -431,7 +431,7 @@ The no-UB guards — an index off the end, a division by zero, a full region —
 in the same shape, with their own two numbers (`index = 9, length = 6`).
 
 **All of it holds in `freestanding` too**, including the values, which a kernel
-formats without stdio. There it arrives through `__ldp3_panic`, which a kernel may
+formats without stdio. There it arrives through `__polaron_panic`, which a kernel may
 override to route reports to its own console; overriding it keeps the whole message,
 because everything is composed before that call rather than printed around it.
 
@@ -443,7 +443,7 @@ A postcondition often needs to compare the final state to the state *at entry* �
 expression on entry into a hidden slot and reads it back when the `ensures` clause
 runs:
 
-```ldp3
+```polaron
 ensures this.balance == old(this.balance) + amount
 ```
 
@@ -456,7 +456,7 @@ Every example above is a `void` mutator promising something about `this`. The ot
 half of what a postcondition is for is the *returned value* — "what I hand you
 satisfies this" — and inside an `ensures` clause the name `result` is that value:
 
-```ldp3
+```polaron
 public method takePage() returns int
     ensures result % 4096 == 0
 {
@@ -480,7 +480,7 @@ A class invariant binds not only the class that declares it but every subclass. 
 `Counter` declares `invariant this.count >= 0;`, then a `Stepper extends Counter`
 is held to that same invariant on exit of *its* own methods too:
 
-```ldp3
+```polaron
 public class Counter {
     protected mutable int count;
     invariant this.count >= 0;
@@ -507,7 +507,7 @@ is knowable at *build time* — a buffer size, a table length, a bit of arithmet
 that must come out a certain way. `demand <condition> otherwise "why";` settles a
 constant condition during compilation and emits no runtime code at all:
 
-```ldp3
+```polaron
 demand 2 + 2 == 4 otherwise "math is broken";
 demand 16 * 1024 < 65536 otherwise "the buffer does not fit";
 ```
@@ -530,10 +530,10 @@ check. See §10 for how `demand` shares its evaluator with `comptime` and `fixed
 
 ## 8.4 The no-UB principle and failure
 
-Underneath all three tools sits a promise that shapes how LDP3 handles the failures
+Underneath all three tools sits a promise that shapes how Polaron handles the failures
 you *didn't* write a handler for: **there is no exploitable undefined behaviour.**
 Where C would quietly wander into the undefined — signed overflow, a stray index, a
-null dereference — LDP3 produces a *deterministic* outcome. Either the operation is
+null dereference — Polaron produces a *deterministic* outcome. Either the operation is
 given a defined answer, or the program stops cleanly with a message via a runtime
 panic. It never becomes a silent memory-corruption bug an attacker can steer.
 
@@ -551,7 +551,7 @@ program. When you want overflow to be an *error* instead, wrap the expression in
 `checked(...)`, and signed `+`, `-`, and `*` will trap deterministically on
 overflow:
 
-```ldp3
+```polaron
 int fast = a + b;                 // defined wrap, no overhead
 int safe = checked(a * b + c);    // signed overflow here panics deterministically
 ```
@@ -561,7 +561,7 @@ For per-operation control there are explicit methods: `wrappingAdd` /
 `saturatingAdd` / `saturatingSub` / `saturatingMul` to clamp to the type's minimum
 or maximum instead of wrapping:
 
-```ldp3
+```polaron
 int clamped = x.saturatingAdd(y);   // pins to the type's max/min instead of wrapping
 int wrapped = x.wrappingAdd(y);     // explicit wrap
 ```
@@ -573,7 +573,7 @@ int wrapped = x.wrappingAdd(y);     // explicit wrap
 Integer division by zero — and the `INT_MIN / -1` overflow corner — do not invoke
 undefined behaviour. They panic deterministically with a clear message:
 
-```ldp3
+```polaron
 int q = a / b;   // if b == 0, the program panics: "integer division by zero or overflow"
 ```
 
@@ -582,7 +582,7 @@ int q = a / b;   // if b == 0, the program panics: "integer division by zero or 
 Every array index is bounds-checked. An out-of-range access panics rather than
 reading or writing past the block:
 
-```ldp3
+```polaron
 int[] xs = new int[3]();
 int bad = xs[7];   // panics: "array index out of bounds"
 ```
@@ -598,7 +598,7 @@ address zero. The compiler emits a null check on the accesses that actually
 dereference, so a null receiver traps deterministically with a message instead of
 segfaulting:
 
-```ldp3
+```polaron
 nullable Dog maybe = this.find(name);
 maybe.bark();   // if maybe is null, this traps deterministically, not a wild segfault
 ```

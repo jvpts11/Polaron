@@ -1,0 +1,33 @@
+import System.IO.Console;
+program RegionClassBasic;
+
+// `region class A`: every instance of A comes from ONE region owned by the type, and that region holds
+// nothing else. See docs/design/region-classes.md.
+//
+// The totality is the feature, not the allocation speed -- regions already beat malloc by 12x in the
+// benchmark suite. What only totality buys is the three things that need "there is nowhere else": an
+// O(1) answer to `unimport`'s "is any A alive?", a linear walk over every instance of a type, and
+// eventually an `A*` that is a 32-bit offset instead of a pointer.
+//
+// So `new A()` here takes no `on heap` and no `in region`: there is one place, and the compiler puts
+// it there. Prints: 3 nodes, sum = 60
+public bundle main {
+    public namespace app {
+
+        public region class Node {
+            public mutable int value;
+            public constructor Node(int v) { this.value = v; }
+            public method get() returns int { return this.value; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* a = new Node(10);
+                Node* b = new Node(20);
+                Node* c = new Node(30);
+                System.IO.Console.printf("3 nodes, sum = %d\n", a.get() + b.get() + c.get());
+                return;
+            }
+        }
+    }
+}

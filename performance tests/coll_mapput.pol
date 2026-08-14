@@ -1,0 +1,17 @@
+import System.IO.Console;
+import System.Collections.HashMap;
+program CollMapPut;
+// Só as escritas: isola o custo de put + crescimento do custo de get.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                HashMap<int, int>* map = new HashMap<int, int>() on heap;
+                for (mutable int i = 0; i < 4000000; i++) { map.put(i, i * 7); }
+                System.IO.Console.printf("acc=%d\n", map.get(3999999));
+                delete map;
+                return;
+            }
+        }
+    }
+}

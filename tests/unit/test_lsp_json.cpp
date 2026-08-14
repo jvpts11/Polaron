@@ -4,7 +4,7 @@
 
 #include "lsp/json.h"
 
-using namespace ldp3::lsp;
+using namespace polaron::lsp;
 
 TEST_CASE("json parses objects, arrays, strings, numbers and booleans") {
     Json j;

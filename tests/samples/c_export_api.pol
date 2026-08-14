@@ -1,0 +1,45 @@
+program CExportApi;
+
+// THE EXTERNAL WORLD, exported.
+//
+// `unknown c` and NOT `unknown win64`: the world named here is "this target's own C ABI", which is the
+// only portable answer for a library that exports a C API. Naming `win64` is right on Windows and
+// wrong everywhere else -- and wrong without a diagnostic, because the functions are emitted with a
+// convention the C++ caller does not use. On Linux this file printed `add=-1131965200`, which is what
+// reading arguments out of the wrong registers looks like. The word `c` was added the day this suite
+// first ran on a second operating system. `unknown <world>` is what gives a method a bare linker symbol and a
+// named calling convention; everything else in a program has internal linkage and a mangled name, and
+// is deliberately unreachable from outside.
+//
+// The methods below are what `polc --emit-c-header` describes and what the C++ side of this test
+// actually calls. Between them they cover the mapping's three interesting cases: a plain 32-bit
+// integer, 64-bit arithmetic, and `boolean` -- which is FOUR BYTES in Polaron, so a caller that
+// declares it as C's `bool` reads one byte of four and gets whatever was in the other three.
+public bundle Main {
+    public namespace App {
+        public class Api {
+            public unknown c static method polaron_add(int a, int b) returns int {
+                return a + b;
+            }
+
+            public unknown c static method polaron_sum_squares(long n) returns long {
+                mutable long s = 0;
+                mutable long i = 1;
+                while (i <= n) {
+                    s = s + i * i;
+                    i = i + 1;
+                }
+                return s;   // 100 -> 338350
+            }
+
+            public unknown c static method polaron_is_even(int n) returns boolean {
+                return (n % 2) == 0;
+            }
+        }
+
+        // NO `main` HERE. This is built with `--lib`, which is the shape the open world actually
+        // takes: someone else's program owns the entry point and links our code in. Building it as a
+        // program gives two `main`s and a link error -- the first thing that went wrong when this
+        // test was written, and a fair summary of what separates the two worlds.
+    }
+}

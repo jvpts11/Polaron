@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Expand inline { ... } blocks in LDP3 source to multi-line, surgically.
+"""Expand inline { ... } blocks in Polaron source to multi-line, surgically.
 
 Only blocks whose matching '}' is on the SAME source line as the '{' are expanded; already
 multi-line blocks and everything else are left untouched. String/char literals ($"..." too),

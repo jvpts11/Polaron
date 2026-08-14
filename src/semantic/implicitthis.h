@@ -20,10 +20,10 @@
 
 #include "parser/ast.h"
 
-namespace ldp3 {
+namespace polaron {
 
 // Rewrites bare member references into `this.x` / `Class.x`, in place. Returns false if anything went
 // wrong; today nothing can, and the return exists so a future ambiguity has somewhere to be reported.
 bool resolveImplicitThis(ast::Program& program);
 
-}  // namespace ldp3
+}  // namespace polaron

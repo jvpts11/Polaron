@@ -1,0 +1,54 @@
+import System.IO.Console;
+program InvariantAssumeReadonly;
+
+// AN INVARIANT MUST REACH THE METHODS THAT READ, NOT ONLY THOSE THAT WRITE.
+//
+// Every declared `invariant` is handed to the optimiser at method entry as an `llvm.assume`, which is
+// sound because every exit of every method checks it. But the list being assumed was the same one the
+// exit checks had already been NARROWED to -- "the invariants this method might have broken" -- so a
+// method that assigns no field got an empty list and no assumptions at all.
+//
+// That is exactly backwards. The read-only methods are the ones with something to gain: on
+// `HashMap$int$int`, `slotFor`, `get`, `containsKey`, `getOrDefault`, `keyArray` and `valueArray` had
+// ZERO assumes and kept every bounds check, while `put`/`grow`/`merge`/`remove` -- which reassign the
+// arrays and so cannot use the fact -- had five each. Splitting the two lists took the map benchmark
+// from 48.2 ms to 39.8.
+//
+// `probe` below writes nothing, so under the old rule it received no assumption. The marker function
+// name is what the IR check looks for: it must appear followed by an assume in the same body.
+//
+// Prints: 7
+public bundle Main {
+    public namespace App {
+
+        public class Table {
+            public mutable int[] slots;
+            public mutable int cap;
+
+            // The fact worth knowing inside a read-only method.
+            invariant this.slots.length() == this.cap;
+            invariant this.cap >= 1;
+
+            public constructor Table(int cap) {
+                this.cap = cap;
+                this.slots = new int[cap]();
+            }
+
+            // Writes nothing. Under the shared list this got no assumption at all.
+            public method probe(int h) returns int {
+                int i = h & (this.cap - 1);
+                return this.slots[i];
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Table* t = new Table(8) on heap;
+                t.slots[3] = 7;
+                System.IO.Console.printf("%d\n", t.probe(3));
+                delete t;
+                return;
+            }
+        }
+    }
+}

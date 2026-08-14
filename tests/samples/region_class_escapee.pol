@@ -1,0 +1,28 @@
+program RegionClassEscapee;
+
+// Everything beneath a region class must be one, and this is the hole that closes.
+//
+// An `abstract region class` declares a region shared by its whole family. A plain class inheriting
+// from it would allocate its instances somewhere else -- and the guarantee the feature exists for,
+// that there IS nowhere else, would be gone without a word. Every consequence rests on it: unimport's
+// O(1) "is any alive?", walking every instance of a type, and the 32-bit pointer totality would allow.
+//
+// Must fail with: 'Escapee' extends the region class 'Node'
+public bundle main {
+    public namespace app {
+
+        public abstract region class Node {
+            public mutable int tag;
+            public constructor Node(int t) { this.tag = t; }
+        }
+
+        // No `region`, so its instances would be born outside the family's region.
+        public class Escapee extends Node {
+            public constructor Escapee(int t) { super(t); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

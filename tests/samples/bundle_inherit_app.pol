@@ -1,0 +1,46 @@
+import System.IO.Console;
+import InheritLib.Ui.Widget;
+program InheritApp;
+
+// EXTENDING AN IMPORTED CLASS -- listed as unaudited in docs/design/abi.md, because every other bundle
+// test keeps the hierarchy inside the library or imports a leaf.
+//
+// A local class over an imported base has to get three separate things right, and the three printed
+// numbers separate them:
+//
+//   weight  the LOCAL override, reached through a Widget* -- the local vtable must put it at the slot
+//           the bundle assigned to the NAME `weight`, not at the next free index
+//   label   INHERITED and never overridden -- the local vtable must carry the bundle's own function
+//           pointer through, so the call lands in the library's code
+//   total   compiled INSIDE the bundle, dispatching on `this` -- it calls weight() through the index
+//           baked into the library before this program existed, and must arrive at the override
+//           above. 5*10 + 7 = 57, whereas inheriting the base's weight() would give 17.
+//
+// The protected field `tag` also has to sit where the bundle put it; `total` reads it from the library
+// side while the constructor wrote it from here.
+//
+// Prints: weight = 5, label = 100, total = 57
+public bundle Main {
+    public namespace App {
+
+        public class Button extends Widget {
+            public constructor Button(int tag) {
+                super(tag);
+            }
+
+            public override method weight() returns int {
+                return 5;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Widget* w = new Button(7) on heap;
+                System.IO.Console.printf("weight = %d, label = %d, total = %d\n",
+                                         w.weight(), w.label(), w.total());
+                delete w;
+                return;
+            }
+        }
+    }
+}

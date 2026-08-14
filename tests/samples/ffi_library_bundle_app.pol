@@ -1,0 +1,14 @@
+import Graphics.Video.Sdl;
+program FfiLibraryBundleApp;
+
+// The consumer names no library of its own. It must still be told to link SDL2, because the bundle it
+// depends on binds to it -- the requirement belongs to the dependency and travels with it.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,17 @@
+import System.IO.Console;
+program Overlay;
+
+// NOT a program the compiler is asked to name -- it is the SCRATCH content behind overlay_base.pol in an
+// --overlay check: an editor's unsaved buffer, with a deliberate semantic error (an undeclared variable).
+// A check with this as the overlay must report the error, and must report it against overlay_base.pol, the
+// real path, never this file's name.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"ok = {undeclaredHere}");
+                return;
+            }
+        }
+    }
+}

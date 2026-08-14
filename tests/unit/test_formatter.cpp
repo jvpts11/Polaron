@@ -3,7 +3,7 @@
 #include "fmt/formatter.h"
 #include "lexer/lexer.h"
 
-using namespace ldp3;
+using namespace polaron;
 
 namespace {
 // The non-comment token lexemes, to check formatting never changes the token sequence.

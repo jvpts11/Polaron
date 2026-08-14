@@ -1,0 +1,41 @@
+import System.IO.Console;
+program FfiReceiver;
+
+// A NON-STATIC extern passes the object as the foreign function's first argument.
+//
+// That is not an invention: it is the hidden `this` of a C++ member function -- which is why a C++
+// binding needs it even without a mangler -- and it is the classic object-oriented-C idiom,
+// `int counter_add(void* self, int by)`.
+//
+// Before this, `static` was not required by the front end but was ASSUMED by codegen, so a non-static
+// extern parsed, type-checked, and then died at the LLVM verifier with "Incorrect number of arguments
+// passed to called function": the call site was already handing over a receiver the declaration did
+// not have. The fix is the feature -- the declaration now has it.
+//
+// The receiver is a `struct` and not a class ON PURPOSE. A class in a hierarchy carries a vtable
+// pointer at offset 0, so `this` does not point at the first field and the C side would increment the
+// low half of a vtable address. A struct has no header, so `self` is the counter -- which is also the
+// only shape a C API would ever be handed.
+//
+// Prints: 5 then 12
+public bundle main {
+    public namespace app {
+        public struct Counter {
+            public mutable int count;
+
+            // No `static`, so the receiver travels first. The Polaron name is ours; the symbol theirs.
+            private extern cdecl method bump(int by) returns int symbol("polaron_counter_add");
+
+            public method add(int by) returns int { return this.bump(by); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Counter c = new Counter();
+                c.count = 0;
+                System.IO.Console.printf("%d\n", c.add(5));
+                System.IO.Console.printf("%d\n", c.add(7));
+                return;
+            }
+        }
+    }
+}

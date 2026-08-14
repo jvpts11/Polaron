@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace ldp3 {
+namespace polaron {
 namespace {
 
 // What a class can answer to a bare NAME, including everything it inherits. Methods are absent on
@@ -22,26 +22,40 @@ using ClassIndex = std::map<std::string, const ast::ClassDecl*>;
 
 void gather(const std::string& typeName, const ClassIndex& index, Members& out,
             std::set<std::string>& seen) {
-    if (!seen.insert(typeName).second) return;
+    if (!seen.insert(typeName).second) {
+        return;
+    }
     auto it = index.find(typeName);
-    if (it == index.end()) return;
+    if (it == index.end()) {
+        return;
+    }
     const ast::ClassDecl& c = *it->second;
     for (const ast::MemberPtr& m : c.members) {
         if (const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get())) {
-            if (f->isStatic) out.staticFields.insert(f->name);
-            else out.instanceFields.insert(f->name);
+            if (f->isStatic) {
+                out.staticFields.insert(f->name);
+            } else {
+                out.instanceFields.insert(f->name);
+            }
             continue;
         }
         // A PROPERTY is read without parentheses, so at the use site it is a field and not a call --
         // which is the whole point of the feature, and the reason it belongs in this pass while an
         // ordinary method does not.
         if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get()); md != nullptr && md->isProperty) {
-            if (md->isStatic) out.staticFields.insert(md->name);
-            else out.instanceFields.insert(md->name);
+            if (md->isStatic) {
+                out.staticFields.insert(md->name);
+            } else {
+                out.instanceFields.insert(md->name);
+            }
         }
     }
-    if (!c.superclass.empty()) gather(c.superclass, index, out, seen);
-    for (const std::string& i : c.interfaces) gather(i, index, out, seen);
+    if (!c.superclass.empty()) {
+        gather(c.superclass, index, out, seen);
+    }
+    for (const std::string& i : c.interfaces) {
+        gather(i, index, out, seen);
+    }
 }
 
 ast::ExprPtr thisRef(const SourceLocation& loc) {
@@ -63,10 +77,14 @@ ast::ExprPtr typeRef(const std::string& name, const SourceLocation& loc) {
 // `a[i] = itself + 1` it would have to stand for an element whose index would then be evaluated a
 // second time, and a pronoun must not cost an extra evaluation of anything.
 std::string itselfTargetName(const ast::Expr* target) {
-    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(target)) return id->name;
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(target)) {
+        return id->name;
+    }
     if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(target)) {
         const auto* obj = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-        if (obj != nullptr && obj->name == "this") return mem->member;
+        if (obj != nullptr && obj->name == "this") {
+            return mem->member;
+        }
     }
     return "";
 }
@@ -89,12 +107,16 @@ public:
 
     void block(ast::Block& b) {
         scopes_.emplace_back();
-        for (auto& st : b.statements) stmt(st.get());
+        for (auto& st : b.statements) {
+            stmt(st.get());
+        }
         scopes_.pop_back();
     }
 
     void declare(const std::string& name) {
-        if (scopes_.empty()) scopes_.emplace_back();
+        if (scopes_.empty()) {
+            scopes_.emplace_back();
+        }
         scopes_.back().insert(name);
     }
 
@@ -106,21 +128,34 @@ public:
 
 private:
     bool shadowed(const std::string& name) const {
-        for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it)
-            if (it->count(name) > 0) return true;
+        for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+            if (it->count(name) > 0) {
+                return true;
+            }
+        }
         return false;
     }
 
     // The one decision. Returns the receiver a bare `name` is missing, or null to leave it alone.
     ast::ExprPtr resolve(const std::string& name, const SourceLocation& loc) const {
-        if (name == "this" || name == "super" || name == "itself" || name == "result") return nullptr;
-        if (shadowed(name)) return nullptr;               // a local of that name -- `this.` is how
+        if (name == "this" || name == "super" || name == "itself" || name == "result") {
+            return nullptr;
+        }
+        if (shadowed(name)) {
+            return nullptr;  // a local of that name -- `this.` is how
+        }
                                                           // the field is reached, and that is the rule
         // A type name stays a type name. `Console.println(...)` must not become `this.Console...`
         // just because some class in the program happens to have a field called Console.
-        if (types_.count(name) > 0) return nullptr;
-        if (!static_ && m_.instanceFields.count(name) > 0) return thisRef(loc);
-        if (m_.staticFields.count(name) > 0) return typeRef(cls_, loc);
+                                                          if (types_.count(name) > 0) {
+                                                              return nullptr;
+                                                          }
+                                                          if (!static_ && m_.instanceFields.count(name) > 0) {
+                                                              return thisRef(loc);
+                                                          }
+                                                          if (m_.staticFields.count(name) > 0) {
+                                                              return typeRef(cls_, loc);
+                                                          }
         // An instance field named from a static method is an error. Left alone on purpose: the
         // analyser's "undeclared variable" says the true thing here, and inventing a `this` in a body
         // that has none would replace it with a worse message about a receiver nobody wrote.
@@ -162,7 +197,9 @@ public:
 
 void Rewriter::expr(ast::ExprPtr& slot) {
     ast::Expr* e = slot.get();
-    if (e == nullptr) return;
+    if (e == nullptr) {
+        return;
+    }
 
     if (auto* x = dynamic_cast<ast::CallExpr*>(e)) {
         // A BARE CALL IS NOT THIS PASS'S BUSINESS. `name(...)` already resolves to the enclosing
@@ -170,8 +207,12 @@ void Rewriter::expr(ast::ExprPtr& slot) {
         // reports that an instance method needs an object, which a rewrite to `this.name(...)` would
         // turn into a message about a receiver the author never wrote. Only the callee is skipped;
         // the arguments are ordinary expressions.
-        if (dynamic_cast<ast::IdentifierExpr*>(x->callee.get()) == nullptr) expr(x->callee);
-        for (auto& a : x->args) expr(a);
+        if (dynamic_cast<ast::IdentifierExpr*>(x->callee.get()) == nullptr) {
+            expr(x->callee);
+        }
+        for (auto& a : x->args) {
+            expr(a);
+        }
         return;
     }
     // `for (int i in 0..n)` -- the bounds of a range were never visited by this pass at all, so a
@@ -180,7 +221,9 @@ void Rewriter::expr(ast::ExprPtr& slot) {
     if (auto* x = dynamic_cast<ast::RangeExpr*>(e)) {
         expr(x->start);
         expr(x->end);
-        if (x->step) expr(x->step);
+        if (x->step) {
+            expr(x->step);
+        }
         return;
     }
     if (auto* x = dynamic_cast<ast::MemberExpr*>(e)) {
@@ -203,16 +246,28 @@ void Rewriter::expr(ast::ExprPtr& slot) {
     if (auto* x = dynamic_cast<ast::ExtractExpr*>(e)) { expr(x->target); return; }
     if (auto* x = dynamic_cast<ast::TryExpr*>(e)) { expr(x->operand); return; }
     if (auto* x = dynamic_cast<ast::CastExpr*>(e)) { expr(x->operand); return; }
-    if (auto* x = dynamic_cast<ast::NewExpr*>(e)) { for (auto& a : x->args) expr(a); return; }
+    if (auto* x = dynamic_cast<ast::NewExpr*>(e)) {
+        for (auto& a : x->args) {
+            expr(a);
+        }
+        return;
+    }
     if (auto* x = dynamic_cast<ast::NewArrayExpr*>(e)) { expr(x->size); return; }
     if (auto* x = dynamic_cast<ast::RegionInitExpr*>(e)) { expr(x->size); return; }
-    if (auto* x = dynamic_cast<ast::InterpStringExpr*>(e)) { for (auto& ex : x->exprs) expr(ex); return; }
+    if (auto* x = dynamic_cast<ast::InterpStringExpr*>(e)) {
+        for (auto& ex : x->exprs) {
+            expr(ex);
+        }
+        return;
+    }
     if (auto* x = dynamic_cast<ast::MethodRefExpr*>(e)) { expr(x->object); return; }
     if (auto* x = dynamic_cast<ast::MatchExpr*>(e)) {
         expr(x->subject);
         for (auto& c : x->cases) {
             openScope();
-            for (const ast::Param& p : c.bindings) declare(p.name);
+            for (const ast::Param& p : c.bindings) {
+                declare(p.name);
+            }
             expr(c.result);
             closeScope();
         }
@@ -225,21 +280,28 @@ void Rewriter::expr(ast::ExprPtr& slot) {
     // body is emitted, so `this` does not exist in there and a field is unreachable with or without
     // the prefix. Rewriting a name into `this.f` inside one would turn today's honest "undeclared
     // variable" into a crash. When lambdas capture their object, this is the line that changes.
-    if (dynamic_cast<ast::LambdaExpr*>(e) != nullptr) return;
+    if (dynamic_cast<ast::LambdaExpr*>(e) != nullptr) {
+        return;
+    }
 
     if (auto* x = dynamic_cast<ast::IdentifierExpr*>(e)) {
         // Bare `itself` is the entity, not its type. Renamed rather than returned on, so that a field
         // still picks up its receiver from the resolve below: in `this.total = itself + 1` the
         // pronoun means the field, and a field needs its `this.` like any other mention of it.
-        if (x->name == "itself" && !itselfName_.empty()) x->name = itselfName_;
-        if (ast::ExprPtr repl = resolve(x->name, x->loc))
+        if (x->name == "itself" && !itselfName_.empty()) {
+            x->name = itselfName_;
+        }
+        if (ast::ExprPtr repl = resolve(x->name, x->loc)) {
             slot = memberOf(std::move(repl), x->name, x->loc);
+        }
         return;
     }
 }
 
 void Rewriter::stmt(ast::Stmt* st) {
-    if (st == nullptr) return;
+    if (st == nullptr) {
+        return;
+    }
     if (auto* x = dynamic_cast<ast::ExprStmt*>(st)) { expr(x->expr); return; }
     if (auto* x = dynamic_cast<ast::DemandStmt*>(st)) { expr(x->condition); return; }
     if (auto* x = dynamic_cast<ast::LabeledStmt*>(st)) { stmt(x->stmt.get()); return; }
@@ -247,7 +309,9 @@ void Rewriter::stmt(ast::Stmt* st) {
     if (auto* x = dynamic_cast<ast::ReturnStmt*>(st)) { expr(x->value); return; }
     if (auto* x = dynamic_cast<ast::DeleteStmt*>(st)) {
         expr(x->target);
-        for (auto& mt : x->moreTargets) expr(mt);
+        for (auto& mt : x->moreTargets) {
+            expr(mt);
+        }
         return;
     }
     if (auto* x = dynamic_cast<ast::AssignStmt*>(st)) {
@@ -275,14 +339,18 @@ void Rewriter::stmt(ast::Stmt* st) {
     }
     if (auto* x = dynamic_cast<ast::TupleDeclStmt*>(st)) {
         expr(x->init);
-        for (const ast::TupleBinding& b : x->bindings) declare(b.name);
+        for (const ast::TupleBinding& b : x->bindings) {
+            declare(b.name);
+        }
         return;
     }
     if (auto* x = dynamic_cast<ast::ForeachStmt*>(st)) {
         expr(x->iterable);
         openScope();
         declare(x->varName);
-        if (!x->indexName.empty()) declare(x->indexName);
+        if (!x->indexName.empty()) {
+            declare(x->indexName);
+        }
         block(x->body);
         closeScope();
         return;
@@ -290,18 +358,24 @@ void Rewriter::stmt(ast::Stmt* st) {
     if (auto* x = dynamic_cast<ast::SwitchStmt*>(st)) {
         expr(x->subject);
         for (auto& c : x->cases) { expr(c.value); block(c.body); }
-        if (x->defaultBody) block(*x->defaultBody);
+        if (x->defaultBody) {
+            block(*x->defaultBody);
+        }
         return;
     }
     if (auto* x = dynamic_cast<ast::MatchStmt*>(st)) {
         expr(x->subject);
         for (auto& c : x->cases) {
             openScope();
-            for (const ast::Param& p : c.bindings) declare(p.name);
+            for (const ast::Param& p : c.bindings) {
+                declare(p.name);
+            }
             block(c.body);
             closeScope();
         }
-        if (x->defaultBody) block(*x->defaultBody);
+        if (x->defaultBody) {
+            block(*x->defaultBody);
+        }
         return;
     }
     if (auto* x = dynamic_cast<ast::TryStmt*>(st)) {
@@ -312,7 +386,9 @@ void Rewriter::stmt(ast::Stmt* st) {
             block(c.body);
             closeScope();
         }
-        if (x->finallyBlock) block(*x->finallyBlock);
+        if (x->finallyBlock) {
+            block(*x->finallyBlock);
+        }
         return;
     }
     if (auto* x = dynamic_cast<ast::DeferStmt*>(st)) { expr(x->within); block(x->body); return; }
@@ -326,7 +402,9 @@ void Rewriter::stmt(ast::Stmt* st) {
     if (auto* x = dynamic_cast<ast::IfStmt*>(st)) {
         expr(x->cond);
         block(x->thenBlock);
-        if (x->elseBlock) block(*x->elseBlock);
+        if (x->elseBlock) {
+            block(*x->elseBlock);
+        }
         return;
     }
     if (auto* x = dynamic_cast<ast::WhileStmt*>(st)) { expr(x->cond); block(x->body); return; }
@@ -349,7 +427,9 @@ void runOnBody(ast::Block& body, const std::vector<ast::Param>& params, const Me
                const std::set<std::string>& typeNames) {
     Rewriter r(members, className, isStatic, typeNames);
     r.openScope();
-    for (const ast::Param& p : params) r.declare(p.name);
+    for (const ast::Param& p : params) {
+        r.declare(p.name);
+    }
     r.block(body);
     r.closeScope();
 }
@@ -361,11 +441,17 @@ void runOnBody(ast::Block& body, const std::vector<ast::Param>& params, const Me
 void runOnContracts(std::vector<ast::ExprPtr>& clauses, const std::vector<ast::Param>& params,
                     const Members& members, const std::string& className, bool isStatic,
                     const std::set<std::string>& typeNames) {
-    if (clauses.empty()) return;
+    if (clauses.empty()) {
+        return;
+    }
     Rewriter r(members, className, isStatic, typeNames);
     r.openScope();
-    for (const ast::Param& p : params) r.declare(p.name);
-    for (ast::ExprPtr& c : clauses) r.expr(c);
+    for (const ast::Param& p : params) {
+        r.declare(p.name);
+    }
+    for (ast::ExprPtr& c : clauses) {
+        r.expr(c);
+    }
     r.closeScope();
 }
 
@@ -374,14 +460,17 @@ void runOnContracts(std::vector<ast::ExprPtr>& clauses, const std::vector<ast::P
 bool resolveImplicitThis(ast::Program& program) {
     ClassIndex index;
     std::set<std::string> typeNames;
-    for (auto& b : program.bundles)
+    for (auto& b : program.bundles) {
         for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) {
                 index[c.name] = &c;
                 typeNames.insert(c.name);
             }
-            for (auto& e : ns.enums) typeNames.insert(e.name);
+            for (auto& e : ns.enums) {
+                typeNames.insert(e.name);
+            }
         }
+    }
 
     // EVERY BODY, not just the methods. A lifecycle hook and an inline field initializer are code
     // written inside the class like any other, and a rule that held in a method and not in
@@ -394,7 +483,9 @@ bool resolveImplicitThis(ast::Program& program) {
                                typeNames);
                 runOnContracts(md->ensuresClauses, md->params, seenMembers, owner, md->isStatic,
                                typeNames);
-                if (md->isAbstract) continue;   // contracts are rewritten even without a body
+                if (md->isAbstract) {
+                    continue;  // contracts are rewritten even without a body
+                }
                 runOnBody(md->body, md->params, seenMembers, owner, md->isStatic, typeNames);
                 continue;
             }
@@ -408,7 +499,9 @@ bool resolveImplicitThis(ast::Program& program) {
                 continue;
             }
             if (auto* fd = dynamic_cast<ast::FieldDecl*>(m.get())) {
-                if (fd->init == nullptr) continue;
+                if (fd->init == nullptr) {
+                    continue;
+                }
                 // A field initializer runs with no instance in hand for a static, and before the
                 // constructor for an instance one; either way only a STATIC member is reachable, so
                 // it is walked as static code.
@@ -420,7 +513,7 @@ bool resolveImplicitThis(ast::Program& program) {
         }
     };
 
-    for (auto& b : program.bundles)
+    for (auto& b : program.bundles) {
         for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) {
                 Members members;
@@ -428,7 +521,9 @@ bool resolveImplicitThis(ast::Program& program) {
                 gather(c.name, index, members, seen);
                 doMembers(c.members, c.name, members);
                 auto hook = [&](std::unique_ptr<ast::Block>& blk) {
-                    if (blk) runOnBody(*blk, {}, members, c.name, /*inStatic=*/true, typeNames);
+                    if (blk) {
+                        runOnBody(*blk, {}, members, c.name, /*inStatic=*/true, typeNames);
+                    }
                 };
                 hook(c.onClassLoad);
                 hook(c.onFirstInstance);
@@ -438,24 +533,35 @@ bool resolveImplicitThis(ast::Program& program) {
             // A java-style enum is a class in every way that matters here: it has fields, a
             // constructor and methods, and code inside them names them the same way.
             for (auto& e : ns.enums) {
-                if (e.members.empty()) continue;
+                if (e.members.empty()) {
+                    continue;
+                }
                 Members members;
                 for (const ast::MemberPtr& m : e.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get())) {
-                        if (f->isStatic) members.staticFields.insert(f->name);
-                        else members.instanceFields.insert(f->name);
+                        if (f->isStatic) {
+                            members.staticFields.insert(f->name);
+                        } else {
+                            members.instanceFields.insert(f->name);
+                        }
                         continue;
                     }
                     if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get())) {
-                        if (!md->isProperty) continue;   // a bare call already resolves on its own
-                        if (md->isStatic) members.staticFields.insert(md->name);
-                        else members.instanceFields.insert(md->name);
+                        if (!md->isProperty) {
+                            continue;  // a bare call already resolves on its own
+                        }
+                        if (md->isStatic) {
+                            members.staticFields.insert(md->name);
+                        } else {
+                            members.instanceFields.insert(md->name);
+                        }
                     }
                 }
                 doMembers(e.members, e.name, members);
             }
         }
+    }
     return true;
 }
 
-}  // namespace ldp3
+}  // namespace polaron

@@ -5,7 +5,7 @@ namespace, and class scaffolding. This chapter is about what goes *inside* a met
 the ordinary, everyday act of writing code. How you declare a variable, how you assign
 to it, which operators the language gives you, how expressions and statements differ,
 and — the thing you will do more than any other — how you call a method. None of this is
-exotic; it is the vocabulary you use on every line. But LDP3 has a few firm rules here
+exotic; it is the vocabulary you use on every line. But Polaron has a few firm rules here
 (assignment is not an expression, member access always goes through `this.`, every block
 is braced) that are worth stating plainly before you meet them scattered through later
 chapters.
@@ -17,7 +17,7 @@ skeleton from Chapter 2 in mind: what follows are the statements you would write
 ## 3.1 Statements and blocks
 
 A method body is a sequence of **statements**, each terminated by a semicolon, executed
-top to bottom. LDP3 is strict about layout in two ways that never relax:
+top to bottom. Polaron is strict about layout in two ways that never relax:
 
 - **Every block is braced.** A `{ }` block groups statements; there is no brace-less
   form. `if (x) return;` written without braces is a *syntax error*, not a shortcut. An
@@ -32,7 +32,7 @@ method call whose result you ignore (`this.log();`), a **`return`**, and the
 **control-flow** statements (`if`, `while`, `for`, `foreach`, `switch`, `match`) covered
 in Chapter 7. A bare block `{ ... }` is itself a statement and opens a new scope.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Statements;
 
@@ -56,7 +56,7 @@ public bundle Main {
 A variable binds a name to a value of a known type. You declare one by writing the type,
 the name, and — almost always — an initializer:
 
-```ldp3
+```polaron
 int side = 4;
 boolean ready = true;
 char grade = 'A';
@@ -71,7 +71,7 @@ Two rules shape every declaration:
   the compiler deduce the type from the initializer. Inference is a *local-only*
   convenience: fields, parameters, and return types always name their type explicitly.
 
-```ldp3
+```polaron
 int fixed = 10;            // immutable: reassigning it is a compile error
 mutable int count = 0;     // mutable: expected to change
 count = count + 1;         // fine
@@ -86,7 +86,7 @@ like.
 ## 3.3 Assignment
 
 Assignment stores a new value in an existing `mutable` variable (or field, through
-`this.`). Two properties of assignment in LDP3 catch newcomers, and both are deliberate:
+`this.`). Two properties of assignment in Polaron catch newcomers, and both are deliberate:
 
 **Assignment is a statement, not an expression.** It has no value, so it cannot appear
 inside a condition or be chained. `if (x = 5) { ... }` is an error (the compiler will not
@@ -100,9 +100,9 @@ mentioned here only so the meaning of `=` is never a surprise. To make two names
 the *same* object you use a pointer or reference, also in Chapter 5.
 
 **Compound assignment** combines an operator with assignment as a shorthand: `a += b` is
-`a = a + b`. LDP3 offers the full set — arithmetic and bitwise alike:
+`a = a + b`. Polaron offers the full set — arithmetic and bitwise alike:
 
-```ldp3
+```polaron
 mutable int a = 20;
 a += 5;     // a = a + 5   -> 25
 a -= 3;     // 22
@@ -115,7 +115,7 @@ a &= 12;    // 0    (bitwise and-assign; also |=  ^=  >>=)
 
 And **increment / decrement**, `++` and `--`, adjust a variable by one:
 
-```ldp3
+```polaron
 mutable int i = 0;
 i++;        // 1
 i--;        // 0
@@ -123,7 +123,7 @@ i--;        // 0
 
 ## 3.4 Operators
 
-LDP3's operators are the familiar C-family set, with defined behavior on every edge case
+Polaron's operators are the familiar C-family set, with defined behavior on every edge case
 (overflow traps, division by zero traps — see Chapter 8). Grouped by role:
 
 | Group | Operators |
@@ -143,7 +143,7 @@ This lets you guard an expensive or unsafe operand with a cheap test on its left
 The **ternary** operator is an *expression* — it produces a value — so it is the idiomatic
 way to choose between two values without an `if` statement:
 
-```ldp3
+```polaron
 int larger = a > b ? a : b;
 ```
 
@@ -151,7 +151,7 @@ Operators follow the usual precedence (multiplication before addition, compariso
 `&&`, and so on). When in doubt, parenthesize; the parentheses cost nothing and document
 intent:
 
-```ldp3
+```polaron
 boolean inRange = (x >= 0) && (x < limit);
 int packed = (hi << 8) | lo;
 ```
@@ -164,7 +164,7 @@ you will use.
 **On another object.** Given a variable holding an object, name it, a dot, the method,
 and the arguments in parentheses. Arguments are ordinary expressions:
 
-```ldp3
+```polaron
 Account acc = new Account(100) on stack;
 acc.deposit(50);                 // call deposit(50) on acc
 int bal = acc.balance();         // a call that returns a value
@@ -174,7 +174,7 @@ int bal = acc.balance();         // a call that returns a value
 object still goes through `this.` — there is no implicit receiver. `this.area()` calls
 this object's `area`; a bare `area()` would be an unknown name.
 
-```ldp3
+```polaron
 public method describe() returns void {
     System.IO.Console.println($"area = {this.area()}");   // one method calling another
     return;
@@ -189,7 +189,7 @@ call on the `Console` type.
 **Chained.** When a call returns an object, you can call a method on that result directly,
 building a chain left to right. Each call runs on the value the previous one returned:
 
-```ldp3
+```polaron
 String s = builder.append("a").append("b").toString();
 ```
 
@@ -203,7 +203,7 @@ call as its own statement.
 A worked example ties the shapes together — one class whose method calls its own helper,
 and a `Main` that constructs it and calls across to it:
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Calls;
 
@@ -265,7 +265,7 @@ For building output from several values, **string interpolation** is usually cle
 `printf`. Inside a `$"..."` string, each `{expr}` is evaluated and its value spliced into
 the text:
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Printing;
 

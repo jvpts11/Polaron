@@ -1,0 +1,27 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionBadUseAfterExtract;
+
+public bundle main {
+    public namespace app {
+
+        public class Dog {
+            public mutable int age;
+            public constructor Dog(int a) {
+                this.age = a;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                pool region k = itself.allocate(1 kilobytes);
+                Dog* d = new Dog(1) in region k;
+                Dog* out = extract d from region k;
+                System.IO.Console.printf("%d", d.age);   // Polaron-1717: `d` was extracted
+                delete out;
+                release region k;
+                return;
+            }
+        }
+    }
+}

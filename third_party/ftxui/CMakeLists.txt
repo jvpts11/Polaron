@@ -168,4 +168,4 @@ include(cmake/ftxui_export.cmake)
 include(cmake/ftxui_install.cmake)
 include(cmake/ftxui_package.cmake)
 
-# examples/ and doc/ removed in the LDP3 vendored copy (see docs/superpowers/specs).
+# examples/ and doc/ removed in the Polaron vendored copy (see docs/superpowers/specs).

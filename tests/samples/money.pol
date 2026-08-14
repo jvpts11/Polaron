@@ -1,0 +1,21 @@
+import System.IO.Console;
+import System.App.Money;
+program MoneyDemo;
+
+// Fixed-point money as integer cents (spec 34) in pure Polaron. Prints:
+//   a=$12.34 sum=$14.84 prod=$15.00 neg=-$0.75
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Money a = new Money(1234) on heap;
+                mutable Money b = new Money(250) on heap;
+                mutable Money c = new Money(500) on heap;
+                mutable Money neg = new Money(0 - 75) on heap;
+                System.IO.Console.printf("a=%s sum=%s prod=%s neg=%s\n",
+                    a.format(), a.plus(b).format(), c.times(3).format(), neg.format());
+                return;
+            }
+        }
+    }
+}

@@ -15,7 +15,7 @@ The essence of an interrupt is not that a CPU jumps somewhere. It is:
 That sentence mentions no architecture and no execution mode. It is equally true of a bare-metal ISR, a
 POSIX signal handler, a Windows console Ctrl-C handler, a vectored exception handler, and a callback a
 foreign event loop invokes on its own thread. The *meaning* is portable; only the lowering is
-target-specific — which is the pattern LDP3 already uses for `asm`, for regions over fixed memory, and
+target-specific — which is the pattern Polaron already uses for `asm`, for regions over fixed memory, and
 for the bit-counted integer names.
 
 **The value of the keyword is in what it forbids, not in what it generates.** The calling convention is
@@ -41,7 +41,7 @@ waits.
 
 The reason is literal rather than stylistic: the code this method interrupted may be standing inside the
 allocator, or holding the very lock this body would take. C states these rules in prose — "async-signal-
-safe" — and checks none of them. A compiler that knows what a method reaches can check them, and LDP3
+safe" — and checks none of them. A compiler that knows what a method reaches can check them, and Polaron
 already tracks that for the region binder.
 
 ### 3. State shared with an interrupt must be declared as such
@@ -49,7 +49,7 @@ already tracks that for the region binder.
 This is the deepest rule and the one that keeps the keyword count at zero.
 
 An interrupt and the code it preempts share memory. The question "what may both of them touch?" already
-has an answer in LDP3: `volatile` for device memory, `atomic<T>` for counters and flags. So `interrupt`
+has an answer in Polaron: `volatile` for device memory, `atomic<T>` for counters and flags. So `interrupt`
 should **require one of those** for anything mutable it reaches, and not invent a marker of its own.
 
 That is the `identity` argument applied again: *what makes two of these the same already has a name*, so
@@ -74,13 +74,13 @@ tidier" — it is that a careful human wrote this by hand, twice reviewed it, an
 ## The parameter should be an object
 
 Today pico's dispatcher is `irq_dispatch(address vector, address ctx)` — two raw integers. LLVM's
-`x86_intrcc` wants one or two pointers. Neither is LDP3.
+`x86_intrcc` wants one or two pointers. Neither is Polaron.
 
     public interrupt method onFault(Trap t) returns void
 
 `Trap` is a type the target world defines: the vector, the error code, the saved frame, with methods.
 It is exactly the object already hiding inside those two `address` parameters. If the body of a handler
-is going to be ordinary LDP3, its argument should be too.
+is going to be ordinary Polaron, its argument should be too.
 
 ## The tension that decides the design
 
@@ -115,7 +115,7 @@ enforced should not be pretended.
 
 **1. Modifier or its own declaration form? → ITS OWN FORM, and nameless:**
 
-```ldp3
+```polaron
 public interrupt(Trap t) returns void { }
 ```
 
@@ -133,7 +133,7 @@ timer has one, the NIC has one — the model already says so.
 than being chosen separately. The CPU jumps to an address: no receiver, no argument, nothing but a
 vector and a frame. If the handler is an instance method, something has to bind it to an instance:
 
-```ldp3
+```polaron
 Idt.install(33, keyboard);   // the OBJECT, not the method
 ```
 
@@ -238,7 +238,7 @@ exactly that. Only the lowering differs:
 `void(int)` was chosen over a per-OS answer because it is what `signal()` takes on POSIX *and*
 through the Windows CRT, so one shape installs on both. `codegen_interrupt_hosted_runs` proves it by
 handing the entry to the C runtime's own `signal()` and raising the signal for real — nothing short
-of running it shows that an entry point is genuinely callable by something that never heard of LDP3.
+of running it shows that an entry point is genuinely callable by something that never heard of Polaron.
 
 **The MODE decides the lowering, not the target triple.** The triple answers an ABI question (is
 there an OS to promise a red zone); `freestanding` answers a language one (is there a runtime at
@@ -270,7 +270,7 @@ record)` is, and it is the sentence that says which of the two to change.
 
 **Rule 3** requires every MUTABLE field an interrupt reaches to be `volatile` or `atomic<T>` — the
 rule invents no marker of its own, because "state something that can preempt me also touches" already
-has two names in LDP3, for two real cases. Immutable is the default, so a driver's ports, buffers and
+has two names in Polaron, for two real cases. Immutable is the default, so a driver's ports, buffers and
 base addresses need no marking at all; what it catches is exactly the state a handler and a main loop
 both write.
 
@@ -308,7 +308,7 @@ that frame — the `byval` parameter. Three experiments, all at -O2:
 2. **A `volatile` store survives** — and in a hand-written IR function with no prologue it landed at
    `(%rsp)`, which looked like the real frame. That was a coincidence of that function having
    nothing else on its stack.
-3. **The same thing written in LDP3, with `volatile` fields throughout, lands in SCRATCH.** The
+3. **The same thing written in Polaron, with `volatile` fields throughout, lands in SCRATCH.** The
    emitted handler is `subq $16,%rsp` … two stores … `addq $16,%rsp` … `iretq`. LLVM materialised
    the copy, wrote into it, and discarded it before returning.
 
@@ -325,17 +325,17 @@ entry by hand — one stub, not the pattern, exactly as (a) said.
 **A `Signal` class in the standard library, so installing a hosted handler does not start with an
 `extern cdecl` in user code.** Today the test writes its own:
 
-```ldp3
+```polaron
 public extern cdecl static method signal(int sig, address handler) returns address;
 Posix.signal(2, box.interrupt);
 ```
 
-That works and is not a gap in the keyword — `extern cdecl` is how LDP3 reaches a C symbol, by
+That works and is not a gap in the keyword — `extern cdecl` is how Polaron reaches a C symbol, by
 design, and `signal()` belongs to the C runtime rather than to us. **What the debt buys is moving the
 declaration once into the library** so the user writes an import instead:
 
-```ldp3
-import System.Os.Signal;
+```polaron
+import System.OS.Signals;
 Signal.on(Signal.Interrupt, box.interrupt);
 ```
 

@@ -1,6 +1,6 @@
 # 14. Functions, lambdas & tuples
 
-Methods are LDP3's primary unit of behavior, but they are not the only one. Functions are
+Methods are Polaron's primary unit of behavior, but they are not the only one. Functions are
 *first-class values*: you can store one in a variable, pass it to a method, return it, and
 build a closure that captures its surroundings. This chapter covers function values and
 their type, lambdas and captures, bound method references, bare C function pointers for
@@ -12,7 +12,7 @@ The type of a function value is `function<...>`: the parameter types first, then
 type **last**. A function taking one `int` and returning an `int` is `function<int, int>`;
 one taking nothing and returning nothing is `function<void>`.
 
-```ldp3
+```polaron
 function<int, int> dbl = ...;     // (int) -> int
 function<void> tick = ...;        // () -> void
 function<int, boolean, int> f;    // (int, boolean) -> int
@@ -20,7 +20,7 @@ function<int, boolean, int> f;    // (int, boolean) -> int
 
 You call a function value like a method — with parentheses:
 
-```ldp3
+```polaron
 int a = dbl(5);
 ```
 
@@ -29,7 +29,7 @@ int a = dbl(5);
 A **lambda** is a function value written inline. Its shape mirrors a method: a parameter
 list, a `returns` type, and a body.
 
-```ldp3
+```polaron
 function<int, int> dbl = lambda(int x) returns int { return x * 2; };
 ```
 
@@ -37,7 +37,7 @@ A lambda that references variables from its surroundings must **capture** them e
 a `[captures: ...]` clause. Captures are `byvalue` (a copy is taken when the lambda is
 created) or `byref` (mutations flow back to the original variable):
 
-```ldp3
+```polaron
 int base = 100;
 function<int, int> addBase =
     lambda[captures: byvalue base](int x) returns int { return x + base; };
@@ -63,7 +63,7 @@ separate flows of control.
 Because functions are values, a method can take one as a parameter or hand one back — the
 basis for callbacks, strategies, and the functional pipeline on collections.
 
-```ldp3
+```polaron
 public static method twice(function<int, int> f, int v) returns int {
     return f(f(v));
 }
@@ -84,7 +84,7 @@ int d = add10(5);                        // 15
 a `function<>` value. Dispatch stays virtual: if the receiver is statically a base type but
 dynamically a subclass, the override runs.
 
-```ldp3
+```polaron
 Animal cat = new Cat() on heap;          // Cat overrides speak()
 function<int, int> sp = methodref cat.speak;
 int e = sp(4);                           // runs Cat.speak(4)
@@ -93,17 +93,17 @@ int e = sp(4);                           // runs Cat.speak(4)
 ## 14.5 Bare C function pointers: `funcptr<>`
 
 For dynamic FFI — loading a C entry point at runtime, e.g. `wglGetProcAddress` for modern
-OpenGL — LDP3 has `funcptr<...>`: a raw C function pointer with no closure environment.
+OpenGL — Polaron has `funcptr<...>`: a raw C function pointer with no closure environment.
 Unlike `function<>`, its type parameters put the **return type first**, then the argument
 types (matching how C signatures read):
 
-```ldp3
+```polaron
 public mutable funcptr<int, int> createShader;             // int  create(int)
 public mutable funcptr<void, int, int, long, long> shaderSource;  // void source(int,int,long,long)
 ```
 
 You call a `funcptr` value like any function; the compiler emits a plain indirect C call.
-Use `function<>` for LDP3 closures and callbacks; use `funcptr<>` only at the FFI boundary,
+Use `function<>` for Polaron closures and callbacks; use `funcptr<>` only at the FFI boundary,
 where the value really is a bare C pointer.
 
 ## 14.6 Multiple return values: tuples
@@ -111,7 +111,7 @@ where the value really is a bare C pointer.
 A method can return several values at once by declaring a **tuple** return type — a
 parenthesized list of types — and returning a parenthesized list of values:
 
-```ldp3
+```polaron
 public static method divmod(int a, int b) returns (int, int) {
     return (a / b, a % b);
 }
@@ -119,14 +119,14 @@ public static method divmod(int a, int b) returns (int, int) {
 
 The caller **destructures** the result into fresh locals:
 
-```ldp3
+```polaron
 (int q, int r) = MathX.divmod(17, 5);    // q = 3, r = 2
 ```
 
 Tuple components may be named for documentation; the names don't change how the tuple is
 used:
 
-```ldp3
+```polaron
 public static method bounds() returns (int low, int high) {
     return (3, 9);
 }
@@ -135,7 +135,7 @@ public static method bounds() returns (int low, int high) {
 
 Tuples are also ordinary values — you can build one from a literal and destructure it:
 
-```ldp3
+```polaron
 (int x, int y) = (lo + 1, hi + 1);
 ```
 
@@ -144,7 +144,7 @@ Tuples are also ordinary values — you can build one from a literal and destruc
 At a call site, an argument may be passed **by name** with `name: value`, which documents
 intent and frees you from remembering positional order:
 
-```ldp3
+```polaron
 validate(value: 100, errorMessage: "name too long");
 ```
 
@@ -152,7 +152,7 @@ A parameter can be *required* to be passed by name by prefixing its declaration 
 `requires named` (spec 22.4), so callers can never pass it positionally — useful for boolean
 flags and other arguments whose meaning isn't obvious from position alone:
 
-```ldp3
+```polaron
 public static method spawn(requires named boolean detached) returns void { /* ... */ }
 // Main.spawn(true);            // error: 'detached' must be passed by name
 Main.spawn(detached: true);     // ok

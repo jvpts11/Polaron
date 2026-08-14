@@ -4,7 +4,7 @@
 #include <string>
 #include <string_view>
 
-namespace ldp3 {
+namespace polaron {
 
 // A position in a source file. Carried from the very first phase so every
 // later diagnostic can point back to file:line:col.
@@ -14,14 +14,14 @@ struct SourceLocation {
     int col = 1;
 };
 
-// Every lexical category the LDP3 lexer can produce. The keyword set covers
+// Every lexical category the Polaron lexer can produce. The keyword set covers
 // the Release 0.1 subset (F1-F3); further keywords are reserved as their
 // language features land in later phases.
 enum class TokenKind : std::uint8_t {
     // Special
     EndOfFile,
     Unknown,  // a character the lexer could not classify
-    Comment,  // a //, /// or /* */ comment (only emitted in keep-comments mode, for `ldp3 fmt`)
+    Comment,  // a //, /// or /* */ comment (only emitted in keep-comments mode, for `polaron fmt`)
 
     // Identifiers and literals
     Identifier,
@@ -44,7 +44,7 @@ enum class TokenKind : std::uint8_t {
     // `call T.p()` -- reach the TRANSFORMER's body rather than this type's override. It exists
     // because there is no receiver to write to the left of the dot: a transformer is not a value.
     //
-    // A HARD keyword, by the author's decision after being shown the cost: `decomp/src/lift.ldp3`
+    // A HARD keyword, by the author's decision after being shown the cost: `decomp/src/lift.pol`
     // declares `mutable String call` and uses it dozens of times, so that file needs a rename. The
     // measurement is recorded rather than the breakage discovered.
     KwCall,
@@ -147,4 +147,4 @@ struct Token {
     SourceLocation loc;
 };
 
-}  // namespace ldp3
+}  // namespace polaron

@@ -1,0 +1,34 @@
+import System.IO.Console;
+import System.App.StackVm;
+program StackVmDemo;
+
+// A bytecode stack VM (spec 34) in pure Polaron running two little programs. Prints:
+//   fact5=120 sum10=55
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // factorial(5): result=1,n=5; while n: result*=n; n--
+                mutable int[] fac = new int[34]();
+                fac[0]=1; fac[1]=1;   fac[2]=2; fac[3]=0;   fac[4]=1; fac[5]=5;   fac[6]=2; fac[7]=1;
+                fac[8]=3; fac[9]=1;   fac[10]=6; fac[11]=15; fac[12]=3; fac[13]=0; fac[14]=3; fac[15]=1;
+                fac[16]=4; fac[17]=0; fac[18]=2; fac[19]=0;  fac[20]=3; fac[21]=1; fac[22]=1; fac[23]=1;
+                fac[24]=5; fac[25]=0; fac[26]=2; fac[27]=1;  fac[28]=7; fac[29]=4; fac[30]=3; fac[31]=0;
+                fac[32]=0; fac[33]=0;
+                int f = StackVm.run(fac, 34, 4);
+
+                // sum(1..10): result=0,i=10; while i: result+=i; i--
+                mutable int[] sm = new int[34]();
+                sm[0]=1; sm[1]=0;   sm[2]=2; sm[3]=0;   sm[4]=1; sm[5]=10;  sm[6]=2; sm[7]=1;
+                sm[8]=3; sm[9]=1;   sm[10]=6; sm[11]=15; sm[12]=3; sm[13]=0; sm[14]=3; sm[15]=1;
+                sm[16]=8; sm[17]=0; sm[18]=2; sm[19]=0;  sm[20]=3; sm[21]=1; sm[22]=1; sm[23]=1;
+                sm[24]=5; sm[25]=0; sm[26]=2; sm[27]=1;  sm[28]=7; sm[29]=4; sm[30]=3; sm[31]=0;
+                sm[32]=0; sm[33]=0;
+                int s = StackVm.run(sm, 34, 4);
+
+                System.IO.Console.printf("fact5=%d sum10=%d\n", f, s);
+                return;
+            }
+        }
+    }
+}

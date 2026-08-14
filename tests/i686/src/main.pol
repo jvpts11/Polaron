@@ -1,0 +1,114 @@
+// The same program as tests/arm64, for a 32-bit x86 machine -- the late-90s hardware this port is
+// aimed at, and the target most likely to disagree with the 64-bit assumptions the compiler grew up on.
+//
+// The ONE difference from the AArch64 version is how a byte reaches the outside world: this machine has
+// port I/O and a UART at 0x3F8, where `virt` has a PL011 at an address in memory. Everything else --
+// the class, the loop, the 64-bit arithmetic on a machine with 32-bit registers -- is the same source,
+// which is the point of running it.
+program I686Boot freestanding;
+
+public bundle Main {
+    public namespace Kernel {
+        // COM1. Not memory: on x86 a serial port lives in a separate I/O address space that only `in`
+        // and `out` reach, which is why this is the one class here with an `asm` block in it.
+        public class Serial {
+            public static method putc(int c) returns void {
+                // `$0` arrives in a 32-bit register, so the byte is named as `al` on the way out. The
+                // architecture on the block is checked against the target: written `x86_64`, this same
+                // file refuses to build for a 32-bit machine, which is the check doing its job.
+                asm("x86") { mov edx, 0x3F8
+                             mov eax, $0
+                             out dx, al } in (c) clobber("eax", "edx");
+                return;
+            }
+
+            public static method puts(byte* s) returns void {
+                mutable int i = 0;
+                mutable int ch = cast<int>(s[0]) & 255;
+                while (ch != 0) {
+                    Serial.putc(ch);
+                    i = i + 1;
+                    ch = cast<int>(s[i]) & 255;
+                }
+                return;
+            }
+
+            public static method nl() returns void {
+                Serial.putc(10);
+                return;
+            }
+
+            // 64-bit arithmetic on a 32-bit machine: every shift below 32 bits crosses a register
+            // boundary, so this prints correctly only if the i686 lowering of a `long` is right.
+            public static method hex(long v) returns void {
+                mutable int shift = 60;
+                while (shift >= 0) {
+                    long nibble = (v >> shift) & 15;
+                    if (nibble < 10) {
+                        Serial.putc(cast<int>(48 + nibble));
+                    } else {
+                        Serial.putc(cast<int>(87 + nibble));
+                    }
+                    shift = shift - 4;
+                }
+                return;
+            }
+        }
+
+        // A REGION CLASS ON BARE METAL: the case the narrow `A*` was built for, and the one that had
+        // no test at all. Hosted, the arena reserves a gigabyte of address space and commits it as it
+        // fills; there is neither here, so the driver emits a STATIC arena instead -- a bound a kernel
+        // can see, name and raise (`POLARON_FS_CLASS_ARENA`), with every byte accounted for before the
+        // first instruction runs. Both arenas keep the same two promises, and this walk needs both:
+        // ONE base for the whole run, and offset zero never handed out so that zero can spell null.
+        //
+        // Booted rather than read, because a wrong base does not fail to link -- it walks into the
+        // arena. On a 32-bit machine a narrow pointer is also the same width as a wide one, which is
+        // exactly why it is worth booting here: the arithmetic must still be an offset from the base
+        // and not an address that happens to fit.
+        public region class Descriptor {
+            public mutable int port;
+            public mutable nullable Descriptor* next;
+
+            public constructor Descriptor(int port) {
+                this.port = port;
+                this.next = null;
+            }
+
+            // Followed through narrow pointers: the sum comes out right only if each one read back as
+            // the object that was stored, rather than as some other offset from some other base.
+            public method sumPorts() returns int {
+                if (this.next == null) { return this.port; }
+                return this.port + this.next.sumPorts();
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Serial.puts(b"polaron on i686");
+                Serial.nl();
+
+                Descriptor* head = new Descriptor(0x3f8);
+                head.next = new Descriptor(0x2f8);
+                head.next.next = new Descriptor(0x3e8);
+                Serial.puts(b"ports = 0x");
+                Serial.hex(cast<long>(head.sumPorts()));   // 0x3f8+0x2f8+0x3e8 = 2776 = 0xad8
+                Serial.nl();
+
+                mutable long sum = 0;
+                mutable int i = 1;
+                while (i <= 100) {
+                    sum = sum + cast<long>(i * i);
+                    i = i + 1;
+                }
+                Serial.puts(b"sum1..100^2 = 0x");
+                Serial.hex(sum);   // 338350 = 0x529ae
+                Serial.nl();
+
+                Serial.puts(b"done");
+                Serial.nl();
+                return;
+            }
+        }
+    }
+}

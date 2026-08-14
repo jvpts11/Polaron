@@ -1,7 +1,7 @@
-/* Boot stub for the LDP3 kernel. A PVH boot note makes QEMU -kernel enter our 64-bit ELF at _start in
+/* Boot stub for the Polaron kernel. A PVH boot note makes QEMU -kernel enter our 64-bit ELF at _start in
    32-bit protected mode; from there we bring up 64-bit long mode -- identity-map the first gigabyte with
    2 MiB pages, enable PAE, set EFER.LME, enable paging, load a 64-bit GDT and far-jump to 64-bit code --
-   then call the LDP3 entry point kmain and halt. Assembled by clang's integrated assembler (GAS, Intel). */
+   then call the Polaron entry point kmain and halt. Assembled by clang's integrated assembler (GAS, Intel). */
 .intel_syntax noprefix
 
 /* ---- PVH boot note: QEMU -kernel accepts a 64-bit ELF that carries a XEN_ELFNOTE_PHYS32_ENTRY (type

@@ -1,0 +1,13 @@
+[polaron_project]
+
+[program]
+name = "wasmsite"
+version = "0.1.0"
+language_version = "1.0"
+entry = "src/main.pol"
+
+[build]
+output = "build-output/"
+
+[freestanding]
+target = "wasm32-unknown-unknown"

@@ -1,0 +1,13 @@
+program CalcLib;
+
+// A library bundle exposing a static method. Compiled with `polc --lib` to bundle_calc_lib.polb;
+// a consumer calls Calc.square across the bundle boundary (linked from the .polb's CODE).
+public bundle calc {
+    public namespace math {
+        public class Calc {
+            public static method square(int x) returns int {
+                return x * x;
+            }
+        }
+    }
+}

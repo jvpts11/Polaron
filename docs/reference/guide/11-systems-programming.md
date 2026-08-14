@@ -2,15 +2,15 @@
 
 Most of what you have read so far is about *the language*: classes, generics, regions,
 ownership, pattern matching. This chapter is about the layer beneath the language — the place
-where LDP3 stops being an abstraction over "objects and methods" and becomes an abstraction over
+where Polaron stops being an abstraction over "objects and methods" and becomes an abstraction over
 "bytes and addresses." It covers three closely related topics: the **compiler builtins** that the
-rest of the standard library is built on, the **foreign function interface (FFI)** that lets LDP3
-talk to C and to the operating system, and **freestanding mode**, in which LDP3 runs with no
+rest of the standard library is built on, the **foreign function interface (FFI)** that lets Polaron
+talk to C and to the operating system, and **freestanding mode**, in which Polaron runs with no
 operating system underneath it at all.
 
 The unifying idea is *no hidden machinery*. A high-level language earns the right to hide the
 machine behind convenient syntax; a systems language earns the right to *show* it when you ask.
-LDP3 tries to do both: the ordinary object model stays clean, and when you need to reach through
+Polaron tries to do both: the ordinary object model stays clean, and when you need to reach through
 it — to a hardware register, a C library, a fixed physical address — the primitives in this
 chapter are waiting.
 
@@ -18,13 +18,13 @@ chapter are waiting.
 
 ## 11.1 Compiler builtins vs. the standard library
 
-It helps to draw a line first. LDP3 has two very different kinds of "built-in" thing:
+It helps to draw a line first. Polaron has two very different kinds of "built-in" thing:
 
-- **The standard library** is ordinary LDP3 code — classes like `ArrayList<T>`, `HashMap<K, V>`,
+- **The standard library** is ordinary Polaron code — classes like `ArrayList<T>`, `HashMap<K, V>`,
   `Strings`, `Files`, `Regex`. It is written in the language, compiled like your code, and you
   reach it with `import`. You could, in principle, have written it yourself.
 - **Compiler builtins** are types and operations the compiler *knows about intrinsically*. They
-  are not classes you could write in LDP3, because they lower directly to machine-level constructs:
+  are not classes you could write in Polaron, because they lower directly to machine-level constructs:
   a `String`'s `{length, data}` layout, a `vec4`'s SSE register, a `Decimal`'s 128-bit mantissa, a
   raw `Memory.write<int>`. They are the bedrock the standard library stands on.
 
@@ -40,13 +40,13 @@ Let us walk through the builtins first.
 
 ## 11.2 Strings: `String` and `string`
 
-LDP3 gives you two string builtins with deliberately different personalities.
+Polaron gives you two string builtins with deliberately different personalities.
 
 `String` is the **immutable** one. Once constructed, its bytes never change; every operation that
 "modifies" it actually returns a fresh `String`. This makes it safe to share and cheap to reason
 about. It is the type most APIs speak.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program StringDemo;
 
@@ -73,21 +73,21 @@ The core `String` methods the compiler recognizes are `length()`, `isEmpty()`, `
 `equals(String)`, `concat(String)`, and `substring(int, int)`. The allocating ones (`concat`,
 `substring`) build a new heap `String`; the query ones do not allocate. Everything richer —
 `split`, `join`, `replace`, formatting — lives in the `Strings` helper class in the standard
-library, which is just LDP3 code layered on top of these primitives.
+library, which is just Polaron code layered on top of these primitives.
 
 `string` (lowercase) is the **mutable** counterpart: a growable buffer you build up in place.
 
-```ldp3
+```polaron
 string m = "hi";
 m.append("!");
 m.append(" there");        // "hi! there", grown in place
 System.IO.Console.println(m);
 ```
 
-Both string types obey LDP3's value semantics: assigning a string **copies** it. Mutating the
+Both string types obey Polaron's value semantics: assigning a string **copies** it. Mutating the
 copy leaves the original untouched — no aliasing surprises.
 
-```ldp3
+```polaron
 string a = "x";
 string b = a;              // a deep copy
 b.append("y");
@@ -107,7 +107,7 @@ Interpolation is the ergonomic way to build a `String` from a mix of literal tex
 Inside a `$"..."` literal, anything in `{ ... }` is evaluated and stitched into the result. The
 value produced is a real `String` object — you can store it, take its `length()`, pass it on.
 
-```ldp3
+```polaron
 int n = 7;
 String who = "world";
 String s = $"n={n}, hello {who}!";          // "n=7, hello world!"
@@ -126,12 +126,12 @@ lowered without a dynamic `String` allocation when the result is only consumed, 
 ## 11.4 `Decimal`: exact fixed-point arithmetic
 
 Binary floating point (`float`, `double`) is fast and wrong for money: `0.1 + 0.2` is famously not
-`0.3`. LDP3's answer is the **`Decimal`** builtin — an exact base-10 fixed-point type backed by a
+`0.3`. Polaron's answer is the **`Decimal`** builtin — an exact base-10 fixed-point type backed by a
 128-bit mantissa scaled by `10^18`, giving eighteen fraction digits with no binary rounding error.
 Decimal literals carry an `m` suffix, which is what tells the compiler "this is a `Decimal`, not a
 `double`."
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Money;
 
@@ -163,11 +163,11 @@ Reach for `Decimal` whenever a rounding error would be a bug — currency, tax, 
 
 ## 11.5 Low-level memory: `address`, raw pointers, and the `Memory` API
 
-This is where LDP3 opens the floor and lets you touch memory directly. Three builtins work
+This is where Polaron opens the floor and lets you touch memory directly. Three builtins work
 together.
 
 **`address`** is a primitive integer the width of a pointer. It is a raw machine address with no
-type attached — the LDP3 equivalent of `uintptr_t`. You can do arithmetic on it and cast it to and
+type attached — the Polaron equivalent of `uintptr_t`. You can do arithmetic on it and cast it to and
 from typed pointers.
 
 **Int↔pointer casts** convert freely between an `address` (or any pointer-sized integer) and a
@@ -186,7 +186,7 @@ The **`Memory` API** is the typed front door to a raw block:
   one.
 - `Memory.getMemory(x)` returns the raw `address` backing a value.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Memory;
 program LowLevelMemory;
@@ -223,7 +223,7 @@ than libc's `malloc`.
 
 ## 11.6 SIMD vectors: `vec2`/`vec3`/`vec4` and `mat4`
 
-Graphics and physics math is dominated by small fixed-size vectors of floats. LDP3 makes them
+Graphics and physics math is dominated by small fixed-size vectors of floats. Polaron makes them
 first-class builtins that lower straight to LLVM `<N x float>` — that is, to SSE/AVX registers —
 so a component-wise add is one instruction, not a loop.
 
@@ -231,7 +231,7 @@ so a component-wise add is one instruction, not a loop.
 calling the type, do element-wise `+ - * /` (a scalar operand *broadcasts* to all lanes), read
 lanes with `.x`/`.y`/`.z`/`.w` or with `[i]`, and pass or return them by value.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Simd;
 
@@ -261,7 +261,7 @@ public bundle main {
 Vectors also carry the geometry methods you expect: `a.dot(b)`, `a.length()`, `a.normalize()`, and
 (on `vec3`) `a.cross(b)`.
 
-```ldp3
+```polaron
 vec3 a = vec3(1.0, 2.0, 2.0);
 vec3 b = vec3(3.0, 0.0, 0.0);
 float d  = a.dot(b);         // 3
@@ -273,7 +273,7 @@ vec3  x  = a.cross(b);       // (0, 6, -6)
 For transforms there is **`mat4`**, a 4×4 float matrix laid out row-major as `<16 x float>`. It
 offers `mat4.identity()`, matrix×matrix `multiply`, and matrix×vector `transform`.
 
-```ldp3
+```polaron
 mat4 id = mat4.identity();
 vec4 p  = vec4(1.0, 2.0, 3.0, 1.0);
 vec4 tp = id.transform(p);              // identity * p = p
@@ -285,7 +285,7 @@ vec4 q  = t.transform(vec4(0.0, 0.0, 0.0, 1.0));   // origin -> (5, 6, 7)
 ```
 
 These types were added to make real 3D code — the kind that used to require a C++ math library —
-expressible directly in LDP3 without giving up performance.
+expressible directly in Polaron without giving up performance.
 
 ---
 
@@ -295,7 +295,7 @@ expressible directly in LDP3 without giving up performance.
 system with standard streams underneath it, which is why it is one of the things freestanding mode
 takes away (§11.9). In hosted programs it is your everyday I/O, and it must be imported.
 
-```ldp3
+```polaron
 import System.IO.Console;
 // ...
 System.IO.Console.printf("x=%d y=%c\n", 42, 'A');   // format string + args
@@ -316,11 +316,11 @@ buffer yourself — which is exactly what §11.9's VGA example does.
 ## 11.8 Foreign Function Interface (FFI)
 
 No systems language is an island. Sooner or later you must call C: libc, a graphics driver, a
-database client, or — in a kernel — a hand-written assembly routine. LDP3's FFI (spec §26) keeps
+database client, or — in a kernel — a hand-written assembly routine. Polaron's FFI (spec §26) keeps
 that inside the object model. A foreign function is declared as an `extern` **static method** of a
 class, with no body; it resolves to a symbol with C linkage.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program FfiExtern;
 
@@ -344,25 +344,25 @@ public bundle main {
 
 **The shape of the declaration** is `public extern <cdecl|stdcall|fastcall> static method
 name(params) returns T;`. The calling convention is a *keyword*, not a string — `cdecl`,
-`stdcall`, or `fastcall`. On the x86-64 targets LDP3 supports today these three conventions
+`stdcall`, or `fastcall`. On the x86-64 targets Polaron supports today these three conventions
 converge on the single platform C ABI, so the choice is currently cosmetic on 64-bit; it is
 carried through the AST so that the distinction can matter on 32-bit x86, where the conventions
 genuinely differ. The enclosing class is pure organization: it groups related externs under one
 convention and gives them a namespace. You call through it (`LibC.abs(...)`), but the actual C
 symbol is the method's **simple name** (`abs`), so it links against the real `abs` in libc.
 
-**Marshalling** — how LDP3 values become C values at the boundary — is where the interesting work
-happens, and LDP3 handles the common cases automatically:
+**Marshalling** — how Polaron values become C values at the boundary — is where the interesting work
+happens, and Polaron handles the common cases automatically:
 
 - **`String` / `string` → `char*`.** A string argument is passed as its NUL-terminated `data`
   pointer, not as the `{length, data}` object. The C side sees plain characters.
 
-  ```ldp3
+  ```polaron
   public class LibC {
       public extern cdecl static method puts(String s) returns int;
   }
   // ...
-  LibC.puts("hello from ldp3");     // C receives a char*
+  LibC.puts("hello from polaron");     // C receives a char*
   ```
 
 - **Small structs by value.** A value-type `struct` small enough to travel in a register (1/2/4/8
@@ -370,15 +370,15 @@ happens, and LDP3 handles the common cases automatically:
   for the call, and stores a returned register back into a fresh struct. A `Point { int x; int y; }`
   is eight bytes and matches a C `struct { int x, y; }`.
 
-  ```ldp3
+  ```polaron
   public struct Point {
       public mutable int x;
       public mutable int y;
       public constructor Point(int x, int y) { this.x = x; this.y = y; }
   }
   public class PointApi {
-      public extern cdecl static method ldp3_point_sum(Point p) returns int;
-      public extern cdecl static method ldp3_point_scale(Point p, int k) returns Point;
+      public extern cdecl static method polaron_point_sum(Point p) returns int;
+      public extern cdecl static method polaron_point_scale(Point p, int k) returns Point;
   }
   ```
 
@@ -386,18 +386,18 @@ happens, and LDP3 handles the common cases automatically:
   raw C function pointer, so a C function can call straight back into it. Lambdas that *do* capture
   cannot cross the boundary (there is nowhere to put the environment).
 
-  ```ldp3
+  ```polaron
   public class Cb {
-      public extern cdecl static method ldp3_apply_cb(function<int, int> f, int x) returns int;
+      public extern cdecl static method polaron_apply_cb(function<int, int> f, int x) returns int;
   }
   // ...
-  int r = Cb.ldp3_apply_cb(lambda(int n) returns int { return n * n; }, 7);   // 49
+  int r = Cb.polaron_apply_cb(lambda(int n) returns int { return n * n; }, 7);   // 49
   ```
 
 - **Variadics.** A trailing `...` in the declaration marks a variadic C function, so you can bind
   things like `printf` directly.
 
-  ```ldp3
+  ```polaron
   public class LibC {
       public extern cdecl static method printf(String format, ...) returns int;
   }
@@ -416,7 +416,7 @@ target = "x86_64-windows"
 native_libs = "opengl32, user32, gdi32"
 ```
 
-This is precisely how a plugable graphics binding (LDP3-OpenGL, for instance) links `opengl32`
+This is precisely how a plugable graphics binding (Polaron-OpenGL, for instance) links `opengl32`
 without any change to the compiler: extern declarations for the entry points, plus one
 `native_libs` line.
 
@@ -424,7 +424,7 @@ without any change to the compiler: extern declarations for the entry points, pl
 
 ## 11.9 Freestanding mode
 
-Freestanding mode (spec §36) is LDP3 with the operating system removed. It is the mode for
+Freestanding mode (spec §36) is Polaron with the operating system removed. It is the mode for
 kernels, bootloaders, firmware, hypervisors — bare metal, where there is no `malloc`, no thread
 scheduler, no filesystem, and no exception handler until *you* write them.
 
@@ -488,17 +488,17 @@ concrete technical reason:
   unit literals, `Result`/`Option`, and every value type.
 
   This is the same split C++ makes: a freestanding implementation drops `<iostream>`, `<fstream>` and
-  `<thread>` and keeps the rest. LDP3 is in that position, not in C's.
+  `<thread>` and keeps the rest. Polaron is in that position, not in C's.
 
   **`String` is on the list for now, and only for now.** It lowers to a family of eleven
-  `__ldp3_str_*` symbols (copy, free, eq, hash, index, trim, upper, lower, repeat, ...) that no
+  `__polaron_str_*` symbols (copy, free, eq, hash, index, trim, upper, lower, repeat, ...) that no
   bare-metal runtime provides yet. They need nothing a kernel does not have — the program's heap and
   `memcpy` — so this is code nobody has written rather than a restriction. Until then, use a byte
   literal `b"..."` for fixed text and `byte*`/`byte[]` with the raw Memory API for text you build.
 
 ### What is kept — and this is the point
 
-Freestanding LDP3 is not a toy subset. What survives is almost the entire *value* of the language:
+Freestanding Polaron is not a toy subset. What survives is almost the entire *value* of the language:
 
 - **Full OOP** — `class`, inheritance, `virtual`/`abstract`/`sealed`, `interface`, generics with
   constraints and variance, `struct` with bit fields, `record`, `union`, `enum`, `catalog`.
@@ -514,7 +514,7 @@ Freestanding LDP3 is not a toy subset. What survives is almost the entire *value
   Type-safe manual memory with predictable layout; see the MMIO use below.
 - **`comptime`** functions, `fixed` constants, `demand`, `layout`, and compile-time string DSLs.
 - **The bit-counted numeric types — `int8`…`int64`, `uint8`…`uint64`, `float32`/`float64`, and
-  `address`.** These are actually **freestanding-only**: in normal mode LDP3 uses the named types
+  `address`.** These are actually **freestanding-only**: in normal mode Polaron uses the named types
   (`byte`/`short`/`int`/`long`, `smallfloat`/`float`/`double`, etc.) and the compiler *rejects* the
   bit-counted names. Freestanding is where exact widths matter — a hardware register is 32 bits,
   full stop — so that is where the bit-counted spellings live.
@@ -533,7 +533,7 @@ source, so the requirement travels with the code. A `program` or a `bundle` can 
 `freestanding`, and the compiler then rejects any non-freestanding feature *even without the
 flag* — you cannot accidentally reach for the managed runtime.
 
-```ldp3
+```polaron
 program FreestandingKernel freestanding;
 
 public bundle main freestanding {
@@ -566,7 +566,7 @@ available in freestanding mode; use FFI for I/O."*
 
 And because the tetrad is kept, the kernel power-management idiom works unchanged:
 
-```ldp3
+```polaron
 public static method tick(int mode) returns int {
     if (mode == 1) { abstainfrom body; }   // disable `body` from now on
     if (mode == 2) { reinstate body; }     // re-enable it
@@ -584,7 +584,7 @@ memory-mapped hardware register or a framebuffer. `new ... in region` bump-alloc
 there, with full type safety over the layout; `release region` frees only the region's small
 header, never the fixed memory itself.
 
-```ldp3
+```polaron
 region hw = itself.at(mem, 256 bytes);      // `mem` here is a fixed hardware address
 Cell* c = new Cell() in region hw;          // placed at that address, type-checked
 c.v = 77;
@@ -596,7 +596,7 @@ predictable layout and no vtable, so its fields sit at exactly the hardware offs
 carry an `Object` vtable pointer at offset 0 and shift everything. This is the classic VGA text
 buffer, straight out of the spec's minimal kernel:
 
-```ldp3
+```polaron
 public region vga_text = itself.at(0xB8000, 4000 bytes).accepts({VGAChar});
 
 public struct VGAChar {
@@ -612,7 +612,7 @@ program the default is the native host (e.g. `x86_64-windows`). For a real bare-
 pass a triple whose OS field is `none`:
 
 ```
-ldp3 build --freestanding --target=x86_64-unknown-none --output=kernel.elf
+polaron build --freestanding --target=x86_64-unknown-none --output=kernel.elf
 ```
 
 A bare-metal triple changes the entry point. A hosted program (even a freestanding one) still gets
@@ -629,9 +629,9 @@ linked into a kernel image.
 The three subjects of this chapter are really one subject seen from three distances. Builtins are
 the primitives; FFI is how those primitives reach outward to existing native code; freestanding
 mode is what remains when you take the operating system away — and it is *almost everything*,
-because LDP3 was designed so that its abstractions (OOP, regions, ownership, comptime) cost nothing
+because Polaron was designed so that its abstractions (OOP, regions, ownership, comptime) cost nothing
 at runtime and therefore survive the trip to bare metal. You can write a hardware driver as a set
 of classes, guard its memory with type-safe regions at fixed addresses, prove its ownership at
 compile time, and never once depend on a runtime that will not be there. That combination — full
-OOP plus type-safe regions plus predictable layout, with no hidden machinery — is what LDP3 offers
+OOP plus type-safe regions plus predictable layout, with no hidden machinery — is what Polaron offers
 that the older systems languages do not.

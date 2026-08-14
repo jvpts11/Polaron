@@ -3,14 +3,14 @@
 #include <fstream>
 #include "driver/sources.h"
 
-using namespace ldp3::driver;
+using namespace polaron::driver;
 
 namespace {
 std::filesystem::path noSources() {
-    return std::filesystem::temp_directory_path() / "ldp3_no_such_sources.toml";
+    return std::filesystem::temp_directory_path() / "polaron_no_such_sources.toml";
 }
 std::filesystem::path writeSources(const std::string& content) {
-    const auto p = std::filesystem::temp_directory_path() / "ldp3_test_sources.toml";
+    const auto p = std::filesystem::temp_directory_path() / "polaron_test_sources.toml";
     std::ofstream f(p, std::ios::binary);
     f << content;
     return p;

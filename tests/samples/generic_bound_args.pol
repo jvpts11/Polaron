@@ -1,0 +1,49 @@
+import System.IO.Console;
+import System.Collections.Comparable;
+program GenericBoundArgs;
+
+// A generic constraint carries its own type arguments (spec 15.2): `<T implements Comparable<T>>`
+// demands Comparable OF T. Dog implements Comparable<Dog>, so Sorter<Dog> is well-formed.
+// The rejected counterpart is generic_bound_args_bad.pol.
+public bundle main {
+    public namespace app {
+        public class Dog implements Comparable<Dog> {
+            private mutable int age;
+            public constructor Dog(int age) {
+                this.age = age;
+            }
+            public override method compareTo(Dog other) returns int {
+                return this.age - other.age();
+            }
+            public method age() returns int {
+                return this.age;
+            }
+        }
+        public class Cat implements Comparable<Dog> {
+            public constructor Cat() {
+            }
+            public override method compareTo(Dog other) returns int {
+                return 0;
+            }
+        }
+        public class Sorter<T implements Comparable<T>> {
+            public constructor Sorter() {
+            }
+            public method pick(T* a, T* b) returns int {
+                return a.compareTo(b);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Sorter<Dog> ok = new Sorter<Dog>() on heap;
+                Dog d1 = new Dog(3) on heap;
+                Dog d2 = new Dog(8) on heap;
+                System.IO.Console.printf("cmp=%d\n", ok.pick(d1, d2));
+                delete d2;
+                delete d1;
+                delete ok;
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,27 @@
+program FfiLibraryList;
+
+// The library names a program declares, which is what the driver has to resolve and link.
+//
+// Two classes naming the SAME library appear once: the list is a set of libraries, not a list of
+// classes. `C` stays in it even though every platform links its C runtime already -- that answer
+// belongs to the manifest resolution in the driver, not to the compiler, whose job is only to report
+// what the source said.
+//
+// Declares, in order: C, SDL2
+public bundle main {
+    public namespace app {
+        public class LibC library C {
+            private extern cdecl static method magnitude(int x) returns int symbol("abs");
+        }
+        public class Sdl library SDL2 {
+            private extern cdecl static method init(int flags) returns int symbol("SDL_Init");
+        }
+        public class SdlWindow library SDL2 {
+            private extern cdecl static method destroy(address w) returns void
+                symbol("SDL_DestroyWindow");
+        }
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

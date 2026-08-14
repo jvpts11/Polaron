@@ -4,7 +4,7 @@
 #include <vector>
 #include "driver/discovery.h"
 
-namespace ldp3::studio {
+namespace polaron::studio {
 
 // Which screen the main area is showing.
 enum class Screen { Projects, ProjectDetail, Environments, Libraries, Toolchain };
@@ -12,7 +12,7 @@ enum class Screen { Projects, ProjectDetail, Environments, Libraries, Toolchain 
 // The resolved toolchain: tool paths, directories and the default build target.
 struct ToolchainInfo {
     std::string version;
-    std::string ldp3c;
+    std::string polc;
     std::string clang;
     std::string runtime;
     std::string home;
@@ -23,7 +23,7 @@ struct ToolchainInfo {
 // A shared environment: its libraries and the projects that use it.
 struct Environment {
     std::string name;
-    std::vector<ldp3::driver::Dependency> libs;
+    std::vector<polaron::driver::Dependency> libs;
     std::vector<std::string> usedBy;
 };
 
@@ -60,7 +60,7 @@ struct NewPlug {
 
 // The console pane's state: the output of the last action run on the open project.
 struct Console {
-    std::string title;                 // e.g. "ldp3 test"
+    std::string title;                 // e.g. "polaron test"
     std::vector<std::string> lines;    // captured output
     enum class Status { Idle, Running, Done } status = Status::Idle;
     int exitCode = 0;
@@ -68,7 +68,7 @@ struct Console {
 
 // The whole TUI's shared state. Screens read it and the app loop mutates it (only ever on the UI thread).
 struct AppState {
-    std::vector<ldp3::driver::DiscoveredProject> projects;
+    std::vector<polaron::driver::DiscoveredProject> projects;
     int selectedProject = 0;
     Screen screen = Screen::Projects;
     int selectedAction = 0;  // index into the project-detail action list
@@ -84,13 +84,15 @@ struct AppState {
     bool scanning = false;   // a background computer-wide scan is running
     int scanFound = 0;       // projects known so far while scanning
 
-    const ldp3::driver::DiscoveredProject* selected() const {
-        if (projects.empty()) return nullptr;
+    const polaron::driver::DiscoveredProject* selected() const {
+        if (projects.empty()) {
+            return nullptr;
+        }
         return &projects[static_cast<std::size_t>(selectedProject)];
     }
 };
 
-// The actions offered on the project-detail screen, as {label, ldp3 verb}. `run` is interactive; the rest
+// The actions offered on the project-detail screen, as {label, polaron verb}. `run` is interactive; the rest
 // stream their output into the console.
 inline const std::vector<std::pair<std::string, std::string>>& projectActions() {
     static const std::vector<std::pair<std::string, std::string>> a = {
@@ -98,4 +100,4 @@ inline const std::vector<std::pair<std::string, std::string>>& projectActions() 
     return a;
 }
 
-}  // namespace ldp3::studio
+}  // namespace polaron::studio

@@ -9,7 +9,7 @@
 #include "lexer/token.h"
 #include "parser/ast.h"
 
-namespace ldp3 {
+namespace polaron {
 
 // A syntax diagnostic with location.
 struct ParseError {
@@ -27,17 +27,20 @@ struct ParseError {
 // returned Program may be partial. Recovery comes later.
 class Parser {
 public:
-    Parser(std::vector<Token> tokens, std::string_view file);
+    // `source` is the file's raw text, and is optional: it is read only to keep a transformer's own
+    // source verbatim, so that a declaration which is expanded rather than compiled can cross a
+    // bundle boundary with its bodies intact. Every other declaration needs nothing from it.
+    Parser(std::vector<Token> tokens, std::string_view file, std::string_view source = {});
 
-    // Header mode: parsing a .ldh (a bundle's public API). Methods and constructors may be signatures
-    // with no body (`...;`), like an interface; their implementations live in the .ldb. Call before
+    // Header mode: parsing a .polh (a bundle's public API). Methods and constructors may be signatures
+    // with no body (`...;`), like an interface; their implementations live in the .polb. Call before
     // parse().
     void setHeaderMode(bool headerMode) { headerMode_ = headerMode; }
 
     ast::Program parse();
 
     // Parses a single class declaration from the token stream: how a synthesis pass turns generated
-    // LDP3 source into AST (IPC proxies and dispatchers, spec 2.8).
+    // Polaron source into AST (IPC proxies and dispatchers, spec 2.8).
     ast::ClassDecl parseClassForSynthesis();
 
     bool hasErrors() const { return !errors_.empty(); }
@@ -119,8 +122,14 @@ private:
     bool inProcedure_ = false;                  // ...and inside a `procedure` written on a type too
     // `call T.p()` sites seen while parsing the current declaration; drained into its `procCalls`.
     std::vector<ast::ClassDecl::ProcCall> pendingProcCalls_;
-    ast::ClassDecl parseTransformer();          // `public [mutual] [explicit] transformer N { }`
+    ast::ClassDecl parseTransformer();          // `public [mutual|explicit|collective|freestanding] transformer N { }`
     void parseAppliesOpt(ast::ClassDecl& c);    // the `applies A, B` clause on a declaration line
+    // The same clause over any declaration's two vectors -- an enum takes it as well as a class.
+    void parseAppliesList(std::vector<std::string>& names, std::vector<SourceLocation>& locs);
+    // The raw text between two locations, inclusive of the character at `to`. Empty when no source
+    // was handed in, which is every synthesis path -- generated declarations have no file to quote.
+    std::string sliceSource(const SourceLocation& from, const SourceLocation& to) const;
+    std::string_view source_;
     ast::ExprPtr parseNew();
     ast::ExprPtr parseUnimportExpr();  // `unimport X expecting [using ...] { ... }` (spec 30.18)
     // Parses `[using a, b] { ... }` after `expecting`; fills usingVars and returns the block.
@@ -176,7 +185,7 @@ private:
     // does not exist in freestanding, so generating it makes the record undeclarable.
     bool freestanding_ = false;
     bool parsingEnsures_ = false;           // inside an `ensures` clause -> `old(...)` is allowed (spec 29)
-    bool headerMode_ = false;               // parsing a .ldh: method/constructor bodies may be absent
+    bool headerMode_ = false;               // parsing a .polh: method/constructor bodies may be absent
 };
 
-}  // namespace ldp3
+}  // namespace polaron

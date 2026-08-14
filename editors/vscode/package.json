@@ -1,9 +1,9 @@
 {
-  "name": "ldp3",
-  "displayName": "LDP3",
-  "description": "Language support and project tooling for LDP3.",
+  "name": "polaron",
+  "displayName": "Polaron",
+  "description": "Language support and project tooling for Polaron.",
   "version": "0.2.0",
-  "publisher": "ldp3",
+  "publisher": "polaron",
   "license": "SEE LICENSE IN ../../LICENSE",
   "engines": {
     "vscode": "^1.85.0"
@@ -14,30 +14,30 @@
   "icon": "media/icon.png",
   "main": "./out/extension.js",
   "activationEvents": [
-    "onLanguage:ldp3",
-    "onView:ldp3Projects"
+    "onLanguage:polaron",
+    "onView:polaronProjects"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": true,
-      "description": "Editing, syntax, formatting and building work in untrusted folders. The toolchain comes from your installed LDP3, not the workspace; the compiler/LSP path settings are ignored in untrusted folders so a workspace cannot redirect the toolchain to another binary.",
+      "description": "Editing, syntax, formatting and building work in untrusted folders. The toolchain comes from your installed Polaron, not the workspace; the compiler/LSP path settings are ignored in untrusted folders so a workspace cannot redirect the toolchain to another binary.",
       "restrictedConfigurations": [
-        "ldp3.path",
-        "ldp3.compilerPath",
-        "ldp3.lspPath"
+        "polaron.path",
+        "polaron.compilerPath",
+        "polaron.lspPath"
       ]
     }
   },
   "contributes": {
     "languages": [
       {
-        "id": "ldp3",
+        "id": "polaron",
         "aliases": [
-          "LDP3",
-          "ldp3"
+          "Polaron",
+          "polaron"
         ],
         "extensions": [
-          ".ldp3"
+          ".pol"
         ],
         "icon": {
           "light": "./media/file-icon-light.svg",
@@ -48,73 +48,73 @@
     ],
     "grammars": [
       {
-        "language": "ldp3",
-        "scopeName": "source.ldp3",
-        "path": "./syntaxes/ldp3.tmLanguage.json"
+        "language": "polaron",
+        "scopeName": "source.pol",
+        "path": "./syntaxes/polaron.tmLanguage.json"
       }
     ],
     "commands": [
-      { "command": "ldp3.build", "title": "LDP3: Build", "category": "LDP3" },
-      { "command": "ldp3.run", "title": "LDP3: Run", "category": "LDP3" },
-      { "command": "ldp3.test", "title": "LDP3: Test", "category": "LDP3" },
-      { "command": "ldp3.doc", "title": "LDP3: Generate Docs", "category": "LDP3" },
-      { "command": "ldp3.fmt", "title": "LDP3: Format Project", "category": "LDP3" },
-      { "command": "ldp3.new", "title": "LDP3: New Project", "category": "LDP3" },
-      { "command": "ldp3.dashboard", "title": "LDP3: Open Studio Dashboard", "category": "LDP3", "icon": "$(dashboard)" },
-      { "command": "ldp3.refresh", "title": "Refresh", "category": "LDP3", "icon": "$(refresh)" },
-      { "command": "ldp3.tree.build", "title": "Build", "category": "LDP3", "icon": "$(tools)" },
-      { "command": "ldp3.tree.run", "title": "Run", "category": "LDP3", "icon": "$(play)" },
-      { "command": "ldp3.tree.test", "title": "Test", "category": "LDP3", "icon": "$(beaker)" }
+      { "command": "polaron.build", "title": "Polaron: Build", "category": "Polaron" },
+      { "command": "polaron.run", "title": "Polaron: Run", "category": "Polaron" },
+      { "command": "polaron.test", "title": "Polaron: Test", "category": "Polaron" },
+      { "command": "polaron.doc", "title": "Polaron: Generate Docs", "category": "Polaron" },
+      { "command": "polaron.fmt", "title": "Polaron: Format Project", "category": "Polaron" },
+      { "command": "polaron.new", "title": "Polaron: New Project", "category": "Polaron" },
+      { "command": "polaron.dashboard", "title": "Polaron: Open Studio Dashboard", "category": "Polaron", "icon": "$(dashboard)" },
+      { "command": "polaron.refresh", "title": "Refresh", "category": "Polaron", "icon": "$(refresh)" },
+      { "command": "polaron.tree.build", "title": "Build", "category": "Polaron", "icon": "$(tools)" },
+      { "command": "polaron.tree.run", "title": "Run", "category": "Polaron", "icon": "$(play)" },
+      { "command": "polaron.tree.test", "title": "Test", "category": "Polaron", "icon": "$(beaker)" }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "ldp3",
-          "title": "LDP3",
-          "icon": "media/ldp3.svg"
+          "id": "polaron",
+          "title": "Polaron",
+          "icon": "media/polaron.svg"
         }
       ]
     },
     "views": {
-      "ldp3": [
-        { "id": "ldp3Projects", "name": "Projects" },
-        { "id": "ldp3Environments", "name": "Environments" },
-        { "id": "ldp3Libraries", "name": "Libraries" }
+      "polaron": [
+        { "id": "polaronProjects", "name": "Projects" },
+        { "id": "polaronEnvironments", "name": "Environments" },
+        { "id": "polaronLibraries", "name": "Libraries" }
       ]
     },
     "menus": {
       "view/title": [
-        { "command": "ldp3.dashboard", "when": "view == ldp3Projects", "group": "navigation@1" },
-        { "command": "ldp3.refresh", "when": "view == ldp3Projects", "group": "navigation@2" }
+        { "command": "polaron.dashboard", "when": "view == polaronProjects", "group": "navigation@1" },
+        { "command": "polaron.refresh", "when": "view == polaronProjects", "group": "navigation@2" }
       ],
       "view/item/context": [
-        { "command": "ldp3.tree.run", "when": "view == ldp3Projects && viewItem == ldp3Project", "group": "inline@1" },
-        { "command": "ldp3.tree.build", "when": "view == ldp3Projects && viewItem == ldp3Project", "group": "inline@2" },
-        { "command": "ldp3.tree.test", "when": "view == ldp3Projects && viewItem == ldp3Project", "group": "1_run@1" }
+        { "command": "polaron.tree.run", "when": "view == polaronProjects && viewItem == polaronProject", "group": "inline@1" },
+        { "command": "polaron.tree.build", "when": "view == polaronProjects && viewItem == polaronProject", "group": "inline@2" },
+        { "command": "polaron.tree.test", "when": "view == polaronProjects && viewItem == polaronProject", "group": "1_run@1" }
       ]
     },
     "configuration": {
-      "title": "LDP3",
+      "title": "Polaron",
       "properties": {
-        "ldp3.path": {
+        "polaron.path": {
           "type": "string",
           "default": "",
-          "description": "Path to the ldp3 CLI. When empty, the extension uses the repo build output if present, otherwise 'ldp3' from PATH."
+          "description": "Path to the polaron CLI. When empty, the extension uses the repo build output if present, otherwise 'polaron' from PATH."
         },
-        "ldp3.compilerPath": {
+        "polaron.compilerPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the ldp3c compiler. When empty, the extension uses the repo build output if present, otherwise 'ldp3c' from PATH."
+          "description": "Path to the polc compiler. When empty, the extension uses the repo build output if present, otherwise 'polc' from PATH."
         },
-        "ldp3.lspPath": {
+        "polaron.lspPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the ldp3-lsp language server. When empty, the extension uses the repo build output if present, otherwise 'ldp3-lsp' from PATH."
+          "description": "Path to the polaron-lsp language server. When empty, the extension uses the repo build output if present, otherwise 'polaron-lsp' from PATH."
         }
       }
     },
     "configurationDefaults": {
-      "[ldp3]": {
+      "[polaron]": {
         "editor.formatOnSave": true
       }
     }

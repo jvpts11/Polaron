@@ -1,0 +1,111 @@
+    public namespace Net {
+        // A blocking TCP socket (spec 34) wrapping an OS handle (or -1 on failure). Build a client with
+        // Socket.connect(host, port); a ServerSocket.accept() also hands back a Socket. send/receive/
+        // close lower to runtime winsock helpers.
+        public class Socket {
+            private mutable long handle;
+            public constructor Socket(long handle) { this.handle = handle; }
+            public static method connect(String host, int port) returns Socket {
+                return new Socket(Net.connect(host, port)) on heap;
+            }
+            public method isOpen() returns boolean { return this.handle >= cast<long>(0); }
+            public method send(String data) returns long { return Net.send(this.handle, data); }
+            public method receive(int max) returns String { return Net.recv(this.handle, max); }
+            public method close() returns void { Net.close(this.handle); }
+        }
+        // A listening TCP server socket (spec 34): bind+listen on a port, then accept() blocks for the
+        // next connection and returns a Socket for it.
+        public class ServerSocket {
+            private mutable long handle;
+            public constructor ServerSocket(int port) { this.handle = Net.listen(port); }
+            public method isOpen() returns boolean { return this.handle >= cast<long>(0); }
+            public method accept() returns Socket { return new Socket(Net.accept(this.handle)) on heap; }
+            public method close() returns void { Net.close(this.handle); }
+        }
+        // A received datagram (spec 34): its payload plus the sender's address, so a server can reply.
+        public class Datagram {
+            public String data;
+            public String host;
+            public int port;
+            public constructor Datagram(String data, String host, int port) {
+                this.data = data;
+                this.host = host;
+                this.port = port;
+            }
+        }
+        // A UDP socket (spec 34): connectionless datagrams. Open with port 0 for an ephemeral client port,
+        // or a fixed port to receive on. send addresses each datagram; receive returns the payload together
+        // with the sender's address (via the runtime's last-sender record) for request/reply exchanges.
+        public class UdpSocket {
+            private mutable long handle;
+            public constructor UdpSocket(int port) { this.handle = Net.udpOpen(port); }
+            public method isOpen() returns boolean { return this.handle >= cast<long>(0); }
+            public method send(String host, int port, String data) returns long {
+                return Net.udpSend(this.handle, host, port, data);
+            }
+            public method receive(int max) returns Datagram {
+                String payload = Net.udpRecv(this.handle, max);
+                return new Datagram(payload, Net.udpPeerHost(), Net.udpPeerPort()) on heap;
+            }
+            public method close() returns void { Net.udpClose(this.handle); }
+        }
+        // A parsed HTTP response (spec 34): the raw text is kept and queried lazily. status reads the code
+        // from the start line, header returns a field's value, and body is everything after the blank line.
+        public class HttpResponse {
+            private mutable String raw;
+            public constructor HttpResponse(String raw) { this.raw = raw; }
+            public method raw() returns String { return this.raw; }
+            public method status() returns int {
+                int sp = this.raw.indexOf(" ");
+                if (sp < 0) { return 0; }
+                mutable int n = 0;
+                mutable int i = sp + 1;
+                while (i < this.raw.length() && this.raw.charAt(i) >= '0' && this.raw.charAt(i) <= '9') {
+                    n = n * 10 + (cast<int>(this.raw.charAt(i)) - cast<int>('0'));
+                    i = i + 1;
+                }
+                return n;
+            }
+            public method body() returns String {
+                int idx = this.raw.indexOf("\r\n\r\n");
+                if (idx < 0) { return ""; }
+                return this.raw.substring(idx + 4, this.raw.length());
+            }
+            public method header(String name) returns String {
+                String key = name.concat(": ");
+                int idx = this.raw.indexOf(key);
+                if (idx < 0) { return ""; }
+                int start = idx + key.length();
+                mutable int end = start;
+                while (end < this.raw.length() && this.raw.charAt(end) != '\r') { end = end + 1; }
+                return this.raw.substring(start, end);
+            }
+        }
+        // A minimal HTTP/1.1 client over Socket (spec 34). buildRequest formats a request line plus Host and
+        // Connection: close headers; get opens a socket, sends a GET, drains the reply, and parses it. The
+        // request building and response parsing are pure; get performs the network round-trip.
+        public class Http {
+            public static method buildRequest(String verb, String host, String path) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.append(verb);
+                sb.append(" ");
+                sb.append(path);
+                sb.append(" HTTP/1.1\r\nHost: ");
+                sb.append(host);
+                sb.append("\r\nConnection: close\r\n\r\n");
+                return sb.toString();
+            }
+            public static method get(String host, int port, String path) returns HttpResponse {
+                mutable Socket s = new Socket(Net.connect(host, port)) on heap;
+                s.send(Http.buildRequest("GET", host, path));
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable boolean more = true;
+                while (more) {
+                    String chunk = s.receive(4096);
+                    if (chunk.length() == 0) { more = false; } else { sb.append(chunk); }
+                }
+                s.close();
+                return new HttpResponse(sb.toString()) on heap;
+            }
+        }
+    }

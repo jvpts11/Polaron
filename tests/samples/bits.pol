@@ -1,0 +1,19 @@
+import System.IO.Console;
+import System.Math.Bits;
+program BitsDemo;
+
+// Bit-twiddling helpers (spec 34.6) in pure Polaron. Prints:
+//   pc=8 lz=31 tz=3 p16=1 p17=0 np17=32 np16=16 rev=16
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("pc=%d lz=%d tz=%d p16=%d p17=%d np17=%d np16=%d rev=%d\n",
+                    Bits.popcount(255), Bits.leadingZeros(1), Bits.trailingZeros(24),
+                    Bits.isPow2(16), Bits.isPow2(17), Bits.nextPow2(17), Bits.nextPow2(16),
+                    Bits.popcount(Bits.reverse(0x0F0F0F0F)));
+                return;
+            }
+        }
+    }
+}

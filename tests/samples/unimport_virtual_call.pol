@@ -1,0 +1,52 @@
+import System.Runtime.UnimportedTypeException;
+import System.IO.Console;
+program UnimportVirtualCall;
+
+// `unimport` REFUSES while instances are still alive, and that precondition is what makes the rest
+// of it safe: with nothing alive, no object's vtable pointer, fields or destructor can outlive the
+// code being ripped, so poisoning the table and overwriting the methods cannot strand anybody.
+//
+// Checked at run time, because how many instances exist is not a question the compiler can answer.
+// The counter that does answer it already existed for onFirstInstance/onLastInstanceDestroyed; an
+// unimportable class now keeps it on both ends, which is also why one gets a destructor even when it
+// wrote none -- without it the count has nowhere to come down.
+//
+// Prints: refused / gone / 16
+public bundle Main {
+    public namespace App {
+        public interface Shape { public method area() returns int; }
+
+        public class Sq implements Shape {
+            public mutable int s;
+            public constructor Sq(int v) { this.s = v; }
+            public override method area() returns int { return this.s * this.s; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Held as the concrete type on purpose: `delete` through an interface reference does
+                // not reach Sq's destructor, so the count would never come down -- see the note at
+                // the end of this file.
+                Sq x = new Sq(4) on heap;
+                int before = x.area();
+                // Still alive, so the rip is refused rather than half-done.
+                try {
+                    unimport Sq;
+                } catch (UnimportedTypeException e) {
+                    System.IO.Console.printf("refused\n");
+                }
+                delete x;
+                // Nothing alive now: the code goes, the table is poisoned, and the guard closes.
+                unimport Sq;
+                try {
+                    Sq again = new Sq(2) on heap;
+                    System.IO.Console.printf("still here\n");
+                } catch (UnimportedTypeException e) {
+                    System.IO.Console.printf("gone\n");
+                }
+                System.IO.Console.printf("%d\n", before);
+                return;
+            }
+        }
+    }
+}

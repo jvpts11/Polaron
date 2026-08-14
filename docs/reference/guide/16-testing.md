@@ -1,8 +1,8 @@
 # 16. Testing
 
-A test in LDP3 is an annotated static method that lives next to the code it tests. There is no `test`
+A test in Polaron is an annotated static method that lives next to the code it tests. There is no `test`
 keyword and no `assert` keyword — it is annotations, static methods, and classes, the same pieces the
-rest of the language is made of. `ldp3 test` finds them, runs them, and exits non-zero if any failed.
+rest of the language is made of. `polaron test` finds them, runs them, and exits non-zero if any failed.
 
 This chapter is about writing tests that are worth having: not only "does `add(2, 2)` return 4", but
 "is the world this generator produced acceptable", "does this run give back all the memory it took",
@@ -12,7 +12,7 @@ This chapter is about writing tests that are worth having: not only "does `add(2
 
 Annotate a `public static` method with `[Test]`, and assert:
 
-```ldp3
+```polaron
 import System.Test.Test;
 program MathTests;
 
@@ -35,7 +35,7 @@ public bundle Main {
 ```
 
 ```
-$ ldp3 test
+$ polaron test
 PASS MathUtils.add_basic
 tests: 1 passed, 0 failed, 0 skipped
 ```
@@ -43,7 +43,7 @@ tests: 1 passed, 0 failed, 0 skipped
 A `[Test]` method may return **`void`**, as above — its verdict is "no assertion failed" — or
 **`boolean`**, in which case the test *is* its own verdict:
 
-```ldp3
+```polaron
 [Test]
 public static method still_boolean() returns boolean {
     return MathUtils.add(20, 22) == 42;
@@ -67,7 +67,7 @@ An assertion that fails prints the numbers. Numbers alone are rarely enough:
 `Test.checking(...)` names the criterion the following assertions are testing, and the failure becomes
 readable:
 
-```ldp3
+```polaron
 Test.checking("mountain share stays in band");
 Test.assertBetween(mountainPercent, 8, 22);
 ```
@@ -119,7 +119,7 @@ comparison when the expected value is zero, where a relative one has no meaning.
 A test that should run over a list of inputs takes **one parameter** and names the static method that
 supplies the rows:
 
-```ldp3
+```polaron
 public static method seeds() returns int[] {
     mutable int[] rows = new int[3]();
     rows[0] = 2;
@@ -161,7 +161,7 @@ failed rather than printing a hundred lines.
 as `XFAIL`; **passing is a failure**, because the bug got fixed and the annotation is now a lie.
 Unlike `[Ignore]` the test still *runs*, so the day it starts working you hear about it:
 
-```ldp3
+```polaron
 [ExpectedToFail(reason: "nested quotes are not handled yet")]
 [Test]
 public static method nested_quotes() returns void {
@@ -181,7 +181,7 @@ that quietly got ten times slower.
 
 `[Benchmark]` marks a `public static` method taking no arguments that is *measured*, not judged:
 
-```ldp3
+```polaron
 [Benchmark(iterations: 1000, warmup: 100)]
 public static method summing_speed() returns void {
     ...
@@ -215,7 +215,7 @@ All four are `public static` methods returning `void`, and there may be at most 
 class** — two would have no defined order, so the runner would have to silently pick one, and the
 compiler rejects it instead.
 
-```ldp3
+```polaron
 public class Census {
     private static mutable int[] cells;      // the class fixture
     private static mutable int[] scratch;    // a per-test buffer
@@ -266,7 +266,7 @@ never built for a run that was not going to use it.
 A test for something that does not work yet has two bad fates: deleted, or commented out. Both make
 the gap invisible. `[Ignore]` is the third option — the test stays in the file and in the report:
 
-```ldp3
+```polaron
 [Ignore(reason: "regrowth is not implemented yet")]
 [Test]
 public static method forest_regrows() returns void {
@@ -284,11 +284,11 @@ nobody forgets it is there.
 
 ## 16.9 Asserting on memory
 
-LDP3 manages memory by hand, so a program can be entirely correct and still be wrong: it produces the
+Polaron manages memory by hand, so a program can be entirely correct and still be wrong: it produces the
 right answer and grows by a megabyte a second. No correctness assertion can see that.
 `Test.assertNoLeaks` can:
 
-```ldp3
+```polaron
 [Test]
 public static method parsing_gives_everything_back() returns void {
     Test.checking("a parse round-trip leaves no live blocks");
@@ -309,7 +309,7 @@ clean; and **the assertion machinery allocates too** — `Test.checking` stores 
 `Test.liveBytes()` exposes the same number directly, for when the question is a budget rather than a
 leak:
 
-```ldp3
+```polaron
 long before = Test.liveBytes();
 this.simulateOneFrame();
 long after = Test.liveBytes();
@@ -322,7 +322,7 @@ Test.assertTrue(after - before < 1048576);
 For code whose *job* is output — a report, a formatter, a serializer — the thing to assert on is what
 came out. `Test.captureOutput` runs an action with its printing diverted and hands back the text:
 
-```ldp3
+```polaron
 String out = Test.captureOutput(lambda() returns void {
     Report.write(world);
 });
@@ -335,7 +335,7 @@ When the output is large, comparing it line by line in assertions is worse than 
 **first differing line**; running with `--update-golden` rewrites that file instead of comparing,
 which is how an intended change gets accepted:
 
-```ldp3
+```polaron
 Test.assertMatchesGolden(out, "tests/golden/world-report.txt");
 ```
 
@@ -348,7 +348,7 @@ first use and deliberately *not* cleaned up: a failing test's leftovers are usua
 Under `--test` the runner is the entry point, which means your program's own `main` is no longer the
 entry point — it is an ordinary static method, and a test can call it:
 
-```ldp3
+```polaron
 [Test]
 public static method drives_the_whole_program() returns void {
     string[] argv = new string[2]();
@@ -370,16 +370,16 @@ as many times as it likes, asserting on whatever state the run left behind. Noth
 
 | Command | What it does |
 |---|---|
-| `ldp3 test` | Build and run every test in the project. |
-| `ldp3 test -- --filter <text>` | Run only the tests whose `Class.method` name contains `<text>`. |
-| `ldp3 test -- --tag <name>` | Run only the tests carrying that `[Tag]`. |
-| `ldp3 test -- --exclude-tag <name>` | Run everything except those. |
-| `ldp3 test -- --list` | Print the test names without running anything. |
-| `ldp3 test -- --timing` | Add per-test and total durations to the report. |
-| `ldp3 test -- --fail-fast` | Stop at the first failure. `[AfterAll]` still runs, so a fixture is never left behind. |
-| `ldp3 test -- --format=json` | Emit one machine-readable document instead of the text report. |
-| `ldp3 test -- --bench` | Also run the `[Benchmark]` methods. |
-| `ldp3 test -- --update-golden` | Rewrite golden files instead of comparing against them. |
+| `polaron test` | Build and run every test in the project. |
+| `polaron test -- --filter <text>` | Run only the tests whose `Class.method` name contains `<text>`. |
+| `polaron test -- --tag <name>` | Run only the tests carrying that `[Tag]`. |
+| `polaron test -- --exclude-tag <name>` | Run everything except those. |
+| `polaron test -- --list` | Print the test names without running anything. |
+| `polaron test -- --timing` | Add per-test and total durations to the report. |
+| `polaron test -- --fail-fast` | Stop at the first failure. `[AfterAll]` still runs, so a fixture is never left behind. |
+| `polaron test -- --format=json` | Emit one machine-readable document instead of the text report. |
+| `polaron test -- --bench` | Also run the `[Benchmark]` methods. |
+| `polaron test -- --update-golden` | Rewrite golden files instead of comparing against them. |
 
 Under `--format=json` the whole run is a single JSON object, and each test's own printing is captured
 into its record rather than interleaved — which is what keeps the document well-formed:
@@ -392,8 +392,8 @@ into its record rather than interleaved — which is what keeps the document wel
 Everything after `--` goes to the runner; anything it does not recognize it ignores, so a project may
 pass its program's own flags the same way.
 
-A **`[library]` project** is tested the same way. It normally builds to a `.ldb` bundle with no entry
-point, but `ldp3 test` builds its sources as an executable instead — the runner supplies the entry —
+A **`[library]` project** is tested the same way. It normally builds to a `.polb` bundle with no entry
+point, but `polaron test` builds its sources as an executable instead — the runner supplies the entry —
 so a library's tests run exactly like a program's. Its tests belong to it: a program that depends on
 the library does not re-run them.
 

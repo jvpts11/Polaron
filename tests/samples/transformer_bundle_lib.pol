@@ -1,0 +1,27 @@
+program TransformerBundleLib;
+
+// A LIBRARY THAT SHIPS A TRANSFORMER. Until this crossed, `applies` was a whole-program feature: the
+// standard library could not publish a `TComparer`, and neither could anybody else's bundle.
+//
+// A transformer is expanded rather than compiled, so what the consumer needs is not a signature but
+// the BODY -- `describe()` here is the free implementation an applying type receives. It travels in
+// the `.polh` as its own source, which is the complete form of a declaration that has no runtime
+// existence at all.
+public bundle ConvLib {
+    public namespace Conv {
+
+        public transformer TDescriber satisfies IShown {
+            // A bodied procedure: free, replaceable, and useless to a consumer unless the body
+            // itself crosses.
+            public procedure describe() returns int {
+                return itself.label() * 10;
+            }
+            // A socket the consumer must answer.
+            public procedure label() returns int;
+        }
+
+        public interface IShown {
+            public method describe() returns int;
+        }
+    }
+}

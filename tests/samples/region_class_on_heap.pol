@@ -1,0 +1,24 @@
+program RegionClassOnHeap;
+
+// `on heap` on a region class is REFUSED, and the refusal is the feature.
+//
+// The three alternatives were: obey it (one instance outside the region, and the totality that
+// `unimport`'s O(1) liveness, the linear walk over every instance and the eventual 32-bit `A*` all
+// rest on is gone), ignore it (the author wrote a placement, the compiler did something else, and
+// nothing said so -- the worst of the three), or say so. This says so.
+//
+// Must fail with: `Node` is a `region class`, so `on heap` has nowhere to put this
+public bundle main {
+    public namespace app {
+        public region class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* n = new Node(1) on heap;
+                return;
+            }
+        }
+    }
+}

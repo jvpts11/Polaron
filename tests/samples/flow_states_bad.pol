@@ -1,0 +1,53 @@
+program FlowStatesBad;
+
+// The rejections the flow analysis exists for. Its companion, flow_states.pol, holds the shapes that
+// must keep compiling -- together they pin both edges, so a fix that is too strict fails one file and a
+// fix that is too loose fails the other.
+//
+// Only the FIRST error is asserted by the test harness; the rest are here so the file stays a readable
+// inventory of what the analysis catches.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public constructor Dog() {}
+            public method bark() returns int { return 1; }
+        }
+        public class Main {
+            // Read with no value ever assigned. Not null, not zero -- no value at all.
+            static method neverAssigned() returns int {
+                int x;
+                return x;
+            }
+            // Assigned on one path only. A different mistake from the one above, and told as one.
+            static method onlyOneBranch(boolean c) returns int {
+                int x;
+                if (c) { x = 1; }
+                return x;
+            }
+            // Deferred initialization spends the single write; a second one needs `mutable`.
+            static method writtenTwice() returns int {
+                int x;
+                x = 1;
+                x = 2;
+                return x;
+            }
+            // Use after free, caught at compile time -- the trap the guide promises (05:768).
+            static method afterDelete() returns int {
+                Dog d = new Dog() on heap;
+                delete d;
+                return d.bark();
+            }
+            // A proof does not survive something that can falsify it: the reassignment kills it.
+            static method proofKilledByWrite(nullable Dog* d, nullable Dog* other) returns int {
+                if (d == null) { return 0; }
+                mutable nullable Dog* p = d;
+                p = other;                    // whatever was proven about `d` says nothing about this
+                return Main.takes(p);
+            }
+            static method takes(Dog* d) returns int { return d.bark(); }
+
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

@@ -1,0 +1,34 @@
+program FfiSyscall;
+
+// `extern syscall(N)`: a syscall is NOT a language and has no symbol.
+//
+// It is the machine's own instruction with a NUMBER, which is why it gets its own form rather than a
+// place on the language axis. `stdcall` was the first instinct for this and was wrong twice over: it
+// means a specific 32-bit x86 convention in every other toolchain, and a calling convention has no
+// room for the one piece of information a syscall actually carries.
+//
+// So this method has a BODY rather than a declaration -- there is nothing to link against. The Linux
+// x86-64 contract: number in rax, arguments in rdi/rsi/rdx/r10/r8/r9 (r10, not rcx, because the
+// `syscall` instruction destroys rcx and r11), and that is exactly why the architecture is checked.
+//
+// Built for x86-64 Windows, this must fail: `extern syscall(...)` is available on Linux/x86-64
+public bundle main {
+    public namespace app {
+        public class Linux {
+            // write(2)
+            private extern syscall(1) static method write(int fd, address buf, long n) returns long;
+
+            public static method emit(address buf, long n) returns long {
+                return Linux.write(1, buf, n);
+            }
+        }
+        public class Main {
+            // The call has to exist or the whole class is dead-stripped and the test proves nothing:
+            // the first version of this sample emitted no syscall at all, for exactly that reason.
+            public static method main(string[] args) returns void {
+                Linux.emit(cast<address>(0), cast<long>(0));
+                return;
+            }
+        }
+    }
+}

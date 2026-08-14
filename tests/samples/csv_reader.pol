@@ -1,0 +1,19 @@
+import System.IO.Console;
+import System.Text.CsvReader;
+import System.Collections.ArrayList;
+program CsvReaderDemo;
+
+// Parse an RFC 4180 CSV record (spec 34) in pure Polaron. Prints:
+//   n=4 f0=a f1=b,c f2=d"e f3=f
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<String> f = CsvReader.parseLine("a,\"b,c\",\"d\"\"e\",f");
+                System.IO.Console.printf("n=%d f0=%s f1=%s f2=%s f3=%s\n",
+                    f.size(), f.get(0), f.get(1), f.get(2), f.get(3));
+                return;
+            }
+        }
+    }
+}

@@ -1,27 +1,27 @@
-# `ldp3 doc` end-to-end, invoked via `cmake -P`.
+# `polaron doc` end-to-end, invoked via `cmake -P`.
 #
-# Builds a project whose entry has a public class documented with /// comments, runs `ldp3 doc`, and checks
+# Builds a project whose entry has a public class documented with /// comments, runs `polaron doc`, and checks
 # the generated HTML page exists and carries the doc text and the API signatures. No clang needed (docs are
 # parse-only).
 #
-# Required -D args: LDP3, WORKDIR
+# Required -D args: POLARON, WORKDIR
 
 set(app "${WORKDIR}/doc_app")
 file(REMOVE_RECURSE "${app}")
 file(MAKE_DIRECTORY "${app}/src")
-file(WRITE "${app}/ldp3.toml"
-"[ldp3_project]\n[program]\nname = \"widgets\"\nlanguage_version = \"1.0\"\nentry = \"src/main.ldp3\"\n")
-file(WRITE "${app}/src/main.ldp3"
+file(WRITE "${app}/polaron.toml"
+"[polaron_project]\n[program]\nname = \"widgets\"\nlanguage_version = \"1.0\"\nentry = \"src/main.pol\"\n")
+file(WRITE "${app}/src/main.pol"
 "program Widgets;\npublic bundle main {\n    public namespace ui {\n        /// A clickable widget.\n        public class Button {\n            /// The visible caption.\n            public String caption;\n            /// Renders the button and returns its width.\n            public method render(int scale) returns int { return scale; }\n        }\n    }\n}\n")
 
-execute_process(COMMAND "${LDP3}" doc
+execute_process(COMMAND "${POLARON}" doc
     WORKING_DIRECTORY "${app}" RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
 message(STATUS "doc: ${out}${err}")
 if(NOT rc EQUAL 0)
-    message(FATAL_ERROR "ldp3 doc failed (exit ${rc}): ${err}")
+    message(FATAL_ERROR "polaron doc failed (exit ${rc}): ${err}")
 endif()
 if(NOT EXISTS "${app}/build-output/widgets-doc.html")
-    message(FATAL_ERROR "ldp3 doc did not write the HTML page")
+    message(FATAL_ERROR "polaron doc did not write the HTML page")
 endif()
 
 file(READ "${app}/build-output/widgets-doc.html" html)
@@ -31,4 +31,4 @@ foreach(needle "A clickable widget" "The visible caption" "Renders the button" "
     endif()
 endforeach()
 
-message(STATUS "OK: ldp3 doc")
+message(STATUS "OK: polaron doc")

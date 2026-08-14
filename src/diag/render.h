@@ -5,7 +5,7 @@
 
 #include "diag/diagnostic.h"
 
-namespace ldp3::diag {
+namespace polaron::diag {
 
 // Render one diagnostic.
 //
@@ -18,4 +18,4 @@ namespace ldp3::diag {
 std::string render(std::string_view severity, const std::string& path, int line, int col,
                    const std::string& message, Code code, const std::string& sourceLine, bool concise);
 
-}  // namespace ldp3::diag
+}  // namespace polaron::diag

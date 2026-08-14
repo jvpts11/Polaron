@@ -1,0 +1,40 @@
+program LayoutLib;
+
+// A struct that IMPLEMENTS A LAYOUT, exported from a bundle.
+//
+// Implementing a layout authorizes the compiler to order the fields widest-alignment-first, so this
+// struct's fields are NOT in declaration order in memory. If the header did not carry the layout, a
+// consumer would lay the same struct out as written and disagree with the bundle about every offset
+// after the first -- silently, because both sides would then be consistent with themselves.
+//
+// The field order below is the worst possible on purpose: one-byte fields between four-byte ones.
+public bundle layoutlib {
+    public namespace shapes {
+
+        public layout Packed {
+            onArrange {
+                itself.fitWithin(12 bytes);
+                itself.refuse("a tick must stay five to a cache line");
+            }
+        }
+
+        public struct Tick implements Packed {
+            public mutable byte flag;
+            public mutable int when;
+            public mutable byte kind;
+            public mutable int value;
+        }
+
+        public class Maker {
+            // Built by the BUNDLE's own code, so the values land at the offsets the bundle believes in.
+            public static method make() returns Tick {
+                mutable Tick t = new Tick();
+                t.flag = cast<byte>(1);
+                t.when = 1000;
+                t.kind = cast<byte>(2);
+                t.value = 77;
+                return t;
+            }
+        }
+    }
+}

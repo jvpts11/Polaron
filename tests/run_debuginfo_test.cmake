@@ -1,19 +1,19 @@
-# Debug-info (`ldp3c -g`) test driver, invoked via `cmake -P`.
+# Debug-info (`polc -g`) test driver, invoked via `cmake -P`.
 #
-# Compiles an .ldp3 with -g, asserts the emitted .ll carries the DWARF metadata a native debugger needs
+# Compiles an .pol with -g, asserts the emitted .ll carries the DWARF metadata a native debugger needs
 # (compile unit, per-function subprograms, per-statement line locations, and local/parameter variables),
 # then links and runs it to confirm -g codegen stays correct. Line-level breakpoints + variable inspection
 # are separately proven with lldb; this keeps the metadata a permanent, dependency-light regression check.
 #
-# Required -D args: LDP3C, CLANG, INPUT, EXPECTED, WORKDIR
+# Required -D args: POLC, CLANG, INPUT, EXPECTED, WORKDIR
 
 string(MD5 _tag "${INPUT}|dbg")
 set(ll "${WORKDIR}/dbg_${_tag}.ll")
 set(exe "${WORKDIR}/dbg_${_tag}.exe")
 
-execute_process(COMMAND "${LDP3C}" -g "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
+execute_process(COMMAND "${POLC}" -g "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
-    message(FATAL_ERROR "ldp3c -g failed (exit ${rc})")
+    message(FATAL_ERROR "polc -g failed (exit ${rc})")
 endif()
 
 file(READ "${ll}" _ir)
@@ -41,7 +41,7 @@ else()
     set(_platlibs -lpthread -ldl -lm -lstdc++)
 endif()
 execute_process(COMMAND "${CLANG}" -g -Wno-override-module "${ll}"
-    "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp" -o "${exe}"
+    "${CMAKE_CURRENT_LIST_DIR}/../runtime/polaron_rt.cpp" -o "${exe}"
     ${_platlibs} RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang -g link failed (exit ${rc})")

@@ -1,0 +1,19 @@
+import System.IO.Console;
+import System.Collections.TreeMap;
+program TreeMapNavigable;
+
+// Navigable ops on the ordered TreeMap (spec 34.1) in pure Polaron. Prints:
+//   first=10 last=50 floor25=20 ceil25=30 higher20=30 lower20=10
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable TreeMap<int, int> m = new TreeMap<int, int>() on heap;
+                m.put(30, 3); m.put(10, 1); m.put(50, 5); m.put(20, 2); m.put(40, 4);
+                System.IO.Console.printf("first=%d last=%d floor25=%d ceil25=%d higher20=%d lower20=%d\n",
+                    m.firstKey(), m.lastKey(), m.floorKey(25), m.ceilingKey(25), m.higherKey(20), m.lowerKey(20));
+                return;
+            }
+        }
+    }
+}
