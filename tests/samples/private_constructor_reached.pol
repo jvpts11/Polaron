@@ -1,0 +1,30 @@
+import System.IO.Console;
+program PrivateConstructorReached;
+
+// A `private constructor` IS HOW A TYPE SAYS "NOT BY `new`" -- the singleton, the factory, the type
+// reachable only through its own static maker. It denied nobody for the same reason no other member's
+// visibility did: `ConstructorDecl` carried the word and `ClassInfo` never received it, so the one
+// place a caller names a constructor had nothing to consult.
+//
+// Checked at `new` because that is the only place a constructor is named from outside; the class's own
+// `of()` passes, since it is inside the owner (see visibility_allowed.pol).
+//
+// Must fail with: 'Made' is private to 'Made'
+public bundle Main {
+    public namespace App {
+
+        public class Made {
+            public mutable int worth;
+            private constructor Made(int worth) { this.worth = worth; }
+            public static method of(int worth) returns Made { return new Made(worth) on heap; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Made m = new Made(7);
+                System.IO.Console.printf("%d\n", m.worth);
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,50 @@
+import System.IO.Console;
+program TransformerOperators;
+
+// ONE SOCKET, FOUR OPERATORS -- the flagship example docs/design/transformers.md said it lacked.
+//
+// That note listed this as improvement 3 with a guess attached: "Operators are already `MethodDecl`s
+// named `operator+`, so this may already work and simply be untested; verify before designing." It
+// does work. What was missing was a test, which is the difference between a feature and an accident
+// that has not been broken yet.
+//
+// This is Rust's `PartialOrd` and it is the case that shows what a transformer is FOR. `Coin` says one
+// thing -- how two coins compare -- and gains an ordering. No interface to implement four times, no
+// vtable, no allocation: the procedures are copied into `Coin` at compile time, so `small < big` is
+// the subtraction and a branch.
+//
+// Prints: less=1 more=0 le=1 ge=0 eqle=1
+public bundle Main {
+    public namespace App {
+
+        public transformer TOrdered {
+            // The one thing an applying type has to say.
+            public procedure compare(itself other) returns int;
+
+            public operator < (itself other) returns boolean { return itself.compare(other) < 0; }
+            public operator > (itself other) returns boolean { return itself.compare(other) > 0; }
+            public operator <= (itself other) returns boolean { return itself.compare(other) <= 0; }
+            public operator >= (itself other) returns boolean { return itself.compare(other) >= 0; }
+        }
+
+        public class Coin applies TOrdered {
+            public mutable int worth;
+            public constructor Coin(int worth) { this.worth = worth; }
+            public procedure compare(Coin other) returns int {
+                return this.worth - other.worth;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Coin small = new Coin(3);
+                Coin big = new Coin(9);
+                Coin twin = new Coin(3);
+                System.IO.Console.printf("less=%d more=%d le=%d ge=%d eqle=%d\n",
+                                         small < big, small > big, small <= big, small >= big,
+                                         small <= twin);
+                return;
+            }
+        }
+    }
+}

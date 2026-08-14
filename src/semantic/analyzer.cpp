@@ -1137,6 +1137,10 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                             FieldInfo{typeRefStr(f->type), f->isMutable || f->isMovable || f->isUnique,
                                       f->isStatic, f->isMovable, f->isUnique, f->bitWidth,
                                       f->isVolatile};
+                        // Set after the aggregate rather than inside it: the brace list is positional
+                        // and already long enough that a reader cannot check it at a glance.
+                        info.fields[f->name].visibility = f->visibility;
+                        info.fields[f->name].owner = cls.name;
                         // `atomic<T>` is one `lock`-prefixed instruction when T fits in a word, and
                         // a call to `__atomic_load`/`__atomic_store` when it does not. Bare metal
                         // there is nothing to link those against, so the declaration compiles and
@@ -1213,6 +1217,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         mi.isVariadic = m->isVariadic;
                         mi.isDeprecated = m->isDeprecated;
                         mi.isInterrupt = m->isInterrupt;
+                        mi.visibility = m->visibility;
+                        mi.owner = cls.name;
                         info.methods[m->name] = std::move(mi);
                     } else if (const auto* c =
                                    dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
@@ -1233,6 +1239,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                                   c->loc);
                         }
                         info.hasConstructor = true;
+                        info.ctorVisibility = c->visibility;
                         if (!c->params.empty()) {
                             info.ctorHasParams = true;
                         }
@@ -4345,6 +4352,63 @@ void SemanticAnalyzer::checkBitCounted(const std::string& typeName, SourceLocati
                   "' instead",
               loc);
     }
+}
+
+bool SemanticAnalyzer::inheritsFrom(const std::string& sub, const std::string& base) const {
+    std::string cur = sub;
+    for (int guard = 0; guard < 64 && !cur.empty(); ++guard) {   // a cycle is reported elsewhere
+        if (cur == base) {
+            return true;
+        }
+        const ClassInfo* ci = lookupClass(cur);
+        if (ci == nullptr) {
+            return false;
+        }
+        cur = ci->superclass;
+    }
+    return false;
+}
+
+void SemanticAnalyzer::checkMemberAccessible(const std::string& kind, const std::string& member,
+                                             const std::string& visibility, const std::string& owner,
+                                             SourceLocation loc) {
+    // An unwritten visibility is not a decision, and refusing on it would turn every member the
+    // compiler synthesizes into an error. Only a word the author actually wrote can deny.
+    if (visibility.empty() || visibility == "public" || owner.empty()) {
+        return;
+    }
+    // `internal` is "the same program, any bundle" (spec 2.6). Everything compiled together is one
+    // program, so within a compilation it denies nobody; the boundary it draws is a `.polb` a
+    // consumer links against, and that is enforced where a header is read rather than here.
+    if (visibility == "internal") {
+        return;
+    }
+    // A MONOMORPHIZED CLASS IS NOT A SECOND CLASS. `ArrayList$int` and `ArrayList` are the same
+    // declaration, and the cloner rewrites the owner to the instantiated name -- so a template's own
+    // method reaching its own private field would be read as one class touching another's. Compare on
+    // the base name, and the question becomes the one the author wrote.
+    auto bare = [](const std::string& n) {
+        const std::size_t d = n.find('$');
+        return d == std::string::npos ? n : n.substr(0, d);
+    };
+    const std::string here = bare(enclosingClass_);
+    const std::string there = bare(owner);
+    if (here == there) {
+        return;   // your own member, whatever the word says
+    }
+    if (visibility == "protected" && !here.empty() && inheritsFrom(here, there)) {
+        return;   // the relationship `protected` exists for (guide 6.6)
+    }
+    const std::string where = here.empty() ? std::string("outside any class") : "'" + here + "'";
+    error("'" + member + "' is " + visibility + " to '" + there + "', and this " + kind +
+              " is being reached from " + where +
+              (visibility == "private"
+                   ? ". A private member is the class's own -- give it a public method that does what "
+                     "the caller needs, so the class stays in charge of how its state is touched"
+                   : ". A protected member is visible to the declaring class and its subclasses only "
+                     "(guide 6.6); extend it, or make the member public if it is really part of the "
+                     "type's surface"),
+          loc);
 }
 
 void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLocation loc) {

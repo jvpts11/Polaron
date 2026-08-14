@@ -80,6 +80,16 @@ struct FieldInfo {
     // spec 37.5. Read by the interrupt check: `volatile` is one of the two ways to say "something
     // that can preempt me also touches this", and a handler may only reach state said to be shared.
     bool isVolatile = false;
+    // THE WORD THE AUTHOR WROTE, and where they wrote it. Both were missing, which is why `private`
+    // was enforced nowhere: the check was not merely absent, the information never reached the table
+    // the analyzer consults. It is parsed, carried in the AST, written into the `.polh` and printed
+    // in the generated documentation -- and stopped here.
+    //
+    // `owner` is the class that DECLARED the member, which is not the class the access was written
+    // against: `protected` is answered by walking up from the accessing class to the declaring one,
+    // and an inherited private member is private to where it was written, not to where it was found.
+    std::string visibility;
+    std::string owner;
 };
 struct MethodInfo {
     std::string returnType;
@@ -104,6 +114,10 @@ struct MethodInfo {
     // two places only: the call site, which must refuse it, and `obj.interrupt`, which is how it is
     // installed and yields an `address` rather than anything callable.
     bool isInterrupt = false;
+    // See FieldInfo: the word the author wrote, and the class that declared it. Absent from this
+    // struct for as long as it existed, which is the whole of why `private` denied nobody.
+    std::string visibility;
+    std::string owner;
 };
 struct ClassInfo {
     std::string name;
@@ -127,6 +141,10 @@ struct ClassInfo {
     bool hasDestructor = false;
     bool ctorHasParams = false;        // a constructor with at least one parameter was declared
     std::vector<std::string> ctorParamTypes;  // declared constructor parameter types
+    // The word on the constructor. A `private constructor` is how a type says "not by `new`" -- the
+    // singleton, the factory, the type built only through its own static maker -- and it meant nothing
+    // for the same reason every other member's visibility did: it never left the AST.
+    std::string ctorVisibility;
     std::vector<std::string> permits;  // sealed permits list
     // Where this type was declared. Kept so a SECOND declaration of the same simple name can be
     // reported against the one the author wrote, rather than wherever the displaced type happened to
@@ -269,6 +287,17 @@ private:
     // A type from another namespace must be imported (or be a primitive / a
     // monomorphized generic). Errors otherwise (namespace visibility).
     void checkTypeAccessible(const std::string& typeName, SourceLocation loc);
+    // MEMBER visibility, the half that was never checked. TYPE visibility has been enforced since the
+    // import model landed, which is exactly what made this hole easy to miss: the word works at one
+    // level and not the other, so `private` read as meaningful everywhere it was written.
+    //
+    // `kind` is the noun for the message ("method", "field"); `visibility` and `owner` come off the
+    // member's own record. Silent for a member that is reachable.
+    void checkMemberAccessible(const std::string& kind, const std::string& member,
+                               const std::string& visibility, const std::string& owner,
+                               SourceLocation loc);
+    // Whether `sub` is `base` or inherits from it -- the question `protected` asks.
+    bool inheritsFrom(const std::string& sub, const std::string& base) const;
     // cast<Wide>(narrow arithmetic): the bits are gone before the cast runs. See the definition.
     void checkWideningLostBits(const ast::CastExpr& cst, const std::string& src,
                                const std::string& dst);

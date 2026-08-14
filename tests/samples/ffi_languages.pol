@@ -17,12 +17,17 @@ program FfiLanguages;
 public bundle main {
     public namespace app {
         public class FromC {
-            private extern cdecl static method magnitude(int x) returns int symbol("abs");
+            // `public`, because `Main` calls it: an extern another class reaches is that class's
+            // surface. It said `private` until member visibility started being enforced, which is the
+            // ordinary shape of that bug -- the word was written where it read well and denied nobody.
+            // (Declaring the foreign symbol `private` and exposing a wrapper is the better idiom, and
+            // is a real choice now rather than a distinction without a difference.)
+            public extern cdecl static method magnitude(int x) returns int symbol("abs");
         }
         // Reserved today, C ABI today. The declaration says what the other side IS; the day Rust
         // stabilizes an ABI, this line does not have to change.
         public class FromRust {
-            private extern rustdecl static method wide(long x) returns long symbol("labs");
+            public extern rustdecl static method wide(long x) returns long symbol("labs");
         }
         public class Main {
             public static method main(string[] args) returns void {

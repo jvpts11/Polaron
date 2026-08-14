@@ -1,0 +1,53 @@
+import System.IO.Console;
+program VisibilityAllowed;
+
+// THE OTHER HALF OF THE RULE: everything member visibility must still let through.
+//
+// A check that only refuses is half-measured. This is the companion to
+// `private_member_reached.pol`, and it exists because the ways to get this wrong are all
+// over-refusal: a class reaching its own private member, a subclass reaching a `protected` one, a
+// static maker building through a `private constructor`, and `internal` -- which is "the same
+// program, any bundle" (spec 2.6) and therefore denies nobody inside one compilation.
+//
+// `Made` is the shape a private constructor exists for: not by `new` from outside, only through the
+// type's own maker. That word meant nothing until member visibility was enforced.
+//
+// Prints: legs=4 own=1 made=7 shared=9
+public bundle Main {
+    public namespace App {
+
+        public class Animal {
+            protected int legs;
+            private int age;
+            public constructor Animal(int legs) { this.legs = legs; this.age = 1; }
+            private method years() returns int { return this.age; }
+            public method own() returns int { return this.years(); }   // own private, through `this`
+        }
+
+        public class Dog extends Animal {
+            public constructor Dog() { super(4); }
+            public method legCount() returns int { return this.legs; }  // protected, in a subclass
+        }
+
+        public class Made {
+            public mutable int worth;
+            private constructor Made(int worth) { this.worth = worth; }
+            // Inside the owner, so the private constructor is reachable exactly here.
+            public static method of(int worth) returns Made { return new Made(worth) on heap; }
+        }
+
+        public class Helper {
+            internal static method twice(int n) returns int { return n + n; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog d = new Dog();
+                Made m = Made.of(7);
+                System.IO.Console.printf("legs=%d own=%d made=%d shared=%d\n",
+                                         d.legCount(), d.own(), m.worth, Helper.twice(4) + 1);
+                return;
+            }
+        }
+    }
+}

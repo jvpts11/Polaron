@@ -13,7 +13,9 @@ program FfiLibraryClause;
 public bundle main {
     public namespace app {
         public class LibC library C {
-            private extern cdecl static method magnitude(int x) returns int symbol("abs");
+            // `public`, because `Main` calls it -- an extern another class reaches is that class's
+            // surface. See ffi_languages.pol: it read `private` while nothing enforced the word.
+            public extern cdecl static method magnitude(int x) returns int symbol("abs");
         }
         public class Main {
             public static method main(string[] args) returns void {

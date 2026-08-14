@@ -125,23 +125,8 @@ I probed `cascade` once with an arbitrary method call, saw it refused, and wrote
 
 ### 9.1 The two that are still ABERTO
 
-**`private` IS NOT ENFORCED ANYWHERE.** Member visibility is written, carried, published in the
-`.polh` and shown in the generated docs — and never checked. This compiles and links today:
-
-```polaron
-public class Dog   { private method secret() returns int { return 5; } }
-public class Other { public method probe() returns int { return new Dog().secret(); } }
-```
-
-Probed directly, both classes in the same namespace. It is not specific to transformers; it is every
-member of every kind. **TYPE** visibility *is* checked (`checkTypeAccessible`, the stdlib-cohesion
-rule), which is what makes the hole easy to miss — the word works at one level and not the other.
-
-The consequence for transformers is worth stating precisely, because a rule was just written on top
-of it: a procedure now enters the applying class **private by default** (spec 32.12). That is right on
-the declaration, it is what the header and the documentation show, and it is what will be enforced the
-day member visibility is — but today it denies nobody. Enforcing it reaches the prelude, pico and
-decomp at once, so it is a decision, not a patch.
+**~~`private` IS NOT ENFORCED ANYWHERE.~~ CORRIGIDO 2026-08-14** — see §9.3 below, which also records
+what the fix cost and what it found.
 
 **`polaron build` CANNOT DO A HOSTED CROSS BUILD FOR ANY TARGET.** The driver hands the linker the
 HOST's `libpolaron_rt.a`, and the runtime source is not embedded (only the region and alloc cores
@@ -165,6 +150,56 @@ gives you target IR and a host link.
 | **five promises the note made and the compiler did not keep** | `freestanding transformer` did not parse at all; `final procedure` sealed nothing; the subject rule for a static procedure was checked by nothing; an `enum` could not apply a transformer (so the flagship `Errno → int` was unwritable, and the enum row of the totality table had never bitten); a transformer could not cross a bundle. |
 
 ---
+
+### 9.3 Member visibility, enforced — 2026-08-14
+
+**The root was not a missing check. It was a missing field.** `FieldInfo` and `MethodInfo` carried no
+visibility at all, and `ClassInfo` carried none for the constructor — so the word was parsed, travelled
+in the AST, was written into the `.polh` and printed in the generated documentation, and stopped before
+the table the analyzer consults. There was nothing to check against. `Polaron-0201` had been sitting in
+the diagnostic catalog the whole time with its `why` and `prevent` text written, for a rule nothing
+enforced.
+
+Both records now carry `visibility` and **`owner`** — the class that DECLARED the member, which is not
+the class the access was written against: `protected` is answered by walking up from the accessing class
+to the declaring one, and an inherited private member is private to where it was written rather than to
+where it was found. `ClassInfo` gained `ctorVisibility`, so `private constructor` — the singleton, the
+factory, the type built only through its own static maker — now means what it says.
+
+Checked at the five places a member is named from outside: instance method, field read, static field,
+static method, and `new`. One exemption, and it is not a loosening: **a monomorphized class is not a
+second class.** The cloner rewrites the owner to `ArrayList$int`, so a template's own method touching
+its own private field would read as one class reaching into another; the comparison is on the base name.
+
+**The fallout was 24 errors in the whole tree, and every one was a real violation.** This note predicted
+it would "reach the prelude, pico and decomp at once", and the number says otherwise:
+
+- 22 in the prelude, three distinct pairs, all in one place: `Sha1` and `Sha224` calling `Sha256.rotr`
+  and `Sha256.putWord`. Those classes' own comments said so out loud — *"Reuses Sha256.rotr/putWord/toHex"*.
+  Fixed in the library rather than in the rule: the two helpers became `internal`, which is the accurate
+  word (spec 2.6) for the SHA family's shared bit plumbing. Public would have put them in the
+  documentation as though a caller were meant to use them.
+- 2 in the test samples, both FFI: a `private extern` called from `Main`. An extern another class reaches
+  is that class's surface.
+
+**And the catalog disagreed with the spec in the one place a reader meets the word.** `internal` was
+explained as "the same bundle"; spec 2.6 says "the same program, any bundle". The text moved, not the
+rule.
+
+Tests: `sema_private_member_errors`, `sema_private_constructor_errors`, and
+`codegen_visibility_allowed_runs` — the last because a check that only refuses is half-measured, and
+every way to get this wrong is an over-refusal.
+
+**Two more of the same disease, found by sweeping every flag the parser writes into the AST and asking
+who reads it.** `MoveExpr::persistMode` (0 carrying / 1 leaving / 2 releasing) is declared in `ast.h`
+and assigned in `parser.cpp`, and read nowhere: `move x leaving persistents` and
+`move x releasing persistents` parse, and all three spellings do the same thing. `leavingPersistents`
+on a `cascade move` is the same story. Still **ABERTO** — spec 18, and implementing it is work rather
+than a line.
+
+The sweep's other result is worth recording too: of the ~60 flags checked, those two and visibility were
+the only ones inert. `final` on a method, which an older note called "parsed, not validated", is
+enforced at `analyzer.cpp:711`, interfaces included.
 
 ## The pattern worth keeping
 
