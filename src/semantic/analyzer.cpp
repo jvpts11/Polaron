@@ -7485,12 +7485,23 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (objId->name != "this" && lookupLocal(objId->name) == nullptr) {
                 auto eit = enums_.find(objId->name);
                 if (eit != enums_.end()) {
-                    if (std::find(eit->second.begin(), eit->second.end(), mem->member) ==
-                        eit->second.end()) {
-                        error("enum '" + objId->name + "' has no constant '" + mem->member + "'",
+                    if (std::find(eit->second.begin(), eit->second.end(), mem->member) !=
+                        eit->second.end())
+                        return objId->name;
+                    // NOT A CONSTANT -- AND A JAVA-STYLE ENUM HAS SOMEWHERE ELSE FOR IT TO BE.
+                    // Its fields, constructor and methods were desugared onto a twin class of the
+                    // same name, and a `static fixed` declared inside the enum went with them. This
+                    // returned early and called every one of them a missing constant, so an enum
+                    // could carry a named threshold and no expression could ever read it back.
+                    if (constTypes_.count(objId->name + "." + mem->member) == 0 &&
+                        (lookupClass(objId->name) == nullptr ||
+                         findField(objId->name, mem->member) == nullptr)) {
+                        error("enum '" + objId->name + "' has no constant '" + mem->member +
+                                  "' and no static of that name",
                               mem->loc);
+                        return objId->name;
                     }
-                    return objId->name;
+                    // fall through to the static-member path below, which knows the twin class
                 }
                 // Static field access: ClassName.field (when the receiver names a class).
                 if (const ClassInfo* sc = lookupClass(objId->name)) {

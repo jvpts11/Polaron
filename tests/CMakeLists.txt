@@ -13,12 +13,12 @@
 # Both are pinned now, so a half-done bump fails here instead of shipping.
 add_test(NAME cli_version COMMAND ldp3c --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.44")
+    PASS_REGULAR_EXPRESSION "ldp3c 1\\.0\\.45")
 
 # ---- ldp3 driver (unified toolchain) integration tests ----
 add_test(NAME ldp3_version COMMAND ldp3 --version)
 set_tests_properties(ldp3_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.44")
+    PASS_REGULAR_EXPRESSION "ldp3 1\\.0\\.45")
 
 # ldp3-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME ldp3_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -6209,6 +6209,18 @@ if(LDP3_WITH_LLVM)
             "-DCLANG=${LDP3_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/stringbuilder_clear.ldp3"
             "-DEXPECTED=first emptied to 0 second batch 012"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A sealed java-style enum: three holes that only met when one enum carried data, kept a
+        # static of its own AND was matched over. The sealing was dropped by the desugaring, the
+        # static could not be read back, and the match trapped at runtime with no arm to land in --
+        # each invisible while the other two hid it.
+        add_test(NAME codegen_sealed_java_enum_match_runs COMMAND "${CMAKE_COMMAND}"
+            "-DLDP3C=$<TARGET_FILE:ldp3c>"
+            "-DCLANG=${LDP3_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sealed_java_enum_match.ldp3"
+            "-DEXPECTED=how many 2 ordinal 1 label fast score 0.25 0.75 brisk 0 1 held slow 0.25"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
