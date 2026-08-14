@@ -1,0 +1,54 @@
+program FieldLib;
+
+// A library whose public field sits AFTER a private one. The private field takes space and does not
+// appear in the .polh, so the two sides only agree on `visible`'s offset if the header reserves the
+// private field's bytes. Without that reservation the consumer reads and writes 8 bytes too early --
+// silently, and self-consistently, so nothing looks wrong from the consumer's side.
+//
+// The weak field is here because a weak slot is TWO pointers, not one: a reservation that assumed 8
+// bytes would misplace everything after it.
+public bundle fieldlib {
+    public namespace store {
+
+        public class Cell {
+            public mutable int tag;
+            public constructor Cell(int tag) { this.tag = tag; }
+        }
+
+        // ALL FOUR SHAPES `spellReservation` KNOWS ARE HERE, deliberately. Its four branches are
+        // weak / bit field / scalar / everything-else, and a test that exercised three of them would
+        // leave the fourth free to be wrong in exactly the silent way this whole file exists to catch.
+        public class Box {
+            private mutable long hidden;             // 8 bytes, invisible to the consumer
+            private weak nullable Cell* watcher;     // 16 bytes: a weak slot is { ptr, ptr }
+            private mutable boolean flagged;         // 4 bytes: `boolean` is i32, not i8
+            private mutable nullable Cell* owner;    // a reference: ONE pointer in the object
+            private mutable int packedA : 3;         // a bit field keeps its width, or the packing
+            private mutable int packedB : 5;         // run it belongs to changes shape
+            // A PUBLIC weak field, which is the same trap from the other side: the header used to
+            // spell it as a plain pointer, so a consumer reserved eight bytes where the object has
+            // sixteen. And `nullable` used to be spelled `Cell*?`, which this compiler cannot re-read
+            // -- the bundle's own header failed to parse.
+            public weak nullable Cell* observer;
+            public mutable int visible;              // the consumer touches THIS
+
+            public constructor Box() {
+                this.hidden = cast<long>(11);
+                this.watcher = null;
+                this.flagged = false;
+                this.owner = null;
+                this.packedA = 3;    // a SIGNED 3-bit int holds -4..3
+                this.packedB = 15;   // a signed 5-bit int holds -16..15
+                this.observer = null;
+                this.visible = 42;
+            }
+
+            // Asked of the bundle's own code, so it reports the offsets the bundle believes in.
+            public method get() returns int { return this.visible; }
+            public method peekHidden() returns long { return this.hidden; }
+            // The bit fields read back through the bundle too: if the consumer's reservation lost
+            // their widths, everything after them moves and `visible` goes with it.
+            public method peekPacked() returns int { return this.packedA + this.packedB; }
+        }
+    }
+}

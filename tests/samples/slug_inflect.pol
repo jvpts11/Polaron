@@ -1,0 +1,22 @@
+import System.IO.Console;
+import System.Text.Slugify;
+import System.Text.Inflector;
+program SlugInflect;
+
+// URL slugs and English pluralization (spec 34) in pure Polaron. Prints:
+//   s1=hello-world s2=polaron-rocks-2026
+//   p=cats,buses,parties,boxes,days
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("s1=%s s2=%s\n",
+                    Slugify.make("Hello, World!"), Slugify.make("  Polaron -- Rocks 2026!  "));
+                System.IO.Console.printf("p=%s,%s,%s,%s,%s\n",
+                    Inflector.pluralize("cat"), Inflector.pluralize("bus"),
+                    Inflector.pluralize("party"), Inflector.pluralize("box"), Inflector.pluralize("day"));
+                return;
+            }
+        }
+    }
+}

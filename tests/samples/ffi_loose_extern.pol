@@ -1,0 +1,21 @@
+program FfiLooseExtern;
+
+// A foreign function is a CLASS MEMBER, and only that.
+//
+// The namespace-level forms declared a loose function, which the language does not permit anywhere
+// else. They also ignored their own visibility -- "an external symbol has no Polaron visibility" --
+// so a binding could not be kept to the class that owns it; and the grouped form parsed
+// `library NAME` and threw the name away, leaving the linking to a `native_libs` line in a different
+// file with no connection to the declaration.
+//
+// Must fail with: a foreign function is declared as a member of a class
+public bundle main {
+    public namespace app {
+
+        extern cdecl method abs(int x) returns int;
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

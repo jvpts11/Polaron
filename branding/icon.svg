@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <!-- The LDP3 app icon: Flamo on the dark brand ground, rounded square. Used for the VS Code
+  <!-- The Polaron app icon: Flamo on the dark brand ground, rounded square. Used for the VS Code
        extension icon and rasterized into the Windows .ico. -->
   <rect width="128" height="128" rx="28" fill="#101c1f"/>
   <g transform="translate(14,14) scale(1.0)">

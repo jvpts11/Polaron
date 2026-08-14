@@ -1,6 +1,6 @@
 # 6. Object-Oriented Programming
 
-LDP3 is an object-oriented language in the strict sense: object orientation is not a
+Polaron is an object-oriented language in the strict sense: object orientation is not a
 style you may adopt but the only way to organize code. There are no free functions, no
 top-level variables, and no bare statements floating outside a type. Every piece of
 behavior you write is a method that belongs to a class, and every piece of state is a
@@ -9,7 +9,7 @@ classes are built, how they relate to one another through inheritance and interf
 how method calls are resolved at runtime, and how the finishing touches — properties,
 operator overloading, and enums — round out the model.
 
-If you come from Java or C#, most of this will feel familiar, but LDP3 makes several
+If you come from Java or C#, most of this will feel familiar, but Polaron makes several
 deliberate choices that a newcomer must internalize early: assignment copies by default
 (so class variables behave like values, not references), member access always goes
 through `this.`, mutability is opt-in rather than the default, and overriding an
@@ -17,13 +17,13 @@ inherited member is never accidental — you must say `override`.
 
 ## 6.1 Everything Lives in a Class
 
-An LDP3 program is a nested hierarchy: a `program` declaration names the compilation
+A Polaron program is a nested hierarchy: a `program` declaration names the compilation
 target, a `bundle` groups related code, a `namespace` carves out a naming scope, and
 classes live inside namespaces. Execution begins in a `static` method named `main`
 that takes a `string[]` and returns `void`. Because there is nowhere else to put code,
 even the smallest program is a class:
 
-```ldp3
+```polaron
 import System.IO.Console;
 program Hello;
 
@@ -49,7 +49,7 @@ first objects and the program grows outward from there.
 A class bundles together the data it owns (its **fields**) with the operations that act
 on that data (its **methods**). Fields declare the shape of every instance. Each field
 carries an explicit visibility keyword — `public`, `private`, `protected`, or
-`internal` — because LDP3 never infers access silently. A field is immutable unless you
+`internal` — because Polaron never infers access silently. A field is immutable unless you
 mark it `mutable`; this is the reverse of most languages and it means that a field you
 never reassign needs no annotation, while one you do reassign announces that fact.
 
@@ -60,7 +60,7 @@ job is to leave every field in a valid state. Inside any method or constructor, 
 to a member is always written through `this.` — there is no implicit `this`, so
 `this.balance` is a field access and `balance` alone would be an unknown name.
 
-```ldp3
+```polaron
 public class Account {
     private mutable int balance;
     private int id = 1000;          // inline initializer
@@ -81,13 +81,13 @@ public class Account {
 ```
 
 A class has **exactly one** constructor, for the same reason it has one method per name:
-LDP3 has no overloading. Where another language would offer several, give the alternatives
+Polaron has no overloading. Where another language would offer several, give the alternatives
 distinct names as static factory methods, or take one constructor with the widest
 parameter list.
 
 The mirror image of a constructor is a **destructor**, written `destructor ~Name()
 returns void`. It runs when an object's lifetime ends and is where you release whatever
-the object owns — heap memory, file handles, and the like. LDP3 has no garbage
+the object owns — heap memory, file handles, and the like. Polaron has no garbage
 collector; memory is managed manually, and the destructor is the hook that makes manual
 management ergonomic. For an object that lives on the stack, the destructor fires
 automatically when the enclosing scope exits (this is RAII, the same discipline C++
@@ -95,7 +95,7 @@ uses); for an object on the heap you trigger it with `delete`. The following pro
 prints `ctor`, then `hello`, then `dtor`, in that order, because the stack object `g`
 is destroyed as `main` returns:
 
-```ldp3
+```polaron
 public class Greeter {
     public constructor Greeter() {
         System.IO.Console.printf("ctor\n");
@@ -130,7 +130,7 @@ Instance methods are declared with the `method` keyword, a unique name, a parame
 list, and a mandatory `returns` clause naming the result type (`void` if there is none).
 The `return` statement is required in a non-void method and optional in a void one.
 
-LDP3 forbids method overloading. Within a class, a method name is unique — you cannot
+Polaron forbids method overloading. Within a class, a method name is unique — you cannot
 declare two methods called `add` that differ only in their parameters. This keeps
 dispatch unambiguous and error messages precise; when you need variants, give them
 different names (`addInt`, `addAll`) rather than relying on the compiler to pick by
@@ -140,7 +140,7 @@ Every block requires braces and there is no shorthand: `if (x) return;` written 
 braces is a syntax error. This uniformity means a method body always reads as a
 sequence of brace-delimited statements.
 
-```ldp3
+```polaron
 public class Rectangle {
     private int width;
     private int height;
@@ -174,7 +174,7 @@ runs without a receiver. Both are addressed by class name — `Counter.count`,
 `Counter.inc()` — never through an instance. Static state that changes over time must
 still be declared `mutable`, exactly like an instance field.
 
-```ldp3
+```polaron
 public class Counter {
     private static mutable int count;
 
@@ -199,14 +199,14 @@ public class Main {
 
 ## 6.5 Value Semantics: Assignment Copies
 
-This is the single most important rule to absorb about LDP3 objects, and the one most
+This is the single most important rule to absorb about Polaron objects, and the one most
 likely to surprise a Java programmer: **assignment is a deep copy.** When you write
 `Account b = a;`, `b` becomes an independent duplicate of `a`, recursively copying every
 field. Mutating `b` afterwards leaves `a` untouched. Passing a class value as a method
 argument follows the same rule — the parameter is a fresh deep copy, so a method cannot
 change the caller's object merely by mutating its parameter.
 
-```ldp3
+```polaron
 Account a = new Account(100) on stack;
 Account b = a;          // deep copy: b is a separate account
 b.deposit(50);
@@ -229,7 +229,7 @@ structs, records — assignment means copy.
 
 ## 6.6 Inheritance with `extends`
 
-A class may extend exactly one base class using `extends`. LDP3 has single inheritance;
+A class may extend exactly one base class using `extends`. Polaron has single inheritance;
 a class inherits all of its base's fields and methods and may add its own. The
 `protected` visibility exists precisely for this relationship: a `protected` member is
 visible to the declaring class and its subclasses but not to unrelated code.
@@ -240,7 +240,7 @@ constructor, this happens implicitly — you write nothing. When the base constr
 needs arguments, you forward them explicitly with a `super(...)` call as the first
 action of the subclass constructor:
 
-```ldp3
+```polaron
 public class Animal {
     protected int legs;
     public constructor Animal(int legs) {
@@ -277,7 +277,7 @@ methods are abstract by default — just a signature terminated by a semicolon �
 implementing class supplies the body, marking it `override` because it is fulfilling an
 inherited obligation.
 
-```ldp3
+```polaron
 public interface Drawable {
     method describe() returns void;
 }
@@ -296,7 +296,7 @@ it if they want different behavior. A default method can call the interface's ot
 (still-abstract) methods on `this`, and those calls dispatch virtually to whatever the
 concrete class provides — so a default written once adapts to every implementer:
 
-```ldp3
+```polaron
 public interface Greeter {
     method name() returns int;
     method greet() returns int {
@@ -328,7 +328,7 @@ method must itself be abstract. This lets you write a base type that defines a c
 (and possibly some shared, concrete helpers) while leaving the essential behavior to be
 filled in below.
 
-```ldp3
+```polaron
 public abstract class Shape {
     public abstract method area() returns int;   // no body; subclasses must provide it
 }
@@ -344,7 +344,7 @@ closed, known set of subtypes, which is what lets the compiler check a `match` o
 for exhaustiveness — if you have handled every permitted case, no `default` arm is
 required.
 
-```ldp3
+```polaron
 public sealed abstract class Shape permits Circle, Square {
     public abstract method area() returns int;
 }
@@ -364,7 +364,7 @@ public class Square extends Shape {
 
 Polymorphism is the payoff of the whole model: a variable typed as a base class or an
 interface can hold any subtype, and a method call on it runs the *most-derived* override
-for the object's real runtime type. LDP3 implements this the classic way, with virtual
+for the object's real runtime type. Polaron implements this the classic way, with virtual
 method tables (vtables). A class that participates in a hierarchy carries a hidden
 vtable pointer as its first field; each concrete class has one vtable, laid out so that
 every distinct virtual method name occupies a stable slot. A call through a base-typed
@@ -381,7 +381,7 @@ to have no subclasses at this point in the program, the call is compiled as a di
 call with no vtable indirection — you get polymorphism's flexibility where you need it
 and a plain call where you don't.
 
-```ldp3
+```polaron
 public class Animal {
     public method speak() returns void {
         System.IO.Console.println("...generic animal");
@@ -417,7 +417,7 @@ dispatch together. `Shape` is an abstract class that implements the `Drawable`
 interface; `Square` and `Circle` each override `area()` and `describe()`. A variable of
 static type `Shape` calls the override belonging to the object it actually holds:
 
-```ldp3
+```polaron
 public interface Drawable {
     method describe() returns void;
 }
@@ -467,7 +467,7 @@ writable field; one with `get; init;` is **init-only** — it may be assigned in
 constructor but is immutable thereafter. A **computed** property provides a getter body
 and no setter, deriving its value on each read rather than storing it:
 
-```ldp3
+```polaron
 public class Rect {
     public int w { get; set; }              // auto-property: read/write
     public int h { get; init; }             // init-only: set in the ctor, then immutable
@@ -485,7 +485,7 @@ You can also write full custom bodies for both accessors, backing them with a pr
 field and running logic on the way in or out. Inside a setter, the incoming value is
 available as `value`. This is how you validate, clamp, or transform:
 
-```ldp3
+```polaron
 public class Temp {
     private mutable int celsius;
     public constructor Temp() { this.celsius = 0; }
@@ -512,7 +512,7 @@ representations of the same datum — Celsius/Fahrenheit, radians/degrees, bytes
 `X to Y:` rules. Reading computes the property from the field; assigning computes the field
 from the property:
 
-```ldp3
+```polaron
 public class Temperature {
     private mutable double celsius;
     public constructor Temperature(double c) { this.celsius = c; }
@@ -540,7 +540,7 @@ parameter list, and a `returns` type. The most common case is a binary operator 
 `+`: `a + b` where `a`'s class defines `operator +` compiles to a call of that operator
 with `b` as the argument.
 
-```ldp3
+```polaron
 public class Vec3 {
     public mutable int x;
     public mutable int y;
@@ -555,7 +555,7 @@ public class Vec3 {
 // Vec3 c = a + b;   ->   a.operator+(b)
 ```
 
-Beyond binary arithmetic and comparison operators, LDP3 also lets you overload:
+Beyond binary arithmetic and comparison operators, Polaron also lets you overload:
 
 - **Unary increment/decrement**, `operator ++ ()` and `operator -- ()`, taking no
   parameters. `c++` reassigns `c` to the operator's result.
@@ -563,7 +563,7 @@ Beyond binary arithmetic and comparison operators, LDP3 also lets you overload:
 - **Indexing for writes**, `operator []= (int i, T v) returns void`, so `t[i] = v`
   routes the assigned value through it.
 
-```ldp3
+```polaron
 public class Pair {
     private mutable int a;
     private mutable int b;
@@ -583,7 +583,7 @@ and each name is a distinct ordinal value starting at zero. You refer to a const
 `EnumName.CONSTANT`, compare enum values with `==` and `!=`, and use them in
 interpolation, where a simple enum prints as its ordinal.
 
-```ldp3
+```polaron
 public enum Color {
     RED,        // 0
     GREEN,      // 1
@@ -598,7 +598,7 @@ constants in declaration order (handy to iterate with `foreach`), `EnumName.rand
 returns an arbitrary constant, and `EnumName.parse(name)` returns an `Option` of the
 constant matching a name.
 
-```ldp3
+```polaron
 public enum Color { RED, GREEN, BLUE }
 
 public class Main {
@@ -621,7 +621,7 @@ constructed with its arguments — because the constants are shared by identity,
 reference values and are never copied. This lets an enum bundle data and behavior with
 each named value:
 
-```ldp3
+```polaron
 public enum Planet {
     EARTH(10, 2),
     MARS(30, 3);
@@ -656,7 +656,7 @@ fields packed together so a pass pulls in fewer cache lines, and the *cold* ones
 bookkeeping) pushed to the end. `affinity` blocks express that intent without hand-splitting
 the class into parallel arrays:
 
-```ldp3
+```polaron
 public class Particle {
     public affinity cold {
         mutable int id;
@@ -684,7 +684,7 @@ An interface says what a type **does**. A layout says how a type **arranges itse
 separate questions, so a layout is not a fourth species beside `struct`, `record` and `union` — it
 crosses them:
 
-```ldp3
+```polaron
 public layout ThreeToALine {
     onArrange {
         itself.fitWithin(20 bytes);
@@ -707,7 +707,7 @@ through — but implementing was never inheriting, which is why the door was alr
 **Implementing a layout authorizes the compiler to order the fields**, and that is the point of the
 feature rather than a side effect. A check that only refuses is a guard against a problem that could
 have been solved; here it can be solved, because the compiler knows every size and alignment and
-LDP3 exposes no offsets. Fields are ordered widest-first, so the padding a declaration order pays
+Polaron exposes no offsets. Fields are ordered widest-first, so the padding a declaration order pays
 for simply is not spent. The build refuses only what could not be made to fit, and says so:
 
 ```
@@ -740,7 +740,129 @@ that has to come out a certain way — use [`demand`](10-metaprogramming-and-pre
 
 ---
 
-field-layout hints in hand, you have the whole object model LDP3 offers. The recurring themes —
+## 6.15 Transformers: a transformation relation between classes
+
+A **transformer** is a construct that establishes a **transformation relation between two classes**.
+It answers a question none of the other declarations do:
+
+> `class` says what a thing **is**.
+> `interface` says what it **must be able to do**.
+> `layout` says how it **arranges itself**.
+> **`transformer` says what a type gains — and how it relates to the other types that gain the same.**
+
+A transformer is a noun. It has a name, you can point at it, and it is **never instantiated**: it
+produces nothing you can hold. What it produces is what the types that apply it gain.
+
+### What lives inside one
+
+Two things: **variables**, and **transformable methods**.
+
+A transformable method is an abstract method that may nevertheless carry a **default implementation
+inside the transformer itself**, and that implementation can still be swapped for one belonging to a
+class. That combination has no equivalent among ordinary methods, and it is why the word is
+different: in Polaron these are **procedures**.
+
+```
+A METHOD's signature is fixed where it is declared.
+A PROCEDURE's signature is completed at the type that applies it.
+```
+
+Inside a transformer, `itself` is *the type that will apply this* — a type that does not exist yet. A
+procedure returning `itself` returns a different type in every type that applies it. That is what
+"abstract, but with an implementation" means here: the body exists, but it is not code for any type
+yet. It is not floating behaviour — **its subject exists, it just does not know its name.**
+
+### The two operations: application and call
+
+A transformer is **not implemented and not extended. It is applied.**
+
+```polaron
+public class Dog applies TDescriber { }
+```
+
+**Applying a transformer does not mean applying all of its procedures** — only the ones the class
+chooses. Supplying a class's own body for a procedure is *also* called applying — applying that
+procedure:
+
+```polaron
+public class Dog applies TDescriber {
+    public procedure describe() returns string { return "a dog"; }
+}
+```
+
+When a procedure is applied, its implementation changes — whether or not the transformer defined one.
+**An applied procedure overrides the transformer's own body**, and there may be exactly **one
+application per procedure per class**: a class applying `TDescriber` may apply `describe` once, and
+only once.
+
+Once applied, the procedure **belongs to the class**, and **its visibility travels with it**.
+
+> The visibility written on a procedure is **not** about who may reach it inside the transformer —
+> nothing can reach into a transformer at all. It is the visibility the member **enters the applying
+> class with**.
+
+Procedures are therefore **private by default**: applying a transformer is equipment, not a promise
+made to the outside world, and the only way to get at a procedure at all is to apply the transformer
+that holds it.
+
+A transformer cannot be instantiated, so there is no receiver to write to the left of a dot. That is
+what the second operation is for — **call**:
+
+```polaron
+public class Cat applies TDescriber {
+    public procedure describe() returns string {
+        return "[" + call TDescriber.describe() + "]";   // the transformer's own body
+    }
+}
+```
+
+`call T.p()` reaches the **transformer's** procedure directly, without going through the application.
+So a class can use both: the applied procedure that now belongs to it, *and* the transformer's
+original, which its own application would otherwise have covered over. Calling is **reserved to the
+class that applied the transformer** — a transformer's procedure cannot be called from outside it.
+
+### The relation
+
+When two or more classes apply the same transformer **and the same procedure**, those classes
+establish a transformation between themselves. It comes in three shapes:
+
+| shape | meaning | declared with |
+|---|---|---|
+| **unidirectional, single** | `A → B` | nothing — it emerges from the pair |
+| **unidirectional, multiple** | `A → B, C, D` | `collective` |
+| **bidirectional** | `A ↔ B` | `mutual` |
+
+Nothing declares "A converts to B". Two types apply the same transformer and implement its
+procedures, and **the transformation emerges from the pair** — the direction too: one side
+implemented is one way, both sides is both. What does *not* emerge is the **obligation** to write the
+other side, and that is the whole of what those two words do.
+
+`collective` is the multiple case, and it brings its own economy: the conversions you write are
+edges, and the compiler completes the graph along them. Three classes in a cycle are three procedures
+and six conversions. The rules that keep it honest are in the specification, §32.12.1 — no path is an
+error, and two equally short paths is an error too, because a composed conversion may never pick one.
+
+This is a **safe way to turn objects into other objects**, or something of one object into something
+of another: a route for an `A` to become a `B` **without necessarily converting vtables**.
+
+### The cost
+
+**Transformers are resolved at compile time, so they create no vtables.** A transformer is expanded
+by the same machinery that expands a generic, running over another list — no vtable, no allocation,
+no indirection. What you pay is exactly the code you would have written by hand, which is what makes
+the feature usable in a kernel without thinking twice.
+
+### Naming
+
+`T` + stem + `er` — `TDescriber`, never `Describe`. A transformer is **the coupling between two types
+and neither of them**: an electrical transformer has two windings and is not either winding, so it is
+named for the agent of the relation. The leading `T` says at a glance which of the three list-like
+clauses on a class line you are reading — `extends` is identity, `implements` is obligation, `applies`
+is equipment. The compiler warns and *generates* the suggested name rather than only demanding one.
+
+---
+
+field-layout hints in hand, you have the whole object model Polaron offers. The recurring themes —
 explicit over implicit (visibility, `this.`, `override`), value semantics with opt-in
 sharing, and immutability by default — are worth keeping in mind as you read the
 chapters that follow, because the rest of the language is built on top of exactly these

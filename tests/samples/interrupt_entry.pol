@@ -1,0 +1,61 @@
+// `interrupt` -- a method the program does not call, because something outside it ENTERS the method
+// at a moment the program did not choose. Both spellings are here on purpose: a handler that reads
+// the frame the hardware pushed, and one that does not care where it came from.
+program InterruptEntry freestanding;
+
+public bundle Kernel {
+    public namespace Arch {
+        // The frame the CPU pushes, as an object instead of two raw integers. Its shape is the
+        // hardware's, which is exactly why it is worth naming once.
+        public class Trap {
+            public mutable address rip;
+            public mutable address cs;
+            public mutable address rflags;
+            public mutable address rsp;
+            public mutable address ss;
+            public constructor Trap() {
+                this.rip = 0;
+                this.cs = 0;
+                this.rflags = 0;
+                this.rsp = 0;
+                this.ss = 0;
+            }
+        }
+
+        // One device, one handler -- which is what `nameless` buys. A second handler means a second
+        // object, and the driver model already says so.
+        public class Keyboard {
+            // `volatile` because the handler and the code it preempts both touch this. The rule
+            // does not invent a marker for "state something that can preempt me also touches" --
+            // Polaron already spells that two ways, for two real cases, and this is one of them.
+            private volatile mutable int scancodes;
+            public constructor Keyboard() { this.scancodes = 0; }
+            public interrupt(Trap t) returns void {
+                this.scancodes = this.scancodes + 1;
+            }
+            public method count() returns int { return this.scancodes; }
+        }
+
+        // The parameterless form: a spurious IRQ has nothing to say about where it came from.
+        public class Spurious {
+            private volatile mutable int seen;
+            public constructor Spurious() { this.seen = 0; }
+            public interrupt() returns void { this.seen = this.seen + 1; }
+            public method count() returns int { return this.seen; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Keyboard kbd = new Keyboard();
+                Spurious spur = new Spurious();
+                // Binding and the entry point are ONE act: a vector holds an address and nothing
+                // else, so there is no way to obtain the address without saying whose handler it is.
+                address kbdEntry = kbd.interrupt;
+                address spurEntry = spur.interrupt;
+                if (kbdEntry == 0) { return 1; }
+                if (spurEntry == 0) { return 2; }
+                return kbd.count() + spur.count();
+            }
+        }
+    }
+}

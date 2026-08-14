@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# Assemble the LDP3 language reference (docs/reference/*.md) into one styled HTML document, ready to
+# Assemble the Polaron language reference (docs/reference/*.md) into one styled HTML document, ready to
 # print to PDF with a headless browser. Regenerate the PDF with:
 #   python docs/reference/make-pdf.py
-#   msedge --headless --print-to-pdf=docs/reference/LDP3-Language-Reference-1.0.16.pdf \
+#   msedge --headless --print-to-pdf=docs/reference/Polaron-Language-Reference-1.0.16.pdf \
 #          --no-pdf-header-footer docs/reference/_reference.html
 import datetime
 import html as _html
@@ -107,12 +107,12 @@ def render():
     today = datetime.date.today().strftime("%B %Y")
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'>",
-        "<title>LDP3 Language Reference " + VERSION + "</title>",
+        "<title>Polaron Language Reference " + VERSION + "</title>",
         "<style>" + CSS + "</style></head><body>",
         # Cover
         "<section class='cover'>",
         "<div class='flame'>&#128293;</div>",
-        "<div class='mark'>LDP3</div>",
+        "<div class='mark'>Polaron</div>",
         "<div class='sub'>Language Reference</div>",
         "<div class='ver'>VERSION " + VERSION + "</div>",
         "<div class='by'>Linguagem De Programa&ccedil;&atilde;o 3 &mdash; Jo&atilde;o Victor Pereira Tavares</div>",

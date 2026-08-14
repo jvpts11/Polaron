@@ -1,13 +1,13 @@
 // Semantic analysis of inline assembly.
 //
-// LDP3's `asm` block is already structured rather than a string: the architecture and dialect are named,
+// Polaron's `asm` block is already structured rather than a string: the architecture and dialect are named,
 // and the operands are ordinary expressions the analyser resolves. What was missing is the half that
 // makes that structure worth having -- nobody looked at the BODY. It went to the assembler verbatim, so
 // `asm` was the one construct in the language where genuinely arbitrary code could live, and the one
-// place a mistake was neither caught nor catchable. That is C's bargain, and LDP3 exists to refuse it.
+// place a mistake was neither caught nor catchable. That is C's bargain, and Polaron exists to refuse it.
 //
 // The checks below are not stylistic. Each one corresponds to a class of fault that has actually cost
-// time in a real freestanding LDP3 program:
+// time in a real freestanding Polaron program:
 //
 //   * A register written by the body but declared to nobody. The compiler allocates around an asm block
 //     using ONLY what the block declares -- outputs and `clobber(...)`. A body that writes `eax` without
@@ -32,7 +32,7 @@
 #include <string>
 #include <vector>
 
-namespace ldp3::semantic {
+namespace polaron::semantic {
 
 // One thing the checker has to say. `offset` is a byte index into the body text, so a caller can point
 // at the offending line rather than at the block as a whole.
@@ -68,4 +68,4 @@ struct AsmDeclared {
 // has not learned yet would be the worse failure.
 AsmReport checkAsm(const std::string& body, const AsmDeclared& declared);
 
-}  // namespace ldp3::semantic
+}  // namespace polaron::semantic

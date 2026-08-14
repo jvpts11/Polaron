@@ -1,0 +1,31 @@
+import System.IO.Console;
+program FfiSymbol;
+
+// `symbol("...")` separates the Polaron name from the linker name.
+//
+// Without it the C symbol IS the method's name, so binding `abs` forced the method to be CALLED
+// `abs` -- and binding `SDL_CreateWindow` forced a Polaron method to carry a C library's naming
+// convention into Polaron source, which is the one thing the object model exists to keep out.
+//
+// The argument is a string and not an identifier on purpose: a mangled C++ symbol
+// (`?f@@YAXXZ`, `_ZN3Foo3barEv`) is not an identifier in any language, and being able to paste one
+// straight from `nm` or `dumpbin` is what lets a C++ binding work without a mangler of our own.
+//
+// Prints: magnitude = 42
+public bundle main {
+    public namespace app {
+        public class Numbers {
+            // Ours is `absolute`; theirs is `abs`. Private, so the binding is reachable only through
+            // the class that owns it -- the encapsulation the declaration form is for.
+            private extern cdecl static method absolute(int x) returns int symbol("abs");
+
+            public static method magnitude(int x) returns int { return Numbers.absolute(x); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("magnitude = %d\n", Numbers.magnitude(0 - 42));
+                return;
+            }
+        }
+    }
+}

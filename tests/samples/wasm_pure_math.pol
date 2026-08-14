@@ -1,0 +1,32 @@
+program WasmPureMath freestanding;
+
+// The wasm32 target, taken as far as this machine can verify: polc emits wasm32 IR, clang assembles
+// it, and wasm-ld links a real module.
+//
+// `freestanding` because a bare WebAssembly module has no host to print through, no syscalls and no
+// console -- so what a module written here can honestly do is compute. That is also what makes it a
+// useful check: the arithmetic below crosses a 32-bit/64-bit boundary on a machine with no registers
+// at all, so it exercises the lowering rather than the runtime.
+public bundle Main {
+    public namespace App {
+        public class Squares {
+            public static method sumTo(int n) returns long {
+                mutable long sum = 0;
+                mutable int i = 1;
+                while (i <= n) {
+                    sum = sum + cast<long>(i * i);
+                    i = i + 1;
+                }
+                return sum;   // sumTo(100) = 338350
+            }
+        }
+        public class Main {
+            // The call has to exist or the class is dead-stripped and the module proves nothing --
+            // the same trap the syscall sample fell into.
+            public static method main(string[] args) returns void {
+                Squares.sumTo(100);
+                return;
+            }
+        }
+    }
+}

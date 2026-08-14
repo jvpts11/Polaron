@@ -1,0 +1,24 @@
+    public namespace Memory.Units {
+        public struct ByteSize {
+            public final long bytes;
+            public constructor ByteSize(long bytes) { this.bytes = bytes; }
+            public comptime literal bytes(int x) returns ByteSize {
+                return new ByteSize(cast<long>(x)) on heap;
+            }
+            public comptime literal kilobytes(int x) returns ByteSize {
+                return new ByteSize(cast<long>(x) * 1024) on heap;
+            }
+            public comptime literal megabytes(int x) returns ByteSize {
+                return new ByteSize(cast<long>(x) * 1024 * 1024) on heap;
+            }
+            public comptime literal gigabytes(int x) returns ByteSize {
+                return new ByteSize(cast<long>(x) * 1024 * 1024 * 1024) on heap;
+            }
+            public comptime literal terabytes(int x) returns ByteSize {
+                return new ByteSize(cast<long>(x) * 1024 * 1024 * 1024 * 1024) on heap;
+            }
+            public comptime literal exabytes(int x) returns ByteSize {
+                return new ByteSize(cast<long>(x) * 1024 * 1024 * 1024 * 1024 * 1024 * 1024) on heap;
+            }
+        }
+    }

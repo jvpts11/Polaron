@@ -1,0 +1,20 @@
+import System.IO.Console;
+import System.Math.Numerics;
+program NumericsDemo;
+
+// Self-contained transcendentals (spec 34.6) in pure Polaron. Prints:
+//   sqrt2=1.414214 exp1=2.718282 ln_e=1.000000
+//   sin=1.000000 cos=1.000000 pow=1024.0000
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("sqrt2=%.6f exp1=%.6f ln_e=%.6f\n",
+                    Numerics.sqrt(2.0), Numerics.exp(1.0), Numerics.ln(2.718281828459045));
+                System.IO.Console.printf("sin=%.6f cos=%.6f pow=%.4f\n",
+                    Numerics.sin(Numerics.pi() / 2.0), Numerics.cos(0.0), Numerics.pow(2.0, 10.0));
+                return;
+            }
+        }
+    }
+}

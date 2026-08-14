@@ -6,7 +6,7 @@
 
 #include "lexer/token.h"
 
-namespace ldp3 {
+namespace polaron {
 
 // A lexical diagnostic with location. The lexer collects these instead of
 // aborting on the first problem (CLAUDE.md: accumulate errors when sensible).
@@ -17,15 +17,15 @@ struct LexError {
 
 // One `///` documentation comment line: its line number and text (with the `///` and one leading space
 // stripped). Consecutive lines form a doc block for the declaration that follows. Collected but not
-// emitted as tokens, so parsing is unaffected; used by `ldp3 doc`.
+// emitted as tokens, so parsing is unaffected; used by `polaron doc`.
 struct DocComment {
     int line;
     std::string text;
 };
 
-// Turns LDP3 source text into a flat list of tokens.
+// Turns Polaron source text into a flat list of tokens.
 //
-//   Lexer lexer(source, "file.ldp3");
+//   Lexer lexer(source, "file.pol");
 //   std::vector<Token> tokens = lexer.tokenize();   // always ends with EndOfFile
 //   if (lexer.hasErrors()) { for (auto& e : lexer.errors()) ... }
 //
@@ -33,7 +33,7 @@ struct DocComment {
 // (tokens keep a string_view to `file` in their SourceLocation).
 class Lexer {
 public:
-    // keepComments: emit `//`, `///` and `/* */` as TokenKind::Comment tokens (for `ldp3 fmt`) instead of
+    // keepComments: emit `//`, `///` and `/* */` as TokenKind::Comment tokens (for `polaron fmt`) instead of
     // discarding them. The parser uses the default (comments skipped).
     Lexer(std::string_view source, std::string_view file, bool keepComments = false);
 
@@ -75,4 +75,4 @@ private:
     bool keepComments_ = false;
 };
 
-}  // namespace ldp3
+}  // namespace polaron

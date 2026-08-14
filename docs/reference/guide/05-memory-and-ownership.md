@@ -1,7 +1,7 @@
 # 5. Memory & Ownership
 
-This is the chapter where LDP3 stops looking like a friendly object-oriented language
-and starts showing its real personality. LDP3 is a systems language: it compiles
+This is the chapter where Polaron stops looking like a friendly object-oriented language
+and starts showing its real personality. Polaron is a systems language: it compiles
 straight to native code, it has **no garbage collector**, and it never stops the world
 to sweep your heap behind your back. Every byte your program uses has a birth and a
 death that you can point to in the source. That is the whole bargain — you trade the
@@ -9,7 +9,7 @@ convenience of a GC for **determinism**: you always know *when* memory is reclai
 *where* an object lives, and *who* is responsible for it.
 
 The surprising part is that this bargain does not feel dangerous in day-to-day code.
-LDP3 achieves that with three ideas working together, and this chapter is the story of
+Polaron achieves that with three ideas working together, and this chapter is the story of
 how they fit:
 
 1. **Value semantics as the default.** Assignment copies. A variable *is* its object,
@@ -24,7 +24,7 @@ how they fit:
 
 And when the safe defaults get in the way — when you want a bump allocator, a
 memory-mapped hardware register, or state that outlives the object that created it —
-LDP3 hands you the sharp tools: pointers, regions, and persistents. The design
+Polaron hands you the sharp tools: pointers, regions, and persistents. The design
 principle throughout is *no ceremony in the common case, a cannon when you need one*.
 
 Let's build the model from the ground up.
@@ -33,13 +33,13 @@ Let's build the model from the ground up.
 
 ## 5.1 Value semantics: assignment is a deep copy
 
-In LDP3, **assignment copies the whole value**, and for a class instance that means a
+In Polaron, **assignment copies the whole value**, and for a class instance that means a
 **deep copy**. This is the single most important sentence in the chapter, so let's sit
 with it. When you write `b = a` and both are class-typed, `b` becomes a brand-new,
 fully independent object with the same contents as `a`. Mutating `b` afterward cannot
 touch `a`, because there is no shared storage between them.
 
-```ldp3
+```polaron
 import System.IO.Console;
 program ValueCopy;
 
@@ -66,7 +66,7 @@ public bundle main {
 The copy is *deep*, not shallow. If a class owns an array or a nested value object, that
 storage is duplicated too, so the two objects share nothing at all:
 
-```ldp3
+```polaron
 public class Bag {
     public mutable int[] items;
     public constructor Bag() {
@@ -92,7 +92,7 @@ arrays.
 **Why default to copying?** Because aliasing is the source of an enormous class of bugs,
 and a value default eliminates them by construction. In a reference-by-default language
 (Java, Python, C#), `b = a` makes `b` point at *the same* object, and now a write through
-either name is visible through both — often at a distance, often surprising. LDP3 flips
+either name is visible through both — often at a distance, often surprising. Polaron flips
 the default: sharing is the thing you must ask for explicitly, so when you *see* sharing
 in the source you know it is intentional. It also composes cleanly with manual memory:
 if every variable owns its own object, "who frees this?" almost always has the obvious
@@ -102,7 +102,7 @@ answer — the scope that declared it.
 an independent deep copy, exactly like assignment. Mutating the parameter inside the
 method does **not** affect the caller's object.
 
-```ldp3
+```polaron
 public static method tryToChange(Point p) returns void {
     p.x = 500;                 // mutates the local copy only
 }
@@ -127,7 +127,7 @@ The copy duplicates the object's own storage, including its value-typed fields. 
 field is copied *as a pointer* — so the copy points at the same thing the original did, and
 everything reachable through it is shared:
 
-```ldp3
+```polaron
 Node head = new Node(1) on stack;
 head.next = &tail;
 
@@ -145,7 +145,7 @@ When you want a genuinely independent graph, that is what **`cascade clone`** is
 ([§10.5](10-metaprogramming-and-prefixes.md)). It walks what the object *owns*, clones each node
 once, repoints the clone's pointers at the clones, and shares nothing:
 
-```ldp3
+```polaron
 cascade clone head into fresh;       // fresh's tail is a copy, not the same tail
 ```
 
@@ -165,7 +165,7 @@ A **pointer** `T*` holds the address of an object. You take an address with the 
 operator, and — this is a small but important convenience — you access members through a
 pointer with the ordinary dot (`.`), not a separate arrow operator:
 
-```ldp3
+```polaron
 Point a = new Point(1) on stack;
 Point b = a;        // deep copy -- independent
 Point* p = &a;      // p shares a's instance
@@ -181,7 +181,7 @@ stands in for that object from then on. Use a reference when "this is just anoth
 for that object" is the whole story; use a pointer when you need an address you can pass
 around, store, rebind, or compare with `null`.
 
-```ldp3
+```polaron
 Point a = new Point(1);
 Point* p = &a;   // an address: rebindable, can be null, supports & and pointer ops
 Point& r = a;    // an alias: bound to a, use it exactly like a
@@ -191,7 +191,7 @@ For passing large objects into a method without paying for the deep copy, declar
 parameter as a reference (or pointer). Now the method sees the caller's object and can
 mutate it:
 
-```ldp3
+```polaron
 public static method bump(Point& p) returns void {
     p.x = p.x + 1;     // mutates the caller's object
 }
@@ -210,7 +210,7 @@ adds a level and the prefix **`*`** operator peels one off — `*pp` on a `T**` 
 *out-parameter* (a method that rebinds the caller's pointer) and for pointer-based data
 structures:
 
-```ldp3
+```polaron
 mutable int x = 5;
 int* p = &x;          // p -> x
 int** pp = &p;        // pp -> p
@@ -233,13 +233,13 @@ reference is a bound alias, not an address you build towers of.
 
 The mental model to carry forward: **value by default, share by exception.** A plain
 variable is an object; a `T*`/`T&` is a way to reach into someone else's object. When
-you read LDP3 and see a `*` or `&`, that is the code announcing "sharing happens here."
+you read Polaron and see a `*` or `&`, that is the code announcing "sharing happens here."
 
 ---
 
 ## 5.3 Where objects live: stack vs heap
 
-Every allocation answers a question: *where does this live, and when does it die?* LDP3
+Every allocation answers a question: *where does this live, and when does it die?* Polaron
 makes you name the answer with `new ... on stack` or `new ... on heap` — but only when
 the default is not what you want.
 
@@ -249,7 +249,7 @@ the default is not what you want.
 - **`on heap`** allocates from the heap and hands you ownership of a long-lived object.
   Heap objects are **not** reclaimed automatically — you must `delete` them.
 
-```ldp3
+```polaron
 Dog rex = new Dog("Rex", 5) on stack;      // dies at end of scope
 Dog* big = new Dog("Big", 10) on heap;     // lives until you delete it
 delete big;                                 // reclaim the heap object
@@ -263,7 +263,7 @@ dynamic). You write the placement explicitly only to force something other than 
 default, or when the type itself demands the heap (a `T*` you intend to return, an object
 that must outlive its scope).
 
-```ldp3
+```polaron
 Dog rex = new Dog("Rex", 5);            // no ceremony -> stack (RAII)
 Dog* big = new Dog("Big", 10) on heap;  // the "cannon": manual heap, needs delete
 int[] scores = new int[16]();           // arrays default to the heap
@@ -279,20 +279,20 @@ to outlive the scope that made it. Both live in the same language, one keystroke
 
 Manual memory has a reputation for foot-guns: use-after-free, double-free, dangling
 pointers. In C and C++ these are *undefined behavior* — the program might crash, might
-silently corrupt data, might appear to work until it doesn't. LDP3 takes a firm position
+silently corrupt data, might appear to work until it doesn't. Polaron takes a firm position
 here, the **no-UB principle**: a memory mistake must **fail deterministically**, never
 silently corrupt.
 
 Consider a double-`delete`:
 
-```ldp3
+```polaron
 Dog* d = new Dog("Rex", 5) on heap;
 delete d;
 delete d;   // deterministic panic, not silent corruption
 ```
 
 The second `delete` does not quietly free a recycled block and march on. Before running
-the destructor, the compiler emits a liveness check (`__ldp3_check_live`) against the
+the destructor, the compiler emits a liveness check (`__polaron_check_live`) against the
 allocator: if the block has already been freed, the program panics immediately with a
 clear message. A live pointer, or a pointer the allocator doesn't own, passes through
 untouched. The same guard covers `delete` of an already-released object. You still bear
@@ -302,7 +302,7 @@ corruption bug into a loud, reproducible crash at the exact offending line.
 Other memory hazards are handled in the same spirit elsewhere in the language:
 dereferencing a `nullable` that happens to be null traps deterministically rather than
 segfaulting; out-of-bounds array indexing traps at the access; integer overflow can be
-made to trap under `checked(...)`. The unifying rule is that LDP3 would rather stop your
+made to trap under `checked(...)`. The unifying rule is that Polaron would rather stop your
 program with a precise diagnostic than let it wander into corrupted state.
 
 The best defense, though, is to not manage memory by hand at all where you don't have to —
@@ -318,10 +318,10 @@ An object allocated in a method's own frame — `new X()`, or `new X() on stack`
 exactly as long as the call. A pointer or reference to it that *leaves* the call is
 dangling before it is ever used once:
 
-```ldp3
+```polaron
 public static method make() returns Point* {
     Point* p = new Point(7);
-    return p;                 // error[LDP3-1721]: the frame is gone by the time
+    return p;                 // error[Polaron-1721]: the frame is gone by the time
 }                             // the caller reads it
 ```
 
@@ -334,7 +334,7 @@ A **heap** object is not caught, and that distinction is the whole of it: `on he
 the pointer dies at return and the object does not, so handing one out is a factory and
 storing one in a field is the ownership transfer every linked structure is built from.
 
-```ldp3
+```polaron
 Node* n = new Node(v) on heap;
 this.head = n;                 // fine: the object outlives the call
 ```
@@ -342,21 +342,21 @@ this.head = n;                 // fine: the object outlives the call
 If a program genuinely traffics in pointers to dead frames, `--no-region-binder` turns the
 analysis off for that program. There is deliberately no per-line version: a line that
 looks ordinary is exactly how this mistake survives review, so the way to opt out is one
-flag, visible in the build. `ldp3c --check` takes the same flag and the same default, so
+flag, visible in the build. `polc --check` takes the same flag and the same default, so
 the editor and the compiler always agree about what is an error.
 
 ---
 
 ## 5.5 RAII: destructors and automatic cleanup
 
-RAII — *Resource Acquisition Is Initialization* — is the backbone of LDP3's memory
+RAII — *Resource Acquisition Is Initialization* — is the backbone of Polaron's memory
 determinism. The idea: tie a resource's lifetime to an object's lifetime, so that
-cleanup is automatic and happens at a well-defined moment. In LDP3 that moment is
+cleanup is automatic and happens at a well-defined moment. In Polaron that moment is
 **scope exit**, and the mechanism is the **destructor**.
 
 A destructor is written `~ClassName` and runs when the object's lifetime ends:
 
-```ldp3
+```polaron
 public class Board {
     private mutable char[] cells;
     public constructor Board() { this.cells = new char[9](); }
@@ -369,7 +369,7 @@ public class Board {
 For a **stack object**, the destructor runs automatically at the end of the block that
 declared it. You do not call it; you cannot forget it:
 
-```ldp3
+```polaron
 public method play() returns void {
     Board board = new Board();      // on the stack by default
     board.place(0, 'X');
@@ -400,12 +400,12 @@ clean up on command.
 
 Sometimes the resource you need to release is not neatly wrapped in a stack object — it's
 a heap allocation, a lock, an open handle — and you want to guarantee its cleanup runs no
-matter how the block exits. LDP3 gives you two scoped tools for that, and both share
+matter how the block exits. Polaron gives you two scoped tools for that, and both share
 RAII's iron guarantee: **they run on normal exit and on exception unwind alike.**
 
 **`defer`** schedules a block to run when the enclosing scope ends:
 
-```ldp3
+```polaron
 public method processFile(String path) returns void {
     File f = new File(path) on heap;
     defer { delete f; }        // runs at scope exit, even if read() throws
@@ -420,7 +420,7 @@ across a long method with many exit points.
 Multiple `defer`s run in **LIFO order** — last deferred, first run — mirroring
 destructor order, so nested resources unwind in the correct sequence:
 
-```ldp3
+```polaron
 defer { System.IO.Console.println("deferred 1"); }
 defer { System.IO.Console.println("deferred 2"); }
 System.IO.Console.println("body");
@@ -431,7 +431,7 @@ System.IO.Console.println("body");
 runs the block, and disposes the resource at the closing brace — running its destructor
 and, for a heap resource, freeing it:
 
-```ldp3
+```polaron
 using (Resource r = new Resource(3) on heap) {
     System.IO.Console.println("inside using");
 }   // r is disposed here: ~Resource() runs, then the heap block is freed
@@ -443,7 +443,7 @@ too, so a throw inside the block still releases the resource before unwinding on
 
 The three mechanisms — destructors, `defer`, `using` — are one idea seen from three angles:
 *cleanup is attached to a scope, ordered LIFO, and guaranteed on every exit.* Together
-they mean that in idiomatic LDP3 you write very little explicit cleanup, and the cleanup
+they mean that in idiomatic Polaron you write very little explicit cleanup, and the cleanup
 you do write cannot be skipped.
 
 ---
@@ -456,12 +456,12 @@ at the same time — a parse tree, a frame of a simulation, every entity in a le
 don't want thousands of separate frees. You want to allocate them all in one arena and
 throw the arena away in a single stroke. That's a **region**.
 
-`region` is a primitive type in LDP3, on the same footing as `int` or `boolean`. A region
+`region` is a primitive type in Polaron, on the same footing as `int` or `boolean`. A region
 owns a slab of memory and hands out pieces of it with a trivial *bump* — advance a pointer,
 that's the whole allocation. You create one with the `itself` self-reference and an
 amount expressed in real units:
 
-```ldp3
+```polaron
 import System.Memory.Units.kilobytes;
 
 region pen = itself.allocate(1 kilobytes);
@@ -480,7 +480,7 @@ Objects placed with `new T() in region r` do **not** get individually freed. The
 region is released at once — either automatically when its scope ends (region RAII, the
 same discipline as stack objects), or explicitly:
 
-```ldp3
+```polaron
 release region pen;   // frees the whole arena at once; destructors of its objects run
 ```
 
@@ -494,7 +494,7 @@ request through the OS every iteration.
 Regions can also enforce **what may live in them**, via `accepts` and `rejects` — chained
 onto the allocation and validated by the type system:
 
-```ldp3
+```polaron
 region pen = itself.allocate(1 kilobytes).accepts({Dog});
 Dog* d = new Dog(42) in region pen;     // OK: Dog is accepted
 // putting a Cat in `pen` is a compile error (and a runtime exception if only known dynamically)
@@ -505,7 +505,7 @@ region io = itself.allocate(8 kilobytes).rejects({String});
 A region can be a **class field**, so an object owns its own arena for the objects it
 manages:
 
-```ldp3
+```polaron
 public class Pool {
     public region arena;
     public constructor Pool() { this.arena = itself.allocate(1 kilobytes); }
@@ -520,24 +520,24 @@ This is the basis for memory-mapped I/O in freestanding code — a VGA text buff
 device register — where objects must live at an address the hardware dictates. Releasing
 such a region frees only its small header; it never touches the fixed memory itself.
 
-```ldp3
+```polaron
 import System.Memory.Units.bytes;
 
 region hw = itself.at(0xB8000, 4000 bytes).accepts({VGAChar});
 // objects placed in `hw` land at the hardware address; ideal for MMIO
 ```
 
-Regions are LDP3's answer to "GC-like ergonomics without a GC": batch the lifetime, and a
+Regions are Polaron's answer to "GC-like ergonomics without a GC": batch the lifetime, and a
 whole graph of objects becomes as cheap to reclaim as a single free.
 
 ### 5.7.1 Region flavors
 
 The plain `region` above is a **bump** allocator: allocation just advances a cursor, and
 nothing is reclaimed piecemeal — the whole slab goes back at once. That is the right shape
-for "everything dies together," but not every arena has that shape. LDP3 lets you pick the
+for "everything dies together," but not every arena has that shape. Polaron lets you pick the
 allocator's *flavor* by writing a soft keyword **before** `region`:
 
-```ldp3
+```polaron
 region a = itself.allocate(64 kilobytes);              // bump (the default)
 pool region b = itself.allocate(64 kilobytes);         // free-list
 stack region c = itself.allocate(64 kilobytes);        // mark / rollback (LIFO)
@@ -566,14 +566,14 @@ a flavor keyword only qualifies a `region` (`pool int x` is an error).
 when the current one fills instead of failing the allocation (a ring is inherently bounded,
 so `growable ring` is rejected):
 
-```ldp3
+```polaron
 growable pool region g = itself.allocate(256 bytes);   // grows in 256-byte blocks as needed
 ```
 
 Flavors work on **region fields**, too — the pattern behind Forge's terminal pool, where a
 long-lived object churns short-lived ones through its own free list:
 
-```ldp3
+```polaron
 public class Kennel {
     private pool region den;
     public constructor Kennel() { this.den = itself.allocate(4 kilobytes); }
@@ -594,7 +594,7 @@ public class Kennel {
 - **`extract x from region r`** — moves `x` *out* of the region onto the heap (a deep
   relocation) and returns the new heap pointer, which you must bind:
 
-  ```ldp3
+  ```polaron
   pool region kennel = itself.allocate(2 kilobytes);
   Dog* d = new Dog(7) in region kennel;
   Dog* out = extract d from region kennel;   // relocate to the heap; the kennel slot is reclaimed
@@ -610,7 +610,7 @@ public class Kennel {
 A `stack` region reclaims in LIFO order. Take a **`checkpoint`** with `mark`, allocate scratch,
 then `rollback` to that checkpoint to free everything since — destructors run in reverse:
 
-```ldp3
+```polaron
 stack region tmp = itself.allocate(1 megabytes);
 checkpoint m = mark of region tmp;   // remember the cursor
 Node* scratch = new Node(1) in region tmp;
@@ -629,7 +629,7 @@ time.
 
 Value semantics is a fine default, but some things must **not** be copied. A file handle,
 a socket, a mutex guard, a GPU buffer — duplicating one of these is either meaningless or
-actively dangerous (two owners closing the same file). For these, LDP3 lets you declare an
+actively dangerous (two owners closing the same file). For these, Polaron lets you declare an
 **ownership discipline** on the class itself, and then proves the rules at *compile time*.
 The discipline is part of the type's contract: anyone using your class learns the rules by
 reading its declaration, not its documentation.
@@ -644,7 +644,7 @@ Ownership moves from one variable to another with the explicit `move` keyword, a
 source variable is *invalidated* by the move — the compiler tracks it and rejects any
 later use:
 
-```ldp3
+```polaron
 public movable class Connection {
     public mutable int id;
     public constructor Connection(int id) { this.id = id; }
@@ -661,16 +661,16 @@ value can land**, not only at a variable: a field, a call argument and a return 
 three ways a value outlives the method it was written in, so they are exactly where it
 matters most.
 
-```ldp3
-this.held = c;        // error[LDP3-0404]: field 'held' needs an explicit 'move' (move c)
-this.keep(c);         // error[LDP3-0404]: the parameter of 'keep' needs an explicit move
-return c;             // error[LDP3-0404]: this return needs an explicit 'move'
+```polaron
+this.held = c;        // error[Polaron-0404]: field 'held' needs an explicit 'move' (move c)
+this.keep(c);         // error[Polaron-0404]: the parameter of 'keep' needs an explicit move
+return c;             // error[Polaron-0404]: this return needs an explicit 'move'
 ```
 
 A moved-from variable is not garbage you must tiptoe around; it is simply *empty*, and you
 can bring it back to life by reassigning it:
 
-```ldp3
+```polaron
 mutable Connection c = new Connection(1) on heap;
 for (int i in 0..10) {
     consume(move c);                    // c is moved out...
@@ -684,7 +684,7 @@ move (the `move` keyword is optional but recommended for clarity), and passing a
 value by value to two places, or storing it in a container that would duplicate it, is
 rejected at compile time.
 
-```ldp3
+```polaron
 public unique class FileHandle {
     public constructor FileHandle(string path) { /* open */ }
 }
@@ -698,7 +698,7 @@ move a single field out of an object, because that would leave the parent in a h
 state. A `partitionable` class permits it for its `movable`/`unique` fields; the compiler
 then tracks each field's state independently:
 
-```ldp3
+```polaron
 public partitionable class Connection {
     public movable Socket socket;
     public mutable Config config;
@@ -725,12 +725,12 @@ run, so ownership transfer never causes a double-free. All of this happens durin
 compilation and produces no runtime checks, no reference counts, no hidden flags:
 **ownership safety is zero-cost.** Contrast C++, where `std::move` is a cast that doesn't
 actually move anything and leaves the source "valid but unspecified" — a fertile source of
-silent bugs. LDP3 makes the state real and checks it.
+silent bugs. Polaron makes the state real and checks it.
 
 `move` is a small family of operations, not just variable-to-variable transfer. It also
 moves objects **between regions** without logically reallocating them:
 
-```ldp3
+```polaron
 Car* c2 = move c1 from region staging to region production carrying persistents;
 // c1's object now lives in production; staging can be released and c2 survives
 ```
@@ -738,7 +738,7 @@ Car* c2 = move c1 from region staging to region production carrying persistents;
 And `cascade move` transfers an object *and the entire graph it owns* from one region to
 another — promote a whole subtree from a scratch arena to a permanent one in one statement:
 
-```ldp3
+```polaron
 cascade move tree from region old to region fresh;   // tree + everything it owns
 release region old;                                   // old is freed; tree lives in fresh
 ```
@@ -746,7 +746,7 @@ release region old;                                   // old is freed; tree live
 `move` also appears **in a signature**, on a parameter or a return type, to say that the
 method takes or gives ownership — for any type, not only a `movable` one:
 
-```ldp3
+```polaron
 public method consume(move Connection c) returns void { ... }
 public method create() returns move Connection { return move c; }
 
@@ -767,7 +767,7 @@ ownership safety at zero cost.
 
 ## 5.9 Persistents and `reattach`: state that outlives its object
 
-The last piece of LDP3's memory model turns the usual object lifetime on its head. A
+The last piece of Polaron's memory model turns the usual object lifetime on its head. A
 **persistent** is a class member whose *lifetime is decoupled from the instance that
 declares it*. It survives its parent object's destructor, and it can **reattach** to a
 new object that occupies the same conceptual slot. Think of it as durable state that a
@@ -785,7 +785,7 @@ two that match on all three share the same persistent. When a variable with a ma
 triple is created again after the previous one was deleted, its persistent fields reattach
 automatically — the new object sees the values that were live before.
 
-```ldp3
+```polaron
 public class Car {
     public eternal persistent mutable int chassi = 0;
     public constructor Car() {}
@@ -804,7 +804,7 @@ public static method bump() returns int {
 ```
 
 The persistent even remains accessible *after* the parent is deleted, through the
-qualified path — it genuinely outlived the object. LDP3's persistents are **in-process**:
+qualified path — it genuinely outlived the object. Polaron's persistents are **in-process**:
 they live for the duration of the program run, keyed by that triple, and reattach in
 memory within the same run.
 
@@ -818,16 +818,16 @@ The one form that needs support is the indexed one (`table[i] = new T()`, §18.5
 by slot at runtime. Freestanding gets a **fixed** registry rather than the hosted growing one: no
 allocator is involved, blocks come from one static arena so an address stays stable for the whole
 run, and exhausting either the slot table or the arena is a panic that names the limit. Raise
-`LDP3_FS_PERSIST_SLOTS` or `LDP3_FS_PERSIST_ARENA` if a program needs more. A bound you can see
+`POLARON_FS_PERSIST_SLOTS` or `POLARON_FS_PERSIST_ARENA` if a program needs more. A bound you can see
 is worth more in a kernel than a table that quietly grows.
 
-Because a persistent that nobody ever releases is a memory leak by construction, LDP3
+Because a persistent that nobody ever releases is a memory leak by construction, Polaron
 enforces a **release obligation at compile time**. A non-`eternal` persistent must have a
 `release persistent` somewhere in the program, or compilation fails with an error telling
 you to either release it, mark it `eternal`, or annotate that release is delegated
 elsewhere:
 
-```ldp3
+```polaron
 public class Cache {
     public persistent mutable int slot = 0;    // non-eternal: must be released
     public constructor Cache() {}
@@ -856,7 +856,7 @@ program, no explicit cleanup required.*
 Persistents interact with everything else in this chapter. They can be disambiguated by
 region with `of region`, they follow (or don't) an object across a `move` via the
 `carrying` / `leaving` / `releasing` qualifiers, and they can be placed in a named region
-at declaration. They are the most advanced corner of LDP3's memory model — reach for them
+at declaration. They are the most advanced corner of Polaron's memory model — reach for them
 when you have state whose lifetime honestly doesn't match any single object, and let the
 default value semantics handle everything else.
 
@@ -884,4 +884,4 @@ Step back and the whole design reads as one coherent stance on memory:
 
 No garbage collector, no hidden pauses, no mystery about when memory is reclaimed — and
 yet, in the code you write most of the time, almost no manual bookkeeping. That balance —
-determinism without drudgery — is the heart of LDP3.
+determinism without drudgery — is the heart of Polaron.

@@ -1,0 +1,47 @@
+import System.IO.Console;
+program GenericInvariantEnforced;
+
+// A GENERIC CLASS KEEPS ITS CONTRACTS WHEN IT IS INSTANTIATED.
+//
+// It did not. `cloneClass` in monomorphize.cpp copied eighteen things about a class and forgot the
+// nineteenth: `invariants`. So `Box<K,V>` declared its clauses and `Box$int$int` -- the class every
+// program actually links -- had none, and nothing checked them at any exit. The stdlib's `HashMap`
+// declares five, including that its three parallel arrays stay the length of the declared capacity;
+// none of them had ever run.
+//
+// The same failure as `cloneMember` dropping `isExtern`: a clone that copies almost everything, and
+// the omission is silent because what goes missing is a CHECK.
+//
+// Must fail with: contract 'invariant' failed
+public bundle Main {
+    public namespace App {
+        public class Box<T> {
+            invariant this.count >= 0;
+            public mutable int count;
+            public mutable T[] items;
+
+            public constructor Box() {
+                this.count = 0;
+                this.items = new T[4]();
+            }
+
+            // Breaks the invariant deliberately. The check runs at the exit of this method, so the
+            // program stops here rather than carrying a negative count into whatever came next.
+            public method corrupt() returns void {
+                this.count = 0 - 1;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box<int>* b = new Box<int>() on heap;
+                System.IO.Console.printf("built %d\n", b.count);
+                b.corrupt();
+                System.IO.Console.printf("unreachable %d\n", b.count);
+                delete b;
+                return;
+            }
+        }
+    }
+}

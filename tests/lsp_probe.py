@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Drive ldp3-lsp over the real LSP protocol and check what it answers.
+"""Drive polaron-lsp over the real LSP protocol and check what it answers.
 
 The unit tests cover the JSON layer; this covers the server as a PROCESS -- headers, request
 dispatch, and the shape of the replies -- which is what an editor actually talks to. Run as:
 
-    python lsp_probe.py <path-to-ldp3-lsp>
+    python lsp_probe.py <path-to-polaron-lsp>
 
 Exits non-zero on the first mismatch, printing what was expected and what came back.
 """
@@ -34,9 +34,9 @@ public bundle main {
 }
 """
 
-URI = "file:///demo.ldp3"
+URI = "file:///demo.pol"
 
-# A two-file workspace. `user.ldp3` calls a method it does not declare, so answering about it at
+# A two-file workspace. `user.pol` calls a method it does not declare, so answering about it at
 # all requires the workspace index rather than the open buffer.
 CALC_SRC = """program Demo;
 public bundle main {
@@ -143,13 +143,13 @@ def single_document(exe):
 
 def across_files(exe):
     """Definition, hover, references and rename reaching a file the editor never opened."""
-    ws = tempfile.mkdtemp(prefix="ldp3lsp")
+    ws = tempfile.mkdtemp(prefix="polaronlsp")
     try:
-        for name, text in (("calc.ldp3", CALC_SRC), ("user.ldp3", USER_SRC)):
+        for name, text in (("calc.pol", CALC_SRC), ("user.pol", USER_SRC)):
             with open(os.path.join(ws, name), "w", encoding="utf-8") as f:
                 f.write(text)
         root = "file:///" + ws.replace("\\", "/")
-        user = root + "/user.ldp3"
+        user = root + "/user.pol"
 
         proc = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         send, read = channel(proc)
@@ -163,12 +163,12 @@ def across_files(exe):
               "params": {"textDocument": {"uri": user, "text": USER_SRC}}})
         read()
 
-        # Line 6 of user.ldp3 calls addTwo, which only calc.ldp3 declares.
+        # Line 6 of user.pol calls addTwo, which only calc.pol declares.
         pos = {"textDocument": {"uri": user}, "position": {"line": 6, "character": 26}}
         send({"jsonrpc": "2.0", "id": 2, "method": "textDocument/definition", "params": pos})
         target = read()["result"]
-        check("cross-file definition lands in calc.ldp3",
-              os.path.basename(target["uri"]) if target else None, "calc.ldp3")
+        check("cross-file definition lands in calc.pol",
+              os.path.basename(target["uri"]) if target else None, "calc.pol")
         check("cross-file definition line", target["range"]["start"]["line"], 4)
 
         send({"jsonrpc": "2.0", "id": 3, "method": "textDocument/hover", "params": pos})
@@ -179,14 +179,14 @@ def across_files(exe):
         send({"jsonrpc": "2.0", "id": 4, "method": "textDocument/references", "params": pos})
         refs = read()["result"]
         check("references span both files",
-              sorted(os.path.basename(r["uri"]) for r in refs), ["calc.ldp3", "user.ldp3"])
+              sorted(os.path.basename(r["uri"]) for r in refs), ["calc.pol", "user.pol"])
 
         renaming = dict(pos)
         renaming["newName"] = "sum"
         send({"jsonrpc": "2.0", "id": 5, "method": "textDocument/rename", "params": renaming})
         changes = read()["result"]["changes"]
         check("rename edits both files",
-              sorted(os.path.basename(u) for u in changes), ["calc.ldp3", "user.ldp3"])
+              sorted(os.path.basename(u) for u in changes), ["calc.pol", "user.pol"])
         check("rename carries the new name",
               list(changes.values())[0][0]["newText"], "sum")
 
@@ -200,7 +200,7 @@ def across_files(exe):
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("usage: lsp_probe.py <path-to-ldp3-lsp>")
+        print("usage: lsp_probe.py <path-to-polaron-lsp>")
         return 2
     single_document(sys.argv[1])
     across_files(sys.argv[1])

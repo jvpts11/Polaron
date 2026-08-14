@@ -1,0 +1,20 @@
+import System.IO.Console;
+import layoutlib.shapes.Tick;
+import layoutlib.shapes.Maker;
+program LayoutApp;
+
+// Reads the fields of a struct the BUNDLE built and arranged. The consumer only agrees with the
+// bundle if its own copy of `Tick` was ordered the same way -- which requires the header to say the
+// struct implements a layout. Prints: flag = 1, when = 1000, kind = 2, value = 77
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Tick t = Maker.make();
+                System.IO.Console.printf("flag = %d, when = %d, kind = %d, value = %d\n",
+                                         cast<int>(t.flag), t.when, cast<int>(t.kind), t.value);
+                return;
+            }
+        }
+    }
+}

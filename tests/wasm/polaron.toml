@@ -1,0 +1,17 @@
+[polaron_project]
+
+[program]
+name = "wasmmod"
+version = "0.1.0"
+language_version = "1.0"
+entry = "src/main.pol"
+
+[build]
+output = "build-output/"
+
+# There is no [freestanding] load_address or boot stub here, and there is no linker script: a
+# WebAssembly module carries its own memory declaration and is entered by its host calling an exported
+# method. polaron build picks wasm-ld for this target instead of ld.lld, which rejects wasm objects
+# outright ("unknown file type").
+[freestanding]
+target = "wasm32-unknown-unknown"

@@ -1,0 +1,31 @@
+import System.Runtime.UnimportedTypeException;
+import System.IO.Console;
+program UnimportTimeout;
+
+// `unimport X timeout(<duration>)` (spec 30.6) parses; unimport is in-process so the timeout is a
+// no-op. The unimport itself still rips the class. Prints:
+//   before
+//   new caught
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public constructor Dog() {}
+            public method bark() returns void { System.IO.Console.println("Woof!"); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Dog a = new Dog() on heap;
+                System.IO.Console.println("before");
+                delete a;   // the rip is refused while an instance is alive
+                unimport Dog timeout(milliseconds(5000));
+                try {
+                    Dog b = new Dog() on heap;
+                    System.IO.Console.println("should not reach");
+                } catch (UnimportedTypeException e) {
+                    System.IO.Console.println("new caught");
+                }
+                return;
+            }
+        }
+    }
+}

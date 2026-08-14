@@ -1,0 +1,22 @@
+import System.IO.Console;
+import main.geo.Shape;
+program NsCollision;
+
+// Two namespaces in this program each declare a type called `Shape`. That is legal -- namespaces
+// scope type names (the same rule catalog_collision.pol asserts for catalogs) -- and the
+// disambiguation pass renames the collided types to <namespace>__Shape internally. This file
+// imports one of them by its full path, which the import validator must accept: it used to look up
+// only the bare name, find it gone after the rename, and reject a perfectly good import as an
+// "unknown symbol", pointing at an innocent file.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                geo.Shape s = new geo.Shape(7) on stack;
+                phys.Shape p = new phys.Shape(2) on stack;
+                System.IO.Console.println($"geo={s.size()} phys={p.size()}");
+                return;
+            }
+        }
+    }
+}

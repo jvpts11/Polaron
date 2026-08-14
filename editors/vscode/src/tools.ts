@@ -3,24 +3,24 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Locate the ldp3 CLI: the `ldp3.path` setting, else the repo build output under a workspace folder, else the
+// Locate the polaron CLI: the `polaron.path` setting, else the repo build output under a workspace folder, else the
 // bare name resolved via PATH.
-export function ldp3Path(): string {
-  return locate('path', 'ldp3');
+export function polaronPath(): string {
+  return locate('path', 'polaron');
 }
 
-// Locate the low-level compiler ldp3c, similarly.
-export function ldp3cPath(): string {
-  return locate('compilerPath', 'ldp3c');
+// Locate the low-level compiler polc, similarly.
+export function polcPath(): string {
+  return locate('compilerPath', 'polc');
 }
 
-// Locate the ldp3-lsp language server, similarly.
-export function ldp3LspPath(): string {
-  return locate('lspPath', 'ldp3-lsp');
+// Locate the polaron-lsp language server, similarly.
+export function polaronLspPath(): string {
+  return locate('lspPath', 'polaron-lsp');
 }
 
 function locate(settingKey: string, exe: string): string {
-  const configured = vscode.workspace.getConfiguration('ldp3').get<string>(settingKey);
+  const configured = vscode.workspace.getConfiguration('polaron').get<string>(settingKey);
   if (configured && configured.trim().length > 0) {
     return configured;
   }
@@ -48,7 +48,7 @@ function findInWorkspace(exe: string): string | undefined {
   return undefined;
 }
 
-// The working directory a command should run in: the active file's folder (ldp3 walks up to the manifest),
+// The working directory a command should run in: the active file's folder (polaron walks up to the manifest),
 // else the first workspace folder.
 export function projectCwd(): string | undefined {
   const doc = vscode.window.activeTextEditor?.document;

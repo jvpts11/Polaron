@@ -1,0 +1,60 @@
+import System.IO.Console;
+program TransformerCollective;
+
+// `collective` -- the 1 -> N relation. `mutual` says a PAIR is symmetric; `collective` says the
+// types that apply the transformer form ONE transformation set, so each of them can become any of
+// the others.
+//
+// What makes that affordable rather than N-squared is COMPOSITION: the conversions written are
+// edges, and the compiler completes the graph along them. Here three types are related by three
+// procedures in a cycle -- Celsius -> Fahrenheit -> Kelvin -> Celsius -- and every one of the six
+// conversions works. The three that were never written are composed along the unique shortest path.
+//
+// That is what removes the patterns this shape is usually built with: the canonical pivot type
+// everything converts through IS a path through this graph, so it stops being something to write.
+
+public bundle Main {
+    public namespace App {
+        public collective transformer TScaler {
+            public procedure into<each Other>() returns Other;
+        }
+
+        public class Celsius applies TScaler {
+            public mutable int degrees;
+            public constructor Celsius(int d) { this.degrees = d; }
+            public procedure into<Fahrenheit>() returns Fahrenheit {
+                return new Fahrenheit(itself.degrees * 9 / 5 + 32);
+            }
+        }
+
+        public class Fahrenheit applies TScaler {
+            public mutable int degrees;
+            public constructor Fahrenheit(int d) { this.degrees = d; }
+            public procedure into<Kelvin>() returns Kelvin {
+                return new Kelvin((itself.degrees - 32) * 5 / 9 + 273);
+            }
+        }
+
+        public class Kelvin applies TScaler {
+            public mutable int degrees;
+            public constructor Kelvin(int d) { this.degrees = d; }
+            public procedure into<Celsius>() returns Celsius {
+                return new Celsius(itself.degrees - 273);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Celsius c = new Celsius(100);
+                // Written: Celsius -> Fahrenheit.
+                Fahrenheit f = c.into<Fahrenheit>();
+                // COMPOSED: Celsius -> Kelvin goes through Fahrenheit, and nobody wrote it.
+                Kelvin k = c.into<Kelvin>();
+                // COMPOSED the other way round: Kelvin -> Fahrenheit through Celsius.
+                Fahrenheit back = k.into<Fahrenheit>();
+                System.IO.Console.printf("%d %d %d\n", f.degrees, k.degrees, back.degrees);
+                return;
+            }
+        }
+    }
+}

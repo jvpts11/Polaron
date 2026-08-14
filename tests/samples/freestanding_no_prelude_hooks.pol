@@ -1,0 +1,19 @@
+// A freestanding program with NOTHING in it. The point is what must not be in the image.
+//
+// `onClassLoad` hooks are called from the entry, and that call is what keeps a hook alive: it is
+// emitted before dead-stripping, so a prelude class nobody touches stops being dead the moment the
+// entry calls it. The prelude's `Test` is the only class in it with a hook, its body assigns two
+// static `String`s, and a String store lowers to `__polaron_str_copy` / `__polaron_str_free` -- symbols
+// no bare-metal image has.
+//
+// The failure was not a wrong answer. It was a LINK error in somebody else's kernel naming two
+// symbols they never wrote, on a program whose whole source is these eleven lines.
+program FreestandingNoPreludeHooks freestanding;
+
+public bundle Kernel {
+    public namespace Boot {
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

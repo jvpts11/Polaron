@@ -1,17 +1,17 @@
-# Installs the LDP3 toolchain for the current user (no admin needed): copies the binaries to a per-user
-# programs directory and puts it on the user PATH. LDP3 links final executables with clang, so this
+# Installs the Polaron toolchain for the current user (no admin needed): copies the binaries to a per-user
+# programs directory and puts it on the user PATH. Polaron links final executables with clang, so this
 # checks for LLVM/clang and points you at it if it is missing (the toolchain does not bundle clang).
-#   install.ps1                 install to %LOCALAPPDATA%\Programs\ldp3 and update PATH
-#   install.ps1 -Prefix D:\ldp3 install elsewhere
+#   install.ps1                 install to %LOCALAPPDATA%\Programs\polaron and update PATH
+#   install.ps1 -Prefix D:\polaron install elsewhere
 #   install.ps1 -NoPath         install but leave PATH untouched
 param(
-    [string]$Prefix = (Join-Path $env:LOCALAPPDATA "Programs\ldp3"),
+    [string]$Prefix = (Join-Path $env:LOCALAPPDATA "Programs\polaron"),
     [switch]$NoPath
 )
 $ErrorActionPreference = "Stop"
 
 $src   = $PSScriptRoot   # the unpacked bundle holds this script next to the binaries
-$files = @("ldp3.exe", "ldp3c.exe", "ldp3-studio.exe", "ldp3-lsp.exe", "ldp3_rt.lib")
+$files = @("polaron.exe", "polc.exe", "polaron-studio.exe", "polaron-lsp.exe", "polaron_rt.lib")
 
 New-Item -ItemType Directory -Path $Prefix -Force | Out-Null
 foreach ($f in $files) {
@@ -34,12 +34,12 @@ if (-not $NoPath) {
 }
 
 $clang = Get-Command clang -ErrorAction SilentlyContinue
-if (-not $clang -and -not $env:LDP3_CLANG) {
-    Write-Warning ("clang was not found. LDP3 links with clang; install LLVM from " +
-        "https://github.com/llvm/llvm-project/releases or set LDP3_CLANG to your clang.exe.")
+if (-not $clang -and -not $env:POLARON_CLANG) {
+    Write-Warning ("clang was not found. Polaron links with clang; install LLVM from " +
+        "https://github.com/llvm/llvm-project/releases or set POLARON_CLANG to your clang.exe.")
 } else {
-    $where = if ($clang) { $clang.Source } else { $env:LDP3_CLANG }
+    $where = if ($clang) { $clang.Source } else { $env:POLARON_CLANG }
     Write-Host "found clang: $where"
 }
 Write-Host ""
-Write-Host "done. In a new terminal try:  ldp3 --version   ldp3 new hello   ldp3-studio"
+Write-Host "done. In a new terminal try:  polaron --version   polaron new hello   polaron-studio"

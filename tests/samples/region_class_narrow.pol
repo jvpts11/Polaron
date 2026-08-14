@@ -1,0 +1,103 @@
+﻿import System.IO.Console;
+program RegionClassNarrow;
+
+// THE NARROW `A*`: the reason a region class insists every instance lives in its own region.
+//
+// Every `Node` is in Node's arena and nowhere else -- `on heap` and `in region other` are refused --
+// so one contiguous reservation holds all of them and a `Node*` is fully described by its OFFSET from
+// that base. An offset fits in 32 bits. Measured on this very class, against the identical one
+// declared without `region` and allocated `on heap`:
+//
+//     without: %class.Node = type { ptr, i32, i32, ptr, ptr }    32 bytes
+//     with:    %class.Node = type { ptr, i32, i32, i32, i32 }    24 bytes
+//
+// A quarter off the node, so a third again as many per cache line -- and a tree walk is bounded by
+// cache misses rather than by arithmetic, which makes that a step change rather than a percentage.
+// (The vtable pointer is the reason it is not a third: the two `int`s and the two children are 24 of
+// the 32.) It is also the one thing a C programmer cannot copy for free: rewriting a structure as
+// `uint32_t` indices costs the type checking, the destructors and the readability. Here `Node*` still
+// reads as a pointer.
+//
+// What this test actually pins down, because none of it fails loudly:
+//   - a null child round-trips as null (offset 0 is never handed out, so 0 can mean null)
+//   - a stored child reads back as the SAME object, through two levels
+//   - the walk still visits everything in order
+//
+// Prints: 1 2 3 4 5 6 7 / root=4 leftmost=1 rightmost=7 / missing=0
+public bundle Main {
+    public namespace App {
+
+        public region class Node {
+            public mutable int key;
+            public mutable int value;
+            // These two are the narrow ones.
+            public mutable nullable Node* left;
+            public mutable nullable Node* right;
+
+            public constructor Node(int key, int value) {
+                this.key = key;
+                this.value = value;
+                this.left = null;
+                this.right = null;
+            }
+
+            public method insert(int k, int v) returns void {
+                if (k < this.key) {
+                    if (this.left == null) { this.left = new Node(k, v); }
+                    else { this.left.insert(k, v); }
+                } else {
+                    if (this.right == null) { this.right = new Node(k, v); }
+                    else { this.right.insert(k, v); }
+                }
+                return;
+            }
+
+            public method inOrder() returns void {
+                if (this.left != null) { this.left.inOrder(); }
+                System.IO.Console.printf("%d ", this.value);
+                if (this.right != null) { this.right.inOrder(); }
+                return;
+            }
+
+            public method leftmost() returns int {
+                if (this.left == null) { return this.key; }
+                return this.left.leftmost();
+            }
+
+            public method rightmost() returns int {
+                if (this.right == null) { return this.key; }
+                return this.right.rightmost();
+            }
+
+            public method find(int k) returns int {
+                if (k == this.key) { return this.value; }
+                if (k < this.key) {
+                    if (this.left == null) { return 0; }
+                    return this.left.find(k);
+                }
+                if (this.right == null) { return 0; }
+                return this.right.find(k);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* root = new Node(4, 4);
+                root.insert(2, 2);
+                root.insert(6, 6);
+                root.insert(1, 1);
+                root.insert(3, 3);
+                root.insert(5, 5);
+                root.insert(7, 7);
+                root.inOrder();
+                System.IO.Console.printf("/ root=%d leftmost=%d rightmost=%d ",
+                                         root.value, root.leftmost(), root.rightmost());
+                // A key that is not there walks to a null child and must come back 0 rather than
+                // dereferencing offset 0 as if it were the arena's first object.
+                System.IO.Console.printf("/ missing=%d\n", root.find(99));
+                return;
+            }
+        }
+    }
+}
+

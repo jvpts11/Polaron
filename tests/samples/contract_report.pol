@@ -1,0 +1,52 @@
+import System.IO.Console;
+
+// WHAT A VIOLATED CONTRACT SAYS (spec 29).
+//
+// A contract that fails is about to stop the program, so the message it leaves behind is the whole
+// of what the programmer gets. It used to be `contract violated: requires` and nothing else -- no
+// clause, no place, no method, no values -- which in a file with several contracts is a bisection
+// rather than a diagnostic, and reads as far worse than the compile-time errors beside it.
+//
+// This program violates one deliberately. The test pins every part of what comes out:
+//
+//   contract violated: requires
+//     --> <path>/contract_report.pol:<line>:<col>  in Gate.admit
+//      |  requires seats >= wanted
+//      |  left = 4, right = 9
+program ContractReport;
+
+public bundle main {
+    public namespace app {
+
+        public class Gate {
+            private mutable int seats;
+
+            public constructor Gate(int howMany) {
+                this.seats = howMany;
+            }
+
+            // The clause names two things the caller cannot see from outside, which is exactly when
+            // the values in the message earn their place.
+            public method admit(int wanted) returns void
+                requires this.seats >= wanted
+            {
+                this.seats = this.seats - wanted;
+                return;
+            }
+
+            public method left() returns int {
+                return this.seats;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Gate g = new Gate(4) on stack;
+                System.IO.Console.println($"seats {g.left()}");
+                g.admit(9);                       // 4 >= 9 is false: this is the last line that runs
+                System.IO.Console.println("not reached");
+                return;
+            }
+        }
+    }
+}

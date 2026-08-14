@@ -3,7 +3,7 @@
 #include "lexer/lexer.h"
 #include "parser/parser.h"
 
-using namespace ldp3;
+using namespace polaron;
 
 namespace {
 const char* kHello =

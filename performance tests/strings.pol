@@ -1,0 +1,31 @@
+import System.IO.Console;
+import System.Text.StringBuilder;
+program Strings;
+
+// String building and comparison -- the commonest thing a real program does that the numeric
+// benchmarks never touch. Builds N strings through a StringBuilder, concatenates, compares, and
+// checksums the result so nothing can be optimized away.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int n = 200000;
+                mutable int acc = 0;
+                for (mutable int i = 0; i < n; i++) {
+                    StringBuilder* sb = new StringBuilder() on heap;
+                    sb.append("item-");
+                    sb.appendInt(i);
+                    sb.append("-of-");
+                    sb.appendInt(n);
+                    String s = sb.toString();
+                    acc = (acc + s.length()) % 1000000007;
+                    if (s.compareTo("item-0-of-200000") == 0) { acc = (acc + 7) % 1000000007; }
+                    delete sb;
+                }
+                System.IO.Console.printf("acc=%d\n", acc);
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,22 @@
+import System.IO.Console;
+import System.Security.Digest;
+import System.Time.Date;
+program DigestDate;
+
+// Checksums and calendar dates (spec 4 / 34): CRC-32 and FNV-1a over bytes, and Date with leap rules,
+// epoch-day conversion, day of week, and date arithmetic.
+// Prints: crc=891568578 fnv=440920331 leap=1 feb=29 epoch=10957 dow=6 add=2000-2-1.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Date a = new Date(2000, 1, 1) on heap;
+                Date b = a.addDays(31);
+                System.IO.Console.printf("crc=%d fnv=%d leap=%d feb=%d epoch=%d dow=%d add=%d-%d-%d\n",
+                    Digest.crc32("abc"), Digest.fnv1a("abc"), Date.isLeap(2024), Date.daysInMonth(2024, 2),
+                    a.toEpochDay(), a.dayOfWeek(), b.year(), b.month(), b.day());
+                return;
+            }
+        }
+    }
+}

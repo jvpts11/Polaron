@@ -1,0 +1,24 @@
+program TransformerSubjectBad;
+
+// THE SUBJECT RULE. An action lives in a method or a procedure and both have a subject; an instance
+// procedure has its subject in the receiver, and a static one has to name it.
+//
+// This is the same rule that turned namespace-level `static_assert` into `demand`: an imperative
+// about nothing in particular, sitting where only declarations belong. `max` here names no subject
+// at all, so it is `static_assert` in a new suit and the transformer is not where it goes.
+public bundle Main {
+    public namespace App {
+        public transformer TMaker {
+            public static procedure max(int a, int b) returns int { return a > b ? a : b; }
+            public procedure tag() returns int;
+        }
+
+        public class Box applies TMaker {
+            public procedure tag() returns int { return 1; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

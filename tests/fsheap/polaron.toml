@@ -1,0 +1,23 @@
+[polaron_project]
+
+[program]
+name = "fsheap"
+version = "0.1.0"
+language_version = "1.0"
+entry = "src/main.pol"
+
+[build]
+output = "build-output/"
+
+# A bare-metal program WITH ITS OWN `heap class`, which is the combination nothing linked.
+#
+# Every freestanding test in the suite either checked the IR or booted an image with no heap at all,
+# so the one interaction that fails at LINK -- codegen defining `__polaron_malloc` from the program's
+# heap class while the driver supplied a second definition -- was invisible to all of them. It cost
+# the pico kernel its whole build, and the suite was green.
+#
+# No boot protocol and no QEMU: the claim is that it LINKS, and an ELF is where the duplicate would
+# surface. That keeps the test cheap enough to run everywhere rather than where an emulator exists.
+[freestanding]
+target = "x86_64-unknown-none-elf"
+load_address = "1M"

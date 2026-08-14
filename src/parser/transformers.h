@@ -2,7 +2,7 @@
 
 #include "parser/ast.h"
 
-namespace ldp3 {
+namespace polaron {
 
 // Expands every `applies` clause: the transformer's members are copied into the type that applies
 // it, with `itself` substituted for that type's name.
@@ -16,4 +16,4 @@ namespace ldp3 {
 // name the author wrote. Returns false if anything was reported.
 bool expandTransformers(ast::Program& program);
 
-}  // namespace ldp3
+}  // namespace polaron

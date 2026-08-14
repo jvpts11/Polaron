@@ -1,0 +1,72 @@
+program NarrowAddress freestanding;
+
+// THE NARROW ADDRESS TYPES, from docs/design/porting.md:
+//
+//     address        64      the address type
+//     half address   32
+//     short address  16      (`short` already means 16)
+//     byte address    8      (`byte` already means 8)
+//
+// `address` does NOT follow the target's pointer width, and that is a decision: a compiler that infers
+// a width is a compiler that can be wrong about one. So `address` is 64 bits everywhere, a `T*` is
+// whatever the target's pointer is, and on a 32-bit machine the narrowing is a `cast` the author
+// wrote. That is what makes 32-bit targets possible without `address` moving -- an i386 is reachable
+// because the rule never bent for it.
+//
+// The three narrow forms are DOMAIN types rather than a portability mechanism. They exist for
+// addresses that genuinely are not the machine's pointer: a real-mode 16-bit offset, a 6502 zero page,
+// a physical address stored narrow inside a hardware structure. Written `uint16` those are
+// indistinguishable from a number, which is the exact confusion `address` was introduced to end -- so
+// they carry the same separation from ordinary integers, which `narrow_address_rule.pol` pins down.
+//
+// Spelled with a width word because `short` and `byte` ALREADY mean 16 and 8. `half` is the only new
+// word, and it is SOFT: special before `address` and an ordinary identifier everywhere else, which the
+// local named `half` below is here to prove.
+//
+// Freestanding, because bare metal is where these are for -- and where turning an integer into an
+// address IS the work.
+public bundle Main {
+    public namespace App {
+
+        // The shape they were designed for: a hardware structure whose fields are addresses that are
+        // not this machine's pointers. Written with `uint16`/`uint8` the intent is lost, and nothing
+        // stops a plain number being stored into one.
+        public class RealModePointer {
+            public mutable shortaddress segment;
+            public mutable shortaddress offset;
+
+            public constructor RealModePointer(shortaddress segment, shortaddress offset) {
+                this.segment = segment;
+                this.offset = offset;
+            }
+
+            // The classic 20-bit computation, and it needs the widening to be explicit at every step.
+            public method linear() returns address {
+                address seg = this.segment;    // narrow widens to wide: allowed, no cast
+                address off = this.offset;
+                return cast<address>(cast<long>(seg) * 16 + cast<long>(off));
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                address a = cast<address>(0x1000);
+                half address h = cast<half address>(a);
+                short address s = cast<short address>(0xB800);
+                byte address z = cast<byte address>(0xFE);
+
+                // `half` as an ordinary name, in the same file that uses it as a type word.
+                int half = 3;
+
+                // Widening within the family needs no cast; narrowing does.
+                address wide = s;
+                half address narrowed = cast<half address>(a);
+
+                RealModePointer* p = new RealModePointer(s, cast<short address>(0x0010)) on heap;
+                address linear = p.linear();
+                delete p;
+                return;
+            }
+        }
+    }
+}

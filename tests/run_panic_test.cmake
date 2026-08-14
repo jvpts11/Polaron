@@ -1,20 +1,20 @@
 # End-to-end "must panic" test driver, invoked via `cmake -P`.
 #
-# Compiles an .ldp3 to a native .exe and runs it, asserting the program TERMINATES WITH A CLEAN PANIC:
+# Compiles an .pol to a native .exe and runs it, asserting the program TERMINATES WITH A CLEAN PANIC:
 # a non-zero exit and a needle in stderr (e.g. "array index out of bounds"). This is the counterpart of
 # run_exe_test.cmake, which requires a zero exit -- here a zero exit is the failure. It exists so the
 # no-UB guards (bounds checks, null-deref traps, double-free guards) can be tested as first-class: a
 # guard that silently corrupts memory instead of panicking is exactly the bug we are guarding against.
 #
-# Required -D args: LDP3C, CLANG, INPUT, PANIC (stderr needle), WORKDIR
+# Required -D args: POLC, CLANG, INPUT, PANIC (stderr needle), WORKDIR
 
 string(MD5 _tag "${INPUT}|${PANIC}")
 set(ll "${WORKDIR}/panic_${_tag}.ll")
 set(exe "${WORKDIR}/panic_${_tag}.exe")
 
-execute_process(COMMAND "${LDP3C}" "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
+execute_process(COMMAND "${POLC}" "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
-    message(FATAL_ERROR "ldp3c failed (exit ${rc})")
+    message(FATAL_ERROR "polc failed (exit ${rc})")
 endif()
 
 get_filename_component(_clangdir "${CLANG}" DIRECTORY)
@@ -32,7 +32,7 @@ else()
     set(_platlibs -lpthread -ldl -lm -lstdc++)
 endif()
 execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}"
-    "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp" -o "${exe}"
+    "${CMAKE_CURRENT_LIST_DIR}/../runtime/polaron_rt.cpp" -o "${exe}"
     ${_platlibs} RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})")

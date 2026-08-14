@@ -1,6 +1,6 @@
 # 4. Values & the Type System
 
-Every value a LDP3 program manipulates has a type, and that type is known at
+Every value a Polaron program manipulates has a type, and that type is known at
 compile time. There is no dynamic typing, no "any", and no silent coercion that
 quietly reinterprets your data behind your back. The compiler knows the exact
 shape and size of every value before the program ever runs, and it uses that
@@ -15,11 +15,11 @@ rules that govern how numbers convert into one another, and then climb up into
 the composite types — records, structs, unions, enums, catalogs — that let you
 give a name and a shape to your own data. Along the way we cover the two string
 types, the `nullable` opt-in, arrays, local type inference with `var`, generics
-and their variance, and finally casting and LDP3's promise that a cast never
+and their variance, and finally casting and Polaron's promise that a cast never
 produces undefined behavior.
 
 A recurring theme is worth stating up front, because it colors every example
-that follows: **assignment in LDP3 is a deep copy, not a shared reference.**
+that follows: **assignment in Polaron is a deep copy, not a shared reference.**
 Writing `b = a` gives `b` its own independent copy of everything `a` holds. When
 you genuinely want two names to point at the same object, you say so explicitly
 with a pointer (`T*`) or a reference (`T&`). Keep this in mind — it is one of the
@@ -31,7 +31,7 @@ structs, records, and full classes alike.
 ## 4.1 The primitive types
 
 Primitives are the atoms: fixed-size values that live in registers or on the
-stack and carry no hidden machinery. LDP3 draws a deliberate line between the
+stack and carry no hidden machinery. Polaron draws a deliberate line between the
 *normal* names you use in everyday application code and the *bit-counted* names
 reserved for freestanding, close-to-the-metal work.
 
@@ -58,7 +58,7 @@ that most of the time you should not have to think about whether an integer is
 default. The unsigned family (`ubyte` … `ulong`) is genuinely unsigned: it wraps
 and compares as an unsigned quantity, not as a signed one wearing a disguise.
 
-```ldp3
+```polaron
 int    count   = 42;
 long   fileSize = 9000000000L;
 ubyte  channel  = 200;      // fits in 0..255
@@ -74,7 +74,7 @@ memory address as a number; you will rarely see it in application code.
 a number is how a program reads memory nobody gave it, so the conversion is written
 down:
 
-```ldp3
+```polaron
 mutable long n = 4096;
 address a = n;                  // error: an address is not a 64-bit integer
 address a = cast<address>(n);   // ...unless you say so
@@ -88,7 +88,7 @@ address instead.
 ### The freestanding-only bit-counted names
 
 You may have seen names like `int32` or `uint8` in other systems languages, and
-LDP3 does have them — but **only in freestanding mode.** The bit-counted family
+Polaron does have them — but **only in freestanding mode.** The bit-counted family
 
 ```
 int8   int16  int32  int64
@@ -101,7 +101,7 @@ parser, the exact number of bits is part of the contract and hiding it would be
 a lie. In normal mode, however, using any of these names is a **compile-time
 error** — the compiler will point you at the normal-mode equivalent:
 
-```ldp3
+```polaron
 int32 x = 5;   // ERROR in normal mode:
                // "type 'int32' exists only in freestanding mode; use 'int'"
 ```
@@ -122,12 +122,12 @@ Normal mode offers four floating-point widths:
 | `double`     | 64   | double precision                         |
 | `quadruple`  | 128  | quad precision                           |
 
-Note the crucial detail that trips up newcomers from other languages: in LDP3,
+Note the crucial detail that trips up newcomers from other languages: in Polaron,
 **`float` is 32 bits and `double` is 64 bits.** They are distinct types, and one
 does not silently become the other. The bit-counted aliases `float32` and
 `float64` are, again, freestanding-only.
 
-```ldp3
+```polaron
 float  ratio = 0.5f;      // 32-bit
 double pi    = 3.14159;   // 64-bit
 ```
@@ -144,7 +144,7 @@ Three more primitives round out the set:
 - **`void`** is the absence of a value; it appears only as the return type of a
   method that produces no result.
 
-```ldp3
+```polaron
 boolean done = false;
 char    grade = 'A';
 
@@ -161,7 +161,7 @@ public method greet() returns void {
 Integer literals may be written in several bases, and an underscore may be used
 freely as a digit separator for readability — it has no effect on the value.
 
-```ldp3
+```polaron
 int decimal = 1_000_000;
 int hex     = 0xFF;        // 255
 int binary  = 0b1010;      // 10
@@ -171,7 +171,7 @@ long big    = 100L;        // the L suffix makes it a long
 Floating-point literals default to `double`; the `f` suffix makes one a `float`
 instead:
 
-```ldp3
+```polaron
 double e  = 2.71828;   // double by default
 float  pi = 3.14f;     // 32-bit because of the f suffix
 ```
@@ -184,7 +184,7 @@ for money and any other domain where the rounding drift of binary floating point
 is unacceptable. Because it is fixed-point, `0.1m + 0.2m` is exactly `0.3m`, not
 the notorious `0.30000000000000004` you would get from `double`.
 
-```ldp3
+```polaron
 Decimal price = 19.99m;
 Decimal tax   = 1.50m;
 Decimal total = price + tax;   // exact: 21.49m
@@ -192,7 +192,7 @@ Decimal total = price + tax;   // exact: 21.49m
 
 ### Size suffixes and user-defined literal suffixes
 
-LDP3 has no dedicated syntax for "kilobytes" or "milliseconds". Instead it offers
+Polaron has no dedicated syntax for "kilobytes" or "milliseconds". Instead it offers
 a single general mechanism — the `comptime literal` function — from which such
 suffixes are built in the standard library and can be built by you. A `comptime
 literal` function takes exactly one argument (the literal it follows) and is
@@ -201,7 +201,7 @@ evaluated entirely at compile time, so the suffix costs nothing at runtime.
 The standard library's `System.Memory.Units` namespace provides six size
 suffixes that all return a `ByteSize`:
 
-```ldp3
+```polaron
 import System.Memory.Units.kilobytes;
 
 region cache = itself.allocate(64 kilobytes);   // expands to kilobytes(64)
@@ -219,13 +219,13 @@ memory chapter for the full rules.
 
 ### Numeric coercion — there is (almost) none
 
-This is the rule that most distinguishes LDP3's arithmetic from C's: **there is
+This is the rule that most distinguishes Polaron's arithmetic from C's: **there is
 no implicit numeric promotion.** Converting between two integer widths, or
 between integer and floating point, requires an explicit `cast<T>` (covered in
 §4.12). The compiler will not quietly widen a `short` to an `int` for you, nor
 truncate a `long` into an `int`.
 
-```ldp3
+```polaron
 long  total  = 5000000000L;
 int   narrow = cast<int>(total);   // explicit narrowing required
 double d     = cast<double>(narrow);
@@ -235,7 +235,7 @@ The one convenience the language does grant is for **compile-time integer
 literals**: a literal that provably fits its target coerces without a cast,
 because the value is known and the fit is provable.
 
-```ldp3
+```polaron
 byte  b = 5;      // OK: 5 fits in a byte
 short s = 300;    // OK: 300 fits in a short
 byte  x = 999;    // ERROR: 999 does not fit in a byte
@@ -254,7 +254,7 @@ an **error** instead, wrap the expression in `checked(...)`, and signed `+`, `-`
 and `*` trap deterministically on overflow. For per-operation control, every integer
 type carries explicit methods:
 
-```ldp3
+```polaron
 int fast = a + b;              // defined two's-complement wrap, no overhead (the default)
 int safe = checked(a * b);     // signed overflow here traps deterministically
 int a = x.wrappingAdd(y);      // explicit wrap
@@ -269,7 +269,7 @@ The full family covers add/sub/mul (and div where meaningful) under each policy.
 
 ## 4.3 `String` versus `string`
 
-LDP3 has two string types, and the capital letter carries real meaning.
+Polaron has two string types, and the capital letter carries real meaning.
 
 - **`String`** (capital S) is the **immutable** string class. Once built, its
   contents never change; any "modification" produces a fresh `String`. Because it
@@ -281,7 +281,7 @@ LDP3 has two string types, and the capital letter carries real meaning.
 Reach for `String` by default; reach for `string` when you are assembling text
 incrementally and mutation is the point.
 
-```ldp3
+```polaron
 String greeting = "hello";     // immutable
 string builder  = "";          // mutable, to be appended to
 ```
@@ -292,7 +292,7 @@ Prefixing a string literal with `$` turns `{ }` into an interpolation hole: the
 expression inside is evaluated and its textual form spliced into the result.
 Without the `$`, braces are just ordinary characters.
 
-```ldp3
+```polaron
 String name = "Ada";
 int    age  = 36;
 String msg  = $"Hello {name}, you are {age} years old";
@@ -308,11 +308,11 @@ the `String` machinery and reads far more clearly than manual concatenation.
 
 ## 4.4 `nullable` types
 
-By default **no type in LDP3 can hold `null`.** A variable of type `Dog` always
+By default **no type in Polaron can hold `null`.** A variable of type `Dog` always
 refers to an actual `Dog`; the possibility of "no dog" simply does not exist for
 it. If you need that possibility, you opt in with the `nullable` modifier:
 
-```ldp3
+```polaron
 Dog          rex = null;   // ERROR: Dog is non-nullable
 nullable Dog rex = null;   // OK: nullable opts the type into null
 ```
@@ -323,13 +323,13 @@ non-nullable target — whether that target is a variable, a field, a parameter,
 a return value. You decide, at each declaration, whether `null` is a legal value
 there; the compiler holds you to it.
 
-```ldp3
+```polaron
 nullable Dog rex = maybeDog();
 Dog          d  = rex;     // ERROR: nullable cannot flow into non-nullable
 nullable Dog r2 = rex;     // OK: nullable -> nullable
 ```
 
-What LDP3 deliberately does **not** have is a flow-sensitive narrowing analysis.
+What Polaron deliberately does **not** have is a flow-sensitive narrowing analysis.
 There is no "if you checked it for null on line 3, the compiler treats it as
 non-null on line 4", no force-unwrap operator, and no borrow-checker-style
 tracking. That machinery is exactly the complexity the language chose to avoid.
@@ -337,13 +337,13 @@ tracking. That machinery is exactly the complexity the language chose to avoid.
 So what happens if you dereference a `nullable` that turns out to be `null` at
 runtime? You get a **deterministic trap** — a clean, defined program halt with a
 message — never undefined behavior and never a silent read through address zero.
-This is consistent with LDP3's broader no-UB principle: dereferencing a nullable
+This is consistent with Polaron's broader no-UB principle: dereferencing a nullable
 is *allowed* (the compiler inserts a null check on the access), and if the value
 is null the program stops predictably instead of corrupting memory. A
 non-nullable value, by construction, can never be null, so dereferencing it costs
 nothing extra. Comparing against `null` with `==` or `!=` is always permitted.
 
-```ldp3
+```polaron
 nullable Dog d = maybeDog();
 int a = d.bark();          // allowed; traps deterministically if d is null
 if (d != null) { }         // comparison is always fine
@@ -353,13 +353,13 @@ if (d != null) { }         // comparison is always fine
 
 ## 4.5 Arrays
 
-Arrays in LDP3 are **dynamic and heap-allocated**. You create one with
+Arrays in Polaron are **dynamic and heap-allocated**. You create one with
 `new T[n]()`, which allocates space for `n` elements on the heap and
 zero-initializes them. Elements are read and written with the familiar `a[i]`
 syntax, the current length is read back with `a.length()`, and the array is
 released with `delete`.
 
-```ldp3
+```polaron
 int[] nums = new int[10]();          // ten zeroed ints on the heap
 for (mutable int i = 0; i < nums.length(); i++) {
     nums[i] = i * i;
@@ -384,7 +384,7 @@ the initializer. This is a convenience for locals **only** — fields, parameter
 and return types always require an explicit type, because those form the
 published surface of a class and should never leave a reader guessing.
 
-```ldp3
+```polaron
 public method process() returns void {
     var dogs = new ArrayList<Dog>() on heap;   // inferred ArrayList<Dog>
     var n    = 42;                              // inferred int
@@ -411,7 +411,7 @@ parameters, which *are* its fields. Records are ideal for the small, value-like
 bundles of data — points, coordinates, small results — that you pass around but
 never mutate.
 
-```ldp3
+```polaron
 public record Point(int x, int y) {
     public method sum() returns int { return this.x + this.y; }
 }
@@ -439,7 +439,7 @@ unlike a record it is mutable and does not auto-generate `equals`/`hashCode`.
 Structs are the right tool for small, mutable aggregates whose layout you care
 about — a vector, a color, a packet header.
 
-```ldp3
+```polaron
 public struct Vec3 {
     public mutable float x;
     public mutable float y;
@@ -463,7 +463,7 @@ A struct field may declare a bit width with `field : N`, constraining it to `N`
 bits. This is essential for hardware registers and wire formats where individual
 fields occupy sub-byte spans.
 
-```ldp3
+```polaron
 public struct Flags {
     public mutable int a : 4;    // 0..15
     public mutable int b : 4;
@@ -486,7 +486,7 @@ one field and reading another reinterprets the same bits. This is a deliberately
 low-level tool, most at home in manual-memory and systems code where you need to
 view one block of memory through more than one lens.
 
-```ldp3
+```polaron
 public union Value {
     int   asInt;
     float asFloat;
@@ -509,7 +509,7 @@ which interpretation is currently valid — the compiler does not track it for y
 The simplest enum is a named set of constants. Each constant is an ordinal value,
 and you refer to one by `EnumName.CONSTANT`.
 
-```ldp3
+```polaron
 public enum Color {
     RED,
     GREEN,
@@ -525,7 +525,7 @@ An enum can also be a full-fledged type: each constant carries constructor
 arguments, and the enum declares fields, a constructor, and methods just like a
 class. This is the form to reach for when each constant needs associated data.
 
-```ldp3
+```polaron
 public enum Planet {
     EARTH(10, 2),
     MARS(30, 3);
@@ -563,7 +563,7 @@ shape (the methods) **and** specific values the implementing enum must contain.
 An enum satisfies a catalog by extending it and supplying the required values in a
 `byCatalog` block, implementing any required methods as normal enum methods.
 
-```ldp3
+```polaron
 public catalog TipoMotor {
     combustao,
     h2,
@@ -594,7 +594,7 @@ passed as an argument to a method, a class constructor, or an enum constant's
 constructor, and calling a catalog method on it dispatches to the constant's own
 implementation whichever enum that constant came from.
 
-```ldp3
+```polaron
 public class Scale {
     public static method weigh(Heavy h) returns int {
         return h.weight();          // dispatches to Ingot's or Stone's, by what was passed
@@ -609,7 +609,7 @@ and the `byCatalog` ones alike — takes constructor arguments, so every constan
 carries its data instead of a table on the side. The catalog's required methods
 are then implemented as ordinary enum methods reading the constant's own fields.
 
-```ldp3
+```polaron
 public catalog Scored {
     bronze,
     gold
@@ -651,12 +651,12 @@ run through `byCatalog` in declaration order exactly as for an ordinal enum, and
 ## 4.11 Generics
 
 Generic types and methods let you write code once and use it across many element
-types. LDP3 implements generics by **monomorphization**: for each concrete set of
+types. Polaron implements generics by **monomorphization**: for each concrete set of
 type arguments you actually use, the compiler stamps out a specialized copy — so
 `ArrayList<int>` and `ArrayList<Dog>` become genuinely distinct, fully-typed code
 with no boxing and no runtime type erasure.
 
-```ldp3
+```polaron
 public class Box<T> {
     private T content;
     public constructor Box(T c) { this.content = c; }
@@ -676,7 +676,7 @@ int v = b.get();
 A type parameter may be constrained with `extends` or `implements`, so that
 generic code can rely on the capabilities of its type argument:
 
-```ldp3
+```polaron
 public class Cache<T extends Serializable> { }
 public class Sorted<T implements Comparable<T>> { }
 public method clamp<T extends Numeric>(T value, T min, T max) returns T { }
@@ -684,12 +684,12 @@ public method clamp<T extends Numeric>(T value, T min, T max) returns T { }
 
 ### Variance
 
-LDP3 uses **declaration-site variance** in the style of C#. On a type parameter,
+Polaron uses **declaration-site variance** in the style of C#. On a type parameter,
 `out` marks it covariant (the type produces `T` values), `in` marks it
 contravariant (the type consumes `T` values), and leaving the annotation off
 makes the parameter **invariant** — the default and the safest choice.
 
-```ldp3
+```polaron
 public interface Producer<out T> {          // covariant: produces T
     method produce() returns T;
 }
@@ -711,7 +711,7 @@ A class may declare a closed set of subclasses with `sealed ... permits`. Only t
 listed classes may extend it, which turns the type into a finite, known set of
 possibilities — the compiler will reject any other class that tries to extend it.
 
-```ldp3
+```polaron
 public sealed class Shape permits Circle, Square, Triangle { }
 ```
 
@@ -728,7 +728,7 @@ since the compiler cannot know the possibilities are complete.)
 All conversions between distinct types are explicit, written `cast<T>(expr)`.
 There is no hidden coercion; if you want a `long` from an `int`, you ask for it.
 
-```ldp3
+```polaron
 int    x = cast<int>(someLong);
 double d = cast<double>(x);
 Dog    dog = cast<Dog>(animal);   // downcast, checked at runtime
@@ -741,7 +741,7 @@ The companion tests `is` and `as` let you probe and convert reference types:
 
 ### Casting never invokes undefined behavior
 
-Casting in LDP3 is held to the same no-UB standard as the rest of the language. A
+Casting in Polaron is held to the same no-UB standard as the rest of the language. A
 cast can fail, but it fails cleanly and predictably — it never produces a poison
 value or a corrupt object. Three cases are worth spelling out:
 
@@ -757,7 +757,7 @@ value or a corrupt object. Three cases are worth spelling out:
   saturating conversion, so it costs nothing at runtime while avoiding the poison
   result a naive truncation would give.
 
-  ```ldp3
+  ```polaron
   double huge = 1.0e30;
   int    n    = cast<int>(huge);   // saturates to int's MAX, not garbage
   ```
@@ -771,7 +771,7 @@ reinterprets the value, a facility meant for low-level and freestanding code.
 Finally, a class may define its own **conversion operators**, letting `cast<T>`
 invoke user-written conversion logic:
 
-```ldp3
+```polaron
 public class Celsius {
     private double temp;
     public operator explicit cast<Fahrenheit>() returns Fahrenheit {

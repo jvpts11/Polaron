@@ -1,0 +1,27 @@
+import System.IO.Console;
+import System.Codecs.Lz77;
+import System.Text.Soundex;
+import System.Collections.ArrayList;
+program Lz77Soundex;
+
+// LZ77 compression (round-trip) and Soundex phonetic codes (spec 34), both pure Polaron. Prints:
+//   raw=35 toks=7 ok=1
+//   robert=R163 rupert=R163 ashcraft=A261 honeyman=H555
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Lz77 lz = new Lz77(64) on heap;
+                String text = "abracadabra abracadabra abracadabra";
+                ArrayList<int> toks = lz.encode(text);
+                String back = lz.decode(toks);
+                System.IO.Console.printf("raw=%d toks=%d ok=%d\n", text.length(), toks.size() / 3, back.equals(text));
+
+                System.IO.Console.printf("robert=%s rupert=%s ashcraft=%s honeyman=%s\n",
+                    Soundex.encode("Robert"), Soundex.encode("Rupert"),
+                    Soundex.encode("Ashcraft"), Soundex.encode("Honeyman"));
+                return;
+            }
+        }
+    }
+}

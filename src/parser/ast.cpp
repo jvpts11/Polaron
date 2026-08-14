@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace ldp3::ast {
+namespace polaron::ast {
 
 namespace {
 
@@ -53,7 +53,9 @@ void CallExpr::dump(std::string& out, int indent) const {
     line(out, indent + 1, "callee:");
     callee->dump(out, indent + 2);
     line(out, indent + 1, "args:");
-    for (const auto& a : args) a->dump(out, indent + 2);
+    for (const auto& a : args) {
+        a->dump(out, indent + 2);
+    }
 }
 
 void BinaryExpr::dump(std::string& out, int indent) const {
@@ -74,9 +76,13 @@ void AwaitExpr::dump(std::string& out, int indent) const {
 
 void NewExpr::dump(std::string& out, int indent) const {
     std::string head = "New '" + className + "' on " + location;
-    if (!region.empty()) head += " in region " + region;
+    if (!region.empty()) {
+        head += " in region " + region;
+    }
     line(out, indent, head);
-    for (const auto& a : args) a->dump(out, indent + 1);
+    for (const auto& a : args) {
+        a->dump(out, indent + 1);
+    }
 }
 
 void MoveExpr::dump(std::string& out, int indent) const {
@@ -86,7 +92,9 @@ void MoveExpr::dump(std::string& out, int indent) const {
 
 void ExtractExpr::dump(std::string& out, int indent) const {
     line(out, indent, "Extract from region " + region);
-    if (target) target->dump(out, indent + 1);
+    if (target) {
+        target->dump(out, indent + 1);
+    }
 }
 
 void MarkExpr::dump(std::string& out, int indent) const {
@@ -95,7 +103,9 @@ void MarkExpr::dump(std::string& out, int indent) const {
 
 void RollbackStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Rollback region " + region);
-    if (checkpoint) checkpoint->dump(out, indent + 1);
+    if (checkpoint) {
+        checkpoint->dump(out, indent + 1);
+    }
 }
 
 void SnapshotExpr::dump(std::string& out, int indent) const {
@@ -104,20 +114,30 @@ void SnapshotExpr::dump(std::string& out, int indent) const {
 
 void SnapshotIntoStmt::dump(std::string& out, int indent) const {
     line(out, indent, "SnapshotInto region " + region);
-    if (into) into->dump(out, indent + 1);
+    if (into) {
+        into->dump(out, indent + 1);
+    }
 }
 
 void RestoreStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Restore into region " + region);
-    if (snapshot) snapshot->dump(out, indent + 1);
+    if (snapshot) {
+        snapshot->dump(out, indent + 1);
+    }
 }
 
 void RegionInitExpr::dump(std::string& out, int indent) const {
     std::string head = "RegionInit";
-    for (const auto& a : accepts) head += " accepts " + a;
-    for (const auto& r : rejects) head += " rejects " + r;
+    for (const auto& a : accepts) {
+        head += " accepts " + a;
+    }
+    for (const auto& r : rejects) {
+        head += " rejects " + r;
+    }
     line(out, indent, head);
-    if (size) size->dump(out, indent + 1);
+    if (size) {
+        size->dump(out, indent + 1);
+    }
 }
 
 void CastExpr::dump(std::string& out, int indent) const {
@@ -149,12 +169,16 @@ void InterpStringExpr::dump(std::string& out, int indent) const {
         line(out, indent + 1, "lit \"" + literals[i] + "\"");
         exprs[i]->dump(out, indent + 1);
     }
-    if (!literals.empty()) line(out, indent + 1, "lit \"" + literals.back() + "\"");
+    if (!literals.empty()) {
+        line(out, indent + 1, "lit \"" + literals.back() + "\"");
+    }
 }
 
 void TupleExpr::dump(std::string& out, int indent) const {
     line(out, indent, "Tuple");
-    for (const auto& e : elements) e->dump(out, indent + 1);
+    for (const auto& e : elements) {
+        e->dump(out, indent + 1);
+    }
 }
 
 void ExprStmt::dump(std::string& out, int indent) const {
@@ -164,7 +188,9 @@ void ExprStmt::dump(std::string& out, int indent) const {
 
 void ReturnStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Return");
-    if (value) value->dump(out, indent + 1);
+    if (value) {
+        value->dump(out, indent + 1);
+    }
 }
 
 void DeleteStmt::dump(std::string& out, int indent) const {
@@ -178,7 +204,9 @@ void ReleaseStmt::dump(std::string& out, int indent) const {
 
 void CascadeMoveStmt::dump(std::string& out, int indent) const {
     line(out, indent, "CascadeMove from " + fromRegion + " to " + toRegion);
-    if (target) target->dump(out, indent + 1);
+    if (target) {
+        target->dump(out, indent + 1);
+    }
 }
 
 void MatchStmt::dump(std::string& out, int indent) const {
@@ -186,8 +214,9 @@ void MatchStmt::dump(std::string& out, int indent) const {
     subject->dump(out, indent + 1);
     for (const auto& c : cases) {
         std::string head = "case " + c.typeName + "(";
-        for (std::size_t i = 0; i < c.bindings.size(); ++i)
+        for (std::size_t i = 0; i < c.bindings.size(); ++i) {
             head += (i ? ", " : "") + c.bindings[i].type.name + " " + c.bindings[i].name;
+        }
         line(out, indent + 1, head + ")");
         c.body.dump(out, indent + 2);
     }
@@ -202,10 +231,13 @@ void MatchExpr::dump(std::string& out, int indent) const {
     subject->dump(out, indent + 1);
     for (const auto& c : cases) {
         std::string head = "case " + c.typeName + "(";
-        for (std::size_t i = 0; i < c.bindings.size(); ++i)
+        for (std::size_t i = 0; i < c.bindings.size(); ++i) {
             head += (i ? ", " : "") + c.bindings[i].type.name + " " + c.bindings[i].name;
+        }
         line(out, indent + 1, head + ") ->");
-        if (c.result) c.result->dump(out, indent + 2);
+        if (c.result) {
+            c.result->dump(out, indent + 2);
+        }
     }
     if (defaultResult) {
         line(out, indent + 1, "default ->");
@@ -279,18 +311,27 @@ void SynchronizedStmt::dump(std::string& out, int indent) const {
 
 void VarDeclStmt::dump(std::string& out, int indent) const {
     std::string head = "VarDecl '" + name + "'";
-    if (isMutable) head += " mutable";
-    if (regionGrowable) head += " growable";
-    if (!regionFlavor.empty()) head += " flavor=" + regionFlavor;
+    if (isMutable) {
+        head += " mutable";
+    }
+    if (regionGrowable) {
+        head += " growable";
+    }
+    if (!regionFlavor.empty()) {
+        head += " flavor=" + regionFlavor;
+    }
     head += isVar ? " var" : (" : " + typeText(type));
     line(out, indent, head);
-    if (init) init->dump(out, indent + 1);  // an empty region decl (`region r;`) has no initializer
+    if (init) {
+        init->dump(out, indent + 1);  // an empty region decl (`region r;`) has no initializer
+    }
 }
 
 void TupleDeclStmt::dump(std::string& out, int indent) const {
     std::string head = "TupleDecl (";
-    for (std::size_t i = 0; i < bindings.size(); ++i)
+    for (std::size_t i = 0; i < bindings.size(); ++i) {
         head += (i ? ", " : "") + typeText(bindings[i].type) + " " + bindings[i].name;
+    }
     line(out, indent, head + ")");
     init->dump(out, indent + 1);
 }
@@ -310,7 +351,9 @@ void IncDecStmt::dump(std::string& out, int indent) const {
 
 void Block::dump(std::string& out, int indent) const {
     line(out, indent, "Block");
-    for (const auto& s : statements) s->dump(out, indent + 1);
+    for (const auto& s : statements) {
+        s->dump(out, indent + 1);
+    }
 }
 
 void IfStmt::dump(std::string& out, int indent) const {
@@ -351,31 +394,53 @@ void ForStmt::dump(std::string& out, int indent) const {
 
 void MethodDecl::dump(std::string& out, int indent) const {
     std::string head = "Method '" + name + "'";
-    if (!visibility.empty()) head += " " + visibility;
-    if (isStatic) head += " static";
-    if (isAbstract) head += " abstract";
-    if (isOverride) head += " override";
-    if (isFinal) head += " final";
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
+    if (isStatic) {
+        head += " static";
+    }
+    if (isAbstract) {
+        head += " abstract";
+    }
+    if (isOverride) {
+        head += " override";
+    }
+    if (isFinal) {
+        head += " final";
+    }
     head += " returns " + typeText(returnType);
     line(out, indent, head);
     for (const auto& p : params) {
         line(out, indent + 1, "Param '" + p.name + "': " + typeText(p.type));
     }
-    if (!isAbstract) body.dump(out, indent + 1);
+    if (!isAbstract) {
+        body.dump(out, indent + 1);
+    }
 }
 
 void FieldDecl::dump(std::string& out, int indent) const {
     std::string head = "Field '" + name + "' : " + typeText(type);
-    if (!visibility.empty()) head += " " + visibility;
-    if (isStatic) head += " static";
-    if (isMutable) head += " mutable";
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
+    if (isStatic) {
+        head += " static";
+    }
+    if (isMutable) {
+        head += " mutable";
+    }
     line(out, indent, head);
-    if (init) init->dump(out, indent + 1);
+    if (init) {
+        init->dump(out, indent + 1);
+    }
 }
 
 void ConstructorDecl::dump(std::string& out, int indent) const {
     std::string head = "Constructor";
-    if (!visibility.empty()) head += " " + visibility;
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
     line(out, indent, head);
     for (const auto& p : params) {
         line(out, indent + 1, "Param '" + p.name + "': " + typeText(p.type));
@@ -385,7 +450,9 @@ void ConstructorDecl::dump(std::string& out, int indent) const {
 
 void DestructorDecl::dump(std::string& out, int indent) const {
     std::string head = "Destructor";
-    if (!visibility.empty()) head += " " + visibility;
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
     line(out, indent, head);
     body.dump(out, indent + 1);
 }
@@ -397,76 +464,132 @@ void ClassDecl::dump(std::string& out, int indent) const {
                         : isStruct  ? "Struct '"
                                     : "Class '") +
                        name + "'";
-    if (!visibility.empty()) head += " " + visibility;
-    if (isAbstract && !isInterface) head += " abstract";
-    if (isMovable) head += " movable";
-    if (isUnique) head += " unique";
-    if (!superclass.empty()) head += " extends " + superclass;
-    for (const auto& i : interfaces) head += " implements " + i;
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
+    if (isAbstract && !isInterface) {
+        head += " abstract";
+    }
+    if (isMovable) {
+        head += " movable";
+    }
+    if (isUnique) {
+        head += " unique";
+    }
+    if (!superclass.empty()) {
+        head += " extends " + superclass;
+    }
+    for (const auto& i : interfaces) {
+        head += " implements " + i;
+    }
     line(out, indent, head);
-    for (const auto& m : members) m->dump(out, indent + 1);
+    for (const auto& m : members) {
+        m->dump(out, indent + 1);
+    }
 }
 
 void EnumDecl::dump(std::string& out, int indent) const {
     std::string head = "Enum '" + name + "'";
-    if (!visibility.empty()) head += " " + visibility;
-    if (isJavaStyle) head += " java-style";
-    for (const auto& cat : extendsCatalogs) head += " extends " + cat;
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
+    if (isJavaStyle) {
+        head += " java-style";
+    }
+    for (const auto& cat : extendsCatalogs) {
+        head += " extends " + cat;
+    }
     line(out, indent, head);
     for (const auto& c : constants) {
         const bool fromCatalog =
             std::find(byCatalogValues.begin(), byCatalogValues.end(), c) != byCatalogValues.end();
         line(out, indent + 1, std::string("Constant '") + c + "'" + (fromCatalog ? " (byCatalog)" : ""));
     }
-    for (const auto& m : members) m->dump(out, indent + 1);
+    for (const auto& m : members) {
+        m->dump(out, indent + 1);
+    }
 }
 
 void CatalogDecl::dump(std::string& out, int indent) const {
     std::string head = "Catalog '" + name + "'";
-    if (!visibility.empty()) head += " " + visibility;
-    for (const auto& cat : extendsCatalogs) head += " extends " + cat;
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
+    for (const auto& cat : extendsCatalogs) {
+        head += " extends " + cat;
+    }
     line(out, indent, head);
-    for (const auto& v : requiredValues) line(out, indent + 1, "Value '" + v + "'");
-    for (const auto& m : methods) m->dump(out, indent + 1);
+    for (const auto& v : requiredValues) {
+        line(out, indent + 1, "Value '" + v + "'");
+    }
+    for (const auto& m : methods) {
+        m->dump(out, indent + 1);
+    }
 }
 
 void LiteralDecl::dump(std::string& out, int indent) const {
     std::string head = "Literal '" + name + "'";
-    if (!visibility.empty()) head += " " + visibility;
-    if (isComptime) head += " comptime";
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
+    if (isComptime) {
+        head += " comptime";
+    }
     head += " (" + param.type.name + " " + param.name + ") returns " + returnType.name;
     line(out, indent, head);
 }
 
 void ConstDecl::dump(std::string& out, int indent) const {
     std::string head = "Const '" + name + "'";
-    if (!visibility.empty()) head += " " + visibility;
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
     head += " : " + type.name;
     line(out, indent, head);
-    if (init) init->dump(out, indent + 1);
+    if (init) {
+        init->dump(out, indent + 1);
+    }
 }
 
 void Namespace::dump(std::string& out, int indent) const {
     std::string head = "Namespace '" + name + "'";
-    if (!visibility.empty()) head += " " + visibility;
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
     line(out, indent, head);
-    for (const auto& e : enums) e.dump(out, indent + 1);
-    for (const auto& c : catalogs) c.dump(out, indent + 1);
-    for (const auto& l : literals) l.dump(out, indent + 1);
-    for (const auto& c : consts) c.dump(out, indent + 1);
-    for (const auto& c : classes) c.dump(out, indent + 1);
+    for (const auto& e : enums) {
+        e.dump(out, indent + 1);
+    }
+    for (const auto& c : catalogs) {
+        c.dump(out, indent + 1);
+    }
+    for (const auto& l : literals) {
+        l.dump(out, indent + 1);
+    }
+    for (const auto& c : consts) {
+        c.dump(out, indent + 1);
+    }
+    for (const auto& c : classes) {
+        c.dump(out, indent + 1);
+    }
 }
 
 void Bundle::dump(std::string& out, int indent) const {
     std::string head = "Bundle '" + name + "'";
-    if (!visibility.empty()) head += " " + visibility;
+    if (!visibility.empty()) {
+        head += " " + visibility;
+    }
     line(out, indent, head);
-    for (const auto& n : namespaces) n.dump(out, indent + 1);
+    for (const auto& n : namespaces) {
+        n.dump(out, indent + 1);
+    }
 }
 
 void Program::dump(std::string& out, int indent) const {
     line(out, indent, "Program '" + name + "'");
-    for (const auto& b : bundles) b.dump(out, indent + 1);
+    for (const auto& b : bundles) {
+        b.dump(out, indent + 1);
+    }
 }
 
-}  // namespace ldp3::ast
+}  // namespace polaron::ast

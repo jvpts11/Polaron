@@ -1,11 +1,11 @@
 # End-to-end codegen test driver, invoked via `cmake -P`.
 #
-# Compiles an .ldp3 to a native .exe (ldp3c -> .ll, then clang -> .exe), runs
+# Compiles an .pol to a native .exe (polc -> .ll, then clang -> .exe), runs
 # it, and checks stdout against EXPECTED.
 #
-# Required -D args: LDP3C, CLANG, INPUT, EXPECTED, WORKDIR
+# Required -D args: POLC, CLANG, INPUT, EXPECTED, WORKDIR
 
-# OPT is optional: an ldp3c optimization flag (e.g. -O3) to exercise the in-process pipeline.
+# OPT is optional: an polc optimization flag (e.g. -O3) to exercise the in-process pipeline.
 if(NOT DEFINED OPT)
     set(OPT "")
 endif()
@@ -19,14 +19,14 @@ string(MD5 _tag "${INPUT}|${INPUT2}|${OPT}|${RUNARGS}|${INPUT_FILE}")
 set(ll "${WORKDIR}/e2e_${_tag}.ll")
 set(exe "${WORKDIR}/e2e_${_tag}.exe")
 
-# INPUT2 is optional: a program may span multiple .ldp3 files.
+# INPUT2 is optional: a program may span multiple .pol files.
 if(DEFINED INPUT2)
-    execute_process(COMMAND "${LDP3C}" ${OPT} "${INPUT}" "${INPUT2}" -o "${ll}" RESULT_VARIABLE rc)
+    execute_process(COMMAND "${POLC}" ${OPT} "${INPUT}" "${INPUT2}" -o "${ll}" RESULT_VARIABLE rc)
 else()
-    execute_process(COMMAND "${LDP3C}" ${OPT} "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
+    execute_process(COMMAND "${POLC}" ${OPT} "${INPUT}" -o "${ll}" RESULT_VARIABLE rc)
 endif()
 if(NOT rc EQUAL 0)
-    message(FATAL_ERROR "ldp3c failed (exit ${rc})")
+    message(FATAL_ERROR "polc failed (exit ${rc})")
 endif()
 
 # The compiler-rt builtins library (next to clang) provides 128-bit integer division (__divti3 etc.)
@@ -63,10 +63,10 @@ endif()
 # Found through WORKDIR, which every test already passes, so none of the ~500 add_test calls had to
 # grow an argument. Falls back to the source when the object is absent, so invoking this script by
 # hand still works.
-set(_rt "${CMAKE_CURRENT_LIST_DIR}/../runtime/ldp3_rt.cpp")
+set(_rt "${CMAKE_CURRENT_LIST_DIR}/../runtime/polaron_rt.cpp")
 foreach(_ext ".obj" ".o")
-    if(EXISTS "${WORKDIR}/ldp3_rt_clang${_ext}")
-        set(_rt "${WORKDIR}/ldp3_rt_clang${_ext}")
+    if(EXISTS "${WORKDIR}/polaron_rt_clang${_ext}")
+        set(_rt "${WORKDIR}/polaron_rt_clang${_ext}")
         break()
     endif()
 endforeach()
@@ -90,7 +90,14 @@ endif()
 if(NOT err STREQUAL "")
     message(STATUS "stderr: ${err}")   # keep panics/alerts visible in the test log
 endif()
-if(NOT rc EQUAL 0)
+# EXPECT_EXIT is optional: the code the program MUST exit with. For a guard that is supposed to fire
+# -- a contract, a bounds check, a refused region release -- success is a non-zero exit with the right
+# message, and without this the harness could only test guards that never trip.
+if(DEFINED EXPECT_EXIT)
+    if(NOT rc EQUAL EXPECT_EXIT)
+        message(FATAL_ERROR "program exited with ${rc}, expected ${EXPECT_EXIT}\n  stdout: [${out}]\n  stderr: [${err}]")
+    endif()
+elseif(NOT rc EQUAL 0)
     message(FATAL_ERROR "program exited with ${rc}")
 endif()
 

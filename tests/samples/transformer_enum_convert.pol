@@ -1,0 +1,39 @@
+import System.IO.Console;
+program TransformerEnumConvert;
+
+// The design note's flagship, finally expressible: `Errno -> int` is total because the constants are
+// a finite list you own. Until an enum could take the `applies` clause, the example that motivated
+// per-target procedures was the one shape the language could not write.
+//
+// `satisfies` is refused on an enum for a reason worth keeping: an enum implements CATALOGS, not
+// interfaces, because its constants are values rather than instances.
+public bundle Main {
+    public namespace App {
+        public transformer TCoder {
+            public procedure into<each Other>() returns Other;
+        }
+
+        public class Code {
+            public mutable int n;
+            public constructor Code(int v) { this.n = v; }
+        }
+
+        public enum Errno applies TCoder {
+            EPERM, ENOENT;
+            public procedure into<Code>() returns Code {
+                if (this == Errno.EPERM) { return new Code(1); }
+                if (this == Errno.ENOENT) { return new Code(2); }
+                return new Code(0);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Errno e = Errno.ENOENT;
+                Code c = e.into<Code>();
+                System.IO.Console.printf("%d\n", c.n);
+                return;
+            }
+        }
+    }
+}

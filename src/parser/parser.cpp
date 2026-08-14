@@ -8,9 +8,20 @@
 
 #include "lexer/lexer.h"
 
-namespace ldp3 {
+namespace polaron {
 
 namespace {
+
+// The soft-keyword modifiers a `transformer` line may carry before the word itself. Soft because
+// each is an ordinary word a program may already be using as a name, and none of them needs to be
+// reserved to be recognised: nothing else can appear between the visibility and `transformer`.
+//
+// One list, read by BOTH the namespace-level lookahead that decides this is a transformer at all and
+// by the header parser that consumes them. Two spellings of the same set is how a fourth modifier
+// gets added to one of them and silently stops the declaration from being recognised.
+bool isTransformerModifier(const std::string& lexeme) {
+    return lexeme == "mutual" || lexeme == "explicit" || lexeme == "collective";
+}
 
 // AST builders used to synthesize a record's primary constructor and equals().
 std::unique_ptr<ast::IdentifierExpr> makeIdent(const std::string& name, SourceLocation loc) {
@@ -65,7 +76,9 @@ ast::MemberPtr buildRecordHashCode(const std::string& typeName,
     vd->init = makeInt("17");
     m->body.statements.push_back(std::move(vd));
     for (const ast::Param& f : fields) {
-        if (!isRecordNumericField(f.type.name)) continue;  // object/String fields are not hashed
+        if (!isRecordNumericField(f.type.name)) {
+            continue;  // object/String fields are not hashed
+        }
         ast::ExprPtr fieldVal = makeMember(makeIdent("this", loc), f.name, loc);
         if (isRecordFloatField(f.type.name)) {  // fold a float field to int for the mix
             auto cast = std::make_unique<ast::CastExpr>();
@@ -140,7 +153,9 @@ ast::MemberPtr buildRecordToString(const std::string& typeName,
     };
     ast::ExprPtr expr = makeStr(typeName + "(");
     for (std::size_t i = 0; i < fields.size(); ++i) {
-        if (i > 0) expr = concat(std::move(expr), makeStr(", "));
+        if (i > 0) {
+            expr = concat(std::move(expr), makeStr(", "));
+        }
         expr = concat(std::move(expr), fieldStr(fields[i]));
     }
     expr = concat(std::move(expr), makeStr(")"));
@@ -231,7 +246,9 @@ bool isTypeKeyword(TokenKind k) {
 // Region flavor / growth soft keywords (spec 17, flavors expansion). These are contextual: they act
 // as modifiers only immediately before a `region` type, and stay ordinary identifiers everywhere else.
 bool isRegionFlavorWord(const Token& t) {
-    if (t.kind != TokenKind::Identifier) return false;
+    if (t.kind != TokenKind::Identifier) {
+        return false;
+    }
     const std::string& s = t.lexeme;
     return s == "bump" || s == "pool" || s == "stack" || s == "fixedslot" ||
            s == "ring" || s == "growable";
@@ -275,12 +292,41 @@ int binaryPrec(TokenKind k) {
 
 }  // namespace
 
-Parser::Parser(std::vector<Token> tokens, std::string_view file)
-    : tokens_(std::move(tokens)), file_(file) {}
+Parser::Parser(std::vector<Token> tokens, std::string_view file, std::string_view source)
+    : tokens_(std::move(tokens)), file_(file), source_(source) {}
+
+// Walks to (line, col) counting from 1, which is what the lexer records. Deliberately a walk rather
+// than a byte offset stored on every token: this is asked once per transformer in a compilation, and
+// widening the token for it would cost every program that has none.
+std::string Parser::sliceSource(const SourceLocation& from, const SourceLocation& to) const {
+    if (source_.empty() || from.line > to.line) {
+        return {};
+    }
+    auto offsetOf = [&](int line, int col) -> std::size_t {
+        std::size_t pos = 0;
+        for (int l = 1; l < line; ++l) {
+            const std::size_t nl = source_.find('\n', pos);
+            if (nl == std::string_view::npos) {
+                return std::string_view::npos;
+            }
+            pos = nl + 1;
+        }
+        return pos + static_cast<std::size_t>(col > 0 ? col - 1 : 0);
+    };
+    const std::size_t begin = offsetOf(from.line, from.col);
+    const std::size_t end = offsetOf(to.line, to.col);
+    if (begin == std::string_view::npos || end == std::string_view::npos || end < begin ||
+        end >= source_.size()) {
+        return {};
+    }
+    return std::string(source_.substr(begin, end - begin + 1));   // inclusive of the closing brace
+}
 
 const Token& Parser::peek(int ahead) const {
     std::size_t i = pos_ + static_cast<std::size_t>(ahead);
-    if (i >= tokens_.size()) return tokens_.back();  // EndOfFile sentinel
+    if (i >= tokens_.size()) {
+        return tokens_.back();  // EndOfFile sentinel
+    }
     return tokens_[i];
 }
 
@@ -290,7 +336,9 @@ bool Parser::check(TokenKind kind) const { return current().kind == kind; }
 
 const Token& Parser::advance() {
     const Token& t = tokens_[pos_];
-    if (pos_ + 1 < tokens_.size()) ++pos_;
+    if (pos_ + 1 < tokens_.size()) {
+        ++pos_;
+    }
     return t;
 }
 
@@ -303,7 +351,9 @@ bool Parser::match(TokenKind kind) {
 }
 
 const Token& Parser::expect(TokenKind kind, const char* what) {
-    if (check(kind)) return advance();
+    if (check(kind)) {
+        return advance();
+    }
     fail(std::string("expected ") + what + " but found '" + current().lexeme + "'",
          current().loc);
 }
@@ -337,10 +387,10 @@ ast::Program Parser::parse() {
     try {
         program.loc = current().loc;
         // File-level imports come before `program` (spec 2.7); `final`/`lazy import` are permitted.
-        while (check(TokenKind::KwImport) ||
-               ((check(TokenKind::KwFinal) || check(TokenKind::KwLazy)) &&
-                peek(1).kind == TokenKind::KwImport))
+        while (check(TokenKind::KwImport) || ((check(TokenKind::KwFinal) || check(TokenKind::KwLazy)) &&
+                                              peek(1).kind == TokenKind::KwImport)) {
             program.imports.push_back(parseImportDecl());
+        }
         expect(TokenKind::KwProgram, "'program'");
         program.name = expect(TokenKind::Identifier, "the program name").lexeme;
         if (match(TokenKind::KwFreestanding)) {
@@ -369,30 +419,40 @@ ast::ImportDecl Parser::parseImportDecl() {
     // -- the type is known from the other program's header and reached over IPC.
     if (check(TokenKind::Identifier) && current().lexeme == "from") {
         advance();
-        if (!(check(TokenKind::KwProgram))) fail("expected 'program' after 'import from'", current().loc);
+        if (!(check(TokenKind::KwProgram))) {
+            fail("expected 'program' after 'import from'", current().loc);
+        }
         advance();
         imp.programName = expectMemberName("the program name");
-        if (check(TokenKind::KwBundle)) advance();  // `bundle` is optional noise in the path
+        if (check(TokenKind::KwBundle)) {
+            advance();  // `bundle` is optional noise in the path
+        }
         imp.path.push_back(expectMemberName("an import path"));
-        while (match(TokenKind::Dot)) imp.path.push_back(expectMemberName("a name after '.'"));
+        while (match(TokenKind::Dot)) {
+            imp.path.push_back(expectMemberName("a name after '.'"));
+        }
         expect(TokenKind::Semicolon, "';'");
         return imp;
     }
     imp.path.push_back(expect(TokenKind::Identifier, "an import path").lexeme);
-    while (match(TokenKind::Dot))
+    while (match(TokenKind::Dot)) {
         imp.path.push_back(expect(TokenKind::Identifier, "a name after '.'").lexeme);
+    }
     expect(TokenKind::Semicolon, "';'");
     return imp;
 }
 
 ast::CascadeParams Parser::parseCascadeParamsOpt() {
     ast::CascadeParams p;
-    if (!match(TokenKind::LParen)) return p;
+    if (!match(TokenKind::LParen)) {
+        return p;
+    }
     if (!check(TokenKind::RParen)) {
         do {
             const Token key = current();
-            if (key.kind != TokenKind::Identifier)
+            if (key.kind != TokenKind::Identifier) {
                 fail("expected a cascade parameter (depth, unlimited, types, except)", key.loc);
+            }
             advance();
             if (key.lexeme == "unlimited") {
                 p.depth = -1;
@@ -424,10 +484,11 @@ ast::CascadeParams Parser::parseCascadeParamsOpt() {
 void Parser::parseLabelRef(std::string& name) {
     name = expect(TokenKind::Identifier, "a label name").lexeme;
     // The chaos tetrad is intra-method only: a method-qualified `method.label` form is an error.
-    if (check(TokenKind::Dot))
+    if (check(TokenKind::Dot)) {
         fail("cross-method goto/comefrom/abstainfrom/reinstate is not allowed; "
              "these are intra-method only (spec 7.9-7.11)",
              current().loc);
+    }
 }
 
 ast::Bundle Parser::parseBundle() {
@@ -445,9 +506,10 @@ ast::Bundle Parser::parseBundle() {
     }
     expect(TokenKind::LBrace, "'{'");
     // Imports belong before `program` (spec 2.7), not inside a bundle.
-    if (check(TokenKind::KwImport))
+    if (check(TokenKind::KwImport)) {
         fail("imports must be written before 'program', not inside a bundle (spec 2.7)",
              current().loc);
+    }
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
         b.namespaces.push_back(parseNamespace());
     }
@@ -486,17 +548,19 @@ ast::Namespace Parser::parseNamespace() {
             ns.annotationDecls.push_back(parseAnnotationDecl(anns));
             continue;
         }
-        // A transformer needs more than the one-token peek the others use: `mutual` and `explicit`
-        // are SOFT keywords, so they lex as identifiers and sit between the visibility and the word
-        // that decides the declaration. Scan past them rather than reserving two more words.
+        // A transformer needs more than the one-token peek the others use: `mutual`, `explicit` and
+        // `collective` are SOFT keywords, so they lex as identifiers and sit between the visibility
+        // and the word that decides the declaration. Scan past them rather than reserving three more
+        // words. `freestanding` is already a hard keyword, so it is scanned by kind.
         {
             int i = (current().kind == TokenKind::KwPublic || current().kind == TokenKind::KwPrivate ||
                      current().kind == TokenKind::KwProtected || current().kind == TokenKind::KwInternal)
                         ? 1
                         : 0;
-            while (peek(i).kind == TokenKind::Identifier &&
-                   (peek(i).lexeme == "mutual" || peek(i).lexeme == "explicit"))
+            while ((peek(i).kind == TokenKind::Identifier && isTransformerModifier(peek(i).lexeme)) ||
+                   peek(i).kind == TokenKind::KwFreestanding) {
                 ++i;
+            }
             if (peek(i).kind == TokenKind::KwTransformer) {
                 ns.transformers.push_back(parseTransformer());
                 continue;
@@ -513,6 +577,12 @@ ast::Namespace Parser::parseNamespace() {
                 cls.visibility = en.visibility;
                 cls.name = en.name;
                 cls.members = std::move(en.members);
+                // The `applies` clause follows the MEMBERS, because a procedure is a member and the
+                // class half is where they went. A java-style enum has state, so it is a class in
+                // everything but its constants -- and the transformer expansion should see it as one.
+                cls.applies = std::move(en.applies);
+                cls.appliesLocs = std::move(en.appliesLocs);
+                cls.procCalls = std::move(en.procCalls);
                 ns.classes.push_back(std::move(cls));
                 ast::EnumDecl light;
                 light.loc = en.loc;
@@ -556,22 +626,51 @@ ast::Namespace Parser::parseNamespace() {
 // `[visibility] extern <cdecl|stdcall|fastcall> method name(params) returns T;` (spec 26), or the
 // grouped form `extern <conv> library NAME { method ...; method ...; }`.
 void Parser::parseExternInto(std::vector<ast::ExternDecl>& out) {
-    parseVisibilityOpt();  // optional; an external symbol has no LDP3 visibility
+    const SourceLocation formLoc = current().loc;
+    parseVisibilityOpt();  // optional; an external symbol has no Polaron visibility
     expect(TokenKind::KwExtern, "'extern'");
+    // A FOREIGN FUNCTION IS A CLASS MEMBER, and only that.
+    //
+    // The namespace-level forms -- `extern <lang> method f(...)` and the `library NAME { ... }` block
+    // around a set of them -- declared a LOOSE FUNCTION, which the language does not otherwise permit
+    // anywhere. They also ignored their own visibility ("an external symbol has no Polaron
+    // visibility"), so a binding could not be kept to the class that owns it; and the block parsed
+    // `library NAME` and threw the name away, leaving the actual linking to a `native_libs` line in a
+    // different file with no connection to the declaration.
+    //
+    // Nothing in this repository used either form. Refused here rather than deleted downstream: the
+    // AST node and its consumers stay, so a header written by an older compiler still reads, and the
+    // only thing that becomes impossible is writing a new one.
+    fail("a foreign function is declared as a member of a class, not on its own: move it into one, "
+         "where it can be `private` and reachable only through the class that owns it. "
+         "(`public class Sdl library SDL2 { private extern cdecl method createWindow(...) returns "
+         "address symbol(\"SDL_CreateWindow\"); }`)",
+         formLoc);
     std::string conv;
-    if (match(TokenKind::KwCdecl)) conv = "cdecl";
-    else if (match(TokenKind::KwStdcall)) conv = "stdcall";
-    else if (match(TokenKind::KwFastcall)) conv = "fastcall";
-    else if (match(TokenKind::KwUnknown))  // `unknown <world>`: adopt a foreign binary's ABI (world required)
+    // Same language axis as the class-member form; see the long note there.
+    if (match(TokenKind::KwCdecl)) {
+        conv = "cdecl";
+    } else if (check(TokenKind::Identifier) &&
+               (current().lexeme == "cppdecl" || current().lexeme == "rustdecl" ||
+                current().lexeme == "zigdecl")) {
+        conv = current().lexeme;
+        advance();
+    } else if (match(TokenKind::KwUnknown)) {  // `unknown <world>`: adopt a foreign binary's ABI (world
+                                               // required)
         conv = "unknown:" + expect(TokenKind::Identifier,
                    "the foreign world (pe/elf/macho, or raw win64/sysv/aapcs) after 'unknown'").lexeme;
-    else fail("expected a calling convention (cdecl/stdcall/fastcall/unknown) after 'extern'", current().loc);
+    } else {
+        fail("expected the foreign LANGUAGE after 'extern' -- cdecl (C), cppdecl (C++), rustdecl, "
+             "zigdecl, or `unknown <world>` for a raw ABI",
+             current().loc);
+    }
     if (check(TokenKind::Identifier) && current().lexeme == "library") {
         advance();  // 'library'
         expect(TokenKind::Identifier, "the library name");  // linked externally; not used here yet
         expect(TokenKind::LBrace, "'{' to open the extern library block");
-        while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile))
+        while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
             out.push_back(parseExternMethod(conv));
+        }
         expect(TokenKind::RBrace, "'}' to close the extern library block");
         return;
     }
@@ -656,7 +755,9 @@ std::vector<ast::AnnotationUse> Parser::parseAnnotationUsesOpt() {
         ast::AnnotationUse use;
         use.loc = current().loc;
         advance();  // '[' or '@'
-        if (attribute) advance();  // the second '['
+        if (attribute) {
+            advance();  // the second '['
+        }
         use.name = expect(TokenKind::Identifier,
                           bracketed ? "an annotation name after '['" : "an annotation name after '@'")
                        .lexeme;
@@ -673,8 +774,12 @@ std::vector<ast::AnnotationUse> Parser::parseAnnotationUsesOpt() {
             }
             expect(TokenKind::RParen, "')' to close the annotation arguments");
         }
-        if (bracketed) expect(TokenKind::RBracket, "']' to close the annotation");
-        if (attribute) expect(TokenKind::RBracket, "']]' to close the attribute");
+        if (bracketed) {
+            expect(TokenKind::RBracket, "']' to close the annotation");
+        }
+        if (attribute) {
+            expect(TokenKind::RBracket, "']]' to close the attribute");
+        }
         uses.push_back(std::move(use));
     }
     return uses;
@@ -688,8 +793,11 @@ ast::AnnotationDecl Parser::parseAnnotationDecl(const std::vector<ast::Annotatio
     a.visibility = parseVisibilityOpt();
     expect(TokenKind::KwAnnotation, "'annotation'");
     a.name = expect(TokenKind::Identifier, "the annotation name").lexeme;
-    for (const ast::AnnotationUse& u : leading)
-        if (u.name == "CompileTimeProcessor") a.isCompileTimeProcessor = true;
+    for (const ast::AnnotationUse& u : leading) {
+        if (u.name == "CompileTimeProcessor") {
+            a.isCompileTimeProcessor = true;
+        }
+    }
     expect(TokenKind::LBrace, "'{' to open the annotation body");
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
         ast::AnnotationField f;
@@ -750,7 +858,9 @@ ast::EnumDecl Parser::parseEnum() {
     ast::EnumDecl e;
     e.loc = current().loc;
     e.visibility = parseVisibilityOpt();
-    if (match(TokenKind::KwSealed)) e.isSealed = true;
+    if (match(TokenKind::KwSealed)) {
+        e.isSealed = true;
+    }
     expect(TokenKind::KwEnum, "'enum'");
     e.name = expect(TokenKind::Identifier, "the enum name").lexeme;
     // Catalogs implemented by this enum (spec 12.4): `enum Motor extends TipoMotor`.
@@ -759,6 +869,9 @@ ast::EnumDecl Parser::parseEnum() {
             e.extendsCatalogs.push_back(expect(TokenKind::Identifier, "a catalog name").lexeme);
         } while (match(TokenKind::Comma));
     }
+    // `enum Errno applies TConverter { ... }`. Same position it holds on a class line -- after
+    // identity, last -- so the three clauses read in the same order wherever they appear.
+    parseAppliesList(e.applies, e.appliesLocs);
     // `sealed enum Ending permits Caught, Escaped;` -- the constants ARE the permits list, and
     // there is no body. The two spellings say the same thing and the specifications use this one
     // wherever the point is that every outcome is named and counted; `{ ... }` remains for the
@@ -837,6 +950,8 @@ ast::EnumDecl Parser::parseEnum() {
         }
     }
     expect(TokenKind::RBrace, "'}'");
+    e.procCalls = std::move(pendingProcCalls_);   // an enum takes `applies`, so it can hold a `call`
+    pendingProcCalls_.clear();
     // What makes an enum java-style is STATE -- per-constant constructor arguments, instance
     // fields, a constructor -- never methods alone. A methods-only enum is normalised back to
     // ordinal whether or not it implements a catalog: its constants stay i32 ordinals with value
@@ -865,7 +980,9 @@ ast::EnumDecl Parser::parseEnum() {
                 }
             }
         }
-        if (!hasCtorArgs && !hasStateOrCtor) e.isJavaStyle = false;
+        if (!hasCtorArgs && !hasStateOrCtor) {
+            e.isJavaStyle = false;
+        }
     }
     return e;
 }
@@ -904,14 +1021,24 @@ ast::ClassDecl Parser::parseClassForSynthesis() { return parseClassOrInterface()
 // `applies A, B` on a declaration line. Shared by class/interface and record, because a record can
 // gain things too -- the design says so, and a record is exactly where a derived `clone` belongs.
 void Parser::parseAppliesOpt(ast::ClassDecl& c) {
-    if (!match(TokenKind::KwApplies)) return;
+    parseAppliesList(c.applies, c.appliesLocs);
+}
+
+// The clause itself, over whichever declaration's two vectors. An ENUM takes it as well as a class:
+// `Errno -> int` is the flagship of the totality rule and Errno is an enum, so the kind that carries
+// the conversion has to be able to take the clause that declares it.
+void Parser::parseAppliesList(std::vector<std::string>& names,
+                              std::vector<SourceLocation>& locs) {
+    if (!match(TokenKind::KwApplies)) {
+        return;
+    }
     do {
-        c.appliesLocs.push_back(current().loc);
-        c.applies.push_back(expect(TokenKind::Identifier, "a transformer name").lexeme);
+        locs.push_back(current().loc);
+        names.push_back(expect(TokenKind::Identifier, "a transformer name").lexeme);
     } while (match(TokenKind::Comma));
 }
 
-// `public [mutual] [explicit] transformer Name { ... }`
+// `public [mutual] [explicit] [collective] [freestanding] transformer Name [satisfies I] { ... }`
 //
 // Parsed into a ClassDecl, the way `operator+` is parsed into a MethodDecl: its members are
 // ordinary members and every pass that walks a class body already knows how to walk them. What is
@@ -921,26 +1048,41 @@ ast::ClassDecl Parser::parseTransformer() {
     ast::ClassDecl c;
     c.loc = current().loc;
     c.visibility = parseVisibilityOpt();
-    // `mutual` and `explicit` are SOFT keywords: both are ordinary words a program may already use
-    // as a name, and neither needs to be reserved to be recognised here -- nothing else can appear
-    // between the visibility and `transformer`.
+    // `mutual`, `explicit` and `collective` are SOFT keywords: each is an ordinary word a program may
+    // already use as a name, and none needs to be reserved to be recognised here -- nothing else can
+    // appear between the visibility and `transformer`. `freestanding` is a hard keyword already.
     for (;;) {
-        if (check(TokenKind::Identifier) && current().lexeme == "mutual") {
+        if (check(TokenKind::KwFreestanding)) {
             advance();
+            c.isFreestandingTransformer = true;
+            continue;
+        }
+        if (!check(TokenKind::Identifier) || !isTransformerModifier(current().lexeme)) {
+            break;
+        }
+        if (current().lexeme == "mutual") {
             c.isMutualTransformer = true;
-            continue;
-        }
-        if (check(TokenKind::Identifier) && current().lexeme == "explicit") {
-            advance();
+        } else if (current().lexeme == "explicit") {
             c.isExplicitTransformer = true;
-            continue;
+        } else {
+            c.isCollectiveTransformer = true;
         }
-        break;
+        advance();
     }
     expect(TokenKind::KwTransformer, "'transformer'");
     c.isTransformer = true;
     c.nameLoc = current().loc;
     c.name = expect(TokenKind::Identifier, "the transformer name").lexeme;
+    // `transformer T satisfies I` -- whoever applies T implements I. A soft keyword, recognised only
+    // here: a transformer can never itself implement anything, since it is never instantiated, so
+    // there is nothing for this position to be confused with.
+    if (check(TokenKind::Identifier) && current().lexeme == "satisfies") {
+        advance();
+        do {
+            c.satisfiesLocs.push_back(current().loc);
+            c.satisfies.push_back(expect(TokenKind::Identifier, "an interface name").lexeme);
+        } while (match(TokenKind::Comma));
+    }
     parseAppliesOpt(c);  // `transformer A applies B` -- whoever applies A also applies B
     expect(TokenKind::LBrace, "'{'");
     inTransformer_ = true;
@@ -961,9 +1103,26 @@ ast::ClassDecl Parser::parseTransformer() {
         c.members.push_back(parseMember(/*inInterface=*/false));
     }
     inTransformer_ = false;
+    // A PROCEDURE IS PRIVATE BY DEFAULT, and the reason is what visibility MEANS here. Nothing can
+    // reach into a transformer at all -- the only way to get at a procedure is to apply the
+    // transformer that holds it -- so the word on the declaration cannot be about access to it here.
+    // What it is about is the visibility the member ENTERS THE APPLYING CLASS WITH. Private is the
+    // right default for that: applying a transformer is equipment, not a promise to the outside
+    // world, and a procedure that should be part of the type's public surface says so.
+    for (const ast::MemberPtr& m : c.members) {
+        auto* md = dynamic_cast<ast::MethodDecl*>(m.get());
+        if (md != nullptr && md->visibility.empty()) {
+            md->visibility = "private";
+        }
+    }
     c.procCalls = std::move(pendingProcCalls_);
     pendingProcCalls_.clear();
+    c.declEnd = current().loc;
     expect(TokenKind::RBrace, "'}'");
+    // Kept so the declaration can be republished in a `.polh` with its bodies intact -- see the
+    // comment on `sourceText`. A transformer is expanded, never compiled, so its text is what a
+    // consumer needs and the only thing that would be complete.
+    c.sourceText = sliceSource(c.loc, c.declEnd);
     return c;
 }
 
@@ -971,17 +1130,50 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     ast::ClassDecl c;
     c.loc = current().loc;
     c.visibility = parseVisibilityOpt();
-    if (match(TokenKind::KwPartial)) c.isPartial = true;   // spec 8.3: one part of a split class
-    if (match(TokenKind::KwSealed)) c.isSealed = true;
-    if (match(TokenKind::KwFinal)) c.isFinal = true;
-    if (match(TokenKind::KwAbstract)) c.isAbstract = true;
-    if (match(TokenKind::KwPartial)) c.isPartial = true;   // ... in either order
+    if (match(TokenKind::KwPartial)) {
+        c.isPartial = true;  // spec 8.3: one part of a split class
+    }
+    if (match(TokenKind::KwSealed)) {
+        c.isSealed = true;
+    }
+    if (match(TokenKind::KwFinal)) {
+        c.isFinal = true;
+    }
+    if (match(TokenKind::KwAbstract)) {
+        c.isAbstract = true;
+    }
+    if (match(TokenKind::KwPartial)) {
+        c.isPartial = true;  // ... in either order
+    }
     if (match(TokenKind::KwMovable)) {
         c.isMovable = true;
     } else if (match(TokenKind::KwUnique)) {
         c.isUnique = true;
     }
-    if (match(TokenKind::KwPartitionable)) c.isPartitionable = true;  // spec 19.9
+    if (match(TokenKind::KwPartitionable)) {
+        c.isPartitionable = true;  // spec 19.9
+    }
+    // `region class A` (docs/design/region-classes.md): every instance of A is allocated from ONE
+    // region owned by the type, and that region holds nothing else.
+    //
+    // `region` is already a hard keyword (it introduces a region declaration), so no soft-keyword dance
+    // is needed here -- but the lookahead to `class` is, because `region` also begins a statement and a
+    // field.
+    //
+    // The modifier is what makes the guarantee TOTAL, and totality is the feature: it is what lets
+    // `unimport` answer "is any A alive?" in O(1), lets every instance of a type be walked linearly,
+    // and one day lets an `A*` be a 32-bit offset instead of a pointer. Let a single A be born
+    // anywhere else and all three close.
+    if (check(TokenKind::KwRegion) && peek(1).kind == TokenKind::KwClass) {
+        advance();
+        c.isRegionClass = true;
+        // A PURE region class is sealed: its region has one slot size, and a subclass with more fields
+        // does not fit it. An ABSTRACT one is the opposite -- it exists to be inherited from, and its
+        // region is the shared arena of the whole family (a compiler's AST nodes, a frame's scratch
+        // objects), which is the case a single-type region cannot express. Sealing that would forbid
+        // exactly what it is for.
+        c.isSealed = !c.isAbstract;
+    }
     // `heap class X` (spec 36): X provides the program's heap. A soft keyword -- `heap` stays usable as
     // an identifier everywhere else, notably in `new T() on heap`.
     if (check(TokenKind::Identifier) && current().lexeme == "heap" &&
@@ -997,17 +1189,21 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         // itself. The class modifiers describe objects and lifetimes, so most of them say nothing
         // about one. Refused with the reason rather than ignored -- silently accepting a word that
         // does nothing teaches that it did something.
-        if (c.isAbstract)
+        if (c.isAbstract) {
             fail("a layout is abstract by nature -- it describes memory and never has an instance, "
                  "so `abstract` states what is already true", c.loc);
-        if (c.isPartial)
+        }
+        if (c.isPartial) {
             fail("a layout cannot be split across declarations: an arrangement is decided once, and "
                  "two halves could ask for two different ones", c.loc);
-        if (c.isMovable || c.isUnique || c.isPartitionable)
+        }
+        if (c.isMovable || c.isUnique || c.isPartitionable) {
             fail("ownership modifiers belong to a type that holds a value; a layout holds nothing "
                  "and is gone by the time the program runs", c.loc);
-        if (c.isHeap)
+        }
+        if (c.isHeap) {
             fail("`heap` marks the class that provides the program's heap, which a layout is not", c.loc);
+        }
         c.isLayout = true;
         c.isAbstract = true;  // abstract by nature, like an interface
     } else if (match(TokenKind::KwStruct)) {
@@ -1020,6 +1216,26 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     }
     c.nameLoc = current().loc;   // before consuming it: a diagnostic about the NAME points at the name
     c.name = expect(TokenKind::Identifier, "the type name").lexeme;
+    // `public class Sdl library SDL2 { ... }` -- the foreign library this class's externs come from.
+    //
+    // It sits on the CLASS because the class is already the unit that groups them, and because the
+    // block form that used to carry it (`extern cdecl library NAME { ... }`) parsed the name and threw
+    // it away: you declared which library a symbol belonged to and the compiler ignored you, leaving
+    // the actual linking to a `native_libs` line in another file with no connection to the
+    // declaration.
+    //
+    // An IDENTIFIER and not a string, deliberately. A name like `SDL2` cannot spell
+    // `libSDL2-2.0.so.0`, and that limitation is the point: it forces the per-platform mapping out of
+    // the source and into the manifest, which is where a thing that differs per platform belongs. The
+    // library name is OURS (a logical name we choose); a symbol is THEIRS, which is why that one is a
+    // string.
+    //
+    // A soft keyword: `library` is only read this way between a class name and the rest of its header.
+    if (check(TokenKind::Identifier) && current().lexeme == "library" &&
+        peek(1).kind == TokenKind::Identifier) {
+        advance();  // 'library'
+        c.foreignLibrary = expect(TokenKind::Identifier, "the library's logical name").lexeme;
+    }
     // Generic parameters: class Box<T>, class Pair<K, V>.
     if (match(TokenKind::Lt)) {
         do {
@@ -1042,19 +1258,22 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             // arguments count: `<T implements Comparable<T>>` demands Comparable OF T, not of anything.
             // The bound is stored in its canonical mangled form ("Comparable$T"), so the constraint check
             // at instantiation can substitute T and compare the whole thing.
-            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements))
+            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {
                 c.typeParamBounds.push_back({tp, parseBoundName()});
+            }
         } while (match(TokenKind::Comma));
         expect(TokenKind::Gt, "'>' to close type parameters");
     }
     if (match(TokenKind::KwExtends)) {
-        if (c.isStruct) fail("a struct cannot extend another type (structs have no inheritance)",
-                             c.loc);
+        if (c.isStruct) {
+            fail("a struct cannot extend another type (structs have no inheritance)", c.loc);
+        }
         c.superclass = expect(TokenKind::Identifier, "a superclass name").lexeme;
         if (match(TokenKind::Lt)) {  // generic base: extends Base<T>, or a concrete arg like Base<int>
             do {
-                if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier)
+                if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier) {
                     fail("expected a type argument but found '" + current().lexeme + "'", current().loc);
+                }
                 c.superclassTypeArgs.push_back(current().lexeme);
                 advance();
             } while (match(TokenKind::Comma));
@@ -1067,8 +1286,9 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             std::vector<std::string> args;  // generic interface args: implements Producer<Dog>
             if (match(TokenKind::Lt)) {
                 do {
-                    if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier)
+                    if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier) {
                         fail("expected a type argument but found '" + current().lexeme + "'", current().loc);
+                    }
                     args.push_back(current().lexeme);
                     advance();
                 } while (match(TokenKind::Comma));
@@ -1101,12 +1321,14 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         if (check(TokenKind::Identifier) && current().lexeme == "onArrange") {
             const SourceLocation hookLoc = current().loc;
             advance();
-            if (!c.isLayout)
+            if (!c.isLayout) {
                 fail("`onArrange` decides how a type arranges itself in memory, which is a layout's "
                      "job -- declare a `layout` and implement it from here", hookLoc);
-            if (c.onArrange != nullptr)
+            }
+            if (c.onArrange != nullptr) {
                 fail("this layout already has an `onArrange`: one arrangement, decided in one place",
                      hookLoc);
+            }
             c.onArrange = std::make_unique<ast::Block>(parseBlock());
             continue;
         }
@@ -1137,7 +1359,9 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         }
         c.members.push_back(parseMember(c.isInterface));
         // A property with a custom setter synthesizes extra members (the setter method); collect them.
-        for (auto& em : extraMembers_) c.members.push_back(std::move(em));
+        for (auto& em : extraMembers_) {
+            c.members.push_back(std::move(em));
+        }
         extraMembers_.clear();
     }
     expect(TokenKind::RBrace, "'}'");
@@ -1146,7 +1370,9 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     // Union fields are written/read freely (manual memory); make them mutable.
     if (c.isUnion) {
         for (const ast::MemberPtr& member : c.members) {
-            if (auto* f = dynamic_cast<ast::FieldDecl*>(member.get())) f->isMutable = true;
+            if (auto* f = dynamic_cast<ast::FieldDecl*>(member.get())) {
+                f->isMutable = true;
+            }
         }
     }
     return c;
@@ -1172,8 +1398,9 @@ ast::ClassDecl Parser::parseRecord() {
             std::vector<std::string> args;  // generic interface args: implements Comparable<Point3D>
             if (match(TokenKind::Lt)) {
                 do {
-                    if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier)
+                    if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier) {
                         fail("expected a type argument but found '" + current().lexeme + "'", current().loc);
+                    }
                     args.push_back(current().lexeme);
                     advance();
                 } while (match(TokenKind::Comma));
@@ -1219,7 +1446,9 @@ ast::ClassDecl Parser::parseRecord() {
     // `equals` and `hashCode` stay: neither touches String (hashCode already skips non-numeric fields
     // by design), and they are the two that make a record worth having as an immutable value -- which
     // is exactly the shape a kernel wants for a descriptor.
-    if (!freestanding_) c.members.push_back(buildRecordToString(c.name, fields, c.loc));
+    if (!freestanding_) {
+        c.members.push_back(buildRecordToString(c.name, fields, c.loc));
+    }
 
     // Body: methods and constants only -- no extra fields (spec 10).
     expect(TokenKind::LBrace, "'{'");
@@ -1231,6 +1460,12 @@ ast::ClassDecl Parser::parseRecord() {
         c.members.push_back(std::move(m));
     }
     expect(TokenKind::RBrace, "'}'");
+    // DRAINED HERE TOO. Without this a `call T.p()` written in a record body stayed in the pending
+    // list and was attributed to whichever declaration was parsed NEXT -- so the three rules `call`
+    // carries were checked against the wrong type's `applies` clause, in both directions. A record
+    // takes `applies`, so it can hold a `call`, so it has to hand its sites over like everyone else.
+    c.procCalls = std::move(pendingProcCalls_);
+    pendingProcCalls_.clear();
     return c;
 }
 
@@ -1238,7 +1473,9 @@ ast::ClassDecl Parser::parseRecord() {
 // `method namespace(...)` are both unambiguous -- after a `.` or after `method`, nothing else can start
 // there -- and the spec's own IPC example needs it, since `namespace` is one of the 134 reserved words.
 std::string Parser::expectMemberName(const char* what) {
-    if (check(TokenKind::Identifier)) return expect(TokenKind::Identifier, what).lexeme;
+    if (check(TokenKind::Identifier)) {
+        return expect(TokenKind::Identifier, what).lexeme;
+    }
     const Token& t = current();
     if (!t.lexeme.empty() && (std::isalpha(static_cast<unsigned char>(t.lexeme[0])) != 0)) {
         advance();
@@ -1256,13 +1493,17 @@ std::string Parser::parseBoundName() {
     std::vector<std::string> args;
     if (match(TokenKind::Lt)) {
         do {
-            if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier)
+            if (!isTypeKeyword(current().kind) && current().kind != TokenKind::Identifier) {
                 fail("expected a type argument but found '" + current().lexeme + "'", current().loc);
+            }
             args.push_back(current().lexeme);
             advance();
         } while (match(TokenKind::Comma));
-        if (check(TokenKind::Shr)) tokens_[pos_].kind = TokenKind::Gt;  // `>>`: one closes the bound
-        else expect(TokenKind::Gt, "'>' to close the constraint's type arguments");
+        if (check(TokenKind::Shr)) {
+            tokens_[pos_].kind = TokenKind::Gt;  // `>>`: one closes the bound
+        } else {
+            expect(TokenKind::Gt, "'>' to close the constraint's type arguments");
+        }
     }
     return ast::mangleGeneric(base, args);
 }
@@ -1273,8 +1514,9 @@ std::string Parser::parseBoundName() {
 bool Parser::atAffinityBlock() const {
     int i = 0;
     if (check(TokenKind::KwPublic) || check(TokenKind::KwPrivate) || check(TokenKind::KwProtected) ||
-        check(TokenKind::KwInternal))
+        check(TokenKind::KwInternal)) {
         i = 1;
+    }
     return peek(i).kind == TokenKind::Identifier && peek(i).lexeme == "affinity" &&
            peek(i + 1).kind == TokenKind::Identifier &&
            (peek(i + 1).lexeme == "hot" || peek(i + 1).lexeme == "cold");
@@ -1291,11 +1533,17 @@ void Parser::parseAffinityBlock(ast::ClassDecl& c) {
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
         ast::MemberPtr m = parseMember(/*inInterface=*/false);
         auto* f = dynamic_cast<ast::FieldDecl*>(m.get());
-        if (f == nullptr) fail("an 'affinity' block holds only fields (spec 32.9)", m->loc);
+        if (f == nullptr) {
+            fail("an 'affinity' block holds only fields (spec 32.9)", m->loc);
+        }
         f->affinity = kind;
-        if (f->visibility.empty()) f->visibility = vis;
+        if (f->visibility.empty()) {
+            f->visibility = vis;
+        }
         c.members.push_back(std::move(m));
-        for (auto& em : extraMembers_) c.members.push_back(std::move(em));
+        for (auto& em : extraMembers_) {
+            c.members.push_back(std::move(em));
+        }
         extraMembers_.clear();
     }
     expect(TokenKind::RBrace, "'}'");
@@ -1340,7 +1588,7 @@ struct ModifierRule {
 //
 //   visibility   who may touch this?        public private protected internal
 //   deprecation  should anyone still?       deprecated
-//   foreignness  is it even an LDP3 method? extern <conv>  unknown <world>  naked
+//   foreignness  is it even a Polaron method? extern <conv>  unknown <world>  naked
 //   binding      one per class or object?   static abstract override final
 //   lifetime     how long does it exist?    eternal lazy persistent transient
 //   access       how must it be touched?    volatile
@@ -1357,7 +1605,7 @@ struct ModifierRule {
 // Foreignness comes before ALL of it, and that is measured, not chosen: the samples write
 // `extern cdecl static method` 13 times and pico writes `unknown sysv naked static method` 15 times,
 // with no counter-example. It reads correctly too -- these say the declaration is not an ordinary
-// LDP3 method at all, which is the outermost fact about it. `async` does NOT belong with them: it
+// Polaron method at all, which is the outermost fact about it. `async` does NOT belong with them: it
 // describes how OUR method runs, not how it is called from outside, and the corpus agrees --
 // `static async method` appears 14 times and `async static` never.
 //
@@ -1367,7 +1615,7 @@ struct ModifierRule {
 // must not invent one.
 //
 // Measured against the whole corpus (samples + pico + psh) this order costs exactly TWO declarations:
-// `persist_demo.ldp3` and `cascade_graph.ldp3`. Everything else already satisfies it, including
+// `persist_demo.pol` and `cascade_graph.pol`. Everything else already satisfies it, including
 // `mutable weak` (18 uses), `static async` (14), `static comptime` (15) and `persistent mutable` (5).
 constexpr bool kEnforceCanonicalOrder = true;
 
@@ -1464,26 +1712,37 @@ void Parser::checkMemberModifiers(std::size_t from, std::size_t to, MemberShape 
     bool sawMutable = false;
     for (std::size_t i = from; i < to && i < tokens_.size(); ++i) {
         const ModifierRule* rule = nullptr;
-        for (const ModifierRule& r : kModifierRules)
+        for (const ModifierRule& r : kModifierRules) {
             if (r.kind == tokens_[i].kind) { rule = &r; break; }
+        }
         // Not a modifier: the region name after `in region`, the convention after `extern`, and so on.
-        if (rule == nullptr) continue;
-        if ((rule->carriedBy & bit) == 0)
+        if (rule == nullptr) {
+            continue;
+        }
+        if ((rule->carriedBy & bit) == 0) {
             fail(std::string("'") + rule->name + "' cannot be applied to " + what + ". It applies to " +
                      rule->belongs + ".",
                  tokens_[i].loc);
+        }
         // spec 37.8: the one contradiction the grammar cannot express, because both words are legal
         // in the same place. It used to be caught by accident -- the local parser stopped after
         // `final`, so `final mutable int x` failed with "expected a type but found 'mutable'", which
         // explains the parse and not the mistake.
-        if (rule->kind == TokenKind::KwFinal) sawFinal = true;
-        if (rule->kind == TokenKind::KwMutable) sawMutable = true;
-        if (sawFinal && sawMutable)
+        if (rule->kind == TokenKind::KwFinal) {
+            sawFinal = true;
+        }
+        if (rule->kind == TokenKind::KwMutable) {
+            sawMutable = true;
+        }
+        if (sawFinal && sawMutable) {
             fail("'final' and 'mutable' are contradictory (spec 37.8): 'final' means the value cannot "
                  "be modified after initialization, 'mutable' allows reassignment. Use one.",
                  tokens_[i].loc);
-        if (!kEnforceCanonicalOrder || rule->rank == 0) continue;
-        if (rule->rank < lastRank)
+        }
+        if (!kEnforceCanonicalOrder || rule->rank == 0) {
+            continue;
+        }
+        if (rule->rank < lastRank) {
             fail(std::string("modifier order: '") + rule->name + "' must come before '" + lastRanked +
                      "'. A declaration answers one question per group, in this order (spec 37.9): "
                      "visibility, deprecation, foreignness, binding, lifetime, access, mutability, "
@@ -1491,6 +1750,7 @@ void Parser::checkMemberModifiers(std::size_t from, std::size_t to, MemberShape 
                      groupOfRank(rule->rank) + " while '" + lastRanked + "' is " +
                      groupOfRank(lastRank) + ".",
                  tokens_[i].loc);
+        }
         lastRank = rule->rank;
         lastRanked = rule->name;
     }
@@ -1629,14 +1889,54 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         }
         if (!isExtern && check(TokenKind::KwExtern)) {  // spec 26: extern <conv> [static] method ...
             advance();
-            if (match(TokenKind::KwCdecl)) externConvention = "cdecl";
-            else if (match(TokenKind::KwStdcall)) externConvention = "stdcall";
-            else if (match(TokenKind::KwFastcall)) externConvention = "fastcall";
-            else if (match(TokenKind::KwUnknown))
+            // THE AXIS IS THE LANGUAGE, NOT THE CALLING CONVENTION. A convention is an ABI detail; the
+            // language is what actually decides name mangling, how aggregates travel, exceptions and
+            // ownership. On x86-64 the three old convention keywords all collapsed onto the one
+            // platform ABI anyway, which the reference itself admitted was "cosmetic on 64-bit".
+            //
+            //   cdecl    C
+            //   cppdecl  C++ -- C++ ABI rules for aggregates and the implicit `this`. NO mangler: the
+            //            symbol is taken literally, so a mangled name is pasted into `symbol("...")`.
+            //   rustdecl } RESERVED, and LOWERED TO THE C ABI today. Neither language has a stable
+            //   zigdecl  } native ABI: what is callable from outside Rust is `#[no_mangle] extern "C"`
+            //            and Zig's `export` is the C ABI. The words are worth having anyway -- they
+            //            declare intent, and they are what a mismatch warning can be written against.
+            //
+            // `stdcall` and `fastcall` are GONE. They named 32-bit x86 conventions (callee cleans the
+            // stack, symbol decorated `@N`; first two integers in ECX/EDX) that mean nothing on x86-64,
+            // and on this axis they are conventions rather than languages. Nothing used them.
+            //
+            // The new names are matched as identifiers rather than added to the keyword table, so no
+            // existing program loses a name it was already using.
+            if (match(TokenKind::KwCdecl)) {
+                externConvention = "cdecl";
+            } else if (check(TokenKind::Identifier) &&
+                       (current().lexeme == "cppdecl" || current().lexeme == "rustdecl" ||
+                        current().lexeme == "zigdecl")) {
+                externConvention = current().lexeme;
+                advance();
+            } else if (check(TokenKind::Identifier) && current().lexeme == "syscall" &&
+                       peek(1).kind == TokenKind::LParen) {
+                // `extern syscall(1) method write(...)`. A SYSCALL IS NOT A LANGUAGE AND HAS NO SYMBOL:
+                // it is an instruction with a NUMBER, which is why it needs its own form rather than a
+                // place on the language axis. Reusing `stdcall` for it -- the first instinct -- would
+                // have collided with what that word means in every other toolchain (a 32-bit x86
+                // convention where the callee cleans the stack), and the number is the one piece of
+                // information a calling convention has no room for.
+                advance();  // 'syscall'
+                expect(TokenKind::LParen, "'(' after 'syscall'");
+                const Token num = expect(TokenKind::IntLiteral, "the syscall NUMBER");
+                externConvention = "syscall:" + num.lexeme;
+                expect(TokenKind::RParen, "')' after the syscall number");
+            } else if (match(TokenKind::KwUnknown)) {
                 externConvention = "unknown:" + expect(TokenKind::Identifier,
                     "the foreign world (pe/elf/macho, or raw win64/sysv/aapcs) after 'unknown'").lexeme;
-            else fail("expected a calling convention (cdecl/stdcall/fastcall/unknown) after 'extern'",
-                      current().loc);
+            } else {
+                fail("expected the foreign LANGUAGE after 'extern' -- cdecl (C), cppdecl (C++), "
+                     "rustdecl, zigdecl, or `unknown <world>` for a raw ABI. (`stdcall` and `fastcall` "
+                     "were calling conventions, not languages, and meant nothing on 64-bit.)",
+                     current().loc);
+            }
             isExtern = true;
             continue;
         }
@@ -1692,8 +1992,11 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
                             isFinal, inInterface);
     }
     if (!anns.empty()) {  // attach leading annotations to the declaration they precede
-        if (auto* m = dynamic_cast<ast::MethodDecl*>(member.get())) m->annotations = std::move(anns);
-        else if (auto* f = dynamic_cast<ast::FieldDecl*>(member.get())) f->annotations = std::move(anns);
+        if (auto* m = dynamic_cast<ast::MethodDecl*>(member.get())) {
+            m->annotations = std::move(anns);
+        } else if (auto* f = dynamic_cast<ast::FieldDecl*>(member.get())) {
+            f->annotations = std::move(anns);
+        }
     }
     return member;
 }
@@ -1710,7 +2013,9 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
     if ((check(TokenKind::Identifier) &&
          (current().lexeme == "explicit" || current().lexeme == "implicit")) ||
         check(TokenKind::KwCast)) {
-        if (check(TokenKind::Identifier)) advance();  // explicit / implicit (both behave as cast<T>)
+        if (check(TokenKind::Identifier)) {
+            advance();  // explicit / implicit (both behave as cast<T>)
+        }
         expect(TokenKind::KwCast, "'cast' in a conversion operator");
         expect(TokenKind::Lt, "'<' after 'cast'");
         const ast::TypeRef target = parseTypeRef();
@@ -1721,8 +2026,11 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
         expect(TokenKind::KwReturns, "'returns'");
         m->returnType = parseTypeRef();
         currentMethodReturnType_ = m->returnType;
-        if (headerMode_ && check(TokenKind::Semicolon)) advance();  // .ldh signature: body is in the .ldb
-        else m->body = parseBlock();
+        if (headerMode_ && check(TokenKind::Semicolon)) {
+            advance();  // .polh signature: body is in the .polb
+        } else {
+            m->body = parseBlock();
+        }
         return m;
     }
     const Token op = advance();  // the operator symbol token (+, -, ==, <, [, ...)
@@ -1738,8 +2046,11 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
     expect(TokenKind::KwReturns, "'returns'");
     m->returnType = parseTypeRef();
     currentMethodReturnType_ = m->returnType;  // enables the Ok(x)/.. return-value sugar
-    if (headerMode_ && check(TokenKind::Semicolon)) advance();  // .ldh signature: body is in the .ldb
-    else m->body = parseBlock();
+    if (headerMode_ && check(TokenKind::Semicolon)) {
+        advance();  // .polh signature: body is in the .polb
+    } else {
+        m->body = parseBlock();
+    }
     return m;
 }
 
@@ -1789,8 +2100,9 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
             m->typeParams.push_back(tp);
             // Constraint (spec 15.2): `<T extends Numeric>` / `<T implements Comparable<T>>`, exactly like
             // the class-level form, type arguments included.
-            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements))
+            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {
                 m->typeParamBounds.push_back({tp, parseBoundName()});
+            }
         } while (match(TokenKind::Comma));
         expect(TokenKind::Gt, "'>' to close type parameters");
     }
@@ -1807,14 +2119,16 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     }
     expect(TokenKind::KwReturns, "'returns'");
     m->returnType = parseTypeRef();
-    if (match(TokenKind::KwComptime)) m->isComptime = true;  // suffix form (spec 28.3)
-    // region-binder escape summary carried in the .ldh: `escapes(i:slot, ...)`, slot -1 = receiver, j = param
+    if (match(TokenKind::KwComptime)) {
+        m->isComptime = true;  // suffix form (spec 28.3)
+    }
+    // region-binder escape summary carried in the .polh: `escapes(i:slot, ...)`, slot -1 = receiver, j = param
     // j. A soft keyword (only meaningful here); harmless elsewhere. Round-trips a library method's summary.
     if (check(TokenKind::Identifier) && current().lexeme == "escapes" &&
         peek(1).kind == TokenKind::LParen) {
         advance();  // 'escapes'
         advance();  // '('
-        if (!check(TokenKind::RParen))
+        if (!check(TokenKind::RParen)) {
             do {
                 int pi = std::stoi(expect(TokenKind::IntLiteral, "a parameter index in escapes(...)").lexeme);
                 expect(TokenKind::Colon, "':' in escapes(i:slot)");
@@ -1822,6 +2136,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
                 int slot = std::stoi(expect(TokenKind::IntLiteral, "a slot in escapes(...)").lexeme);
                 m->escapeSummary.emplace_back(pi, neg ? -slot : slot);
             } while (match(TokenKind::Comma));
+        }
         expect(TokenKind::RParen, "')' to close escapes(...)");
     }
     currentMethodReturnType_ = m->returnType;  // enables the Ok(x)/.. return-value sugar
@@ -1835,7 +2150,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
         parsingEnsures_ = false;
     }
     if (headerMode_ && !inInterface && check(TokenKind::Semicolon)) {
-        // A .ldh signature: no body (the implementation is in the .ldb). Not abstract -- the bundle
+        // A .polh signature: no body (the implementation is in the .polb). Not abstract -- the bundle
         // defines it; codegen for the importing program emits an external declaration. Interface
         // signatures fall through to the interface branch below (they stay abstract).
         advance();
@@ -1860,7 +2175,28 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     } else if (m->isAbstract) {
         expect(TokenKind::Semicolon, "';' (an abstract method has no body)");
     } else if (m->isExtern) {
-        expect(TokenKind::Semicolon, "';' (an extern method has no body; it links to a C symbol)");
+        // `symbol("...")` before the `;`: the linker name, when it differs from the Polaron one.
+        //
+        // A soft keyword -- `symbol` stays usable as an identifier, and is read as this only when it
+        // is followed by `(` exactly where a declaration is about to end. The argument is a STRING and
+        // not an identifier on purpose: a mangled C++ name is not an identifier in any language, and
+        // being able to paste one from `nm` or `dumpbin` is what lets a C++ binding work without a
+        // mangler of our own.
+        if (check(TokenKind::Identifier) && current().lexeme == "symbol" &&
+            peek(1).kind == TokenKind::LParen) {
+            advance();  // 'symbol'
+            expect(TokenKind::LParen, "'(' after 'symbol'");
+            const Token sym = expect(TokenKind::StringLiteral, "the linker symbol, as a string");
+            m->externSymbol = sym.lexeme;
+            if (m->externSymbol.empty()) {
+                fail("symbol(\"\") names nothing -- omit the clause to link against the method's own "
+                     "name, or give the symbol the linker will actually look for",
+                     sym.loc);
+            }
+            expect(TokenKind::RParen, "')' to close 'symbol'");
+        }
+        expect(TokenKind::Semicolon,
+               "';' (an extern method has no body; it links to a foreign symbol)");
     } else {
         m->body = parseBlock();
     }
@@ -1879,9 +2215,13 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     while (isRegionFlavorWord(current())) {
         const std::string w = current().lexeme;
         advance();
-        if (w == "growable") fieldRegionGrowable = true;
-        else if (fieldRegionFlavor.empty()) fieldRegionFlavor = w;
-        else fieldRegionFlavor += " " + w;  // two flavors -> LDP3-1710 in the analyzer
+        if (w == "growable") {
+            fieldRegionGrowable = true;
+        } else if (fieldRegionFlavor.empty()) {
+            fieldRegionFlavor = w;
+        } else {
+            fieldRegionFlavor += " " + w;  // two flavors -> Polaron-1710 in the analyzer
+        }
     }
     ast::TypeRef type = parseTypeRef();
     const std::string name = expect(TokenKind::Identifier, "a field name").lexeme;
@@ -1953,13 +2293,16 @@ ast::MemberPtr Parser::parseBidirectional(std::string visibility, bool isStatic)
     bool sawWrite = false;
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
         const std::string from = expect(TokenKind::Identifier, "a name before 'to'").lexeme;
-        if (!(check(TokenKind::Identifier) && current().lexeme == "to"))
+        if (!(check(TokenKind::Identifier) && current().lexeme == "to")) {
             fail("expected 'to' in a bidirectional property direction", current().loc);
+        }
         advance();  // 'to'
         const std::string to = expect(TokenKind::Identifier, "a name after 'to'").lexeme;
         expect(TokenKind::Colon, "':' after the direction");
         std::vector<Token> body;
-        while (!check(TokenKind::Semicolon) && !check(TokenKind::EndOfFile)) body.push_back(advance());
+        while (!check(TokenKind::Semicolon) && !check(TokenKind::EndOfFile)) {
+            body.push_back(advance());
+        }
         expect(TokenKind::Semicolon, "';' to end a bidirectional direction");
         if (to == name) {          // `<field> to <property>`: the READ direction
             field = from;
@@ -1974,10 +2317,11 @@ ast::MemberPtr Parser::parseBidirectional(std::string visibility, bool isStatic)
         }
     }
     expect(TokenKind::RBrace, "'}' to close a bidirectional property");
-    if (!sawRead || !sawWrite)
+    if (!sawRead || !sawWrite) {
         fail("a bidirectional property needs both directions ('field to " + name + "' and '" + name +
                  " to field')",
              loc);
+    }
 
     // Rewrite the bare names on the token stream, then parse each expression with a sub-parser.
     auto rewrite = [&](std::vector<Token> toks, bool writeDir) {
@@ -2006,13 +2350,16 @@ ast::MemberPtr Parser::parseBidirectional(std::string visibility, bool isStatic)
         out.push_back(eof);
         Parser sub(std::move(out), file_);
         ast::ExprPtr e = sub.parseExpression();
-        for (const ParseError& se : sub.errors()) errors_.push_back(se);
+        for (const ParseError& se : sub.errors()) {
+            errors_.push_back(se);
+        }
         return e;
     };
     ast::ExprPtr readExpr = rewrite(std::move(readToks), /*writeDir=*/false);
     ast::ExprPtr writeExpr = rewrite(std::move(writeToks), /*writeDir=*/true);
-    if (readExpr == nullptr || writeExpr == nullptr)
+    if (readExpr == nullptr || writeExpr == nullptr) {
         fail("invalid expression in bidirectional property '" + name + "'", loc);
+    }
 
     // setter: `method name$set(T value) { this.<field> = <writeExpr>; }`
     auto setter = std::make_unique<ast::MethodDecl>();
@@ -2197,7 +2544,9 @@ ast::MemberPtr Parser::parseProperty(std::string visibility, bool isStatic, ast:
         m->loc = loc; m->visibility = std::move(visibility); m->isStatic = isStatic;
         m->isAbstract = true; m->isProperty = true; m->name = name;
         m->returnType = std::move(type);
-        if (hasSet) m->propertySetter = name + "$set";
+        if (hasSet) {
+            m->propertySetter = name + "$set";
+        }
         return m;
     }
     // Auto-property -> a field (set => mutable; init / get-only => immutable).
@@ -2228,7 +2577,7 @@ std::unique_ptr<ast::ConstructorDecl> Parser::parseConstructor(std::string visib
         parsingEnsures_ = false;
     }
     if (headerMode_ && check(TokenKind::Semicolon)) {
-        advance();  // a .ldh constructor signature: no body (the .ldb defines it)
+        advance();  // a .polh constructor signature: no body (the .polb defines it)
         return c;
     }
     c->body = parseBlock();
@@ -2272,7 +2621,7 @@ std::unique_ptr<ast::MethodDecl> Parser::parseInterrupt(std::string visibility) 
     }
     currentMethodReturnType_ = m->returnType;
     if (headerMode_ && check(TokenKind::Semicolon)) {
-        advance();  // a .ldh signature: the .ldb carries the body
+        advance();  // a .polh signature: the .polb carries the body
         return m;
     }
     m->body = parseBlock();
@@ -2299,7 +2648,9 @@ std::unique_ptr<ast::DestructorDecl> Parser::parseDestructor(std::string visibil
 
 std::vector<ast::Param> Parser::parseParams(bool* variadic) {
     std::vector<ast::Param> params;
-    if (check(TokenKind::RParen)) return params;
+    if (check(TokenKind::RParen)) {
+        return params;
+    }
     do {
         // A trailing `...` (lexed as '..' then '.') marks a variadic extern (spec 26); only accepted
         // when the caller opts in via `variadic`.
@@ -2330,7 +2681,9 @@ std::vector<ast::Param> Parser::parseParams(bool* variadic) {
 // `name: expr`. A bare `expr` is positional and records an empty name. A ternary `cond ? a : b` cannot be
 // confused with one, because a named argument is exactly an identifier immediately followed by ':'.
 void Parser::parseCallArgs(ast::CallExpr& call) {
-    if (check(TokenKind::RParen)) return;
+    if (check(TokenKind::RParen)) {
+        return;
+    }
     do {
         std::string name;
         if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon) {
@@ -2374,11 +2727,15 @@ ast::TypeRef Parser::parseTypeRef() {
         do {
             ast::TypeRef elem = parseTypeRef();
             // An optional component name follows the type.
-            if (check(TokenKind::Identifier)) advance();
+            if (check(TokenKind::Identifier)) {
+                advance();
+            }
             canonical += (count++ ? "," : "") + ast::canonicalType(elem);
         } while (match(TokenKind::Comma));
         expect(TokenKind::RParen, "')' to close a tuple type");
-        if (count < 2) fail("a tuple type needs at least two components", t.loc);
+        if (count < 2) {
+            fail("a tuple type needs at least two components", t.loc);
+        }
         t.name = canonical + ")";
         return t;  // tuple components carry their own markers; no outer [] / * / &
     }
@@ -2408,9 +2765,11 @@ ast::TypeRef Parser::parseTypeRef() {
         advance();
         std::string world = expect(TokenKind::Identifier,
             "the foreign world (pe/elf/macho, or raw win64/sysv/aapcs) after 'unknown'").lexeme;
-        if (!(current().kind == TokenKind::Identifier && current().lexeme == "funcptr"))
+        if (!(current().kind == TokenKind::Identifier &&
+          (current().lexeme == "methodptr" || current().lexeme == "funcptr"))) {
             fail("`unknown <world>` on a type applies only to funcptr (e.g. `unknown pe funcptr<...>`)",
                  current().loc);
+        }
         advance();  // 'funcptr'
         std::string nm = "funcptr<$unknown:" + world + ",";
         expect(TokenKind::Lt, "'<' after funcptr");
@@ -2428,7 +2787,14 @@ ast::TypeRef Parser::parseTypeRef() {
     // an address obtained at runtime (e.g. wglGetProcAddress / GetProcAddress) cast to this type and
     // called with the plain C ABI. `funcptr` is a contextual type name (only special before '<'), so it
     // is not a reserved word. The canonical string, like function<>, is not generic-mangled.
-    if (tok.kind == TokenKind::Identifier && tok.lexeme == "funcptr" && peek(1).kind == TokenKind::Lt) {
+    // `methodptr<Ret, Args...>` -- and `funcptr` for one more release.
+    //
+    // The rename is the vocabulary rule applied where it had been missed: in Polaron they are METHODS,
+    // interrupts, procedures and lambdas, never functions. `function` stays the first-class value type;
+    // what a pointer points at is a method. The old spelling is still read so no existing program
+    // breaks on the day the word changes.
+    if (tok.kind == TokenKind::Identifier &&
+        (tok.lexeme == "methodptr" || tok.lexeme == "funcptr") && peek(1).kind == TokenKind::Lt) {
         advance();
         std::string nm = "funcptr<";
         expect(TokenKind::Lt, "'<' after funcptr");
@@ -2445,7 +2811,46 @@ ast::TypeRef Parser::parseTypeRef() {
         t.name = nm + ">";
         return t;
     }
-    if (isTypeKeyword(tok.kind) || tok.kind == TokenKind::Identifier) {
+    // THE NARROW ADDRESSES: `half address`, `short address`, `byte address` (docs/design/porting.md).
+    //
+    // A width word before `address`, because `short` and `byte` ALREADY mean 16 and 8 -- inventing an
+    // `address16` beside a `short` that means the same width would be a second vocabulary for
+    // something this language already has a word for. `half` is the only new word, and it is SOFT:
+    // special here, before `address`, and an ordinary identifier everywhere else, so no program with a
+    // variable called `half` breaks on the day this lands.
+    //
+    // Domain types, not a portability mechanism -- `address` itself stays 64 bits on every target on
+    // purpose. These are for addresses that genuinely are NOT the machine's pointer: a real-mode
+    // 16-bit offset, a 6502 zero page, a physical address stored narrow inside a hardware structure.
+    // Today those are written `uint16` and the intent is lost.
+    //
+    // The canonical name closes the space (`shortaddress`), because a type name reaches symbol
+    // mangling and a space is not something a linker can carry.
+    if (peek(1).kind == TokenKind::Identifier && peek(1).lexeme == "address") {
+        const char* narrow = nullptr;
+        if (tok.kind == TokenKind::KwShort) {
+            narrow = "shortaddress";
+        } else if (tok.kind == TokenKind::KwByte) {
+            narrow = "byteaddress";
+        } else if (tok.kind == TokenKind::Identifier && tok.lexeme == "half") {
+            narrow = "halfaddress";
+        }
+        if (narrow != nullptr) {
+            advance();  // the width word
+            advance();  // `address`
+            t.name = narrow;
+        }
+    }
+    // `itself` IS a type here, not only a receiver. Inside a transformer it names the type that will
+    // apply it, which is the whole point of the word -- and a procedure could not previously take an
+    // argument of that type, so the canonical transformer (derive five comparisons from one) could
+    // not be written at all: the socket had no way to say what it compares against. The expansion
+    // already rewrites `itself` to the applying type's name; it never got the chance because the type
+    // parser stopped one step earlier.
+    if (!t.name.empty()) {
+        // already resolved above (a narrow address); fall through to the suffixes
+    } else if (isTypeKeyword(tok.kind) || tok.kind == TokenKind::Identifier ||
+        tok.kind == TokenKind::KwItself) {
         t.name = tok.lexeme;
         advance();
         // Namespace-qualified type name: `app.Box` (a type declared in another
@@ -2519,19 +2924,31 @@ ast::Block Parser::parseBlock() {
 // args from the expected type (the method return type or the declared variable type). Those args are
 // syntactically present, so no inference is needed; the normal `new` lowering handles the rest.
 static void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected) {
-    if (expected.typeArgs.empty()) return;
+    if (expected.typeArgs.empty()) {
+        return;
+    }
     auto* call = dynamic_cast<ast::CallExpr*>(value.get());
-    if (call == nullptr) return;
+    if (call == nullptr) {
+        return;
+    }
     const auto* id = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
-    if (id == nullptr) return;
+    if (id == nullptr) {
+        return;
+    }
     const bool isResult = id->name == "Ok" || id->name == "Err";
     const bool isOption = id->name == "Some" || id->name == "None";
-    if (!isResult && !isOption) return;
+    if (!isResult && !isOption) {
+        return;
+    }
     // Only sugar against the matching sealed base with the right arity, so `Some(x)`
     // in a non-Option (or wrong-arity) context falls through to normal resolution
     // (a clear error) instead of fabricating a malformed Some$int$int instantiation.
-    if (isResult && !(expected.name == "Result" && expected.typeArgs.size() == 2)) return;
-    if (isOption && !(expected.name == "Option" && expected.typeArgs.size() == 1)) return;
+    if (isResult && !(expected.name == "Result" && expected.typeArgs.size() == 2)) {
+        return;
+    }
+    if (isOption && !(expected.name == "Option" && expected.typeArgs.size() == 1)) {
+        return;
+    }
     auto nw = std::make_unique<ast::NewExpr>();
     nw->loc = call->loc;
     nw->className = id->name;
@@ -2542,10 +2959,12 @@ static void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected
     // A payload that does not fit the value form's 64-bit slot stays boxed for now: a pointer/ref (also
     // mangling-ambiguous), Decimal (i128), or a tuple (aggregate). Sized payloads are deferred.
     bool boxedPayload = false;
-    for (const std::string& a : expected.typeArgs)
+    for (const std::string& a : expected.typeArgs) {
         if (a.find('*') != std::string::npos || a.find('&') != std::string::npos ||
-            a.find("Decimal") != std::string::npos || a.find('(') != std::string::npos)
+            a.find("Decimal") != std::string::npos || a.find('(') != std::string::npos) {
             boxedPayload = true;
+        }
+    }
     nw->location = (expected.isPointer || boxedPayload) ? "heap" : "value";
     value = std::move(nw);
 }
@@ -2580,10 +2999,11 @@ ast::StmtPtr Parser::parseStatement() {
         auto g = std::make_unique<ast::GotoStmt>();
         g->loc = current().loc;
         advance();  // 'goto'
-        if (check(TokenKind::Identifier))
+        if (check(TokenKind::Identifier)) {
             parseLabelRef(g->name);          // a label or an extern function name
-        else
+        } else {
             g->address = parseExpression();  // raw address form, e.g. `goto 0x1000;`
+        }
         expect(TokenKind::Semicolon, "';'");
         return g;
     }
@@ -2594,7 +3014,9 @@ ast::StmtPtr Parser::parseStatement() {
         int k = 1;
         if (peek(k).kind == TokenKind::Identifier) {
             ++k;
-            while (peek(k).kind == TokenKind::Dot && peek(k + 1).kind == TokenKind::Identifier) k += 2;
+            while (peek(k).kind == TokenKind::Dot && peek(k + 1).kind == TokenKind::Identifier) {
+                k += 2;
+            }
         }
         const bool validated = peek(k).kind == TokenKind::KwExpecting;
 
@@ -2612,8 +3034,9 @@ ast::StmtPtr Parser::parseStatement() {
             r->loc = current().loc;
             advance();  // 'import' / 'reimport'
             r->target = expect(TokenKind::Identifier, "a type name").lexeme;
-            while (match(TokenKind::Dot))
+            while (match(TokenKind::Dot)) {
                 r->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
+            }
             expect(TokenKind::KwExpecting, "'expecting'");
             r->expected = parseExpression();  // the value produced by the matching unimport
             r->expecting = parseExpectingTail(r->usingVars);
@@ -2630,17 +3053,26 @@ ast::StmtPtr Parser::parseStatement() {
         auto u = std::make_unique<ast::UnimportStmt>();
         u->loc = current().loc;
         u->isReimport = match(TokenKind::KwReimport);
-        if (!u->isReimport) advance();  // 'unimport'
+        if (!u->isReimport) {
+            advance();  // 'unimport'
+        }
         // Granularity (spec 30.1): `namespace N` / `bundle B` unimport a whole namespace or bundle;
         // `interface`/`enum` just name an individual type (unimported like a class).
-        if (match(TokenKind::KwNamespace)) u->granularity = 1;
-        else if (match(TokenKind::KwBundle)) u->granularity = 2;
-        else { match(TokenKind::KwInterface); match(TokenKind::KwEnum); }  // optional type-kind keyword
+        if (match(TokenKind::KwNamespace)) {
+            u->granularity = 1;
+        } else if (match(TokenKind::KwBundle)) {
+            u->granularity = 2;
+        } else {
+            match(TokenKind::KwInterface);
+            match(TokenKind::KwEnum);
+        }  // optional type-kind keyword
         u->target = expect(TokenKind::Identifier, "a type/namespace/bundle name to (un)import").lexeme;
         // Accept (and ignore) trailing modifiers (spec 30.6): a bare `force`, or `timeout(<duration>)`
         // whose argument is parsed and discarded (unimport/reimport is in-process, so the timeout is a
         // no-op). Dotted names extend the target.
-        while (match(TokenKind::Dot)) u->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
+        while (match(TokenKind::Dot)) {
+            u->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
+        }
         // `unimport bundle B from program P` (spec 30.1): the program name is accepted (the bundle is
         // resolved locally). `from` is a soft keyword.
         if (u->granularity == 2 && check(TokenKind::Identifier) && current().lexeme == "from") {
@@ -2666,7 +3098,9 @@ ast::StmtPtr Parser::parseStatement() {
         auto a = std::make_unique<ast::AbstainfromStmt>();
         a->loc = current().loc;
         a->isReinstate = match(TokenKind::KwReinstate);
-        if (!a->isReinstate) advance();  // 'abstainfrom'
+        if (!a->isReinstate) {
+            advance();  // 'abstainfrom'
+        }
         parseLabelRef(a->name);  // same method only (spec 7.11)
         expect(TokenKind::Semicolon, "';'");
         return a;
@@ -2757,7 +3191,9 @@ ast::StmtPtr Parser::parseStatement() {
         auto b = std::make_unique<ast::BreakStmt>();
         b->loc = current().loc;
         advance();
-        if (check(TokenKind::Identifier)) b->label = advance().lexeme;  // break label;
+        if (check(TokenKind::Identifier)) {
+            b->label = advance().lexeme;  // break label;
+        }
         expect(TokenKind::Semicolon, "';'");
         return b;
     }
@@ -2765,7 +3201,9 @@ ast::StmtPtr Parser::parseStatement() {
         auto c = std::make_unique<ast::ContinueStmt>();
         c->loc = current().loc;
         advance();
-        if (check(TokenKind::Identifier)) c->label = advance().lexeme;  // continue label;
+        if (check(TokenKind::Identifier)) {
+            c->label = advance().lexeme;  // continue label;
+        }
         expect(TokenKind::Semicolon, "';'");
         return c;
     }
@@ -2842,19 +3280,23 @@ ast::StmtPtr Parser::parseStatement() {
             auto cm = std::make_unique<ast::CascadeMoveStmt>();
             cm->loc = cloc;
             cm->target = parseExpression();
-            if (!(check(TokenKind::Identifier) && current().lexeme == "from"))
+            if (!(check(TokenKind::Identifier) && current().lexeme == "from")) {
                 fail("expected 'from' in cascade move", current().loc);
+            }
             advance();  // 'from'
             expect(TokenKind::KwRegion, "'region' after 'from'");
             cm->fromRegion = expect(TokenKind::Identifier, "the source region name").lexeme;
-            if (!(check(TokenKind::Identifier) && current().lexeme == "to"))
+            if (!(check(TokenKind::Identifier) && current().lexeme == "to")) {
                 fail("expected 'to' in cascade move", current().loc);
+            }
             advance();  // 'to'
             expect(TokenKind::KwRegion, "'region' after 'to'");
             cm->toRegion = expect(TokenKind::Identifier, "the destination region name").lexeme;
             if (check(TokenKind::Identifier) && current().lexeme == "leaving") {
                 advance();  // 'leaving'
-                if (check(TokenKind::Identifier) && current().lexeme == "persistents") advance();
+                if (check(TokenKind::Identifier) && current().lexeme == "persistents") {
+                    advance();
+                }
                 cm->leavingPersistents = true;
             }
             expect(TokenKind::Semicolon, "';'");
@@ -2878,11 +3320,12 @@ ast::StmtPtr Parser::parseStatement() {
             // region ALREADY runs the destructors of the objects inside it, and those destructors
             // release whatever regions those objects own. The recursion the prefix asks for is what
             // the ownership model does by itself, so the honest answer is to say so.
-            if (check(TokenKind::KwRegion))
+            if (check(TokenKind::KwRegion)) {
                 fail("'cascade' is not needed on 'release region': releasing a region already runs the "
                      "destructors of the objects in it, and those release the regions those objects "
                      "own. Write 'release region ...'.",
                      current().loc);
+            }
             auto cs = std::make_unique<ast::CascadeStmt>();
             cs->loc = cloc;
             cs->op = ast::CascadeOpKind::Release;
@@ -2912,8 +3355,9 @@ ast::StmtPtr Parser::parseStatement() {
             cs->op = ast::CascadeOpKind::Clone;
             cs->params = std::move(params);
             cs->target = parseExpression();
-            if (!(check(TokenKind::Identifier) && current().lexeme == "into"))
+            if (!(check(TokenKind::Identifier) && current().lexeme == "into")) {
                 fail("expected 'into' in cascade clone", current().loc);
+            }
             advance();  // 'into'
             cs->dest = parseExpression();
             expect(TokenKind::Semicolon, "';'");
@@ -2938,10 +3382,12 @@ ast::StmtPtr Parser::parseStatement() {
             // `println(X)`. The last name before `(` must be `println`.
             std::string last = current().lexeme;
             advance();
-            while (match(TokenKind::Dot))
+            while (match(TokenKind::Dot)) {
                 last = expect(TokenKind::Identifier, "a name after '.'").lexeme;
-            if (last != "println")
+            }
+            if (last != "println") {
                 fail("this operation does not support 'cascade' (spec 37.1)", cloc);
+            }
             auto cs = std::make_unique<ast::CascadeStmt>();
             cs->loc = cloc;
             cs->op = ast::CascadeOpKind::Println;
@@ -2972,15 +3418,17 @@ ast::StmtPtr Parser::parseStatement() {
         };
         del->target = parseDeleteTarget();
         // `delete a, b, c;` frees several objects in one statement; any placement suffix applies to all.
-        while (match(TokenKind::Comma)) del->moreTargets.push_back(parseDeleteTarget());
+        while (match(TokenKind::Comma)) {
+            del->moreTargets.push_back(parseDeleteTarget());
+        }
         // Optional placement suffix (spec 17.7 / 12.x): `from heap` is explicit; `from region R`
         // runs the destructor but leaves the memory for the region to reclaim on release. `from`
         // and `heap` are soft keywords (identifiers); only `region` is reserved.
         if (check(TokenKind::Identifier) && current().lexeme == "from") {
             advance();  // 'from'
-            if (match(TokenKind::KwRegion))
+            if (match(TokenKind::KwRegion)) {
                 del->fromRegion = parseRegionName();
-            else if (check(TokenKind::Identifier) && current().lexeme == "heap") {
+            } else if (check(TokenKind::Identifier) && current().lexeme == "heap") {
                 advance();  // 'heap'
                 del->fromHeap = true;
             } else {
@@ -2998,11 +3446,12 @@ ast::StmtPtr Parser::parseStatement() {
         advance();  // 'snapshot'
         advance();  // 'region'
         st->region = parseRegionName();
-        if (!(check(TokenKind::Identifier) && current().lexeme == "into"))
+        if (!(check(TokenKind::Identifier) && current().lexeme == "into")) {
             fail("expected 'into <snapshot>' after 'snapshot region " + st->region +
                      "'. To declare a new one, write 'RegionSnapshot k = snapshot region " +
                      st->region + " in region <name>;'.",
                  current().loc);
+        }
         advance();  // 'into'
         st->into = parseExpression();
         expect(TokenKind::Semicolon, "';'");
@@ -3011,7 +3460,7 @@ ast::StmtPtr Parser::parseStatement() {
     // `restore k into W;` / `restore k into region W;` (spec 32.2).
     //
     // A SOFT keyword, and not by preference: pico has a `restore()` METHOD that puts the video mode
-    // back (dev/core/hardware.ldp3, dev/display/font.ldp3). `saved.restore()` starts with `saved` and a
+    // back (dev/core/hardware.pol, dev/display/font.pol). `saved.restore()` starts with `saved` and a
     // bare call starts with `restore` followed by '(', so requiring an IDENTIFIER after it tells the
     // two apart exactly, and a hard keyword would have broken the kernel.
     if (check(TokenKind::Identifier) && current().lexeme == "restore" &&
@@ -3020,8 +3469,9 @@ ast::StmtPtr Parser::parseStatement() {
         st->loc = current().loc;
         advance();  // 'restore'
         st->snapshot = parseExpression();
-        if (!(check(TokenKind::Identifier) && current().lexeme == "into"))
+        if (!(check(TokenKind::Identifier) && current().lexeme == "into")) {
             fail("expected 'into <region>' after 'restore <snapshot>'", current().loc);
+        }
         advance();  // 'into'
         match(TokenKind::KwRegion);  // `into region W` and `into W` are both accepted
         st->region = parseRegionName();
@@ -3039,7 +3489,9 @@ ast::StmtPtr Parser::parseStatement() {
             // carries nothing: the field was already declared persistent, so restating it at the release
             // site resolves no ambiguity -- and this language does not make you repeat what it already
             // knows. Both spellings are accepted so existing code keeps compiling.
-            if (!match(TokenKind::KwPersistent)) match(TokenKind::KwEternal);
+            if (!match(TokenKind::KwPersistent)) {
+                match(TokenKind::KwEternal);
+            }
             rel->isPersistent = true;
             rel->target = parseExpression();
             // `release Session.hits all;` -- every entry the field has, not just this object's key.
@@ -3062,8 +3514,9 @@ ast::StmtPtr Parser::parseStatement() {
         advance();  // 'rollback'
         advance();  // 'region'
         rb->region = parseRegionName();
-        if (!(check(TokenKind::Identifier) && current().lexeme == "to"))
+        if (!(check(TokenKind::Identifier) && current().lexeme == "to")) {
             fail("expected 'to <checkpoint>' after 'rollback region <name>' (spec 17)", current().loc);
+        }
         advance();  // 'to'
         rb->checkpoint = parseExpression();
         expect(TokenKind::Semicolon, "';'");
@@ -3083,7 +3536,7 @@ ast::StmtPtr Parser::parseStatement() {
         return parseTupleDecl();
     }
     // A bare `extract X from region R;` -- parse it as an expression statement (not a `ClassName name`
-    // declaration) so the analyzer can reject the unbound extract result (LDP3-1720).
+    // declaration) so the analyzer can reject the unbound extract result (Polaron-1720).
     if (looksLikeExtractStmt()) {
         return parseExprStatement();
     }
@@ -3117,19 +3570,27 @@ ast::StmtPtr Parser::parseStatement() {
 // (a comparison): scans the `<...>` -- which may hold only type names and
 // commas -- and checks that an identifier (the variable name) follows the `>`.
 bool Parser::looksLikeGenericVarDecl() const {
-    if (!check(TokenKind::Identifier) || peek(1).kind != TokenKind::Lt) return false;
+    if (!check(TokenKind::Identifier) || peek(1).kind != TokenKind::Lt) {
+        return false;
+    }
     int i = 2;
     int depth = 1;
     while (true) {
         const TokenKind k = peek(i).kind;
-        if (k == TokenKind::EndOfFile) return false;
+        if (k == TokenKind::EndOfFile) {
+            return false;
+        }
         if (k == TokenKind::Lt) {
             ++depth;
         } else if (k == TokenKind::Gt) {
-            if (--depth == 0) break;
+            if (--depth == 0) {
+                break;
+            }
         } else if (k == TokenKind::Shr) {
             depth -= 2;  // '>>' closes two generic levels at once
-            if (depth <= 0) break;
+            if (depth <= 0) {
+                break;
+            }
         } else if (k != TokenKind::Identifier && k != TokenKind::Comma && k != TokenKind::Star &&
                    k != TokenKind::Amp && k != TokenKind::LBracket && k != TokenKind::RBracket &&
                    k != TokenKind::Dot && !isTypeKeyword(k)) {
@@ -3154,9 +3615,13 @@ bool Parser::looksLikeGenericVarDecl() const {
 // optional *, &, or [] then a name. A trailing `(`, `=` etc. (a member call or
 // assignment) does not match, so those stay expressions.
 bool Parser::looksLikeQualifiedVarDecl() const {
-    if (!check(TokenKind::Identifier) || peek(1).kind != TokenKind::Dot) return false;
+    if (!check(TokenKind::Identifier) || peek(1).kind != TokenKind::Dot) {
+        return false;
+    }
     int i = 1;
-    while (peek(i).kind == TokenKind::Dot && peek(i + 1).kind == TokenKind::Identifier) i += 2;
+    while (peek(i).kind == TokenKind::Dot && peek(i + 1).kind == TokenKind::Identifier) {
+        i += 2;
+    }
     if (peek(i).kind == TokenKind::Star || peek(i).kind == TokenKind::Amp) {
         ++i;
     } else if (peek(i).kind == TokenKind::LBracket && peek(i + 1).kind == TokenKind::RBracket) {
@@ -3168,34 +3633,47 @@ bool Parser::looksLikeQualifiedVarDecl() const {
 // A region declaration carrying a flavor / growth modifier: `pool region R`, `growable region R`,
 // `growable pool region R`. Recognized only when, after skipping one or more flavor/growth soft
 // keywords, the next token is a *type keyword* -- normally `region`, but also a non-region type
-// (e.g. `pool int x`) so the analyzer can reject the misuse with LDP3-1719. A flavor word followed by
+// (e.g. `pool int x`) so the analyzer can reject the misuse with Polaron-1719. A flavor word followed by
 // an ordinary identifier (e.g. `pool x`, a variable of a class named `pool`) is NOT a flavored decl,
 // which keeps the words usable as identifiers.
 bool Parser::looksLikeFlavoredRegionDecl() const {
-    if (!isRegionFlavorWord(current())) return false;
+    if (!isRegionFlavorWord(current())) {
+        return false;
+    }
     int i = 0;
-    while (isRegionFlavorWord(peek(i))) ++i;
+    while (isRegionFlavorWord(peek(i))) {
+        ++i;
+    }
     return isTypeKeyword(peek(i).kind);
 }
 
 // A bare `extract <lvalue> from region R;` statement. Detected before the `ClassName name` var-decl
 // dispatch so `extract d from ...` is not mis-parsed as declaring a variable `d` of a class `extract`
-// (the analyzer then rejects the unbound extract with LDP3-1720). Requires `from` to follow the lvalue,
+// (the analyzer then rejects the unbound extract with Polaron-1720). Requires `from` to follow the lvalue,
 // so `extract d = ...` (a real declaration of a class named `extract`) is left to the var-decl path.
 // A region reference in an operation (`... region R` / `... region this.field`): a local name, or a
 // region field reached through `this` (spec 17: region as a field). Mirrors the `new ... in region` form.
 std::string Parser::parseRegionName() {
     std::string r;
-    if (match(TokenKind::KwThis)) r = "this";
-    else r = expect(TokenKind::Identifier, "the region name").lexeme;
-    while (match(TokenKind::Dot)) r += "." + expect(TokenKind::Identifier, "a field name").lexeme;
+    if (match(TokenKind::KwThis)) {
+        r = "this";
+    } else {
+        r = expect(TokenKind::Identifier, "the region name").lexeme;
+    }
+    while (match(TokenKind::Dot)) {
+        r += "." + expect(TokenKind::Identifier, "a field name").lexeme;
+    }
     return r;
 }
 
 bool Parser::looksLikeExtractStmt() const {
-    if (!(check(TokenKind::Identifier) && current().lexeme == "extract")) return false;
+    if (!(check(TokenKind::Identifier) && current().lexeme == "extract")) {
+        return false;
+    }
     int i = 1;
-    if (peek(i).kind != TokenKind::Identifier && peek(i).kind != TokenKind::KwThis) return false;
+    if (peek(i).kind != TokenKind::Identifier && peek(i).kind != TokenKind::KwThis) {
+        return false;
+    }
     ++i;
     for (;;) {  // skip a member/index lvalue chain: .name, [ ... ]
         if (peek(i).kind == TokenKind::Dot && peek(i + 1).kind == TokenKind::Identifier) { i += 2; continue; }
@@ -3203,8 +3681,11 @@ bool Parser::looksLikeExtractStmt() const {
             int depth = 1;
             ++i;
             while (depth > 0 && peek(i).kind != TokenKind::EndOfFile) {
-                if (peek(i).kind == TokenKind::LBracket) ++depth;
-                else if (peek(i).kind == TokenKind::RBracket) --depth;
+                if (peek(i).kind == TokenKind::LBracket) {
+                    ++depth;
+                } else if (peek(i).kind == TokenKind::RBracket) {
+                    --depth;
+                }
                 ++i;
             }
             continue;
@@ -3219,19 +3700,27 @@ bool Parser::looksLikeExtractStmt() const {
 // and commas) and requires a `(` immediately after the closing `>`. The `(`
 // rules out comparisons -- `a < b > c` has no parenthesized call after `>`.
 bool Parser::looksLikeGenericCall() const {
-    if (!check(TokenKind::Lt)) return false;
+    if (!check(TokenKind::Lt)) {
+        return false;
+    }
     int i = 1;
     int depth = 1;
     while (true) {
         const TokenKind k = peek(i).kind;
-        if (k == TokenKind::EndOfFile) return false;
+        if (k == TokenKind::EndOfFile) {
+            return false;
+        }
         if (k == TokenKind::Lt) {
             ++depth;
         } else if (k == TokenKind::Gt) {
-            if (--depth == 0) break;
+            if (--depth == 0) {
+                break;
+            }
         } else if (k == TokenKind::Shr) {
             depth -= 2;  // '>>' closes two generic levels at once
-            if (depth <= 0) break;
+            if (depth <= 0) {
+                break;
+            }
         } else if (k != TokenKind::Identifier && k != TokenKind::Comma && k != TokenKind::Star &&
                    k != TokenKind::Amp && k != TokenKind::LBracket && k != TokenKind::RBracket &&
                    k != TokenKind::Dot && !isTypeKeyword(k)) {
@@ -3250,13 +3739,17 @@ bool Parser::looksLikeGenericCall() const {
 // the closing `)` to be immediately followed by `=`. A tuple *expression* like
 // `(a, b);` has bare identifiers (no per-component name) and no trailing `=`.
 bool Parser::looksLikeTupleDestructuring() const {
-    if (!check(TokenKind::LParen)) return false;
+    if (!check(TokenKind::LParen)) {
+        return false;
+    }
     int i = 1;
     int comps = 0;
     while (true) {
         // One component: a type, then a binding name.
         const TokenKind tk = peek(i).kind;
-        if (tk != TokenKind::Identifier && !isTypeKeyword(tk)) return false;
+        if (tk != TokenKind::Identifier && !isTypeKeyword(tk)) {
+            return false;
+        }
         ++i;
         // Optional generic arguments `<...>` (only type names / commas inside).
         if (peek(i).kind == TokenKind::Lt) {
@@ -3264,22 +3757,34 @@ bool Parser::looksLikeTupleDestructuring() const {
             ++i;
             while (depth > 0) {
                 const TokenKind k = peek(i).kind;
-                if (k == TokenKind::EndOfFile) return false;
-                if (k == TokenKind::Lt) ++depth;
-                else if (k == TokenKind::Gt) --depth;
-                else if (k == TokenKind::Shr) depth -= 2;  // '>>' closes two levels
-                else if (k != TokenKind::Identifier && k != TokenKind::Comma &&
-                         k != TokenKind::Star && k != TokenKind::Amp && k != TokenKind::LBracket &&
-                         k != TokenKind::RBracket && k != TokenKind::Dot && !isTypeKeyword(k))
+                if (k == TokenKind::EndOfFile) {
+                    return false;
+                }
+                if (k == TokenKind::Lt) {
+                    ++depth;
+                } else if (k == TokenKind::Gt) {
+                    --depth;
+                } else if (k == TokenKind::Shr) {
+                    depth -= 2;  // '>>' closes two levels
+                } else if (k != TokenKind::Identifier && k != TokenKind::Comma && k != TokenKind::Star &&
+                           k != TokenKind::Amp && k != TokenKind::LBracket && k != TokenKind::RBracket &&
+                           k != TokenKind::Dot && !isTypeKeyword(k)) {
                     return false;  // pointer/ref/array/qualified type args are allowed
+                }
                 ++i;
             }
         }
         // Optional `[]`, then optional `*` / `&`.
-        if (peek(i).kind == TokenKind::LBracket && peek(i + 1).kind == TokenKind::RBracket) i += 2;
-        if (peek(i).kind == TokenKind::Star || peek(i).kind == TokenKind::Amp) ++i;
+        if (peek(i).kind == TokenKind::LBracket && peek(i + 1).kind == TokenKind::RBracket) {
+            i += 2;
+        }
+        if (peek(i).kind == TokenKind::Star || peek(i).kind == TokenKind::Amp) {
+            ++i;
+        }
         // The binding name.
-        if (peek(i).kind != TokenKind::Identifier) return false;
+        if (peek(i).kind != TokenKind::Identifier) {
+            return false;
+        }
         ++i;
         ++comps;
         if (peek(i).kind == TokenKind::Comma) {
@@ -3368,8 +3873,11 @@ ast::StmtPtr Parser::parseForStatement() {
         advance();  // 'index'
         fe->indexName = expect(TokenKind::Identifier, "an index variable name").lexeme;
         expect(TokenKind::Comma, "',' after the index variable");
-        if (match(TokenKind::KwVar)) fe->isVar = true;
-        else fe->elemType = parseTypeRef();
+        if (match(TokenKind::KwVar)) {
+            fe->isVar = true;
+        } else {
+            fe->elemType = parseTypeRef();
+        }
         fe->varName = expect(TokenKind::Identifier, "a loop variable name").lexeme;
         expect(TokenKind::KwIn, "'in'");
         fe->iterable = parseExpression();
@@ -3420,7 +3928,7 @@ ast::StmtPtr Parser::parseForStatement() {
 
 // C#-style iteration: `foreach (T v in coll)`, `foreach (var v in coll)`, or with an index
 // `foreach (index i, T v in coll)` (spec 7.6). Identical in effect to the `for (T v in coll)` form --
-// LDP3 keeps both spellings so C# and Java/C++ programmers each find the one they expect; they lower
+// Polaron keeps both spellings so C# and Java/C++ programmers each find the one they expect; they lower
 // to the same ForeachStmt.
 ast::StmtPtr Parser::parseForeachStatement() {
     const SourceLocation loc = current().loc;
@@ -3572,9 +4080,11 @@ std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
         break;
     }
     checkMemberModifiers(modFrom, pos_, MemberShape::Local);
-    if (sawFinal) decl->isMutable = false;  // final = explicitly immutable (the default)
+    if (sawFinal) {
+        decl->isMutable = false;  // final = explicitly immutable (the default)
+    }
     // Region flavor / growth soft keywords (spec 17, flavors expansion), consumed just before the type.
-    // A second flavor word is space-joined into `regionFlavor` so the analyzer can report LDP3-1710 with
+    // A second flavor word is space-joined into `regionFlavor` so the analyzer can report Polaron-1710 with
     // both names; `growable` sets its own flag. These stay ordinary identifiers unless a type follows.
     while (isRegionFlavorWord(current())) {
         const std::string w = current().lexeme;
@@ -3584,7 +4094,7 @@ std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
         } else if (decl->regionFlavor.empty()) {
             decl->regionFlavor = w;
         } else {
-            decl->regionFlavor += " " + w;  // two flavors -> LDP3-1710 in the analyzer
+            decl->regionFlavor += " " + w;  // two flavors -> Polaron-1710 in the analyzer
         }
     }
     if (match(TokenKind::KwVar)) {
@@ -3615,7 +4125,9 @@ std::unique_ptr<ast::VarDeclStmt> Parser::parseVarDeclCore() {
     }
     expect(TokenKind::Assign, "'=' (a variable is either initialized here or declared without a value)");
     decl->init = parseExpression();
-    if (!decl->isVar) rewriteVariantCtor(decl->init, decl->type);
+    if (!decl->isVar) {
+        rewriteVariantCtor(decl->init, decl->type);
+    }
     return decl;
 }
 
@@ -3677,7 +4189,9 @@ static ast::ExprPtr cloneLValue(const ast::Expr* e) {
     }
     if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) {
         ast::ExprPtr obj = cloneLValue(m->object.get());
-        if (obj == nullptr) return nullptr;
+        if (obj == nullptr) {
+            return nullptr;
+        }
         auto n = std::make_unique<ast::MemberExpr>();
         n->loc = m->loc;
         n->member = m->member;
@@ -3687,7 +4201,9 @@ static ast::ExprPtr cloneLValue(const ast::Expr* e) {
     if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
         ast::ExprPtr arr = cloneLValue(ix->array.get());
         ast::ExprPtr idx = cloneLValue(ix->index.get());
-        if (arr == nullptr || idx == nullptr) return nullptr;
+        if (arr == nullptr || idx == nullptr) {
+            return nullptr;
+        }
         auto n = std::make_unique<ast::IndexExpr>();
         n->loc = ix->loc;
         n->array = std::move(arr);
@@ -3720,20 +4236,33 @@ ast::StmtPtr Parser::parseSimpleStatement() {
     }
     // Compound assignment: `x += e` desugars to `x = x + e` (spec 6).
     std::string compoundOp;
-    if (check(TokenKind::PlusEq)) compoundOp = "+";
-    else if (check(TokenKind::MinusEq)) compoundOp = "-";
-    else if (check(TokenKind::StarEq)) compoundOp = "*";
-    else if (check(TokenKind::SlashEq)) compoundOp = "/";
-    else if (check(TokenKind::PercentEq)) compoundOp = "%";
-    else if (check(TokenKind::AmpEq)) compoundOp = "&";
-    else if (check(TokenKind::PipeEq)) compoundOp = "|";
-    else if (check(TokenKind::CaretEq)) compoundOp = "^";
-    else if (check(TokenKind::ShlEq)) compoundOp = "<<";
-    else if (check(TokenKind::ShrEq)) compoundOp = ">>";
+    if (check(TokenKind::PlusEq)) {
+        compoundOp = "+";
+    } else if (check(TokenKind::MinusEq)) {
+        compoundOp = "-";
+    } else if (check(TokenKind::StarEq)) {
+        compoundOp = "*";
+    } else if (check(TokenKind::SlashEq)) {
+        compoundOp = "/";
+    } else if (check(TokenKind::PercentEq)) {
+        compoundOp = "%";
+    } else if (check(TokenKind::AmpEq)) {
+        compoundOp = "&";
+    } else if (check(TokenKind::PipeEq)) {
+        compoundOp = "|";
+    } else if (check(TokenKind::CaretEq)) {
+        compoundOp = "^";
+    } else if (check(TokenKind::ShlEq)) {
+        compoundOp = "<<";
+    } else if (check(TokenKind::ShrEq)) {
+        compoundOp = ">>";
+    }
     if (!compoundOp.empty()) {
         const Token op = advance();
         ast::ExprPtr lhs = cloneLValue(expr.get());
-        if (lhs == nullptr) fail("unsupported target for compound assignment", op.loc);
+        if (lhs == nullptr) {
+            fail("unsupported target for compound assignment", op.loc);
+        }
         auto bin = std::make_unique<ast::BinaryExpr>();
         bin->loc = op.loc;
         bin->op = compoundOp;
@@ -3775,7 +4304,9 @@ ast::ExprPtr Parser::parseExpression() {
         advance();  // '..' or '..='
         r->start = std::move(e);
         r->end = parseTernary();
-        if (match(TokenKind::KwStep)) r->step = parseTernary();
+        if (match(TokenKind::KwStep)) {
+            r->step = parseTernary();
+        }
         return r;
     }
     return e;
@@ -3791,7 +4322,9 @@ ast::ExprPtr Parser::parseTernary() {
         nc->lhs = std::move(cond);
         cond = std::move(nc);
     }
-    if (!check(TokenKind::Question)) return cond;
+    if (!check(TokenKind::Question)) {
+        return cond;
+    }
     auto t = std::make_unique<ast::TernaryExpr>();
     t->loc = current().loc;
     advance();  // '?'
@@ -3819,12 +4352,16 @@ ast::ExprPtr Parser::parseInterpolation(const std::string& raw, SourceLocation l
                 if (raw[j] == '{') {
                     ++depth;
                 } else if (raw[j] == '}') {
-                    if (--depth == 0) break;
+                    if (--depth == 0) {
+                        break;
+                    }
                 }
                 exprSrc += raw[j];
                 ++j;
             }
-            if (depth != 0) fail("unterminated '{' in interpolated string", loc);
+            if (depth != 0) {
+                fail("unterminated '{' in interpolated string", loc);
+            }
 
             e->literals.push_back(lit);
             lit.clear();
@@ -3879,7 +4416,9 @@ ast::ExprPtr Parser::parseInterpolation(const std::string& raw, SourceLocation l
             if (parsed == nullptr) {
                 // The sub-parser's own message is the precise one; this generic one only speaks when
                 // it said nothing, so a single fault is not reported twice.
-                if (subReported) throw errors_.back();
+                if (subReported) {
+                    throw errors_.back();
+                }
                 fail("invalid expression in interpolation: {" + exprSrc + "}", exprLoc);
             }
             e->exprs.push_back(std::move(parsed));
@@ -3903,13 +4442,18 @@ ast::ExprPtr Parser::parseBinary(int minPrec) {
         auto ce = std::make_unique<ast::CastExpr>();
         ce->loc = kw.loc;
         ce->operand = std::move(left);
-        if (kw.kind == TokenKind::KwIs) ce->op = 1;                       // `is`  -> boolean
-        else ce->op = match(TokenKind::Question) ? 2 : 0;                 // `as?` -> nullable, `as` -> checked
+        if (kw.kind == TokenKind::KwIs) {
+            ce->op = 1;  // `is`  -> boolean
+        } else {
+            ce->op = match(TokenKind::Question) ? 2 : 0;  // `as?` -> nullable, `as` -> checked
+        }
         const Token& tt = current();
         if (isTypeKeyword(tt.kind) || tt.kind == TokenKind::Identifier) {
             ce->targetType = tt.lexeme;
             advance();
-            if (match(TokenKind::Star)) ce->targetType += "*";
+            if (match(TokenKind::Star)) {
+                ce->targetType += "*";
+            }
         } else {
             fail("expected a type after 'is'/'as'", tt.loc);
         }
@@ -3917,7 +4461,9 @@ ast::ExprPtr Parser::parseBinary(int minPrec) {
     }
     for (;;) {
         const int prec = binaryPrec(current().kind);
-        if (prec == 0 || prec < minPrec) break;
+        if (prec == 0 || prec < minPrec) {
+            break;
+        }
         const Token op = advance();
         ast::ExprPtr right = parseBinary(prec + 1);
         auto bin = std::make_unique<ast::BinaryExpr>();
@@ -3954,10 +4500,13 @@ ast::ExprPtr Parser::parseUnary() {
         c->loc = current().loc;
         advance();  // 'cast'
         expect(TokenKind::Lt, "'<' after 'cast'");
-        if (match(TokenKind::KwVolatile)) c->targetVolatile = true;  // cast<volatile T*>: MMIO (spec 37.5)
+        if (match(TokenKind::KwVolatile)) {
+            c->targetVolatile = true;  // cast<volatile T*>: MMIO (spec 37.5)
+        }
         const Token& tt = current();
         if (tt.kind == TokenKind::KwFunction || tt.kind == TokenKind::KwUnknown ||  // [unknown-abi]
-            (tt.kind == TokenKind::Identifier && tt.lexeme == "funcptr" &&
+            (tt.kind == TokenKind::Identifier &&
+             (tt.lexeme == "methodptr" || tt.lexeme == "funcptr") &&
              peek(1).kind == TokenKind::Lt)) {
             // A function<...> / funcptr<...> / unknown-world-funcptr target carries its own angle
             // brackets: parse the full
@@ -3966,7 +4515,18 @@ ast::ExprPtr Parser::parseUnary() {
         } else if (isTypeKeyword(tt.kind) || tt.kind == TokenKind::Identifier) {
             c->targetType = tt.lexeme;
             advance();
-            if (match(TokenKind::Star)) c->targetType += "*";  // cast<T*>: pointer target (spec 17.8)
+            // `cast<half address>` and friends: a narrow address is TWO tokens, and this branch reads
+            // one. Without it the declaration `half address h` parsed and the cast that has to produce
+            // its value did not -- which would have made the type declarable and unusable, the worst
+            // of the three possible states and the same one static region fields were left in.
+            if (check(TokenKind::Identifier) && current().lexeme == "address" &&
+                (c->targetType == "half" || c->targetType == "short" || c->targetType == "byte")) {
+                c->targetType += "address";   // halfaddress / shortaddress / byteaddress
+                advance();
+            }
+            if (match(TokenKind::Star)) {
+                c->targetType += "*";  // cast<T*>: pointer target (spec 17.8)
+            }
         } else {
             fail("expected a type inside cast<...>", tt.loc);
         }
@@ -3998,8 +4558,9 @@ ast::ExprPtr Parser::parseUnary() {
         ex->loc = current().loc;
         advance();  // 'extract'
         ex->target = parsePostfix();  // an lvalue: identifier / this.field / a[i]
-        if (!(check(TokenKind::Identifier) && current().lexeme == "from"))
+        if (!(check(TokenKind::Identifier) && current().lexeme == "from")) {
             fail("expected 'from region <name>' after the object to extract (spec 17)", current().loc);
+        }
         advance();  // 'from'
         expect(TokenKind::KwRegion, "'region' after 'from' in an extract");
         ex->region = parseRegionName();
@@ -4012,7 +4573,9 @@ ast::ExprPtr Parser::parseUnary() {
         mv->loc = current().loc;
         advance();
         mv->operand = parseUnary();
-        if (match(TokenKind::KwAs)) mv->castType = parseTypeRef().name;
+        if (match(TokenKind::KwAs)) {
+            mv->castType = parseTypeRef().name;
+        }
         // Optional move qualifiers (spec 19.3), in any order: `from region R0`, `to`/`into region R`,
         // and `carrying`/`leaving`/`releasing persistents`. `from`/`to`/`into`/`carrying`/`leaving`/
         // `releasing`/`persistents` are soft keywords.
@@ -4023,13 +4586,18 @@ ast::ExprPtr Parser::parseUnary() {
                 const std::string kw = advance().lexeme;  // from / to / into
                 advance();                                // 'region'
                 const std::string rgn = parseRegionName();
-                if (kw == "from") mv->fromRegion = rgn;
-                else mv->toRegion = rgn;  // to / into region: relocate here
+                if (kw == "from") {
+                    mv->fromRegion = rgn;
+                } else {
+                    mv->toRegion = rgn;  // to / into region: relocate here
+                }
             } else if (check(TokenKind::Identifier) &&
                        (current().lexeme == "carrying" || current().lexeme == "leaving" ||
                         current().lexeme == "releasing")) {
                 const std::string kw = advance().lexeme;
-                if (check(TokenKind::Identifier) && current().lexeme == "persistents") advance();
+                if (check(TokenKind::Identifier) && current().lexeme == "persistents") {
+                    advance();
+                }
                 mv->persistMode = kw == "leaving" ? 1 : kw == "releasing" ? 2 : 0;
             } else {
                 break;
@@ -4191,8 +4759,9 @@ ast::ExprPtr Parser::parseRegionInit() {
             if (!check(TokenKind::RBrace)) {
                 do {
                     std::string name = expect(TokenKind::Identifier, "a type name").lexeme;
-                    while (match(TokenKind::Dot))
+                    while (match(TokenKind::Dot)) {
                         name += "." + expect(TokenKind::Identifier, "a name after '.'").lexeme;
+                    }
                     out.push_back(std::move(name));
                 } while (match(TokenKind::Comma));
             }
@@ -4202,9 +4771,13 @@ ast::ExprPtr Parser::parseRegionInit() {
         do {
             ast::RegionInitExpr::Range r;
             r.address = parseExpression();
-            if (match(TokenKind::KwAccepts)) braceTypeSet(r.accepts);
-            else if (match(TokenKind::KwRejects)) braceTypeSet(r.rejects);
-            else fail("expected 'accepts' or 'rejects' after a range address", current().loc);
+            if (match(TokenKind::KwAccepts)) {
+                braceTypeSet(r.accepts);
+            } else if (match(TokenKind::KwRejects)) {
+                braceTypeSet(r.rejects);
+            } else {
+                fail("expected 'accepts' or 'rejects' after a range address", current().loc);
+            }
             e->ranges.push_back(std::move(r));
         } while (match(TokenKind::Comma));
         expect(TokenKind::RBrace, "'}' to close atMultiple");
@@ -4235,7 +4808,9 @@ ast::ExprPtr Parser::parseRegionInit() {
 // After a numeric literal, an identifier means a literal suffix (spec 17.10):
 // `64 kilobytes` parses as kilobytes(64). Otherwise the literal stands alone.
 ast::ExprPtr Parser::maybeLiteralSuffix(ast::ExprPtr literal) {
-    if (!check(TokenKind::Identifier)) return literal;
+    if (!check(TokenKind::Identifier)) {
+        return literal;
+    }
     auto call = std::make_unique<ast::CallExpr>();
     call->loc = current().loc;
     call->fromSuffix = true;
@@ -4260,10 +4835,11 @@ ast::ExprPtr Parser::parsePrimary() {
         advance();  // 'snapshot'
         advance();  // 'region'
         e->region = parseRegionName();
-        if (!match(TokenKind::KwIn))
+        if (!match(TokenKind::KwIn)) {
             fail("a snapshot needs somewhere to live: write 'snapshot region " + e->region +
                      " in region <name>'. The bytes are the caller's, and releasing them is too.",
                  current().loc);
+        }
         expect(TokenKind::KwRegion, "'region' after 'in'");
         e->home = parseRegionName();
         return e;
@@ -4436,9 +5012,9 @@ ast::ExprPtr Parser::parsePrimary() {
             // `itself.member` is an ordinary access on the declared type, resolved in the
             // implicit-this pass where the declaration's type is still in hand.
             if (peek(1).kind == TokenKind::Dot && peek(2).kind == TokenKind::Identifier &&
-                (peek(2).lexeme == "allocate" || peek(2).lexeme == "at" ||
-                 peek(2).lexeme == "atMultiple"))
+                (peek(2).lexeme == "allocate" || peek(2).lexeme == "at" || peek(2).lexeme == "atMultiple")) {
                 return parseRegionInit();
+            }
             // BARE `itself` is the self-reference pronoun the keyword reference already describes:
             // "refers to the entity being declared". Inside a lambda that entity is the lambda, so
             // `itself(...)` is how an anonymous function recurses.
@@ -4523,8 +5099,9 @@ ast::ExprPtr Parser::parsePrimary() {
 std::unique_ptr<ast::Block> Parser::parseExpectingTail(std::vector<std::string>& usingVars) {
     if (match(TokenKind::KwUsing)) {
         usingVars.push_back(expect(TokenKind::Identifier, "a context variable name").lexeme);
-        while (match(TokenKind::Comma))
+        while (match(TokenKind::Comma)) {
             usingVars.push_back(expect(TokenKind::Identifier, "a context variable name").lexeme);
+        }
     }
     return std::make_unique<ast::Block>(parseBlock());
 }
@@ -4536,7 +5113,9 @@ ast::ExprPtr Parser::parseUnimportExpr() {
     e->loc = current().loc;
     expect(TokenKind::KwUnimport, "'unimport'");
     e->target = expect(TokenKind::Identifier, "a type name").lexeme;
-    while (match(TokenKind::Dot)) e->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
+    while (match(TokenKind::Dot)) {
+        e->target += "." + expect(TokenKind::Identifier, "a name").lexeme;
+    }
     expect(TokenKind::KwExpecting, "'expecting'");
     e->expecting = parseExpectingTail(e->usingVars);
     return e;
@@ -4558,7 +5137,9 @@ ast::ExprPtr Parser::parseNew() {
     // `nullable` is dropped from the element type name rather than carried: an element slot is
     // pointer-sized either way, and null IS the zero the array is already initialised to. It is the
     // DECLARED type that makes the caller check, and that is on the field, not here.
-    if (check(TokenKind::KwNullable)) advance();
+    if (check(TokenKind::KwNullable)) {
+        advance();
+    }
     // Base type: a primitive keyword (int/char/...) or a class name.
     std::string typeName;
     if (isTypeKeyword(current().kind) || check(TokenKind::Identifier)) {
@@ -4641,4 +5222,4 @@ ast::ExprPtr Parser::parseNew() {
     return e;
 }
 
-}  // namespace ldp3
+}  // namespace polaron

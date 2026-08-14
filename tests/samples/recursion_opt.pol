@@ -1,0 +1,33 @@
+import System.IO.Console;
+program RecursionOpt;
+
+// Exercises polc's recursive-inlining pass (compiled with -O3). Self-recursive (fib, factorial)
+// and mutually-recursive (isEven/isOdd) functions must produce the same results optimized as not.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method fib(int n) returns int {
+                if (n < 2) { return n; }
+                return Main.fib(n - 1) + Main.fib(n - 2);
+            }
+            public static method fact(int n) returns int {
+                if (n < 2) { return 1; }
+                return n * Main.fact(n - 1);
+            }
+            public static method isEven(int n) returns int {
+                if (n == 0) { return 1; }
+                return Main.isOdd(n - 1);
+            }
+            public static method isOdd(int n) returns int {
+                if (n == 0) { return 0; }
+                return Main.isEven(n - 1);
+            }
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("fib=%d fact=%d even=%d\n",
+                                         Main.fib(20), Main.fact(12), Main.isEven(50));
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,70 @@
+import System.IO.Console;
+program PointerArith;
+
+// Pointer arithmetic (spec 27): `p + n`, `p - n`, `p++`, `p--` step by whole ELEMENTS, and `q - p` is
+// the number of elements between two pointers -- the C semantics, with Polaron's rule that a pointer is an
+// opt-in to sharing rather than the default.
+//
+// It is allowed on every pointee type, but a pointer to a CLASS gets a warning: such a pointer normally
+// points at one object, not at an array of them, so stepping it walks off the object. (Compile this file
+// and you will see that warning for `dp++` -- the program still compiles and runs; the warning is the
+// spec's whole point.)
+
+public bundle main {
+    public namespace app {
+
+        public class Dog {
+            private mutable int age;
+
+            public constructor Dog(int age) {
+                this.age = age;
+            }
+
+            public method age() returns int {
+                return this.age;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                int[] xs = new int[5]();
+                mutable int i = 0;
+                while (i < 5) {
+                    xs[i] = i * 10;
+                    i = i + 1;
+                }
+
+                // A pointer into the array, walked by whole elements.
+                mutable int* p = &xs[0];
+                p++;                               // -> xs[1]
+                System.IO.Console.printf("p1=%d\n", p[0]);
+                p = p + 2;                         // -> xs[3]
+                System.IO.Console.printf("p3=%d\n", p[0]);
+                p--;                               // -> xs[2]
+                System.IO.Console.printf("p2=%d\n", p[0]);
+
+                // The distance between two pointers is an element count, not a byte count.
+                int* first = &xs[0];
+                long gap = p - first;
+                System.IO.Console.printf("gap=%d\n", cast<int>(gap));
+
+                // Stepping backwards from a later element.
+                mutable int* q = &xs[4];
+                q = q - 3;                         // -> xs[1]
+                System.IO.Console.printf("q=%d\n", q[0]);
+
+                // A pointer to a class: allowed, warned about (see the header comment).
+                Dog rex = new Dog(7) on heap;
+                mutable Dog* dp = rex;
+                System.IO.Console.printf("age=%d\n", dp.age());
+                dp++;                              // walks off the object -- the compiler says so
+                dp--;                              // ...and back
+                System.IO.Console.printf("back=%d\n", dp.age());
+
+                delete rex;
+                delete xs;
+                return;
+            }
+        }
+    }
+}

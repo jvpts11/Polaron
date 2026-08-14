@@ -1,0 +1,22 @@
+import System.IO.Console;
+import System.Security.Caesar;
+import System.Security.Vigenere;
+program Ciphers;
+
+// Classic ciphers (spec 34) in pure Polaron. Prints:
+//   caesar=Khoor, Zruog! back=Hello, World! rot=Hello
+//   vig=LXFOPVEFRNHR back=ATTACKATDAWN
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                String ce = Caesar.encrypt("Hello, World!", 3);
+                System.IO.Console.printf("caesar=%s back=%s rot=%s\n",
+                    ce, Caesar.decrypt(ce, 3), Caesar.rot13(Caesar.rot13("Hello")));
+                String ve = Vigenere.encrypt("ATTACKATDAWN", "LEMON");
+                System.IO.Console.printf("vig=%s back=%s\n", ve, Vigenere.decrypt(ve, "LEMON"));
+                return;
+            }
+        }
+    }
+}

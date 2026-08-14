@@ -4,7 +4,7 @@
 #include <vector>
 #include "lsp/json.h"
 
-namespace ldp3::lsp {
+namespace polaron::lsp {
 
 // One declaration found somewhere in the project. The workspace index holds these so definition,
 // references and rename can answer about names declared in files the editor never opened.
@@ -16,7 +16,7 @@ struct IndexEntry {
     std::string detail;   // the declaration as it would be written -- what hover shows
 };
 
-// The LDP3 language server: reads LSP (JSON-RPC over stdio, Content-Length framed) and answers with live
+// The Polaron language server: reads LSP (JSON-RPC over stdio, Content-Length framed) and answers with live
 // lex/parse diagnostics, a document-symbol outline, keyword completion, go-to-definition, hover,
 // references, rename, and an extract-method analysis, reusing the compiler's front-end.
 class Server {
@@ -26,7 +26,7 @@ class Server {
  private:
     std::map<std::string, std::string> documents_;  // uri -> full text of an OPEN document
     std::vector<IndexEntry> index_;                 // declarations across the whole project
-    std::vector<std::string> projectFiles_;         // every .ldp3 found under the root
+    std::vector<std::string> projectFiles_;         // every .pol found under the root
     std::string rootPath_;                          // filesystem path of the workspace root
     bool initialized_ = false;
 
@@ -46,4 +46,4 @@ class Server {
     void notify(const std::string& method, Json params);
 };
 
-}  // namespace ldp3::lsp
+}  // namespace polaron::lsp

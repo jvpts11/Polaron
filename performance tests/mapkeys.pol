@@ -1,0 +1,51 @@
+import System.IO.Console;
+import System.Collections.HashMap;
+program MapKeys;
+
+// The map benchmark that says something. `coll_map` used keys 0..N, which is the BEST case for an
+// identity hash: perfect distribution, zero collisions, sequential writes. Real keys are not like
+// that, so this runs three distributions and reports each separately:
+//
+//   seq       0,1,2,...        -- the flattering case, kept for comparison
+//   random    an LCG stream    -- what a hash is actually for
+//   patterned i*64             -- structure in the LOW BITS, which is exactly what a power-of-two
+//                                 mask over an unmixed hash cannot survive: aligned pointers,
+//                                 prefixed ids, anything stepping by a power of two.
+
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method fill(HashMap<int, int>* m, int n, int mode) returns int {
+                mutable uint s = cast<uint>(12345);
+                mutable int acc = 0;
+                for (mutable int i = 0; i < n; i++) {
+                    mutable int k = i;
+                    if (mode == 1) { s = s * 1103515245 + 12345; k = cast<int>(s >> 8); }
+                    if (mode == 2) { k = i * 64; }
+                    m.put(k, i);
+                }
+                s = cast<uint>(12345);
+                for (mutable int i = 0; i < n; i++) {
+                    mutable int k = i;
+                    if (mode == 1) { s = s * 1103515245 + 12345; k = cast<int>(s >> 8); }
+                    if (mode == 2) { k = i * 64; }
+                    acc = (acc + m.get(k)) % 1000000007;
+                }
+                return acc;
+            }
+            public static method main(string[] args) returns void {
+                HashMap<int, int>* a = new HashMap<int, int>() on heap;
+                int r0 = Main.fill(a, 2000000, 0);
+                delete a;
+                HashMap<int, int>* b = new HashMap<int, int>() on heap;
+                int r1 = Main.fill(b, 2000000, 1);
+                delete b;
+                HashMap<int, int>* c = new HashMap<int, int>() on heap;
+                int r2 = Main.fill(c, 400000, 2);
+                delete c;
+                System.IO.Console.printf("seq=%d rand=%d patt=%d\n", r0, r1, r2);
+                return;
+            }
+        }
+    }
+}

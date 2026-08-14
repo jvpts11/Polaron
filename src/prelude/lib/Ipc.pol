@@ -1,0 +1,359 @@
+// System.Ipc in its own literal: the cross-program IPC protocol (spec 2.8) and the capability tokens
+// (spec 32.7) it enforces. The transport (Ipc.*) is a named pipe / Unix socket named after the program.
+    public namespace Ipc {
+        // A cross-program call failed: the peer threw, refused a capability, or the connection broke.
+        public class IpcError extends Exception {
+            private mutable String text;
+            public constructor IpcError(String text) {
+                this.text = text;
+            }
+            public override method message() returns String {
+                return this.text;
+            }
+        }
+        // The frame kinds. A request travels in EITHER direction: when a program lends out a T*, the
+        // peer calls back into it on the same connection.
+        public class IpcProto {
+            public static method kCreate() returns int { return 1; }
+            public static method kCall() returns int { return 2; }
+            public static method kRelease() returns int { return 3; }
+            public static method kCapability() returns int { return 4; }
+            public static method kReplyOk() returns int { return 10; }
+            public static method kReplyError() returns int { return 11; }
+            // An error reply carrying `text`.
+            public static method errorFrame(String text) returns String {
+                IpcWriter w = new IpcWriter() on heap;
+                w.putByte(IpcProto.kReplyError());
+                w.putString(text);
+                String f = w.toFrame();
+                delete w;
+                return f;
+            }
+            // An empty OK reply (a void return).
+            public static method okFrame() returns String {
+                IpcWriter w = new IpcWriter() on heap;
+                w.putByte(IpcProto.kReplyOk());
+                String f = w.toFrame();
+                delete w;
+                return f;
+            }
+        }
+        // Builds a frame: scalars little-endian, strings length-prefixed. Both sides were compiled
+        // against the same header, so the wire is schema-driven -- no per-value type tags.
+        public class IpcWriter {
+            private mutable StringBuilder sb;
+            public constructor IpcWriter() {
+                this.sb = new StringBuilder() on heap;
+            }
+            public method putByte(int b) returns void {
+                this.sb.appendChar(cast<char>(b & 255));
+                return;
+            }
+            public method putLong(long v) returns void {
+                mutable int i = 0;
+                while (i < 8) {
+                    this.putByte(cast<int>((v >> (i * 8)) & cast<long>(255)));
+                    i = i + 1;
+                }
+                return;
+            }
+            public method putInt(int v) returns void {
+                this.putLong(cast<long>(v));
+                return;
+            }
+            public method putBoolean(boolean b) returns void {
+                if (b) {
+                    this.putByte(1);
+                } else {
+                    this.putByte(0);
+                }
+                return;
+            }
+            public method putChar(char c) returns void {
+                this.putByte(cast<int>(c) & 255);
+                return;
+            }
+            public method putDouble(double d) returns void {
+                this.putLong(Bits.doubleToLong(d));
+                return;
+            }
+            public method putString(String s) returns void {
+                this.putInt(s.length());
+                this.sb.append(s);
+                return;
+            }
+            public method toFrame() returns String {
+                return this.sb.toString();
+            }
+            public destructor ~IpcWriter() returns void {
+                delete this.sb;
+            }
+        }
+        // Reads a frame back, in the same order it was written.
+        public class IpcReader {
+            private mutable String buf;
+            private mutable int pos;
+            public constructor IpcReader(String frame) {
+                this.buf = frame;
+                this.pos = 0;
+            }
+            public method atEnd() returns boolean {
+                return this.pos >= this.buf.length();
+            }
+            public method getByte() returns int {
+                int b = cast<int>(this.buf.charAt(this.pos)) & 255;
+                this.pos = this.pos + 1;
+                return b;
+            }
+            public method getLong() returns long {
+                mutable long v = cast<long>(0);
+                mutable int i = 0;
+                while (i < 8) {
+                    v = v | (cast<long>(this.getByte()) << (i * 8));
+                    i = i + 1;
+                }
+                return v;
+            }
+            public method getInt() returns int {
+                return cast<int>(this.getLong());
+            }
+            public method getBoolean() returns boolean {
+                return this.getByte() != 0;
+            }
+            public method getChar() returns char {
+                return cast<char>(this.getByte());
+            }
+            public method getDouble() returns double {
+                return Bits.longToDouble(this.getLong());
+            }
+            public method getString() returns String {
+                int n = this.getInt();
+                String s = this.buf.substring(this.pos, this.pos + n);
+                this.pos = this.pos + n;
+                return s;
+            }
+        }
+        // The program's own dispatcher. A program that exports nothing answers every request with an
+        // error; a program that takes part in IPC has this body REWRITTEN by the compiler to call the
+        // dispatcher it synthesized for that program's own classes.
+        public class IpcRuntime {
+            public static method handle(String frame) returns String {
+                return IpcProto.errorFrame("this program exports nothing over IPC");
+            }
+        }
+        // One connection. request() sends a frame and waits for its reply -- and while it waits, an
+        // inbound request is a CALLBACK into an object this program lent out (a T* it passed), so it is
+        // served right there and the wait resumes. Both peers are single-threaded over the channel, so
+        // the next reply on the wire always belongs to the innermost outstanding request; no ids needed.
+        public class IpcChannel {
+            private mutable long conn;
+            public constructor IpcChannel(long conn) {
+                this.conn = conn;
+            }
+            public method connection() returns long {
+                return this.conn;
+            }
+            public method request(String frame) throws(IpcError) returns IpcReader {
+                Ipc.send(this.conn, frame);
+                while (true) {
+                    String msg = Ipc.recv(this.conn);
+                    if (msg.length() == 0) {
+                        throw new IpcError("the peer closed the connection") on heap;
+                    }
+                    IpcReader r = new IpcReader(msg) on heap;
+                    int kind = r.getByte();
+                    if (kind == IpcProto.kReplyOk()) {
+                        return r;
+                    }
+                    if (kind == IpcProto.kReplyError()) {
+                        String m = r.getString();
+                        delete r;
+                        throw new IpcError(m) on heap;
+                    }
+                    delete r;
+                    String reply = IpcRuntime.handle(msg);   // a callback into an object we lent out
+                    Ipc.send(this.conn, reply);
+                }
+            }
+            public method close() returns void {
+                Ipc.close(this.conn);
+                return;
+            }
+        }
+        // A capability granted by another program (spec 2.8 + 32.7): unforgeable because the ISSUER
+        // remembers the nonce it minted and checks it on every call that demands the token.
+        public class BundleAccessToken {
+            private mutable long nonceValue;
+            private mutable String capabilityName;
+            public constructor BundleAccessToken(long nonce, String capability) {
+                this.nonceValue = nonce;
+                this.capabilityName = capability;
+            }
+            public method nonce() returns long {
+                return this.nonceValue;
+            }
+            public method capability() returns String {
+                return this.capabilityName;
+            }
+            // A refused request yields a token that was never granted, rather than null. Narrowing would
+            // make `nullable BundleAccessToken*` workable at the call site, but it would also collapse
+            // "refused" and "absent" into one shape; a token that answers `granted()` keeps the refusal a
+            // value you can carry, log and attribute.
+            public method granted() returns boolean {
+                return this.nonceValue != cast<long>(0);
+            }
+        }
+        // The client's view of another running program.
+        public class ProgramHandle {
+            private mutable long conn;
+            public constructor ProgramHandle(long conn) {
+                this.conn = conn;
+            }
+            public method connection() returns long {
+                return this.conn;
+            }
+            // The spec's fluent path: a.bundle("audio").namespace("mixers").type<StereoMixer>().
+            // The names were already checked against the header at COMPILE time, so at runtime they are
+            // a readable no-op that keeps the call site self-documenting.
+            public method bundle(String name) returns ProgramHandle {
+                return this;
+            }
+            public method namespace(String name) returns ProgramHandle {
+                return this;
+            }
+            public method type<T>() returns RemoteType<T> {
+                return new RemoteType<T>(this.conn) on heap;
+            }
+            // Ask the program for a capability. Its serve() policy decides; null means refused.
+            public method requestAccess(String capability) returns BundleAccessToken* {
+                IpcWriter w = new IpcWriter() on heap;
+                w.putByte(IpcProto.kCapability());
+                w.putString(capability);
+                IpcChannel ch = new IpcChannel(this.conn) on heap;
+                try {
+                    IpcReader r = ch.request(w.toFrame());
+                    long nonce = r.getLong();
+                    delete r;
+                    delete ch;
+                    delete w;
+                    return new BundleAccessToken(nonce, capability) on heap;
+                }
+                catch (IpcError e) {
+                    delete ch;
+                    delete w;
+                    return new BundleAccessToken(cast<long>(0), capability) on heap;   // refused
+                }
+            }
+            public method close() returns void {
+                Ipc.close(this.conn);
+                return;
+            }
+        }
+        // A remote type, bound to a connection: instantiate() creates the object IN THE OTHER PROGRAM
+        // and hands back a proxy to it.
+        public class RemoteType<T> {
+            private mutable long conn;
+            public constructor RemoteType(long conn) {
+                this.conn = conn;
+            }
+            public method instantiate() returns T {
+                // id 0: the proxy's constructor makes the object in the other program.
+                return new T(this.conn, cast<long>(0)) on heap;
+            }
+        }
+        // Connecting to, and serving as, a program (spec 2.8).
+        public class Program {
+            // Connect to a running program by NAME (its pipe/socket is named after it). Null when it is
+            // not running.
+            public static method connect(String name) returns nullable ProgramHandle* {
+                long c = Ipc.connect(name);
+                if (c < cast<long>(0)) {
+                    return null;
+                }
+                return new ProgramHandle(c) on heap;
+            }
+            // Serve this program's exported types forever. `auth` is the capability policy: it is asked
+            // for every capability a client requests, and its answer is final.
+            public static method serve(String name, function<boolean, String> auth) returns void {
+                IpcServer.serve(name, auth);
+                return;
+            }
+        }
+        // The accept loop. One connection is served to completion, then the next is accepted -- the
+        // channel is synchronous by construction, which is what lets replies be matched by nesting.
+        public class IpcServer {
+            private static mutable ArrayList<long> nonces;
+            private static mutable ArrayList<String> caps;
+            private static mutable boolean ready;
+            public static method serve(String name, function<boolean, String> auth) returns void {
+                IpcServer.nonces = new ArrayList<long>() on heap;
+                IpcServer.caps = new ArrayList<String>() on heap;
+                IpcServer.ready = true;
+                long srv = Ipc.listen(name);
+                if (srv < cast<long>(0)) {
+                    return;
+                }
+                while (true) {
+                    long c = Ipc.accept(srv);
+                    if (c < cast<long>(0)) {
+                        break;
+                    }
+                    IpcServer.session(c, auth);
+                    Ipc.close(c);
+                }
+                Ipc.close(srv);
+                return;
+            }
+            private static method session(long conn, function<boolean, String> auth) returns void {
+                while (true) {
+                    String msg = Ipc.recv(conn);
+                    if (msg.length() == 0) {
+                        return;
+                    }
+                    IpcReader peek = new IpcReader(msg) on heap;
+                    int kind = peek.getByte();
+                    if (kind == IpcProto.kCapability()) {
+                        String cap = peek.getString();
+                        delete peek;
+                        Ipc.send(conn, IpcServer.grant(cap, auth));
+                    } else {
+                        delete peek;
+                        Ipc.send(conn, IpcRuntime.handle(msg));
+                    }
+                }
+                return;
+            }
+            // Mint a nonce for `cap` if the policy approves, and REMEMBER it: that memory is what makes
+            // the token unforgeable -- a client cannot invent one this program never issued.
+            private static method grant(String cap, function<boolean, String> auth) returns String {
+                if (!auth(cap)) {
+                    return IpcProto.errorFrame("capability refused: " + cap);
+                }
+                SecureRandom rng = new SecureRandom() on heap;   // a token nonce must not be guessable
+                long nonce = rng.nextLong();
+                delete rng;
+                IpcServer.nonces.add(nonce);
+                IpcServer.caps.add(cap);
+                IpcWriter w = new IpcWriter() on heap;
+                w.putByte(IpcProto.kReplyOk());
+                w.putLong(nonce);
+                String f = w.toFrame();
+                delete w;
+                return f;
+            }
+            // Called by the synthesized dispatcher before running any method that demands a token.
+            public static method validate(long nonce, String cap) returns boolean {
+                if (!IpcServer.ready) {
+                    return false;   // this program never served, so it never issued a token
+                }
+                mutable int i = 0;
+                while (i < IpcServer.nonces.size()) {
+                    if (IpcServer.nonces.get(i) == nonce && IpcServer.caps.get(i).equals(cap)) {
+                        return true;
+                    }
+                    i = i + 1;
+                }
+                return false;
+            }
+        }
+    }

@@ -13,7 +13,7 @@
 // `const int`/`static_assert` and `const double` with comptime calls go through the
 // same logic. Both the analyzer and the codegen drive it, so the language's notion
 // of "what is a compile-time constant" lives in exactly one place.
-namespace ldp3::comptime {
+namespace polaron::comptime {
 
 struct Context {
     // Named namespace-level consts (spec 28.1), by name -> value.
@@ -68,4 +68,4 @@ bool evalInt(const ast::Expr& e, long long& out, Context& ctx);
 // is not a compile-time numeric constant.
 bool evalDouble(const ast::Expr& e, double& out, Context& ctx);
 
-}  // namespace ldp3::comptime
+}  // namespace polaron::comptime

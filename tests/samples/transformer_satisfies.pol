@@ -1,0 +1,43 @@
+import System.IO.Console;
+program TransformerSatisfies;
+
+// `transformer T satisfies I` -- whoever applies T implements I, and T's procedures ARE the
+// implementation.
+//
+// Without the clause this case is written twice on every applying type -- `implements IShown applies
+// TDescriber` -- with nothing in the language saying the second half answers the first. The
+// transformer is the declaration that knows its procedures are that interface's methods, so it is
+// where the promise belongs.
+//
+// `Dog`'s class line names no interface, and `IShown d = dog;` still binds: the transformer made the
+// promise on its behalf, and the analyzer verified it the ordinary way, through the interface list.
+public bundle Main {
+    public namespace App {
+        public interface IShown {
+            public method describe() returns int;
+        }
+
+        public transformer TDescriber satisfies IShown {
+            public procedure describe() returns int { return itself.label() * 10; }
+            public procedure label() returns int;
+        }
+
+        public class Dog applies TDescriber {
+            public procedure label() returns int { return 7; }
+        }
+
+        public class Cat applies TDescriber {
+            public procedure label() returns int { return 3; }
+            public procedure describe() returns int { return 100; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                IShown a = new Dog();
+                IShown b = new Cat();
+                System.IO.Console.printf("%d %d\n", a.describe(), b.describe());
+                return;
+            }
+        }
+    }
+}

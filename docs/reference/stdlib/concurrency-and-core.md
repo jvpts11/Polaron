@@ -1,4 +1,4 @@
-# LDP3 Standard Library — Concurrency & Core
+# Polaron Standard Library — Concurrency & Core
 
 This is the "everything the language leans on" corner of the standard library. It gathers the
 pieces a program reaches for once it does more than compute a single value: the concurrency
@@ -8,19 +8,19 @@ talking to the outside world, a small pseudo-random generator, the root `Object`
 descends from, the runtime exception hierarchy, and the two iteration interfaces (`Iterator`,
 `Iterable`) that the collections library builds on.
 
-All of these live in the LDP3-source prelude embedded in `src/cli/main.cpp` (the `kPreludeSource`
+All of these live in the Polaron-source prelude embedded in `src/cli/main.cpp` (the `kPreludeSource`
 raw string literal). There is no privileged runtime library written in C++ hiding behind them:
-every type below is ordinary LDP3, compiled from that prelude exactly like your own code, so the
+every type below is ordinary Polaron, compiled from that prelude exactly like your own code, so the
 signatures shown are the verbatim declarations from the source. Where a type is genuinely a thin
 shell over a compiler intrinsic (a channel send, an atomic add, a `printf`), that is called out in
-prose — those operations are lowered directly by the compiler and have no LDP3 method body to quote.
+prose — those operations are lowered directly by the compiler and have no Polaron method body to quote.
 
-How these types fit the rest of LDP3:
+How these types fit the rest of Polaron:
 
 - **Manual memory, no GC.** These classes are allocated with `new ... on heap` (or `on stack`) and
   freed with `delete`, just like any object. A `Task`, `Channel`, or `Mutex` wraps an OS/runtime
   handle in a `long` field; hold the wrapper for as long as you need the underlying resource.
-- **Value semantics.** Assignment in LDP3 is a deep copy, and to *share* one instance across
+- **Value semantics.** Assignment in Polaron is a deep copy, and to *share* one instance across
   threads or call sites you pass a pointer (`T*`) or reference (`T&`). The concurrency types are
   meant to be shared, so you almost always allocate them `on heap` and capture them into closures
   by value of the pointer (see the `Mutex` and `Channel` examples below).
@@ -53,7 +53,7 @@ Public members:
 - **Import:** `import System.Concurrency.Task;`
 
 The handle to an async computation that will produce a `T` (spec 20.2). An `async` method returns
-one of these and `await` yields the `T`. The public field `h` is the runtime `ldp3_task*`.
+one of these and `await` yields the `T`. The public field `h` is the runtime `polaron_task*`.
 
 Public members:
 
@@ -63,7 +63,7 @@ Public members:
 You rarely construct a `Task` by hand: an `async method` produces one for you, returning it the
 moment it is called (the body runs on the worker pool), and `await` blocks for its result.
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Concurrency.Task;
 
@@ -102,7 +102,7 @@ A channel is the safe way for a producer thread and a consumer thread to hand va
 sharing mutable state. Allocate it `on heap` so the same channel can be captured into a worker
 closure and used from `main`:
 
-```ldp3
+```polaron
 import System.Concurrency.Thread;
 import System.Concurrency.Channel;
 
@@ -152,7 +152,7 @@ You never touch `value` directly; the only door to it is `synchronized (m) using
 which takes the lock for the duration of the block and binds `x` to a reference to the guarded
 value, so a read-modify-write cannot interleave with another thread's:
 
-```ldp3
+```polaron
 import System.Concurrency.Thread;
 import System.Concurrency.Mutex;
 
@@ -331,7 +331,7 @@ of throwing. You construct the variants with the `Ok(x)` / `Err(e)` / `Some(x)` 
 exhaustive `match` — because the base is `sealed`, the compiler checks that you cover every variant,
 so no `default` arm is needed:
 
-```ldp3
+```polaron
 import System.IO.Console;
 import System.Errors.Result;
 
@@ -364,7 +364,7 @@ namespace-visibility rules require importing it before use.
 
 Public members:
 
-- (none declared in the prelude) — `printf`, `println`, `print`, and `read` are compiler builtins with no LDP3 method declaration.
+- (none declared in the prelude) — `printf`, `println`, `print`, and `read` are compiler builtins with no Polaron method declaration.
 
 ---
 
@@ -447,7 +447,7 @@ Public members:
 - **Namespace:** `System.Math`
 - **Import:** `import System.Math.Random;`
 
-A deterministic PRNG (xorshift64), pure LDP3 over a `ulong` state (spec 34.6 Random). `Math` itself
+A deterministic PRNG (xorshift64), pure Polaron over a `ulong` state (spec 34.6 Random). `Math` itself
 is a compiler builtin, not a class; `Random` is the only real class in `System.Math`.
 
 Public members:

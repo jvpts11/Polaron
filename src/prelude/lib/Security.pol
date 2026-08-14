@@ -1,0 +1,651 @@
+    public namespace Security {
+        // A cryptographically secure random source (spec 34): 64 bits per draw from the OS CSPRNG,
+        // suitable for keys, tokens and nonces (unlike System.Math.Random, which is a fast PRNG). The
+        // extern method links directly to the runtime helper.
+        public class SecureRandom {
+            private extern cdecl static method __polaron_secure_random() returns long;
+            public constructor SecureRandom() {}
+            public method nextLong() returns long { return SecureRandom.__polaron_secure_random(); }
+            public method nextInt() returns int {
+                return cast<int>((this.nextLong() >> 33) & cast<long>(2147483647));  // non-negative 31-bit
+            }
+            public method nextIntMax(int max) returns int { return this.nextInt() % max; }  // [0, max)
+            public method nextBool() returns boolean { return (this.nextLong() & cast<long>(1)) == cast<long>(1); }
+            public method nextDouble() returns double {
+                mutable long bits = this.nextLong() & cast<long>(4503599627370495);  // low 52 bits
+                return cast<double>(bits) / 4503599627370496.0;  // [0, 1)
+            }
+            public method nextBytes(int n) returns int[] {
+                mutable int[] out = new int[n]();
+                for (mutable int i = 0; i < n; i++) {
+                    out[i] = cast<int>(this.nextLong() & cast<long>(255));
+                }
+                return out;
+            }
+        }
+        // AES block cipher (spec 34; FIPS-197), pure Polaron. Supports 128- and 256-bit keys (16 or 32 bytes).
+        // The S-boxes are generated from the GF(2^8) multiplicative inverse plus the affine transform (so no
+        // 256-entry literal tables). encryptBlock/decryptBlock are the raw 16-byte ECB primitive; ctr() is
+        // the recommended stream mode (a keystream XORed with the data, so encryption and decryption are the
+        // same call). Verified against the FIPS-197 test vector. Bytes are carried as ints in 0..255.
+        public class Aes {
+            private mutable int[] sbox;
+            private mutable int[] invSbox;
+            private mutable int[] rk;      // expanded round-key bytes: (rounds+1)*16
+            private mutable int rounds;
+            public constructor Aes(int[] key) {
+                this.initTables();
+                this.expandKey(key);
+            }
+            private method xtime(int x) returns int {
+                mutable int r = (x << 1) & 255;
+                if ((x & 128) != 0) { r = r ^ 27; }   // reduce by 0x11b
+                return r;
+            }
+            private method rotl8(int b, int n) returns int {
+                return ((b << n) | (b >> (8 - n))) & 255;
+            }
+            private method initTables() returns void {
+                mutable int[] expt = new int[256]();   // powers of the generator 3
+                mutable int[] logt = new int[256]();
+                mutable int x = 1;
+                for (mutable int i = 0; i < 255; i++) {
+                    expt[i] = x;
+                    logt[x] = i;
+                    x = x ^ this.xtime(x);   // x *= 3 in GF(2^8)
+                }
+                this.sbox = new int[256]();
+                this.invSbox = new int[256]();
+                for (mutable int a = 0; a < 256; a++) {
+                    mutable int inv = 0;
+                    if (a != 0) { inv = expt[(255 - logt[a]) % 255]; }
+                    mutable int s = inv ^ this.rotl8(inv, 1) ^ this.rotl8(inv, 2)
+                                  ^ this.rotl8(inv, 3) ^ this.rotl8(inv, 4) ^ 99;   // affine, +0x63
+                    s = s & 255;
+                    this.sbox[a] = s;
+                    this.invSbox[s] = a;
+                }
+            }
+            private method gmul(int a, int b) returns int {
+                mutable int p = 0;
+                mutable int aa = a & 255;
+                mutable int bb = b & 255;
+                for (mutable int i = 0; i < 8; i++) {
+                    if ((bb & 1) != 0) { p = p ^ aa; }
+                    aa = this.xtime(aa);
+                    bb = bb >> 1;
+                }
+                return p & 255;
+            }
+            private method expandKey(int[] key) returns void {
+                int nk = key.length() / 4;          // 4 (AES-128) or 8 (AES-256)
+                this.rounds = nk + 6;               // 10 or 14
+                int nw = (this.rounds + 1) * 4;      // total 32-bit words
+                this.rk = new int[nw * 4]();
+                for (mutable int i = 0; i < nk * 4; i++) { this.rk[i] = key[i] & 255; }
+                mutable int rcon = 1;
+                mutable int w = nk;
+                while (w < nw) {
+                    mutable int t0 = this.rk[(w - 1) * 4 + 0];
+                    mutable int t1 = this.rk[(w - 1) * 4 + 1];
+                    mutable int t2 = this.rk[(w - 1) * 4 + 2];
+                    mutable int t3 = this.rk[(w - 1) * 4 + 3];
+                    if (w % nk == 0) {
+                        int r0 = this.sbox[t1] ^ rcon;   // RotWord + SubWord + Rcon
+                        int r1 = this.sbox[t2];
+                        int r2 = this.sbox[t3];
+                        int r3 = this.sbox[t0];
+                        t0 = r0; t1 = r1; t2 = r2; t3 = r3;
+                        rcon = this.xtime(rcon);
+                    } else if (nk > 6 && (w % nk) == 4) {
+                        t0 = this.sbox[t0]; t1 = this.sbox[t1];   // SubWord (AES-256)
+                        t2 = this.sbox[t2]; t3 = this.sbox[t3];
+                    }
+                    this.rk[w * 4 + 0] = this.rk[(w - nk) * 4 + 0] ^ t0;
+                    this.rk[w * 4 + 1] = this.rk[(w - nk) * 4 + 1] ^ t1;
+                    this.rk[w * 4 + 2] = this.rk[(w - nk) * 4 + 2] ^ t2;
+                    this.rk[w * 4 + 3] = this.rk[(w - nk) * 4 + 3] ^ t3;
+                    w = w + 1;
+                }
+            }
+            private method addRoundKey(int[] s, int round) returns void {
+                for (mutable int i = 0; i < 16; i++) { s[i] = s[i] ^ this.rk[round * 16 + i]; }
+            }
+            private method subBytes(int[] s) returns void {
+                for (mutable int i = 0; i < 16; i++) { s[i] = this.sbox[s[i]]; }
+            }
+            private method invSubBytes(int[] s) returns void {
+                for (mutable int i = 0; i < 16; i++) { s[i] = this.invSbox[s[i]]; }
+            }
+            private method shiftRows(int[] s) returns void {   // state index = row + 4*col
+                mutable int[] t = new int[16]();
+                for (mutable int r = 0; r < 4; r++) {
+                    for (mutable int c = 0; c < 4; c++) { t[r + 4 * c] = s[r + 4 * ((c + r) % 4)]; }
+                }
+                for (mutable int i = 0; i < 16; i++) { s[i] = t[i]; }
+            }
+            private method invShiftRows(int[] s) returns void {
+                mutable int[] t = new int[16]();
+                for (mutable int r = 0; r < 4; r++) {
+                    for (mutable int c = 0; c < 4; c++) { t[r + 4 * c] = s[r + 4 * ((c - r + 4) % 4)]; }
+                }
+                for (mutable int i = 0; i < 16; i++) { s[i] = t[i]; }
+            }
+            private method mixColumns(int[] s) returns void {
+                for (mutable int c = 0; c < 4; c++) {
+                    int a0 = s[4 * c + 0];
+                    int a1 = s[4 * c + 1];
+                    int a2 = s[4 * c + 2];
+                    int a3 = s[4 * c + 3];
+                    s[4 * c + 0] = this.gmul(a0, 2) ^ this.gmul(a1, 3) ^ a2 ^ a3;
+                    s[4 * c + 1] = a0 ^ this.gmul(a1, 2) ^ this.gmul(a2, 3) ^ a3;
+                    s[4 * c + 2] = a0 ^ a1 ^ this.gmul(a2, 2) ^ this.gmul(a3, 3);
+                    s[4 * c + 3] = this.gmul(a0, 3) ^ a1 ^ a2 ^ this.gmul(a3, 2);
+                }
+            }
+            private method invMixColumns(int[] s) returns void {
+                for (mutable int c = 0; c < 4; c++) {
+                    int a0 = s[4 * c + 0];
+                    int a1 = s[4 * c + 1];
+                    int a2 = s[4 * c + 2];
+                    int a3 = s[4 * c + 3];
+                    s[4 * c + 0] = this.gmul(a0, 14) ^ this.gmul(a1, 11) ^ this.gmul(a2, 13) ^ this.gmul(a3, 9);
+                    s[4 * c + 1] = this.gmul(a0, 9) ^ this.gmul(a1, 14) ^ this.gmul(a2, 11) ^ this.gmul(a3, 13);
+                    s[4 * c + 2] = this.gmul(a0, 13) ^ this.gmul(a1, 9) ^ this.gmul(a2, 14) ^ this.gmul(a3, 11);
+                    s[4 * c + 3] = this.gmul(a0, 11) ^ this.gmul(a1, 13) ^ this.gmul(a2, 9) ^ this.gmul(a3, 14);
+                }
+            }
+            public method encryptBlock(int[] input) returns int[] {
+                mutable int[] s = new int[16]();
+                for (mutable int i = 0; i < 16; i++) { s[i] = input[i] & 255; }
+                this.addRoundKey(s, 0);
+                for (mutable int r = 1; r < this.rounds; r++) {
+                    this.subBytes(s);
+                    this.shiftRows(s);
+                    this.mixColumns(s);
+                    this.addRoundKey(s, r);
+                }
+                this.subBytes(s);
+                this.shiftRows(s);
+                this.addRoundKey(s, this.rounds);
+                return s;
+            }
+            public method decryptBlock(int[] input) returns int[] {
+                mutable int[] s = new int[16]();
+                for (mutable int i = 0; i < 16; i++) { s[i] = input[i] & 255; }
+                this.addRoundKey(s, this.rounds);
+                for (mutable int r = this.rounds - 1; r > 0; r = r - 1) {
+                    this.invShiftRows(s);
+                    this.invSubBytes(s);
+                    this.addRoundKey(s, r);
+                    this.invMixColumns(s);
+                }
+                this.invShiftRows(s);
+                this.invSubBytes(s);
+                this.addRoundKey(s, 0);
+                return s;
+            }
+            // CTR mode (spec 34): keystream = encryptBlock(counter) XOR data; symmetric, no padding. iv is a
+            // 16-byte nonce/counter start; the counter increments big-endian per block.
+            public method ctr(int[] data, int[] iv) returns int[] {
+                int n = data.length();
+                mutable int[] out = new int[n]();
+                mutable int[] counter = new int[16]();
+                for (mutable int i = 0; i < 16; i++) { counter[i] = iv[i] & 255; }
+                mutable int off = 0;
+                while (off < n) {
+                    mutable int[] ks = this.encryptBlock(counter);
+                    mutable int j = 0;
+                    while (j < 16 && off + j < n) {
+                        out[off + j] = (data[off + j] ^ ks[j]) & 255;
+                        j = j + 1;
+                    }
+                    mutable int c = 15;
+                    mutable boolean carry = true;
+                    while (c >= 0 && carry) {
+                        counter[c] = (counter[c] + 1) & 255;
+                        if (counter[c] != 0) { carry = false; }
+                        c = c - 1;
+                    }
+                    off = off + 16;
+                }
+                return out;
+            }
+        }
+
+        // Digests and message authentication, moved here from System.Text on 2026-08-13.
+        // They were in Text because they consume bytes; a hash is not text any more than a
+        // cipher is. The rule the library now follows: a type belongs to the subject that
+        // names WHAT IT IS, not what it is made of.
+        // Non-cryptographic checksums and hashes over a string's bytes (spec 4): CRC-32 (reflected, the
+        // zip/png polynomial) and 32-bit FNV-1a. Uses unsigned 32-bit arithmetic, which wraps and shifts
+        // logically. Returned as int (the same 32 bits reinterpreted).
+        public class Digest {
+            public static method crc32(String data) returns int {
+                mutable uint crc = cast<uint>(4294967295);
+                uint poly = cast<uint>(3988292384);
+                for (mutable int i = 0; i < data.length(); i++) {
+                    crc = crc ^ cast<uint>(cast<int>(data.charAt(i)));
+                    for (mutable int b = 0; b < 8; b++) {
+                        if ((crc & cast<uint>(1)) != cast<uint>(0)) { crc = (crc >> 1) ^ poly; }
+                        else { crc = crc >> 1; }
+                    }
+                }
+                crc = crc ^ cast<uint>(4294967295);
+                return cast<int>(crc);
+            }
+            public static method fnv1a(String data) returns int {
+                mutable uint h = cast<uint>(2166136261);
+                uint prime = cast<uint>(16777619);
+                for (mutable int i = 0; i < data.length(); i++) {
+                    h = (h ^ cast<uint>(cast<int>(data.charAt(i)))) * prime;
+                }
+                return cast<int>(h);
+            }
+            // Adler-32 (the zlib checksum): two running sums modulo 65521, packed high-sum over low-sum.
+            public static method adler32(String data) returns int {
+                mutable uint a = cast<uint>(1);
+                mutable uint b = cast<uint>(0);
+                uint m = cast<uint>(65521);
+                for (mutable int i = 0; i < data.length(); i++) {
+                    a = (a + cast<uint>(cast<int>(data.charAt(i)))) % m;
+                    b = (b + a) % m;
+                }
+                return cast<int>((b << 16) | a);
+            }
+        }
+        // SHA-256 cryptographic hash (FIPS 180-4), pure Polaron over 32-bit unsigned arithmetic (spec 4). digest
+        // returns the 64-character lowercase hex of the hash. The method is named digest, not hash, since hash
+        // is the Hashable interface method.
+        public class Sha256 {
+            private static method rotr(uint x, int n) returns uint { return (x >> n) | (x << (32 - n)); }
+            private static method putWord(int[] out, int off, uint w) returns void {
+                out[off]   = cast<int>((w >> 24) & cast<uint>(255));
+                out[off+1] = cast<int>((w >> 16) & cast<uint>(255));
+                out[off+2] = cast<int>((w >> 8) & cast<uint>(255));
+                out[off+3] = cast<int>(w & cast<uint>(255));
+                return;
+            }
+            // Lowercase hex of the first n bytes of an int[] (each entry treated as a 0..255 byte).
+            public static method toHex(int[] bytes, int n) returns String {
+                String digs = "0123456789abcdef";
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < n; i++) {
+                    int b = bytes[i] & 255;
+                    sb.appendChar(digs.charAt((b >> 4) & 15));
+                    sb.appendChar(digs.charAt(b & 15));
+                }
+                return sb.toString();
+            }
+            // Core: hash the first len bytes of data, returning the 32 raw output bytes (used by Hmac).
+            public static method digestRaw(int[] data, int len) returns int[] {
+                mutable int padded = len + 1;
+                while (padded % 64 != 56) { padded = padded + 1; }
+                padded = padded + 8;
+                mutable int[] m = new int[padded]();
+                for (mutable int i = 0; i < len; i++) { m[i] = data[i] & 255; }
+                m[len] = 128;
+                long bits = cast<long>(len) * cast<long>(8);
+                for (mutable int i = 0; i < 8; i++) {
+                    m[padded - 1 - i] = cast<int>((bits >> (i * 8)) & cast<long>(255));
+                }
+                mutable uint[] k = new uint[64]();
+                k[0]=cast<uint>(0x428a2f98); k[1]=cast<uint>(0x71374491); k[2]=cast<uint>(0xb5c0fbcf); k[3]=cast<uint>(0xe9b5dba5);
+                k[4]=cast<uint>(0x3956c25b); k[5]=cast<uint>(0x59f111f1); k[6]=cast<uint>(0x923f82a4); k[7]=cast<uint>(0xab1c5ed5);
+                k[8]=cast<uint>(0xd807aa98); k[9]=cast<uint>(0x12835b01); k[10]=cast<uint>(0x243185be); k[11]=cast<uint>(0x550c7dc3);
+                k[12]=cast<uint>(0x72be5d74); k[13]=cast<uint>(0x80deb1fe); k[14]=cast<uint>(0x9bdc06a7); k[15]=cast<uint>(0xc19bf174);
+                k[16]=cast<uint>(0xe49b69c1); k[17]=cast<uint>(0xefbe4786); k[18]=cast<uint>(0x0fc19dc6); k[19]=cast<uint>(0x240ca1cc);
+                k[20]=cast<uint>(0x2de92c6f); k[21]=cast<uint>(0x4a7484aa); k[22]=cast<uint>(0x5cb0a9dc); k[23]=cast<uint>(0x76f988da);
+                k[24]=cast<uint>(0x983e5152); k[25]=cast<uint>(0xa831c66d); k[26]=cast<uint>(0xb00327c8); k[27]=cast<uint>(0xbf597fc7);
+                k[28]=cast<uint>(0xc6e00bf3); k[29]=cast<uint>(0xd5a79147); k[30]=cast<uint>(0x06ca6351); k[31]=cast<uint>(0x14292967);
+                k[32]=cast<uint>(0x27b70a85); k[33]=cast<uint>(0x2e1b2138); k[34]=cast<uint>(0x4d2c6dfc); k[35]=cast<uint>(0x53380d13);
+                k[36]=cast<uint>(0x650a7354); k[37]=cast<uint>(0x766a0abb); k[38]=cast<uint>(0x81c2c92e); k[39]=cast<uint>(0x92722c85);
+                k[40]=cast<uint>(0xa2bfe8a1); k[41]=cast<uint>(0xa81a664b); k[42]=cast<uint>(0xc24b8b70); k[43]=cast<uint>(0xc76c51a3);
+                k[44]=cast<uint>(0xd192e819); k[45]=cast<uint>(0xd6990624); k[46]=cast<uint>(0xf40e3585); k[47]=cast<uint>(0x106aa070);
+                k[48]=cast<uint>(0x19a4c116); k[49]=cast<uint>(0x1e376c08); k[50]=cast<uint>(0x2748774c); k[51]=cast<uint>(0x34b0bcb5);
+                k[52]=cast<uint>(0x391c0cb3); k[53]=cast<uint>(0x4ed8aa4a); k[54]=cast<uint>(0x5b9cca4f); k[55]=cast<uint>(0x682e6ff3);
+                k[56]=cast<uint>(0x748f82ee); k[57]=cast<uint>(0x78a5636f); k[58]=cast<uint>(0x84c87814); k[59]=cast<uint>(0x8cc70208);
+                k[60]=cast<uint>(0x90befffa); k[61]=cast<uint>(0xa4506ceb); k[62]=cast<uint>(0xbef9a3f7); k[63]=cast<uint>(0xc67178f2);
+                mutable uint h0=cast<uint>(0x6a09e667); mutable uint h1=cast<uint>(0xbb67ae85);
+                mutable uint h2=cast<uint>(0x3c6ef372); mutable uint h3=cast<uint>(0xa54ff53a);
+                mutable uint h4=cast<uint>(0x510e527f); mutable uint h5=cast<uint>(0x9b05688c);
+                mutable uint h6=cast<uint>(0x1f83d9ab); mutable uint h7=cast<uint>(0x5be0cd19);
+                mutable uint[] w = new uint[64]();
+                mutable int blk = 0;
+                while (blk < padded) {
+                    for (mutable int t = 0; t < 16; t++) {
+                        int b = blk + t * 4;
+                        w[t] = (cast<uint>(m[b]) << 24) | (cast<uint>(m[b+1]) << 16)
+                             | (cast<uint>(m[b+2]) << 8) | cast<uint>(m[b+3]);
+                    }
+                    for (mutable int t = 16; t < 64; t++) {
+                        uint s0 = Sha256.rotr(w[t-15],7) ^ Sha256.rotr(w[t-15],18) ^ (w[t-15] >> 3);
+                        uint s1 = Sha256.rotr(w[t-2],17) ^ Sha256.rotr(w[t-2],19) ^ (w[t-2] >> 10);
+                        w[t] = w[t-16] + s0 + w[t-7] + s1;
+                    }
+                    mutable uint a=h0; mutable uint b2=h1; mutable uint c=h2; mutable uint d=h3;
+                    mutable uint e=h4; mutable uint f=h5; mutable uint g=h6; mutable uint hh=h7;
+                    for (mutable int t = 0; t < 64; t++) {
+                        uint bigS1 = Sha256.rotr(e,6) ^ Sha256.rotr(e,11) ^ Sha256.rotr(e,25);
+                        uint ch = (e & f) ^ ((~e) & g);
+                        uint t1 = hh + bigS1 + ch + k[t] + w[t];
+                        uint bigS0 = Sha256.rotr(a,2) ^ Sha256.rotr(a,13) ^ Sha256.rotr(a,22);
+                        uint maj = (a & b2) ^ (a & c) ^ (b2 & c);
+                        uint t2 = bigS0 + maj;
+                        hh=g; g=f; f=e; e=d+t1; d=c; c=b2; b2=a; a=t1+t2;
+                    }
+                    h0=h0+a; h1=h1+b2; h2=h2+c; h3=h3+d; h4=h4+e; h5=h5+f; h6=h6+g; h7=h7+hh;
+                    blk = blk + 64;
+                }
+                mutable int[] out = new int[32]();
+                Sha256.putWord(out,0,h0); Sha256.putWord(out,4,h1); Sha256.putWord(out,8,h2); Sha256.putWord(out,12,h3);
+                Sha256.putWord(out,16,h4); Sha256.putWord(out,20,h5); Sha256.putWord(out,24,h6); Sha256.putWord(out,28,h7);
+                return out;
+            }
+            // Hash a String (bytes are charAt & 255) into the 64-character lowercase hex digest.
+            public static method digest(String msg) returns String {
+                int len = msg.length();
+                mutable int[] data = new int[len + 1]();
+                for (mutable int i = 0; i < len; i++) { data[i] = cast<int>(msg.charAt(i)) & 255; }
+                return Sha256.toHex(Sha256.digestRaw(data, len), 32);
+            }
+            // Hash the first len bytes of an int[] into the lowercase hex digest.
+            public static method digestBytes(int[] data, int len) returns String {
+                return Sha256.toHex(Sha256.digestRaw(data, len), 32);
+            }
+        }
+        // HMAC-SHA256 keyed message authentication (RFC 2104), pure Polaron on top of Sha256. sha256 returns the
+        // lowercase hex of HMAC-SHA256(key, msg). Keys longer than the 64-byte block are hashed down first.
+        public class Hmac {
+            public static method sha256(String key, String msg) returns String {
+                int B = 64;
+                int klen = key.length();
+                mutable int[] keyBytes = new int[klen + 1]();
+                for (mutable int i = 0; i < klen; i++) { keyBytes[i] = cast<int>(key.charAt(i)) & 255; }
+                mutable int[] kb = new int[B]();
+                if (klen > B) {
+                    int[] kh = Sha256.digestRaw(keyBytes, klen);
+                    for (mutable int i = 0; i < 32; i++) { kb[i] = kh[i]; }
+                } else {
+                    for (mutable int i = 0; i < klen; i++) { kb[i] = keyBytes[i]; }
+                }
+                int mlen = msg.length();
+                mutable int[] inner = new int[B + mlen]();
+                for (mutable int i = 0; i < B; i++) { inner[i] = kb[i] ^ 54; }
+                for (mutable int i = 0; i < mlen; i++) { inner[B + i] = cast<int>(msg.charAt(i)) & 255; }
+                int[] ih = Sha256.digestRaw(inner, B + mlen);
+                mutable int[] outer = new int[B + 32]();
+                for (mutable int i = 0; i < B; i++) { outer[i] = kb[i] ^ 92; }
+                for (mutable int i = 0; i < 32; i++) { outer[B + i] = ih[i]; }
+                return Sha256.toHex(Sha256.digestRaw(outer, B + 32), 32);
+            }
+        }
+        // SHA-1 cryptographic hash (FIPS 180-1), pure Polaron over 32-bit unsigned arithmetic. digest returns the
+        // 40-character lowercase hex. (SHA-1 is broken for collision resistance; provided for legacy interop
+        // such as Git object ids.) Reuses Sha256.putWord/toHex for the byte/hex plumbing.
+        public class Sha1 {
+            private static method rotl(uint x, int n) returns uint { return (x << n) | (x >> (32 - n)); }
+            public static method digestRaw(int[] data, int len) returns int[] {
+                mutable int padded = len + 1;
+                while (padded % 64 != 56) { padded = padded + 1; }
+                padded = padded + 8;
+                mutable int[] m = new int[padded]();
+                for (mutable int i = 0; i < len; i++) { m[i] = data[i] & 255; }
+                m[len] = 128;
+                long bits = cast<long>(len) * cast<long>(8);
+                for (mutable int i = 0; i < 8; i++) {
+                    m[padded - 1 - i] = cast<int>((bits >> (i * 8)) & cast<long>(255));
+                }
+                mutable uint h0 = cast<uint>(0x67452301); mutable uint h1 = cast<uint>(0xEFCDAB89);
+                mutable uint h2 = cast<uint>(0x98BADCFE); mutable uint h3 = cast<uint>(0x10325476);
+                mutable uint h4 = cast<uint>(0xC3D2E1F0);
+                mutable uint[] w = new uint[80]();
+                mutable int blk = 0;
+                while (blk < padded) {
+                    for (mutable int t = 0; t < 16; t++) {
+                        int b = blk + t * 4;
+                        w[t] = (cast<uint>(m[b]) << 24) | (cast<uint>(m[b+1]) << 16)
+                             | (cast<uint>(m[b+2]) << 8) | cast<uint>(m[b+3]);
+                    }
+                    for (mutable int t = 16; t < 80; t++) {
+                        w[t] = Sha1.rotl(w[t-3] ^ w[t-8] ^ w[t-14] ^ w[t-16], 1);
+                    }
+                    mutable uint a = h0; mutable uint b2 = h1; mutable uint c = h2; mutable uint d = h3; mutable uint e = h4;
+                    for (mutable int t = 0; t < 80; t++) {
+                        mutable uint f = cast<uint>(0);
+                        mutable uint k = cast<uint>(0);
+                        if (t < 20) { f = (b2 & c) | ((~b2) & d); k = cast<uint>(0x5A827999); }
+                        else {
+                            if (t < 40) { f = b2 ^ c ^ d; k = cast<uint>(0x6ED9EBA1); }
+                            else {
+                                if (t < 60) { f = (b2 & c) | (b2 & d) | (c & d); k = cast<uint>(0x8F1BBCDC); }
+                                else { f = b2 ^ c ^ d; k = cast<uint>(0xCA62C1D6); }
+                            }
+                        }
+                        uint tmp = Sha1.rotl(a, 5) + f + e + k + w[t];
+                        e = d; d = c; c = Sha1.rotl(b2, 30); b2 = a; a = tmp;
+                    }
+                    h0 = h0 + a; h1 = h1 + b2; h2 = h2 + c; h3 = h3 + d; h4 = h4 + e;
+                    blk = blk + 64;
+                }
+                mutable int[] out = new int[20]();
+                Sha256.putWord(out, 0, h0); Sha256.putWord(out, 4, h1); Sha256.putWord(out, 8, h2);
+                Sha256.putWord(out, 12, h3); Sha256.putWord(out, 16, h4);
+                return out;
+            }
+            public static method digest(String msg) returns String {
+                int len = msg.length();
+                mutable int[] data = new int[len + 1]();
+                for (mutable int i = 0; i < len; i++) { data[i] = cast<int>(msg.charAt(i)) & 255; }
+                return Sha256.toHex(Sha1.digestRaw(data, len), 20);
+            }
+        }
+        // SHA-224 (FIPS 180-4), the SHA-256 compression with different initial hash values and a 28-byte
+        // (56 hex char) output. Reuses Sha256.rotr/putWord/toHex; the round constants match SHA-256.
+        public class Sha224 {
+            public static method digest(String msg) returns String {
+                int len = msg.length();
+                mutable int padded = len + 1;
+                while (padded % 64 != 56) { padded = padded + 1; }
+                padded = padded + 8;
+                mutable int[] m = new int[padded]();
+                for (mutable int i = 0; i < len; i++) { m[i] = cast<int>(msg.charAt(i)) & 255; }
+                m[len] = 128;
+                long bits = cast<long>(len) * cast<long>(8);
+                for (mutable int i = 0; i < 8; i++) {
+                    m[padded - 1 - i] = cast<int>((bits >> (i * 8)) & cast<long>(255));
+                }
+                mutable uint[] k = new uint[64]();
+                k[0]=cast<uint>(0x428a2f98); k[1]=cast<uint>(0x71374491); k[2]=cast<uint>(0xb5c0fbcf); k[3]=cast<uint>(0xe9b5dba5);
+                k[4]=cast<uint>(0x3956c25b); k[5]=cast<uint>(0x59f111f1); k[6]=cast<uint>(0x923f82a4); k[7]=cast<uint>(0xab1c5ed5);
+                k[8]=cast<uint>(0xd807aa98); k[9]=cast<uint>(0x12835b01); k[10]=cast<uint>(0x243185be); k[11]=cast<uint>(0x550c7dc3);
+                k[12]=cast<uint>(0x72be5d74); k[13]=cast<uint>(0x80deb1fe); k[14]=cast<uint>(0x9bdc06a7); k[15]=cast<uint>(0xc19bf174);
+                k[16]=cast<uint>(0xe49b69c1); k[17]=cast<uint>(0xefbe4786); k[18]=cast<uint>(0x0fc19dc6); k[19]=cast<uint>(0x240ca1cc);
+                k[20]=cast<uint>(0x2de92c6f); k[21]=cast<uint>(0x4a7484aa); k[22]=cast<uint>(0x5cb0a9dc); k[23]=cast<uint>(0x76f988da);
+                k[24]=cast<uint>(0x983e5152); k[25]=cast<uint>(0xa831c66d); k[26]=cast<uint>(0xb00327c8); k[27]=cast<uint>(0xbf597fc7);
+                k[28]=cast<uint>(0xc6e00bf3); k[29]=cast<uint>(0xd5a79147); k[30]=cast<uint>(0x06ca6351); k[31]=cast<uint>(0x14292967);
+                k[32]=cast<uint>(0x27b70a85); k[33]=cast<uint>(0x2e1b2138); k[34]=cast<uint>(0x4d2c6dfc); k[35]=cast<uint>(0x53380d13);
+                k[36]=cast<uint>(0x650a7354); k[37]=cast<uint>(0x766a0abb); k[38]=cast<uint>(0x81c2c92e); k[39]=cast<uint>(0x92722c85);
+                k[40]=cast<uint>(0xa2bfe8a1); k[41]=cast<uint>(0xa81a664b); k[42]=cast<uint>(0xc24b8b70); k[43]=cast<uint>(0xc76c51a3);
+                k[44]=cast<uint>(0xd192e819); k[45]=cast<uint>(0xd6990624); k[46]=cast<uint>(0xf40e3585); k[47]=cast<uint>(0x106aa070);
+                k[48]=cast<uint>(0x19a4c116); k[49]=cast<uint>(0x1e376c08); k[50]=cast<uint>(0x2748774c); k[51]=cast<uint>(0x34b0bcb5);
+                k[52]=cast<uint>(0x391c0cb3); k[53]=cast<uint>(0x4ed8aa4a); k[54]=cast<uint>(0x5b9cca4f); k[55]=cast<uint>(0x682e6ff3);
+                k[56]=cast<uint>(0x748f82ee); k[57]=cast<uint>(0x78a5636f); k[58]=cast<uint>(0x84c87814); k[59]=cast<uint>(0x8cc70208);
+                k[60]=cast<uint>(0x90befffa); k[61]=cast<uint>(0xa4506ceb); k[62]=cast<uint>(0xbef9a3f7); k[63]=cast<uint>(0xc67178f2);
+                mutable uint h0=cast<uint>(0xc1059ed8); mutable uint h1=cast<uint>(0x367cd507);
+                mutable uint h2=cast<uint>(0x3070dd17); mutable uint h3=cast<uint>(0xf70e5939);
+                mutable uint h4=cast<uint>(0xffc00b31); mutable uint h5=cast<uint>(0x68581511);
+                mutable uint h6=cast<uint>(0x64f98fa7); mutable uint h7=cast<uint>(0xbefa4fa4);
+                mutable uint[] w = new uint[64]();
+                mutable int blk = 0;
+                while (blk < padded) {
+                    for (mutable int t = 0; t < 16; t++) {
+                        int b = blk + t * 4;
+                        w[t] = (cast<uint>(m[b]) << 24) | (cast<uint>(m[b+1]) << 16)
+                             | (cast<uint>(m[b+2]) << 8) | cast<uint>(m[b+3]);
+                    }
+                    for (mutable int t = 16; t < 64; t++) {
+                        uint s0 = Sha256.rotr(w[t-15],7) ^ Sha256.rotr(w[t-15],18) ^ (w[t-15] >> 3);
+                        uint s1 = Sha256.rotr(w[t-2],17) ^ Sha256.rotr(w[t-2],19) ^ (w[t-2] >> 10);
+                        w[t] = w[t-16] + s0 + w[t-7] + s1;
+                    }
+                    mutable uint a=h0; mutable uint b2=h1; mutable uint c=h2; mutable uint d=h3;
+                    mutable uint e=h4; mutable uint f=h5; mutable uint g=h6; mutable uint hh=h7;
+                    for (mutable int t = 0; t < 64; t++) {
+                        uint bigS1 = Sha256.rotr(e,6) ^ Sha256.rotr(e,11) ^ Sha256.rotr(e,25);
+                        uint ch = (e & f) ^ ((~e) & g);
+                        uint t1 = hh + bigS1 + ch + k[t] + w[t];
+                        uint bigS0 = Sha256.rotr(a,2) ^ Sha256.rotr(a,13) ^ Sha256.rotr(a,22);
+                        uint maj = (a & b2) ^ (a & c) ^ (b2 & c);
+                        uint t2 = bigS0 + maj;
+                        hh=g; g=f; f=e; e=d+t1; d=c; c=b2; b2=a; a=t1+t2;
+                    }
+                    h0=h0+a; h1=h1+b2; h2=h2+c; h3=h3+d; h4=h4+e; h5=h5+f; h6=h6+g; h7=h7+hh;
+                    blk = blk + 64;
+                }
+                mutable int[] out = new int[28]();
+                Sha256.putWord(out,0,h0); Sha256.putWord(out,4,h1); Sha256.putWord(out,8,h2);
+                Sha256.putWord(out,12,h3); Sha256.putWord(out,16,h4); Sha256.putWord(out,20,h5);
+                Sha256.putWord(out,24,h6);
+                return Sha256.toHex(out, 28);
+            }
+        }
+        // MD5 message digest (RFC 1321), pure Polaron over 32-bit unsigned arithmetic (little-endian, unlike the
+        // SHA family). digest returns the 32-character lowercase hex. (MD5 is broken for collision resistance;
+        // provided for legacy interop/checksums only.) Reuses Sha256.toHex for the final hex.
+        public class Md5 {
+            private static method rotl(uint x, int n) returns uint { return (x << n) | (x >> (32 - n)); }
+            private static method putLE(int[] out, int off, uint w) returns void {
+                out[off]   = cast<int>(w & cast<uint>(255));
+                out[off+1] = cast<int>((w >> 8) & cast<uint>(255));
+                out[off+2] = cast<int>((w >> 16) & cast<uint>(255));
+                out[off+3] = cast<int>((w >> 24) & cast<uint>(255));
+                return;
+            }
+            public static method digest(String msg) returns String {
+                int len = msg.length();
+                mutable int padded = len + 1;
+                while (padded % 64 != 56) { padded = padded + 1; }
+                padded = padded + 8;
+                mutable int[] m = new int[padded]();
+                for (mutable int i = 0; i < len; i++) { m[i] = cast<int>(msg.charAt(i)) & 255; }
+                m[len] = 128;
+                long bitLen = cast<long>(len) * cast<long>(8);
+                for (mutable int i = 0; i < 8; i++) {
+                    m[padded - 8 + i] = cast<int>((bitLen >> (i * 8)) & cast<long>(255));
+                }
+                mutable int[] s = new int[64]();
+                int[] sv = new int[16]();
+                sv[0]=7; sv[1]=12; sv[2]=17; sv[3]=22; sv[4]=5; sv[5]=9; sv[6]=14; sv[7]=20;
+                sv[8]=4; sv[9]=11; sv[10]=16; sv[11]=23; sv[12]=6; sv[13]=10; sv[14]=15; sv[15]=21;
+                for (mutable int i = 0; i < 64; i++) {
+                    int grp = i / 16;
+                    s[i] = sv[grp * 4 + (i % 4)];
+                }
+                mutable uint[] k = new uint[64]();
+                k[0]=cast<uint>(0xd76aa478); k[1]=cast<uint>(0xe8c7b756); k[2]=cast<uint>(0x242070db); k[3]=cast<uint>(0xc1bdceee);
+                k[4]=cast<uint>(0xf57c0faf); k[5]=cast<uint>(0x4787c62a); k[6]=cast<uint>(0xa8304613); k[7]=cast<uint>(0xfd469501);
+                k[8]=cast<uint>(0x698098d8); k[9]=cast<uint>(0x8b44f7af); k[10]=cast<uint>(0xffff5bb1); k[11]=cast<uint>(0x895cd7be);
+                k[12]=cast<uint>(0x6b901122); k[13]=cast<uint>(0xfd987193); k[14]=cast<uint>(0xa679438e); k[15]=cast<uint>(0x49b40821);
+                k[16]=cast<uint>(0xf61e2562); k[17]=cast<uint>(0xc040b340); k[18]=cast<uint>(0x265e5a51); k[19]=cast<uint>(0xe9b6c7aa);
+                k[20]=cast<uint>(0xd62f105d); k[21]=cast<uint>(0x02441453); k[22]=cast<uint>(0xd8a1e681); k[23]=cast<uint>(0xe7d3fbc8);
+                k[24]=cast<uint>(0x21e1cde6); k[25]=cast<uint>(0xc33707d6); k[26]=cast<uint>(0xf4d50d87); k[27]=cast<uint>(0x455a14ed);
+                k[28]=cast<uint>(0xa9e3e905); k[29]=cast<uint>(0xfcefa3f8); k[30]=cast<uint>(0x676f02d9); k[31]=cast<uint>(0x8d2a4c8a);
+                k[32]=cast<uint>(0xfffa3942); k[33]=cast<uint>(0x8771f681); k[34]=cast<uint>(0x6d9d6122); k[35]=cast<uint>(0xfde5380c);
+                k[36]=cast<uint>(0xa4beea44); k[37]=cast<uint>(0x4bdecfa9); k[38]=cast<uint>(0xf6bb4b60); k[39]=cast<uint>(0xbebfbc70);
+                k[40]=cast<uint>(0x289b7ec6); k[41]=cast<uint>(0xeaa127fa); k[42]=cast<uint>(0xd4ef3085); k[43]=cast<uint>(0x04881d05);
+                k[44]=cast<uint>(0xd9d4d039); k[45]=cast<uint>(0xe6db99e5); k[46]=cast<uint>(0x1fa27cf8); k[47]=cast<uint>(0xc4ac5665);
+                k[48]=cast<uint>(0xf4292244); k[49]=cast<uint>(0x432aff97); k[50]=cast<uint>(0xab9423a7); k[51]=cast<uint>(0xfc93a039);
+                k[52]=cast<uint>(0x655b59c3); k[53]=cast<uint>(0x8f0ccc92); k[54]=cast<uint>(0xffeff47d); k[55]=cast<uint>(0x85845dd1);
+                k[56]=cast<uint>(0x6fa87e4f); k[57]=cast<uint>(0xfe2ce6e0); k[58]=cast<uint>(0xa3014314); k[59]=cast<uint>(0x4e0811a1);
+                k[60]=cast<uint>(0xf7537e82); k[61]=cast<uint>(0xbd3af235); k[62]=cast<uint>(0x2ad7d2bb); k[63]=cast<uint>(0xeb86d391);
+                mutable uint a0 = cast<uint>(0x67452301); mutable uint b0 = cast<uint>(0xefcdab89);
+                mutable uint c0 = cast<uint>(0x98badcfe); mutable uint d0 = cast<uint>(0x10325476);
+                mutable uint[] w = new uint[16]();
+                mutable int blk = 0;
+                while (blk < padded) {
+                    for (mutable int t = 0; t < 16; t++) {
+                        int b = blk + t * 4;
+                        w[t] = cast<uint>(m[b]) | (cast<uint>(m[b+1]) << 8)
+                             | (cast<uint>(m[b+2]) << 16) | (cast<uint>(m[b+3]) << 24);
+                    }
+                    mutable uint a = a0; mutable uint b2 = b0; mutable uint c = c0; mutable uint d = d0;
+                    for (mutable int i = 0; i < 64; i++) {
+                        mutable uint f = cast<uint>(0);
+                        mutable int g = 0;
+                        if (i < 16) { f = (b2 & c) | ((~b2) & d); g = i; }
+                        else {
+                            if (i < 32) { f = (d & b2) | ((~d) & c); g = (5 * i + 1) % 16; }
+                            else {
+                                if (i < 48) { f = b2 ^ c ^ d; g = (3 * i + 5) % 16; }
+                                else { f = c ^ (b2 | (~d)); g = (7 * i) % 16; }
+                            }
+                        }
+                        f = f + a + k[i] + w[g];
+                        a = d; d = c; c = b2;
+                        b2 = b2 + Md5.rotl(f, s[i]);
+                    }
+                    a0 = a0 + a; b0 = b0 + b2; c0 = c0 + c; d0 = d0 + d;
+                    blk = blk + 64;
+                }
+                mutable int[] out = new int[16]();
+                Md5.putLE(out, 0, a0); Md5.putLE(out, 4, b0); Md5.putLE(out, 8, c0); Md5.putLE(out, 12, d0);
+                return Sha256.toHex(out, 16);
+            }
+        }
+
+        // Classical ciphers, moved from System.Text on 2026-08-13. Being breakable does not make
+        // them text: a cipher is a cipher, and putting them here is what stops somebody reaching
+        // for Caesar while believing System.Security is where the real ones live.
+        // Caesar shift cipher (spec 34): rotate each letter by n, wrapping within its case; non-letters pass
+        // through. decrypt is the inverse shift; rot13 is the classic shift of 13.
+        public class Caesar {
+            private static method shiftChar(char c, int n) returns char {
+                if (c >= 'A' && c <= 'Z') {
+                    return cast<char>((cast<int>(c) - cast<int>('A') + n + 2600) % 26 + cast<int>('A'));
+                }
+                if (c >= 'a' && c <= 'z') {
+                    return cast<char>((cast<int>(c) - cast<int>('a') + n + 2600) % 26 + cast<int>('a'));
+                }
+                return c;
+            }
+            public static method encrypt(String s, int n) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < s.length(); i++) { sb.appendChar(Caesar.shiftChar(s.charAt(i), n)); }
+                return sb.toString();
+            }
+            public static method decrypt(String s, int n) returns String { return Caesar.encrypt(s, 26 - (n % 26)); }
+            public static method rot13(String s) returns String { return Caesar.encrypt(s, 13); }
+        }
+        // Vigenere cipher (spec 34): a repeating-key poly-alphabetic shift over letters (case preserved,
+        // non-letters skipped and not consuming key). encrypt and decrypt are inverses.
+        public class Vigenere {
+            private static method proc(String s, String key, int dir) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int ki = 0;
+                int klen = key.length();
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    mutable boolean upper = c >= 'A' && c <= 'Z';
+                    mutable boolean lower = c >= 'a' && c <= 'z';
+                    if (upper || lower) {
+                        char kc = key.charAt(ki % klen);
+                        mutable int kshift = 0;
+                        if (kc >= 'A' && kc <= 'Z') { kshift = cast<int>(kc) - cast<int>('A'); }
+                        if (kc >= 'a' && kc <= 'z') { kshift = cast<int>(kc) - cast<int>('a'); }
+                        mutable int base = cast<int>('A');
+                        if (lower) { base = cast<int>('a'); }
+                        int off = cast<int>(c) - base;
+                        int shifted = (off + dir * kshift + 2600) % 26;
+                        sb.appendChar(cast<char>(base + shifted));
+                        ki = ki + 1;
+                    } else {
+                        sb.appendChar(c);
+                    }
+                }
+                return sb.toString();
+            }
+            public static method encrypt(String s, String key) returns String { return Vigenere.proc(s, key, 1); }
+            public static method decrypt(String s, String key) returns String { return Vigenere.proc(s, key, -1); }
+        }
+    }

@@ -1,0 +1,37 @@
+program InheritLib;
+
+// A base class meant to be EXTENDED from outside the bundle, which is the case the ABI audit listed as
+// unaudited: every earlier bundle test either kept the whole hierarchy inside the library or imported a
+// leaf. Here the consumer derives from `Widget` and overrides one of its three virtual methods.
+//
+// Three methods, deliberately: one the consumer overrides, one it inherits and calls directly, and one
+// the BASE calls on itself -- which is the interesting one, because that call is compiled here, into
+// this bundle's numbering, and has to land on the consumer's override at run time.
+public bundle InheritLib {
+    public namespace Ui {
+
+        public class Widget {
+            protected mutable int tag;
+
+            public constructor Widget(int tag) {
+                this.tag = tag;
+            }
+
+            // Overridden by the consumer.
+            public method weight() returns int {
+                return 1;
+            }
+
+            // Inherited, never overridden.
+            public method label() returns int {
+                return 100;
+            }
+
+            // Compiled HERE, dispatching on `this` -- so a Widget the consumer derived must come back
+            // into its override through this bundle's baked vtable index.
+            public method total() returns int {
+                return this.weight() * 10 + this.tag;
+            }
+        }
+    }
+}

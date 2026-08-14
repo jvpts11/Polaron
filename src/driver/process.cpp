@@ -7,17 +7,21 @@
 #include <unistd.h>
 #endif
 
-namespace ldp3::driver {
+namespace polaron::driver {
 
 #ifdef _WIN32
 namespace {
 
 // Quote an argument for a Windows command line if it contains whitespace or quotes.
 std::string quoteArg(const std::string& a) {
-    if (a.find_first_of(" \t\"") == std::string::npos) return a;
+    if (a.find_first_of(" \t\"") == std::string::npos) {
+        return a;
+    }
     std::string q = "\"";
     for (char c : a) {
-        if (c == '"') q += '\\';
+        if (c == '"') {
+            q += '\\';
+        }
         q += c;
     }
     q += "\"";
@@ -29,12 +33,14 @@ std::string quoteArg(const std::string& a) {
 int runProcess(const std::string& exe, const std::vector<std::string>& args) {
     // Build a single quoted command line and hand it to CreateProcessA. This is NOT the same as
     // _spawnvp: the CRT's _spawn family joins argv with spaces WITHOUT quoting, so any argument with an
-    // embedded space (a full exe path or a `-libpath:` under `C:\Program Files\LDP3`, the default install
+    // embedded space (a full exe path or a `-libpath:` under `C:\Program Files\Polaron`, the default install
     // location) is split into two by the child's command-line parser and the build fails. quoteArg wraps
     // every whitespace-bearing argument so paths with spaces survive. CreateProcessA with a NULL
     // application name still searches PATH and appends `.exe` for a bare token (so "git" resolves).
     std::string cmd = quoteArg(exe);
-    for (const auto& a : args) cmd += " " + quoteArg(a);
+    for (const auto& a : args) {
+        cmd += " " + quoteArg(a);
+    }
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -54,13 +60,17 @@ int runProcess(const std::string& exe, const std::vector<std::string>& args) {
 int runProcessCapture(const std::string& exe, const std::vector<std::string>& args, std::string& output,
                       const std::string& cwd, bool mergeStderr) {
     std::string cmd = quoteArg(exe);
-    for (const auto& a : args) cmd += " " + quoteArg(a);
+    for (const auto& a : args) {
+        cmd += " " + quoteArg(a);
+    }
 
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
     HANDLE rd = nullptr, wr = nullptr;
-    if (!CreatePipe(&rd, &wr, &sa, 0)) return -1;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) {
+        return -1;
+    }
     SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
 
     STARTUPINFOA si{};
@@ -81,7 +91,9 @@ int runProcessCapture(const std::string& exe, const std::vector<std::string>& ar
     CloseHandle(wr);  // the parent does not write to the pipe
     char chunk[4096];
     DWORD n = 0;
-    while (ReadFile(rd, chunk, sizeof(chunk), &n, nullptr) && n > 0) output.append(chunk, n);
+    while (ReadFile(rd, chunk, sizeof(chunk), &n, nullptr) && n > 0) {
+        output.append(chunk, n);
+    }
     CloseHandle(rd);
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 0;
@@ -153,4 +165,4 @@ int runProcessCapture(const std::string& exe, const std::vector<std::string>& ar
 
 #endif
 
-}  // namespace ldp3::driver
+}  // namespace polaron::driver

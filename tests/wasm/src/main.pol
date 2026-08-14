@@ -1,0 +1,59 @@
+// A WEBASSEMBLY MODULE THAT IMPORTS NOTHING, built by `polaron build` rather than by hand.
+//
+// `run_wasm_link_test.cmake` already drove polc -> clang -> wasm-ld directly, and because it did, two
+// gaps stayed invisible for as long as wasm existed as a target:
+//
+//   1. `polaron build` could not produce a module at all. The freestanding path linked with `ld.lld`
+//      unconditionally, and a wasm object is not an ELF: "unknown file type", once per object. Every
+//      other part of the toolchain was ready; the whole failure was in the driver, exactly as it was
+//      for the AArch64 port.
+//
+//   2. The entry wrapper marshalled `argv`. The test for "is this bare metal" was the substring
+//      `none` in the triple, and `wasm32-unknown-unknown` does not contain it -- so a module with no
+//      libc, no argv and nothing to call `main` took the HOSTED path and came out importing
+//      `__polaron_malloc` and `strlen` purely to build a `string[]` from a command line that does not
+//      exist. The question is "is there a C runtime", and now one method answers it for both the
+//      declaration and the body of the entry point.
+//
+// What is exercised below is deliberately not just arithmetic. A region class puts the narrow 32-bit
+// `A*` in a wasm module -- its arena is the static one the driver emits for freestanding, so both
+// halves of the contract have to hold here too: one base, and offset zero never handed out. Contracts
+// are in because their failure path is a call the module would otherwise have to import.
+//
+// The test asserts the module has NO undefined symbols. A wasm import is not a broken image the way an
+// undefined ELF symbol is -- it is a demand on the host -- so "it links" proves nothing about
+// self-containment and the symbol table is the only thing that does.
+program WasmModule freestanding;
+
+public bundle Main {
+    public namespace App {
+
+        public region class Node {
+            public mutable int value;
+            public mutable nullable Node* next;
+
+            invariant this.value >= 0;
+
+            public constructor Node(int value) {
+                this.value = value;
+                this.next = null;
+            }
+
+            public method total() returns int {
+                if (this.next == null) { return this.value; }
+                return this.value + this.next.total();
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* head = new Node(10);
+                head.next = new Node(20);
+                head.next.next = new Node(12);
+                // 42, and it is only 42 if each narrow pointer read back as the object stored.
+                head.value = head.total();
+                return;
+            }
+        }
+    }
+}

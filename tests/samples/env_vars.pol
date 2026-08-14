@@ -1,0 +1,20 @@
+import System.IO.Console;
+import System.OS.Env;
+program EnvVars;
+
+// Environment variables (spec 34): Env.set writes one, Env.get reads it back (empty String if unset).
+// Prints:
+//   v=hello42 missing_len=0
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Env.set("POLARON_TEST_VAR", "hello42");
+                String v = Env.get("POLARON_TEST_VAR");
+                String missing = Env.get("POLARON_NONEXISTENT_ZZZ");
+                System.IO.Console.printf("v=%s missing_len=%d\n", v, missing.length());
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,10 @@
+[polaron_project]
+
+[program]
+name = "distroproof"
+version = "0.1.0"
+language_version = "1.0"
+entry = "src/main.pol"
+
+[build]
+output = "build-output/"

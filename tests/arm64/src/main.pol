@@ -1,0 +1,91 @@
+// The first Polaron program to run on a machine that is not an x86.
+//
+// It boots on QEMU's `virt` board and writes to the PL011 UART the board maps at 0x09000000, which is
+// what `-nographic` presents as the terminal. That is deliberately the smallest thing that proves the
+// whole chain end to end: polc -> AArch64 IR -> clang -> ld.lld -> an ELF a real ARM core executes.
+//
+// Everything here is ordinary Polaron. There is no architecture in the source at all beyond the UART's
+// address -- objects, methods, a loop, a `while` over a string -- because that is the claim being
+// tested: that the language, not a subset of it, reaches another machine.
+program Arm64Boot freestanding;
+
+public bundle main {
+    public namespace kernel {
+        // The PL011 the `virt` board maps at 0x09000000.
+        //
+        // A real driver would wait on the FIFO-full bit in UARTFR before each write. This one does not,
+        // because QEMU's PL011 never asserts it and a spin on a bit that is always clear proves nothing
+        // -- the honest version of that check belongs with a real board, and this file's job is to
+        // prove the machine runs our code at all.
+        public class Uart {
+            private volatile mutable byte* data;
+
+            public constructor Uart() {
+                this.data = cast<volatile byte*>(0x09000000);
+            }
+
+            public method putc(int c) returns void {
+                this.data[0] = cast<byte>(c);
+                return;
+            }
+
+            // `b"..."` is a NUL-terminated `byte*`, so the walk ends on the terminator rather than on a
+            // length -- the same shape pico's serial reporter uses, and for the same reason: it depends
+            // on an index and a comparison, and so keeps working when the object graph is what broke.
+            public method puts(byte* s) returns void {
+                mutable int i = 0;
+                mutable int ch = cast<int>(s[0]) & 255;
+                while (ch != 0) {
+                    this.putc(ch);
+                    i = i + 1;
+                    ch = cast<int>(s[i]) & 255;
+                }
+                return;
+            }
+
+            public method nl() returns void {
+                this.putc(10);
+                return;
+            }
+
+            // A number in hex, so the report can carry a value and not only a word.
+            public method hex(long v) returns void {
+                mutable int shift = 60;
+                while (shift >= 0) {
+                    long nibble = (v >> shift) & 15;
+                    if (nibble < 10) {
+                        this.putc(cast<int>(48 + nibble));
+                    } else {
+                        this.putc(cast<int>(87 + nibble));
+                    }
+                    shift = shift - 4;
+                }
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Uart uart = new Uart();
+                uart.puts(b"polaron on aarch64");
+                uart.nl();
+
+                // Arithmetic that has to survive the trip: a loop the optimiser will happily unroll and
+                // reassociate, whose answer is only right if the AArch64 lowering is.
+                mutable long sum = 0;
+                mutable int i = 1;
+                while (i <= 100) {
+                    sum = sum + cast<long>(i * i);
+                    i = i + 1;
+                }
+                uart.puts(b"sum1..100^2 = 0x");
+                uart.hex(sum);   // 338350 = 0x529ae
+                uart.nl();
+
+                uart.puts(b"done");
+                uart.nl();
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,19 @@
+program FfiLibraryBundleLib;
+
+// The library half of the cross-bundle link test: a bundle whose class binds to a foreign library.
+//
+// The extern is PRIVATE, so it does not appear in the generated .polh at all -- which is exactly why
+// the `library` clause has to. Without it, the only evidence that consuming this bundle also means
+// linking SDL2 would be an unresolved symbol at the final link, naming a method the consumer's author
+// never wrote and cannot see.
+public bundle Graphics {
+    public namespace Video {
+        public class Sdl library SDL2 {
+            private extern cdecl static method init(int flags) returns int symbol("SDL_Init");
+
+            public static method start() returns int {
+                return Sdl.init(0);
+            }
+        }
+    }
+}

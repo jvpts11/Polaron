@@ -1,7 +1,7 @@
-# Packages the built LDP3 toolchain into dist/ldp3-toolchain/ and a versioned zip. Both toolchain
-# front-ends ship together: ldp3 (the classic gcc/cargo-style CLI) and ldp3-studio (the FTXUI TUI
-# project manager), plus the ldp3c compiler, the ldp3-lsp language server, and the ldp3_rt runtime lib.
-# Run after building: cmake --build build --config Release --target ldp3 ldp3c ldp3-studio ldp3-lsp
+# Packages the built Polaron toolchain into dist/polaron-toolchain/ and a versioned zip. Both toolchain
+# front-ends ship together: polaron (the classic gcc/cargo-style CLI) and polaron-studio (the FTXUI TUI
+# project manager), plus the polc compiler, the polaron-lsp language server, and the polaron_rt runtime lib.
+# Run after building: cmake --build build --config Release --target polaron polc polaron-studio polaron-lsp
 param(
     [string]$Config = "Release",
     [string]$Version = "1.0.0",
@@ -10,8 +10,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $binDir = Join-Path $RepoRoot "build\bin\$Config"
-$outDir = Join-Path $RepoRoot "dist\ldp3-toolchain"
-$files  = @("ldp3.exe", "ldp3c.exe", "ldp3-studio.exe", "ldp3-lsp.exe", "ldp3_rt.lib")
+$outDir = Join-Path $RepoRoot "dist\polaron-toolchain"
+$files  = @("polaron.exe", "polc.exe", "polaron-studio.exe", "polaron-lsp.exe", "polaron_rt.lib")
 
 foreach ($f in $files) {
     if (-not (Test-Path (Join-Path $binDir $f))) {
@@ -26,8 +26,8 @@ Copy-Item (Join-Path $PSScriptRoot "install.ps1")   $outDir
 Copy-Item (Join-Path $PSScriptRoot "uninstall.ps1") $outDir
 Set-Content (Join-Path $outDir "VERSION.txt") $Version -Encoding utf8
 
-$zip = Join-Path $RepoRoot "dist\ldp3-toolchain-$Version.zip"
+$zip = Join-Path $RepoRoot "dist\polaron-toolchain-$Version.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path "$outDir\*" -DestinationPath $zip
 Write-Host "packed $zip"
-Write-Host "(unzip it and run install.ps1, or build the GUI installer with ISCC ldp3.iss)"
+Write-Host "(unzip it and run install.ps1, or build the GUI installer with ISCC polaron.iss)"

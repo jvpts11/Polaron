@@ -1,0 +1,35 @@
+import System.IO.Console;
+program FfiLanguages;
+
+// The FFI axis is the LANGUAGE on the other side, not a calling convention.
+//
+// A convention is an ABI detail; the language is what decides name mangling, how aggregates travel,
+// exceptions and ownership -- and on x86-64 the three old convention keywords collapsed onto the one
+// platform ABI anyway. `stdcall` and `fastcall` are gone: they named 32-bit x86 conventions that mean
+// nothing here, and on this axis they were conventions rather than languages.
+//
+// `rustdecl` and `zigdecl` are RESERVED AND LOWER TO THE C ABI today, and that is documented rather
+// than pretended: neither language has a stable native ABI. What is callable from outside Rust is
+// `#[no_mangle] extern "C"`, and Zig's `export` is the C ABI. The words earn their place by declaring
+// intent -- and by being what a "this is not C" warning can be written against.
+//
+// Prints: abs = 42, labs = 1000000
+public bundle main {
+    public namespace app {
+        public class FromC {
+            private extern cdecl static method magnitude(int x) returns int symbol("abs");
+        }
+        // Reserved today, C ABI today. The declaration says what the other side IS; the day Rust
+        // stabilizes an ABI, this line does not have to change.
+        public class FromRust {
+            private extern rustdecl static method wide(long x) returns long symbol("labs");
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("abs = %d, labs = %lld\n", FromC.magnitude(0 - 42),
+                                         FromRust.wide(cast<long>(0) - cast<long>(1000000)));
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,29 @@
+import System.IO.Console;
+program NarrowAddressRule;
+
+// A NARROW ADDRESS IS STILL AN ADDRESS, and the rule that separates one from a number holds for all
+// four widths rather than only for the 64-bit one.
+//
+// `address` sits among the integer types so that arithmetic on it works, and that is exactly why the
+// separation has to be stated: left as a plain widening, `int n = someAddress;` silently turns a
+// pointer into a number and `address a = someLong;` silently turns a number into a pointer. The second
+// is how a program reads memory nobody gave it.
+//
+// HOSTED, deliberately. Freestanding is exempt from this rule and not as a concession: on bare metal
+// turning an integer into an address IS the work, the memory-mapped register at 0xB8000 is a number
+// until you say otherwise, and there is no allocator to have given you the address instead. So this
+// file must be a hosted program or it would prove nothing.
+//
+// Must fail with: An address is not an integer that happens to be that wide
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                short address s = cast<short address>(0x20);
+                int n = s;
+                System.IO.Console.printf("%d\n", n);
+                return;
+            }
+        }
+    }
+}

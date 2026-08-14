@@ -9,7 +9,7 @@ A persistent outlives the object that declared it. That is the whole feature. So
 entry after the object is gone — and if the key is *the object*, the registry is holding a pointer to
 something that no longer exists.
 
-Storing a copy of the key object does not fix it either. LDP3's copy is one level deep
+Storing a copy of the key object does not fix it either. Polaron's copy is one level deep
 ([§5.1](../reference/guide/05-memory-and-ownership.md)): a pointer field is copied **as a pointer**, so a
 key containing one would still dangle the moment the pointee died. Copying deeper means `cascade clone`
 on every attach, which drags an unbounded graph walk into a lookup.
@@ -30,7 +30,7 @@ Every problem above disappears rather than being managed:
 | Ownership | Bytes are self-contained. Copied once into registry memory, owned by it, freed with it. |
 | Dangling | There is nothing to dangle. No pointer leaves the object. |
 | Collisions | The hash picks a bucket; the **bytes** decide the match. Two identities never merge. |
-| Freestanding | No callback from the runtime into LDP3 code, so hosted and bare metal run the same path. |
+| Freestanding | No callback from the runtime into Polaron code, so hosted and bare metal run the same path. |
 | Cost | Serialise once per distinct identity, at attach — never on access. |
 
 ## What gets serialised
@@ -67,7 +67,7 @@ is a small value type holding exactly the identity, with the persistent declared
 Keying by value makes `release` mean something it could not mean before, and the two forms are both
 needed:
 
-```ldp3
+```polaron
 release persistent s.hits;              // just this key's entry -- this session, this user
 release persistent Session.hits all;    // every entry for the field -- shutdown, or a full reset
 ```

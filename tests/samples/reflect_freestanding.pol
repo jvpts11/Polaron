@@ -1,0 +1,31 @@
+import reflect;
+// REFLECTION WORKS BARE METAL, and the gate that said otherwise was inherited from spec 36.3's list
+// rather than from a measurement -- the list was written when reflection was assumed to need a
+// managed runtime.
+//
+// Measured against an empty program, `reflect.typeOf<T>()` and the Type/Method tokens it hands back
+// need `__polaron_malloc` (the kernel's own, through the `heap class` bridge) and `memcpy`. Looking a
+// method up BY NAME adds `strcmp`, which is the same category: a freestanding-implementable
+// primitive, not a managed runtime.
+//
+// And it is not an academic case. `Method.firstByte()` is how `unimport` is tested -- reading back
+// the 0xCC that replaced the code -- which is a bare-metal question by nature.
+program ReflectFreestanding freestanding;
+
+public bundle Kernel {
+    public namespace Drv {
+        public class Nic {
+            public mutable int irq;
+            public constructor Nic() { this.irq = 11; }
+            public method poll() returns int { return this.irq; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Type t = reflect.typeOf<Nic>();
+                Method m = t.method("poll");
+                return m.firstByte();
+            }
+        }
+    }
+}

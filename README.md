@@ -1,15 +1,15 @@
-<!-- LDP3 — Linguagem De Programação 3. -->
+<!-- Polaron — Linguagem De Programação 3. -->
 
-# LDP3
+# Polaron
 
-**LDP3** (*Linguagem De Programação 3*) is an object-orientation–mandatory, manually
+**Polaron** (*Linguagem De Programação 3*) is an object-orientation–mandatory, manually
 memory-managed systems language that compiles to native code through LLVM. It aims to be
 as fast as C and C++ while being safer by construction — value semantics, no garbage
 collector, and no *exploitable* undefined behaviour.
 
 Created by João Victor Pereira Tavares.
 
-```ldp3
+```polaron
 import System.IO.Console;
 
 program Hello;
@@ -25,7 +25,7 @@ public bundle main {
 }
 ```
 
-## Why LDP3
+## Why Polaron
 
 - **OOP-mandatory, no ceremony.** Everything lives in a `class`; there are no free
   functions. Sensible defaults keep the common case terse, with explicit syntax available
@@ -55,24 +55,24 @@ Small, self-contained programs live in [`examples/`](examples/).
 
 ## Building the compiler
 
-LDP3 is written in C++20 and builds with CMake against LLVM 17+.
+Polaron is written in C++20 and builds with CMake against LLVM 17+.
 
 ```
-cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake -DLDP3_WITH_LLVM=ON
+cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake -DPOLARON_WITH_LLVM=ON
 cmake --build build --config Debug
 ctest --test-dir build -C Debug
 ```
 
-The compiler is `ldp3c` and the project driver is `ldp3`. A Windows installer that bundles
+The compiler is `polc` and the project driver is `polaron`. A Windows installer that bundles
 a self-contained toolchain (compiler + linker + runtime) is built from
 [`installer/`](installer/).
 
 ## Compiling a program
 
 ```
-ldp3 build            # builds an ldp3.toml project
+polaron build            # builds a polaron.toml project
 # or, a single file:
-ldp3c hello.ldp3 -o hello.ll && clang hello.ll -o hello.exe
+polc hello.pol -o hello.ll && clang hello.ll -o hello.exe
 ```
 
 ## Status

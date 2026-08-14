@@ -1,0 +1,2223 @@
+    public namespace Collections {
+        // A cursor over a sequence: hasNext reports whether another element remains, next yields the
+        // current one and advances (spec 34). Iterable is anything that can hand out a fresh Iterator
+        // over its elements, so a generic algorithm can walk any collection through these two interfaces.
+        public interface Iterator<T> {
+            method hasNext() returns boolean;
+            method next() returns T;
+        }
+        public interface Iterable<T> {
+            method iterator() returns Iterator<T>;
+        }
+        // A growable list backed by a dynamic array that doubles on overflow (spec 31 uses
+        // ArrayList<Method>/ArrayList<Field>; also a general-purpose collection).
+        public class ArrayList<T> implements Iterable<T> {
+            // WHAT IS ALWAYS TRUE OF A LIST, said to the compiler rather than only to the reader.
+            //
+            // The library declared preconditions (`requires`) in 29 places and never once declared a
+            // postcondition or an invariant -- which is backwards for a LIBRARY: a caller can check
+            // its own arguments and cannot check ours. These two clauses are the entire contract of a
+            // growable array. The count never goes negative, and it never runs past the storage that
+            // holds it; essentially every bug this class could have violates one of them.
+            //
+            // Not free in principle, free in practice: contracts are real runtime checks, and the
+            // optimizer deletes the ones it can prove. `coll_list` sits at parity with std::vector
+            // and is the benchmark that would show it if they cost anything.
+            invariant this.count >= 0;
+            invariant this.count <= this.data.length();
+            private mutable T[] data;
+            private mutable int count;
+            public constructor ArrayList() {
+                this.data = new T[4]();
+                this.count = 0;
+            }
+            public destructor ~ArrayList() returns void {
+                delete this.data;
+            }
+            public method add(T item) returns void
+                // The one thing a caller is entitled to assume, now stated: adding grows the list by
+                // exactly one. `old(...)` is the value at entry, so this also rules out the mistake
+                // a growable array actually makes -- reallocating and losing the count.
+                ensures this.count == old(this.count) + 1
+            {
+                if (this.count >= this.data.length()) {
+                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    for (mutable int i = 0; i < this.count; i++) {
+                        bigger[i] = this.data[i];
+                    }
+                    delete this.data;
+                    this.data = bigger;
+                }
+                this.data[this.count] = item;
+                this.count = this.count + 1;
+            }
+            // Grow the backing store to hold at least n elements up front, so a known-size fill (a copy,
+            // a filter/map/sort output) does not pay repeated doubling reallocations. A no-op when the
+            // capacity already suffices; never shrinks.
+            public method ensureCapacity(int n) returns void {
+                if (n > this.data.length()) {
+                    mutable T[] bigger = new T[n]();
+                    for (mutable int i = 0; i < this.count; i++) { bigger[i] = this.data[i]; }
+                    delete this.data;
+                    this.data = bigger;
+                }
+            }
+            public method get(int i) returns T {
+                if (i < 0 || i >= this.count) {
+                    // Past the logical size but still inside the backing store's spare capacity: the raw
+                    // array check would not catch it, so force a clean "array index out of bounds" panic
+                    // instead of returning an uninitialized slot (garbage for a value, a wild pointer for
+                    // an object). No UB.
+                    return this.data[this.data.length()];
+                }
+                return this.data[i];
+            }
+            public method set(int i, T item) returns void {
+                if (i < 0 || i >= this.count) {
+                    this.data[this.data.length()] = item;   // out of bounds -> clean panic, never a silent write
+                    return;
+                }
+                this.data[i] = item;
+            }
+            public method indexOf(T item) returns int {  // -1 if absent (uses equalsKey)
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (this.data[i].equalsKey(item)) { return i; }
+                }
+                return -1;
+            }
+            public method contains(T item) returns boolean {
+                return this.indexOf(item) >= 0;
+            }
+            public method removeAt(int i) returns void {  // shift the tail left
+                if (i < 0 || i >= this.count) {
+                    // Out of range would silently decrement count (or leave a gap) without removing
+                    // anything. Force a clean "array index out of bounds" panic instead. No UB.
+                    mutable T oob = this.data[this.data.length()];
+                    return;
+                }
+                for (mutable int j = i; j < this.count - 1; j++) {
+                    this.data[j] = this.data[j + 1];
+                }
+                this.count = this.count - 1;
+            }
+            public method insertAt(int i, T item) returns void {  // shift the tail right, insert at i
+                if (i < 0 || i > this.count) {   // count itself is valid here -- that is an append
+                    this.data[this.data.length()] = item;   // out of bounds -> clean panic, no silent gap
+                    return;
+                }
+                if (this.count >= this.data.length()) {
+                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    for (mutable int k = 0; k < this.count; k++) { bigger[k] = this.data[k]; }
+                    delete this.data;
+                    this.data = bigger;
+                }
+                for (mutable int j = this.count; j > i; j--) {
+                    this.data[j] = this.data[j - 1];
+                }
+                this.data[i] = item;
+                this.count = this.count + 1;
+            }
+            public method remove(T item) returns boolean {  // remove first equal element
+                int i = this.indexOf(item);
+                if (i < 0) { return false; }
+                this.removeAt(i);
+                return true;
+            }
+            public method clear() returns void {
+                this.count = 0;
+            }
+            public method toArray() returns T[] {
+                mutable T[] out = new T[this.count]();
+                for (mutable int i = 0; i < this.count; i++) { out[i] = this.data[i]; }
+                return out;
+            }
+            public method size() returns int {
+                return this.count;
+            }
+            public method isEmpty() returns boolean {
+                return this.count == 0;
+            }
+            // Functional pipeline (spec 34): run over, and select from, the elements with a lambda.
+            public method forEach(function<void, T> action) returns void {
+                for (mutable int i = 0; i < this.count; i++) { action(this.data[i]); }
+            }
+            public method filter(function<boolean, T> keep) returns ArrayList<T> {
+                mutable ArrayList<T> out = new ArrayList<T>() on heap;
+                out.ensureCapacity(this.count);  // at most `count` kept; size once instead of growing
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (keep(this.data[i])) { out.add(this.data[i]); }
+                }
+                return out;
+            }
+            public method map<R>(function<R, T> transform) returns ArrayList<R> {
+                mutable ArrayList<R> out = new ArrayList<R>() on heap;
+                out.ensureCapacity(this.count);  // output is exactly `count`; size once, no growth
+                for (mutable int i = 0; i < this.count; i++) { out.add(transform(this.data[i])); }
+                return out;
+            }
+            public method reduce<R>(R seed, function<R, R, T> combine) returns R {
+                mutable R acc = seed;
+                for (mutable int i = 0; i < this.count; i++) { acc = combine(acc, this.data[i]); }
+                return acc;
+            }
+            public method any(function<boolean, T> pred) returns boolean {
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (pred(this.data[i])) { return true; }
+                }
+                return false;
+            }
+            public method all(function<boolean, T> pred) returns boolean {
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (!pred(this.data[i])) { return false; }
+                }
+                return true;
+            }
+            public method count(function<boolean, T> pred) returns int {
+                mutable int hits = 0;
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (pred(this.data[i])) { hits = hits + 1; }
+                }
+                return hits;
+            }
+            // Returns a new list with the elements ordered by a comparator (spec 34): compare(a, b) is
+            // negative when a comes first, positive when b does. Stable merge sort, leaves this list
+            // untouched. The comparator keeps it generic -- the element type needs no ordering of its own.
+            public method sortedBy(function<int, T, T> compare) returns ArrayList<T> {
+                mutable ArrayList<T> out = new ArrayList<T>() on heap;
+                out.ensureCapacity(this.count);  // the copy is known-size; fill without reallocating
+                for (mutable int i = 0; i < this.count; i++) { out.add(this.data[i]); }
+                if (out.size() > 1) {
+                    T[] scratch = new T[out.size()]();  // O(n) merge buffer, freed below
+                    out.mergeSortRange(scratch, 0, out.size() - 1, compare);
+                    delete scratch;
+                }
+                return out;
+            }
+            // Stable merge sort (O(n log n)) backing sortedBy; `tmp` is an n-element scratch array. Kept
+            // internal to the collection. Two standard refinements over the textbook version: small ranges
+            // fall back to an in-place insertion sort (no recursion/merge overhead, cache-friendly), and a
+            // range whose two sorted halves are already in order skips the merge and its copy-back entirely.
+            private method mergeSortRange(T[] tmp, int lo, int hi, function<int, T, T> compare) returns void {
+                if (lo >= hi) { return; }
+                if (hi - lo < 16) {  // insertion sort; stable -- only shifts strictly-greater elements
+                    for (mutable int p = lo + 1; p <= hi; p = p + 1) {
+                        T key = this.data[p];
+                        mutable int q = p - 1;
+                        while (q >= lo && compare(this.data[q], key) > 0) {
+                            this.data[q + 1] = this.data[q];
+                            q = q - 1;
+                        }
+                        this.data[q + 1] = key;
+                    }
+                    return;
+                }
+                int mid = (lo + hi) / 2;
+                this.mergeSortRange(tmp, lo, mid, compare);
+                this.mergeSortRange(tmp, mid + 1, hi, compare);
+                if (compare(this.data[mid], this.data[mid + 1]) <= 0) { return; }  // already ordered
+                mutable int i = lo;
+                mutable int j = mid + 1;
+                mutable int k = lo;
+                while (i <= mid && j <= hi) {
+                    if (compare(this.data[i], this.data[j]) <= 0) {
+                        tmp[k] = this.data[i];
+                        i = i + 1;
+                    } else {
+                        tmp[k] = this.data[j];
+                        j = j + 1;
+                    }
+                    k = k + 1;
+                }
+                while (i <= mid) { tmp[k] = this.data[i]; i = i + 1; k = k + 1; }
+                while (j <= hi) { tmp[k] = this.data[j]; j = j + 1; k = k + 1; }
+                for (mutable int t = lo; t <= hi; t = t + 1) { this.data[t] = tmp[t]; }
+            }
+            // Search terminals (spec 34): find returns the first element a predicate accepts, min/max the
+            // smallest/largest by a comparator. Each returns Option<T> -- Some on a hit, None when the list
+            // is empty or nothing matches -- so the empty case is in the type, not a sentinel.
+            public method find(function<boolean, T> pred) returns Option<T> {
+                for (mutable int i = 0; i < this.count; i++) {
+                    if (pred(this.data[i])) { return Some(this.data[i]); }
+                }
+                return None();
+            }
+            public method min(function<int, T, T> compare) returns Option<T> {
+                if (this.count == 0) { return None(); }
+                mutable T best = this.data[0];
+                for (mutable int i = 1; i < this.count; i++) {
+                    if (compare(this.data[i], best) < 0) { best = this.data[i]; }
+                }
+                return Some(best);
+            }
+            public method max(function<int, T, T> compare) returns Option<T> {
+                if (this.count == 0) { return None(); }
+                mutable T best = this.data[0];
+                for (mutable int i = 1; i < this.count; i++) {
+                    if (compare(this.data[i], best) > 0) { best = this.data[i]; }
+                }
+                return Some(best);
+            }
+            public override method iterator() returns Iterator<T> {
+                return new ArrayListIterator<T>(this) on heap;
+            }
+        }
+        // The cursor an ArrayList hands out: walks indices 0..size over the list it was given.
+        public class ArrayListIterator<T> implements Iterator<T> {
+            private mutable ArrayList<T> list;
+            private mutable int pos;
+            public constructor ArrayListIterator(ArrayList<T> list) {
+                this.list = list;
+                this.pos = 0;
+            }
+            public override method hasNext() returns boolean {
+                return this.pos < this.list.size();
+            }
+            public override method next() returns T {
+                mutable T value = this.list.get(this.pos);
+                this.pos = this.pos + 1;
+                return value;
+            }
+        }
+        // A lazy iterator pipeline (spec 25 / stdlib #25): a Stream is itself an Iterator, and each
+        // transform (filter/map) wraps the previous stream and pulls elements on demand -- nothing runs
+        // until a terminal op (fold/count/forEach) drives hasNext/next. Build one over any Iterator with
+        // `new IteratorStream<T>(collection.iterator())`, then chain. map<R> may change the element type.
+        public abstract class Stream<T> implements Iterator<T> {
+            public abstract method hasNext() returns boolean;
+            public abstract method next() returns T;
+            public method filter(function<boolean, T> pred) returns Stream<T> {
+                return new FilterStream<T>(this, pred) on heap;
+            }
+            public method map<R>(function<R, T> fn) returns Stream<R> {
+                return new MapStream<T, R>(this, fn) on heap;
+            }
+            public method fold<R>(R init, function<R, R, T> combine) returns R {
+                mutable R acc = init;
+                while (this.hasNext()) { acc = combine(acc, this.next()); }
+                return acc;
+            }
+            public method forEach(function<void, T> action) returns void {
+                while (this.hasNext()) { action(this.next()); }
+            }
+            public method count() returns int {
+                mutable int c = 0;
+                while (this.hasNext()) { this.next(); c = c + 1; }
+                return c;
+            }
+        }
+        // Adapts a plain Iterator into a Stream (the head of a pipeline). It adds nothing but its type,
+        // so it answers nothing itself: `delegate` forwards hasNext and next to the iterator it wraps.
+        public class IteratorStream<T> extends Stream<T> {
+            private delegate Iterator<T> src;
+            public constructor IteratorStream(Iterator<T> src) { this.src = src; }
+        }
+        // Yields only the upstream elements that satisfy the predicate; caches one look-ahead so hasNext
+        // can skip rejected elements without losing the accepted one.
+        public class FilterStream<T> extends Stream<T> {
+            private Stream<T> src;
+            private function<boolean, T> pred;
+            private mutable boolean hasCached;
+            private mutable T cached;
+            public constructor FilterStream(Stream<T> src, function<boolean, T> pred) {
+                this.src = src; this.pred = pred; this.hasCached = false;
+            }
+            public override method hasNext() returns boolean {
+                if (this.hasCached) { return true; }
+                while (this.src.hasNext()) {
+                    T v = this.src.next();
+                    if (this.pred(v)) { this.cached = v; this.hasCached = true; return true; }
+                }
+                return false;
+            }
+            public override method next() returns T {
+                this.hasCached = false;
+                return this.cached;
+            }
+        }
+        // Applies a transform to each upstream element as it is pulled, possibly changing the type
+        // (T -> R). Extends Stream<R>, so map may be chained with a different element type.
+        // A decorator: `hasNext` is the upstream's answer unchanged, so it is delegated; `next` is the
+        // one thing this class exists to do, so it is written here and wins over the delegate.
+        public class MapStream<T, R> extends Stream<R> {
+            private delegate Stream<T> src;
+            private function<R, T> fn;
+            public constructor MapStream(Stream<T> src, function<R, T> fn) {
+                this.src = src; this.fn = fn;
+            }
+            public override method next() returns R { return this.fn(this.src.next()); }
+        }
+        // A non-owning window over a [start, start+len) range of an array (spec 34): no copy, just a
+        // backing array and an offset. Reads go through the array's own bounds check, so there is no UB;
+        // sub returns a narrower window, toArray copies the window out into a fresh array.
+        public class Slice<T> {
+            private mutable T[] backing;
+            private mutable int start;
+            private mutable int len;
+            public constructor Slice(T[] array, int start, int len) {
+                this.backing = array;
+                this.start = start;
+                this.len = len;
+            }
+            public method length() returns int {
+                return this.len;
+            }
+            public method get(int i) returns T {
+                if (i < 0 || i >= this.len) {
+                    // Inside the backing array but outside THIS window: the raw check would not catch it,
+                    // so force a clean "array index out of bounds" panic rather than read a neighbour. No UB.
+                    return this.backing[this.backing.length()];
+                }
+                return this.backing[this.start + i];
+            }
+            public method set(int i, T value) returns void {
+                if (i < 0 || i >= this.len) {
+                    this.backing[this.backing.length()] = value;   // outside the window -> clean panic
+                    return;
+                }
+                this.backing[this.start + i] = value;
+            }
+            public method sub(int from, int to) returns Slice<T> {
+                return new Slice<T>(this.backing, this.start + from, to - from) on heap;
+            }
+            public method toArray() returns T[] {
+                mutable T[] out = new T[this.len]();
+                for (mutable int i = 0; i < this.len; i++) { out[i] = this.backing[this.start + i]; }
+                return out;
+            }
+        }
+// Split here only to stay under the MSVC per-string-literal size limit; the two raw chunks concatenate
+// into one continuous System.Collections namespace.
+        // LIFO stack backed by a doubling array (spec 34.1).
+        public class Stack<T> {
+            invariant this.count >= 0;
+            invariant this.count <= this.data.length();
+            private mutable T[] data;
+            private mutable int count;
+            public constructor Stack() { this.data = new T[4](); this.count = 0; }
+            public destructor ~Stack() returns void { delete this.data; }
+            public method push(T item) returns void {
+                if (this.count >= this.data.length()) {
+                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    for (mutable int i = 0; i < this.count; i++) { bigger[i] = this.data[i]; }
+                    delete this.data;
+                    this.data = bigger;
+                }
+                this.data[this.count] = item;
+                this.count = this.count + 1;
+            }
+            public method pop() returns T {
+                this.count = this.count - 1;
+                return this.data[this.count];
+            }
+            public method peek() returns T { return this.data[this.count - 1]; }
+            public method toArray() returns T[] {  // bottom-to-top (insertion order)
+                mutable T[] out = new T[this.count]();
+                for (mutable int i = 0; i < this.count; i++) { out[i] = this.data[i]; }
+                return out;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // FIFO queue backed by a doubling ring buffer (spec 34.1).
+        public class Queue<T> {
+            // A ring: the head is a position inside the storage and the count never exceeds it.
+            // The second clause is what a circular buffer gets wrong when it gets anything wrong.
+            invariant this.count >= 0;
+            invariant this.count <= this.data.length();
+            invariant this.head >= 0;
+            invariant this.head < this.data.length();
+            private mutable T[] data;
+            private mutable int head;
+            private mutable int count;
+            public constructor Queue() { this.data = new T[4](); this.head = 0; this.count = 0; }
+            public destructor ~Queue() returns void { delete this.data; }
+            public method enqueue(T item) returns void {
+                if (this.count >= this.data.length()) {
+                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    for (mutable int i = 0; i < this.count; i++) {
+                        bigger[i] = this.data[(this.head + i) % this.data.length()];
+                    }
+                    delete this.data;
+                    this.data = bigger;
+                    this.head = 0;
+                }
+                this.data[(this.head + this.count) % this.data.length()] = item;
+                this.count = this.count + 1;
+            }
+            public method dequeue() returns T {
+                T v = this.data[this.head];
+                this.head = (this.head + 1) % this.data.length();
+                this.count = this.count - 1;
+                return v;
+            }
+            public method peek() returns T { return this.data[this.head]; }
+            public method toArray() returns T[] {  // front-to-back
+                mutable T[] out = new T[this.count]();
+                for (mutable int i = 0; i < this.count; i++) {
+                    out[i] = this.data[(this.head + i) % this.data.length()];
+                }
+                return out;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // Double-ended queue backed by a doubling ring buffer (spec 34.1).
+        public class Deque<T> {
+            private mutable T[] data;
+            private mutable int head;
+            private mutable int count;
+            public constructor Deque() { this.data = new T[4](); this.head = 0; this.count = 0; }
+            public destructor ~Deque() returns void { delete this.data; }
+            private method grow() returns void {
+                if (this.count < this.data.length()) { return; }
+                mutable T[] bigger = new T[this.data.length() * 2]();
+                for (mutable int i = 0; i < this.count; i++) {
+                    bigger[i] = this.data[(this.head + i) % this.data.length()];
+                }
+                delete this.data;
+                this.data = bigger;
+                this.head = 0;
+            }
+            public method addLast(T item) returns void {
+                this.grow();
+                this.data[(this.head + this.count) % this.data.length()] = item;
+                this.count = this.count + 1;
+            }
+            public method addFirst(T item) returns void {
+                this.grow();
+                this.head = (this.head + this.data.length() - 1) % this.data.length();
+                this.data[this.head] = item;
+                this.count = this.count + 1;
+            }
+            public method removeFirst() returns T {
+                T v = this.data[this.head];
+                this.head = (this.head + 1) % this.data.length();
+                this.count = this.count - 1;
+                return v;
+            }
+            public method removeLast() returns T {
+                this.count = this.count - 1;
+                return this.data[(this.head + this.count) % this.data.length()];
+            }
+            public method toArray() returns T[] {  // front-to-back
+                mutable T[] out = new T[this.count]();
+                for (mutable int i = 0; i < this.count; i++) {
+                    out[i] = this.data[(this.head + i) % this.data.length()];
+                }
+                return out;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // Singly-linked list node (helper for LinkedList).
+        public class LinkedNode<T> {
+            public mutable T value;
+            // `weak`, because a node does not OWN the next one -- the list does. As a plain owning
+            // pointer, destroying one node cascaded down the whole chain, which is why the nodes
+            // could not be moved into a region: the cascade reached slots the region had already
+            // taken back and handed them to the allocator. `weak` says the relationship out loud and
+            // the cascade stops.
+            public mutable weak nullable LinkedNode<T>* next;
+            public constructor LinkedNode(T v) { this.value = v; this.next = null; }
+        }
+        // Linked list (spec 34.1): O(1) append + O(1) head removal, with self-referential generic
+        // pointer nodes (LinkedNode<T> holds a LinkedNode<T>* next).
+        public class LinkedList<T> {
+            // THE NODES LIVE IN A POOL REGION -- the standard library's first, and the reason three
+            // compiler bugs are now fixed.
+            //
+            // A linked list is the case regions were made for: many small objects, all the same size,
+            // all dying with the container. `pool` is the flavor that fits rather than `bump`,
+            // because `removeFirst` hands a single node back and only a pool can take one back.
+            //
+            // This replaces a malloc per `add`, a free per `removeFirst`, and a destructor that WALKED
+            // THE WHOLE CHAIN freeing node by node, with one `release region`. The `regions` benchmark
+            // measures that same difference against malloc/free at 12x.
+            //
+            // Why no generic container could do this before: MONOMORPHIZATION SILENTLY DROPPED THE
+            // REGION. Cloning a `delete` copied only its target, losing `from region` (and `fromHeap`,
+            // and the extra targets of `delete a, b, c` -- which leaked); cloning a `new` copied
+            // `location` but not `region`. Every container is generic, so every one of them lost both
+            // halves, and because the two agreed on the wrong answer nothing ever complained: the
+            // region was simply never used. Fixing one half alone is what finally spoke -- the delete
+            // went to the region while the allocation was still on the heap, and the region refused a
+            // pointer it had never handed out.
+            private mutable pool region nodes;
+            private mutable nullable LinkedNode<T>* head;
+            private mutable nullable LinkedNode<T>* tail;
+            private mutable int count;
+            public constructor LinkedList() {
+                this.nodes = itself.allocate(4096);
+                this.head = null; this.tail = null; this.count = 0;
+            }
+            // ONE statement where there was a walk. Every node lives in the region, so giving the
+            // region back gives all of them back at once -- no chain traversal, no free per node.
+            public destructor ~LinkedList() returns void {
+                this.head = null;
+                this.tail = null;
+                this.count = 0;
+                release region this.nodes;
+            }
+            public method add(T item) returns void {
+                LinkedNode<T>* node = new LinkedNode<T>(item) in region this.nodes;
+                if (this.tail == null) { this.head = node; this.tail = node; }
+                else { this.tail.next = node; this.tail = node; }
+                this.count = this.count + 1;
+            }
+            public method get(int i) returns T {
+                mutable nullable LinkedNode<T>* cur = this.head;
+                for (mutable int j = 0; j < i; j++) { cur = cur.next; }
+                return cur.value;
+            }
+            public method removeFirst() returns T {
+                nullable LinkedNode<T>* node = this.head;
+                T v = node.value;
+                this.head = node.next;
+                if (this.head == null) { this.tail = null; }
+                delete node from region this.nodes;
+                this.count = this.count - 1;
+                return v;
+            }
+            public method toArray() returns T[] {  // head-to-tail
+                mutable T[] out = new T[this.count]();
+                mutable nullable LinkedNode<T>* cur = this.head;
+                for (mutable int i = 0; i < this.count; i++) { out[i] = cur.value; cur = cur.next; }
+                return out;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // Keys of HashMap/HashSet implement Hashable<T>; keys of TreeMap/TreeSet implement
+        // Comparable<T> (spec 34). The primitive types (int family, String) satisfy these via
+        // compiler builtins, so they can be used as keys without boxing.
+        public interface Hashable<T> {
+            method hash() returns long;
+            method equalsKey(T other) returns boolean;
+        }
+        public interface Comparable<T> {
+            method compareTo(T other) returns int;
+        }
+
+        // ORDERING, DERIVED. `Comparable` states an obligation and hands nothing back: a type that
+        // implements it still writes `a.compareTo(b) < 0` at every call site, forever.
+        //
+        // This is what `transformer` is for, and the standard library had not used one. The
+        // transformer writes the algorithm -- five comparisons, all of them the same mistake waiting
+        // to happen -- and the applying type supplies the single part only it can know. `compareTo`
+        // below has no body, so it is a SOCKET: a type that applies TComparer and forgets it gets an
+        // error on its own `applies` line naming what is missing, which an interface cannot do for a
+        // method it never calls.
+        //
+        // `itself` is the applying type, which does not exist yet when this is written -- that is the
+        // difference between a procedure and a method, and the reason the second word exists.
+        // ORDERING, DERIVED. `Comparable` states an obligation and hands nothing back: a type that
+        // implements it still writes `a.compareTo(b) < 0` at every call site, forever.
+        //
+        // This is what `transformer` is for. The transformer writes the algorithm -- five
+        // comparisons, every one of them the same off-by-a-sign waiting to happen -- and the applying
+        // type supplies the single part only it can know. `compareTo` has no body, so it is a SOCKET:
+        // a type that applies TComparer and forgets it gets an error on its own `applies` line
+        // naming what is missing, which an interface cannot do for a method it never calls.
+        //
+        // No type parameter: `itself` already IS the applying type, and `transformer T<X>` is
+        // rejected for exactly that reason. `itself` in the PARAMETER positions below is what makes
+        // the socket expressible at all -- it did not parse until this was written, and the fix was
+        // one line in the type parser, because the expansion already knew how to substitute it.
+        // ORDERING, DERIVED -- and the standard library's first transformer.
+        //
+        // `Comparable` states an obligation and hands nothing back: a type that implements it still
+        // writes `a.compareTo(b) < 0` at every call site, forever. A transformer is the other half.
+        // It writes the algorithm -- five comparisons, every one the same off-by-a-sign waiting to
+        // happen -- and the applying type supplies the one part only it can know. `compareTo` has no
+        // body, so it is a SOCKET: a type that applies TComparer and forgets it is told so on its own
+        // `applies` line, which an interface cannot do for a method nobody calls.
+        //
+        // `itself` in the parameters is what makes the socket expressible: it names the applying
+        // type, which does not exist yet. Getting here took two compiler fixes and one correction of
+        // my own reading -- see the note in System.Time.Duration for where the applying type spells
+        // its own name instead.
+        public transformer TComparer {
+            public procedure compareTo(itself other) returns int;
+
+            public procedure lessThan(itself other) returns boolean { return itself.compareTo(other) < 0; }
+            public procedure atMost(itself other) returns boolean { return itself.compareTo(other) <= 0; }
+            public procedure greaterThan(itself other) returns boolean { return itself.compareTo(other) > 0; }
+            public procedure atLeast(itself other) returns boolean { return itself.compareTo(other) >= 0; }
+            public procedure sameOrder(itself other) returns boolean { return itself.compareTo(other) == 0; }
+        }
+        // Hash map with open addressing (linear probing); capacity is a power of two, load factor
+        // 0.75 (spec 34.1). Keys must be Hashable. get() on an absent key returns a zero/null value;
+        // probe with containsKey() first.
+        // Spreading a hash before a power-of-two table masks it (spec 34).
+        //
+        // `int.hash()` is the IDENTITY, and an open-addressed table keeps only the LOW bits of it. So
+        // any key set with structure down there degenerates: keys of `i * 64` in a 64-slot table all
+        // land in slot 0, and linear probing then walks the whole table for every one of them. That is
+        // not a corner case -- indices scaled by a record size, pointers, ids allocated in blocks, all
+        // have exactly that shape.
+        //
+        // `std::unordered_map` never notices, because its bucket count is PRIME and a modulo spreads
+        // the structure for it. A power-of-two table has to spread it itself, which is what every map
+        // of this shape does: Abseil, robin_hood, and Java's HashMap (`h ^ h >>> 16`).
+        //
+        // Fibonacci hashing: multiply by 2^64/phi so every input bit influences the high bits, then
+        // fold those down into the low ones the mask keeps. One multiply and one xor-shift.
+        //
+        // AND IT IS NOT USED BY HashMap/HashSet, BECAUSE IT WAS MEASURED AND IT LOST. Applying it to
+        // every lookup moved the benchmarks the wrong way, every one of them:
+        //     mapkeys 0.43 -> 0.38 | collections 0.33 -> 0.26 | coll_map 0.63 -> 0.44
+        //     coll_mapput 0.69 -> 0.54 | coll_mapoa 0.91 -> 0.60      (ratio vs GCC; >1 is a win)
+        // The reason is the half of the argument that was left out. Those workloads use SEQUENTIAL
+        // keys, and for sequential keys the identity hash is not merely adequate, it is optimal: zero
+        // collisions AND consecutive slots, so a fill walks memory in order. Spreading them destroys
+        // that locality and turns each probe into a cache miss -- which costs far more than the
+        // clustering it was meant to prevent.
+        //
+        // So this is here for a map whose keys are known to be structured, and as the record of an
+        // idea that is right in theory and lost on the machine. A table that ADAPTS -- identity until
+        // a probe chain gets long, mixed after -- is the shape that would win both, and is unwritten.
+        public class Hashing {
+            public static method mix(long h) returns long {
+                mutable long x = h * 0x9E3779B97F4A7C15;
+                return x ^ (x >> 32);
+            }
+        }
+
+        public class HashMap<K, V> {
+            // The three parallel arrays must stay the same length as the declared capacity -- that
+            // is the assumption every probe makes when it masks an index and then indexes all three.
+            // And the table must never fill: linear probing with count == cap does not terminate.
+            invariant this.count >= 0;
+            invariant this.count < this.cap;
+            invariant this.keys.length() == this.cap;
+            invariant this.values.length() == this.cap;
+            invariant this.used.length() == this.cap;
+            private mutable K[] keys;
+            private mutable V[] values;
+            // ONE BYTE PER SLOT, NOT FOUR. This was a `boolean[]`, and `boolean` in Polaron is an i32 --
+            // four bytes to carry one bit, in the array every probe touches first and most often. At a
+            // capacity of 262144 that array was a megabyte; it is now 256 KiB.
+            //
+            // KEPT FOR THE MEMORY AND NOT FOR THE SPEED, because the speed was measured and there was
+            // none. Every map benchmark moved by less than the run-to-run noise, which the unrelated
+            // benchmarks in the same runs put at about 4%:
+            //     coll_map 6.4 -> 6.2 ms | coll_mapoa 6.6 -> 6.5 | coll_mapput 5.7 -> 6.0
+            //     collections 12.3 -> 12.1 | mapkeys 9.3 -> 9.8   (quicksort and virtualcall, which
+            //     this change cannot touch, moved 219 -> 221 and 96.0 -> 96.9 in the same pair of runs)
+            //
+            // So the occupancy array was NOT where the gap against `std::unordered_map` lives -- these
+            // tables are small enough that a megabyte and 256 KiB are both misses or both not. That is
+            // worth knowing before anyone spends a day making it a bitset, which would be an eighth
+            // again and would put a shift and a mask on the path of every probe.
+            private mutable byte[] used;
+            private mutable int count;
+            private mutable int cap;
+            public constructor HashMap() {
+                this.cap = 8;
+                this.keys = new K[8]();
+                this.values = new V[8]();
+                this.used = new byte[8]();
+                this.count = 0;
+            }
+            public destructor ~HashMap() returns void {
+                delete this.keys;
+                delete this.values;
+                delete this.used;
+            }
+            private method slotFor(K key) returns int {
+                int mask = this.cap - 1;
+                mutable int i = cast<int>(key.hash()) & mask;
+                while (this.used[i] != 0) {
+                    if (this.keys[i].equalsKey(key)) { return i; }
+                    i = (i + 1) & mask;
+                }
+                return i;
+            }
+            private method grow() returns void {
+                int oldCap = this.cap;
+                mutable K[] oldK = this.keys;
+                mutable V[] oldV = this.values;
+                mutable byte[] oldU = this.used;
+                // Quadruple, not double. Growth is the expensive part of filling a map: every step
+                // allocates and ZEROES three fresh arrays and rehashes everything into them, so what
+                // matters is how many times that happens, not how much slack it leaves. Doubling from
+                // 8 to a quarter-million is fifteen rehashes; quadrupling is seven.
+                this.cap = oldCap * 4;
+                this.keys = new K[this.cap]();
+                this.values = new V[this.cap]();
+                this.used = new byte[this.cap]();
+                // Reinsert DIRECTLY, not through put(). A rehash knows three things put() has to
+                // re-establish for every element: every key is distinct, none is already present,
+                // and the table cannot need to grow again. Going through put() paid for all three --
+                // a load-factor branch, a full slotFor() probe with an equalsKey comparison at every
+                // step, and the count bookkeeping -- on every element of every rehash, and a table
+                // filled to 200k rehashes about fifteen times. Measured: this is where the map spent
+                // its time (put-only was 7.1 ms against std::unordered_map's 3.8; the lookups were
+                // already nearly free).
+                int mask = this.cap - 1;
+                for (mutable int j = 0; j < oldCap; j++) {
+                    if (oldU[j] != 0) {
+                        mutable int i = cast<int>(oldK[j].hash()) & mask;
+                        while (this.used[i] != 0) { i = (i + 1) & mask; }  // free slot only: no equality
+                        this.used[i] = cast<byte>(1);
+                        this.keys[i] = oldK[j];
+                        this.values[i] = oldV[j];
+                    }
+                }
+                delete oldK;
+                delete oldV;
+                delete oldU;
+            }
+            public method put(K key, V value) returns void {
+                if ((this.count + 1) * 4 >= this.cap * 3) { this.grow(); }
+                int i = this.slotFor(key);
+                if (this.used[i] == 0) { this.used[i] = cast<byte>(1); this.count = this.count + 1; }
+                this.keys[i] = key;
+                this.values[i] = value;
+            }
+            public method get(K key) returns V {
+                return this.values[this.slotFor(key)];
+            }
+            public method containsKey(K key) returns boolean {
+                return this.used[this.slotFor(key)] != 0;
+            }
+            // Single-lookup helpers so callers avoid re-hashing the key. getOrDefault reads with one probe;
+            // merge inserts `value` or replaces the existing value with combine(old, value) -- the efficient
+            // way to tally (counts.merge(k, 1, add)) instead of containsKey + get + put (three probes).
+            public method getOrDefault(K key, V defaultValue) returns V {
+                int i = this.slotFor(key);
+                if (this.used[i] != 0) { return this.values[i]; }
+                return defaultValue;
+            }
+            public method merge(K key, V value, function<V, V, V> combine) returns void {
+                if ((this.count + 1) * 4 >= this.cap * 3) { this.grow(); }
+                int i = this.slotFor(key);
+                if (this.used[i] == 0) {
+                    this.used[i] = cast<byte>(1);
+                    this.count = this.count + 1;
+                    this.keys[i] = key;
+                    this.values[i] = value;
+                } else {
+                    this.values[i] = combine(this.values[i], value);
+                }
+            }
+            public method remove(K key) returns boolean {  // backward-shift: reinsert the cluster after i
+                int i = this.slotFor(key);
+                if (this.used[i] == 0) { return false; }
+                int mask = this.cap - 1;
+                this.used[i] = cast<byte>(0);
+                this.count = this.count - 1;
+                mutable int j = (i + 1) & mask;
+                while (this.used[j] != 0) {
+                    mutable K rk = this.keys[j];
+                    mutable V rv = this.values[j];
+                    this.used[j] = cast<byte>(0);
+                    this.count = this.count - 1;
+                    this.put(rk, rv);
+                    j = (j + 1) & mask;
+                }
+                return true;
+            }
+            public method keyArray() returns K[] {  // keys (arbitrary order); field is named `keys`
+                mutable K[] out = new K[this.count]();
+                mutable int j = 0;
+                for (mutable int i = 0; i < this.cap; i++) {
+                    if (this.used[i] != 0) { out[j] = this.keys[i]; j = j + 1; }
+                }
+                return out;
+            }
+            public method valueArray() returns V[] {  // values (arbitrary order)
+                mutable V[] out = new V[this.count]();
+                mutable int j = 0;
+                for (mutable int i = 0; i < this.cap; i++) {
+                    if (this.used[i] != 0) { out[j] = this.values[i]; j = j + 1; }
+                }
+                return out;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // Hash set with open addressing (spec 34.1). Elements must be Hashable.
+        public class HashSet<T> {
+            private mutable T[] elems;
+            private mutable byte[] used;   // one byte per slot, for the reason written out in HashMap
+            private mutable int count;
+            private mutable int cap;
+            public constructor HashSet() {
+                this.cap = 8;
+                this.elems = new T[8]();
+                this.used = new byte[8]();
+                this.count = 0;
+            }
+            public destructor ~HashSet() returns void {
+                delete this.elems;
+                delete this.used;
+            }
+            private method slotFor(T value) returns int {
+                int mask = this.cap - 1;
+                mutable int i = cast<int>(value.hash()) & mask;
+                while (this.used[i] != 0) {
+                    if (this.elems[i].equalsKey(value)) { return i; }
+                    i = (i + 1) & mask;
+                }
+                return i;
+            }
+            private method grow() returns void {
+                int oldCap = this.cap;
+                mutable T[] oldE = this.elems;
+                mutable byte[] oldU = this.used;
+                this.cap = oldCap * 2;
+                this.elems = new T[this.cap]();
+                this.used = new byte[this.cap]();
+                this.count = 0;
+                for (mutable int j = 0; j < oldCap; j++) {
+                    if (oldU[j] != 0) { this.add(oldE[j]); }
+                }
+                delete oldE;
+                delete oldU;
+            }
+            public method add(T value) returns void {
+                if ((this.count + 1) * 4 >= this.cap * 3) { this.grow(); }
+                int i = this.slotFor(value);
+                if (this.used[i] == 0) {
+                    this.used[i] = cast<byte>(1);
+                    this.elems[i] = value;
+                    this.count = this.count + 1;
+                }
+            }
+            public method contains(T value) returns boolean {
+                return this.used[this.slotFor(value)] != 0;
+            }
+            public method remove(T value) returns boolean {  // backward-shift deletion
+                int i = this.slotFor(value);
+                if (this.used[i] == 0) { return false; }
+                int mask = this.cap - 1;
+                this.used[i] = cast<byte>(0);
+                this.count = this.count - 1;
+                mutable int j = (i + 1) & mask;
+                while (this.used[j] != 0) {
+                    mutable T re = this.elems[j];
+                    this.used[j] = cast<byte>(0);
+                    this.count = this.count - 1;
+                    this.add(re);
+                    j = (j + 1) & mask;
+                }
+                return true;
+            }
+            public method toArray() returns T[] {  // elements (arbitrary order)
+                mutable T[] out = new T[this.count]();
+                mutable int j = 0;
+                for (mutable int i = 0; i < this.cap; i++) {
+                    if (this.used[i] != 0) { out[j] = this.elems[i]; j = j + 1; }
+                }
+                return out;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // Binary-search-tree node for TreeMap (self-referential generic).
+        public class TreeNode<K, V> {
+            public mutable K key;
+            public mutable V value;
+            public mutable nullable TreeNode<K, V>* left;
+            public mutable nullable TreeNode<K, V>* right;
+            public mutable int height;  // AVL subtree height, for O(log n) balancing
+            public constructor TreeNode(K k, V v) {
+                this.key = k; this.value = v; this.left = null; this.right = null; this.height = 1;
+            }
+        }
+        // Ordered map backed by an (unbalanced) binary search tree (spec 34.1). Keys are Comparable.
+        // get() on an absent key returns a zero/null value; probe with containsKey() first.
+        public class TreeMap<K, V> {
+            private mutable nullable TreeNode<K, V>* root;
+            private mutable int count;
+            public constructor TreeMap() { this.root = null; this.count = 0; }
+            // Post-order release: children before the parent, so no node is read after it is freed.
+            public destructor ~TreeMap() returns void {
+                this.freeSubtree(this.root);
+                this.root = null;
+                this.count = 0;
+            }
+            private method freeSubtree(nullable TreeNode<K, V>* n) returns void {
+                if (n == null) {
+                    return;
+                }
+                this.freeSubtree(n.left);
+                this.freeSubtree(n.right);
+                delete n;
+            }
+            public method put(K key, V value) returns void {
+                this.root = this.insertNode(this.root, key, value);
+            }
+            // AVL balancing keeps height O(log n) so ordered/monotonic keys can't degenerate the tree into
+            // a list (which made insert O(n^2)). Nodes are typed nullable; callers only dereference on the
+            // non-null path, so the null branch is never taken where a deref would trap.
+            private method nodeHeight(nullable TreeNode<K, V>* n) returns int {
+                if (n == null) { return 0; }
+                return n.height;
+            }
+            private method fixHeight(nullable TreeNode<K, V>* n) returns void {
+                int lh = this.nodeHeight(n.left);
+                int rh = this.nodeHeight(n.right);
+                if (lh > rh) { n.height = lh + 1; } else { n.height = rh + 1; }
+            }
+            private method balance(nullable TreeNode<K, V>* n) returns int {
+                return this.nodeHeight(n.left) - this.nodeHeight(n.right);
+            }
+            private method rotateRight(nullable TreeNode<K, V>* y) returns nullable TreeNode<K, V>* {
+                nullable TreeNode<K, V>* x = y.left;
+                y.left = x.right;
+                x.right = y;
+                this.fixHeight(y);
+                this.fixHeight(x);
+                return x;
+            }
+            private method rotateLeft(nullable TreeNode<K, V>* x) returns nullable TreeNode<K, V>* {
+                nullable TreeNode<K, V>* y = x.right;
+                x.right = y.left;
+                y.left = x;
+                this.fixHeight(x);
+                this.fixHeight(y);
+                return y;
+            }
+            private method insertNode(nullable TreeNode<K, V>* node, K key, V value) returns nullable TreeNode<K, V>* {
+                if (node == null) {
+                    this.count = this.count + 1;
+                    return new TreeNode<K, V>(key, value) on heap;
+                }
+                int c = key.compareTo(node.key);
+                if (c == 0) { node.value = value; return node; }
+                if (c < 0) {
+                    node.left = this.insertNode(node.left, key, value);
+                } else {
+                    node.right = this.insertNode(node.right, key, value);
+                }
+                this.fixHeight(node);
+                int bf = this.balance(node);
+                if (bf > 1) {
+                    if (this.balance(node.left) < 0) { node.left = this.rotateLeft(node.left); }
+                    return this.rotateRight(node);
+                }
+                if (bf < 0 - 1) {
+                    if (this.balance(node.right) > 0) { node.right = this.rotateRight(node.right); }
+                    return this.rotateLeft(node);
+                }
+                return node;
+            }
+            private method find(K key) returns nullable TreeNode<K, V>* {
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                while (cur != null) {
+                    int c = key.compareTo(cur.key);
+                    if (c == 0) { return cur; }
+                    if (c < 0) { cur = cur.left; } else { cur = cur.right; }
+                }
+                return null;
+            }
+            public method get(K key) returns V {
+                nullable TreeNode<K, V>* n = this.find(key);
+                if (n != null) { return n.value; }
+                mutable V[] zero = new V[1]();  // zero/null default for an absent key
+                V z = zero[0];
+                delete zero;
+                return z;
+            }
+            public method containsKey(K key) returns boolean { return this.find(key) != null; }
+            private method fillKeys(nullable TreeNode<K, V>* node, K[] out, int idx) returns int {
+                if (node == null) { return idx; }
+                mutable int i = this.fillKeys(node.left, out, idx);
+                out[i] = node.key;
+                i = i + 1;
+                return this.fillKeys(node.right, out, i);
+            }
+            private method fillValues(nullable TreeNode<K, V>* node, V[] out, int idx) returns int {
+                if (node == null) { return idx; }
+                mutable int i = this.fillValues(node.left, out, idx);
+                out[i] = node.value;
+                i = i + 1;
+                return this.fillValues(node.right, out, i);
+            }
+            public method keyArray() returns K[] {  // sorted (in-order)
+                mutable K[] out = new K[this.count]();
+                this.fillKeys(this.root, out, 0);
+                return out;
+            }
+            public method valueArray() returns V[] {  // by key order
+                mutable V[] out = new V[this.count]();
+                this.fillValues(this.root, out, 0);
+                return out;
+            }
+            private method zeroKey() returns K {  // zero/null default when no navigable key exists
+                mutable K[] zero = new K[1]();
+                K z = zero[0];
+                delete zero;
+                return z;
+            }
+            public method firstKey() returns K {  // smallest key (leftmost)
+                if (this.root == null) { return this.zeroKey(); }
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                while (cur.left != null) { cur = cur.left; }
+                return cur.key;
+            }
+            public method lastKey() returns K {  // largest key (rightmost)
+                if (this.root == null) { return this.zeroKey(); }
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                while (cur.right != null) { cur = cur.right; }
+                return cur.key;
+            }
+            public method floorKey(K key) returns K {  // largest key <= given
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                mutable nullable TreeNode<K, V>* best = null;
+                while (cur != null) {
+                    int c = key.compareTo(cur.key);
+                    if (c == 0) { return cur.key; }
+                    if (c < 0) { cur = cur.left; } else { best = cur; cur = cur.right; }
+                }
+                if (best == null) { return this.zeroKey(); }
+                return best.key;
+            }
+            public method ceilingKey(K key) returns K {  // smallest key >= given
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                mutable nullable TreeNode<K, V>* best = null;
+                while (cur != null) {
+                    int c = key.compareTo(cur.key);
+                    if (c == 0) { return cur.key; }
+                    if (c > 0) { cur = cur.right; } else { best = cur; cur = cur.left; }
+                }
+                if (best == null) { return this.zeroKey(); }
+                return best.key;
+            }
+            public method higherKey(K key) returns K {  // smallest key > given
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                mutable nullable TreeNode<K, V>* best = null;
+                while (cur != null) {
+                    int c = key.compareTo(cur.key);
+                    if (c < 0) { best = cur; cur = cur.left; } else { cur = cur.right; }
+                }
+                if (best == null) { return this.zeroKey(); }
+                return best.key;
+            }
+            public method lowerKey(K key) returns K {  // largest key < given
+                mutable nullable TreeNode<K, V>* cur = this.root;
+                mutable nullable TreeNode<K, V>* best = null;
+                while (cur != null) {
+                    int c = key.compareTo(cur.key);
+                    if (c > 0) { best = cur; cur = cur.right; } else { cur = cur.left; }
+                }
+                if (best == null) { return this.zeroKey(); }
+                return best.key;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // BST node for TreeSet (self-referential generic).
+        public class TreeSetNode<T> {
+            public mutable T value;
+            public mutable nullable TreeSetNode<T>* left;
+            public mutable nullable TreeSetNode<T>* right;
+            public mutable int height;  // AVL subtree height
+            public constructor TreeSetNode(T v) { this.value = v; this.left = null; this.right = null; this.height = 1; }
+        }
+        // Ordered set backed by an (unbalanced) binary search tree (spec 34.1). Elements Comparable.
+        public class TreeSet<T> {
+            private mutable nullable TreeSetNode<T>* root;
+            private mutable int count;
+            public constructor TreeSet() { this.root = null; this.count = 0; }
+            // Post-order release: children before the parent, so no node is read after it is freed.
+            public destructor ~TreeSet() returns void {
+                this.freeSubtree(this.root);
+                this.root = null;
+                this.count = 0;
+            }
+            private method freeSubtree(nullable TreeSetNode<T>* n) returns void {
+                if (n == null) {
+                    return;
+                }
+                this.freeSubtree(n.left);
+                this.freeSubtree(n.right);
+                delete n;
+            }
+            public method add(T value) returns void {
+                this.root = this.insertNode(this.root, value);
+            }
+            // AVL balancing (see TreeMap) so ordered inserts stay O(log n) instead of degenerating to O(n^2).
+            private method nodeHeight(nullable TreeSetNode<T>* n) returns int {
+                if (n == null) { return 0; }
+                return n.height;
+            }
+            private method fixHeight(nullable TreeSetNode<T>* n) returns void {
+                int lh = this.nodeHeight(n.left);
+                int rh = this.nodeHeight(n.right);
+                if (lh > rh) { n.height = lh + 1; } else { n.height = rh + 1; }
+            }
+            private method balance(nullable TreeSetNode<T>* n) returns int {
+                return this.nodeHeight(n.left) - this.nodeHeight(n.right);
+            }
+            private method rotateRight(nullable TreeSetNode<T>* y) returns nullable TreeSetNode<T>* {
+                nullable TreeSetNode<T>* x = y.left;
+                y.left = x.right;
+                x.right = y;
+                this.fixHeight(y);
+                this.fixHeight(x);
+                return x;
+            }
+            private method rotateLeft(nullable TreeSetNode<T>* x) returns nullable TreeSetNode<T>* {
+                nullable TreeSetNode<T>* y = x.right;
+                x.right = y.left;
+                y.left = x;
+                this.fixHeight(x);
+                this.fixHeight(y);
+                return y;
+            }
+            private method insertNode(nullable TreeSetNode<T>* node, T value) returns nullable TreeSetNode<T>* {
+                if (node == null) {
+                    this.count = this.count + 1;
+                    return new TreeSetNode<T>(value) on heap;
+                }
+                int c = value.compareTo(node.value);
+                if (c == 0) { return node; }
+                if (c < 0) {
+                    node.left = this.insertNode(node.left, value);
+                } else {
+                    node.right = this.insertNode(node.right, value);
+                }
+                this.fixHeight(node);
+                int bf = this.balance(node);
+                if (bf > 1) {
+                    if (this.balance(node.left) < 0) { node.left = this.rotateLeft(node.left); }
+                    return this.rotateRight(node);
+                }
+                if (bf < 0 - 1) {
+                    if (this.balance(node.right) > 0) { node.right = this.rotateRight(node.right); }
+                    return this.rotateLeft(node);
+                }
+                return node;
+            }
+            public method contains(T value) returns boolean {
+                mutable nullable TreeSetNode<T>* cur = this.root;
+                while (cur != null) {
+                    int c = value.compareTo(cur.value);
+                    if (c == 0) { return true; }
+                    if (c < 0) { cur = cur.left; } else { cur = cur.right; }
+                }
+                return false;
+            }
+            private method fill(nullable TreeSetNode<T>* node, T[] out, int idx) returns int {
+                if (node == null) { return idx; }
+                mutable int i = this.fill(node.left, out, idx);
+                out[i] = node.value;
+                i = i + 1;
+                return this.fill(node.right, out, i);
+            }
+            public method toArray() returns T[] {  // sorted (in-order)
+                mutable T[] out = new T[this.count]();
+                this.fill(this.root, out, 0);
+                return out;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+// (split 1b: keep the collections literal under MSVC's ~16KB cap.)
+        // Binary min-heap priority queue (spec 34.1): the smallest element (by compareTo) is served
+        // first. Backed by a doubling array; add and poll are O(log n).
+        public class PriorityQueue<T> {
+            private mutable T[] heap;
+            private mutable int count;
+            public constructor PriorityQueue() { this.heap = new T[8](); this.count = 0; }
+            public destructor ~PriorityQueue() returns void { delete this.heap; }
+            public method add(T item) returns void {
+                if (this.count >= this.heap.length()) {
+                    mutable T[] bigger = new T[this.heap.length() * 2]();
+                    for (mutable int j = 0; j < this.count; j++) { bigger[j] = this.heap[j]; }
+                    delete this.heap;
+                    this.heap = bigger;
+                }
+                this.heap[this.count] = item;
+                mutable int i = this.count;
+                this.count = this.count + 1;
+                while (i > 0) {  // sift up
+                    int parent = (i - 1) / 2;
+                    if (this.heap[i].compareTo(this.heap[parent]) >= 0) { break; }
+                    T tmp = this.heap[i];
+                    this.heap[i] = this.heap[parent];
+                    this.heap[parent] = tmp;
+                    i = parent;
+                }
+            }
+            public method peek() returns T { return this.heap[0]; }
+            public method poll() returns T {
+                T top = this.heap[0];
+                this.count = this.count - 1;
+                this.heap[0] = this.heap[this.count];
+                mutable int i = 0;
+                while (true) {  // sift down
+                    int l = 2 * i + 1;
+                    int r = 2 * i + 2;
+                    mutable int smallest = i;
+                    if (l < this.count && this.heap[l].compareTo(this.heap[smallest]) < 0) {
+                        smallest = l;
+                    }
+                    if (r < this.count && this.heap[r].compareTo(this.heap[smallest]) < 0) {
+                        smallest = r;
+                    }
+                    if (smallest == i) { break; }
+                    T tmp = this.heap[i];
+                    this.heap[i] = this.heap[smallest];
+                    this.heap[smallest] = tmp;
+                    i = smallest;
+                }
+                return top;
+            }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+        }
+        // A compact set of bit flags packed into 32-bit words (spec 34.1): set/clear/flip/get a bit by
+        // index, count the ones. Cheaper than a HashSet<int> for dense indices in a known range.
+        public class Bitset {
+            private mutable int[] words;
+            private mutable int nbits;
+            public constructor Bitset(int size) {
+                this.nbits = size;
+                this.words = new int[(size + 31) / 32]();
+            }
+            public destructor ~Bitset() returns void { delete this.words; }
+            public method set(int i) returns void {
+                this.words[i >> 5] = this.words[i >> 5] | (1 << (i & 31));
+                return;
+            }
+            public method clear(int i) returns void {
+                this.words[i >> 5] = this.words[i >> 5] & (~(1 << (i & 31)));
+                return;
+            }
+            public method flip(int i) returns void {
+                this.words[i >> 5] = this.words[i >> 5] ^ (1 << (i & 31));
+                return;
+            }
+            public method get(int i) returns boolean {
+                return (this.words[i >> 5] & (1 << (i & 31))) != 0;
+            }
+            public method count() returns int {
+                mutable int total = 0;
+                for (mutable int w = 0; w < this.words.length(); w++) {
+                    mutable int x = this.words[w];
+                    for (mutable int b = 0; b < 32; b++) {
+                        if ((x & (1 << b)) != 0) { total = total + 1; }
+                    }
+                }
+                return total;
+            }
+            public method size() returns int { return this.nbits; }
+        }
+        // Counts how many times each value is added (spec 34.1): a multiset over a HashMap. add bumps a
+        // value's tally, count reads it (0 if absent), distinct is the number of values seen, total the sum
+        // of all tallies. The element type must be Hashable, like any HashMap key. (Named Multiset rather
+        // than Counter so it does not shadow a user class commonly called Counter.)
+        public class Multiset<T> {
+            private mutable HashMap<T, int> counts;
+            public constructor Multiset() {
+                this.counts = new HashMap<T, int>() on heap;
+            }
+            public method add(T item) returns void {
+                if (this.counts.containsKey(item)) {
+                    this.counts.put(item, this.counts.get(item) + 1);
+                } else {
+                    this.counts.put(item, 1);
+                }
+                return;
+            }
+            public method count(T item) returns int {
+                if (this.counts.containsKey(item)) { return this.counts.get(item); }
+                return 0;
+            }
+            public method distinct() returns int {
+                return this.counts.size();
+            }
+            public method total() returns int {
+                mutable int[] tallies = this.counts.valueArray();
+                mutable int sum = 0;
+                for (mutable int i = 0; i < tallies.length(); i++) { sum = sum + tallies[i]; }
+                return sum;
+            }
+            public method keys() returns T[] {
+                return this.counts.keyArray();
+            }
+        }
+        // A fixed-capacity circular buffer (spec 34.1): push appends and, once full, overwrites the oldest
+        // element; pop and peek read from the oldest end. Indices wrap with modulo, so there is no shifting.
+        public class RingBuffer<T> {
+            invariant this.count >= 0;
+            invariant this.count <= this.cap;
+            invariant this.head >= 0;
+            invariant this.head < this.cap;
+            invariant this.buf.length() == this.cap;
+            private mutable T[] buf;
+            private mutable int head;
+            private mutable int count;
+            private mutable int cap;
+            public constructor RingBuffer(int capacity) {
+                this.cap = capacity;
+                this.buf = new T[capacity]();
+                this.head = 0;
+                this.count = 0;
+            }
+            public method push(T item) returns void {
+                int tail = (this.head + this.count) % this.cap;
+                this.buf[tail] = item;
+                if (this.count == this.cap) { this.head = (this.head + 1) % this.cap; }
+                else { this.count = this.count + 1; }
+                return;
+            }
+            public method pop() returns T {
+                T v = this.buf[this.head];
+                this.head = (this.head + 1) % this.cap;
+                this.count = this.count - 1;
+                return v;
+            }
+            public method peek() returns T { return this.buf[this.head]; }
+            public method size() returns int { return this.count; }
+            public method isEmpty() returns boolean { return this.count == 0; }
+            public method isFull() returns boolean { return this.count == this.cap; }
+            public method capacity() returns int { return this.cap; }
+        }
+        // A map that remembers insertion order (spec 34.1): a HashMap for lookup plus a list of keys in the
+        // order they were first added. put updates in place without reordering; keysInOrder walks them as
+        // inserted, which a plain HashMap does not promise.
+        public class LinkedHashMap<K, V> {
+            private mutable HashMap<K, V> map;
+            private mutable ArrayList<K> order;
+            public constructor LinkedHashMap() {
+                this.map = new HashMap<K, V>() on heap;
+                this.order = new ArrayList<K>() on heap;
+            }
+            public method put(K key, V value) returns void {
+                if (!this.map.containsKey(key)) { this.order.add(key); }
+                this.map.put(key, value);
+                return;
+            }
+            public method get(K key) returns V { return this.map.get(key); }
+            public method containsKey(K key) returns boolean { return this.map.containsKey(key); }
+            public method size() returns int { return this.map.size(); }
+            public method isEmpty() returns boolean { return this.map.size() == 0; }
+            public method keysInOrder() returns ArrayList<K> { return this.order; }
+        }
+        // Builds lists of integers over a range (spec 34.1): upTo(n) is 0..n-1, between(a,b) is a..b-1, and
+        // step(a,b,s) walks a..b in increments of s. A convenience for counting loops expressed as data.
+        public class Range {
+            // A first-class range value (spec 7.5): `start..end`, `start..=end`, and `step`. Built by the
+            // range operator (e.g. `var r = 0..10 step 2;`), iterable with foreach, and queryable.
+            public int start;
+            public int end;
+            public int stride;   // the step increment (`step` is a reserved keyword)
+            public boolean inclusive;
+            public constructor Range(int start, int end, int stride, boolean inclusive) {
+                this.start = start;
+                this.end = end;
+                this.stride = stride;
+                this.inclusive = inclusive;
+            }
+            // Whether `i` is still within the range, honoring the step direction and inclusivity.
+            private method inRange(int i) returns boolean {
+                if (this.stride >= 0) {
+                    if (this.inclusive) { return i <= this.end; }
+                    return i < this.end;
+                }
+                if (this.inclusive) { return i >= this.end; }
+                return i > this.end;
+            }
+            public method size() returns int {
+                mutable int n = 0;
+                mutable int i = this.start;
+                while (this.inRange(i)) { n = n + 1; i = i + this.stride; }
+                return n;
+            }
+            public method contains(int v) returns boolean {
+                mutable int i = this.start;
+                while (this.inRange(i)) { if (i == v) { return true; } i = i + this.stride; }
+                return false;
+            }
+            public method toArray() returns int[] {
+                mutable int n = this.size();
+                mutable int[] a = new int[n]();
+                mutable int idx = 0;
+                mutable int i = this.start;
+                while (this.inRange(i)) { a[idx] = i; idx = idx + 1; i = i + this.stride; }
+                return a;
+            }
+            public static method upTo(int n) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                for (mutable int i = 0; i < n; i++) { out.add(i); }
+                return out;
+            }
+            public static method between(int start, int end) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                for (mutable int i = start; i < end; i++) { out.add(i); }
+                return out;
+            }
+            public static method stepBy(int start, int end, int by) returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                if (by <= 0) { return out; }
+                for (mutable int i = start; i < end; i = i + by) { out.add(i); }
+                return out;
+            }
+        }
+        // A prefix tree over lowercase-letter words (spec 34.1), stored as an arena: every node's 26 child
+        // links and its end-of-word flag live in flat arrays indexed by node number, so there are no node
+        // pointers. A link of 0 means "none" (node 0 is the root, which is never a child).
+        public class Trie {
+            private mutable int[] next;
+            private mutable boolean[] isWord;
+            private mutable int nodes;
+            private mutable int cap;
+            public constructor Trie() {
+                this.cap = 8;
+                this.next = new int[8 * 26]();
+                this.isWord = new boolean[8]();
+                this.nodes = 1;
+            }
+            private method ensure() returns void {
+                if (this.nodes < this.cap) { return; }
+                int nc = this.cap * 2;
+                mutable int[] nn = new int[nc * 26]();
+                mutable boolean[] nw = new boolean[nc]();
+                for (mutable int i = 0; i < this.cap * 26; i++) { nn[i] = this.next[i]; }
+                for (mutable int i = 0; i < this.cap; i++) { nw[i] = this.isWord[i]; }
+                this.next = nn;
+                this.isWord = nw;
+                this.cap = nc;
+                return;
+            }
+            public method insert(String word) returns void {
+                mutable int node = 0;
+                for (mutable int i = 0; i < word.length(); i++) {
+                    int c = cast<int>(word.charAt(i)) - cast<int>('a');
+                    if (this.next[node * 26 + c] == 0) {
+                        this.ensure();
+                        this.next[node * 26 + c] = this.nodes;
+                        this.nodes = this.nodes + 1;
+                    }
+                    node = this.next[node * 26 + c];
+                }
+                this.isWord[node] = true;
+                return;
+            }
+            public method contains(String word) returns boolean {
+                mutable int node = 0;
+                for (mutable int i = 0; i < word.length(); i++) {
+                    int c = cast<int>(word.charAt(i)) - cast<int>('a');
+                    if (this.next[node * 26 + c] == 0) { return false; }
+                    node = this.next[node * 26 + c];
+                }
+                return this.isWord[node];
+            }
+            public method startsWith(String prefix) returns boolean {
+                mutable int node = 0;
+                for (mutable int i = 0; i < prefix.length(); i++) {
+                    int c = cast<int>(prefix.charAt(i)) - cast<int>('a');
+                    if (this.next[node * 26 + c] == 0) { return false; }
+                    node = this.next[node * 26 + c];
+                }
+                return true;
+            }
+        }
+        // An undirected graph on a fixed vertex set (spec 34.1), edges kept as two parallel lists so no
+        // per-node pointers are needed. distance is the shortest hop count between two vertices by BFS, or
+        // -1 if they are not connected.
+        public class Graph {
+            private mutable int n;
+            private mutable ArrayList<int> eu;
+            private mutable ArrayList<int> ev;
+            public constructor Graph(int vertices) {
+                this.n = vertices;
+                this.eu = new ArrayList<int>() on heap;
+                this.ev = new ArrayList<int>() on heap;
+            }
+            public method addEdge(int u, int v) returns void {
+                this.eu.add(u);
+                this.ev.add(v);
+                return;
+            }
+            public method distance(int src, int dst) returns int {
+                mutable int[] dist = new int[this.n]();
+                for (mutable int i = 0; i < this.n; i++) { dist[i] = 0 - 1; }
+                mutable Queue<int> q = new Queue<int>() on heap;
+                dist[src] = 0;
+                q.enqueue(src);
+                while (!q.isEmpty()) {
+                    int u = q.dequeue();
+                    for (mutable int i = 0; i < this.eu.size(); i++) {
+                        mutable int a = 0 - 1;
+                        if (this.eu.get(i) == u) { a = this.ev.get(i); }
+                        else { if (this.ev.get(i) == u) { a = this.eu.get(i); } }
+                        if (a >= 0 && dist[a] < 0) {
+                            dist[a] = dist[u] + 1;
+                            q.enqueue(a);
+                        }
+                    }
+                }
+                return dist[dst];
+            }
+        }
+        // A generational arena (spec 17): insert returns a stable handle that stays valid until removed,
+        // even as the backing storage grows or other slots are reused. A removed slot bumps its generation,
+        // so an old handle to it no longer matches and containsHandle reports it stale. A handle packs the
+        // slot index and generation into one int.
+        public class SlotMap<T> {
+            private mutable T[] values;
+            private mutable int[] gens;
+            private mutable boolean[] occ;
+            private mutable int[] freeList;
+            private mutable int freeCount;
+            private mutable int cap;
+            private mutable int len;
+            public constructor SlotMap() {
+                this.cap = 4;
+                this.values = new T[4]();
+                this.gens = new int[4]();
+                this.occ = new boolean[4]();
+                this.freeList = new int[4]();
+                this.freeCount = 4;
+                this.len = 0;
+                for (mutable int i = 0; i < 4; i++) { this.freeList[i] = i; }
+            }
+            private method grow() returns void {
+                int nc = this.cap * 2;
+                mutable T[] nv = new T[nc]();
+                mutable int[] ng = new int[nc]();
+                mutable boolean[] no = new boolean[nc]();
+                mutable int[] nf = new int[nc]();
+                for (mutable int i = 0; i < this.cap; i++) {
+                    nv[i] = this.values[i];
+                    ng[i] = this.gens[i];
+                    no[i] = this.occ[i];
+                }
+                mutable int fc = 0;
+                for (mutable int i = this.cap; i < nc; i++) {
+                    nf[fc] = i;
+                    fc = fc + 1;
+                }
+                this.values = nv;
+                this.gens = ng;
+                this.occ = no;
+                this.freeList = nf;
+                this.freeCount = fc;
+                this.cap = nc;
+                return;
+            }
+            public method insert(T value) returns int {
+                if (this.freeCount == 0) { this.grow(); }
+                int slot = this.freeList[this.freeCount - 1];
+                this.freeCount = this.freeCount - 1;
+                this.values[slot] = value;
+                this.occ[slot] = true;
+                this.len = this.len + 1;
+                return slot * 1048576 + this.gens[slot];
+            }
+            public method containsHandle(int h) returns boolean {
+                int slot = h / 1048576;
+                int gen = h % 1048576;
+                return slot < this.cap && this.occ[slot] && this.gens[slot] == gen;
+            }
+            public method get(int h) returns T { return this.values[h / 1048576]; }
+            public method remove(int h) returns void {
+                if (this.containsHandle(h)) {
+                    int slot = h / 1048576;
+                    this.occ[slot] = false;
+                    this.gens[slot] = this.gens[slot] + 1;
+                    this.freeList[this.freeCount] = slot;
+                    this.freeCount = this.freeCount + 1;
+                    this.len = this.len - 1;
+                }
+                return;
+            }
+            public method size() returns int { return this.len; }
+        }
+        // A binary min-heap of integers (spec 34.1): push and pop keep the smallest element at the top, so
+        // repeated pop yields ascending order. Backing array grows as needed.
+        public class IntHeap {
+            private mutable int[] h;
+            private mutable int n;
+            private mutable int cap;
+            public constructor IntHeap() {
+                this.cap = 8;
+                this.h = new int[8]();
+                this.n = 0;
+            }
+            private method grow() returns void {
+                int nc = this.cap * 2;
+                mutable int[] nh = new int[nc]();
+                for (mutable int i = 0; i < this.n; i++) { nh[i] = this.h[i]; }
+                this.h = nh;
+                this.cap = nc;
+                return;
+            }
+            public method push(int v) returns void {
+                if (this.n == this.cap) { this.grow(); }
+                this.h[this.n] = v;
+                mutable int i = this.n;
+                this.n = this.n + 1;
+                while (i > 0 && this.h[(i - 1) / 2] > this.h[i]) {
+                    int t = this.h[i];
+                    this.h[i] = this.h[(i - 1) / 2];
+                    this.h[(i - 1) / 2] = t;
+                    i = (i - 1) / 2;
+                }
+                return;
+            }
+            public method pop() returns int {
+                int top = this.h[0];
+                this.n = this.n - 1;
+                this.h[0] = this.h[this.n];
+                mutable int i = 0;
+                while (true) {
+                    int l = 2 * i + 1;
+                    int r = 2 * i + 2;
+                    mutable int sm = i;
+                    if (l < this.n && this.h[l] < this.h[sm]) { sm = l; }
+                    if (r < this.n && this.h[r] < this.h[sm]) { sm = r; }
+                    if (sm == i) { return top; }
+                    int t = this.h[i];
+                    this.h[i] = this.h[sm];
+                    this.h[sm] = t;
+                    i = sm;
+                }
+                return top;
+            }
+            public method peek() returns int { return this.h[0]; }
+            public method size() returns int { return this.n; }
+        }
+        // A node in a binary search tree (spec 34.1), linked by scalar nullable pointers to its children
+        // (arrays/lists of pointers are not yet supported, but a `nullable T*` link field is). collect does an
+        // in-order walk, appending keys in sorted order.
+        public class BstNode {
+            public mutable int key;
+            public mutable nullable BstNode* left;
+            public mutable nullable BstNode* right;
+            public constructor BstNode(int k) {
+                this.key = k;
+                this.left = null;
+                this.right = null;
+            }
+            public method collect(ArrayList<int>& out) returns void {  // & : accumulate into the caller's list
+                if (this.left != null) { this.left.collect(out); }
+                out.add(this.key);
+                if (this.right != null) { this.right.collect(out); }
+                return;
+            }
+        }
+        // An ordered set of integers backed by an unbalanced binary search tree (spec 34.1): insert ignores
+        // duplicates, contains tests membership, and inOrder returns the keys sorted. A genuinely
+        // pointer-linked structure (each node points to its children).
+        public class Bst {
+            private mutable nullable BstNode* root;
+            private mutable int count;
+            public constructor Bst() {
+                this.root = null;
+                this.count = 0;
+            }
+            public method insert(int k) returns void {
+                if (this.root == null) {
+                    this.root = new BstNode(k) on heap;
+                    this.count = this.count + 1;
+                    return;
+                }
+                mutable nullable BstNode* cur = this.root;
+                mutable boolean done = false;
+                while (!done) {
+                    if (k < cur.key) {
+                        if (cur.left == null) {
+                            cur.left = new BstNode(k) on heap;
+                            this.count = this.count + 1;
+                            done = true;
+                        } else {
+                            cur = cur.left;
+                        }
+                    } else {
+                        if (k > cur.key) {
+                            if (cur.right == null) {
+                                cur.right = new BstNode(k) on heap;
+                                this.count = this.count + 1;
+                                done = true;
+                            } else {
+                                cur = cur.right;
+                            }
+                        } else {
+                            done = true;
+                        }
+                    }
+                }
+                return;
+            }
+            public method contains(int k) returns boolean {
+                mutable nullable BstNode* cur = this.root;
+                while (cur != null) {
+                    if (k == cur.key) { return true; }
+                    if (k < cur.key) { cur = cur.left; } else { cur = cur.right; }
+                }
+                return false;
+            }
+            public method size() returns int { return this.count; }
+            public method inOrder() returns ArrayList<int> {
+                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                if (this.root != null) { this.root.collect(out); }
+                return out;
+            }
+        }
+        // A sorted set of ints (spec 34.1) on a growable sorted array with binary search: add (deduping),
+        // contains, navigable floor (largest <= v) and ceiling (smallest >= v), plus order statistics rank
+        // (count of elements < v) and kth (the i-th smallest). floor/ceiling return int min/max when absent.
+        public class SortedIntSet {
+            private mutable int[] data;
+            private mutable int count;
+            public constructor SortedIntSet() {
+                this.data = new int[8]();
+                this.count = 0;
+            }
+            private method lowerBound(int v) returns int {
+                mutable int lo = 0;
+                mutable int hi = this.count;
+                while (lo < hi) {
+                    int mid = (lo + hi) / 2;
+                    if (this.data[mid] < v) { lo = mid + 1; } else { hi = mid; }
+                }
+                return lo;
+            }
+            private method ensure(int need) returns void {
+                if (need <= this.data.length()) { return; }
+                mutable int[] bigger = new int[this.data.length() * 2]();
+                for (mutable int i = 0; i < this.count; i++) { bigger[i] = this.data[i]; }
+                this.data = bigger;
+                return;
+            }
+            public method add(int v) returns void {
+                int p = this.lowerBound(v);
+                if (p < this.count && this.data[p] == v) { return; }
+                this.ensure(this.count + 1);
+                for (mutable int i = this.count; i > p; i = i - 1) { this.data[i] = this.data[i - 1]; }
+                this.data[p] = v;
+                this.count = this.count + 1;
+                return;
+            }
+            public method contains(int v) returns boolean {
+                int p = this.lowerBound(v);
+                return p < this.count && this.data[p] == v;
+            }
+            public method rank(int v) returns int { return this.lowerBound(v); }
+            public method floor(int v) returns int {
+                int p = this.lowerBound(v);
+                if (p < this.count && this.data[p] == v) { return v; }
+                if (p == 0) { return -2147483648; }
+                return this.data[p - 1];
+            }
+            public method ceiling(int v) returns int {
+                int p = this.lowerBound(v);
+                if (p == this.count) { return 2147483647; }
+                return this.data[p];
+            }
+            public method kth(int i) returns int { return this.data[i]; }
+            public method size() returns int { return this.count; }
+        }
+        // A multiset / frequency counter of ints (spec 34.1) backed by a HashMap: add tallies occurrences and
+        // tracks the running most-common value, total, and distinct count in O(1) per add; count returns 0 for
+        // absent keys.
+        public class IntCounter {
+            private mutable HashMap<int, int> counts;
+            private mutable int total;
+            private mutable int distinct;
+            private mutable int best;
+            private mutable int bestCount;
+            public constructor IntCounter() {
+                this.counts = new HashMap<int, int>() on heap;
+                this.total = 0; this.distinct = 0; this.best = 0; this.bestCount = 0;
+            }
+            public method add(int v) returns void {
+                mutable int c = 1;
+                if (this.counts.containsKey(v)) { c = this.counts.get(v) + 1; } else { this.distinct = this.distinct + 1; }
+                this.counts.put(v, c);
+                this.total = this.total + 1;
+                if (c > this.bestCount) { this.bestCount = c; this.best = v; }
+                return;
+            }
+            public method count(int v) returns int {
+                if (this.counts.containsKey(v)) { return this.counts.get(v); }
+                return 0;
+            }
+            public method mostCommon() returns int { return this.best; }
+            public method maxCount() returns int { return this.bestCount; }
+            public method total() returns int { return this.total; }
+            public method distinct() returns int { return this.distinct; }
+        }
+        // An immutable list (spec 34.1): copies the source array at construction and exposes only reads
+        // (get/size/isEmpty), so the contents can never change afterwards.
+        public class ImmutableList<T> {
+            private mutable T[] data;
+            private mutable int n;
+            public constructor ImmutableList(T[] src, int count) {
+                this.n = count;
+                this.data = new T[count]();
+                for (mutable int i = 0; i < count; i++) { this.data[i] = src[i]; }
+            }
+            public method get(int i) returns T { return this.data[i]; }
+            public method size() returns int { return this.n; }
+            public method isEmpty() returns boolean { return this.n == 0; }
+        }
+        // A dense map keyed by enum ordinal (spec 34.1): since Polaron enums are int ordinals, values live in a
+        // flat array of the enum's size, with a parallel presence flag. O(1) put/get/containsKey.
+        public class EnumMap<V> {
+            private mutable V[] values;
+            private mutable boolean[] present;
+            private mutable int count;
+            public constructor EnumMap(int size) {
+                this.values = new V[size]();
+                this.present = new boolean[size]();
+                this.count = 0;
+            }
+            public method put(int ord, V v) returns void {
+                if (!this.present[ord]) { this.count = this.count + 1; this.present[ord] = true; }
+                this.values[ord] = v;
+                return;
+            }
+            public method get(int ord) returns V { return this.values[ord]; }
+            public method containsKey(int ord) returns boolean { return this.present[ord]; }
+            public method size() returns int { return this.count; }
+        }
+        // A dense set of enum ordinals (spec 34.1): a fixed-size flag array over the enum's constants, with
+        // O(1) add/remove/contains and a maintained count.
+        public class EnumSet {
+            private mutable boolean[] bits;
+            private mutable int count;
+            public constructor EnumSet(int size) { this.bits = new boolean[size](); this.count = 0; }
+            public method add(int ord) returns void { if (!this.bits[ord]) { this.bits[ord] = true; this.count = this.count + 1; } return; }
+            public method remove(int ord) returns void { if (this.bits[ord]) { this.bits[ord] = false; this.count = this.count - 1; } return; }
+            public method contains(int ord) returns boolean { return this.bits[ord]; }
+            public method size() returns int { return this.count; }
+        }
+        // A weighted undirected graph (spec 34.1) on a dense adjacency matrix (-1 means no edge). dijkstra
+        // returns the shortest-path distances from src (O(V^2), unreachable stay at "infinity"); mstWeight is
+        // the total weight of a minimum spanning tree via Prim. Vertices are 0..vertices-1.
+        public class WeightedGraph {
+            private mutable int[] adj;
+            private mutable int n;
+            public constructor WeightedGraph(int vertices) {
+                this.n = vertices;
+                this.adj = new int[vertices * vertices]();
+                for (mutable int i = 0; i < vertices * vertices; i++) { this.adj[i] = -1; }
+            }
+            public method addEdge(int u, int v, int w) returns void {
+                this.adj[u * this.n + v] = w;
+                this.adj[v * this.n + u] = w;
+                return;
+            }
+            public method dijkstra(int src) returns int[] {
+                int INF = 1000000000;
+                mutable int[] dist = new int[this.n]();
+                mutable boolean[] visited = new boolean[this.n]();
+                for (mutable int i = 0; i < this.n; i++) { dist[i] = INF; }
+                dist[src] = 0;
+                for (mutable int iter = 0; iter < this.n; iter++) {
+                    mutable int u = -1;
+                    mutable int best = INF;
+                    for (mutable int i = 0; i < this.n; i++) {
+                        if (!visited[i] && dist[i] < best) { best = dist[i]; u = i; }
+                    }
+                    if (u == -1) { iter = this.n; }
+                    else {
+                        visited[u] = true;
+                        for (mutable int v = 0; v < this.n; v++) {
+                            int w = this.adj[u * this.n + v];
+                            if (w >= 0 && !visited[v] && dist[u] + w < dist[v]) { dist[v] = dist[u] + w; }
+                        }
+                    }
+                }
+                return dist;
+            }
+            public method mstWeight() returns int {
+                int INF = 1000000000;
+                mutable int[] key = new int[this.n]();
+                mutable boolean[] inMst = new boolean[this.n]();
+                for (mutable int i = 0; i < this.n; i++) { key[i] = INF; }
+                key[0] = 0;
+                mutable int total = 0;
+                for (mutable int iter = 0; iter < this.n; iter++) {
+                    mutable int u = -1;
+                    mutable int best = INF;
+                    for (mutable int i = 0; i < this.n; i++) {
+                        if (!inMst[i] && key[i] < best) { best = key[i]; u = i; }
+                    }
+                    if (u == -1) { iter = this.n; }
+                    else {
+                        inMst[u] = true;
+                        total = total + key[u];
+                        for (mutable int v = 0; v < this.n; v++) {
+                            int w = this.adj[u * this.n + v];
+                            if (w >= 0 && !inMst[v] && w < key[v]) { key[v] = w; }
+                        }
+                    }
+                }
+                return total;
+            }
+        }
+        // A fixed-capacity LRU cache (spec 34) mapping int keys to int values, with O(1) get/put. A doubly
+        // linked list over slot arrays tracks recency (head = most recent); a HashMap finds a key's slot.
+        // get returns -1 when the key is absent; put evicts the least-recently-used entry when full.
+        public class LruCache {
+            private mutable int cap;
+            private mutable int size;
+            private mutable int head;
+            private mutable int tail;
+            private mutable int[] keys;
+            private mutable int[] vals;
+            private mutable int[] prev;
+            private mutable int[] next;
+            private mutable HashMap<int, int> slotByKey;
+            public constructor LruCache(int capacity) {
+                this.cap = capacity;
+                this.size = 0;
+                this.head = -1;
+                this.tail = -1;
+                this.keys = new int[capacity]();
+                this.vals = new int[capacity]();
+                this.prev = new int[capacity]();
+                this.next = new int[capacity]();
+                this.slotByKey = new HashMap<int, int>() on heap;
+            }
+            private method unlink(int s) returns void {
+                int p = this.prev[s];
+                int nx = this.next[s];
+                if (p != -1) { this.next[p] = nx; } else { this.head = nx; }
+                if (nx != -1) { this.prev[nx] = p; } else { this.tail = p; }
+                return;
+            }
+            private method pushHead(int s) returns void {
+                this.prev[s] = -1;
+                this.next[s] = this.head;
+                if (this.head != -1) { this.prev[this.head] = s; }
+                this.head = s;
+                if (this.tail == -1) { this.tail = s; }
+                return;
+            }
+            public method get(int key) returns int {
+                if (!this.slotByKey.containsKey(key)) { return -1; }
+                int s = this.slotByKey.get(key);
+                this.unlink(s);
+                this.pushHead(s);
+                return this.vals[s];
+            }
+            public method contains(int key) returns boolean { return this.slotByKey.containsKey(key); }
+            public method put(int key, int value) returns void {
+                if (this.slotByKey.containsKey(key)) {
+                    int s = this.slotByKey.get(key);
+                    this.vals[s] = value;
+                    this.unlink(s);
+                    this.pushHead(s);
+                    return;
+                }
+                mutable int s = 0;
+                if (this.size < this.cap) {
+                    s = this.size;
+                    this.size = this.size + 1;
+                } else {
+                    s = this.tail;
+                    this.slotByKey.remove(this.keys[s]);
+                    this.unlink(s);
+                }
+                this.keys[s] = key;
+                this.vals[s] = value;
+                this.slotByKey.put(key, s);
+                this.pushHead(s);
+                return;
+            }
+            public method count() returns int { return this.size; }
+        }
+        // Comparator combinators (spec 34.1) built on closures: naturalInt gives ascending int order,
+        // reversed flips a comparator, and thenComparing chains a tie-breaker after a primary comparator.
+        // Each returns a function<int,int,int> usable with ArrayList.sortedBy.
+        public class Comparators {
+            public static method naturalInt() returns function<int, int, int> {
+                return lambda(int a, int b) returns int { return a - b; };
+            }
+            public static method reversed(function<int, int, int> cmp) returns function<int, int, int> {
+                return lambda(int a, int b) returns int { return cmp(b, a); };
+            }
+            public static method thenComparing(function<int, int, int> first, function<int, int, int> second)
+                returns function<int, int, int> {
+                return lambda(int a, int b) returns int {
+                    int r = first(a, b);
+                    if (r != 0) { return r; }
+                    return second(a, b);
+                };
+            }
+        }
+        // A stack that also reports its minimum in O(1) (spec 34.1): a parallel stack carries the running
+        // minimum at each depth. push/pop/peek/getMin/size.
+        public class MinStack {
+            private mutable int[] vals;
+            private mutable int[] mins;
+            private mutable int top;
+            public constructor MinStack(int capacity) {
+                this.vals = new int[capacity]();
+                this.mins = new int[capacity]();
+                this.top = 0;
+            }
+            public method push(int v) returns void {
+                this.vals[this.top] = v;
+                if (this.top == 0 || v < this.mins[this.top - 1]) { this.mins[this.top] = v; }
+                else { this.mins[this.top] = this.mins[this.top - 1]; }
+                this.top = this.top + 1;
+                return;
+            }
+            public method pop() returns int { this.top = this.top - 1; return this.vals[this.top]; }
+            public method peek() returns int { return this.vals[this.top - 1]; }
+            public method getMin() returns int { return this.mins[this.top - 1]; }
+            public method size() returns int { return this.top; }
+        }
+        // A bidirectional map (spec 34): keeps key->value and value->key in sync so either side can be looked
+        // up. put overwrites both directions; getByKey/getByValue resolve across them.
+        public class BiMap<K, V> {
+            private mutable HashMap<K, V> fwd;
+            private mutable HashMap<V, K> bwd;
+            public constructor BiMap() {
+                this.fwd = new HashMap<K, V>() on heap;
+                this.bwd = new HashMap<V, K>() on heap;
+            }
+            public method put(K k, V v) returns void {
+                this.fwd.put(k, v);
+                this.bwd.put(v, k);
+                return;
+            }
+            public method getByKey(K k) returns V { return this.fwd.get(k); }
+            public method getByValue(V v) returns K { return this.bwd.get(v); }
+            public method hasKey(K k) returns boolean { return this.fwd.containsKey(k); }
+            public method size() returns int { return this.fwd.size(); }
+        }
+        // A multimap (spec 34): each key maps to a growable list of values. put appends; countFor and get(k,i)
+        // read the list for a key.
+        public class MultiMap<K, V> {
+            private mutable HashMap<K, ArrayList<V>> map;
+            public constructor MultiMap() { this.map = new HashMap<K, ArrayList<V>>() on heap; }
+            public method put(K k, V v) returns void {
+                if (!this.map.containsKey(k)) { this.map.put(k, new ArrayList<V>() on heap); }
+                mutable ArrayList<V> lst = this.map.get(k);
+                lst.add(v);
+                return;
+            }
+            public method countFor(K k) returns int {
+                if (!this.map.containsKey(k)) { return 0; }
+                return this.map.get(k).size();
+            }
+            public method get(K k, int i) returns V { return this.map.get(k).get(i); }
+        }
+        // A directed graph (spec 34.1) on a dense adjacency matrix: topoSort fills a topological ordering by
+        // Kahn's algorithm (lowest-index source first) and returns how many vertices were placed; fewer than
+        // n means a cycle, which hasCycle reports.
+        public class DiGraph {
+            private mutable int[] adj;
+            private mutable int n;
+            public constructor DiGraph(int vertices) {
+                this.n = vertices;
+                this.adj = new int[vertices * vertices]();
+            }
+            public method addEdge(int u, int v) returns void { this.adj[u * this.n + v] = 1; return; }
+            public method topoSort(int[] order) returns int {
+                mutable int[] indeg = new int[this.n]();
+                for (mutable int u = 0; u < this.n; u++) {
+                    for (mutable int v = 0; v < this.n; v++) {
+                        if (this.adj[u * this.n + v] == 1) { indeg[v] = indeg[v] + 1; }
+                    }
+                }
+                mutable boolean[] done = new boolean[this.n]();
+                mutable int cnt = 0;
+                mutable boolean progress = true;
+                while (progress) {
+                    mutable int pick = -1;
+                    mutable int i = 0;
+                    while (i < this.n) {
+                        if (!done[i] && indeg[i] == 0) { pick = i; i = this.n; }
+                        else { i = i + 1; }
+                    }
+                    if (pick == -1) { progress = false; }
+                    else {
+                        done[pick] = true; order[cnt] = pick; cnt = cnt + 1;
+                        for (mutable int j = 0; j < this.n; j++) {
+                            if (this.adj[pick * this.n + j] == 1) { indeg[j] = indeg[j] - 1; }
+                        }
+                    }
+                }
+                return cnt;
+            }
+            public method hasCycle() returns boolean {
+                mutable int[] o = new int[this.n]();
+                return this.topoSort(o) < this.n;
+            }
+        }
+        // A uniform spatial hash grid (spec 34.1) for 2D broad-phase queries: points are bucketed by
+        // cell (a HashMap from a packed cell key to the point indices in it), so queryRect only scans the
+        // cells overlapping the query box. Coordinates are assumed non-negative.
+        public class SpatialGrid {
+            private mutable int cell;
+            private mutable int[] px;
+            private mutable int[] py;
+            private mutable int n;
+            private mutable HashMap<int, ArrayList<int>> buckets;
+            public constructor SpatialGrid(int cellSize, int capacity) {
+                this.cell = cellSize;
+                this.px = new int[capacity]();
+                this.py = new int[capacity]();
+                this.n = 0;
+                this.buckets = new HashMap<int, ArrayList<int>>() on heap;
+            }
+            private method key(int cx, int cy) returns int { return cx * 100000 + cy; }
+            public method insert(int x, int y) returns void {
+                int idx = this.n;
+                this.px[idx] = x; this.py[idx] = y; this.n = this.n + 1;
+                int ck = this.key(x / this.cell, y / this.cell);
+                if (!this.buckets.containsKey(ck)) { this.buckets.put(ck, new ArrayList<int>() on heap); }
+                this.buckets.get(ck).add(idx);
+                return;
+            }
+            public method queryRect(int x0, int y0, int x1, int y1) returns int {
+                int cx0 = x0 / this.cell; int cy0 = y0 / this.cell;
+                int cx1 = x1 / this.cell; int cy1 = y1 / this.cell;
+                mutable int count = 0;
+                for (mutable int cx = cx0; cx <= cx1; cx++) {
+                    for (mutable int cy = cy0; cy <= cy1; cy++) {
+                        int ck = this.key(cx, cy);
+                        if (this.buckets.containsKey(ck)) {
+                            mutable ArrayList<int> lst = this.buckets.get(ck);
+                            for (mutable int i = 0; i < lst.size(); i++) {
+                                int idx = lst.get(i);
+                                if (this.px[idx] >= x0 && this.px[idx] <= x1
+                                    && this.py[idx] >= y0 && this.py[idx] <= y1) { count = count + 1; }
+                            }
+                        }
+                    }
+                }
+                return count;
+            }
+        }
+
+        // A BloomFilter is a probabilistic SET, moved from System.Text on 2026-08-13. It lived there
+        // because it is usually asked about strings; what it IS is a membership structure.
+        // A Bloom filter: a probabilistic set that never misses a member but may report a false positive
+        // (spec 34.1). Two independent hashes (FNV-1a and CRC-32 from Digest) set and test bits in a fixed
+        // bit array. mightContain returning false is definitive; true means probably present.
+        public class BloomFilter {
+            private mutable boolean[] bits;
+            private mutable int m;
+            public constructor BloomFilter(int size) {
+                this.m = size;
+                this.bits = new boolean[size]();
+            }
+            private method idx(int h) returns int {
+                int r = h % this.m;
+                if (r < 0) { return r + this.m; }
+                return r;
+            }
+            public method add(String key) returns void {
+                this.bits[this.idx(Digest.fnv1a(key))] = true;
+                this.bits[this.idx(Digest.crc32(key))] = true;
+                return;
+            }
+            public method mightContain(String key) returns boolean {
+                return this.bits[this.idx(Digest.fnv1a(key))] && this.bits[this.idx(Digest.crc32(key))];
+            }
+        }
+    }

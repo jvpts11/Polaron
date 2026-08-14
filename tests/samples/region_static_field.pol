@@ -1,0 +1,38 @@
+import System.IO.Console;
+program RegionStaticField;
+
+// A STATIC REGION FIELD: one arena for the whole program, with an owner's name on it.
+//
+// This parsed and was unusable. The analyser reported `unknown region field 'Arena.shared'` for every
+// use, because its dotted lookup took the name after the dot and searched the CURRENT class -- a
+// static is in neither that table nor in the locals. Declarable and not usable is the worst of the
+// three possible states, and it is what the region-classes design flagged as "small and independently
+// useful" to finish.
+//
+// The region is built on FIRST USE rather than by a static constructor, for the same reason a region
+// class's arena is: bare metal runs none.
+//
+// Prints: shared 7 11
+public bundle Main {
+    public namespace App {
+        public class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+        }
+
+        // No instance, no owner object -- the class itself is the owner, which is exactly the shape
+        // `region class` has and the reason namespace-level regions were rejected instead.
+        public class Arena {
+            public static mutable pool region shared;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* a = new Node(7) in region Arena.shared;
+                Node* b = new Node(11) in region Arena.shared;
+                System.IO.Console.printf("shared %d %d\n", a.v, b.v);
+                return;
+            }
+        }
+    }
+}
