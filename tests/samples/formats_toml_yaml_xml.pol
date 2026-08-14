@@ -1,0 +1,76 @@
+import System.IO.Console;
+import System.Json.Json;
+import System.Formats.Toml;
+import System.Formats.Yaml;
+import System.Formats.Xml;
+program FormatsSample;
+
+// THREE FORMATS THE LANGUAGE COULD NOT READ. JSON, CSV, INI and Properties existed; TOML, YAML and
+// XML did not, which is most of the configuration in the world.
+//
+// TOML AND YAML PARSE INTO `Json`, AND THAT IS THE DESIGN. They are two more syntaxes for the same
+// thing -- a tree of maps, lists, strings, numbers and booleans -- so they share the document model.
+// Three trees would mean three sets of accessors and a program that reads configuration caring which
+// file it came out of. Sharing it means `JsonPointer` works on a TOML file, and anything later built
+// over `Json` gets all three for nothing.
+//
+// XML deliberately does NOT share it: an element has a tag, ATTRIBUTES and children, and flattening
+// that into a map costs the distinction between an attribute and a child element.
+//
+// Prints:
+//   toml: name=Polaron port=8080 ratio=1.5 owner=Joao tags=3 hosts=2 second=beta
+//   yaml: name=Polaron port=8080 debug=1 deep=2 items=3 second=two host0=alpha
+//   xml:  root=config id=7 kids=2 host=alpha port=8080 text=hello & <world>
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Main.toml();
+                Main.yaml();
+                Main.xml();
+                return;
+            }
+
+            private static method toml() returns void {
+                String src = "name = \"Polaron\"   # the name\nport = 8080\nratio = 1.5\n\n[owner]\nname = 'Joao'\n\n[server.limits]\ntags = [\"a\", \"b\", \"c\"]\n\n[[hosts]]\nname = \"alpha\"\n\n[[hosts]]\nname = \"beta\"\n";
+                Json d = Toml.parse(src);
+                System.IO.Console.printf("toml: name=%s port=%d ratio=%g owner=%s tags=%d hosts=%d second=%s\n",
+                                         d.field("name").asStr(),
+                                         cast<int>(d.field("port").asNum()),
+                                         d.field("ratio").asReal(),
+                                         d.field("owner").field("name").asStr(),
+                                         d.field("server").field("limits").field("tags").size(),
+                                         d.field("hosts").size(),
+                                         d.field("hosts").at(1).field("name").asStr());
+                return;
+            }
+
+            private static method yaml() returns void {
+                String src = "name: Polaron   # the name\nport: 8080\ndebug: true\nnested:\n  inner:\n    deep: 2\nitems:\n  - one\n  - two\n  - three\nhosts:\n  - name: alpha\n    port: 1\n  - name: beta\n    port: 2\n";
+                Json d = Yaml.parse(src);
+                System.IO.Console.printf("yaml: name=%s port=%d debug=%d deep=%d items=%d second=%s host0=%s\n",
+                                         d.field("name").asStr(),
+                                         cast<int>(d.field("port").asNum()),
+                                         d.field("debug").asBool(),
+                                         cast<int>(d.field("nested").field("inner").field("deep").asNum()),
+                                         d.field("items").size(),
+                                         d.field("items").at(1).asStr(),
+                                         d.field("hosts").at(0).field("name").asStr());
+                return;
+            }
+
+            private static method xml() returns void {
+                String src = "<?xml version=\"1.0\"?>\n<config id='7'>\n  <!-- a comment -->\n  <host name=\"alpha\"/>\n  <port>8080</port>\n  <note>hello &amp; &lt;world&gt;</note>\n</config>\n";
+                Xml root = Xml.parse(src);
+                System.IO.Console.printf("xml:  root=%s id=%s kids=%d host=%s port=%s text=%s\n",
+                                         root.name(),
+                                         root.attribute("id"),
+                                         root.countNamed("host") + root.countNamed("port"),
+                                         root.childNamed("host").attribute("name"),
+                                         root.childNamed("port").content(),
+                                         root.childNamed("note").content());
+                return;
+            }
+        }
+    }
+}

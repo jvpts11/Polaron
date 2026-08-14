@@ -1,10 +1,20 @@
     public namespace Json {
-        // A JSON value (spec 34). kind: 0=null, 1=bool, 2=number(long), 3=string, 4=array, 5=object.
-        // Built and read with pure-Polaron code over System.Collections + System.Text.
+        // A JSON value (spec 34). kind: 0=null, 1=bool, 2=integer(long), 3=string, 4=array, 5=object,
+        // 6=real(double). Built and read with pure-Polaron code over System.Collections + System.Text.
+        //
+        // KIND 6 IS NOT AN EXTRA -- it is the one JSON actually requires. The model held only `long`,
+        // so `{"a": 1.5}` read the `1`, left the `.5` in the stream, and the object parser then met a
+        // `.` where it wanted a comma and walked off the end of the input: an ACCESS VIOLATION on a
+        // decimal number, which is legal JSON and appears in almost every real document.
+        //
+        // Integer and real are kept apart rather than making every number a double, because a
+        // configuration file's `port = 8080` should come back as 8080 and not as 8080.0, and because a
+        // long carries 63 bits of integer where a double carries 53.
         public class Json {
             private mutable int kind;
             private mutable boolean b;
             private mutable long num;
+            private mutable double real;
             private mutable String str;
             private mutable String memberKey;   // the key, when this node is an object member
             private mutable nullable Json* firstChild;   // array elements / object members (sibling chain)
@@ -15,6 +25,7 @@
                 this.kind = k;
                 this.b = false;
                 this.num = cast<long>(0);
+                this.real = cast<double>(0);
                 this.str = "";
                 this.memberKey = "";
                 this.firstChild = null;
@@ -29,6 +40,9 @@
             public static method ofNum(long v) returns Json {
                 Json j = new Json(2) on heap; j.num = v; return j;
             }
+            public static method ofReal(double v) returns Json {
+                Json j = new Json(6) on heap; j.real = v; return j;
+            }
             public static method ofStr(String v) returns Json {
                 Json j = new Json(3) on heap; j.str = v; return j;
             }
@@ -42,7 +56,18 @@
             public method put(String key, Json* v) returns void { v.memberKey = key; this.add(v); }
             public method kindOf() returns int { return this.kind; }
             public method asBool() returns boolean { return this.b; }
-            public method asNum() returns long { return this.num; }
+            // A real read as an integer truncates, and an integer read as a real widens, so a caller
+            // who does not care which the document used never has to ask. `isReal` is there for the
+            // one who does.
+            public method asNum() returns long {
+                if (this.kind == 6) { return cast<long>(this.real); }
+                return this.num;
+            }
+            public method asReal() returns double {
+                if (this.kind == 2) { return cast<double>(this.num); }
+                return this.real;
+            }
+            public method isReal() returns boolean { return this.kind == 6; }
             public method asStr() returns String { return this.str; }
             public method size() returns int { return this.childCount; }
             public method at(int i) returns nullable Json {
@@ -77,6 +102,7 @@
                     return;
                 }
                 if (this.kind == 2) { sb.append(this.num.toString()); return; }
+                if (this.kind == 6) { sb.append(this.real.toString()); return; }
                 if (this.kind == 3) { this.escapeInto(sb, this.str); return; }
                 if (this.kind == 4) {
                     sb.appendChar('[');
@@ -117,6 +143,7 @@
                 if (this.kind == 0) { sb.append("null"); return; }
                 if (this.kind == 1) { if (this.b) { sb.append("true"); } else { sb.append("false"); } return; }
                 if (this.kind == 2) { sb.append(this.num.toString()); return; }
+                if (this.kind == 6) { sb.append(this.real.toString()); return; }
                 if (this.kind == 3) { this.escapeInto(sb, this.str); return; }
                 if (this.kind == 4) {
                     if (this.childCount == 0) { sb.append("[]"); return; }
@@ -238,6 +265,11 @@
                 if (c == 't') { this.pos = this.pos + 4; return Json.ofBool(true); }
                 if (c == 'f') { this.pos = this.pos + 5; return Json.ofBool(false); }
                 if (c == 'n') { this.pos = this.pos + 4; return Json.ofNull(); }
+                // A NUMBER, WHOLE OR NOT. This read the integer part and stopped, so `1.5` consumed the
+                // `1` and left `.5` in the stream -- the object parser then met a `.` where it wanted a
+                // comma, ran past the end of the input, and the program died with an access violation
+                // on a document that was perfectly valid JSON. The fraction and the exponent are both
+                // part of the grammar and both are read here now.
                 mutable boolean neg = false;
                 if (c == '-') { neg = true; this.pos = this.pos + 1; }
                 mutable long acc = cast<long>(0);
@@ -248,6 +280,49 @@
                         acc = acc * cast<long>(10) + cast<long>(d - '0');
                         this.pos = this.pos + 1;
                     } else { more = false; }
+                }
+                // Whole, unless a '.' or an exponent follows -- which is also the rule that keeps
+                // `port = 8080` an integer instead of widening every number to a double.
+                mutable boolean isReal = false;
+                mutable double val = cast<double>(acc);
+                if (this.pos < this.s.length() && this.s.charAt(this.pos) == '.') {
+                    isReal = true;
+                    this.pos = this.pos + 1;
+                    mutable double scale = cast<double>(1);
+                    mutable boolean frac = true;
+                    while (frac && this.pos < this.s.length()) {
+                        char d = this.s.charAt(this.pos);
+                        if (d >= '0' && d <= '9') {
+                            scale = scale / cast<double>(10);
+                            val = val + cast<double>(d - '0') * scale;
+                            this.pos = this.pos + 1;
+                        } else { frac = false; }
+                    }
+                }
+                if (this.pos < this.s.length() &&
+                    (this.s.charAt(this.pos) == 'e' || this.s.charAt(this.pos) == 'E')) {
+                    isReal = true;
+                    this.pos = this.pos + 1;
+                    mutable boolean eneg = false;
+                    if (this.pos < this.s.length()) {
+                        char sgn = this.s.charAt(this.pos);
+                        if (sgn == '-') { eneg = true; this.pos = this.pos + 1; }
+                        else { if (sgn == '+') { this.pos = this.pos + 1; } }
+                    }
+                    mutable int ex = 0;
+                    mutable boolean digits = true;
+                    while (digits && this.pos < this.s.length()) {
+                        char d = this.s.charAt(this.pos);
+                        if (d >= '0' && d <= '9') { ex = ex * 10 + cast<int>(d - '0'); this.pos = this.pos + 1; }
+                        else { digits = false; }
+                    }
+                    for (mutable int k = 0; k < ex; k++) {
+                        if (eneg) { val = val / cast<double>(10); } else { val = val * cast<double>(10); }
+                    }
+                }
+                if (isReal) {
+                    if (neg) { val = cast<double>(0) - val; }
+                    return Json.ofReal(val);
                 }
                 if (neg) { acc = cast<long>(0) - acc; }
                 return Json.ofNum(acc);

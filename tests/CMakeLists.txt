@@ -2646,6 +2646,31 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # THREE FORMATS THE LANGUAGE COULD NOT READ. JSON, CSV, INI and Properties existed; TOML, YAML
+        # and XML did not, which is most of the configuration in the world. TOML and YAML parse into
+        # `Json` -- they are two more syntaxes for the same tree, so they share the document model and
+        # everything built over it. XML gets its own, because an element has attributes AND children
+        # and flattening that into a map loses the difference between them.
+        add_test(NAME codegen_formats_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/formats_toml_yaml_xml.pol"
+            "-DEXPECTED=toml: name=Polaron port=8080 ratio=1.5 owner=Joao tags=3 hosts=2 second=beta yaml: name=Polaron port=8080 debug=1 deep=2 items=3 second=two host0=alpha xml: root=config id=7 kids=2 host=alpha port=8080 text=hello & <world>"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A DECIMAL NUMBER IS LEGAL JSON, and the parser died on one: the model held only `long`, so the
+        # number reader took the integer part and left `.5` in the stream, the object parser met a `.`
+        # where it wanted a comma, and it ran off the end of the input. An access violation, on a shape
+        # almost every real service returns. Integer and real stay distinct through parse and write.
+        add_test(NAME codegen_json_reals_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/json_reals.pol"
+            "-DEXPECTED=half=0.5 pi=3.14159 exp=1500 port=8080 isreal=1 0 out={\"a\":0.5,\"n\":7}"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # AN OPEN FILE, which the language did not have: every other file call moves a WHOLE file, so
         # the first line of a log cost the whole log. Never a limit of the platform -- no handle had
         # crossed into Polaron. Writes 26 bytes, then seeks around the file without reading it in.

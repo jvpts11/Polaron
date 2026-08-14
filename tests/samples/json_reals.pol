@@ -1,0 +1,45 @@
+import System.IO.Console;
+import System.Json.Json;
+import System.Json.JsonParser;
+program JsonReals;
+
+// A DECIMAL NUMBER IS LEGAL JSON, and the parser died on one.
+//
+// The document model held only `long`, so the number reader took the integer part and stopped: `1.5`
+// consumed the `1` and left `.5` in the stream, the object parser then met a `.` where it wanted a
+// comma, and it ran off the end of the input. An ACCESS VIOLATION, on a document almost every real
+// service returns.
+//
+// Kind 6 (real) is not an extra -- it is the half of the number grammar that was missing. Integer and
+// real stay apart rather than making every number a double, because `"port": 8080` should come back as
+// 8080 rather than 8080.0, and because a long carries 63 bits of integer where a double carries 53.
+//
+// Prints: half=0.5 pi=3.14159 exp=1500 port=8080 isreal=1 0 out={"a":0.5,"n":7}
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable JsonParser p =
+                    new JsonParser("{\"half\": 0.5, \"pi\": 3.14159, \"exp\": 1.5e3, \"port\": 8080}") on heap;
+                Json doc = p.parseValue();
+
+                System.IO.Console.printf("half=%g pi=%g exp=%g port=%d ",
+                                         doc.field("half").asReal(),
+                                         doc.field("pi").asReal(),
+                                         doc.field("exp").asReal(),
+                                         cast<int>(doc.field("port").asNum()));
+
+                // The distinction survives the parse: one is a real, the other is not.
+                System.IO.Console.printf("isreal=%d %d ",
+                                         doc.field("half").isReal(), doc.field("port").isReal());
+
+                // And it survives being written back out.
+                mutable Json out = Json.object();
+                out.put("a", Json.ofReal(cast<double>(0.5)));
+                out.put("n", Json.ofNum(cast<long>(7)));
+                System.IO.Console.printf("out=%s\n", out.toString());
+                return;
+            }
+        }
+    }
+}
