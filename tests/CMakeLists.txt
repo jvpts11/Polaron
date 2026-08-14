@@ -473,12 +473,36 @@ add_test(NAME codegen_region_class_on_heap_errors
 set_tests_properties(codegen_region_class_on_heap_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "is a .region class., so .on heap. has nowhere to put this")
 
+# And `on stack`, which had to be asked for separately: it IS the default, so silence and the written
+# word arrive identical unless the parser records which it was. A written placement the compiler
+# silently overrides is the case these refusals exist to prevent.
+add_test(NAME codegen_region_class_on_stack_errors
+    COMMAND polc "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_class_on_stack.pol"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/region_class_on_stack.ll")
+set_tests_properties(codegen_region_class_on_stack_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "is a .region class., so .on stack. has nowhere to put this")
+
+# `move x into region R` is `in region R` spelled as a move, and a rule that holds only for the
+# spelling it was written against is not a rule.
+add_test(NAME codegen_region_class_move_in_errors
+    COMMAND polc "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_class_move_in.pol"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/region_class_move_in.ll")
+set_tests_properties(codegen_region_class_move_in_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "would move it out of the only region its instances may be in")
+
 # Everything beneath a region class must be one. A plain class inheriting from an abstract region class
 # would put its instances outside the family's region, and totality is the whole feature.
 add_test(NAME sema_region_class_escapee_errors
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_class_escapee.pol")
 set_tests_properties(sema_region_class_escapee_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "extends the region class")
+
+# Extraction relocates an object out of a region it would otherwise die with. A region class's arena is
+# the only place its instances may be, so there is nowhere to extract TO -- the same refusal as `on heap`.
+add_test(NAME sema_region_class_extract_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_class_extract.pol")
+set_tests_properties(sema_region_class_extract_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "is a .region class.: its arena is the only place")
 
 # `extern syscall(N)`: a syscall is not a language and has no symbol -- it is the machine's instruction
 # with a NUMBER, so the method gets a body rather than a declaration. Checked by reading the IR for
@@ -3592,6 +3616,41 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_class_family.pol"
             "-DCONTAINS=ident=7 call=42 total=49"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # The author is not the only one who allocates an A: assignment is a deep copy, and the copy
+        # the COMPILER makes went to the stack (a local) or the heap (a field). Outside the arena, a
+        # narrow `A*` field storing `(i32)(p - base)` is a wild pointer -- this program used to die
+        # with an access violation and no diagnostic.
+        add_test(NAME codegen_region_class_copy_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_class_copy.pol"
+            "-DCONTAINS=original=4 copy=77 through-field=77"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # `new A()` with no placement parses as location "stack" -- the default for every class -- and
+        # RAII registration read that field, so a region class instance was filed as a stack object and
+        # destructed at the closing brace while the arena still held it and every `A*` still pointed at
+        # it. The design says the opposite in as many words.
+        add_test(NAME codegen_region_class_outlives_block_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_class_outlives_block.pol"
+            "-DEXPECTED=kept out of the block still readable: 42 destructor ran"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # The one allocation site that cannot know the class at compile time. The type token carries
+        # the arena's own `new` (null for a class that has none), so `instantiate` places by the
+        # class's rule instead of reaching for malloc, and reflection never learns what a region is.
+        add_test(NAME codegen_region_class_reflect_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_class_reflect.pol"
+            "-DCONTAINS=built=5 then=77 through-field=77"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

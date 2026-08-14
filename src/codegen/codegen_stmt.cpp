@@ -542,7 +542,13 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
             // to tell a stack address from a heap one, and it is the ONLY thing this set is for --
             // deriving that from the destructor list meant a class with no destructor was invisible
             // to `delete`, which then freed a stack pointer into libc.
-            if (cit != classes.end() && nw->region.empty() && nw->location == "stack") {
+            // A REGION CLASS IS NOT A STACK OBJECT, however the placement reads. `new A()` with no
+            // placement parses as location "stack" -- that is the default for every class -- and a
+            // region class then ignores it and allocates from its arena. Both questions below are
+            // about WHERE the object is, so both have to ask the class rather than the syntax.
+            const bool inClassArena = livesInClassArena(nw->className);
+            if (cit != classes.end() && nw->region.empty() && nw->location == "stack" &&
+                !inClassArena) {
                 stackObjectSlots_.insert(slot);
             }
             // Track for scope-exit teardown if it has a destructor OR any weak state OR owns a
@@ -566,10 +572,17 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
                 const std::string rfl = flavorOfRegion(nw->region);
                 if (!nw->region.empty() && !regionHasRegistry(nw->region) && !isRingFlavor(rfl)) {
                     scopeObjects.push_back(ScopeObject{slot, nw->className, nw->region});
-                } else if (nw->region.empty() && nw->location == "stack") {
+                } else if (nw->region.empty() && nw->location == "stack" && !inClassArena) {
                     zeroStackObjectSlot(slot);  // abstain/skip past this decl -> null -> no dtor on uninit
                     scopeObjects.push_back(ScopeObject{slot, nw->className, ""});
                 }
+                // A region class is deliberately absent from both branches: its instance outlives the
+                // block, so scope-exit teardown would destruct an object the arena still holds and
+                // every `A*` still points at. Measured before this: the destructor ran at the closing
+                // brace and the object read back fine afterwards -- a use-after-destruct that only a
+                // destructor doing real work (freeing a String field) would have made visible. The
+                // design says it in as many words: a local A "lives until it is deleted or the region
+                // dies -- NOT until the block exits".
             }
             // An object placed in a `volatile region` (MMIO): its field accesses are volatile.
             if (!nw->region.empty() && volatileRegions_.count(nw->region) > 0) {
@@ -582,9 +595,12 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
             // on the stack here (an escaping copy was promoted to the heap and is excluded). Register
             // it for scope-exit destruction so it does not leak, exactly like a `new ... on stack`
             // object; same ownership and same accepted this-escape risk as any stack object.
+            // -- unless the class is a region class, whose copy `emitClassCopy` puts in the arena for
+            // the same reason `new A()` goes there. It is not this frame's to destruct at the closing
+            // brace: it is an A, and an A lives until it is deleted or the region dies.
             const std::string cn = baseType(declType);
             if (auto cit = classes.find(cn);
-                cit != classes.end() &&
+                cit != classes.end() && !livesInClassArena(cn) &&
                 (cit->second.hasDestructor || weakRelevant(cn) || !ownedRegionFieldsOf(cn).empty())) {
                 scopeObjects.push_back(ScopeObject{slot, cn, ""});
             }

@@ -1,0 +1,46 @@
+import System.IO.Console;
+import reflect;
+program RegionClassReflect;
+
+// REFLECTION BUILDS A REGION CLASS WHERE IT BELONGS.
+//
+// Every other allocation of an A knows at compile time that it is building an A, so it can reach A's
+// arena. `Type.instantiate()` (spec 31) does not: it holds a token and a size, and it reached for
+// `malloc` -- which put an instance of a region class outside the one region its instances may be in,
+// through a door the language otherwise refuses to open (`on heap` is a compile error here).
+//
+// The token now carries the arena's own `new`, so the placement is the class's decision rather than
+// the reflection path's, and reflection never learns what a region is. A class without an arena
+// stores null there and keeps the heap path.
+//
+// The narrow field is the check that bites: `real.left = born` stores `(i32)(born - arenaBase)`, so
+// reading it back only answers 77 if `born` really came out of that reservation.
+//
+// Prints: built=5 then=77 through-field=77
+public bundle Main {
+    public namespace App {
+
+        public region class Node {
+            public mutable int key;
+            public mutable nullable Node* left;
+
+            public constructor Node() {
+                this.key = 5;
+                this.left = null;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* real = new Node();
+                Type t = reflect.typeOf<Node>();
+                Node* born = cast<Node>(t.instantiate());
+                System.IO.Console.printf("built=%d ", born.key);
+                born.key = 77;
+                real.left = born;
+                System.IO.Console.printf("then=%d through-field=%d\n", born.key, real.left.key);
+                return;
+            }
+        }
+    }
+}

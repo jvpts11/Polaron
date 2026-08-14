@@ -1,0 +1,59 @@
+import System.IO.Console;
+program RegionClassOutlivesBlock;
+
+// A REGION CLASS INSTANCE OUTLIVES THE BLOCK THAT BUILT IT.
+//
+// The design says it in as many words: a local A "lives until it is deleted or the region dies -- not
+// until the block exits". The compiler said otherwise, and for a reason worth keeping written down:
+// `new A()` with no placement parses as location "stack", because that is the default for every
+// class, and RAII registration read that field. So the object was filed as a stack object, its
+// destructor ran at the closing brace, and the arena went on handing the same live bytes to every
+// `A*` that had been kept.
+//
+// It read as harmless here -- 42 is still 42 after a destructor that only prints -- which is exactly
+// why it survived: a destructor that frees a String field would have left a dangling pointer instead,
+// and the fault would have surfaced somewhere else entirely.
+//
+// The fix asks the CLASS where its instances live rather than reading the placement the author did
+// not write. Prints, in this order: kept, out of the block, still readable: 42, destructor ran
+// (the last from `delete`, where it belongs).
+public bundle Main {
+    public namespace App {
+
+        public region class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+            public destructor ~Node() returns void {
+                System.IO.Console.println("destructor ran");
+            }
+        }
+
+        public class Keeper {
+            public mutable nullable Node* held;
+            public constructor Keeper() { this.held = null; }
+            public method keep(Node* n) returns void { this.held = n; }
+            public method read() returns int { return this.held.v; }
+            public method drop() returns void {
+                delete this.held;
+                this.held = null;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Keeper k = new Keeper();
+                while (true) {
+                    Node* a = new Node(42);
+                    k.keep(a);
+                    System.IO.Console.println("kept");
+                    break;
+                }
+                System.IO.Console.println("out of the block");
+                System.IO.Console.printf("still readable: %d\n", k.read());
+                k.drop();
+                return;
+            }
+        }
+    }
+}

@@ -329,10 +329,11 @@ decision plus one global per class.
 
 ## What is left to build
 
-**All of it is built** (2026-08-14), step 6 included. Steps 1–5 are kept written out rather than
-struck through because the sub-points are the specification of what each layer must enforce, and that
-is still what the code is read against. What step 6 took is written up under *The narrow `A*`, built*
-at the end.
+**All of it is built** (2026-08-14), step 6 included — **except step 3, which the narrow-pointer
+rewrite silently undid; see *Audited, 2026-08-14* at the end.** Steps 1–5 are kept written out rather
+than struck through because the sub-points are the specification of what each layer must enforce, and
+that is still what the code is read against. What step 6 took is written up under *The narrow `A*`,
+built* at the end.
 
 1. Parser: the `region class` and `abstract region class` modifiers, the flavor, and the
    `on heap` / `at <addr>` backing.
@@ -467,3 +468,84 @@ testing what it says.
 The i686 image now boots **with a region class in it**, and asserts the walk
 (`ports = 0x0000000000000ad8`) alongside the arithmetic it already checked. Tests:
 `codegen_region_class_narrow_layout`, `codegen_region_class_narrow_runs`, `port_i686_boots`.
+
+## Audited, 2026-08-14 — five escapes, and one decision that never shipped
+
+The question asked of the tree was the one this document opens with: *is it true that every A is in
+A's region?* `emitNew` refuses `on heap` and `in region other`, and that is where the enforcement
+stopped — because `emitNew` was the **only** caller of `classArenaAlloc`. Every other way an A comes
+into existence went somewhere else, and none of them said so.
+
+**Why they were invisible.** A misplaced object still has the right shape and the right fields, so it
+reads back correctly and the program looks fine. What makes it fatal is step 6: a narrow `A*` field
+stores `(i32)(p - arenaBase)`, so an A outside the arena is not a misplaced object — it is a field
+holding an arbitrary 32-bit number that the next read turns back into an address. `Node b = a;
+root.left = b;` was an access violation with no diagnostic before this audit.
+
+Each of the five is now refused or routed, with a sample and a test:
+
+| escape | was | now |
+|---|---|---|
+| value copy (`A b = a;`) | `alloca` for a local, `malloc` for a field | `classArenaAlloc` — `codegen_region_class_copy_runs` |
+| `cascade` clone | `malloc` in `cloneHelper` | `classArenaAlloc` |
+| `Type.instantiate()` | `malloc` from the type token | the token carries the arena's own `new` — `codegen_region_class_reflect_runs` |
+| library-mode `__new` | `malloc` in the exported constructor | `classArenaAlloc` |
+| `move x into region R` | relocated into R | refused — `codegen_region_class_move_in_errors` |
+
+And two the refusals had missed:
+
+- **`on stack` was accepted and quietly overridden**, because it *is* the default: `location` reads
+  "stack" whether the author wrote it or wrote nothing, so codegen could not tell the two apart.
+  `NewExpr` now records whether the placement was **written**, and a written one is refused whatever
+  it says (`codegen_region_class_on_stack_errors`). This is the case the `on heap` refusal exists to
+  prevent, and it was open for the one placement that does the most damage.
+- **`extract`** relocates an object out of a region it would otherwise die with. A region class has no
+  such moment, so there is nowhere to extract to — refused, and naming the class where a region goes
+  now says that rather than "unknown region" (`sema_region_class_extract_errors`).
+
+**And an instance did not live as long as this document says it does.** *Two consequences worth
+stating out loud* promised that a local A "lives until it is deleted or the region dies — **not** until
+the block exits". It did not: RAII registration keyed off `NewExpr::location`, which for `new A()` is
+"stack", so the object was filed as a stack object and **destructed at the closing brace** while the
+arena still held it and every kept `A*` still pointed at it. A use-after-destruct that reads as
+harmless exactly when the destructor does nothing. Both registration sites now ask the class where its
+instances live instead of reading a placement nobody wrote
+(`codegen_region_class_outlives_block_runs`).
+
+**Fixing that uncovered the one underneath it, which is the usual way a pair like this comes apart.**
+Being filed as a stack object had also been routing `delete` to the branch that destructs and never
+frees — the right behaviour, reached for entirely the wrong reason. Take the misfiling away and
+`delete` fell through to `emitDeleteObject`, which hands the pointer to the allocator; the sixteen
+bytes in front of an arena object are arena bytes rather than a block header, so no stamp matches, the
+allocator calls it foreign and forwards it to libc. Two existing tests turned into
+**STATUS_HEAP_CORRUPTION** the moment the lifetime bug was fixed, which is the clearest evidence
+either bug produced. `delete` on a region class now destructs and stops, deliberately: the destructor
+is also what brings the instance counter down, which is what `release region` reads.
+
+### Step 3 was not built, and the narrow pointer is what took it away
+
+`__polaron_arena_alloc` is a **plain bump on a non-atomic `unsigned long long used`**, with no free
+list anywhere. Step 3 specifies "the chunked-bump allocator with thread-local free lists and the
+shared overflow stack", and the *Synchronization: measured, not argued* section above exists precisely
+to justify it — sixteen cores, four strategies, a table of numbers. None of it is in the shipped
+allocator.
+
+It is not that the work was skipped; it is that the narrow-pointer rewrite **replaced** the allocator.
+The old arena was a `growable pool` reached through `__polaron_region_new`, which had the free lists;
+one reservation with one base was needed for offsets to be unique, so it went, and the free list and
+the synchronization went with it without anything noticing.
+
+Two things follow, both open:
+
+- **Two threads allocating an A race on `used`.** Read-modify-write with no atomic: both can be handed
+  the same offset, so two objects share one address. This is the failure the measurement section was
+  written to prevent, and it contradicts the no-UB rule the rest of the language is held to.
+- **`delete` reclaims nothing.** A pure bump has nowhere to put a freed slot, so an allocate/delete
+  loop walks the 1 GiB reservation to its end and panics — with a message that tells the author to
+  "delete what is finished with", which is the one thing that does not help.
+- **And a double delete destructs twice, silently.** Everywhere else the freed stamp catches it; here
+  there is no free list to write one into. This is not a third problem — it is the second one seen
+  from the guard's side, and the same free list closes both.
+
+Neither is a hole in the *design*: the design settled both, with numbers. What is missing is the
+implementation, and it should be built against the table above rather than reinvented.

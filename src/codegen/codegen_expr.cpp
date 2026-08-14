@@ -661,6 +661,17 @@ llvm::Value* CodeGenerator::Impl::emitExpr(const ast::Expr& expr) {
         if (!mv->toRegion.empty()) {
             const std::string cls = baseType(typeName(*mv->operand));
             if (auto cit = classes.find(cls); cit != classes.end() && cit->second.type != nullptr) {
+                // Relocating into another region is what `new A() in region other` says, spelled as a
+                // move -- and it is refused for the same reason and in the same words. A region class
+                // has one arena; an A somewhere else is the one thing the feature is built on not
+                // existing.
+                if (cit->second.decl != nullptr && cit->second.decl->isRegionClass) {
+                    error("`" + cls + "` is a `region class`, so `into region " + mv->toRegion +
+                              "` would move it out of the only region its instances may be in -- the "
+                              "same thing `in region` is refused for at `new`",
+                          mv->loc);
+                    return nullptr;
+                }
                 llvm::Value* dst = emitRegionAlloc(mv->toRegion, cit->second.type, mv->loc);
                 if (dst != nullptr) {
                     emitMemcpy(dst, src, sizeOf(cit->second.type));
@@ -680,6 +691,19 @@ llvm::Value* CodeGenerator::Impl::emitExpr(const ast::Expr& expr) {
         auto cit = classes.find(cn);
         if (cit == classes.end() || cit->second.type == nullptr) {
             error("extract requires a class object (spec 17)", ex->loc);
+            return nullptr;
+        }
+        // `extract` IS the escape a region class forbids. Relocating an object out of a region to a
+        // fresh heap block is the right answer for an owned region, whose point is that the region
+        // dies and this one object should not; a region class has no such moment -- its arena is the
+        // only place its instances may be, and an extracted A is an A that `on heap` would have been
+        // refused for. Refused here rather than obeyed, for the same reason: obeying it ends the
+        // totality that unimport's O(1) liveness, the linear walk and the narrow `A*` all read.
+        if (cit->second.decl != nullptr && cit->second.decl->isRegionClass) {
+            error("`" + cn + "` is a `region class`, so there is nowhere to extract it TO -- its "
+                  "arena is the only place its instances may be, which is what `on heap` is refused "
+                  "for as well. Copy the values you need out instead of relocating the object",
+                  ex->loc);
             return nullptr;
         }
         llvm::Value* addr = emitLValue(*ex->target);       // where the source handle is stored
@@ -1443,6 +1467,20 @@ llvm::Value* CodeGenerator::Impl::emitNew(const ast::NewExpr& nw) {
             error("`" + cn + "` is a `region class`, so `on heap` has nowhere to put this -- every "
                   "instance comes from the type's own region, and that is the whole guarantee. "
                   "Write `new " + cn + "(...)` with no placement",
+                  nw.loc);
+            return nullptr;
+        }
+        // `on stack` gets the same refusal, and it has to be asked for separately because the DEFAULT
+        // is "stack" -- silence and the written word arrive here identical unless the parser says
+        // which it was. Letting the written one through would be the case this refusal exists to
+        // prevent: the author states a placement, the compiler does something else, and nothing says
+        // so. It is also the placement that would do the most damage, since a stack `A` is what makes
+        // a narrow `A*` point outside the arena.
+        if (nw.locationWritten) {
+            error("`" + cn + "` is a `region class`, so `on " + nw.location + "` has nowhere to put "
+                  "this -- every instance comes from the type's own region, and a region class is "
+                  "worth having precisely because there is nowhere else. Write `new " + cn +
+                  "(...)` with no placement",
                   nw.loc);
             return nullptr;
         }

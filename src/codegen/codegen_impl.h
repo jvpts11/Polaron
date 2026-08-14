@@ -2243,10 +2243,29 @@ struct CodeGenerator::Impl {
             return srcPtr;
         }
         llvm::StructType* st = cit->second.type;
-        // A copy bound to a field must outlive the current frame -> heap; a copy bound to a local
-        // can live in the frame -> stack.
-        llvm::Value* dest = heap ? builder.CreateCall(mallocFn(), {sizeOf(st)}, className + ".copy")
-                                 : createEntryAlloca(className + ".copy", st);
+        // A REGION CLASS'S COPY IS IN ITS REGION TOO, and this is not a refinement -- it is the
+        // guarantee. `A b = a;` allocates an A, and totality admits no exception for the allocation
+        // the COMPILER makes rather than the one the author wrote: `emitNew` refuses `on heap` and
+        // `in region other` for exactly this reason, and a copy on the stack (or the heap) walked
+        // out through the door those refusals close.
+        //
+        // What made it a crash rather than a broken invariant: a narrow `A*` field stores
+        // `(i32)(p - arenaBase)`. Given a stack copy, that subtraction is an arbitrary number
+        // truncated to 32 bits, so the field pointed at neither the copy nor anything else in the
+        // reservation. Measured before the fix, on a two-line program: access violation, no
+        // diagnostic. Not "a copy in the wrong place" -- a wild pointer with a pointer's face on it.
+        //
+        // The price is the one the design already states for every other instance: a copy lives
+        // until it is deleted or the region dies, not until the block exits.
+        llvm::Value* dest = nullptr;
+        if (cit->second.decl != nullptr && cit->second.decl->isRegionClass) {
+            dest = classArenaAlloc(className, sizeOf(st));
+        } else {
+            // A copy bound to a field must outlive the current frame -> heap; a copy bound to a local
+            // can live in the frame -> stack.
+            dest = heap ? builder.CreateCall(mallocFn(), {sizeOf(st)}, className + ".copy")
+                        : createEntryAlloca(className + ".copy", st);
+        }
         emitMemcpy(dest, srcPtr, sizeOf(st));  // shallow copy first
         // A deep copy is a fresh object: it has no incoming `weak T*` refs and observes nothing through its
         // own weak fields, so reset the copied weak-list head and every weak slot to null. Otherwise the
@@ -3131,6 +3150,19 @@ struct CodeGenerator::Impl {
     // `A*` is an offset from -- marked readonly so LLVM folds the repeated call away.
     llvm::Value* classArenaAlloc(const std::string& cls, llvm::Value* size);
     llvm::Value* classArenaBase(const std::string& cls);
+    // Whether instances of this class live in the type's own arena. Asked wherever a decision is
+    // keyed on WHERE an object is, because a region class takes the default placement ("stack") and
+    // then ignores it -- so reading `NewExpr::location` alone answers the wrong question.
+    bool livesInClassArena(const std::string& cls) const {
+        auto it = classes.find(cls);
+        return it != classes.end() && it->second.decl != nullptr && it->second.decl->isRegionClass;
+    }
+    // The same bump, wrapped in a callable with no arguments, so a caller that only learns the class
+    // at RUNTIME can still reach its arena. Reflection's `Type.instantiate()` is that caller: the type
+    // token is a value, and `malloc` there put an instance of a region class outside its own region.
+    // Returns null for a class that has no arena, which is what the token then stores.
+    llvm::Function* classArenaNewFn(const std::string& cls);
+    std::unordered_map<std::string, llvm::Function*> arenaNewFns_;
     llvm::Value* emitNew(const ast::NewExpr& nw);  // out of line in codegen_expr.cpp
 
     // A java-style enum constant: materializes `new EnumName(args)` on the heap.

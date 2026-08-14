@@ -795,10 +795,30 @@ void CodeGenerator::Impl::freeStringFields(llvm::Value* objPtr, const std::strin
 }
 
 void CodeGenerator::Impl::emitDeleteObject(llvm::Value* objPtr, const std::string& cn) {
+    // A REGION CLASS'S OBJECT IS NOT THE ALLOCATOR'S, so `delete` destructs it and stops there. Its
+    // storage came from the arena's own reservation, and handing that pointer to `free` is the exact
+    // corruption the guard below exists to catch, one level too late: the sixteen bytes in front of it
+    // are arena bytes rather than a block header, so no stamp matches, the allocator treats it as a
+    // foreign pointer and forwards it to libc. Measured: STATUS_HEAP_CORRUPTION (0xC0000374).
+    //
+    // This was hidden until this audit by an unrelated accident -- `new A()` parses as location
+    // "stack", so the object was filed as a stack object and `delete` took the never-free branch for
+    // the wrong reason. Fixing the lifetime bug uncovered this one, which is the usual way a pair like
+    // this comes apart.
+    //
+    // The destructor still runs, and it is also what brings the instance counter down, which is what
+    // `release region` reads. What does NOT happen is reclamation: the arena is a bump with no free
+    // list (see "Step 3 was not built" in docs/design/region-classes.md), so the slot is dead until
+    // the region is released. Deleting twice therefore destructs twice, undetectably -- the freed
+    // stamp that would catch it is part of the same missing free list.
+    const bool inArena = livesInClassArena(cn);
     // No-UB double-delete guard: a freed pool block's field 0 (the vtable slot) has been overwritten
     // by the free-list link, so the destructor lookup below would call through garbage. Panic first
-    // if the block is already freed (live/foreign pointers pass through untouched).
-    builder.CreateCall(checkLiveFn(), {objPtr});
+    // if the block is already freed (live/foreign pointers pass through untouched). An arena object
+    // has no header to read, so the question is meaningless rather than merely negative.
+    if (!inArena) {
+        builder.CreateCall(checkLiveFn(), {objPtr});
+    }
     // Regions this object OWNS go with it -- see `emitOwnedRegionFieldRelease`. Done up front
     // because everything below may free the object's storage, and the field holding the region's
     // block has to still be readable.
@@ -825,7 +845,9 @@ void CodeGenerator::Impl::emitDeleteObject(llvm::Value* objPtr, const std::strin
         builder.SetInsertPoint(freeBB);
         emitWeakCleanup(objPtr, cn);
         freeStringFields(objPtr, cn);
-        builder.CreateCall(freeFn(), {objPtr});
+        if (!inArena) {
+            builder.CreateCall(freeFn(), {objPtr});
+        }
         return;
     }
     if (cit != classes.end() && cit->second.hasDestructor) {
@@ -833,7 +855,9 @@ void CodeGenerator::Impl::emitDeleteObject(llvm::Value* objPtr, const std::strin
     }
     emitWeakCleanup(objPtr, cn);
     freeStringFields(objPtr, cn);
-    builder.CreateCall(freeFn(), {objPtr});
+    if (!inArena) {
+        builder.CreateCall(freeFn(), {objPtr});
+    }
 }
 
 std::string CodeGenerator::Impl::ownedHeapNewArg(const ast::Expr& argExpr, const std::string& paramType) {
@@ -1085,7 +1109,14 @@ llvm::Function* CodeGenerator::Impl::cloneHelper(int csid, const std::string& cn
         return fn;
     }
     llvm::Value* size = sizeOf(cit->second.type);
-    llvm::Value* dst = builder.CreateCall(mallocFn(), {size});
+    // A `cascade` clone of a region class lands in that class's region, for the same reason a value
+    // copy does (see emitClassCopy): every A comes from A's arena and there is nowhere else, so an
+    // allocation the compiler makes on the author's behalf is not an exception to the rule the
+    // author is held to. Every consequence of the feature -- unimport's O(1) liveness, the linear
+    // walk, and the narrow 32-bit `A*` -- reads the arena and only the arena.
+    llvm::Value* dst = (cit->second.decl != nullptr && cit->second.decl->isRegionClass)
+                           ? classArenaAlloc(cn, size)
+                           : builder.CreateCall(mallocFn(), {size});
     emitMemcpy(dst, srcArg, size);       // shallow copy
     builder.CreateCall(ptrmapPutFn(), {mapArg, srcArg, dst});  // register before recursing
 
@@ -2848,8 +2879,11 @@ llvm::StructType* CodeGenerator::Impl::typeTokenType() {
             {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(),
              builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
              builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(),
-             builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()},
+             builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()},
             "ReflectType");  // ..., ptr fieldGetters, ptr fieldSetters, ptr methodAnnCounts(i64[]),
+                             // and field 15: ptr arenaNew -- how to allocate one of this class when
+                             // the class is only known at runtime. Null for everything but a region
+                             // class, whose instances have exactly one place they may be.
     }
                              // ptr methodAnnNames(ptr[] -> String[]), ptr methodRetTags(i64[])
     return typeStructTy;
@@ -3051,9 +3085,15 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
     llvm::Constant* ctorFn = ctorIt != functions.end()
                                  ? llvm::cast<llvm::Constant>(ctorIt->second)
                                  : llvm::ConstantPointerNull::get(builder.getPtrTy());
+    // How to allocate one, for a class whose instances may live in only one place. Null otherwise,
+    // which is what keeps `instantiate` on the ordinary heap path for every ordinary class.
+    llvm::Function* arenaNew = classArenaNewFn(className);
+    llvm::Constant* arenaNewC = arenaNew != nullptr
+                                    ? llvm::cast<llvm::Constant>(arenaNew)
+                                    : llvm::ConstantPointerNull::get(builder.getPtrTy());
     llvm::Constant* obj = llvm::ConstantStruct::get(
         typeTokenType(), {nameStr, mcount, mnames, fnsG, fcount, fnames, size, ctorFn, acount,
-                          anames, fGetG, fSetG, mAnnCountsG, mAnnPtrsG, retTagsG});
+                          anames, fGetG, fSetG, mAnnCountsG, mAnnPtrsG, retTagsG, arenaNewC});
     auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
                                        llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
     typeGlobals[className] = g;
