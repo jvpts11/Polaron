@@ -3393,6 +3393,27 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # WRITING TO A TERMINAL (System.Terminal): the library had `println` and nothing else, so every
+        # command-line tool reinvented colour and alignment slightly differently. `Style` decides what
+        # text looks like and `Table` where it goes, and they are separate because THE WIDTH OF A
+        # STYLED STRING IS NOT ITS LENGTH -- a table measuring with `length()` pushes every row after a
+        # coloured cell out of line. The alignment is checked BY THE PROGRAM (every line the same
+        # on-screen width), since the harness collapses whitespace and cannot carry column positions.
+        add_test(NAME codegen_terminal_table_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/terminal_table.pol"
+            "-DCONTAINS=styled=12 wide=3 stripped=red"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_terminal_table_aligns COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/terminal_table.pol"
+            "-DCONTAINS=lines=4 aligned=1 width=19 rightAligned=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
