@@ -33,7 +33,7 @@
 # -- `Math` is declared in two places). It is sorted so the foundations come first anyway, because
 # the assembled file is what a diagnostic points into.
 set(PRELUDE_ORDER
-    Runtime Memory Memory.Units Errors Collections Algorithms Text Codecs Math Time
+    Runtime Memory Memory.Units Errors Collections Arrays Algorithms Text Codecs Math Time
     IO OS Net Concurrency Ipc Json Formats Compress Science Spatial Units Serialize Validate
     Inject Arena Compare Security Events Ecs App Test)
 

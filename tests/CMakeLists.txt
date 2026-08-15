@@ -3203,6 +3203,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # SORTING A RAW ARRAY (System.Arrays), which the library had no way to do: `ArrayList.sortedBy`
+        # was the only sort in 305 types, so an `int[]` had to become an ArrayList to be put in order.
+        # One generic method per operation with a comparator (no overloading), plus `Ints` for the
+        # order nobody disagrees about.
+        add_test(NAME codegen_arrays_sort_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/arrays_sort.pol"
+            "-DEXPECTED=ints=0123456789 sorted=1 found=4 missing=-1 sum=45 min=0 max=9 words=apple/banana/cherry/date desc=9876543210"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
